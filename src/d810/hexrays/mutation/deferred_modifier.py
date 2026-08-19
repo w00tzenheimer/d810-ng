@@ -1349,6 +1349,11 @@ class DeferredGraphModifier:
         init=False,
         repr=False,
     )
+    _pending_kreg_allocations: list[AllocatedKreg] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(
@@ -1370,6 +1375,7 @@ class DeferredGraphModifier:
 
     def reset(self) -> None:
         """Clear all queued modifications."""
+        self.release_allocated_kregs()
         self.modifications.clear()
         self._applied = False
         if self._mutation_gateway is not None:
@@ -1381,6 +1387,50 @@ class DeferredGraphModifier:
         self.last_stale_serial_scan = None
         self._instruction_rewrite_batch = None
         self._instruction_batch_expected_epoch = None
+
+    def allocate_kreg(self, size: int) -> int | None:
+        """Allocate and ledger a kernel register for this DGM transaction.
+
+        Native allocation is deliberately exposed only through the mutation
+        backend.  A caller may use the returned register while constructing a
+        queued native edit; the allocation is retained when ``apply()``
+        succeeds and released by DGM on rejection, failure, or reset.
+        """
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise TypeError("size must be an integer")
+        if size <= 0:
+            raise ValueError("size must be positive")
+        if self._applied:
+            raise RuntimeError("cannot allocate a kreg after DGM apply")
+        alloc_kreg = getattr(self.mba, "alloc_kreg", None)
+        if not callable(alloc_kreg):
+            raise RuntimeError("MBA cannot allocate kregs")
+        allocated = alloc_kreg(int(size), True)
+        if allocated is None:
+            return None
+        register = int(allocated)
+        if register == int(ida_hexrays.mr_none) or register < 0:
+            return None
+        self._pending_kreg_allocations.append(
+            AllocatedKreg(register=register, size=int(size))
+        )
+        return register
+
+    def release_allocated_kregs(self) -> None:
+        """Release DGM-owned allocations that never became live instructions."""
+        if not self._pending_kreg_allocations:
+            return
+        allocations = tuple(reversed(self._pending_kreg_allocations))
+        self._pending_kreg_allocations.clear()
+        free_kreg = getattr(self.mba, "free_kreg", None)
+        if not callable(free_kreg):
+            raise RuntimeError("MBA cannot free allocated kregs")
+        for allocation in allocations:
+            free_kreg(int(allocation.register), int(allocation.size))
+
+    def _retain_allocated_kregs(self) -> None:
+        """Forget the pending ledger after successful native materialization."""
+        self._pending_kreg_allocations.clear()
 
     def configure_instruction_batch_lifecycle(self, authority: object | None) -> None:
         """Install the lifecycle-owned native-failure poison port.
@@ -8387,7 +8437,7 @@ class DeferredGraphModifier:
         self.plan_refusal_reason = None
         self.rollback_outcome = None
         try:
-            return self._apply(
+            result = self._apply(
                 run_optimize_local=run_optimize_local,
                 run_deep_cleaning=run_deep_cleaning,
                 verify_each_mod=verify_each_mod,
@@ -8400,8 +8450,25 @@ class DeferredGraphModifier:
                 staged_atomic=staged_atomic,
             )
         except BaseException as exc:
+            try:
+                self.release_allocated_kregs()
+            finally:
+                self._abort_open_mutation_batch(
+                    f"apply raised {type(exc).__name__}: {exc}"
+                )
+            raise
+        try:
+            if result > 0:
+                self._retain_allocated_kregs()
+            else:
+                had_pending_allocations = bool(self._pending_kreg_allocations)
+                self.release_allocated_kregs()
+                if had_pending_allocations:
+                    self._abort_open_mutation_batch("DGM apply rejected pending work")
+        except BaseException as exc:
             self._abort_open_mutation_batch(f"apply raised {type(exc).__name__}: {exc}")
             raise
+        return result
 
     def _abort_open_mutation_batch(self, reason: str) -> None:
         gateway = self._mutation_gateway

@@ -195,8 +195,7 @@ class _FiniteZeroSetMaterializer:
             return None
         first = _fresh_byte_kreg(context)
         second = _fresh_byte_kreg(context)
-        predicate_output = _fresh_byte_kreg(context)
-        if first is None or second is None or predicate_output is None:
+        if first is None or second is None:
             return None
 
         comparisons = (
@@ -232,6 +231,9 @@ class _FiniteZeroSetMaterializer:
             if child is None:
                 return None
             extension = ida_hexrays.minsn_t(child)
+        predicate_output = _fresh_byte_kreg(context)
+        if predicate_output is None:
+            return None
         replacement = _and(
             instruction.ea,
             first,

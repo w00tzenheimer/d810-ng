@@ -702,6 +702,17 @@ class _JournalHostedRule(HostedBlockInstructionRule):
         )
 
 
+def _unregister_test_hosted_rule(rule_type):
+    """Keep a module-local fixture out of the process-global flow registry."""
+    key = HostedBlockInstructionRule.normalize_key(
+        HostedBlockInstructionRule.keyof(rule_type)
+    )
+    assert HostedBlockInstructionRule.registry.pop(key) is rule_type
+
+
+_unregister_test_hosted_rule(_JournalHostedRule)
+
+
 class _Journal:
     callback_detail_is_full = False
 
@@ -729,9 +740,10 @@ class _JournalGateway:
 
 
 class _JournalContext:
-    def __init__(self, lifecycle):
+    def __init__(self, lifecycle, *, mba):
         self.lifecycle = lifecycle
         self.gateway = _JournalGateway()
+        self.mba = mba
 
     def new_mba_mutation_gateway(self):
         return self.gateway
@@ -744,8 +756,12 @@ class _JournalContext:
 
 
 class _JournalDgm:
-    def __init__(self, _mba, *, mutation_gateway):
+    instances = []
+
+    def __init__(self, mba, *, mutation_gateway):
+        self.mba = mba
         self.mutation_gateway = mutation_gateway
+        self.__class__.instances.append(self)
 
 
 class _JournalCommitter:
@@ -774,6 +790,7 @@ class _JournalCommitter:
 def test_hosted_block_journal_uses_batch_receipt_effect_and_parent_attempt(
     monkeypatch,
 ):
+    _JournalDgm.instances.clear()
     monkeypatch.setattr(
         optblock_adapter,
         "HexRaysBlockInstructionCommitter",
@@ -787,7 +804,10 @@ def test_hosted_block_journal_uses_batch_receipt_effect_and_parent_attempt(
         raising=False,
     )
     lifecycle = _JournalLifecycle()
-    context = _JournalContext(lifecycle)
+    block = _make_block(0x401000)
+    block.serial = 3
+    block.start = 0x401000
+    context = _JournalContext(lifecycle, mba=block.mba)
     rule = _JournalHostedRule()
     manager = BlockOptimizerManager.__new__(BlockOptimizerManager)
     manager.cfg_rules = [rule]
@@ -813,12 +833,9 @@ def test_hosted_block_journal_uses_batch_receipt_effect_and_parent_attempt(
     manager._capture_callback_block_nop_sites = lambda _block: None
     manager._report_callback_block_nop_delta = lambda _block, **_kwargs: None
     manager._record_run_later_requests = lambda *_args, **_kwargs: None
-    block = _make_block(0x401000)
-    block.serial = 3
-    block.start = 0x401000
-
     assert manager.optimize(block) == 1
     assert rule.proposals == 1
+    assert _JournalDgm.instances[-1].mba is context.mba
     assert len(lifecycle.journal.records) == 1
     _session_id, parent_attempt_id, records = lifecycle.journal.records[0]
     assert parent_attempt_id == "parent"

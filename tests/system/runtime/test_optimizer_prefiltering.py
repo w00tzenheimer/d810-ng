@@ -811,6 +811,17 @@ class _HostedRule(HostedBlockInstructionRule):
         )
 
 
+def _unregister_test_hosted_rule(rule_type):
+    """Keep a module-local fixture out of the process-global flow registry."""
+    key = HostedBlockInstructionRule.normalize_key(
+        HostedBlockInstructionRule.keyof(rule_type)
+    )
+    assert HostedBlockInstructionRule.registry.pop(key) is rule_type
+
+
+_unregister_test_hosted_rule(_HostedRule)
+
+
 class _LegacyRuleWithProposalMethod:
     name = "Legacy.Rule.With.Proposal.Method"
     maturities = [ida_hexrays.MMAT_LOCOPT]
@@ -854,8 +865,9 @@ class _HostedGateway:
 
 
 class _HostedContext:
-    def __init__(self, gateway):
+    def __init__(self, gateway, *, mba):
         self.gateway = gateway
+        self.mba = mba
         self.gateway_calls = 0
         self.current_rule_names = []
 
@@ -974,8 +986,8 @@ def test_hosted_block_abstention_falls_through_but_proposal_is_terminal(
     second = _HostedRule(True, rule_id="second")
     lifecycle = _HostedLifecycle()
     gateway = _HostedGateway()
-    context = _HostedContext(gateway)
     block = _new_hosted_block()
+    context = _HostedContext(gateway, mba=block.mba)
     manager = _new_hosted_adapter_manager(
         (first, second), lifecycle=lifecycle, context=context, block=block
     )
@@ -993,8 +1005,8 @@ def test_hosted_block_rejection_is_callback_terminal(monkeypatch):
     _HostedCommitter.outcomes = {"first": False}
     lifecycle = _HostedLifecycle()
     gateway = _HostedGateway()
-    context = _HostedContext(gateway)
     block = _new_hosted_block()
+    context = _HostedContext(gateway, mba=block.mba)
     manager = _new_hosted_adapter_manager(
         (first, second), lifecycle=lifecycle, context=context, block=block
     )
@@ -1012,8 +1024,8 @@ def test_hosted_block_commit_preserves_lifecycle_epoch_and_invalidates_adapter_c
     trailing = _HostedRule(True, rule_id="trailing-rule")
     lifecycle = _HostedLifecycle(generation=17)
     gateway = _HostedGateway()
-    context = _HostedContext(gateway)
     block = _new_hosted_block()
+    context = _HostedContext(gateway, mba=block.mba)
     manager = _new_hosted_adapter_manager(
         (rule, trailing), lifecycle=lifecycle, context=context, block=block
     )
@@ -1030,6 +1042,8 @@ def test_hosted_block_commit_preserves_lifecycle_epoch_and_invalidates_adapter_c
     assert manager._flow_context is None
     assert lifecycle.generation == 17
     assert context.gateway_calls == 1
+    assert _HostedDgm.instances[-1].mba is context.mba
+    assert _HostedCommitter.calls[-1][3].mba_identity == id(context.mba)
     assert _HostedDgm.instances[-1].mutation_gateway is gateway
     assert trailing.proposals == []
 
@@ -1038,8 +1052,8 @@ def test_hosted_block_quarantine_prevents_proposal_and_commit(monkeypatch):
     _patch_hosted_adapter(monkeypatch)
     rule = _HostedRule(True)
     lifecycle = _HostedLifecycle(quarantined=True)
-    context = _HostedContext(_HostedGateway())
     block = _new_hosted_block()
+    context = _HostedContext(_HostedGateway(), mba=block.mba)
     manager = _new_hosted_adapter_manager(
         (rule,), lifecycle=lifecycle, context=context, block=block
     )
@@ -1053,8 +1067,8 @@ def test_unrelated_legacy_rule_with_proposal_method_stays_on_legacy_path(monkeyp
     _patch_hosted_adapter(monkeypatch)
     rule = _LegacyRuleWithProposalMethod()
     lifecycle = _HostedLifecycle()
-    context = _HostedContext(_HostedGateway())
     block = _new_hosted_block()
+    context = _HostedContext(_HostedGateway(), mba=block.mba)
     manager = _new_hosted_adapter_manager(
         (rule,), lifecycle=lifecycle, context=context, block=block
     )

@@ -176,3 +176,39 @@ def test_native_rule_uses_the_hosted_proposal_boundary_without_live_mutation() -
     ]
     assert calls == []
     assert "block.mba.alloc_kreg" not in _NATIVE.read_text(encoding="utf-8")
+
+
+def test_no_extension_materialization_does_not_allocate_an_unused_output_kreg() -> None:
+    """The standalone setnz form needs only the two comparison temporaries."""
+    tree = ast.parse(_NATIVE.read_text(encoding="utf-8"))
+    materializer = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "_FiniteZeroSetMaterializer"
+    )
+    materialize = next(
+        node
+        for node in materializer.body
+        if isinstance(node, ast.FunctionDef) and node.name == "materialize"
+    )
+    no_extension = next(
+        node
+        for node in materialize.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Attribute)
+        and node.test.left.attr == "extension_kind"
+        and isinstance(node.test.comparators[0], ast.Constant)
+        and node.test.comparators[0].value is None
+    )
+    output_assignment = next(
+        node
+        for node in materialize.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "predicate_output"
+            for target in node.targets
+        )
+    )
+
+    assert materialize.body.index(output_assignment) > materialize.body.index(no_extension)

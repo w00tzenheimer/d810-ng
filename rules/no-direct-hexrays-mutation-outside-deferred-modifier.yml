@@ -15,6 +15,7 @@ severity: error
 
 files:
   - "src/d810/hexrays/mutation/**/*.py"
+  - "src/d810/optimizers/microcode/instructions/peephole/*_native.py"
 
 ignores:
   # Central queue/apply implementation and low-level primitive bridge.
@@ -22,7 +23,12 @@ ignores:
   - "src/d810/hexrays/mutation/cfg_mutations.py"
 
 message: |
-  Hex-Rays materialization must route live CFG rewrites through DeferredGraphModifier.
+  Hex-Rays materialization must route live CFG rewrites and hosted-block
+  instruction rewrites through DeferredGraphModifier.
+
+  Hosted block materializers emit typed instruction intents; DeferredGraphModifier
+  owns their native application, including insertion, removal, swapping, list
+  dirtying, and raw kernel-register allocation/freeing.
 
   Queue the operation with an existing DeferredGraphModifier queue_* primitive,
   or add the missing queue primitive there if the plan needs a new live rewrite.
@@ -34,12 +40,25 @@ rule:
     - pattern: $BLK.make_nop($$$)
     - pattern: $BLK.insert_into_block($$$)
     - pattern: $BLK.remove_from_block($$$)
+    - pattern: $INS.swap($$$)
+    - all:
+        - pattern: $MBA.alloc_kreg($$$)
+        - not:
+            # Hosted materializers may use the typed, backend-owned allocation
+            # port.  The raw MBA allocation primitive remains DGM-only.
+            pattern: context.alloc_kreg($$$)
+    - pattern: $MBA.free_kreg($$$)
     - pattern: change_1way_block_successor($$$)
     - pattern: change_2way_block_conditional_successor($$$)
     - pattern: change_2way_block_fallthrough_successor($$$)
     - pattern: $MBA.mark_chains_dirty()
     - pattern: $BLK.mark_lists_dirty()
-    - pattern: $BLK.type = $$$
+    - all:
+        - pattern: $BLK.type = $$$
+        - not:
+            # Native helper-call construction assigns a call-argument type;
+            # it is not a live mblock_t type rewrite.
+            pattern: argument.type = $$$
     - pattern: $BLK.succset._del($$$)
     - pattern: $BLK.succset.push_back($$$)
     - pattern: $BLK.succset.add($$$)
