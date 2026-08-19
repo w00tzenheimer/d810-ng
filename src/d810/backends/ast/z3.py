@@ -247,7 +247,12 @@ def _z3_leaf_width_bits(leaf: AstLeaf) -> int:
     return width
 
 
-def _z3_mop_identity(mop: object, *, proof_origin: object = None, leaf_identity: object = None) -> tuple:
+def _z3_mop_identity(
+    mop: object,
+    *,
+    proof_origin: object = None,
+    leaf_identity: object = None,
+) -> tuple:
     """Return an immutable identity safe for Z3 leaf canonicalisation.
 
     ``equal_mops_ignore_size`` is intentionally a storage-oriented helper. It

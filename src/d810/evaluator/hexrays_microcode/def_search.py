@@ -109,6 +109,8 @@ def _proof_block_identity(blk: object) -> tuple[int, int, int] | None:
 def _proof_mba_identity(mba: object) -> int | None:
     """Normalize SWIG MBA wrappers to their native pointer when available."""
 
+    if mba is None:
+        return None
     try:
         return int(mba.this)
     except (AttributeError, TypeError, ValueError):
@@ -166,12 +168,6 @@ def _terminal_proof_origin(
     if storage is None:
         return None
     try:
-        has_location = _proof_operand_has_location(mop, blk)
-    except Exception:
-        return None
-    if not has_location:
-        return None
-    try:
         width = int(mop.size)
     except (AttributeError, TypeError, ValueError):
         return None
@@ -192,7 +188,11 @@ def _terminal_proof_origin(
         if serial in visited:
             return None
         visited.add(serial)
-        if not _proof_operand_has_location(mop, current):
+        try:
+            has_location = _proof_operand_has_location(mop, current)
+        except Exception:
+            return None
+        if not has_location:
             return None
 
         try:

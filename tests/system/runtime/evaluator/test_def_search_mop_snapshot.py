@@ -8,6 +8,20 @@ import pytest
 from d810.evaluator.hexrays_microcode import def_search
 
 
+def test_terminal_origin_rejects_non_native_before_mlist(monkeypatch):
+    def explode():
+        raise AssertionError("native mlist must not be constructed")
+
+    monkeypatch.setattr(ida_hexrays, "mlist_t", explode)
+    mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=1, valnum=0)
+    block = SimpleNamespace(serial=1, start=0, end=1, mba=None)
+    assert not def_search._proof_operand_has_location(mop, block)
+
+
+def test_proof_mba_identity_rejects_missing_mba():
+    assert def_search._proof_mba_identity(None) is None
+
+
 class FakeSnapshot:
     def __init__(self, *, t, size, reg=None, stkoff=None, owned_mop=None):
         self.t = t
