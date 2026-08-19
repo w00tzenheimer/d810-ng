@@ -28,6 +28,9 @@ if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
   printf '%s\\n' "${MOCK_DOCKER_LABEL:-}"
 fi
 if [ "${1:-}" = run ]; then
+  for arg in "$@"; do
+    printf 'run-arg %s\n' "$arg" >> "$DOCKER_LOG"
+  done
   exit "${MOCK_DOCKER_RUN_EXIT:-0}"
 fi
 """,
@@ -52,6 +55,7 @@ def _run(
     env = os.environ.copy()
     env.pop("D810_DOCKER_IMAGE", None)
     env.pop("D810_API_TOKEN", None)
+    env.pop("D810_EGGLOG_ROOT", None)
     env.update(
         {
             "PATH": f"{tmp_path / 'bin'}:{env['PATH']}",
@@ -106,11 +110,13 @@ def test_baked_runtime_validates_dependencies_in_every_mode(
     assert any(call.startswith("image inspect ") for call in calls)
     command = _container_run(calls)
     assert "from d810.speedups import bootstrap" in command
-    assert "import pytest, unicorn, z3, egglog" in command
+    assert "import pytest, unicorn, z3;" in command
+    assert "import pytest, unicorn, z3, egglog" not in command
     assert "/app/ida/.venv/bin/python -c" in command
     assert "z3.get_version()" in command
     assert "command -v git" in command
-    assert ".[dev,emulation,egraph]" in command
+    assert ".[dev,emulation]" in command
+    assert ".[dev,emulation,egraph]" not in command
     assert "d810.speedups.install" in command
     assert "baked runtime dependencies detected" in command
     assert "baked runtime is stale" in command
@@ -121,8 +127,90 @@ def test_unlabeled_runtime_keeps_dependency_setup(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
-    assert ".[dev,emulation,egraph]" in command
+    assert ".[dev,emulation]" in command
+    assert ".[dev,emulation,egraph]" not in command
     assert "d810.speedups.install" in command
+
+
+def test_core_mode_does_not_mount_or_forward_extension_root(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(tmp_path, "exec", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "/opt/d810-egglog" not in command
+    assert "D810_EGGLOG_ROOT=" not in command
+    assert "egglog" not in command
+
+
+@pytest.mark.parametrize("root", ["relative/extension", "missing-extension"])
+def test_invalid_extension_root_fails_before_docker(
+    tmp_path: Path,
+    root: str,
+) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_EGGLOG_ROOT": root},
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "D810_EGGLOG_ROOT" in result.stderr
+
+
+def test_extension_mode_mounts_installs_and_probes_once(tmp_path: Path) -> None:
+    extension_root = tmp_path / "extension"
+    extension_root.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_EGGLOG_ROOT": str(extension_root)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    mount = f"{extension_root}:/opt/d810-egglog:ro"
+    assert calls.count(f"run-arg {mount}") == 1
+    assert "find /opt/d810-egglog/dist" in command
+    assert 'pip install "$EXTENSION_WHEEL[test]" --no-deps -q' in command
+    assert 'cp -a /opt/d810-egglog/. "$EXTENSION_BUILD_DIR/"' in command
+    assert "pip install -e '/opt/d810-egglog" not in command
+    assert "pip install 'egglog>=13.2.0,<14' -q" in command
+    assert "import d810_egglog, egglog" in command
+    assert f"D810_EGGLOG_ROOT={extension_root}" not in command
+
+
+def test_extension_path_with_spaces_remains_one_mount_argument(tmp_path: Path) -> None:
+    extension_root = tmp_path / "extension repo with spaces"
+    extension_root.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_EGGLOG_ROOT": str(extension_root)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    mount = f"{extension_root}:/opt/d810-egglog:ro"
+    assert calls.count(f"run-arg {mount}") == 1
+
+
+def test_out_still_targets_bare_work_tmp_filename(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "test", "-o", "rendered.log", "--", "true")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "/work/.tmp/rendered.log" in command
+    assert "/work/.tmp//rendered.log" not in command
 
 
 def test_reports_docker_completion_and_preserves_failure_status(tmp_path: Path) -> None:
@@ -159,7 +247,7 @@ def test_baked_runtime_preserves_native_cython_build(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
-    assert ".[dev,emulation,egraph]" in command
+    assert ".[dev,emulation]" in command
     assert "command -v git" in command
     assert "D810_BUILD_SPEEDUPS=1" in command
     assert "DEBUG=1 D810_BUILD_SPEEDUPS=1" not in command
@@ -256,7 +344,7 @@ def test_baked_runtime_preserves_llvm_provisioning(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
     assert "apt-get install -y --no-install-recommends llvm" in command
-    assert ".[dev,emulation,egraph]" in command
+    assert ".[dev,emulation]" in command
     assert "command -v git" in command
 
 

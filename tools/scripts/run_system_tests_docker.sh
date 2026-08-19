@@ -71,6 +71,7 @@
 #   D810_CYTHON_PROFILE    Test-only Cython trace/profile build (requires D810_NO_CYTHON=0)
 #   D810_NATIVE_PROFILE    Opt-in perf/py-spy tooling plus PERFMON/SYS_PTRACE (default: 0)
 #   D810_TEST_BINARY       Passed into container (default: libobfuscated.dll)
+#   D810_EGGLOG_ROOT       Optional absolute host path to a d810-egglog checkout
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #
 # Examples:
@@ -232,6 +233,22 @@ if [ "$CYTHON_PROFILE" = "1" ] && [ "$NO_CYTHON" != "0" ]; then
   echo "ERROR: D810_CYTHON_PROFILE=1 requires D810_NO_CYTHON=0" >&2
   exit 1
 fi
+
+# The optional Egglog repository is a wrapper-only host path. Validate it
+# before any Docker command, then expose only the fixed container path below.
+EGGLOG_EXTENSION_ENABLED=0
+if [ -n "${D810_EGGLOG_ROOT+x}" ]; then
+  if [ -z "$D810_EGGLOG_ROOT" ] || [[ "$D810_EGGLOG_ROOT" != /* ]]; then
+    echo "ERROR: D810_EGGLOG_ROOT must be an absolute existing directory" >&2
+    exit 1
+  fi
+  if [ ! -d "$D810_EGGLOG_ROOT" ]; then
+    echo "ERROR: D810_EGGLOG_ROOT must be an absolute existing directory: $D810_EGGLOG_ROOT" >&2
+    exit 1
+  fi
+  D810_EGGLOG_ROOT="$(cd "$D810_EGGLOG_ROOT" && pwd -P)"
+  EGGLOG_EXTENSION_ENABLED=1
+fi
 RUNTIME_LABEL_KEY="org.d810.test-runtime"
 RUNTIME_LABEL_VALUE="dev-emulation-z3-v1"
 
@@ -392,6 +409,10 @@ if [ -n "$MOUNT_LOGS" ]; then
   mkdir -p "$LOGS_DIR"
   VOL_LOGS="-v ${LOGS_DIR}:/root/.idapro/logs"
 fi
+VOL_EGGLOG=()
+if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
+  VOL_EGGLOG=(-v "${D810_EGGLOG_ROOT}:/opt/d810-egglog:ro")
+fi
 
 # Plan: print what we're about to do so agents see worktree, output path, and options
 echo "$0 plan:"
@@ -456,7 +477,7 @@ fi
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
 _d810_extra_env_flags() {
-  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES "
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES "
   local _out=""
   local _var _val
   for _var in ${!D810_@}; do
@@ -507,13 +528,21 @@ elif [ "$CYTHON_PROFILE" = "1" ]; then
 else
   SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q || echo '[speedups] build failed, falling back to pure-Python'"
 fi
-RUNTIME_PROBE="from d810.speedups import bootstrap; bootstrap.ensure_speedups_on_path(); import pytest, unicorn, z3, egglog; assert (4, 13) <= z3.get_version() < (4, 15, 5)"
+RUNTIME_PROBE="from d810.speedups import bootstrap; bootstrap.ensure_speedups_on_path(); import pytest, unicorn, z3; assert (4, 13) <= z3.get_version() < (4, 15, 5)"
 if _image_has_baked_runtime; then
-  DEPENDENCY_SETUP="if $IDA_VENV_PYTHON -c '$RUNTIME_PROBE' >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then echo '[setup] baked runtime dependencies detected; install skipped'; else echo '[setup] baked runtime is stale; refreshing declared test dependencies'; if ! command -v git >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends git; fi; $IDA_VENV_PIP install -e '.[dev,emulation,egraph]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && $IDA_VENV_PYTHON -c '$RUNTIME_PROBE'; fi"
+  DEPENDENCY_SETUP="if $IDA_VENV_PYTHON -c '$RUNTIME_PROBE' >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then echo '[setup] baked runtime dependencies detected; install skipped'; else echo '[setup] baked runtime is stale; refreshing declared test dependencies'; if ! command -v git >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends git; fi; $IDA_VENV_PIP install -e '.[dev,emulation]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && $IDA_VENV_PYTHON -c '$RUNTIME_PROBE'; fi"
 else
-  DEPENDENCY_SETUP="$IDA_VENV_PIP install -e '.[dev,emulation,egraph]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && $IDA_VENV_PYTHON -c '$RUNTIME_PROBE'"
+  DEPENDENCY_SETUP="$IDA_VENV_PIP install -e '.[dev,emulation]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && $IDA_VENV_PYTHON -c '$RUNTIME_PROBE'"
 fi
-SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON $ENV_GIT && $PROFILE_SETUP${PROFILE_SETUP:+ && }$DEPENDENCY_SETUP && { $SPEEDUPS_BUILD_CMD; }"
+EXTENSION_SETUP=""
+if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
+  EXTENSION_SETUP="EXTENSION_WHEEL=\$(find /opt/d810-egglog/dist -maxdepth 1 -type f -name 'd810_egglog-*.whl' -print -quit 2>/dev/null); if [ -n \"\$EXTENSION_WHEEL\" ]; then $IDA_VENV_PIP install \"\$EXTENSION_WHEEL[test]\" --no-deps -q; else EXTENSION_BUILD_DIR=\$(mktemp -d); cp -a /opt/d810-egglog/. \"\$EXTENSION_BUILD_DIR/\"; $IDA_VENV_PIP install \"\$EXTENSION_BUILD_DIR[test]\" --no-deps -q; fi; $IDA_VENV_PIP install 'egglog>=13.2.0,<14' -q; $IDA_VENV_PYTHON -c 'import d810_egglog, egglog'"
+fi
+SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON $ENV_GIT && $PROFILE_SETUP${PROFILE_SETUP:+ && }$DEPENDENCY_SETUP"
+if [ -n "$EXTENSION_SETUP" ]; then
+  SETUP_CMD="$SETUP_CMD && $EXTENSION_SETUP"
+fi
+SETUP_CMD="$SETUP_CMD && { $SPEEDUPS_BUILD_CMD; }"
 
 # Safely reassemble an array of args into a string suitable for embedding in
 # a bash -c command that gets re-parsed by another shell (e.g. inside the
@@ -554,6 +583,7 @@ run_bash() {
     $VOL_WORK \
     $VOL_GIT \
     $VOL_LOGS \
+    "${VOL_EGGLOG[@]}" \
     -w /work \
     --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner"
 }
@@ -569,6 +599,7 @@ run_bash_it() {
     $VOL_WORK \
     $VOL_GIT \
     $VOL_LOGS \
+    "${VOL_EGGLOG[@]}" \
     -w /work \
     -e "CMD=$CMD" \
     -e "PYTHON=$IDA_VENV_PYTHON" \
@@ -590,6 +621,7 @@ run_bash_exec() {
     $VOL_WORK \
     $VOL_GIT \
     $VOL_LOGS \
+    "${VOL_EGGLOG[@]}" \
     -w /work \
     -e "CMD=exec" \
     -e "PYTHON=$IDA_VENV_PYTHON" \
