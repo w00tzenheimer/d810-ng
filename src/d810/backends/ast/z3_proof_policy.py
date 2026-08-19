@@ -74,7 +74,7 @@ class Z3ExpressionNodeBudget:
     caller constructs or descends into an occurrence.
     """
 
-    __slots__ = ("_limit", "_observed_nodes")
+    __slots__ = ("_limit", "_observed_nodes", "_charged_occurrences")
 
     def __init__(self, policy: Z3ProofPolicy | int) -> None:
         if isinstance(policy, Z3ProofPolicy):
@@ -84,6 +84,11 @@ class Z3ExpressionNodeBudget:
         _validate_bounded_integer("max_expression_nodes", limit, minimum=1, maximum=4096)
         self._limit = limit
         self._observed_nodes = 0
+        # The AST builder consumes occurrences before it constructs them.  The
+        # visitor later sees those same objects, so retain per-object charges
+        # to avoid charging an already-accounted occurrence twice while still
+        # charging any replacement node produced by contextual resolution.
+        self._charged_occurrences: dict[int, int] = {}
 
     @property
     def limit(self) -> int:
@@ -110,6 +115,40 @@ class Z3ExpressionNodeBudget:
                 limit=self._limit,
             )
         self._observed_nodes += 1
+
+    @staticmethod
+    def _occurrence_key(occurrence: object) -> int:
+        """Return a stable identity for an AST occurrence or proxy."""
+
+        target = occurrence
+        # AstProxy deliberately keeps its target private while forwarding the
+        # AST interface.  Unwrap one or more proxy layers without importing the
+        # IDA-specific AST implementation into this portable module.
+        while hasattr(target, "_target"):
+            next_target = getattr(target, "_target")
+            if next_target is target:
+                break
+            target = next_target
+        return id(target)
+
+    def mark_charged(self, occurrence: object) -> None:
+        """Record an occurrence already consumed at the builder seam."""
+
+        key = self._occurrence_key(occurrence)
+        self._charged_occurrences[key] = self._charged_occurrences.get(key, 0) + 1
+
+    def consume_ast(self, occurrence: object) -> None:
+        """Consume an AST occurrence unless its builder charge is recorded."""
+
+        key = self._occurrence_key(occurrence)
+        charged = self._charged_occurrences.get(key, 0)
+        if charged:
+            if charged == 1:
+                del self._charged_occurrences[key]
+            else:
+                self._charged_occurrences[key] = charged - 1
+            return
+        self.consume()
 
 
 # Short aliases keep the primitive convenient for backend-local callers while

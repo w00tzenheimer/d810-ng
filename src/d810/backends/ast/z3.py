@@ -299,7 +299,11 @@ class AstNodeZ3Visitor:
         if ast is None:
             raise ValueError("ast is None")
         if self.node_budget is not None:
-            self.node_budget.consume()
+            consume_ast = getattr(self.node_budget, "consume_ast", None)
+            if consume_ast is not None:
+                consume_ast(ast)
+            else:
+                self.node_budget.consume()
 
         if ast.is_leaf():
             return self._visit_leaf(typing.cast(AstLeaf, ast))
@@ -1056,7 +1060,17 @@ class Z3MopProver:
                         )
 
         if ast is not None and blk is not None and ins is not None:
-            ast = _recursively_resolve_ast(ast, blk, ins)
+            resolved_ast = _recursively_resolve_ast(ast, blk, ins)
+            if (
+                self._policy is not None
+                and resolved_ast is not None
+                and resolved_ast is not ast
+            ):
+                # Keep the builder's charges in this same budget.  The
+                # visitor's occurrence-aware seam skips the unchanged nodes
+                # and consumes every newly created replacement node.
+                visitor_needs_budget = True
+            ast = resolved_ast
             if logger.debug_on:
                 logger.debug("%s: After recursive resolution: %s", operation, ast)
         if ast is None:

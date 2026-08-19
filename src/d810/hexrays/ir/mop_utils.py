@@ -52,6 +52,9 @@ class _NodeBudget(Protocol):
     def consume(self) -> None:
         ...
 
+    def mark_charged(self, occurrence: object) -> None:
+        ...
+
 _VALID_MOP_SIZES = VALID_MOP_SIZES
 _MAX_MAKE_NUMBER_SIZE = MAX_MAKE_NUMBER_SIZE
 
@@ -95,6 +98,18 @@ def _native_perf_snapshot() -> dict:
 def _native_perf_ast_constructed() -> None:
     if _NATIVE_PERF_ENABLED:
         _NATIVE_PERF_COUNTERS["ast_constructions"] += 1
+
+
+def _mark_node_budget_charged(
+    node_budget: _NodeBudget | None, occurrence: AstBase
+) -> None:
+    """Tell a compatible budget that *occurrence* was charged by the builder."""
+
+    if node_budget is None:
+        return
+    marker = getattr(node_budget, "mark_charged", None)
+    if marker is not None:
+        marker(occurrence)
 
 
 def register_native_perf_provider() -> None:
@@ -293,7 +308,9 @@ def mop_to_ast_internal(
         if _NATIVE_PERF_ENABLED:
             _NATIVE_PERF_COUNTERS["local_cache_hits"] += 1
         existing_index = context.mop_key_to_index[key]
-        return context.unique_asts[existing_index]
+        existing = context.unique_asts[existing_index]
+        _mark_node_budget_charged(node_budget, existing)
+        return existing
     if _NATIVE_PERF_ENABLED:
         _NATIVE_PERF_COUNTERS["local_cache_misses"] += 1
 
@@ -378,6 +395,7 @@ def mop_to_ast_internal(
                     tree.ast_index = new_index
                     context.unique_asts.append(tree)
                     context.mop_key_to_index[key] = new_index
+                    _mark_node_budget_charged(node_budget, tree)
                     return tree
 
     # Helper calls that evaluate to constants are now canonicalised by
@@ -443,6 +461,7 @@ def mop_to_ast_internal(
             tree.ast_index = new_index
             context.unique_asts.append(tree)
             context.mop_key_to_index[key] = new_index
+            _mark_node_budget_charged(node_budget, tree)
             return tree
 
     # Special handling for mop_d that wraps an m_ldc as a constant leaf
@@ -473,6 +492,7 @@ def mop_to_ast_internal(
             const_leaf.ast_index = new_index
             context.unique_asts.append(const_leaf)
             context.mop_key_to_index[key] = new_index
+            _mark_node_budget_charged(node_budget, const_leaf)
             return const_leaf
 
     # Fallback for any unhandled mop: treat as a leaf.
@@ -551,6 +571,7 @@ def mop_to_ast_internal(
         tree.ast_index = new_index
         context.unique_asts.append(tree)
         context.mop_key_to_index[key] = new_index
+        _mark_node_budget_charged(node_budget, tree)
         return tree
 
     # If we reach here, we failed to build an AST. Log the full mop tree.
