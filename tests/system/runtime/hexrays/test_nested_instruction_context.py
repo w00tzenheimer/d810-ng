@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import platform
 from types import SimpleNamespace
 
 import pytest
@@ -193,3 +194,79 @@ def test_z3_context_is_cleared_when_rule_check_raises(monkeypatch) -> None:
     assert rule._current_blk is None
     assert rule._current_ins is None
     assert rule._definition_search_ins is None
+
+
+class TestNativeNestedInstructionTraversal:
+    """Exercise the owner seam through Hex-Rays' real nested-instruction walk."""
+
+    binary_name = (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
+
+    def test_for_all_insns_binds_and_restores_owner_anchor(self, libobfuscated_setup):
+        import ida_hexrays
+        import idc
+
+        from tests.system.runtime.conftest import gen_microcode_at_maturity
+
+        from d810.hexrays.hooks.optinsn_adapter import (
+            InstructionOptimizerManager,
+            InstructionVisitorManager,
+        )
+
+        class _NativeCaptureManager:
+            def __init__(self) -> None:
+                self.calls: list[tuple[object, object, object]] = []
+
+            def optimize(self, block, candidate, *, contextual_anchor_ins=None):
+                self.calls.append((block, candidate, contextual_anchor_ins))
+                return False
+
+        def _empty_mop():
+            mop = ida_hexrays.mop_t()
+            mop.erase()
+            return mop
+
+        def _number(value: int, size: int):
+            mop = ida_hexrays.mop_t()
+            mop.make_number(value, size)
+            return mop
+
+        nested = ida_hexrays.minsn_t(0x401014)
+        nested.opcode = ida_hexrays.m_add
+        nested.l = _number(1, 4)
+        nested.r = _number(2, 4)
+        nested.d = _empty_mop()
+
+        nested_mop = ida_hexrays.mop_t()
+        nested_mop.create_from_insn(nested)
+        nested_mop.size = 4
+
+        owner = ida_hexrays.minsn_t(0x401000)
+        owner.opcode = ida_hexrays.m_mov
+        owner.l = nested_mop
+        owner.r = _empty_mop()
+        owner.d = _empty_mop()
+
+        capture = _NativeCaptureManager()
+        visitor = InstructionVisitorManager(capture)
+        source_ea = idc.get_name_ea_simple("test_cst_simplification")
+        mba = gen_microcode_at_maturity(source_ea, ida_hexrays.MMAT_LOCOPT)
+        assert mba is not None
+        block = mba.get_mblock(0)
+        manager = SimpleNamespace(
+            _decompilation_lifecycle=None,
+            _last_optimizer_tried=None,
+            instruction_visitor=visitor,
+            log_info_on_input=lambda *_args: False,
+            optimize=lambda *_args: False,
+            _capture_callback_nop_sites=lambda *_args: None,
+            _report_callback_nop_delta=lambda *_args, **_kwargs: None,
+        )
+
+        assert InstructionOptimizerManager.func(manager, block, owner) is False
+
+        nested_calls = [call for call in capture.calls if call[1] is not owner]
+        assert nested_calls, capture.calls
+        assert all(call[2] is owner for call in nested_calls), capture.calls
+        assert not hasattr(visitor, "_contextual_anchor_ins")

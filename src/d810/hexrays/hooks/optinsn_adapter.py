@@ -871,7 +871,23 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     # def-use scans (e.g. wide constant reconstruction for the
                     # magic-modulo rule) need the owning block, so set it explicitly.
                     self.instruction_visitor.blk = blk
-                    optimization_performed = ins.for_all_insns(self.instruction_visitor)
+                    # The minsn traversal callback also does not reliably expose
+                    # the top-level instruction as ``topins``.  Bind it explicitly
+                    # for this traversal so contextual def-use resolution remains
+                    # anchored to the owner rather than to each nested candidate.
+                    visitor = self.instruction_visitor
+                    had_contextual_anchor = hasattr(visitor, "_contextual_anchor_ins")
+                    previous_contextual_anchor = getattr(
+                        visitor, "_contextual_anchor_ins", None
+                    )
+                    visitor._contextual_anchor_ins = ins
+                    try:
+                        optimization_performed = ins.for_all_insns(visitor)
+                    finally:
+                        if had_contextual_anchor:
+                            visitor._contextual_anchor_ins = previous_contextual_anchor
+                        else:
+                            del visitor._contextual_anchor_ins
 
                 if optimization_performed:
                     ins.optimize_solo()
@@ -1700,7 +1716,9 @@ class InstructionVisitorManager(ida_hexrays.minsn_visitor_t):
 
     def visit_minsn(self) -> bool:
         candidate_ins = self.curins
-        owner_ins = getattr(self, "topins", None)
+        owner_ins = getattr(self, "_contextual_anchor_ins", None)
+        if owner_ins is None:
+            owner_ins = getattr(self, "topins", None)
         if owner_ins is None:
             owner_ins = candidate_ins
         return self.instruction_optimizer.optimize(
