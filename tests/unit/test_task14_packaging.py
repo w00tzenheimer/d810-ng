@@ -76,6 +76,28 @@ def test_core_readme_documents_the_supported_python_floor() -> None:
     assert "CPython 3.10 through" not in readme
 
 
+def test_ci_python_matrix_matches_the_project_python_floor() -> None:
+    workflow = (ROOT / ".github/workflows/python.yml").read_text(encoding="utf-8")
+    project = _metadata()["project"]
+    floor_match = re.fullmatch(r">=\s*(\d+\.\d+)", project["requires-python"])
+    assert floor_match is not None
+    floor = tuple(int(part) for part in floor_match.group(1).split("."))
+
+    version_lists = re.findall(r"python-version:\s*\[([^\]]+)\]", workflow)
+    versions = {
+        tuple(int(part) for part in value.split("."))
+        for values in version_lists
+        for value in re.findall(r'"(\d+\.\d+)"', values)
+    }
+
+    assert floor in versions
+    assert {"3.11", "3.12", "3.13"} <= {
+        f"{major}.{minor}" for major, minor in versions
+    }
+    assert all(version >= floor for version in versions)
+    assert "3.10" not in workflow
+
+
 def test_task14_blocked_import_snippet_uses_exported_registry_helper() -> None:
     paths = (
         ROOT / "docs/superpowers/plans/2026-08-18-d810-egglog-extension-extraction.md",
