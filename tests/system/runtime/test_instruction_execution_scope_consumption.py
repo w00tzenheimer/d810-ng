@@ -634,3 +634,20 @@ def test_instruction_callback_does_not_visit_nested_rules_after_rejection(monkey
     assert result == 0
     assert optimizer.rejected == ["rewrite_noop"]
     assert nested_calls == []
+
+
+def test_instruction_callback_returns_zero_for_rejected_nested_proposal():
+    manager = _make_callback_manager()
+    manager.optimize = lambda _blk, _ins: False
+    manager._last_instruction_receipt = None
+    nested = _CallbackInstruction(1)
+    nested.for_all_insns = lambda _visitor: (
+        setattr(
+            manager,
+            "_last_instruction_receipt",
+            SimpleNamespace(applied_count=0, committed=False),
+        )
+        or True
+    )
+
+    assert InstructionOptimizerManager.func(manager, _make_block(0x401000), nested) == 0

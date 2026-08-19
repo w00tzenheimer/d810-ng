@@ -288,15 +288,12 @@ class InstructionRewriteReceipt:
             self.epoch_after, NativeEpoch
         ):
             raise TypeError("receipt epochs must be NativeEpoch values")
-        expected_generation = self.epoch_before.generation + int(committed)
-        expected_epoch = NativeEpoch(
-            self.epoch_before.function_ea,
-            self.epoch_before.mba_identity,
-            self.epoch_before.maturity,
-            expected_generation,
-        )
-        if self.epoch_after != expected_epoch:
-            raise ValueError("receipt epoch transition is invalid")
+        # An instruction transaction is inside one lifecycle-owned native
+        # snapshot. It may change the instruction but cannot mint a lifecycle
+        # generation; only the lifecycle may advance that epoch after it owns
+        # an actual MBA transition.
+        if self.epoch_after != self.epoch_before:
+            raise ValueError("receipt must retain its lifecycle snapshot epoch")
         for name in ("before_fingerprint", "after_fingerprint"):
             value = getattr(self, name)
             if value is not None and (
@@ -678,12 +675,11 @@ class HexRaysInstructionCommitter:
                 committed=True,
                 applied_count=1,
                 epoch_before=context.epoch,
-                epoch_after=NativeEpoch(
-                    context.epoch.function_ea,
-                    context.epoch.mba_identity,
-                    context.epoch.maturity,
-                    context.epoch.generation + 1,
-                ),
+                # This committer does not own the lifecycle epoch transition.
+                # Hex-Rays may revisit this live MBA before lifecycle obtains a
+                # fresh generation, so claiming G -> G+1 here would fabricate
+                # an ordering edge. The receipt records the current snapshot.
+                epoch_after=context.epoch,
                 before_fingerprint=fingerprint,
                 after_fingerprint=final_fingerprint,
                 reason=REASON_COMMITTED,

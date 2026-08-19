@@ -197,7 +197,7 @@ def test_recover_candidate_commits_one_instruction_transaction() -> None:
     assert verified == [mba]
     assert receipt.committed is True
     assert receipt.applied_count == 1
-    assert receipt.epoch_after.generation == receipt.epoch_before.generation + 1
+    assert receipt.epoch_after == receipt.epoch_before
     assert receipt.after_fingerprint == 2
     assert receipt.pass_id == "test-pass"
     assert receipt.stage_id == "test-stage"

@@ -1924,6 +1924,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             del visitor._contextual_anchor_ins
                     receipt = getattr(self, "_last_instruction_receipt", None)
 
+                    # A nested visitor can set the receipt after the top-level
+                    # probe abstained. Reload it before translating callback
+                    # outcome, otherwise a rejected nested proposal is falsely
+                    # reported to Hex-Rays as a mutation.
+                    receipt = getattr(self, "_last_instruction_receipt", None)
+
                 callback_result = (
                     int(receipt.applied_count)
                     if receipt is not None
