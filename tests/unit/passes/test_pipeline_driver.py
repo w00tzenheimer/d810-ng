@@ -229,7 +229,10 @@ class _MutatingPass:
     name = "mutating"
 
     def run(self, ctx) -> PassResult:
-        return PassResult(rewrite_plan=_nonempty_patch_plan())
+        return PassResult(
+            rewrite_plan=_nonempty_patch_plan(),
+            preserved=PreservedAnalyses.none(),
+        )
 
 
 def _nonempty_patch_plan() -> PatchPlan:
@@ -245,7 +248,10 @@ class _ReceiptPass:
 
     def run(self, ctx) -> PassResult:
         del ctx
-        return PassResult(rewrite_plan=_nonempty_patch_plan())
+        return PassResult(
+            rewrite_plan=_nonempty_patch_plan(),
+            preserved=PreservedAnalyses.none(),
+        )
 
 
 def _typed_route_projection(
@@ -2772,6 +2778,49 @@ def test_mutation_backend_pass_with_rewrite_plan_still_applies():
     assert backend.applied == 1
     assert facts.invalidations == 1
     assert out == "G1"
+
+
+def test_owned_mutating_result_requires_explicit_preservation_before_backend_apply():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
+
+    backend, facts = _Backend(), _Facts()
+    with pytest.raises(PassContractError, match="explicit preservation"):
+        _run_config_v2(
+            (PassSpec("mutator", _Mutator, no_caps, default),),
+            backend=backend,
+            facts=facts,
+            journal=None,
+        )
+
+    assert backend.applied == 0
+    assert facts.invalidations == 0
+
+
+def test_owned_mutating_result_with_explicit_none_reaches_backend():
+    class _Mutator:
+        name = "mutator"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(
+                rewrite_plan=_nonempty_patch_plan(),
+                preserved=PreservedAnalyses.none(),
+            )
+
+    backend, facts = _Backend(), _Facts()
+    assert (
+        _run_config_v2(
+            (PassSpec("mutator", _Mutator, no_caps, default),),
+            backend=backend,
+            facts=facts,
+            journal=None,
+        )
+        == "G1"
+    )
+    assert backend.applied == 1
 
 
 def test_noop_backend_apply_preserves_analysis_epoch():

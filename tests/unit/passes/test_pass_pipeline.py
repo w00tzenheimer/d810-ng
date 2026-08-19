@@ -10,7 +10,8 @@ from d810.ir.maturity import IRMaturity
 from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.passes import pass_pipeline as pp
 from d810.passes.scheduler import RunLater
-from d810.transforms.plan import PatchPlan
+from d810.transforms.cfg_transaction import LogicalBlockRef
+from d810.transforms.plan import PatchNopInstructions, PatchPlan
 
 
 @pytest.mark.parametrize(
@@ -71,6 +72,20 @@ def test_preserved_analyses():
     keep = pp.PreservedAnalyses.preserving({"dominators"})
     assert keep.preserves("dominators") is True
     assert keep.preserves("scc") is False
+
+
+def test_pass_result_reports_only_nonempty_portable_mutation_forms():
+    assert pp.PassResult().mutation_forms == ()
+
+    plan = PatchPlan(
+        steps=(
+            PatchNopInstructions(
+                LogicalBlockRef("pass-pipeline-test", "block:0", 0),
+                (0x1000,),
+            ),
+        )
+    )
+    assert pp.PassResult(rewrite_plan=plan).mutation_forms == ("rewrite_plan",)
 
 
 def test_pass_result_accepts_run_later_requests():
