@@ -8,24 +8,8 @@ tests can use them without importing the IDA provider.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 
-
-class Z3ProofStatus(str, Enum):
-    """Classification of a proof query."""
-
-    PROVED = "proved"
-    DISPROVED = "disproved"
-    ABSTAINED = "abstained"
-
-
-class Z3ProofAbstentionReason(str, Enum):
-    """Why a proof query could not be concluded."""
-
-    NODE_LIMIT = "node_limit"
-    TIMEOUT = "timeout"
-    UNSUPPORTED_EXPRESSION = "unsupported_expression"
-    SOLVER_UNKNOWN = "solver_unknown"
+from d810.core.z3_proof import Z3ProofAbstentionReason, Z3ProofStatus
 
 
 @dataclass(frozen=True, slots=True)

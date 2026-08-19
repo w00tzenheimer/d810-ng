@@ -15,6 +15,7 @@ from d810.core.observability_models import (
 )
 from d810.core.semantic_route_oracle import RouteOracleComparison
 from d810.core.typing import Any
+from d810.core.z3_proof import Z3ProofAbstentionReason, Z3ProofStatus
 
 
 # ---------------------------------------------------------------------------
@@ -113,23 +114,25 @@ class Z3PredicateProofObserved:
     proof_timeout_ms: int
     observed_expression_nodes: int | None
     elapsed_ms: float
-    status: str
-    reason: str | None
+    status: Z3ProofStatus
+    reason: Z3ProofAbstentionReason | None
     session_id: str = ""
     timestamp: float = 0.0
 
     def __post_init__(self) -> None:
         if int(self.func_ea) < 0:
             raise ValueError("func_ea must be non-negative")
-        for field_name in ("transform_id", "operation", "status"):
+        for field_name in ("transform_id", "operation"):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{field_name} must be non-empty")
-        if self.status not in {"proved", "disproved", "abstained"}:
-            raise ValueError("status must be proved, disproved, or abstained")
-        if self.status == "abstained":
-            if not isinstance(self.reason, str) or not self.reason.strip():
+        if type(self.status) is not Z3ProofStatus:
+            raise TypeError("status must be a Z3ProofStatus")
+        if self.status is Z3ProofStatus.ABSTAINED:
+            if self.reason is None:
                 raise ValueError("abstained proof receipt requires a reason")
+            if type(self.reason) is not Z3ProofAbstentionReason:
+                raise TypeError("reason must be a Z3ProofAbstentionReason")
         elif self.reason is not None:
             raise ValueError("conclusive proof receipt reason must be omitted")
         if self.session_id and not isinstance(self.session_id, str):

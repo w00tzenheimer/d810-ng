@@ -39,6 +39,7 @@ from d810.core.observability_events import (
     SemanticOutputVerifiedObserved,
     Z3PredicateProofObserved,
 )
+from d810.core.z3_proof import Z3ProofAbstentionReason, Z3ProofStatus
 import d810.core.observability_events as observability_events
 from d810.core.observability_models import (
     BlockSnapshot,
@@ -194,8 +195,8 @@ def test_z3_predicate_proof_receipt_is_queryable_in_the_lifecycle_timeline(
             proof_timeout_ms=13,
             observed_expression_nodes=8,
             elapsed_ms=2.5,
-            status="abstained",
-            reason="node_limit",
+            status=Z3ProofStatus.ABSTAINED,
+            reason=Z3ProofAbstentionReason.NODE_LIMIT,
             timestamp=4.0,
         )
     )

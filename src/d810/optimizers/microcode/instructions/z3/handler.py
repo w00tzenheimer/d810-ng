@@ -6,6 +6,7 @@ import ida_hexrays
 from d810.backends.ast.z3_proof_policy import Z3ProofPolicy
 from d810.core.observability import emit as emit_observation
 from d810.core.observability_events import Z3PredicateProofObserved
+from d810.core.z3_proof import Z3ProofAbstentionReason, Z3ProofStatus
 from d810.hexrays.expr.ast import AstNode, AstNodeProtocol
 from d810.optimizers.microcode.instructions.handler import (
     GenericPatternRule,
@@ -36,8 +37,13 @@ class Z3Rule(GenericPatternRule):
         config = dict(kwargs or {})
         policy = self._z3_proof_policy
         if self.PROOF_TRANSFORM_ID is not None:
-            max_expression_nodes = config.pop("max_expression_nodes", 256)
-            proof_timeout_ms = config.pop("proof_timeout_ms", 50)
+            default_policy = Z3ProofPolicy()
+            max_expression_nodes = config.pop(
+                "max_expression_nodes", default_policy.max_expression_nodes
+            )
+            proof_timeout_ms = config.pop(
+                "proof_timeout_ms", default_policy.proof_timeout_ms
+            )
             try:
                 policy = Z3ProofPolicy(
                     max_expression_nodes=max_expression_nodes,
@@ -55,24 +61,24 @@ class Z3Rule(GenericPatternRule):
         """Return the immutable policy configured for this rule."""
         return self._z3_proof_policy
 
-    def observe_z3_proof(self, operation: str, result: object) -> None:
-        """Publish one typed proof receipt without affecting rule matching."""
-        status = getattr(getattr(result, "status", None), "value", None)
-        if status is None:
-            status = str(getattr(result, "status", "abstained"))
-        reason = getattr(getattr(result, "reason", None), "value", None)
-        if reason is None:
-            raw_reason = getattr(result, "reason", None)
-            reason = raw_reason if isinstance(raw_reason, str) else None
-        if status == "abstained" and not reason:
-            # A malformed fake/backend result must still produce a valid
-            # abstention receipt; conclusive results intentionally retain the
-            # typed API's ``None`` reason.
-            reason = "proof_abstained"
-        mba = getattr(self._current_blk, "mba", None)
-        func_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        emit_observation(
-            Z3PredicateProofObserved(
+    def observe_z3_proof(self, operation: str, result: object) -> bool:
+        """Publish a valid proof receipt, rejecting malformed results."""
+        try:
+            status = getattr(result, "status", None)
+            reason = getattr(result, "reason", None)
+        except Exception:
+            return False
+        if type(status) is not Z3ProofStatus:
+            return False
+        if status is Z3ProofStatus.ABSTAINED:
+            if type(reason) is not Z3ProofAbstentionReason:
+                return False
+        elif reason is not None:
+            return False
+        try:
+            mba = getattr(self._current_blk, "mba", None)
+            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            event = Z3PredicateProofObserved(
                 func_ea=func_ea,
                 transform_id=str(self.PROOF_TRANSFORM_ID or self.name),
                 operation=str(operation),
@@ -82,10 +88,13 @@ class Z3Rule(GenericPatternRule):
                     result, "observed_expression_nodes", None
                 ),
                 elapsed_ms=float(getattr(result, "elapsed_ms", 0.0)),
-                status=str(status),
+                status=status,
                 reason=reason,
             )
-        )
+        except (AttributeError, TypeError, ValueError):
+            return False
+        emit_observation(event)
+        return True
 
     @property
     @abc.abstractmethod

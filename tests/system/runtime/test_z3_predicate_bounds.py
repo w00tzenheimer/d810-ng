@@ -66,6 +66,29 @@ def test_three_generic_rules_keep_distinct_immutable_policies() -> None:
 
 
 @pytest.mark.runtime
+def test_generic_rule_configure_uses_canonical_policy_defaults(monkeypatch) -> None:
+    import d810.optimizers.microcode.instructions.z3.handler as handler
+    from d810.optimizers.microcode.instructions.z3.predicates import (
+        Z3lnotRuleGeneric,
+        Z3setnzRuleGeneric,
+        Z3setzRuleGeneric,
+    )
+
+    class _CanonicalPolicy:
+        def __init__(self, max_expression_nodes=913, proof_timeout_ms=271):
+            self.max_expression_nodes = max_expression_nodes
+            self.proof_timeout_ms = proof_timeout_ms
+
+    monkeypatch.setattr(handler, "Z3ProofPolicy", _CanonicalPolicy)
+    for rule_class in (Z3setzRuleGeneric, Z3setnzRuleGeneric, Z3lnotRuleGeneric):
+        rule = rule_class()
+        rule.configure({})
+
+        assert rule.z3_proof_policy.max_expression_nodes == 913
+        assert rule.z3_proof_policy.proof_timeout_ms == 271
+
+
+@pytest.mark.runtime
 @pytest.mark.parametrize(
     ("rule_name", "target_operation", "expected_operations"),
     (
@@ -305,6 +328,95 @@ def test_low_node_setz_abstention_does_not_block_setnz_or_lnot_policy(
 
 
 @pytest.mark.runtime
+@pytest.mark.parametrize(
+    "malformed_result",
+    (
+        SimpleNamespace(
+            status="abstained",
+            reason="timeout",
+            observed_expression_nodes=1,
+            elapsed_ms=0.5,
+        ),
+        SimpleNamespace(
+            status="abstained",
+            reason="not-a-valid-abstention-reason",
+            observed_expression_nodes=1,
+            elapsed_ms=0.5,
+        ),
+    ),
+)
+def test_malformed_proof_result_is_ignored_without_synthetic_receipt(
+    malformed_result,
+) -> None:
+    from d810.core.observability import reset_diagnostic_bus, subscribe
+    from d810.core.observability_events import Z3PredicateProofObserved
+    from d810.optimizers.microcode.instructions.z3.predicates import Z3setzRuleGeneric
+
+    events: list[Z3PredicateProofObserved] = []
+    reset_diagnostic_bus()
+    subscribe(Z3PredicateProofObserved, events.append)
+    try:
+        rule = Z3setzRuleGeneric()
+        rule.configure({})
+
+        assert rule.observe_z3_proof("prove_equal", malformed_result) is False
+    finally:
+        reset_diagnostic_bus()
+
+    assert events == []
+
+
+@pytest.mark.runtime
+def test_malformed_conclusive_result_cannot_mutate_or_emit_a_receipt(monkeypatch) -> None:
+    import ida_hexrays
+
+    import d810.optimizers.microcode.instructions.z3.predicates as predicates
+    from d810.backends.ast.z3_proof_policy import Z3ProofStatus
+    from d810.core.observability import reset_diagnostic_bus, subscribe
+    from d810.core.observability_events import Z3PredicateProofObserved
+
+    class _MalformedProver:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prove_equal(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status=Z3ProofStatus.PROVED,
+                reason="not-a-valid-reason",
+                observed_expression_nodes=2,
+                elapsed_ms=0.5,
+            )
+
+        def prove_unequal(self, *_args, **_kwargs):
+            return self.prove_equal()
+
+        def prove_always_zero(self, *_args, **_kwargs):
+            return self.prove_equal()
+
+        def prove_always_nonzero(self, *_args, **_kwargs):
+            return self.prove_equal()
+
+    monkeypatch.setattr(predicates, "Z3MopProver", _MalformedProver)
+    events: list[Z3PredicateProofObserved] = []
+    reset_diagnostic_bus()
+    subscribe(Z3PredicateProofObserved, events.append)
+    try:
+        rule = predicates.Z3setzRuleGeneric()
+        rule.configure({})
+        candidate, additions = _candidate(
+            _mop(mop_type=ida_hexrays.mop_r),
+            _mop(mop_type=ida_hexrays.mop_n, value=0),
+        )
+
+        assert rule.check_candidate(candidate) is False
+    finally:
+        reset_diagnostic_bus()
+
+    assert additions == []
+    assert events == []
+
+
+@pytest.mark.runtime
 def test_proof_receipts_preserve_conclusive_and_abstention_reasons_without_errors(
     monkeypatch,
     caplog,
@@ -359,8 +471,14 @@ def test_proof_receipts_preserve_conclusive_and_abstention_reasons_without_error
         reset_diagnostic_bus()
 
     assert additions == [("val_res", 0, 1)]
-    assert [event.status for event in events] == ["abstained", "proved"]
-    assert [event.reason for event in events] == ["timeout", None]
+    assert [event.status for event in events] == [
+        Z3ProofStatus.ABSTAINED,
+        Z3ProofStatus.PROVED,
+    ]
+    assert [event.reason for event in events] == [
+        Z3ProofAbstentionReason.TIMEOUT,
+        None,
+    ]
     assert all(event.transform_id == "z-3-setz-generic" for event in events)
     assert all(event.max_expression_nodes == 19 for event in events)
     assert all(event.proof_timeout_ms == 23 for event in events)
