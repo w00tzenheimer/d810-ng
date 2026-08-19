@@ -58,7 +58,20 @@ def _enable_global_const_persistence(state) -> None:
         for entry in additional["pipeline_v2"]
         if entry["pass_id"] == "constant-simplification"
     )
-    constant_pass.setdefault("options", {})["persist_global_const_annotations"] = True
+    # Preparation is a separate lifecycle lane.  Keep readonly folding off in
+    # this fixture so the runtime proof exercises the observation/preparation
+    # subscriber rather than a peephole-rule side effect.
+    constant_pass["options"] = {
+        "preparation": {
+            "global_const_types": {
+                "enabled": True,
+                "discover_bounded_tables": True,
+            }
+        },
+        "stages": {
+            "fold-readonly-data": {"enabled": False},
+        },
+    }
     runtime_project.additional_configuration = additional
     state._activate_runtime_project(
         project_index=project_index,

@@ -19,6 +19,7 @@ from d810.manager.pre_hexrays_preparation import (
     PreHexPreparationController,
     PreparationMode,
 )
+from d810.passes.constant_simplification_options import ConstantPreparationOptions
 
 pytestmark = pytest.mark.pure_python
 
@@ -90,6 +91,7 @@ def _controller(
     transaction_types=None,
     acknowledged=None,
     discover_type_proposals=None,
+    preparation_options=None,
 ) -> PreHexPreparationController:
     type_script = _script("d810-global-const-types")
     return PreHexPreparationController(
@@ -102,6 +104,11 @@ def _controller(
         pending_type_proposals=lambda: tuple(proposals),
         acknowledge_type_proposals=(acknowledged or (lambda values: None)),
         type_step_descriptor=type_script,
+        preparation_options=(
+            preparation_options
+            if preparation_options is not None
+            else ConstantPreparationOptions(enabled=True)
+        ),
     )
 
 
@@ -225,6 +232,78 @@ def test_static_type_discovery_runs_before_pending_proposals_are_consumed() -> N
     assert discoveries == [0x401000]
     assert len(gateway.requests) == 1
     assert gateway.requests[0][1] == (proposal.type_delta,)
+
+
+def test_whole_item_const_preparation_runs_without_readonly_folding() -> None:
+    gateway = _Gateway()
+    discoveries: list[int] = []
+    controller = _controller(
+        gateway=gateway,
+        preparation_options=ConstantPreparationOptions(enabled=True),
+        discover_type_proposals=discoveries.append,
+    )
+
+    receipt = controller.prepare(0x401000, PreparationMode.AUTOMATIC)
+
+    assert receipt.ok
+    assert discoveries == [0x401000]
+
+
+def test_readonly_folding_does_not_enable_const_preparation() -> None:
+    gateway = _Gateway()
+    discoveries: list[int] = []
+    controller = _controller(
+        gateway=gateway,
+        preparation_options=ConstantPreparationOptions(enabled=False),
+        discover_type_proposals=discoveries.append,
+    )
+
+    receipt = controller.prepare(0x401000, PreparationMode.AUTOMATIC)
+
+    assert receipt.ok
+    assert discoveries == []
+    assert gateway.requests == []
+
+
+def test_preparation_status_uses_proposal_identities_and_pending_reason() -> None:
+    before = SerializedTypeSnapshot.absent()
+    after = SerializedTypeSnapshot.from_parts(b"const", b"fields", b"comments")
+    type_delta = PreparationTypeDelta(0x500000, before, after)
+    proposal = type(
+        "Proposal",
+        (),
+        {
+            "function_ea": 0x401000,
+            "type_delta": type_delta,
+        },
+    )()
+    type_script = _script("d810-global-const-types")
+    applied = _record(type_script, function_ea=0x401000)
+    conflicting = _record(type_script, function_ea=0x402000)
+    restored = _record(type_script, function_ea=0x403000)
+    restored = replace(restored, state=PreparationState.RESTORED)
+    gateway = _Gateway()
+    gateway.matches[conflicting.transaction_id.value] = False
+    type_by_transaction = {
+        applied.transaction_id: (type_delta,),
+        conflicting.transaction_id: (replace(type_delta, item_ea=0x500010),),
+        restored.transaction_id: (replace(type_delta, item_ea=0x500020),),
+    }
+    controller = _controller(
+        gateway=gateway,
+        proposals=(proposal,),
+        prepared=(applied, conflicting, restored),
+        transaction_types=lambda transaction_id: type_by_transaction[transaction_id],
+    )
+
+    status = controller.status_snapshot()
+
+    assert status.pending == ("function=0x401000:item=0x500000",)
+    assert status.pending_reason == "next preparation round"
+    assert status.applied == ("function=0x401000:item=0x500000",)
+    assert status.conflicting == ("function=0x402000:item=0x500010",)
+    assert status.restored == ("function=0x403000:item=0x500020",)
+    assert status.pending_count == status.applied_count == 1
 
 
 def test_generated_retry_does_not_reenter_controller() -> None:

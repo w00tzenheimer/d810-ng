@@ -41,6 +41,7 @@ logger = getLogger("d810.backends.hexrays.global_const_annotation")
 
 _PROPOSAL_NODE_NAME = "$ d810.global_const_proposals.v1"
 _PROPOSAL_SCHEMA_VERSION = 1
+PENDING_PREPARATION_REASON = "next preparation round"
 _SIZE_TO_BTF = {
     1: ida_typeinf.BTF_UINT8,
     2: ida_typeinf.BTF_UINT16,
@@ -94,6 +95,23 @@ class GlobalConstAnnotationProposal:
     reason: GlobalConstReason
 
     @property
+    def identity(self) -> tuple[object, ...]:
+        """Stable durable identity used by preparation consumers.
+
+        The proposal store is IDB-local, so the database identity is supplied
+        by the owning journal/controller.  Within that scope, these fields are
+        the exact queued before/after change and function attribution.
+        """
+
+        return (
+            int(self.function_ea),
+            int(self.item_head),
+            int(self.item_end),
+            self.before,
+            self.after,
+        )
+
+    @property
     def type_delta(self) -> PreparationTypeDelta:
         return PreparationTypeDelta(self.item_head, self.before, self.after)
 
@@ -126,6 +144,17 @@ class GlobalConstAnnotationReport:
         return sum(
             outcome.status is GlobalConstAnnotationStatus.QUEUED
             for outcome in self.outcomes
+        )
+
+    @property
+    def queued_proposals(self) -> tuple[GlobalConstAnnotationProposal, ...]:
+        """Return only newly queued exact proposals from this observation."""
+
+        return tuple(
+            outcome.proposal
+            for outcome in self.outcomes
+            if outcome.status is GlobalConstAnnotationStatus.QUEUED
+            and outcome.proposal is not None
         )
 
     @property
@@ -611,7 +640,7 @@ def annotate_global_table_access(
                 type_before=before_rendering,
                 type_after=before_rendering,
             )
-            return GlobalConstAnnotationReport(0, (outcome,))
+            return GlobalConstAnnotationReport(int(function_ea), (outcome,))
 
     if not decision.can_persist_const:
         if queued is not None:
@@ -631,7 +660,7 @@ def annotate_global_table_access(
             type_before=before_rendering,
             type_after=before_rendering,
         )
-        return GlobalConstAnnotationReport(0, (outcome,))
+        return GlobalConstAnnotationReport(int(function_ea), (outcome,))
 
     current_rendering = _type_rendering(tif)
     if tif.is_const():
@@ -643,7 +672,7 @@ def annotate_global_table_access(
             type_before=current_rendering,
             type_after=current_rendering,
         )
-        return GlobalConstAnnotationReport(0, (outcome,))
+        return GlobalConstAnnotationReport(int(function_ea), (outcome,))
 
     updated = tif.copy()
     updated.set_const()
@@ -681,6 +710,7 @@ __all__ = [
     "GlobalConstAnnotationReport",
     "GlobalConstAnnotationStatus",
     "DynamicGlobalTableAccess",
+    "PENDING_PREPARATION_REASON",
     "ReferencedGlobalItem",
     "acknowledge_global_const_proposals",
     "annotate_global_table_access",

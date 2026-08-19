@@ -88,6 +88,7 @@ from d810.passes.constant_simplification import (
 )
 from d810.passes.constant_simplification_options import (
     CompiledConstantSimplificationSchedule,
+    ConstantPreparationOptions,
 )
 from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
@@ -765,6 +766,11 @@ class D810Manager:
     _constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = dataclasses.field(
         default=None, init=False, repr=False
     )
+    _constant_preparation_options: ConstantPreparationOptions = dataclasses.field(
+        default_factory=ConstantPreparationOptions,
+        init=False,
+        repr=False,
+    )
     _idb_preparation_journal: typing.Any = dataclasses.field(
         default=None, init=False, repr=False
     )
@@ -1092,6 +1098,16 @@ class D810Manager:
                 mode=selected_mode,
             )
         return controller.prepare(int(function_ea), selected_mode)
+
+    def preparation_status(self):
+        """Return the portable pre-Hex preparation status snapshot."""
+
+        controller = getattr(self, "pre_hex_preparation", None)
+        if controller is None:
+            from d810.manager.pre_hexrays_preparation import PreparationStatusSnapshot
+
+            return PreparationStatusSnapshot()
+        return controller.status_snapshot()
 
     def restore_idb_preparation(self, transaction_id):
         """Restore one preparation transaction through the destructive gateway."""
@@ -2086,11 +2102,28 @@ class D810Manager:
 
     def _ensure_post_d810_runtime(self) -> HexRaysPostD810Runtime:
         if self._post_d810_runtime is None:
+            from d810.backends.hexrays.global_const_observer import GlobalConstObserver
+
+            # The pre-Hex preparation journal and proposal netnode are scoped
+            # by the durable IDB identity, not the project/configuration key.
+            # Reuse that same identity for observer deduplication so a
+            # project switch cannot make one database's observations suppress
+            # another database's proposals.
+            preparation = getattr(self, "pre_hex_preparation", None)
+            database_identity = getattr(
+                preparation,
+                "database_identity",
+                self._database_identity,
+            )
             self._post_d810_runtime = HexRaysPostD810Runtime(
                 preanalysis_runtime=self._preanalysis_runtime,
                 block_optimizer=self.block_optimizer,
                 maturity_name_provider=_maturity_name,
                 handoff_detector=detect_post_d810_handoff_violations,
+                global_const_observer=GlobalConstObserver(
+                    preparation_options=self._constant_preparation_options,
+                    database_identity=database_identity,
+                ),
             )
         return self._post_d810_runtime
 
@@ -2467,7 +2500,7 @@ class D810Manager:
             enabled=True,
             portable=True,
         )
-        persistence_enabled = self._global_const_persistence_enabled
+        preparation_options = self._constant_preparation_options
         self.pre_hex_preparation = PreHexPreparationController(
             database_identity=database_identity,
             scripts=tuple(self._preparation_scripts),
@@ -2476,14 +2509,15 @@ class D810Manager:
             transaction_type_deltas=journal.type_deltas,
             discover_type_proposals=(
                 annotate_function_global_consts
-                if persistence_enabled
+                if preparation_options.enabled
                 else lambda function_ea: None
             ),
             pending_type_proposals=(
-                pending_global_const_proposals if persistence_enabled else lambda: ()
+                pending_global_const_proposals
             ),
             acknowledge_type_proposals=acknowledge_global_const_proposals,
             type_step_descriptor=type_step,
+            preparation_options=preparation_options,
         )
 
     def reconfigure_execution_callback_detail(self, callback_detail: str) -> None:
@@ -3951,6 +3985,10 @@ class D810Manager:
         )
         self.event_emitter.on(
             DecompilationEvent.POST_D810_CAPTURE,
+            self._ensure_post_d810_runtime().observe_global_const_types,
+        )
+        self.event_emitter.on(
+            DecompilationEvent.POST_D810_CAPTURE,
             self._ensure_post_d810_runtime().attach_rendered_program,
         )
         self.event_emitter.on(
@@ -4046,9 +4084,32 @@ class D810Manager:
         scripts,
         *,
         global_const_persistence_enabled: bool = False,
+        constant_preparation_options: ConstantPreparationOptions | None = None,
     ) -> None:
         self._preparation_scripts = tuple(scripts)
-        self._global_const_persistence_enabled = bool(global_const_persistence_enabled)
+        if constant_preparation_options is None:
+            constant_preparation_options = (
+                self._constant_simplification_schedule.preparation
+                if self._constant_simplification_schedule is not None
+                else ConstantPreparationOptions(
+                    enabled=bool(global_const_persistence_enabled)
+                )
+            )
+        if not isinstance(constant_preparation_options, ConstantPreparationOptions):
+            raise TypeError(
+                "constant_preparation_options must be ConstantPreparationOptions"
+            )
+        self._constant_preparation_options = constant_preparation_options
+        self._global_const_persistence_enabled = bool(
+            constant_preparation_options.enabled
+        )
+        controller = getattr(self, "pre_hex_preparation", None)
+        if controller is not None:
+            controller.configure_preparation_options(constant_preparation_options)
+        runtime = getattr(self, "_post_d810_runtime", None)
+        observer = getattr(runtime, "global_const_observer", None)
+        if observer is not None:
+            observer.configure(constant_preparation_options)
 
     def configure_constant_simplification_schedule(
         self,
@@ -4057,6 +4118,20 @@ class D810Manager:
         """Install the immutable constant-stage schedule for live scoping."""
 
         self._constant_simplification_schedule = schedule
+        preparation_options = (
+            schedule.preparation
+            if schedule is not None
+            else ConstantPreparationOptions()
+        )
+        self._constant_preparation_options = preparation_options
+        self._global_const_persistence_enabled = bool(preparation_options.enabled)
+        controller = getattr(self, "pre_hex_preparation", None)
+        if controller is not None:
+            controller.configure_preparation_options(preparation_options)
+        runtime = getattr(self, "_post_d810_runtime", None)
+        observer = getattr(runtime, "global_const_observer", None)
+        if observer is not None:
+            observer.configure(preparation_options)
 
     def configure_block_optimizer(self, rules, **kwargs):
         self.block_optimizer_rules = list(rules)

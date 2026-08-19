@@ -55,9 +55,39 @@ class HexRaysPostD810Runtime:
     maturity_name_provider: Callable[[int], str] = _default_maturity_name
     handoff_detector: Callable[..., Any] | None = None
     environ: Mapping[str, str] | None = None
+    global_const_observer: Any | None = None
 
     def _maturity_name(self, maturity: int) -> str:
         return self.maturity_name_provider(int(maturity))
+
+    def observe_global_const_types(
+        self,
+        mba: Any,
+        maturity: int,
+        snapshot: Any = None,
+    ) -> None:
+        """Observe bounded tables at the manager-owned post-D810 seam.
+
+        The subscriber is deliberately isolated from all mutation and restart
+        controls.  It receives the live MBA already supplied by
+        ``POST_D810_CAPTURE`` and queues only reversible preparation proposals.
+        """
+
+        del snapshot
+        observer = self.global_const_observer
+        if observer is None:
+            return
+        try:
+            observer.observe(mba, maturity)
+        except Exception:
+            # Observation is optional enrichment.  A type/proposal backend
+            # failure must not affect the decompilation callback.
+            logger.debug(
+                "post-D810 global const observation failed for func=0x%x maturity=%s",
+                int(getattr(mba, "entry_ea", 0) or 0),
+                self._maturity_name(int(maturity)),
+                exc_info=True,
+            )
 
     def capture_mba(
         self,

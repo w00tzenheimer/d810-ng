@@ -372,6 +372,7 @@ class D810State(metaclass=SingletonMeta):
             "function_analysis_priors": dict(manager._function_analysis_priors),
             "native_handlers_installed": manager._native_preanalysis_handlers_installed,
             "constant_schedule": manager._constant_simplification_schedule,
+            "constant_preparation_options": manager._constant_preparation_options,
             "runtime_invalidated": manager.runtime_invalidated,
             "scope_stages": tuple(service._stages),
             "scope_generation": service._generation,
@@ -422,6 +423,9 @@ class D810State(metaclass=SingletonMeta):
         manager._function_analysis_priors = dict(previous["function_analysis_priors"])  # type: ignore[index]
         manager._constant_simplification_schedule = previous[  # type: ignore[index]
             "constant_schedule"
+        ]
+        manager._constant_preparation_options = previous[  # type: ignore[index]
+            "constant_preparation_options"
         ]
         if previous["started"]:  # type: ignore[index]
             attempt(
@@ -1370,6 +1374,11 @@ class D810State(metaclass=SingletonMeta):
             project_snapshot.preparation_scripts,
             global_const_persistence_enabled=(
                 project_snapshot.global_const_persistence_enabled
+            ),
+            constant_preparation_options=(
+                project_snapshot.constant_simplification_schedule.preparation
+                if project_snapshot.constant_simplification_schedule is not None
+                else None
             ),
         )
         self.manager.start()
