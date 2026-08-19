@@ -112,6 +112,32 @@ def _mark_node_budget_charged(
         marker(occurrence)
 
 
+def _charge_cached_ast_occurrence(
+    node_budget: _NodeBudget | None,
+    occurrence: AstBase,
+    *,
+    root_already_consumed: bool = False,
+) -> None:
+    """Charge one logical occurrence of a cached AST subtree.
+
+    A local builder-cache hit reuses the existing AST objects, but it still
+    represents a complete recursive occurrence in the source mop tree. Walk
+    only that reused subtree to charge each child occurrence and record the
+    corresponding identities for the later visitor; no AST nodes are rebuilt.
+    """
+
+    if node_budget is None:
+        return
+    if not root_already_consumed:
+        node_budget.consume()
+    _mark_node_budget_charged(node_budget, occurrence)
+
+    for child_name in ("left", "right", "dst"):
+        child = getattr(occurrence, child_name, None)
+        if child is not None:
+            _charge_cached_ast_occurrence(node_budget, child)
+
+
 def register_native_perf_provider() -> None:
     """Select the Python-boundary AST builder provider."""
     _register_native_perf_provider(
@@ -309,7 +335,11 @@ def mop_to_ast_internal(
             _NATIVE_PERF_COUNTERS["local_cache_hits"] += 1
         existing_index = context.mop_key_to_index[key]
         existing = context.unique_asts[existing_index]
-        _mark_node_budget_charged(node_budget, existing)
+        _charge_cached_ast_occurrence(
+            node_budget,
+            existing,
+            root_already_consumed=True,
+        )
         return existing
     if _NATIVE_PERF_ENABLED:
         _NATIVE_PERF_COUNTERS["local_cache_misses"] += 1
