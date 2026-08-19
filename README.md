@@ -180,6 +180,33 @@ graph LR
     Lower --> Mutate
 ```
 
+#### Two execution owners, one live mutation authority
+
+The pass catalog now records execution ownership explicitly. A stage declares
+whether it is `D810_OWNED` (portable pipeline work) or `HEXRAYS_HOSTED`
+(callback work), the host that provides its safe point, and the scope of IR it
+may inspect. These are sibling execution models, not concurrent mutation
+threads: Hex-Rays still drives the live microcode callbacks, and D-810 permits
+only one live mutation authority at a time.
+
+D-810-owned stages run through the pipeline/safe-point path and publish a
+portable `PassResult`. Callback-hosted instruction rules instead produce a
+callback-local `InstructionRewriteCandidate`; the native committer checks the
+current epoch, source fingerprint, callback capabilities, operand size,
+mode-appropriate proof/cost admission, and cycle/no-op guards before it
+performs one instruction transaction. The resulting primitive
+`InstructionRewriteReceipt`
+records the final post-follow-up fingerprint and provenance. A callback with
+no block context is limited to explicitly instruction-only candidates and
+cannot dirty lists or verify the MBA.
+
+The `optblock_t` coordinator retains the existing maturity-wide stale-pointer
+fence after an owned pipeline mutation. The current slice makes this boundary
+explicit without claiming that every legacy direct mutator or a future shared
+semantic-idiom framework has already migrated. `rotate-idiom-recovery` is the
+first representative hosted stage: its config-v2 identity and options remain
+stable while its native rule is resolved through the declared Hex-Rays host.
+
 > Package note: the read-only/planning/lowering layers below were restructured
 > into the LLVM/LiSA-style portable taxonomy (`preanalysis`/`cfg` were
 > dissolved into `analyses`/`transforms`/`passes`/`ir`).
