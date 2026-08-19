@@ -430,7 +430,7 @@ def project_workbench_rows(
     compiled_stages = tuple(
         stage
         for stage in snapshot.effective_schedule.stages
-        if stage.schedule_source == "compiled stage contract"
+        if stage.schedule_source.startswith("compiled stage contract")
     )
 
     def contract_detail(stage: object) -> str:
@@ -460,11 +460,35 @@ def project_workbench_rows(
         preparation_reason = getattr(stage, "preparation_reason", None)
         if preparation_reason:
             lines.append(f"preparation reason: {preparation_reason}")
+        preparation_buckets = (
+            ("pending", getattr(stage, "preparation_pending_count", 0)),
+            ("applied", getattr(stage, "preparation_applied_count", 0)),
+            ("conflicting", getattr(stage, "preparation_conflicting_count", 0)),
+            ("restored", getattr(stage, "preparation_restored_count", 0)),
+            ("unknown", getattr(stage, "preparation_unknown_count", 0)),
+        )
+        visible_buckets = tuple(
+            f"{name}: {count}" for name, count in preparation_buckets if count
+        )
+        if visible_buckets:
+            lines.append("preparation buckets: " + ", ".join(visible_buckets))
+        for failure in getattr(stage, "preparation_provider_failures", ()):
+            lines.append(f"provider failure: {failure}")
         return "\n".join(lines)
 
     def contract_status(stage: object) -> OutcomeStatus:
         if not bool(getattr(stage, "enabled", False)):
             return OutcomeStatus.NOT_ELIGIBLE
+        if getattr(stage, "preparation_unknown_count", 0):
+            return OutcomeStatus.FAILED
+        if getattr(stage, "preparation_conflicting_count", 0):
+            return OutcomeStatus.BLOCKED
+        if getattr(stage, "preparation_pending_count", 0):
+            return OutcomeStatus.READY
+        if getattr(stage, "preparation_applied_count", 0):
+            return OutcomeStatus.CHANGED
+        if getattr(stage, "preparation_restored_count", 0):
+            return OutcomeStatus.UNCHANGED
         state = getattr(stage, "preparation_state", None)
         return {
             "applied": OutcomeStatus.CHANGED,
@@ -496,40 +520,49 @@ def project_workbench_rows(
         )
 
     for schedule_row in snapshot.effective_schedule.rows:
-        if not schedule_row.stages:
+        if not schedule_row.pipeline_stages:
             continue
-        stage_labels = tuple(
-            f"{stage.pass_id} (configured {stage.configured_index + 1})"
-            for stage in schedule_row.stages
+        stage_groups = tuple(
+            (
+                pipeline,
+                tuple(
+                    f"{stage.pass_id} (configured {stage.configured_index + 1})"
+                    for stage in stages
+                ),
+            )
+            for pipeline, stages in schedule_row.pipeline_stages
         )
         schedule_details: list[str] = []
-        for stage in schedule_row.stages:
-            if stage.schedule_source == "compiled stage contract":
-                callback_order = (
-                    f"{stage.pipeline} pipeline runtime order {stage.runtime_order}"
-                    if stage.runtime_order >= 0
-                    else f"{stage.pipeline} pipeline runtime order unavailable"
-                )
-                schedule_details.append(
-                    f"{stage.pipeline} {stage.pass_id}/{stage.stage_id}: "
-                    f"{callback_order}; source: compiled stage contract; "
-                    f"requires {', '.join(stage.requirements) or 'none'}"
-                )
-            else:
-                callback_order = (
-                    f"runtime callback order {stage.runtime_order}"
-                    if stage.runtime_order >= 0
-                    else "runtime callback order unavailable"
-                )
-                schedule_details.append(
-                    f"{stage.pipeline} {stage.pass_id}/{stage.stage_id}: "
-                    f"{callback_order}; maturity authority {stage.maturity_source}; "
-                    f"requires {', '.join(stage.requirements) or 'none'}"
-                )
+        for pipeline, pipeline_stages in schedule_row.pipeline_stages:
+            schedule_details.append(f"{pipeline} pipeline:")
+            for stage in pipeline_stages:
+                if stage.schedule_source.startswith("compiled stage contract"):
+                    callback_order = (
+                        f"runtime order {stage.runtime_order}"
+                        if stage.runtime_order >= 0
+                        else "runtime order unavailable"
+                    )
+                    schedule_details.append(
+                        f"  {stage.pass_id}/{stage.stage_id}: {callback_order}; "
+                        f"source: {stage.schedule_source}; "
+                        f"requires {', '.join(stage.requirements) or 'none'}"
+                    )
+                else:
+                    callback_order = (
+                        f"runtime callback order {stage.runtime_order}"
+                        if stage.runtime_order >= 0
+                        else "runtime callback order unavailable"
+                    )
+                    schedule_details.append(
+                        f"  {stage.pass_id}/{stage.stage_id}: "
+                        f"{callback_order}; maturity authority {stage.maturity_source}; "
+                        f"requires {', '.join(stage.requirements) or 'none'}"
+                    )
         schedule_detail = "\n".join(schedule_details)
         if any(
-            stage.schedule_source == "compiled stage contract"
-            for stage in schedule_row.stages
+            stage.schedule_source.startswith("compiled stage contract")
+            for _pipeline, pipeline_stages in schedule_row.pipeline_stages
+            for stage in pipeline_stages
         ):
             schedule_detail = (
                 "Instruction and flow pipelines have independent runtime orders; "
@@ -544,7 +577,10 @@ def project_workbench_rows(
                 label=(
                     f"{schedule_row.provider_maturity} / {schedule_row.ir_maturity}"
                 ),
-                summary="; ".join(stage_labels),
+                summary="; ".join(
+                    f"{pipeline}: {', '.join(labels)}"
+                    for pipeline, labels in stage_groups
+                ),
                 detail=(
                     "Configured position is descriptive, not global execution order.\n"
                     + schedule_detail

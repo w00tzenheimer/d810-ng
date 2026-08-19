@@ -12,7 +12,7 @@ class PipelineScheduleRowView:
     ordinal: int
     maturity: str
     ir_maturity: str
-    stage_labels: tuple[str, ...]
+    pipeline_groups: tuple[tuple[str, tuple[str, ...]], ...]
     detail: str
 
 
@@ -21,31 +21,39 @@ def project_pipeline_schedule_rows(
 ) -> tuple[PipelineScheduleRowView, ...]:
     rows: list[PipelineScheduleRowView] = []
     for row in schedule.rows:
-        if not row.stages:
+        if not row.pipeline_stages:
             continue
-        labels = tuple(
-            f"{stage.pass_id} (configured {stage.configured_index + 1})"
-            for stage in row.stages
+        groups = tuple(
+            (
+                pipeline,
+                tuple(
+                    f"{stage.pass_id} (configured {stage.configured_index + 1})"
+                    for stage in stages
+                ),
+            )
+            for pipeline, stages in row.pipeline_stages
         )
         details: list[str] = []
-        for stage in row.stages:
-            callback_order = (
-                f"runtime callback order {stage.runtime_order}"
-                if stage.runtime_order >= 0
-                else "runtime callback order unavailable"
-            )
-            details.append(
-                f"{stage.pipeline} {stage.pass_id}/{stage.stage_id}: "
-                f"{callback_order}; maturity authority {stage.maturity_source}; "
-                f"requires {', '.join(stage.requirements) or 'none'}"
-            )
+        for pipeline, stages in row.pipeline_stages:
+            details.append(f"{pipeline} pipeline:")
+            for stage in stages:
+                callback_order = (
+                    f"runtime order {stage.runtime_order}"
+                    if stage.runtime_order >= 0
+                    else "runtime order unavailable"
+                )
+                details.append(
+                    f"  {stage.pass_id}/{stage.stage_id}: {callback_order}; "
+                    f"maturity authority {stage.maturity_source}; "
+                    f"requires {', '.join(stage.requirements) or 'none'}"
+                )
         detail = "\n".join(details)
         rows.append(
             PipelineScheduleRowView(
                 ordinal=row.ordinal,
                 maturity=row.provider_maturity,
                 ir_maturity=row.ir_maturity,
-                stage_labels=labels,
+                pipeline_groups=groups,
                 detail=detail,
             )
         )

@@ -12,7 +12,7 @@ from d810.manager.deobfuscation_case_service import DeobfuscationCaseCollectionE
 from d810.manager.effective_pipeline_schedule import (
     build_effective_maturity_schedule,
 )
-from d810.manager.project_runtime import ProjectRuntimeSnapshot
+from d810.manager.project_runtime import ProjectConfigMode, ProjectRuntimeSnapshot
 from d810.manager.workbench_models import (
     ArtifactRef,
     AttackSummary,
@@ -382,6 +382,10 @@ class WorkbenchService:
             maturity_name_provider=self._maturity_name_provider,
             constant_simplification_schedule=constant_schedule,
             preparation_status=preparation_status,
+            allow_legacy_constant_fallback=(
+                project_snapshot is not None
+                and project_snapshot.mode is ProjectConfigMode.LEGACY
+            ),
         )
 
     @staticmethod

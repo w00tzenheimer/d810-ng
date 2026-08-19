@@ -8,6 +8,8 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+from d810.core import typing
+from d810.core.pass_editor_spec import FieldControlKind, FieldEditorSpec
 from d810.ui.config_v2_editing_logic import ConfigV2EditorScreen
 from d810.ui.project_config_logic import (
     ConfigEditMode,
@@ -24,6 +26,10 @@ IDA_UI_TREE = ast.parse(IDA_UI.read_text(encoding="utf-8"), filename=str(IDA_UI)
 PIPELINE_OVERVIEW_TREE = ast.parse(
     PIPELINE_OVERVIEW.read_text(encoding="utf-8"),
     filename=str(PIPELINE_OVERVIEW),
+)
+PROJECT_EDITOR_TREE = ast.parse(
+    PROJECT_EDITOR.read_text(encoding="utf-8"),
+    filename=str(PROJECT_EDITOR),
 )
 
 
@@ -413,11 +419,136 @@ def test_edit_pipeline_entry_text_exists_only_in_the_host_overview() -> None:
     assert owners == [PIPELINE_OVERVIEW]
 
 
-def test_choice_backed_string_lists_use_an_editable_checkable_qt_list() -> None:
-    source = PROJECT_EDITOR.read_text(encoding="utf-8")
+def _project_editor_method(name: str) -> ast.FunctionDef:
+    for node in ast.walk(PROJECT_EDITOR_TREE):
+        if isinstance(node, ast.ClassDef) and node.name == "ConfigV2EditingPanel":
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == name:
+                    return item
+    raise AssertionError(f"ConfigV2EditingPanel.{name} not found")
 
-    assert "QtWidgets.QListWidget()" in source
-    assert "ItemIsUserCheckable" in source
-    assert "setCheckState" in source
-    assert "checked_choices" in source
-    assert "apply_typed_field_option" in source
+
+class _SignalStub:
+    def __init__(self) -> None:
+        self._callbacks: list[object] = []
+
+    def connect(self, callback: object) -> None:
+        self._callbacks.append(callback)
+
+    def emit(self, *args: object) -> None:
+        for callback in tuple(self._callbacks):
+            callback(*args)
+
+
+class _ListItemStub:
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._flags = 0
+        self._data: dict[object, object] = {}
+        self._check_state = 0
+
+    def text(self) -> str:
+        return self._text
+
+    def flags(self) -> int:
+        return self._flags
+
+    def setFlags(self, flags: int) -> None:
+        self._flags = flags
+
+    def setData(self, role: object, value: object) -> None:
+        self._data[role] = value
+
+    def data(self, role: object) -> object:
+        return self._data.get(role)
+
+    def setCheckState(self, state: int) -> None:
+        self._check_state = state
+
+    def checkState(self) -> int:
+        return self._check_state
+
+
+class _ListWidgetStub:
+    def __init__(self) -> None:
+        self._items: list[_ListItemStub] = []
+        self.itemChanged = _SignalStub()
+
+    def addItem(self, item: _ListItemStub) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def item(self, index: int) -> _ListItemStub:
+        return self._items[index]
+
+
+def _compiled_project_editor_method(name: str):
+    class_node = ast.ClassDef(
+        name="ProjectEditorHarness",
+        bases=[],
+        keywords=[],
+        body=[copy.deepcopy(_project_editor_method(name))],
+        decorator_list=[],
+    )
+    module = ast.fix_missing_locations(ast.Module(body=[class_node], type_ignores=[]))
+    namespace = {
+        "FieldControlKind": FieldControlKind,
+        "FieldEditorSpec": FieldEditorSpec,
+        "QtWidgets": types.SimpleNamespace(
+            QListWidget=_ListWidgetStub,
+            QListWidgetItem=_ListItemStub,
+        ),
+        "_checkable_flag": lambda: 1,
+        "_checked_state": lambda: 2,
+        "_unchecked_state": lambda: 0,
+        "_user_role": lambda: 32,
+        "qt_flag_or": lambda left, right: left | right,
+        "typing": typing,
+    }
+    exec(compile(module, filename=str(PROJECT_EDITOR), mode="exec"), namespace)
+    return getattr(namespace["ProjectEditorHarness"], name)
+
+
+def test_choice_backed_string_lists_emit_checkable_values_in_declared_order() -> None:
+    field = FieldEditorSpec(
+        field_id="stage.maturities",
+        label="Stage maturities",
+        path=("stage", "maturities"),
+        control=FieldControlKind.STRING_LIST,
+        choices=("CANONICAL", "GLOBAL_ANALYZED", "STRUCTURED"),
+        default=["CANONICAL"],
+    )
+    calls: list[tuple[object, object]] = []
+    panel = SimpleNamespace(
+        _apply_typed_option=lambda selected_field, value: calls.append(
+            (selected_field, value)
+        )
+    )
+
+    control = _compiled_project_editor_method("_typed_option_control")(
+        panel,
+        field,
+        ["STRUCTURED", "CANONICAL"],
+    )
+
+    assert all(control.item(index).flags() & 1 for index in range(control.count()))
+    assert [control.item(index).checkState() for index in range(control.count())] == [
+        2,
+        0,
+        2,
+    ]
+    assert [control.item(index).data(32) for index in range(control.count())] == [
+        "CANONICAL",
+        "GLOBAL_ANALYZED",
+        "STRUCTURED",
+    ]
+
+    control.item(1).setCheckState(2)
+    control.itemChanged.emit(control.item(1))
+    assert calls[-1] == (field, ["CANONICAL", "GLOBAL_ANALYZED", "STRUCTURED"])
+
+    control.item(0).setCheckState(0)
+    control.itemChanged.emit(control.item(0))
+    assert calls[-1] == (field, ["GLOBAL_ANALYZED", "STRUCTURED"])

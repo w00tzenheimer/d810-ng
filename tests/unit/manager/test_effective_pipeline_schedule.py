@@ -126,6 +126,7 @@ def test_private_rule_maturities_override_unbounded_public_contract() -> None:
             4: "MMAT_CALLS",
             5: "MMAT_GLBOPT1",
         }[value],
+        allow_legacy_constant_fallback=True,
     )
 
     assert schedule.stage("constant-simplification").maturity_source == "private-rule"
@@ -208,6 +209,60 @@ def test_constant_bundle_projection_uses_compiled_schedule_over_live_rules() -> 
     assert forward.provider_maturities == ("MMAT_CALLS",)
 
 
+def test_constant_preparation_projection_preserves_all_status_buckets() -> None:
+    config = _config(
+        "constant-simplification",
+        options={"preparation": {"global_const_types": {"enabled": True}}},
+    )
+    compiled = compile_constant_simplification_schedule(
+        config,
+        constant_simplification_stage_descriptors(),
+    )
+    status = SimpleNamespace(
+        pending_count=2,
+        applied_count=3,
+        conflicting_count=4,
+        restored_count=5,
+        unknown_count=1,
+        unknown=(
+            SimpleNamespace(
+                provider="transaction_type_deltas",
+                error_type="RuntimeError",
+                message="provider unavailable",
+            ),
+        ),
+        pending_reason="next preparation round",
+    )
+
+    schedule = build_effective_maturity_schedule(
+        (config,),
+        registry=_Registry(
+            (config,),
+            {config.pass_id: constant_simplification_stage_descriptors()},
+        ),
+        implementations={
+            ExecutionPipeline.INSTRUCTION: (),
+            ExecutionPipeline.FLOW: (),
+        },
+        constant_simplification_schedule=compiled,
+        preparation_status=status,
+    )
+
+    preparation = schedule.stage("global-const-types")
+    assert preparation.preparation_pending_count == 2
+    assert preparation.preparation_applied_count == 3
+    assert preparation.preparation_conflicting_count == 4
+    assert preparation.preparation_restored_count == 5
+    assert preparation.preparation_unknown_count == 1
+    assert preparation.preparation_provider_failures == (
+        "transaction_type_deltas: RuntimeError: provider unavailable",
+    )
+    assert preparation.preparation_state == (
+        "pending, applied, conflicting, restored, unknown"
+    )
+    assert preparation.preparation_reason == "next preparation round"
+
+
 def test_compiled_constant_stage_orders_are_independent_per_pipeline() -> None:
     config = _config("constant-simplification")
     compiled = compile_constant_simplification_schedule(
@@ -234,6 +289,42 @@ def test_compiled_constant_stage_orders_are_independent_per_pipeline() -> None:
     assert (subtree.pipeline, subtree.runtime_order) == ("instruction", 1)
     assert (forward.pipeline, forward.runtime_order) == ("flow", 0)
     at_calls = schedule.at("MMAT_CALLS")
+    groups = dict(at_calls.pipeline_stages)
     assert tuple(
-        (stage.pipeline, stage.runtime_order) for stage in at_calls.stages
-    ) == (("instruction", 0), ("instruction", 1), ("flow", 0))
+        (stage.pipeline, stage.runtime_order) for stage in groups["instruction"]
+    ) == (("instruction", 0), ("instruction", 1))
+    assert tuple(
+        (stage.pipeline, stage.runtime_order) for stage in groups["flow"]
+    ) == (("flow", 0),)
+
+
+def test_missing_compiled_constant_schedule_fails_closed_without_live_maturities() -> None:
+    config = _config("constant-simplification")
+    descriptors = constant_simplification_stage_descriptors()
+    schedule = build_effective_maturity_schedule(
+        (config,),
+        registry=_Registry((config,), {config.pass_id: descriptors}),
+        implementations={
+            ExecutionPipeline.INSTRUCTION: (
+                SimpleNamespace(
+                    name="FoldReadonlyDataRule",
+                    maturities=("MMAT_GLBOPT2",),
+                ),
+            ),
+            ExecutionPipeline.FLOW: (
+                SimpleNamespace(
+                    name="ForwardConstantPropagationRule",
+                    maturities=("MMAT_GLBOPT3",),
+                ),
+            ),
+        },
+        constant_simplification_schedule=None,
+    )
+
+    readonly = schedule.stage("fold-readonly-data")
+    preparation = schedule.stage("global-const-types")
+    assert readonly.provider_maturities == ()
+    assert readonly.schedule_source == "compiled stage contract unavailable"
+    assert readonly.inactive_reason == "compiled schedule unavailable"
+    assert preparation.schedule_source == "compiled stage contract unavailable"
+    assert preparation.inactive_reason == "compiled schedule unavailable"

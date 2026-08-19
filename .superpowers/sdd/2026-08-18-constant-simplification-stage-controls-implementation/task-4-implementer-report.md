@@ -67,6 +67,53 @@ PYTHONPATH=src pytest -q tests/unit/core/test_pass_editor_spec.py tests/unit/pas
 94 passed in 0.53s
 ```
 
+## Fix Round 1 evidence
+
+Review regressions were added before production changes. The exact focused
+command then produced:
+
+```text
+PYTHONPATH=src pytest -q tests/unit/core/test_pass_editor_spec.py tests/unit/passes/test_config_v2_editor_contracts.py tests/unit/manager/test_effective_pipeline_schedule.py tests/unit/ui/test_config_v2_editing_logic.py tests/unit/ui/test_workbench_logic.py tests/unit/ui/test_config_v2_project_editor_host_contract.py tests/unit/ui/test_project_config_adapter_contract.py
+4 failed, 92 passed in 0.78s
+```
+
+The failures covered simultaneous preparation buckets, independent pipeline
+groups, a missing compiled schedule, and the grouped Workbench contract row.
+The Qt behavioral regression passed during RED and remained green after the
+fix.
+
+GREEN focused command:
+
+```text
+PYTHONPATH=src pytest -q tests/unit/core/test_pass_editor_spec.py tests/unit/passes/test_config_v2_editor_contracts.py tests/unit/manager/test_effective_pipeline_schedule.py tests/unit/ui/test_config_v2_editing_logic.py tests/unit/ui/test_workbench_logic.py tests/unit/ui/test_config_v2_project_editor_host_contract.py tests/unit/ui/test_project_config_adapter_contract.py
+98 passed in 0.62s
+```
+
+GREEN adjacent command:
+
+```text
+PYTHONPATH=src pytest -q tests/unit/passes/test_constant_simplification.py tests/unit/passes/test_constant_simplification_options.py tests/unit/passes/test_pipeline_v2_hook_bridge.py tests/unit/manager/test_project_runtime.py tests/unit/manager/test_workbench_service.py tests/unit/ui/test_workbench_pipeline_schedule.py tests/unit/manager/test_workbench_preparation_projection.py
+88 passed in 0.59s
+```
+
+The fix carries every simultaneous preparation bucket and deterministic
+provider-failure detail, groups maturity rows by pipeline without a global
+callback order, emits unavailable rows when a config-v2 compiled schedule is
+missing, and gates live-rule fallback behind explicit legacy mode.
+
+Fix Round 1 static checks:
+
+```text
+ruff check src/d810/manager/effective_pipeline_schedule.py src/d810/manager/workbench_models.py src/d810/manager/workbench_service.py src/d810/ui/workbench_logic.py src/d810/ui/workbench_pipeline_schedule.py tests/unit/manager/test_effective_pipeline_schedule.py tests/unit/manager/test_workbench_service.py tests/unit/ui/test_workbench_logic.py tests/unit/ui/test_workbench_pipeline_schedule.py tests/unit/ui/test_config_v2_project_editor_host_contract.py
+All checks passed!
+
+sg scan --config sgconfig.yml --report-style short
+exit 0
+
+PYTHONPATH=src lint-imports --config .importlinter
+Contracts: 14 kept, 0 broken.
+```
+
 Adjacent affected subsystem tests:
 
 ```text
@@ -104,6 +151,7 @@ Contracts: 14 kept, 0 broken.
 ## Commit
 
 Feature commit SHA: `d946f4b99`.
+Fix Round 1 commit SHA: pending immediate post-fix commit update.
 
 Required message:
 

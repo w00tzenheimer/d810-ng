@@ -237,7 +237,10 @@ def test_compiled_schedule_rows_show_contract_fields_and_preparation_state() -> 
                     ordinal=1,
                     ir_maturity="ir.local.optimized",
                     provider_maturity="MMAT_LOCOPT",
-                    stages=(readonly, disabled, forward),
+                    pipeline_stages=(
+                        ("instruction", (readonly, disabled)),
+                        ("flow", (forward,)),
+                    ),
                 ),
             ),
             stages=(preparation, readonly, disabled, forward),
@@ -314,6 +317,81 @@ def test_preparation_row_projects_each_durable_proposal_state() -> None:
         assert preparation.status is expected_status[state]
         if state == "pending":
             assert "next preparation round" in preparation.detail
+
+
+def test_preparation_row_renders_simultaneous_buckets_and_provider_failures() -> None:
+    stage = EffectiveScheduleStage(
+        configured_index=0,
+        runtime_order=-1,
+        pass_id="constant-simplification",
+        stage_id="global-const-types",
+        pipeline="",
+        implementation_name="",
+        requirements=(),
+        provider_maturities=(),
+        maturity_source="compiled stage contract",
+        enabled=True,
+        lifecycle_domain="PRE_HEXRAYS",
+        schedule_source="compiled stage contract",
+        preparation_state="pending, applied, conflicting, restored, unknown",
+        preparation_reason="next preparation round",
+        preparation_pending_count=2,
+        preparation_applied_count=3,
+        preparation_conflicting_count=4,
+        preparation_restored_count=5,
+        preparation_unknown_count=1,
+        preparation_provider_failures=(
+            "transaction_type_deltas: RuntimeError: provider unavailable",
+        ),
+    )
+    scheduled = dataclasses.replace(
+        _snapshot(),
+        effective_schedule=EffectiveMaturitySchedule(stages=(stage,)),
+    )
+
+    row = next(
+        row
+        for row in logic.project_workbench_rows(scheduled)
+        if row.key == "pipeline:preparation:global-const-types"
+    )
+
+    assert row.status is OutcomeStatus.FAILED
+    assert "preparation buckets: pending: 2, applied: 3, conflicting: 4, restored: 5, unknown: 1" in row.detail
+    assert "provider failure: transaction_type_deltas: RuntimeError: provider unavailable" in row.detail
+    assert "preparation reason: next preparation round" in row.detail
+
+
+def test_missing_compiled_schedule_is_visible_as_unavailable_contract() -> None:
+    stage = EffectiveScheduleStage(
+        configured_index=0,
+        runtime_order=-1,
+        pass_id="constant-simplification",
+        stage_id="fold-readonly-data",
+        pipeline="instruction",
+        implementation_name="FoldReadonlyDataRule",
+        requirements=(),
+        provider_maturities=(),
+        maturity_source="compiled stage contract unavailable",
+        enabled=False,
+        supported_maturities=("CANONICAL",),
+        schedule_source="compiled stage contract unavailable",
+        inactive_reason="compiled schedule unavailable",
+        lifecycle_domain="MICROCODE",
+    )
+    scheduled = dataclasses.replace(
+        _snapshot(),
+        effective_schedule=EffectiveMaturitySchedule(stages=(stage,)),
+    )
+
+    row = next(
+        row
+        for row in logic.project_workbench_rows(scheduled)
+        if row.key == "pipeline:stage:fold-readonly-data"
+    )
+
+    assert row.status is OutcomeStatus.NOT_ELIGIBLE
+    assert "source: compiled stage contract unavailable" in row.detail
+    assert "inactive/rejected reason: compiled schedule unavailable" in row.detail
 
 
 def test_supporting_rows_lead_with_session_execution_ledger_and_demote_counters() -> (
