@@ -33,20 +33,13 @@ from d810.mba.canonical_pattern import (
 )
 from d810.mba.ac_matching import AcMatchStopReason
 from d810.mba.dsl import SymbolicExpressionProtocol
+from d810.mba.extension_api import CanonicalPatternComparisonBudgetExceeded
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
 
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 _PodPattern = tuple[tuple[tuple[int, ...], ...], tuple[str, ...]]
-
-
-class CanonicalPatternComparisonBudgetExceeded(RuntimeError):
-    """Canonical matching exhausted its comparison budget.
-
-    Earlier matches may still be present for diagnostic/shadow telemetry, but
-    saturation must never consume them as executable rewrite applications.
-    """
 
 
 @dataclass(frozen=True)

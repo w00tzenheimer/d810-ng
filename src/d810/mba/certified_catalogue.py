@@ -72,6 +72,18 @@ def _is_enrolled_structural_rule(rule: object) -> bool:
     return _ADMITTED_STRUCTURAL_RULES.get(id(rule)) is rule
 
 
+def enroll_structural_rule(rule: object) -> None:
+    """Enroll one proof-gated structural rule in the portable certificate set."""
+
+    _enroll_structural_rule(rule)
+
+
+def is_enrolled_structural_rule(rule: object) -> bool:
+    """Return whether this exact live structural rule was enrolled."""
+
+    return _is_enrolled_structural_rule(rule)
+
+
 def _is_sha256_digest(value: object) -> bool:
     return (
         isinstance(value, str)
@@ -1015,6 +1027,8 @@ __all__ = [
     "StructuralMatcherParityCertificate",
     "StructuralMatcherParityExpectation",
     "build_certified_catalogue_snapshot",
+    "enroll_structural_rule",
+    "is_enrolled_structural_rule",
     "load_structural_matcher_parity_certificate",
     "make_structural_matcher_parity_certificate",
     "root_shape_for_term",

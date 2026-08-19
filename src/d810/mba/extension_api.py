@@ -15,15 +15,188 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from d810.core.typing import Protocol
+from d810.mba.ac_matching import AcMatchStopReason
+from d810.mba.certified_rule_compiler import (
+    CompiledMbaRule,
+    require_admitted_compiled_rules,
+)
+from d810.mba.canonical_pattern import (
+    CanonicalCompiledPattern,
+    CanonicalPatternMalformed,
+    CanonicalPatternUnsupported,
+    compile_canonical_pattern,
+    evaluate_frozen_constraints,
+    match_canonical_term_pattern,
+)
+from d810.mba.egraph_contracts import EgraphExtractionReceipt, EgraphSkipReason
 from d810.mba.island_profile import (
     IslandBlocker,
     MbaIslandClass,
     MbaIslandProfile,
+    profile_to_dict,
+    profile_typed_term,
 )
-from d810.mba.typed_term import TypedBvTerm
+from d810.mba.semantic_canonicalization import (
+    CANONICALIZER_SCHEMA_VERSION,
+    CanonicalMbaTermView,
+    canonicalize_mba_term,
+)
+from d810.mba.typed_term import (
+    FIXED_SHIFT_OPERATIONS,
+    SUPPORTED_OPERATIONS,
+    TypedBvTerm,
+)
+from d810.mba.typed_term import (
+    canonicalize_ac_term,
+    fixed_shift_term,
+    leaf_key_fingerprint,
+    term_cost,
+    term_fingerprint,
+)
+from d810.mba.certified_catalogue import (
+    enroll_structural_rule,
+    is_enrolled_structural_rule,
+)
 
 
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
+
+
+class CanonicalPatternComparisonBudgetExceeded(RuntimeError):
+    """A canonical rule matcher exhausted its caller-supplied comparison cap."""
+
+
+class CanonicalMbaRuleCatalogue(Protocol):
+    """Narrow typed-term projection consumed by portable providers.
+
+    Concrete native matcher classes stay in their owning backend.  The
+    extension receives only this callable view, which is enough to construct
+    bounded rewrite candidates without importing a backend implementation.
+    """
+
+    def canonical_applications(
+        self,
+        candidate: TypedBvTerm,
+        *,
+        comparison_budget: int = 256,
+    ) -> tuple[tuple[CompiledMbaRule, TypedBvTerm, int], ...]: ...
+
+
+def _is_validated_typed_term(term: object, *, width: int, active: set[int]) -> bool:
+    """Validate a proof input without retaining solver or native state."""
+
+    if type(term) is not TypedBvTerm or id(term) in active:
+        return False
+    active.add(id(term))
+    try:
+        if term.width != width or type(term.children) is not tuple:
+            return False
+        if term.operation is None:
+            if term.children or term.shift_count is not None:
+                return False
+            if (term.value is None) == (term.leaf_key is None):
+                return False
+            if term.value is not None:
+                return type(term.value) is int and 0 <= term.value < (1 << width)
+            if type(term.leaf_key) is not tuple or not term.leaf_key:
+                return False
+            try:
+                hash(term.leaf_key)
+            except (TypeError, ValueError):
+                return False
+            return True
+        if (
+            type(term.operation) is not str
+            or term.operation not in SUPPORTED_OPERATIONS
+            or term.value is not None
+            or term.leaf_key is not None
+        ):
+            return False
+        expected_arity = (
+            1
+            if term.operation in {"bnot", "neg"} | FIXED_SHIFT_OPERATIONS
+            else 2
+        )
+        if len(term.children) != expected_arity:
+            return False
+        if term.operation in FIXED_SHIFT_OPERATIONS:
+            if type(term.shift_count) is not int or not 0 <= term.shift_count < width:
+                return False
+            if term.operation in {"rol", "ror"} and width not in {8, 16, 32, 64}:
+                return False
+        elif term.shift_count is not None:
+            return False
+        return all(
+            _is_validated_typed_term(child, width=width, active=active)
+            for child in term.children
+        )
+    finally:
+        active.remove(id(term))
+
+
+def _lower_typed_term(term: TypedBvTerm, *, variables: dict[tuple[object, ...], object], z3):
+    if term.operation is None:
+        if term.value is not None:
+            return z3.BitVecVal(term.value, term.width)
+        assert term.leaf_key is not None
+        return variables.setdefault(
+            term.leaf_key,
+            z3.BitVec(f"mba_extension_leaf_{len(variables)}", term.width),
+        )
+    children = tuple(
+        _lower_typed_term(child, variables=variables, z3=z3) for child in term.children
+    )
+    if term.operation == "shl":
+        return children[0] << term.shift_count
+    if term.operation == "lshr":
+        return z3.LShR(children[0], term.shift_count)
+    if term.operation == "rol":
+        return z3.RotateLeft(children[0], term.shift_count)
+    if term.operation == "ror":
+        return z3.RotateRight(children[0], term.shift_count)
+    if term.operation == "add":
+        return children[0] + children[1]
+    if term.operation == "sub":
+        return children[0] - children[1]
+    if term.operation == "mul":
+        return children[0] * children[1]
+    if term.operation == "and":
+        return children[0] & children[1]
+    if term.operation == "or":
+        return children[0] | children[1]
+    if term.operation == "xor":
+        return children[0] ^ children[1]
+    if term.operation == "neg":
+        return -children[0]
+    if term.operation == "bnot":
+        return ~children[0]
+    raise ValueError(f"unsupported typed-term operation: {term.operation}")
+
+
+def prove_typed_term_equivalence(
+    original: TypedBvTerm, replacement: TypedBvTerm
+) -> bool:
+    """Prove two portable fixed-width terms with a fresh bounded Z3 solver."""
+
+    if type(original) is not TypedBvTerm or type(replacement) is not TypedBvTerm:
+        return False
+    if original.width != replacement.width or original.width not in {8, 16, 32, 64}:
+        return False
+    if not _is_validated_typed_term(original, width=original.width, active=set()):
+        return False
+    if not _is_validated_typed_term(replacement, width=original.width, active=set()):
+        return False
+    try:
+        import z3
+    except ImportError:
+        return False
+    variables: dict[tuple[object, ...], object] = {}
+    left = _lower_typed_term(original, variables=variables, z3=z3)
+    right = _lower_typed_term(replacement, variables=variables, z3=z3)
+    solver = z3.Solver()
+    solver.set(timeout=50)
+    solver.add(left != right)
+    return solver.check() == z3.unsat
 
 
 def _copy_json_value(
@@ -191,7 +364,18 @@ class NativeMbaHostServices(Protocol):
 
 
 __all__ = [
+    "CANONICALIZER_SCHEMA_VERSION",
+    "AcMatchStopReason",
+    "CanonicalCompiledPattern",
+    "CanonicalMbaTermView",
+    "CanonicalMbaRuleCatalogue",
+    "CanonicalPatternComparisonBudgetExceeded",
+    "CanonicalPatternMalformed",
+    "CanonicalPatternUnsupported",
+    "CompiledMbaRule",
     "EgraphPersistenceService",
+    "EgraphExtractionReceipt",
+    "EgraphSkipReason",
     "IslandBlocker",
     "MbaIslandClass",
     "MbaIslandProfile",
@@ -199,4 +383,19 @@ __all__ = [
     "NativeMbaHostServices",
     "NativeMbaReconstruction",
     "TypedBvTerm",
+    "canonicalize_ac_term",
+    "canonicalize_mba_term",
+    "compile_canonical_pattern",
+    "evaluate_frozen_constraints",
+    "fixed_shift_term",
+    "enroll_structural_rule",
+    "is_enrolled_structural_rule",
+    "leaf_key_fingerprint",
+    "profile_to_dict",
+    "profile_typed_term",
+    "prove_typed_term_equivalence",
+    "require_admitted_compiled_rules",
+    "match_canonical_term_pattern",
+    "term_cost",
+    "term_fingerprint",
 ]

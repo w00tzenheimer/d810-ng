@@ -148,3 +148,51 @@ assert 'idaapi' not in sys.modules
         env={"PATH": str(Path(sys.executable).parent), "PYTHONPATH": str(source_root)},
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_typed_term_proof_is_the_single_native_and_portable_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from d810.backends.mba import native_z3_proof_template
+    from d810.mba.typed_term import fixed_shift_term
+
+    x = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    valid_left = fixed_shift_term("rol", 32, x, 5)
+    valid_right = fixed_shift_term("rol", 32, x, 5)
+    invalid_width = TypedBvTerm(None, 16, leaf_key=("register", "x"))
+    malformed = object.__new__(TypedBvTerm)
+    object.__setattr__(malformed, "operation", "add")
+    object.__setattr__(malformed, "width", 32)
+    object.__setattr__(malformed, "value", None)
+    object.__setattr__(malformed, "leaf_key", None)
+    object.__setattr__(malformed, "children", ())
+    object.__setattr__(malformed, "shift_count", None)
+
+    for left, right in (
+        (valid_left, valid_right),
+        (valid_left, invalid_width),
+        (malformed, valid_right),
+    ):
+        assert extension_api.prove_typed_term_equivalence(left, right) == (
+            native_z3_proof_template.prove_typed_term_equivalence(left, right)
+        )
+
+    monkeypatch.setattr(
+        extension_api,
+        "prove_typed_term_equivalence",
+        lambda _left, _right: True,
+    )
+    assert native_z3_proof_template.prove_typed_term_equivalence(
+        valid_left, valid_right
+    ) is True
+
+
+def test_typed_term_proof_parity_when_z3_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from d810.backends.mba import native_z3_proof_template
+
+    term = TypedBvTerm(None, 32, value=0)
+    monkeypatch.setitem(sys.modules, "z3", None)
+    assert extension_api.prove_typed_term_equivalence(term, term) is False
+    assert native_z3_proof_template.prove_typed_term_equivalence(term, term) is False
