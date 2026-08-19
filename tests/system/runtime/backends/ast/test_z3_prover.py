@@ -966,6 +966,85 @@ class TestZ3MopProverAPI:
         AstNodeZ3Visitor(node_budget=two_node_budget).visit(ast)
         assert two_node_budget.observed_nodes == 2
 
+    def test_repeated_cached_subtree_charges_all_descendant_occurrences(
+        self, monkeypatch
+    ):
+        import d810.hexrays.ir.mop_utils as mop_utils
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ExpressionNodeBudget,
+            Z3NodeLimitExceeded,
+            Z3ProofPolicy,
+        )
+
+        class _Mop:
+            pass
+
+        def _leaf(name):
+            mop = _Mop()
+            mop.t = ida_hexrays.mop_r
+            mop.size = 4
+            mop.r = 1
+            mop.valnum = 0
+            mop.name = name
+            mop.dstr = lambda: name
+            return mop
+
+        shared_leaf_left = _leaf("shared-left")
+        shared_leaf_right = _leaf("shared-right")
+        shared_subtree = _Mop()
+        shared_subtree.t = ida_hexrays.mop_d
+        shared_subtree.size = 4
+        shared_subtree.name = "shared-subtree"
+        shared_subtree.d = SimpleNamespace(
+            opcode=ida_hexrays.m_add,
+            ea=0,
+            l=shared_leaf_left,
+            r=shared_leaf_right,
+            d=None,
+        )
+        root = _Mop()
+        root.t = ida_hexrays.mop_d
+        root.size = 4
+        root.name = "root"
+        root.d = SimpleNamespace(
+            opcode=ida_hexrays.m_add,
+            ea=0,
+            l=shared_subtree,
+            r=shared_subtree,
+            d=None,
+        )
+
+        monkeypatch.setattr(mop_utils, "get_mop_key", lambda mop: (mop.name,))
+        monkeypatch.setattr(mop_utils, "format_mop_t", lambda mop: mop.name)
+        monkeypatch.setattr(mop_utils, "sanitize_ea", lambda ea: ea)
+        monkeypatch.setattr(
+            mop_utils.MopSnapshot,
+            "from_mop",
+            classmethod(lambda _cls, mop: SimpleNamespace(t=mop.t)),
+        )
+
+        low_budget = Z3ExpressionNodeBudget(
+            Z3ProofPolicy(max_expression_nodes=5, proof_timeout_ms=100)
+        )
+        with pytest.raises(Z3NodeLimitExceeded):
+            mop_utils.mop_to_ast_internal(
+                root,
+                mop_utils.AstBuilderContext(),
+                node_budget=low_budget,
+            )
+        assert low_budget.observed_nodes == 5
+
+        in_budget = Z3ExpressionNodeBudget(
+            Z3ProofPolicy(max_expression_nodes=7, proof_timeout_ms=100)
+        )
+        ast = mop_utils.mop_to_ast_internal(
+            root,
+            mop_utils.AstBuilderContext(),
+            node_budget=in_budget,
+        )
+        assert ast is not None
+        assert in_budget.observed_nodes == 7
+
     @pytest.mark.parametrize(
         ("max_expression_nodes", "expected_status", "expected_observed"),
         (
