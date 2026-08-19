@@ -738,7 +738,10 @@ if IDA_AVAILABLE:
             }
             page = pages.get(primary)
             catalog_primary = page is not None
-            options_primary = primary is ConfigV2InspectorPrimarySection.OPTIONS
+            options_primary = (
+                primary is ConfigV2InspectorPrimarySection.OPTIONS
+                and getattr(self, "_primary_options_enabled", True)
+            )
             has_primary = catalog_primary or options_primary
             self.primary_workspace.setVisible(catalog_primary)
             self.inspector_elastic_sink.setVisible(not has_primary)
@@ -1014,6 +1017,7 @@ if IDA_AVAILABLE:
             self.field_section_widgets.clear()
             self.options_scroll.setVisible(False)
             self.options_sections_body.setVisible(False)
+            self._primary_options_enabled = False
             self.options_group.setVisible(False)
             if inspector is None:
                 return
@@ -1027,8 +1031,10 @@ if IDA_AVAILABLE:
                     continue
                 group, _body = self._build_field_section_widget(section)
                 self.field_section_widgets[section.section_id] = group
-                stretch = 1 if section.presentation.value == "primary" else 0
-                if stretch:
+                is_primary = section.presentation.value == "primary"
+                stretch = 1 if is_primary and section.enabled else 0
+                if is_primary and section.enabled:
+                    self._primary_options_enabled = True
                     self.options_scroll.setWidget(group)
                     self.options_scroll.setVisible(True)
                     self.options_sections_layout.addWidget(

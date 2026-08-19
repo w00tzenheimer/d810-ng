@@ -209,9 +209,8 @@ def test_field_section_stretch_and_empty_projection_are_generic() -> None:
     assert "self.options_sections_layout.addWidget(group, stretch=stretch)" in (
         render_source
     )
-    assert "stretch = 1 if section.presentation.value == 'primary' else 0" in (
-        render_source
-    )
+    assert "is_primary = section.presentation.value == 'primary'" in render_source
+    assert "stretch = 1 if is_primary and section.enabled else 0" in render_source
     assert "self.field_section_widgets[section.section_id] = group" in (
         render_source
     )
@@ -501,6 +500,8 @@ class _BehaviorWidget:
         self.clicked = _BehaviorSignal()
         self.toggled = _BehaviorSignal()
         self.textChanged = _BehaviorSignal()
+        self.editingFinished = _BehaviorSignal()
+        self._deleted = False
 
     def setVisible(self, visible: bool) -> None:
         self._visible = bool(visible)
@@ -533,7 +534,7 @@ class _BehaviorWidget:
         del parent
 
     def deleteLater(self) -> None:
-        return None
+        self._deleted = True
 
     def setWordWrap(self, enabled: bool) -> None:
         del enabled
@@ -1002,6 +1003,165 @@ def test_fake_qt_section_renderer_omits_hidden_subordinates_and_keeps_controller
 
     assert group._text == "Controls"
     assert len(body._layout.children) == 1
+
+
+def _render_behavior_panel(monkeypatch):
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    panel = object.__new__(panel_type)
+    panel.options_scroll = module.QtWidgets.QScrollArea()
+    panel.options_scroll.setWidgetResizable(True)
+    panel.options_sections_body = module.QtWidgets.QWidget()
+    panel.options_sections_layout = module.QtWidgets.QVBoxLayout(
+        panel.options_sections_body
+    )
+    panel.options_group = module.QtWidgets.QGroupBox("Options")
+    panel.field_section_widgets = {}
+    panel._primary_options_enabled = False
+    panel._apply_typed_option = lambda field, value: None
+    panel._rendering_inspector = False
+    panel.primary_workspace = module.QtWidgets.QStackedWidget()
+    panel.transforms_group = module.QtWidgets.QGroupBox("Transforms")
+    panel.rules_group = module.QtWidgets.QGroupBox("Rules")
+    panel.primary_workspace.addWidget(panel.transforms_group)
+    panel.primary_workspace.addWidget(panel.rules_group)
+    panel.inspector_elastic_sink = module.QtWidgets.QWidget()
+    panel._inspector_layout = _BehaviorLayout()
+    panel._inspector_layout.addWidget(panel.primary_workspace, stretch=1)
+    panel._inspector_layout.addWidget(panel.options_group, stretch=0)
+    panel._inspector_layout.addWidget(panel.inspector_elastic_sink, stretch=0)
+    return module, panel_type, panel
+
+
+def _behavior_sections(module, *, enabled: bool):
+    from d810.core.pass_editor_spec import (
+        FieldControlKind,
+        FieldEditorSpec,
+        PassEditorSectionPresentation,
+    )
+
+    controller = FieldEditorSpec(
+        field_id="enabled",
+        label="Enabled",
+        path=("enabled",),
+        control=FieldControlKind.BOOLEAN,
+        default=True,
+    )
+    subordinate = FieldEditorSpec(
+        field_id="value",
+        label="Value",
+        path=("value",),
+        control=FieldControlKind.TEXT,
+        default="kept",
+    )
+    choices = FieldEditorSpec(
+        field_id="choices",
+        label="Choices",
+        path=("choices",),
+        control=FieldControlKind.STRING_LIST,
+        choices=("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"),
+    )
+    from d810.ui.config_v2_editing_logic import (
+        ConfigV2FieldSectionEntryView,
+        ConfigV2FieldSectionView,
+    )
+
+    return (
+        ConfigV2FieldSectionView(
+            section_id="primary",
+            label="Primary",
+            description="Primary controls.",
+            presentation=PassEditorSectionPresentation.PRIMARY,
+            enabled=enabled,
+            controller_field_id="enabled",
+            entries=(
+                ConfigV2FieldSectionEntryView(
+                    field=controller,
+                    value=enabled,
+                    is_controller=True,
+                    editable=True,
+                    visible=True,
+                ),
+                ConfigV2FieldSectionEntryView(
+                    field=subordinate,
+                    value="kept",
+                    is_controller=False,
+                    editable=enabled,
+                    visible=enabled,
+                ),
+            ),
+        ),
+        ConfigV2FieldSectionView(
+            section_id="secondary",
+            label="Secondary",
+            description="Secondary controls.",
+            presentation=PassEditorSectionPresentation.SECONDARY,
+            enabled=True,
+            controller_field_id=None,
+            entries=(
+                ConfigV2FieldSectionEntryView(
+                    field=choices,
+                    value=("two",),
+                    is_controller=False,
+                    editable=False,
+                    visible=True,
+                ),
+            ),
+        ),
+        ConfigV2FieldSectionView(
+            section_id="empty",
+            label="Empty",
+            description="Omitted.",
+            presentation=PassEditorSectionPresentation.SECONDARY,
+            enabled=True,
+            controller_field_id=None,
+            entries=(),
+        ),
+    )
+
+
+def test_fake_qt_render_rerender_routes_disabled_primary_to_sink(monkeypatch) -> None:
+    module, panel_type, panel = _render_behavior_panel(monkeypatch)
+    from d810.ui.panel_density_logic import (
+        CHOICE_LIST_MAX_HEIGHT,
+        CHOICE_LIST_MIN_HEIGHT,
+    )
+
+    enabled = types.SimpleNamespace(field_sections=_behavior_sections(module, enabled=True))
+    panel._render_typed_options(enabled)
+    first_primary = panel.field_section_widgets["primary"]
+
+    assert panel.options_scroll._widget is first_primary
+    assert panel.options_sections_layout.stretches == {0: 1, 1: 0}
+    panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
+    assert panel._inspector_layout.stretches == {0: 0, 1: 1, 2: 0}
+    assert panel.inspector_elastic_sink.isVisible() is False
+    assert panel.primary_workspace.pages == [panel.transforms_group, panel.rules_group]
+
+    disabled = types.SimpleNamespace(field_sections=_behavior_sections(module, enabled=False))
+    panel._render_typed_options(disabled)
+    disabled_primary = panel.field_section_widgets["primary"]
+
+    assert first_primary._deleted is True
+    assert panel.options_scroll._widget is None
+    assert panel.options_sections_layout.stretches == {0: 0, 1: 0}
+    assert panel.field_section_widgets.keys() == {"primary", "secondary"}
+    assert len(disabled_primary._layout.children) == 2
+    secondary = panel.field_section_widgets["secondary"]
+    secondary_body = secondary._layout.children[-1]
+    choice_control = secondary_body._layout.children[0][1]
+    assert choice_control.isEnabled() is False
+    assert choice_control.minimum_height == CHOICE_LIST_MIN_HEIGHT
+    assert choice_control.maximum_height == CHOICE_LIST_MAX_HEIGHT
+    panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
+    assert panel._inspector_layout.stretches == {0: 0, 1: 0, 2: 1}
+    assert panel.inspector_elastic_sink.isVisible() is True
+    assert panel.primary_workspace.pages == [panel.transforms_group, panel.rules_group]
+
+    panel._render_typed_options(enabled)
+    assert disabled_primary._deleted is True
+    assert panel.options_scroll._widget is panel.field_section_widgets["primary"]
+    panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
+    assert panel._inspector_layout.stretches == {0: 0, 1: 1, 2: 0}
 
 
 class _BehaviorAdapter:
