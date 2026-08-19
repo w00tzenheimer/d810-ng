@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import ida_hexrays
 import ida_typeinf
 
+from d810.core.pass_ids import PassId
 from d810.hexrays.mutation.block_instruction_commit import (
     BlockInstructionAnchor,
     BlockInstructionBatchCandidate,
@@ -315,7 +316,7 @@ class ModularProductNonzeroBlockRule(HostedBlockInstructionRule):
                     ),
                 ),
                 epoch_before=epoch,
-                pass_id="modular-product-nonzero",
+                pass_id=PassId.MBA_SIMPLIFY.value,
                 stage_id="modular-product-nonzero",
                 rule_id=self.name,
             )

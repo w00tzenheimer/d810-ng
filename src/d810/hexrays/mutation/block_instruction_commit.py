@@ -338,6 +338,20 @@ class HexRaysBlockInstructionCommitter:
             raise TypeError("epoch_provider must return NativeEpoch")
         if current_epoch != candidate.epoch_before:
             return self._rejected(candidate, "stale-epoch")
+        try:
+            callback_serial = int(getattr(block, "serial"))
+            callback_start_ea = int(getattr(block, "start"))
+        except (AttributeError, TypeError, ValueError):
+            return self._rejected(candidate, "callback-block-context-invalid")
+        if any(
+            edit.anchor.block_serial != callback_serial
+            or edit.anchor.block_start_ea != callback_start_ea
+            for edit in candidate.edits
+        ):
+            # A hosted BLOCK rule owns this callback block only.  DGM may
+            # resolve arbitrary block serials while applying a batch, so this
+            # boundary must reject cross-block anchors before queueing.
+            return self._rejected(candidate, "callback-block-mismatch")
         configure = getattr(modifier, "configure_instruction_batch_lifecycle", None)
         if callable(configure):
             configure(authority)

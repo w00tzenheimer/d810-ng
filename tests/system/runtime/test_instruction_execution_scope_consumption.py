@@ -822,7 +822,12 @@ def test_hosted_block_journal_uses_batch_receipt_effect_and_parent_attempt(
         "legacy_candidates_total": 0,
         "scoped_lookup_ns": 0,
     }
-    manager._execution_scope_service = object()
+    manager._execution_scope_service = SimpleNamespace(
+        identity_for_implementation=lambda _rule, *, pipeline: ExecutionStageIdentity(
+            pass_id="journal-pass",
+            stage_id="journal-stage",
+        )
+    )
     manager._execution_scope_project_name = "project"
     manager._execution_scope_idb_key = "idb"
     manager._perf_compare_execution_scope = False
@@ -840,10 +845,16 @@ def test_hosted_block_journal_uses_batch_receipt_effect_and_parent_attempt(
     _session_id, parent_attempt_id, records = lifecycle.journal.records[0]
     assert parent_attempt_id == "parent"
     assert len(records) == 2
+    assert records[0].stage_id.startswith("flow_rule:journal-pass/journal-stage:")
+    assert records[1].stage_id.startswith(
+        "mba_rule_mutation:journal-pass/journal-stage:"
+    )
     assert records[0].effect_refs[0].kind == "mutation_receipt"
     assert records[0].effect_refs[0].ref_id == "batch-receipt-id"
     assert records[1].effect_refs[0].kind == "mutation_receipt"
     assert records[1].effect_refs[0].ref_id == "batch-receipt-id"
+    assert records[0].details["pass_id"] == "journal-pass"
+    assert records[0].details["stage_id"] == "journal-stage"
     assert all(
         effect.kind != "mba_rule_edit"
         for record in records

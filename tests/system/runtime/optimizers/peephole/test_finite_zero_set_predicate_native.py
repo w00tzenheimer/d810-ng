@@ -77,6 +77,8 @@ class TestFiniteZeroSetPredicateNative:
             if candidate is None:
                 continue
             assert len(candidate.edits) == 1
+            assert candidate.pass_id == "mba-simplify"
+            assert candidate.stage_id == "finite-zero-set-predicate"
             assert tuple(
                 format_minsn_t(instruction)
                 for instruction in _instructions(block)

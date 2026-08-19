@@ -7,6 +7,7 @@ import sqlite3
 import time
 import traceback
 from collections import defaultdict
+from dataclasses import replace
 
 import ida_hexrays
 
@@ -1793,11 +1794,40 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
             return None
 
+    def _hosted_stage_identity(
+        self,
+        cfg_rule: object,
+    ) -> ExecutionStageIdentity | None:
+        """Resolve the configured public identity for one hosted rule."""
+
+        service = self._execution_scope_service
+        identity_for_implementation = getattr(
+            service,
+            "identity_for_implementation",
+            None,
+        )
+        if not callable(identity_for_implementation):
+            return None
+        try:
+            identity = identity_for_implementation(
+                cfg_rule,
+                pipeline=ExecutionPipeline.FLOW,
+            )
+        except Exception:
+            optimizer_logger.debug(
+                "hosted block instruction stage identity unavailable",
+                exc_info=True,
+            )
+            return None
+        return identity if isinstance(identity, ExecutionStageIdentity) else None
+
     def _run_hosted_block_instruction_rule(
         self,
         cfg_rule: object,
         blk: ida_hexrays.mblock_t,
         flow_context: object | None,
+        *,
+        stage_identity: ExecutionStageIdentity | None,
     ) -> tuple[int, BlockInstructionBatchReceipt | None, bool]:
         """Propose and commit one adapter-owned batch.
 
@@ -1805,6 +1835,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         terminally.  Only an explicit ``None`` proposal may fall through.
         """
 
+        if stage_identity is None:
+            return 0, None, True
         callback_mba = getattr(flow_context, "mba", None)
         if callback_mba is None:
             return 0, None, True
@@ -1834,6 +1866,23 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         candidate = cfg_rule.propose_instruction_batch(blk, epoch=epoch)
         if candidate is None:
             return 0, None, False
+        if (
+            candidate.pass_id != stage_identity.pass_id
+            or candidate.stage_id != stage_identity.stage_id
+        ):
+            optimizer_logger.debug(
+                "normalizing hosted batch provenance for %s: %s/%s -> %s/%s",
+                str(getattr(cfg_rule, "name", type(cfg_rule).__name__)),
+                candidate.pass_id,
+                candidate.stage_id,
+                stage_identity.pass_id,
+                stage_identity.stage_id,
+            )
+            candidate = replace(
+                candidate,
+                pass_id=stage_identity.pass_id,
+                stage_id=stage_identity.stage_id,
+            )
 
         new_gateway = getattr(flow_context, "new_mba_mutation_gateway", None)
         if not callable(new_gateway):
@@ -1973,6 +2022,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     except Exception:
                         pass
                     rule_name = str(cfg_rule.name)
+                    hosted_stage_identity = (
+                        self._hosted_stage_identity(cfg_rule)
+                        if self._is_hosted_block_instruction_rule(cfg_rule)
+                        else None
+                    )
+                    public_rule_identity = (
+                        f"{hosted_stage_identity.pass_id}/"
+                        f"{hosted_stage_identity.stage_id}"
+                        if hosted_stage_identity is not None
+                        else rule_name
+                    )
                     journal, session_id, parent_attempt_id = (
                         _flow_rule_execution_context(flow_context)
                     )
@@ -1987,10 +2047,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         getattr(journal, "callback_detail_is_full", True)
                     )
                     rule_stage = (
-                        f"flow_rule:{rule_name}:maturity={maturity_name}:{block_anchor}"
+                        f"flow_rule:{public_rule_identity}:maturity={maturity_name}:"
+                        f"{block_anchor}"
                     )
                     mutation_stage = (
-                        f"mba_rule_mutation:{rule_name}:maturity={maturity_name}:"
+                        f"mba_rule_mutation:{public_rule_identity}:maturity={maturity_name}:"
                         f"{block_anchor}"
                     )
                     rule_attempt = None
@@ -2066,6 +2127,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                                 cfg_rule,
                                 blk,
                                 flow_context,
+                                stage_identity=hosted_stage_identity,
                             )
                         else:
                             callback_result = cfg_rule.optimize(blk)
@@ -2303,7 +2365,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                                 session_id,
                                 parent_attempt_id=parent_attempt_id,
                                 callback_kind="optblock",
-                                stage_id=f"flow_rule:{rule_name}",
+                                stage_id=f"flow_rule:{public_rule_identity}",
                                 maturity=maturity_name,
                                 reason_code=abstention_reason,
                             )

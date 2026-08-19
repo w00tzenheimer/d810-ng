@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import ida_hexrays
 
+from d810.core.pass_ids import PassId
 from d810.hexrays.mutation.block_instruction_commit import (
     BlockInstructionAnchor,
     BlockInstructionBatchCandidate,
@@ -384,7 +385,7 @@ class FiniteZeroSetPredicateBlockRule(HostedBlockInstructionRule):
                     ),
                 ),
                 epoch_before=epoch,
-                pass_id="finite-zero-set-predicate",
+                pass_id=PassId.MBA_SIMPLIFY.value,
                 stage_id="finite-zero-set-predicate",
                 rule_id=self.name,
             )

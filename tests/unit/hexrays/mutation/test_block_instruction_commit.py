@@ -548,6 +548,56 @@ def test_thin_committer_rejects_same_mba_with_stale_lifecycle_generation() -> No
     assert receipt.reason == "stale-epoch"
 
 
+def test_thin_committer_rejects_anchor_outside_callback_block_before_queueing() -> None:
+    mba = _BatchMba()
+    instruction = _BatchInstruction(0x401010, 42, "original")
+    callback_block = _BatchBlock(mba, [instruction])
+    mba.blocks[callback_block.serial] = callback_block
+    candidate = _batch_candidate(
+        mba,
+        callback_block,
+        instruction,
+        _BatchMaterializer(),
+    )
+    foreign_anchor = replace(
+        candidate.edits[0].anchor,
+        block_serial=callback_block.serial + 1,
+        block_start_ea=callback_block.start + 0x100,
+    )
+    foreign_candidate = replace(
+        candidate,
+        edits=(
+            replace(candidate.edits[0], anchor=foreign_anchor),
+        ),
+    )
+
+    class _TrackingModifier:
+        def __init__(self):
+            self.queue_calls = 0
+
+        def queue_instruction_rewrite_batch(self, _candidate):
+            self.queue_calls += 1
+
+        def apply_instruction_rewrite_batch(self):
+            return HexRaysBlockInstructionCommitter._rejected(
+                foreign_candidate,
+                "unexpected-apply",
+            )
+
+    modifier = _TrackingModifier()
+    receipt = HexRaysBlockInstructionCommitter(
+        epoch_provider=lambda _block: foreign_candidate.epoch_before,
+    ).commit(
+        block=callback_block,
+        candidate=foreign_candidate,
+        modifier=modifier,
+    )
+
+    assert not receipt.committed
+    assert receipt.reason == "callback-block-mismatch"
+    assert modifier.queue_calls == 0
+
+
 def test_thin_committer_requires_adapter_epoch_provenance() -> None:
     mba = _BatchMba()
     instruction = _BatchInstruction(0x401010, 42, "original")

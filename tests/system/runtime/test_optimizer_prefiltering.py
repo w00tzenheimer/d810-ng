@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.core.decompilation_session import DecompilationEvent
+from d810.core.execution_scope import ExecutionStageIdentity
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hooks import optinsn_adapter
 from d810.hexrays.hooks import optblock_adapter
@@ -891,6 +892,15 @@ class _HostedDgm:
         self.__class__.instances.append(self)
 
 
+class _HostedExecutionScope:
+    def __init__(self, identity: ExecutionStageIdentity):
+        self.identity = identity
+
+    def identity_for_implementation(self, implementation, *, pipeline):
+        del implementation, pipeline
+        return self.identity
+
+
 class _HostedCommitter:
     outcomes = {}
     receipts = []
@@ -921,7 +931,14 @@ class _HostedCommitter:
         return receipt
 
 
-def _new_hosted_adapter_manager(rules, *, lifecycle, context, block):
+def _new_hosted_adapter_manager(
+    rules,
+    *,
+    lifecycle,
+    context,
+    block,
+    stage_identity: ExecutionStageIdentity | None = None,
+):
     manager = BlockOptimizerManager.__new__(BlockOptimizerManager)
     manager.cfg_rules = list(rules)
     manager.current_maturity = ida_hexrays.MMAT_LOCOPT
@@ -935,7 +952,13 @@ def _new_hosted_adapter_manager(rules, *, lifecycle, context, block):
         "legacy_candidates_total": 0,
         "scoped_lookup_ns": 0,
     }
-    manager._execution_scope_service = object()
+    manager._execution_scope_service = _HostedExecutionScope(
+        stage_identity
+        or ExecutionStageIdentity(
+            pass_id="configured-pass",
+            stage_id="configured-stage",
+        )
+    )
     manager._execution_scope_project_name = "project"
     manager._execution_scope_idb_key = "idb"
     manager._perf_compare_execution_scope = False
@@ -1046,6 +1069,32 @@ def test_hosted_block_commit_preserves_lifecycle_epoch_and_invalidates_adapter_c
     assert _HostedCommitter.calls[-1][3].mba_identity == id(context.mba)
     assert _HostedDgm.instances[-1].mutation_gateway is gateway
     assert trailing.proposals == []
+
+
+def test_hosted_block_receipt_uses_scheduled_stage_identity(monkeypatch):
+    _patch_hosted_adapter(monkeypatch)
+    rule = _HostedRule(True, rule_id="finite-zero-set-rule")
+    lifecycle = _HostedLifecycle()
+    block = _new_hosted_block()
+    context = _HostedContext(_HostedGateway(), mba=block.mba)
+    scheduled_identity = ExecutionStageIdentity(
+        pass_id="mba-simplify",
+        stage_id="finite-zero-set-predicate",
+    )
+    manager = _new_hosted_adapter_manager(
+        (rule,),
+        lifecycle=lifecycle,
+        context=context,
+        block=block,
+        stage_identity=scheduled_identity,
+    )
+
+    assert manager.optimize(block) == 1
+    receipt = _HostedCommitter.receipts[-1]
+    assert receipt.pass_id == scheduled_identity.pass_id
+    assert receipt.stage_id == scheduled_identity.stage_id
+    assert _HostedCommitter.calls[-1][1].pass_id == scheduled_identity.pass_id
+    assert _HostedCommitter.calls[-1][1].stage_id == scheduled_identity.stage_id
 
 
 def test_hosted_block_quarantine_prevents_proposal_and_commit(monkeypatch):

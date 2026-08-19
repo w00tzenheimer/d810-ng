@@ -64,6 +64,8 @@ class TestModularProductNonzeroNative:
         assert len(proposals) == 1, "one callback must admit one batch only"
         block, candidate, before = proposals[0]
         assert len(candidate.edits) == 1
+        assert candidate.pass_id == "mba-simplify"
+        assert candidate.stage_id == "modular-product-nonzero"
         assert tuple(format_minsn_t(ins) for ins in _instructions(block)) == before
         modifier = deferred_modifier_module.DeferredGraphModifier(
             mba,
