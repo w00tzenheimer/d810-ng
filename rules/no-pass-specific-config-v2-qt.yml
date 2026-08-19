@@ -16,7 +16,10 @@ rule:
   any:
     - pattern: '$OBJECT.pass_id == "$VALUE"'
     - pattern: '"$VALUE" == $OBJECT.pass_id'
-    - pattern: $PASS_ID in {$$$PASS_IDS}
+    - pattern: 'pass_id == "$VALUE"'
+    - pattern: '"$VALUE" == pass_id'
+    - pattern: 'pass_id in {$$$PASS_IDS}'
+    - pattern: '$OBJECT.pass_id in {$$$PASS_IDS}'
 
 note: |
   Keep pass IDs available for ordinary display and dictionary lookup. The

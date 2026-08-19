@@ -408,6 +408,23 @@ class _StackedWidget(_Widget):
         return self.current
 
 
+class _ScrollAreaWidget(_Widget):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._widget: object | None = None
+
+    def setWidgetResizable(self, resizable: bool) -> None:
+        del resizable
+
+    def setWidget(self, widget: object) -> None:
+        self._widget = widget
+
+    def takeWidget(self) -> object | None:
+        widget = self._widget
+        self._widget = None
+        return widget
+
+
 class _ListItem:
     def __init__(self, text: str = "") -> None:
         self._text = text
@@ -623,6 +640,7 @@ def _load_gui_panel(monkeypatch):
             )
         },
         QStackedWidget=_StackedWidget,
+        QScrollArea=_ScrollAreaWidget,
         QListWidgetItem=_ListItem,
     )
     monkeypatch.setitem(sys.modules, "ida_kernwin", ida)
