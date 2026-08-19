@@ -103,6 +103,7 @@ def _field_entry(panel: object, field_id: str) -> object:
 
 
 def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) -> None:
+    import ida_loader
     import idaapi
 
     from d810.core.config import ProjectConfiguration
@@ -115,7 +116,7 @@ def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) ->
     assert QT_BINDING in {"PySide6", "PyQt5"}
     assert idaapi.get_kernel_version().split(".", 1)[0] == "9"
 
-    idb_path = pathlib.Path(idaapi.get_input_file_path()).resolve()
+    idb_path = pathlib.Path(ida_loader.get_path(ida_loader.PATH_TYPE_IDB)).resolve()
     assert idb_path.suffix == ".i64"
     assert ".tmp/ida-gui" in idb_path.as_posix()
     idb_hash_before = _sha256(idb_path)
@@ -229,10 +230,16 @@ def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) ->
         )
         choice_control.item(0).setCheckState(opposite)
         _process_until(lambda: panel._current_inspector() is not None)
+        changed_inspector = panel._current_inspector()
+        assert changed_inspector is not None
+        assert changed_inspector.options["maturities"] != list(choice_entry.value)
         choice_control = _list_control(panel, "maturities")
         choice_control.item(0).setCheckState(initial_checked)
         _process_until(lambda: panel._current_inspector() is not None)
         choice_control = _list_control(panel, "maturities")
+        restored_inspector = panel._current_inspector()
+        assert restored_inspector is not None
+        assert restored_inspector.options["maturities"] == list(choice_entry.value)
         assert tuple(
             choice_control.item(index).text()
             for index in range(choice_control.count())

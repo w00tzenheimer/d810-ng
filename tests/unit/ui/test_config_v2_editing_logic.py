@@ -737,6 +737,23 @@ def test_constant_stage_canonical_options_are_read_by_typed_editor_field():
     ) == "aggressive_no_direct_writes"
 
 
+def test_choice_backed_string_list_actions_preserve_selected_values() -> None:
+    field = FieldEditorSpec(
+        field_id="choices",
+        label="Choices",
+        path=("choices",),
+        control=FieldControlKind.STRING_LIST,
+        choices=("one", "two", "three"),
+    )
+
+    assert logic.apply_typed_field_option({}, field, ["two"]) == {
+        "choices": ["two"]
+    }
+    assert logic.apply_typed_field_option({}, field, ("one", "three")) == {
+        "choices": ["one", "three"]
+    }
+
+
 def test_typed_field_actions_reject_out_of_contract_values() -> None:
     field = FieldEditorSpec(
         field_id="max_leaves",
