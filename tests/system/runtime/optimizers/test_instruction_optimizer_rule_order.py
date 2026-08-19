@@ -64,3 +64,13 @@ def test_instruction_rules_deduplicate_without_reordering(monkeypatch) -> None:
         "FoldReadonlyDataRule",
         "ConstantSubtreeFoldRule",
     )
+
+
+def test_instruction_optimizer_reset_clears_ordered_rules() -> None:
+    optimizer = PeepholeOptimizer([ida_hexrays.MMAT_GLBOPT1], stats=None)
+    assert optimizer.add_rule(FoldReadonlyDataRule())
+    assert tuple(optimizer.rules)
+
+    optimizer.reset_rules()
+
+    assert tuple(optimizer.rules) == ()

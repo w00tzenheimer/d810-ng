@@ -205,6 +205,9 @@ class _InsertionOrderedRuleSet(typing.Generic[T_Rule]):
     def add(self, rule: T_Rule) -> None:
         self._rules.setdefault(rule, None)
 
+    def clear(self) -> None:
+        self._rules.clear()
+
     def __contains__(self, rule: object) -> bool:
         return rule in self._rules
 
