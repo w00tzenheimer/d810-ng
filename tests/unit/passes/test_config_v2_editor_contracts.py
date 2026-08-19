@@ -9,6 +9,8 @@ from d810.core.pass_editor_spec import (
     FieldControlKind,
     FieldEditorSpec,
     PassEditorKind,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
     PassEditorSpec,
     RuleEditorSpec,
     TransformCost,
@@ -41,8 +43,66 @@ def _mode_editor() -> PassEditorSpec:
                 choices=("strict", "aggressive"),
                 default="strict",
             ),
-        )
+        ),
+        sections=(
+            PassEditorSectionSpec(
+                "mode",
+                "Mode",
+                ("mode",),
+                presentation=PassEditorSectionPresentation.PRIMARY,
+            ),
+        ),
     )
+
+
+def _transform() -> TransformEditorSpec:
+    return TransformEditorSpec(
+        transform_id="known-transform",
+        label="Known transform",
+        family_id="test",
+        family_label="Test",
+        subfamily_id=None,
+        subfamily_label=None,
+        description="A test-only selectable transform.",
+        reference="test",
+        maturities=("any",),
+        default_selected=False,
+        verification=VerificationStatus.VERIFIED,
+        verification_reason="Verified for the test contract.",
+        advisory=AdvisoryTone.NONE,
+        advisory_reason="",
+        cost=TransformCost.UNKNOWN,
+    )
+
+
+def test_catalog_editors_accept_secondary_pass_sections_without_changing_paths() -> None:
+    section = PassEditorSectionSpec(
+        "advanced",
+        "Advanced",
+        ("limit",),
+        presentation=PassEditorSectionPresentation.SECONDARY,
+    )
+    field = FieldEditorSpec(
+        field_id="limit",
+        label="Limit",
+        path=("limit",),
+        control=FieldControlKind.INTEGER,
+        minimum=1,
+        default=4,
+    )
+    transform_editor = PassEditorSpec.transform_catalog(
+        (_transform(),), fields=(field,), sections=(section,)
+    )
+    rule_editor = PassEditorSpec.rule_catalog(
+        (_rule_editor().rules[0],), fields=(field,), sections=(section,)
+    )
+
+    assert transform_editor.option_paths() == (
+        ("limit",),
+        ("transforms",),
+        ("transform_options",),
+    )
+    assert rule_editor.option_paths() == (("limit",), ("enabled_rules",))
 
 
 def _rule_editor() -> PassEditorSpec:
@@ -130,7 +190,8 @@ def test_public_config_registration_rejects_a_nested_json_only_option() -> None:
                 minimum=1,
                 default=3,
             ),
-        )
+        ),
+        sections=(PassEditorSectionSpec("limits", "Limits", ("depth",)),),
     )
 
     with pytest.raises(PassRegistryError, match="editor-visible"):
@@ -273,7 +334,16 @@ def test_public_field_rejects_string_false_for_boolean_control() -> None:
                 control=FieldControlKind.BOOLEAN,
                 default=False,
             ),
-        )
+        ),
+        sections=(
+            PassEditorSectionSpec(
+                "options",
+                "Options",
+                ("enabled",),
+                controller_field_id="enabled",
+                presentation=PassEditorSectionPresentation.PRIMARY,
+            ),
+        ),
     )
     registry = PassRegistry()
     registry.register_configured(
@@ -408,3 +478,24 @@ def test_constant_simplification_editor_registers_the_canonical_nested_controls(
     danger = fields[("stages", "fold-readonly-data", "allow_executable_readonly")]
     assert danger.advisory is AdvisoryTone.DANGER
     assert "executable" in danger.advisory_reason.casefold()
+    sections = entry.editor_spec.sections
+    assert tuple(section.section_id for section in sections) == (
+        "global-const-preparation",
+        "readonly-data-folding",
+        "constant-subtree-folding",
+        "forward-constants",
+    )
+    assert tuple(section.controller_field_id for section in sections) == (
+        "preparation.global_const_types.enabled",
+        "stages.fold-readonly-data.enabled",
+        "stages.fold-constant-subtree.enabled",
+        "stages.forward-constants.enabled",
+    )
+    assert sum(
+        section.presentation is PassEditorSectionPresentation.PRIMARY
+        for section in sections
+    ) == 1
+    assert sections[1].presentation is PassEditorSectionPresentation.PRIMARY
+    assert [field_id for section in sections for field_id in section.field_ids] == [
+        field.field_id for field in entry.editor_spec.fields
+    ]

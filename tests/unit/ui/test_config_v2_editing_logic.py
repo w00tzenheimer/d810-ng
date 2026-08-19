@@ -18,6 +18,8 @@ from d810.core.pass_editor_spec import (
     AdvisoryTone,
     FieldControlKind,
     FieldEditorSpec,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
     PassEditorSpec,
     RuleEditorSpec,
     TransformCost,
@@ -146,7 +148,15 @@ def _catalog() -> tuple[PassCatalogEntry, ...]:
                         control=FieldControlKind.BOOLEAN,
                         default=False,
                     ),
-                )
+                ),
+                sections=(
+                    PassEditorSectionSpec(
+                        "readonly-data-folding",
+                        "Readonly data folding",
+                        ("memory_policy", "allow_executable_readonly"),
+                        presentation=PassEditorSectionPresentation.PRIMARY,
+                    ),
+                ),
             ),
         ),
         PassCatalogEntry(

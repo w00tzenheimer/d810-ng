@@ -11,6 +11,8 @@ from d810.core.pass_editor_spec import (
     AdvisoryTone,
     FieldControlKind,
     FieldEditorSpec,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
     PassEditorSpec,
 )
 from d810.ir.maturity import IRMaturity
@@ -385,7 +387,52 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                     choices=maturity_choices(forward_descriptor),
                     default=forward_maturities,
                 ),
-            )
+            ),
+            sections=(
+                PassEditorSectionSpec(
+                    "global-const-preparation",
+                    "Global const preparation",
+                    (
+                        "preparation.global_const_types.enabled",
+                        "preparation.global_const_types.discover_bounded_tables",
+                    ),
+                    controller_field_id="preparation.global_const_types.enabled",
+                    presentation=PassEditorSectionPresentation.SECONDARY,
+                ),
+                PassEditorSectionSpec(
+                    "readonly-data-folding",
+                    "Readonly data folding",
+                    (
+                        "stages.fold-readonly-data.enabled",
+                        "stages.fold-readonly-data.maturities",
+                        "stages.fold-readonly-data.memory_policy",
+                        "stages.fold-readonly-data.rva_guard",
+                        "stages.fold-readonly-data.allow_executable_readonly",
+                    ),
+                    controller_field_id="stages.fold-readonly-data.enabled",
+                    presentation=PassEditorSectionPresentation.PRIMARY,
+                ),
+                PassEditorSectionSpec(
+                    "constant-subtree-folding",
+                    "Constant subtree folding",
+                    (
+                        "stages.fold-constant-subtree.enabled",
+                        "stages.fold-constant-subtree.maturities",
+                    ),
+                    controller_field_id="stages.fold-constant-subtree.enabled",
+                    presentation=PassEditorSectionPresentation.SECONDARY,
+                ),
+                PassEditorSectionSpec(
+                    "forward-constants",
+                    "Forward constants",
+                    (
+                        "stages.forward-constants.enabled",
+                        "stages.forward-constants.maturities",
+                    ),
+                    controller_field_id="stages.forward-constants.enabled",
+                    presentation=PassEditorSectionPresentation.SECONDARY,
+                ),
+            ),
         ),
     )
     return registry

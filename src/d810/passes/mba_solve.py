@@ -33,6 +33,8 @@ from d810.core.pass_ids import PassId
 from d810.core.pass_editor_spec import (
     FieldControlKind,
     FieldEditorSpec,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
     PassEditorSpec,
 )
 from d810.core.typing import Mapping, Protocol
@@ -399,7 +401,22 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                     ),
                     default=False,
                 ),
-            )
+            ),
+            sections=(
+                PassEditorSectionSpec(
+                    "solver",
+                    "Solver",
+                    ("max_leaves", "require_proof", "maturities"),
+                    presentation=PassEditorSectionPresentation.PRIMARY,
+                ),
+                PassEditorSectionSpec(
+                    "installation",
+                    "Installation",
+                    ("auto_install_solver",),
+                    controller_field_id="auto_install_solver",
+                    presentation=PassEditorSectionPresentation.SECONDARY,
+                ),
+            ),
         ),
     )
     return registry

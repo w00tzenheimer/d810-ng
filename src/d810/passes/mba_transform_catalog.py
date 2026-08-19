@@ -10,6 +10,8 @@ from d810.core.pass_editor_spec import (
     AdvisoryTone,
     FieldControlKind,
     FieldEditorSpec,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
     PassEditorSpec,
     TransformCost,
     TransformEditorSpec,
@@ -361,6 +363,14 @@ def mba_transform_editor_spec() -> PassEditorSpec:
     return PassEditorSpec.transform_catalog(
         _build_specs(),
         fields=_MBA_SIMPLIFY_EDITOR_FIELDS,
+        sections=(
+            PassEditorSectionSpec(
+                "mba-transform-options",
+                "MBA transform options",
+                ("generate_commutative_permutations",),
+                presentation=PassEditorSectionPresentation.SECONDARY,
+            ),
+        ),
     )
 
 

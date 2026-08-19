@@ -58,6 +58,13 @@ class TransformCost(str, enum.Enum):
     RUNTIME_HIGH = "runtime_high"
 
 
+class PassEditorSectionPresentation(str, enum.Enum):
+    """The fixed presentation roles for pass-owned field sections."""
+
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+
+
 def _required(value: str, *, name: str) -> str:
     rendered = str(value).strip()
     if not rendered:
@@ -370,6 +377,37 @@ class TransformEditorSpec:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class PassEditorSectionSpec:
+    """One explicit, pass-owned group of top-level editor fields."""
+
+    section_id: str
+    label: str
+    field_ids: tuple[str, ...]
+    description: str = ""
+    controller_field_id: str | None = None
+    presentation: PassEditorSectionPresentation = (
+        PassEditorSectionPresentation.SECONDARY
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "section_id", _required(self.section_id, name="section_id"))
+        object.__setattr__(self, "label", _required(self.label, name="section label"))
+        field_ids = tuple(_required(item, name="section field_id") for item in self.field_ids)
+        if not field_ids:
+            raise ValueError("section field_ids must be non-empty")
+        if len(field_ids) != len(set(field_ids)):
+            raise ValueError("section has duplicate field_id")
+        if self.controller_field_id is not None:
+            controller = _required(self.controller_field_id, name="controller_field_id")
+            if controller not in field_ids:
+                raise ValueError("controller_field_id must belong to its section")
+            object.__setattr__(self, "controller_field_id", controller)
+        if not isinstance(self.presentation, PassEditorSectionPresentation):
+            raise ValueError("presentation must be a PassEditorSectionPresentation")
+        object.__setattr__(self, "field_ids", field_ids)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class PassEditorSpec:
     """A pass-owned contract for one fixed config-v2 editor renderer."""
 
@@ -377,6 +415,7 @@ class PassEditorSpec:
     fields: tuple[FieldEditorSpec, ...] = ()
     transforms: tuple[TransformEditorSpec, ...] = ()
     rules: tuple[RuleEditorSpec, ...] = ()
+    sections: tuple[PassEditorSectionSpec, ...] = ()
     rule_option_path: tuple[str, ...] = ("enabled_rules",)
 
     def __post_init__(self) -> None:
@@ -385,6 +424,7 @@ class PassEditorSpec:
         fields = tuple(self.fields)
         transforms = tuple(self.transforms)
         rules = tuple(self.rules)
+        sections = tuple(self.sections)
         rule_option_path = tuple(
             _required(item, name="rule option path") for item in self.rule_option_path
         )
@@ -396,9 +436,47 @@ class PassEditorSpec:
         field_paths = tuple(item.path for item in fields)
         if len(field_paths) != len(set(field_paths)):
             raise ValueError("editor has duplicate field path")
+        if any(not isinstance(section, PassEditorSectionSpec) for section in sections):
+            raise ValueError("sections must contain PassEditorSectionSpec")
+        section_ids = tuple(section.section_id for section in sections)
+        if len(section_ids) != len(set(section_ids)):
+            raise ValueError("editor has duplicate section_id")
+        field_id_set = set(field_ids)
+        assigned_field_ids: list[str] = []
+        for section in sections:
+            unknown = set(section.field_ids).difference(field_id_set)
+            if unknown:
+                raise ValueError(f"section references unknown field: {sorted(unknown)!r}")
+            assigned_field_ids.extend(section.field_ids)
+            if section.controller_field_id is not None:
+                controller = next(
+                    field for field in fields if field.field_id == section.controller_field_id
+                )
+                if controller.control is not FieldControlKind.BOOLEAN:
+                    raise ValueError("section controller field must be boolean")
+        duplicates = {
+            field_id for field_id in assigned_field_ids if assigned_field_ids.count(field_id) > 1
+        }
+        if duplicates:
+            raise ValueError(
+                f"field appears in more than one section: {sorted(duplicates)!r}"
+            )
+        unassigned = field_id_set.difference(assigned_field_ids)
+        if fields and not sections:
+            raise ValueError("editor fields require exactly one section per field")
+        if unassigned:
+            raise ValueError(f"unassigned field: {sorted(unassigned)!r}")
+        if not fields and sections:
+            raise ValueError("editor without fields must not declare sections")
+        primary_count = sum(
+            section.presentation is PassEditorSectionPresentation.PRIMARY
+            for section in sections
+        )
+        if primary_count > 1:
+            raise ValueError("editor may have at most one primary section")
         if self.kind is PassEditorKind.SUMMARY:
-            if fields or transforms or rules:
-                raise ValueError("summary editor must not declare fields, transforms, or rules")
+            if fields or transforms or rules or sections:
+                raise ValueError("summary editor must not declare fields, transforms, rules, or sections")
         elif self.kind is PassEditorKind.FIELDS:
             if not fields or transforms or rules:
                 raise ValueError("fields editor requires fields and no transforms or rules")
@@ -421,6 +499,7 @@ class PassEditorSpec:
         object.__setattr__(self, "fields", fields)
         object.__setattr__(self, "transforms", transforms)
         object.__setattr__(self, "rules", rules)
+        object.__setattr__(self, "sections", sections)
         object.__setattr__(self, "rule_option_path", rule_option_path)
 
     @classmethod
@@ -431,8 +510,10 @@ class PassEditorSpec:
     def fields_editor(
         cls,
         fields: tuple[FieldEditorSpec, ...],
+        *,
+        sections: tuple[PassEditorSectionSpec, ...] = (),
     ) -> PassEditorSpec:
-        return cls(PassEditorKind.FIELDS, fields=fields)
+        return cls(PassEditorKind.FIELDS, fields=fields, sections=sections)
 
     @classmethod
     def transform_catalog(
@@ -440,11 +521,13 @@ class PassEditorSpec:
         transforms: tuple[TransformEditorSpec, ...],
         *,
         fields: tuple[FieldEditorSpec, ...] = (),
+        sections: tuple[PassEditorSectionSpec, ...] = (),
     ) -> PassEditorSpec:
         return cls(
             PassEditorKind.TRANSFORM_CATALOG,
             fields=fields,
             transforms=transforms,
+            sections=sections,
         )
 
     @classmethod
@@ -453,12 +536,14 @@ class PassEditorSpec:
         rules: tuple[RuleEditorSpec, ...],
         *,
         fields: tuple[FieldEditorSpec, ...] = (),
+        sections: tuple[PassEditorSectionSpec, ...] = (),
         option_path: tuple[str, ...] = ("enabled_rules",),
     ) -> PassEditorSpec:
         return cls(
             PassEditorKind.RULE_CATALOG,
             fields=fields,
             rules=rules,
+            sections=sections,
             rule_option_path=option_path,
         )
 
@@ -613,6 +698,8 @@ __all__ = [
     "FieldControlKind",
     "FieldEditorSpec",
     "PassEditorKind",
+    "PassEditorSectionPresentation",
+    "PassEditorSectionSpec",
     "PassEditorSpec",
     "RuleEditorSpec",
     "TransformCost",

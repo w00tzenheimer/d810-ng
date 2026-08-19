@@ -8,6 +8,8 @@ from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.pass_editor_spec import (
     FieldControlKind,
     FieldEditorSpec,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
     PassEditorSpec,
 )
 from d810.core.pass_ids import PassId
@@ -120,7 +122,16 @@ def register_cleanup_family_adapter_passes(registry: PassRegistry) -> PassRegist
                     description="Remove proven-dead direct register and stack writes.",
                     default=False,
                 ),
-            )
+            ),
+            sections=(
+                PassEditorSectionSpec(
+                    "cleanup",
+                    "Cleanup",
+                    ("enable_dead_store_elimination",),
+                    controller_field_id="enable_dead_store_elimination",
+                    presentation=PassEditorSectionPresentation.PRIMARY,
+                ),
+            ),
         ),
     )
     return registry
