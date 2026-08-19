@@ -44,7 +44,7 @@
 | 3 | `d4051c063` | `/root/constant_stage_task3` | PASS | PASS | 35 focused + 289 manager + 11 journal; 12 global/pre-Hex + 8 activation Docker passed; ruff/sg/import-linter passed | `be510fabb`, `fafc35c5f`, `01a6cafc0`, `37eebd18a` | complete after 3 fix rounds |
 | 4 | `37eebd18a` | `/root/constant_stage_task4` | PASS | PASS | 98 focused + 88 adjacent + 22 renderer tests passed; ruff/sg/import-linter passed | `d946f4b99`, `6d9ea61c1`, `cf9020f08`, `a7ecc6a76` | complete after 1 fix round |
 | 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix5b` | PASS | PASS | 129 Python + 129 Cython + 15 focused resolver + 1 parity + 1 AstProxy + 14 def-search + 2 cumulative probes in both modes; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `35e114973`, `a4b5e045c`, `540995e67` | complete after 5 fix rounds |
-| 6 | `6446f49f1` | `/root/constant_stage_task6` | pending | pending | 140 focused/adjacent units + 17 normal/17 Cython IDA runtime + 1 adjacent ASTProxy; Ruff/py_compile/sg/import-linter/diff-check passed | `b7cee6071`, `9034ae5ad` | complete after review fix |
+| 6 | `6446f49f1` | `/root/constant_stage_task6` + `/root/constant_stage_task6_defaults_fix` | pending final re-review | pending final re-review | 152 focused/adjacent units + 18 normal/18 Cython IDA runtime; Ruff/py_compile/sg/import-linter/diff-check passed | `b7cee6071`, `9034ae5ad`, `4b0f03a23` | repair implemented; review pending |
 | 7 | pending | pending | pending | pending | pending | pending | pending |
 | 8 | pending | pending | pending | pending | pending | pending | pending |
 
@@ -119,3 +119,24 @@
   `sg`, import-linter, and diff-check passed.
 - Product/test fix commit: `9034ae5ad` (`fix(mba): close bounded z3 receipt contract`).
 - Task 6 report/progress documentation follows in the separate docs commit.
+
+## Task 6 default-authority repair
+
+- RED: the independent review demonstrated that direct `Z3ProofPolicy()`
+  defaults and six generic editor field literals were separate authorities.
+  The new regression changes the portable authority and checks direct rules,
+  editor fields, pass materialization, and bridge rule options together.
+- Repair: `d810.core.z3_proof` owns the frozen, dependency-free
+  `Z3ProofPolicyAuthority`; runtime policy validation/defaults and all generic
+  editor fields consume it. The mapping of parameterized transform fields now
+  has deterministic iteration, and the catalog rebuilds from the current
+  schema-backed field provider.
+- Verification: local focused/adjacent runtime and unit selection passed 152
+  tests; the normal Docker runtime passed 18 tests; the Cython-enabled Docker
+  runtime passed 18 tests. Ruff, py_compile, sg, import-linter, and diff-check
+  passed. The exact Docker outputs are in the worktree `.tmp` files
+  `task6_defaults_authority_normal.txt` and
+  `task6_defaults_authority_cython.txt`.
+- Product/test commit: `4b0f03a23` (`fix(mba): centralize bounded z3 policy limits`).
+- Task 7 and Task 8 were not started; final Task 6 review remains with the
+  controller.

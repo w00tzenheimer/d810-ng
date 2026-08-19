@@ -87,6 +87,68 @@ blocked by the environment with `[Errno 1] Operation not permitted`.
 
 Task 7 and Task 8 were not started.
 
+## Default-authority repair
+
+The follow-up review found that omitted proof defaults still had two
+behavioral authorities: `Z3ProofPolicy` owned the live defaults while six
+generic-transform `FieldEditorSpec` literals owned the pass/editor defaults.
+That could let direct rule configuration and config-v2 bridge materialization
+drift apart. The repair is in `4b0f03a23`:
+
+```text
+fix(mba): centralize bounded z3 policy limits
+```
+
+`d810.core.z3_proof` now owns the dependency-free frozen
+`Z3ProofPolicyAuthority` and its two typed field authorities. The authority
+contains the defaults and inclusive bounds for both fields (nodes `256`,
+`1..4096`; timeout `50`, `1..5000`). `Z3ProofPolicy` obtains defaults and
+validates bounds from that provider, while all three generic-transform editor
+field pairs and the pass/bridge materializer obtain their values from the same
+provider. The direct live configure path therefore shares the exact authority
+with the editor and both config-v2 materialization paths, without introducing a
+dependency from core/backend code into the pass or UI layers. Generic option
+mapping iteration is also explicitly ordered.
+
+The regression changes the typed provider through the public authority seam and
+asserts, in one runtime case, that all three direct rule classes, catalog editor
+fields, pass defaults, and live bridge rule options receive the same defaults;
+it also asserts the custom bounds are enforced by `Z3ProofPolicy`.
+
+Repair verification:
+
+```text
+PYTHONPATH=src pytest -q \
+  tests/unit/passes/test_mba_transform_options.py \
+  tests/unit/passes/test_mba_transform_catalog.py \
+  tests/unit/passes/test_mba_simplify.py \
+  tests/unit/passes/test_pipeline_v2_hook_bridge.py \
+  tests/unit/optimizers/test_z3_predicate_options.py \
+  tests/unit/core/diag/test_event_handlers.py \
+  tests/unit/backends/ast/test_z3_proof_policy.py \
+  tests/system/runtime/test_z3_predicate_bounds.py -q
+152 passed, 118 warnings in 2.15s
+
+./tools/scripts/run_system_tests_docker.sh test \
+  -w constant-simplification-stage-controls \
+  -o task6_defaults_authority_normal.txt -- \
+  tests/system/runtime/test_z3_predicate_bounds.py -q
+18 passed, 118 warnings in 0.11s
+
+D810_NO_CYTHON=0 D810_BUILD_SPEEDUPS=1 \
+./tools/scripts/run_system_tests_docker.sh test \
+  -w constant-simplification-stage-controls \
+  -o task6_defaults_authority_cython.txt -- \
+  tests/system/runtime/test_z3_predicate_bounds.py -q
+18 passed, 118 warnings in 0.07s
+```
+
+The Docker commands were launched from `/Users/mahmoud/src/idapro/d810`; the
+Cython run required local Docker-socket approval but completed successfully.
+Ruff, `PYTHONPATH=src python3 -m py_compile`, `sg scan`, import-linter, and
+`git diff --check` all passed. No broad suites were run; Task 7 and Task 8 were
+not started.
+
 ## Review fix round
 
 The independent review identified two Task 6 defects: the portable receipt
