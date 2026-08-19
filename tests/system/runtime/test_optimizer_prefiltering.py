@@ -1009,12 +1009,13 @@ def test_hosted_block_commit_preserves_lifecycle_epoch_and_invalidates_adapter_c
 ):
     _patch_hosted_adapter(monkeypatch)
     rule = _HostedRule(True, rule_id="configured-rule")
+    trailing = _HostedRule(True, rule_id="trailing-rule")
     lifecycle = _HostedLifecycle(generation=17)
     gateway = _HostedGateway()
     context = _HostedContext(gateway)
     block = _new_hosted_block()
     manager = _new_hosted_adapter_manager(
-        (rule,), lifecycle=lifecycle, context=context, block=block
+        (rule, trailing), lifecycle=lifecycle, context=context, block=block
     )
 
     assert manager.optimize(block) == 1
@@ -1030,6 +1031,7 @@ def test_hosted_block_commit_preserves_lifecycle_epoch_and_invalidates_adapter_c
     assert lifecycle.generation == 17
     assert context.gateway_calls == 1
     assert _HostedDgm.instances[-1].mutation_gateway is gateway
+    assert trailing.proposals == []
 
 
 def test_hosted_block_quarantine_prevents_proposal_and_commit(monkeypatch):
