@@ -52,9 +52,6 @@ _DIGEST_LENGTH = 64
 # Retained only as a negative-test/compatibility sentinel. Possession of this
 # importable object is deliberately not authorization.
 _STRUCTURAL_RULE_ADMISSION_TOKEN = object()
-_ADMITTED_STRUCTURAL_RULES: weakref.WeakValueDictionary[int, Any] = (
-    weakref.WeakValueDictionary()
-)
 _STRUCTURAL_PROOF_CACHE_CAPACITY = 256
 _STRUCTURAL_PROOF_CACHE_LOCK = RLock()
 _STRUCTURAL_PROOF_CACHE: OrderedDict[tuple[object, ...], bool] = OrderedDict()
@@ -173,6 +170,9 @@ def _fixed_rotate_identity(rule: object) -> tuple[object, ...]:
         count,
         term_fingerprint(pattern),
         term_fingerprint(replacement),
+        proof_verdict,
+        proof_widths,
+        aliases,
     )
 
 
@@ -195,7 +195,6 @@ def _enroll_structural_rule(
         reference = weakref.ref(rule, _cleanup)
     except TypeError as exc:
         raise TypeError("admitted structural rules must support weak references") from exc
-    _ADMITTED_STRUCTURAL_RULES[rule_id] = rule
     _ADMITTED_STRUCTURAL_IDENTITIES[rule_id] = (reference, validated_identity)
 
 
@@ -220,7 +219,7 @@ def enroll_structural_rule(rule: object) -> None:
         from d810.mba.extension_api import prove_typed_term_equivalence
     except Exception as exc:
         raise ValueError("structural rule proof authority unavailable") from exc
-    cache_key = (prove_typed_term_equivalence, *identity)
+    cache_key = (prove_typed_term_equivalence, *identity[:7])
     with _STRUCTURAL_PROOF_CACHE_LOCK:
         cached_verdict = _STRUCTURAL_PROOF_CACHE.get(cache_key)
         if cached_verdict is not None:
