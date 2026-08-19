@@ -847,17 +847,18 @@ class TestConstantStageControls:
             assert observer.preparation_options.discover_bounded_tables is True
             from d810.core.decompilation_session import DecompilationEvent
 
-            calls_post_d810_events = []
+            post_d810_capture_events = []
 
-            def _record_calls_post_d810(mba, maturity):
+            def _record_post_d810_capture(mba, maturity, snapshot=None):
+                del snapshot
                 if int(getattr(mba, "entry_ea", 0) or 0) == ea:
-                    calls_post_d810_events.append(
+                    post_d810_capture_events.append(
                         (int(maturity), int(getattr(mba, "maturity", -1)))
                     )
 
             state.manager.event_emitter.on(
-                DecompilationEvent.HEXRAYS_CALLS_POST_D810,
-                _record_calls_post_d810,
+                DecompilationEvent.POST_D810_CAPTURE,
+                _record_post_d810_capture,
             )
             before_annotation = _decompile(state, ea, idaapi)
             assert before_annotation is not None
@@ -871,9 +872,17 @@ class TestConstantStageControls:
                 "0x7F" in before_annotation_rendered
                 or "127" in before_annotation_rendered
             ), before_annotation_rendered
-            assert calls_post_d810_events == [
-                (int(ida_hexrays.MMAT_CALLS), int(ida_hexrays.MMAT_CALLS))
+            calls_capture_events = [
+                event
+                for event in post_d810_capture_events
+                if event[0] == int(ida_hexrays.MMAT_CALLS)
             ]
+            assert len(calls_capture_events) == 1, post_d810_capture_events
+            # POST_D810_CAPTURE is emitted on the maturity transition away
+            # from CALLS, after all CALLS blocks have been optimized.  The
+            # callback therefore carries the completed CALLS maturity as its
+            # first field and the newly-entered maturity on the live MBA.
+            assert calls_capture_events[0][1] != int(ida_hexrays.MMAT_CALLS)
             assert observer.restart_requested is False
             assert observer.pending_identities
             assert observer.pending_reason == "next preparation round"

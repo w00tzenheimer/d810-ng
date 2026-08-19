@@ -132,14 +132,3 @@ def test_global_const_observer_is_wired_to_maturity_wide_post_capture() -> None:
         "DecompilationEvent.POST_D810_CAPTURE,\n"
         f"            {observer},"
     ) in manager_source
-    assert (
-        "DecompilationEvent.HEXRAYS_CALLS_POST_D810,\n"
-        f"            {observer},"
-    ) not in manager_source
-
-    adapter_source = (
-        Path(__file__).resolve().parents[4]
-        / "src/d810/hexrays/hooks/optblock_adapter.py"
-    ).read_text(encoding="utf-8")
-    assert "_emit_calls_post_d810_if_needed" not in adapter_source
-    assert "_calls_post_d810_last_emitted" not in adapter_source
