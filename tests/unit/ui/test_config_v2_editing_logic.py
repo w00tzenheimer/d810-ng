@@ -532,6 +532,23 @@ def test_typed_field_actions_normalize_values_without_mutating_other_options():
     }
 
 
+def test_constant_stage_legacy_options_are_presented_as_canonical_on_load():
+    field = FieldEditorSpec(
+        field_id="stages.fold-readonly-data.memory_policy",
+        label="Memory policy",
+        path=("stages", "fold-readonly-data", "memory_policy"),
+        control=FieldControlKind.ENUM,
+        choices=("strict", "aggressive_no_direct_writes"),
+        default="strict",
+    )
+    assert logic.typed_field_option_value(
+        {
+            "memory_policy": "aggressive_no_direct_writes",
+        },
+        field,
+    ) == "strict"
+
+
 def test_typed_field_actions_reject_out_of_contract_values() -> None:
     field = FieldEditorSpec(
         field_id="max_leaves",

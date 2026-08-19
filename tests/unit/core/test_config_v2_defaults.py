@@ -122,9 +122,22 @@ def test_shipped_constant_pipelines_use_one_architecture_neutral_bundle(
         entry for entry in pipeline if entry["pass_id"] == "constant-simplification"
     ]
     assert len(bundles) == 1
-    assert bundles[0]["options"] == {
-        "memory_policy": memory_policy,
-        "allow_executable_readonly": False,
+    assert set(bundles[0]["options"]) == {"preparation", "stages"}
+    assert bundles[0]["options"]["preparation"] == {
+        "global_const_types": {
+            "enabled": False,
+            "discover_bounded_tables": True,
+        }
+    }
+    readonly = bundles[0]["options"]["stages"]["fold-readonly-data"]
+    assert readonly["memory_policy"] == memory_policy
+    assert readonly["allow_executable_readonly"] is False
+    assert readonly["enabled"] is True
+    assert readonly["maturities"]
+    assert set(bundles[0]["options"]["stages"]) == {
+        "fold-readonly-data",
+        "fold-constant-subtree",
+        "forward-constants",
     }
     assert not {entry["pass_id"] for entry in pipeline} & {
         "global-constant-inliner",

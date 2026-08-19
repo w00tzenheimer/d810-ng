@@ -10,6 +10,7 @@ from d810.core.config import ProjectConfiguration
 from d810.core.config_v2_defaults import CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS
 from d810.core.pass_editor_spec import PassEditorSpec
 from d810.passes.module_pass_manager import ModulePassManager
+from d810.passes.pass_pipeline import PipelineConfig
 from d810.passes.operational_config_v2 import (
     CONFIG_V2_OPERATIONAL_REGISTRY_NAME,
     operational_config_v2_pass_registry,
@@ -87,6 +88,72 @@ def test_operational_registry_builds_all_bundled_canaries(canary_name):
     )
 
     assert specs
+
+
+def test_external_legacy_constant_options_still_compile_equivalently():
+    registry = operational_config_v2_pass_registry()
+    legacy = PipelineConfig.from_dict(
+        {
+            "pass_id": "constant-simplification",
+            "options": {
+                "memory_policy": "aggressive_no_direct_writes",
+                "rva_guard": False,
+                "allow_executable_readonly": False,
+                "persist_global_const_annotations": True,
+            },
+        }
+    )
+    canonical = PipelineConfig.from_dict(
+        {
+            "pass_id": "constant-simplification",
+            "options": {
+                "preparation": {
+                    "global_const_types": {
+                        "enabled": True,
+                        "discover_bounded_tables": True,
+                    }
+                },
+                "stages": {
+                    "fold-readonly-data": {
+                        "enabled": True,
+                        "maturities": [
+                            "CANONICAL",
+                            "LOCAL_OPTIMIZED",
+                            "CALL_MODELED",
+                            "GLOBAL_ANALYZED",
+                            "STRUCTURED",
+                        ],
+                        "memory_policy": "aggressive_no_direct_writes",
+                        "rva_guard": False,
+                        "allow_executable_readonly": False,
+                    },
+                    "fold-constant-subtree": {
+                        "enabled": True,
+                        "maturities": [
+                            "LOCAL_OPTIMIZED",
+                            "CALL_MODELED",
+                            "GLOBAL_ANALYZED",
+                            "GLOBAL_OPTIMIZED",
+                            "STRUCTURED",
+                        ],
+                    },
+                    "forward-constants": {
+                        "enabled": True,
+                        "maturities": [
+                            "CALL_MODELED",
+                            "GLOBAL_ANALYZED",
+                            "GLOBAL_OPTIMIZED",
+                            "STRUCTURED",
+                        ],
+                    },
+                },
+            },
+        }
+    )
+
+    legacy_schedule = registry.build_spec(legacy).pass_factory().options
+    canonical_schedule = registry.build_spec(canonical).pass_factory().options
+    assert legacy_schedule == canonical_schedule
 
 
 def test_operational_registry_keeps_state_machine_wrapper_unregistered():
