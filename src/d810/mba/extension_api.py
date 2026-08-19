@@ -425,6 +425,15 @@ class NativeMbaHostServices(Protocol):
         replacement: TypedBvTerm,
     ) -> object | None: ...
 
+    def prove_ast(
+        self,
+        candidate: NativeMbaCandidate,
+        replacement_ast: object,
+        *,
+        certificate: str | None,
+        known_constants: object | None,
+    ) -> bool: ...
+
     def prove(
         self,
         candidate: NativeMbaCandidate,

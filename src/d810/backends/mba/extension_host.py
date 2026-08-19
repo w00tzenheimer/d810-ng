@@ -302,6 +302,37 @@ class _NativeMbaHostServices:
             destination_size=candidate.destination_size,
         )
 
+    def prove_ast(
+        self,
+        candidate: NativeMbaCandidate,
+        replacement_ast: object,
+        *,
+        certificate: str | None,
+        known_constants: object | None,
+    ) -> bool:
+        """Prove a rebuilt AST without requiring a mutation destination."""
+
+        if replacement_ast is None:
+            return False
+        context = _host_context(candidate)
+        if context is None or context.source_ast is None:
+            return False
+        assumptions = (
+            context.known_constants if known_constants is None else known_constants
+        )
+        if not isinstance(assumptions, Mapping):
+            return False
+        try:
+            return prove_native_ast_equivalence(
+                context.source_ast,
+                replacement_ast,
+                width=candidate.destination_size * 8,
+                certificate=certificate,
+                known_constants=assumptions,
+            )
+        except Exception:
+            return False
+
     def prove(
         self,
         candidate: NativeMbaCandidate,

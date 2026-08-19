@@ -166,6 +166,18 @@ class TestNativeMbaExtensionHost:
 
         assert rebuilt is not None
 
+    def test_prove_ast_does_not_require_mutation_destination(self):
+        host = native_mba_host_services()
+        source = _node(ida_hexrays.m_xor, _leaf("x", 1), _constant(0))
+        candidate = host.capture_ast(source, destination_size=4)
+
+        assert host.prove_ast(
+            candidate,
+            source.clone(),
+            certificate=None,
+            known_constants=None,
+        )
+
     def test_rebuild_rejects_destination_copy_failure(self, monkeypatch):
         host = native_mba_host_services()
         source = _node(ida_hexrays.m_xor, _leaf("x", 1), _constant(0))
