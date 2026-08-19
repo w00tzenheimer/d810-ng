@@ -55,7 +55,23 @@ def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig
                 "so the entry uses pass_id and typed pass options"
             )
         try:
-            configs.append(PipelineConfig.from_dict(item))
+            parsed = PipelineConfig.from_dict(item)
+            if parsed.pass_id == "constant-simplification":
+                # The public constant bundle retains explicit compatibility
+                # with the former flat options, but every config-v2 consumer
+                # receives the same canonical schedule representation.  This
+                # keeps legacy read support from leaking editor-invisible
+                # options into runtime validation.
+                from d810.passes.constant_simplification_options import (
+                    canonical_constant_simplification_options,
+                )
+
+                canonical = parsed.to_dict()
+                canonical["options"] = canonical_constant_simplification_options(
+                    parsed
+                )
+                parsed = PipelineConfig.from_dict(canonical)
+            configs.append(parsed)
         except PipelineConfigError as exc:
             raise PipelineConfigError(
                 f"{source_prefix}pipeline_v2[{index}]: {exc}"

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from d810.core.config import ProjectConfiguration
+from d810.manager.config_v2_editing import ConfigV2EditingService
 from d810.passes.constant_simplification_options import (
     AGGRESSIVE_MEMORY_POLICY,
     CONSTANT_STAGE_IDS,
@@ -15,6 +16,7 @@ from d810.passes.constant_simplification_options import (
 )
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
+from d810.passes.pass_pipeline import PipelineConfigError
 
 
 CONF_DIR = Path("src/d810/conf")
@@ -43,7 +45,7 @@ EXPECTED_MEMORY_POLICIES = {
 
 def _constant_entries() -> tuple[tuple[Path, dict[str, object], dict[str, object]], ...]:
     entries: list[tuple[Path, dict[str, object], dict[str, object]]] = []
-    for path in sorted(CONF_DIR.glob("*.json")):
+    for path in sorted(CONF_DIR.rglob("*.json")):
         document = json.loads(path.read_text(encoding="utf-8"))
         pipeline = document.get("additional_configuration", {}).get("pipeline_v2", [])
         for entry in pipeline:
@@ -121,3 +123,74 @@ def test_eid_profiles_preserve_aggressive_no_rva_behavior(profile_name: str) -> 
         "allow_executable_readonly": False,
     }
 
+
+def test_external_legacy_profile_saves_as_canonical_without_behavior_change(
+    tmp_path: Path,
+) -> None:
+    source_document = json.loads(
+        (CONF_DIR / "eidolon_v3_const_solve.json").read_text(encoding="utf-8")
+    )
+    legacy_entry = next(
+        item
+        for item in source_document["additional_configuration"]["pipeline_v2"]
+        if item["pass_id"] == "constant-simplification"
+    )
+    legacy_entry["options"] = {
+        "memory_policy": AGGRESSIVE_MEMORY_POLICY,
+        "rva_guard": False,
+        "allow_executable_readonly": False,
+        "persist_global_const_annotations": True,
+    }
+    source = tmp_path / "legacy.json"
+    destination = tmp_path / "canonical.json"
+    source.write_text(json.dumps(source_document), encoding="utf-8")
+
+    source_project = ProjectConfiguration.from_file(source)
+    legacy_config = next(
+        config
+        for config in pipeline_configs_from_project_config(source_project)
+        if config.pass_id == "constant-simplification"
+    )
+    legacy_schedule = compile_constant_simplification_schedule(legacy_config)
+
+    service = ConfigV2EditingService()
+    draft = service.create_draft(source_project, destination=destination)
+    validation = service.validate(draft)
+    assert validation.valid is True
+    service.save(draft, validation)
+
+    saved_document = json.loads(destination.read_text(encoding="utf-8"))
+    saved_entry = next(
+        item
+        for item in saved_document["additional_configuration"]["pipeline_v2"]
+        if item["pass_id"] == "constant-simplification"
+    )
+    assert set(saved_entry["options"]) == {"preparation", "stages"}
+    assert not LEGACY_KEYS.intersection(saved_entry["options"])
+
+    saved_config = next(
+        config
+        for config in pipeline_configs_from_project_config(
+            ProjectConfiguration.from_file(destination)
+        )
+        if config.pass_id == "constant-simplification"
+    )
+    assert compile_constant_simplification_schedule(saved_config) == legacy_schedule
+    assert saved_entry["maturity_gates"] == legacy_entry["maturity_gates"]
+
+
+def test_external_mixed_legacy_and_canonical_options_remain_an_error() -> None:
+    with pytest.raises(PipelineConfigError, match="cannot mix legacy options"):
+        pipeline_configs_from_project_config(
+            {
+                "pipeline_v2": [
+                    {
+                        "pass_id": "constant-simplification",
+                        "options": {
+                            "persist_global_const_annotations": False,
+                            "preparation": {},
+                        },
+                    }
+                ]
+            }
+        )

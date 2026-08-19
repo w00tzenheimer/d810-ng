@@ -572,6 +572,63 @@ def compile_constant_simplification_schedule(
     )
 
 
+def canonical_constant_simplification_options(
+    config: PipelineConfig,
+    stage_descriptors: Sequence["ExecutionStageDescriptor"] | None = None,
+) -> dict[str, object]:
+    """Return the complete canonical option document for ``config``.
+
+    Compilation remains the sole validator and legacy compatibility boundary.
+    This projection deliberately serializes requested maturities rather than
+    effective maturities so pass-level ``maturity_gates`` retain their original
+    meaning when a project is loaded and saved again.
+    """
+
+    schedule = compile_constant_simplification_schedule(
+        config,
+        stage_descriptors,
+    )
+    stages: dict[str, object] = {}
+    for stage in schedule.stages:
+        options: dict[str, object] = {
+            "enabled": stage.enabled,
+            "maturities": [maturity.name for maturity in stage.requested_maturities],
+        }
+        options.update(dict(stage.options))
+        stages[stage.stage_id] = options
+    return {
+        "preparation": {
+            "global_const_types": {
+                "enabled": schedule.preparation.enabled,
+                "discover_bounded_tables": schedule.preparation.discover_bounded_tables,
+            }
+        },
+        "stages": stages,
+    }
+
+
+def canonicalize_constant_simplification_entry(
+    entry: Mapping[str, object],
+) -> dict[str, object]:
+    """Canonicalize one serialized public pipeline entry.
+
+    The surrounding entry is copied without reinterpretation.  Only the
+    pass-owned ``options`` object is projected through the portable compiler;
+    pass metadata, including ``maturity_gates``, is preserved by the normal
+    ``PipelineConfig`` serializer.
+    """
+
+    config = PipelineConfig.from_dict(entry)
+    if config.pass_id != CONSTANT_SIMPLIFICATION_PASS_ID:
+        raise PipelineConfigError(
+            "constant option canonicalization received pass "
+            f"{config.pass_id!r}"
+        )
+    canonical = config.to_dict()
+    canonical["options"] = canonical_constant_simplification_options(config)
+    return canonical
+
+
 # Explicit aliases make the parser/compiler boundary discoverable to callers
 # using either vocabulary without introducing another implementation.
 parse_constant_simplification_options = compile_constant_simplification_schedule
@@ -591,5 +648,7 @@ __all__ = [
     "STRICT_MEMORY_POLICY",
     "compile_constant_simplification_options",
     "compile_constant_simplification_schedule",
+    "canonical_constant_simplification_options",
+    "canonicalize_constant_simplification_entry",
     "parse_constant_simplification_options",
 ]

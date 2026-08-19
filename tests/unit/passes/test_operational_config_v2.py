@@ -15,7 +15,10 @@ from d810.passes.operational_config_v2 import (
     CONFIG_V2_OPERATIONAL_REGISTRY_NAME,
     operational_config_v2_pass_registry,
 )
-from d810.passes.pipeline_config_parser import pass_specs_from_project_config
+from d810.passes.pipeline_config_parser import (
+    pass_specs_from_project_config,
+    pipeline_configs_from_project_config,
+)
 from d810.passes.registry import UnknownPassIdError
 
 _CONF_DIR = Path("src/d810/conf")
@@ -151,8 +154,17 @@ def test_external_legacy_constant_options_still_compile_equivalently():
         }
     )
 
-    legacy_schedule = registry.build_spec(legacy).pass_factory().options
-    canonical_schedule = registry.build_spec(canonical).pass_factory().options
+    # The parser is the external-config compatibility boundary. It projects
+    # accepted legacy entries to the canonical public editor contract before
+    # the registry validates editor-visible options.
+    legacy_config = pipeline_configs_from_project_config(
+        {"pipeline_v2": [legacy.to_dict()]}
+    )[0]
+    canonical_config = pipeline_configs_from_project_config(
+        {"pipeline_v2": [canonical.to_dict()]}
+    )[0]
+    legacy_schedule = registry.build_spec(legacy_config).pass_factory().options
+    canonical_schedule = registry.build_spec(canonical_config).pass_factory().options
     assert legacy_schedule == canonical_schedule
 
 

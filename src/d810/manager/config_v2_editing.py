@@ -28,6 +28,9 @@ from d810.manager.config_v2_edit_models import (
     ConfigV2ProjectValidation,
 )
 from d810.manager.workbench_recipe_models import PipelineRecipeDraft
+from d810.passes.constant_simplification_options import (
+    canonicalize_constant_simplification_entry,
+)
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
@@ -121,6 +124,36 @@ def _unsupported_projection(document: dict[str, object]) -> object:
     return projected
 
 
+def _canonicalize_constant_pipeline_entries(
+    document: dict[str, object],
+) -> dict[str, object]:
+    """Project legacy constant-bundle entries to canonical options.
+
+    Config-v2 editing keeps the complete document intact, so this helper only
+    touches entries owned by the public constant bundle.  The compiler remains
+    the authority for validating legacy/canonical shape and preserving stage
+    gates; all other entries are copied byte-for-byte at the JSON value level.
+    """
+
+    updated = copy.deepcopy(document)
+    additional = updated.get("additional_configuration")
+    if not isinstance(additional, dict):
+        return updated
+    pipeline = additional.get("pipeline_v2")
+    if not isinstance(pipeline, list):
+        return updated
+    for index, entry in enumerate(pipeline):
+        if not isinstance(entry, Mapping) or entry.get("pass_id") != "constant-simplification":
+            continue
+        try:
+            pipeline[index] = canonicalize_constant_simplification_entry(entry)
+        except (PipelineConfigError, TypeError, ValueError) as error:
+            raise ConfigV2EditError(
+                f"invalid constant-simplification pipeline entry {index}: {error}"
+            ) from error
+    return updated
+
+
 class ConfigV2EditingService:
     """Own complete-document structured edits and full pre-commit validation."""
 
@@ -152,6 +185,7 @@ class ConfigV2EditingService:
             ) from error
         if not isinstance(document, dict):
             raise ConfigV2EditError("runtime project document must be an object")
+        document = _canonicalize_constant_pipeline_entries(document)
         canonical = _canonical_json(document)
         draft = ConfigV2ProjectDraft(
             draft_id=str(uuid.uuid4()),
@@ -270,6 +304,11 @@ class ConfigV2EditingService:
             raise ConfigV2EditError("pass index is out of range")
         candidate = copy.deepcopy(pipeline[pass_index])
         candidate["options"] = copy.deepcopy(dict(options))
+        if candidate.get("pass_id") == "constant-simplification":
+            try:
+                candidate = canonicalize_constant_simplification_entry(candidate)
+            except (PipelineConfigError, TypeError, ValueError) as error:
+                raise ConfigV2EditError(str(error)) from error
         try:
             config = PipelineConfig.from_dict(candidate)
             self._registry.build_spec(config)
@@ -347,7 +386,7 @@ class ConfigV2EditingService:
     ) -> ConfigV2ProjectDraft:
         if not isinstance(document, Mapping):
             raise ConfigV2EditError("project document must be an object")
-        candidate = copy.deepcopy(dict(document))
+        candidate = _canonicalize_constant_pipeline_entries(copy.deepcopy(dict(document)))
         current = _document(draft.document_json)
         if _unsupported_projection(candidate) != _unsupported_projection(current):
             raise ConfigV2EditError("document fields outside declared serializers changed")
@@ -450,7 +489,10 @@ class ConfigV2EditingService:
                 raise ConfigV2EditError(
                     f"invalid recipe pass {item.pass_id}: {error}"
                 ) from error
-            materialized.append(config.to_dict())
+            serialized = config.to_dict()
+            if config.pass_id == "constant-simplification":
+                serialized = canonicalize_constant_simplification_entry(serialized)
+            materialized.append(serialized)
         _additional(document)["pipeline_v2"] = materialized
         return self._updated(draft, document)
 
@@ -590,7 +632,9 @@ class ConfigV2EditingService:
             raise ConfigV2EditError(
                 "stale or invalid config-v2 validation; validate the current draft"
             )
-        document = _document(draft.document_json)
+        document = _canonicalize_constant_pipeline_entries(
+            _document(draft.document_json)
+        )
 
         def validate_reload(project: ProjectConfiguration) -> None:
             reloaded_document = json.loads(project.path.read_text(encoding="utf-8"))
