@@ -104,13 +104,15 @@ if IDA_AVAILABLE:
             self._manifest = tuple(adapter.manifest())
             self._catalog = tuple(adapter.catalog())
             self._draft, self._validation = adapter.reset()
+            self._view = project_config_v2_document(self._draft)
             self._inspection_catalog = tuple(
-                adapter.inspection_catalog(self._validation.pass_ids)
+                adapter.inspection_catalog(
+                    tuple(row.pass_id for row in self._view.pipeline_rows)
+                )
             )
             self._catalog_by_pass_id = {
                 entry.pass_id: entry for entry in self._inspection_catalog
             }
-            self._view = project_config_v2_document(self._draft)
             self._editor_view = project_config_v2_editor_view(
                 self._draft,
                 self._validation,
@@ -454,7 +456,9 @@ if IDA_AVAILABLE:
         def _render(self) -> None:
             self._view = project_config_v2_document(self._draft)
             self._inspection_catalog = tuple(
-                self._adapter.inspection_catalog(self._validation.pass_ids)
+                self._adapter.inspection_catalog(
+                    tuple(row.pass_id for row in self._view.pipeline_rows)
+                )
             )
             self._catalog_by_pass_id = {
                 entry.pass_id: entry for entry in self._inspection_catalog

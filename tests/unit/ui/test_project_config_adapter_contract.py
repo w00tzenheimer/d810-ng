@@ -447,6 +447,7 @@ class _RouteAdapter:
     def __init__(self) -> None:
         self.reset_count = 0
         self.transform_edits: list[tuple[int, tuple[str, ...]]] = []
+        self.inspection_requests: list[tuple[str, ...]] = []
         document = {
             "description": "route proof",
             "additional_configuration": {
@@ -502,6 +503,7 @@ class _RouteAdapter:
         self,
         pass_ids: tuple[str, ...],
     ) -> tuple[PassCatalogEntry, ...]:
+        self.inspection_requests.append(tuple(pass_ids))
         by_pass_id = {entry.pass_id: entry for entry in self.catalog()}
         return tuple(by_pass_id[pass_id] for pass_id in pass_ids)
 
@@ -519,6 +521,36 @@ class _RouteAdapter:
         assert draft is self.draft
         self.transform_edits.append((pass_index, transform_ids))
         return self.draft, self.validation
+
+    def remove_pass(
+        self,
+        draft: ConfigV2ProjectDraft,
+        pass_index: int,
+    ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
+        assert draft is self.draft
+        assert pass_index == 0
+        document = json.loads(draft.document_json)
+        document["additional_configuration"]["pipeline_v2"].pop(pass_index)
+        edited = ConfigV2ProjectDraft(
+            draft_id=draft.draft_id,
+            revision=draft.revision + 1,
+            source_path=draft.source_path,
+            destination_path=draft.destination_path,
+            source_sha256=draft.source_sha256,
+            original_document_json=draft.original_document_json,
+            document_json=json.dumps(document),
+        )
+        invalid = ConfigV2ProjectValidation(
+            draft_id=edited.draft_id,
+            revision=edited.revision,
+            valid=False,
+            pass_ids=(),
+            stage_ids=(),
+            transform_ids=(),
+            routing_policy_json="{}",
+            diagnostics=(),
+        )
+        return edited, invalid
 
 
 def _load_gui_panel(monkeypatch):
@@ -652,6 +684,23 @@ def test_routes_focus_duplicate_by_exact_row_and_share_draft_across_screens(
         focus_target=ambiguous_focus,
     )
     assert refused._selected_pass_index is None
+
+
+def test_remove_pass_keeps_rendering_remaining_rows_when_draft_is_invalid(
+    monkeypatch,
+) -> None:
+    panel_type = _load_gui_panel(monkeypatch)
+    adapter = _RouteAdapter()
+    panel = panel_type(adapter, screen=ConfigV2EditorScreen.BUILDER)
+    panel.pipeline_list.setCurrentRow(0)
+
+    panel._remove_pass()
+
+    assert panel._validation.valid is False
+    assert tuple(row.pass_id for row in panel._editor_view.overview.rows) == (
+        "mba-simplify",
+    )
+    assert adapter.inspection_requests[-1] == ("mba-simplify",)
 
 
 def test_config_v2_save_refreshes_the_current_project_view_without_reloading() -> None:

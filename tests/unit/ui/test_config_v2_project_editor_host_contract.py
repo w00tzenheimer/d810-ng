@@ -37,12 +37,13 @@ def test_active_overview_uses_configured_pass_inspection_catalog() -> None:
     assert "adapter.inspection_catalog(validation.pass_ids)" in method
 
 
-def test_project_editor_keeps_private_inspection_separate_from_public_add_catalog() -> None:
+def test_project_editor_uses_draft_rows_for_private_inspection_catalog() -> None:
     source = PROJECT_EDITOR.read_text(encoding="utf-8")
 
     assert "self._catalog = tuple(adapter.catalog())" in source
     assert "self._inspection_catalog = tuple(" in source
-    assert "self._adapter.inspection_catalog(self._validation.pass_ids)" in source
+    assert "tuple(row.pass_id for row in self._view.pipeline_rows)" in source
+    assert "inspection_catalog(self._validation.pass_ids)" not in source
     assert "for entry in sorted(self._catalog" in source
 
 
