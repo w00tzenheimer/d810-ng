@@ -47,9 +47,14 @@ def _constant_entries() -> tuple[tuple[Path, dict[str, object], dict[str, object
     entries: list[tuple[Path, dict[str, object], dict[str, object]]] = []
     for path in sorted(CONF_DIR.rglob("*.json")):
         document = json.loads(path.read_text(encoding="utf-8"))
-        pipeline = document.get("additional_configuration", {}).get("pipeline_v2", [])
+        additional = document.get("additional_configuration", {})
+        if not isinstance(additional, dict):
+            continue
+        pipeline = additional.get("pipeline_v2", [])
+        if not isinstance(pipeline, list):
+            continue
         for entry in pipeline:
-            if entry.get("pass_id") == "constant-simplification":
+            if isinstance(entry, dict) and entry.get("pass_id") == "constant-simplification":
                 entries.append((path, document, entry))
     return tuple(entries)
 
@@ -141,6 +146,7 @@ def test_external_legacy_profile_saves_as_canonical_without_behavior_change(
         "allow_executable_readonly": False,
         "persist_global_const_annotations": True,
     }
+    legacy_entry["maturity_gates"] = ["GLOBAL_ANALYZED", "STRUCTURED"]
     source = tmp_path / "legacy.json"
     destination = tmp_path / "canonical.json"
     source.write_text(json.dumps(source_document), encoding="utf-8")
@@ -176,7 +182,7 @@ def test_external_legacy_profile_saves_as_canonical_without_behavior_change(
         if config.pass_id == "constant-simplification"
     )
     assert compile_constant_simplification_schedule(saved_config) == legacy_schedule
-    assert saved_entry["maturity_gates"] == legacy_entry["maturity_gates"]
+    assert saved_config.maturity_gates == legacy_config.maturity_gates
 
 
 def test_external_mixed_legacy_and_canonical_options_remain_an_error() -> None:
