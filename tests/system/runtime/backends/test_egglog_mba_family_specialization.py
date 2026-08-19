@@ -189,7 +189,7 @@ def _prove(
     )
     assert isinstance(candidate, AstNode)
 
-    specialization = specialize(rule, candidate, destination_size=4, rounds=3)
+    specialization = specialize(rule, candidate, destination_size=4)
 
     assert specialization is not None
     assert specialization.family == family
@@ -387,13 +387,12 @@ def test_live_handler_xor_root_never_specializes_unrelated_root_buckets(monkeypa
     attempted_roots = []
     real_specialize = egglog_add_rule_compiler.specialize
 
-    def observe(rule, ast, *, destination_size, rounds):
+    def observe(rule, ast, *, destination_size):
         attempted_roots.append(rule.pattern.operation)
         return real_specialize(
             rule,
             ast,
             destination_size=destination_size,
-            rounds=rounds,
         )
 
     monkeypatch.setattr(

@@ -16,7 +16,10 @@ from d810.core.persistence import (
     create_optimization_storage,
 )
 from d810.core.provider_phase import ProviderPhaseSnapshot
-from d810.mba.egglog_composite_rewrite import ActiveSemantics, EgglogCompositeRewrite
+from d810.mba.egglog_composite_rewrite import (
+    CompositeRewriteSemantics,
+    EgglogCompositeRewrite,
+)
 from d810.mba.typed_term import TypedBvTerm
 
 
@@ -48,7 +51,7 @@ def _require_ida9_netnode() -> None:
 
 
 def _runtime_composite_rewrite() -> EgglogCompositeRewrite:
-    semantics = ActiveSemantics(
+    semantics = CompositeRewriteSemantics(
         canonicalizer_version=1,
         catalogue_digest="a" * 64,
         profile_digest="b" * 64,

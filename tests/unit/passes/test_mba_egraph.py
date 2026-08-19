@@ -253,12 +253,11 @@ class TestMbaEgraphOptions(unittest.TestCase):
 
         self.assertIsNone(options.function_time_budget_ms)
 
-    def test_legacy_rounds_alias_is_normalized_and_conflicts_are_rejected(self):
-        with self.assertWarns(DeprecationWarning):
-            options = parse_mba_egraph_options(_config({"rounds": 4}))
+    def test_rounds_option_is_rejected(self):
+        with self.assertRaisesRegex(PipelineConfigError, "unknown options"):
+            parse_mba_egraph_options(_config({"rounds": 4}))
 
-        self.assertEqual(options.saturation_rounds, 4)
-        with self.assertRaisesRegex(PipelineConfigError, "cannot both"):
+        with self.assertRaisesRegex(PipelineConfigError, "unknown options"):
             parse_mba_egraph_options(_config({"rounds": 4, "saturation_rounds": 4}))
 
     def test_rejects_duplicate_families(self):

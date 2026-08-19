@@ -221,11 +221,6 @@ class CompositeRewriteSemantics:
         return cls.from_dict(payload)
 
 
-# The short spelling was used in the initial RED fixture and is intentionally
-# retained as a public alias for callers that prefer it.
-ActiveSemantics = CompositeRewriteSemantics
-
-
 @dataclass(frozen=True, slots=True)
 class AlphaTerm:
     """Portable alpha-normalized fixed-width term node."""
@@ -247,14 +242,15 @@ class AlphaTerm:
         if any(not isinstance(child, AlphaTerm) for child in children):
             raise ValueError("AlphaTerm children must be AlphaTerm values")
         if self.operation is not None:
-            if type(self.operation) is not str or self.operation not in SUPPORTED_OPERATIONS:
+            if (
+                type(self.operation) is not str
+                or self.operation not in SUPPORTED_OPERATIONS
+            ):
                 raise ValueError("unsupported AlphaTerm operation")
             if self.value is not None or self.leaf_slot is not None:
                 raise ValueError("operator AlphaTerm cannot carry a terminal value")
             expected_arity = (
-                1
-                if self.operation in {"bnot", "neg"} | FIXED_SHIFT_OPERATIONS
-                else 2
+                1 if self.operation in {"bnot", "neg"} | FIXED_SHIFT_OPERATIONS else 2
             )
             if len(children) != expected_arity:
                 raise ValueError("AlphaTerm operation has the wrong arity")
@@ -337,9 +333,7 @@ def alpha_normalize_pair(
     """Normalize a pair using one first-preorder slot map."""
 
     slots: dict[tuple[object, ...], int] = {}
-    normalized_input = _alpha_normalize(
-        input_term, slots=slots, allow_new_slots=True
-    )
+    normalized_input = _alpha_normalize(input_term, slots=slots, allow_new_slots=True)
     normalized_output = _alpha_normalize(
         output_term, slots=slots, allow_new_slots=False
     )
@@ -386,7 +380,9 @@ def _validate_alpha_pair(input_template: AlphaTerm, output_template: AlphaTerm) 
     if len(unique_input_slots) > MAX_INPUT_LEAF_SLOTS:
         raise CompositeRewriteMalformed("input template has too many leaf slots")
     if unique_input_slots != tuple(range(len(unique_input_slots))):
-        raise CompositeRewriteMalformed("input leaf slots are not first-preorder canonical")
+        raise CompositeRewriteMalformed(
+            "input leaf slots are not first-preorder canonical"
+        )
     output_slots = set(_collect_leaf_slots(output_template))
     if not output_slots.issubset(set(unique_input_slots)):
         raise CompositeRewriteMalformed("output references an unknown leaf slot")
@@ -441,7 +437,9 @@ def _trace_has_active_rules(
     trace: tuple[tuple[str, str, tuple[str, ...]], ...],
     semantics: CompositeRewriteSemantics,
 ) -> bool:
-    return all(semantics.has_rule(family, source_name) for family, source_name, _ in trace)
+    return all(
+        semantics.has_rule(family, source_name) for family, source_name, _ in trace
+    )
 
 
 def _template_id(
@@ -531,7 +529,10 @@ class EgglogCompositeRewrite:
                 self.output_template, AlphaTerm
             ):
                 raise ValueError("templates must be AlphaTerm values")
-            if self.input_template.width != self.width or self.output_template.width != self.width:
+            if (
+                self.input_template.width != self.width
+                or self.output_template.width != self.width
+            ):
                 raise ValueError("template width does not match rewrite width")
             if self.root_operation != self.input_template.operation:
                 raise ValueError("root_operation does not match input template")
@@ -540,8 +541,14 @@ class EgglogCompositeRewrite:
             if self.coarse_arity != len(self.input_template.children):
                 raise ValueError("coarse_arity does not match input template")
             _validate_alpha_pair(self.input_template, self.output_template)
-            object.__setattr__(self, "raw_input_cost", _normalize_cost(self.raw_input_cost, "raw_input_cost"))
-            object.__setattr__(self, "output_cost", _normalize_cost(self.output_cost, "output_cost"))
+            object.__setattr__(
+                self,
+                "raw_input_cost",
+                _normalize_cost(self.raw_input_cost, "raw_input_cost"),
+            )
+            object.__setattr__(
+                self, "output_cost", _normalize_cost(self.output_cost, "output_cost")
+            )
             expected_raw = term_cost(_alpha_to_typed_term(self.input_template))
             expected_output = term_cost(_alpha_to_typed_term(self.output_template))
             if self.raw_input_cost != expected_raw:
@@ -549,8 +556,12 @@ class EgglogCompositeRewrite:
             if self.output_cost != expected_output:
                 raise ValueError("output_cost does not match output template")
             if not self.output_cost < self.raw_input_cost:
-                raise ValueError("output cost must be strictly lower than raw input cost")
-            object.__setattr__(self, "derivation_trace", _normalize_trace(self.derivation_trace))
+                raise ValueError(
+                    "output cost must be strictly lower than raw input cost"
+                )
+            object.__setattr__(
+                self, "derivation_trace", _normalize_trace(self.derivation_trace)
+            )
             if self.egraph_run_count is not None:
                 _require_nonnegative_int(self.egraph_run_count, "egraph_run_count")
             _require_nonnegative_int(self.created_sequence, "created_sequence")
@@ -576,7 +587,10 @@ class EgglogCompositeRewrite:
             )
             if self.template_id != expected_id:
                 raise ValueError("template_id does not match canonical payload")
-            if len(_canonical_json(self.to_dict()).encode("utf-8")) > MAX_SERIALIZED_ENTRY_BYTES:
+            if (
+                len(_canonical_json(self.to_dict()).encode("utf-8"))
+                > MAX_SERIALIZED_ENTRY_BYTES
+            ):
                 raise ValueError("serialized composite rewrite exceeds hard bound")
         except CompositeRewriteMalformed:
             raise
@@ -615,19 +629,30 @@ class EgglogCompositeRewrite:
         last_used_sequence: int = 0,
     ) -> "EgglogCompositeRewrite":
         if not isinstance(semantics, CompositeRewriteSemantics):
-            raise CompositeRewriteMalformed("semantics must be CompositeRewriteSemantics")
+            raise CompositeRewriteMalformed(
+                "semantics must be CompositeRewriteSemantics"
+            )
         try:
-            input_template, output_template = alpha_normalize_pair(input_term, output_term)
-            if input_template.width not in SUPPORTED_WIDTHS or output_template.width != input_template.width:
+            input_template, output_template = alpha_normalize_pair(
+                input_term, output_term
+            )
+            if (
+                input_template.width not in SUPPORTED_WIDTHS
+                or output_template.width != input_template.width
+            ):
                 raise ValueError("unsupported or inconsistent extraction width")
             _validate_alpha_pair(input_template, output_template)
             normalized_trace = _normalize_trace(derivation_trace)
             if not _trace_has_active_rules(normalized_trace, semantics):
-                raise ValueError("derivation trace contains a rule absent from active semantics")
+                raise ValueError(
+                    "derivation trace contains a rule absent from active semantics"
+                )
             raw_input_cost = term_cost(input_term)
             output_cost = term_cost(output_term)
             if not output_cost < raw_input_cost:
-                raise ValueError("output cost must be strictly lower than raw input cost")
+                raise ValueError(
+                    "output cost must be strictly lower than raw input cost"
+                )
             template_id = _template_id(
                 schema_version=SCHEMA_VERSION,
                 canonicalizer_version=semantics.canonicalizer_version,
@@ -810,10 +835,20 @@ class EgglogCompositeRewrite:
             raise CompositeRewriteMalformed("bindings must be a mapping")
         normalized: dict[int, TypedBvTerm] = {}
         for slot, value in bindings.items():
-            if not _is_exact_int(slot) or slot < 0 or not isinstance(value, TypedBvTerm):
+            if (
+                not _is_exact_int(slot)
+                or slot < 0
+                or not isinstance(value, TypedBvTerm)
+            ):
                 raise CompositeRewriteMalformed("bindings contain a non-portable value")
-            if value.width != self.width or value.operation is not None or value.leaf_key is None:
-                raise CompositeRewriteMalformed("bindings must contain current live leaves")
+            if (
+                value.width != self.width
+                or value.operation is not None
+                or value.leaf_key is None
+            ):
+                raise CompositeRewriteMalformed(
+                    "bindings must contain current live leaves"
+                )
             normalized[slot] = value
         try:
             return _materialize_alpha(self.output_template, normalized)
@@ -823,7 +858,9 @@ class EgglogCompositeRewrite:
             raise CompositeRewriteMalformed(str(exc)) from exc
 
 
-def _normalize_json_trace(value: object) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+def _normalize_json_trace(
+    value: object,
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
     if type(value) is not list:
         raise CompositeRewriteMalformed("derivation_trace must be a list")
     for row in value:
@@ -925,7 +962,6 @@ def _materialize_alpha(
 
 __all__ = [
     "ACTIVE_SEMANTICS_SCHEMA_VERSION",
-    "ActiveSemantics",
     "AlphaTerm",
     "CompositeRewriteMalformed",
     "CompositeRewriteSemantics",

@@ -103,6 +103,7 @@ def _is_native_instruction(value) -> bool:
     native_type = getattr(ida_hexrays, "minsn_t", None)
     return isinstance(native_type, type) and isinstance(value, native_type)
 
+
 _ROOT_OPCODE_BY_OPERATION = MappingProxyType(
     {
         "add": ida_hexrays.m_add,
@@ -127,7 +128,9 @@ _DEFAULT_FAMILIES = ("add",)
 _MAX_NATIVE_Z3_TIMEOUT_MS = 250
 _INTERACTIVE_NATIVE_Z3_TIMEOUT_MS = 50
 _MAX_PATTERN_COMPARISONS = 256
-_CACHE_STATUSES = frozenset({"disabled", "miss", "hit", "stale", "malformed", "evicted"})
+_CACHE_STATUSES = frozenset(
+    {"disabled", "miss", "hit", "stale", "malformed", "evicted"}
+)
 _REPLAY_SEMANTICS_UNAVAILABLE = object()
 
 
@@ -233,12 +236,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def configure(self, kwargs) -> None:
         config = dict(kwargs or {})
         maturity_names = config.pop("maturities", None)
-        if "rounds" in config and "saturation_rounds" in config:
-            raise ValueError(
-                "EgglogOptimizer rounds and saturation_rounds cannot both be set"
-            )
         if "rounds" in config:
-            config["saturation_rounds"] = config.pop("rounds")
+            raise ValueError(
+                "EgglogOptimizer no longer accepts rounds; use saturation_rounds"
+            )
         families = self._validate_families(
             config.get("families", list(_DEFAULT_FAMILIES))
         )
@@ -282,9 +283,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             raise ValueError(
                 "EgglogOptimizer cross_block_def_use_preparation must be boolean"
             )
-        if families == ("fixed_rotate",) and (
-            preparation or def_use_preparation
-        ):
+        if families == ("fixed_rotate",) and (preparation or def_use_preparation):
             raise ValueError(
                 "EgglogOptimizer families fixed_rotate cannot use "
                 "cross-block preparation"
@@ -292,15 +291,21 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         learned_replay_enabled = self.config.get("learned_replay_enabled", False)
         if type(learned_replay_enabled) is not bool:
             raise ValueError("EgglogOptimizer learned_replay_enabled must be boolean")
-        learned_replay_max_entries = self.config.get(
-            "learned_replay_max_entries", 256
-        )
-        if type(learned_replay_max_entries) is not int or not 1 <= learned_replay_max_entries <= 4_096:
+        learned_replay_max_entries = self.config.get("learned_replay_max_entries", 256)
+        if (
+            type(learned_replay_max_entries) is not int
+            or not 1 <= learned_replay_max_entries <= 4_096
+        ):
             raise ValueError(
                 "EgglogOptimizer learned_replay_max_entries must be an integer from 1 to 4096"
             )
-        learned_replay_max_bytes = self.config.get("learned_replay_max_bytes", 2_097_152)
-        if type(learned_replay_max_bytes) is not int or not 1 <= learned_replay_max_bytes <= 16_777_216:
+        learned_replay_max_bytes = self.config.get(
+            "learned_replay_max_bytes", 2_097_152
+        )
+        if (
+            type(learned_replay_max_bytes) is not int
+            or not 1 <= learned_replay_max_bytes <= 16_777_216
+        ):
             raise ValueError(
                 "EgglogOptimizer learned_replay_max_bytes must be an integer from 1 to 16777216"
             )
@@ -394,8 +399,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.max_rule_firings = budget.max_rule_firings
         self.time_budget_ms = budget.time_budget_ms
         self.require_proof = budget.require_proof
-        # Deprecated direct-handler compatibility. Config-v2 emits only the new key.
-        self.rounds = budget.saturation_rounds
 
     @property
     def _catalogue(self):
@@ -455,7 +458,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     @staticmethod
     def _normalize_cache_status(status: object) -> str:
-        return status if type(status) is str and status in _CACHE_STATUSES else "malformed"
+        return (
+            status if type(status) is str and status in _CACHE_STATUSES else "malformed"
+        )
 
     @staticmethod
     def _cache_lookup(
@@ -569,7 +574,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
         from d810.mba.certified_catalogue import build_certified_catalogue_snapshot
 
-        structural_rules = self._compiled_rules if self.families == ("fixed_rotate",) else ()
+        structural_rules = (
+            self._compiled_rules if self.families == ("fixed_rotate",) else ()
+        )
         try:
             snapshot = build_certified_catalogue_snapshot(
                 self._compiled_rules,
@@ -1005,18 +1012,23 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
             return None
         self._record_extraction_receipt(extraction.receipt)
-        if extraction.receipt.execution_path == "fresh_saturation" and self.learned_replay_enabled:
+        if (
+            extraction.receipt.execution_path == "fresh_saturation"
+            and self.learned_replay_enabled
+        ):
             try:
-                self._pending_composite_rewrite = EgglogCompositeRewrite.from_extraction(
-                    input_term=(
-                        canonical_candidate_term
-                        if template_input_term is None
-                        else template_input_term
-                    ),
-                    output_term=replacement_term,
-                    derivation_trace=extraction.derivation_trace,
-                    semantics=self._current_replay_semantics(),
-                    egraph_run_count=extraction.receipt.egraph_run_count,
+                self._pending_composite_rewrite = (
+                    EgglogCompositeRewrite.from_extraction(
+                        input_term=(
+                            canonical_candidate_term
+                            if template_input_term is None
+                            else template_input_term
+                        ),
+                        output_term=replacement_term,
+                        derivation_trace=extraction.derivation_trace,
+                        semantics=self._current_replay_semantics(),
+                        egraph_run_count=extraction.receipt.egraph_run_count,
+                    )
                 )
             except (CompositeRewriteMalformed, TypeError, ValueError):
                 self._pending_composite_rewrite = None
@@ -1178,10 +1190,14 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             matches = () if match_result is None else match_result.matches
             canonical_match_result = None
             if not structural_route and not matches:
-                canonical_term = canonicalize_mba_term(view.to_typed_term()).canonical_term
-                canonical_match_result = self._native_pattern_catalogue.match_canonical_root(
-                    canonical_term,
-                    comparison_budget=_MAX_PATTERN_COMPARISONS,
+                canonical_term = canonicalize_mba_term(
+                    view.to_typed_term()
+                ).canonical_term
+                canonical_match_result = (
+                    self._native_pattern_catalogue.match_canonical_root(
+                        canonical_term,
+                        comparison_budget=_MAX_PATTERN_COMPARISONS,
+                    )
                 )
                 if canonical_match_result.stop_reason.value == "comparison_budget":
                     self._record_extraction_receipt(
@@ -1200,9 +1216,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._finish_stage("native_preflight")
         extraction_budget = self._candidate_extraction_budget(blk)
         telemetry_match_result = (
-            match_result
-            if canonical_match_result is None
-            else canonical_match_result
+            match_result if canonical_match_result is None else canonical_match_result
         )
         if extraction_budget is None:
             receipt = extraction_receipt_for_profile(
@@ -1317,7 +1331,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             receipt=replace(
                 extraction.receipt,
                 execution_path="fresh_saturation",
-                cache_status=(cache_status if cache_status != "disabled" else "disabled"),
+                cache_status=(
+                    cache_status if cache_status != "disabled" else "disabled"
+                ),
                 cache_key=cache_key,
                 cache_lookup_elapsed_ms=cache_lookup_elapsed_ms,
                 replay_fallback_reason=self._replay_fallback_reason,
@@ -1418,9 +1434,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         expected_lowering_term = lowering.term
         matcher_started = time.perf_counter()
         try:
-            canonical_match_result = self._native_pattern_catalogue.match_canonical_root(
-                prepared_candidate_term,
-                comparison_budget=_MAX_PATTERN_COMPARISONS,
+            canonical_match_result = (
+                self._native_pattern_catalogue.match_canonical_root(
+                    prepared_candidate_term,
+                    comparison_budget=_MAX_PATTERN_COMPARISONS,
+                )
             )
         except CanonicalPatternComparisonBudgetExceeded:
             self._record_extraction_receipt(
@@ -1913,7 +1931,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 rule,
                 ast,
                 destination_size=int(destination_size),
-                rounds=self.rounds,
             )
             if specialization is None:
                 continue

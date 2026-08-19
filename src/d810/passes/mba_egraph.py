@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 
 from d810.core.pass_ids import PassId
@@ -132,7 +131,6 @@ def parse_mba_egraph_options(
         "max_operator_nodes",
         "max_degree",
         "saturation_rounds",
-        "rounds",
         "max_eclasses",
         "max_enodes",
         "max_rule_firings",
@@ -153,20 +151,10 @@ def parse_mba_egraph_options(
     }
     if unknown:
         raise PipelineConfigError(f"mba-egraph has unknown options: {sorted(unknown)}")
-    if "rounds" in options and "saturation_rounds" in options:
-        raise PipelineConfigError(
-            "mba-egraph options.rounds and options.saturation_rounds cannot both be set"
-        )
-    if "rounds" in options:
-        warnings.warn(
-            "mba-egraph options.rounds is deprecated; use saturation_rounds",
-            DeprecationWarning,
-            stacklevel=2,
-        )
     max_leaves = options.get("max_leaves", 2)
     max_operator_nodes = options.get("max_operator_nodes", 10)
     max_degree = options.get("max_degree", 1)
-    saturation_rounds = options.get("saturation_rounds", options.get("rounds", 2))
+    saturation_rounds = options.get("saturation_rounds", 2)
     max_eclasses = options.get("max_eclasses", 64)
     max_enodes = options.get("max_enodes", 128)
     max_rule_firings = options.get("max_rule_firings", 32)

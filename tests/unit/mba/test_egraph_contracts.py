@@ -130,6 +130,20 @@ def test_receipt_serializes_every_field_with_exact_keys_and_round_trips() -> Non
     assert payload["backend_version"] == "13.2.0"
 
 
+def test_receipt_accepts_structural_matcher_backend_without_fabricated_counts() -> None:
+    receipt = _receipt(
+        native_matcher_backend="structural",
+        native_matcher_comparisons=None,
+        native_matcher_lazy_swaps=None,
+        native_fixed_binding_count=None,
+    )
+
+    assert receipt.native_matcher_backend == "structural"
+    assert receipt.native_matcher_comparisons is None
+    assert receipt.native_matcher_lazy_swaps is None
+    assert receipt.native_fixed_binding_count is None
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
@@ -173,6 +187,8 @@ def test_receipt_rejects_non_json_native_profile_values() -> None:
 def test_receipt_from_dict_rejects_missing_or_extra_json_keys() -> None:
     payload = _receipt().to_dict()
     with pytest.raises(ValueError, match="schema"):
-        EgraphExtractionReceipt.from_dict({key: value for key, value in payload.items() if key != "backend"})
+        EgraphExtractionReceipt.from_dict(
+            {key: value for key, value in payload.items() if key != "backend"}
+        )
     with pytest.raises(ValueError, match="schema"):
         EgraphExtractionReceipt.from_dict({**payload, "unexpected": True})

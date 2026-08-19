@@ -40,7 +40,7 @@ class EgglogAddSpecialization:
     candidate_ast: AstNode
     replacement_ast: AstNode
     bindings: dict[str, AstBase]
-    rounds: int = 6
+    saturation_rounds: int = 6
 
     @property
     def source_names(self) -> tuple[str, ...]:
@@ -352,9 +352,13 @@ def specialize(
     candidate_ast: AstNode,
     *,
     destination_size: int,
-    rounds: int = 6,
+    saturation_rounds: int = 6,
 ) -> EgglogAddSpecialization | None:
-    if not isinstance(rounds, int) or isinstance(rounds, bool) or not 1 <= rounds <= 6:
+    if (
+        not isinstance(saturation_rounds, int)
+        or isinstance(saturation_rounds, bool)
+        or not 1 <= saturation_rounds <= 6
+    ):
         return None
     candidate_ast = _unwrap_runtime_ast(candidate_ast)
     if not isinstance(candidate_ast, AstNode):
@@ -368,7 +372,11 @@ def specialize(
     if not isinstance(replacement, AstNode):
         return None
     specialization = EgglogAddSpecialization(
-        rule, candidate_ast, replacement, bindings, rounds=rounds
+        rule,
+        candidate_ast,
+        replacement,
+        bindings,
+        saturation_rounds=saturation_rounds,
     )
     return specialization if _prove_specialization(specialization) else None
 
@@ -486,7 +494,7 @@ def _prove_specialization(specialization: EgglogAddSpecialization) -> bool:
         )
         egraph.register(egglog.rewrite(pattern).to(replacement))
         egraph.register(candidate)
-        egraph.run(min(max(int(specialization.rounds), 1), 6))
+        egraph.run(min(max(int(specialization.saturation_rounds), 1), 6))
         egraph.check(egglog.eq(candidate).to(concrete_replacement))
     except Exception:
         return False

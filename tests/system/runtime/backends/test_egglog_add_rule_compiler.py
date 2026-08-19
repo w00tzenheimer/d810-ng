@@ -219,36 +219,11 @@ def test_specializes_live_astproxy_without_changing_structural_semantics():
     assert specialization.rule.source_name == "Add_HackersDelightRule_2"
 
 
-def test_live_handler_threads_configured_rounds_into_specialization(monkeypatch):
-    x, y = _leaf("x", 1), _leaf("y", 2)
-    candidate_ast = _node(
-        ida_hexrays.m_add,
-        _node(ida_hexrays.m_xor, x, y),
-        _node(
-            ida_hexrays.m_mul,
-            _constant(2),
-            _node(ida_hexrays.m_and, x.clone(), y.clone()),
-        ),
-    )
-    observed_rounds = []
-    real_specialize = egglog_add_rule_compiler.specialize
-
-    def observe(rule, ast, *, destination_size, rounds):
-        observed_rounds.append(rounds)
-        return real_specialize(
-            rule, ast, destination_size=destination_size, rounds=rounds
-        )
-
-    monkeypatch.setattr(
-        "d810.optimizers.microcode.instructions.egraph.egglog_handler.specialize",
-        observe,
-    )
+def test_live_handler_rejects_deprecated_rounds_option():
     handler = EgglogOptimizer()
-    handler.configure({"rounds": 2})
 
-    assert handler._select_specialization(candidate_ast, destination_size=4)
-    assert observed_rounds
-    assert set(observed_rounds) == {2}
+    with pytest.raises(ValueError, match="saturation_rounds"):
+        handler.configure({"rounds": 2})
 
 
 def test_live_handler_rejects_disabling_mandatory_proof():
