@@ -27,7 +27,6 @@ class DecompilationEvent(enum.Enum):
     HEXRAYS_STKPNTS = "decompilation.hexrays.stkpnts"
     HEXRAYS_BUILD_CALLINFO = "decompilation.hexrays.callinfo.build"
     HEXRAYS_CALLS_DONE = "decompilation.hexrays.calls_done"
-    HEXRAYS_CALLS_POST_D810 = "decompilation.hexrays.calls_post_d810"
     FLOWGRAPH_READY = "decompilation.flowgraph.ready"
 
 

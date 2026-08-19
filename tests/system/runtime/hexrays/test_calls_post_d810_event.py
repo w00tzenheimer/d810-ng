@@ -1,137 +1,129 @@
-"""Runtime contract for the post-D810 CALLS observation seam."""
+"""Runtime contract for maturity-wide post-D810 CALLS observation."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import ida_hexrays
-import pytest
 
 from d810.core.decompilation_session import DecompilationEvent
-from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
+class _Instruction:
+    def __init__(self, ea: int) -> None:
+        self.ea = ea
+        self.next = None
 
 
-class _Emitter:
-    def __init__(self) -> None:
-        self.events: list[tuple[object, tuple[object, ...]]] = []
-
-    def emit(self, event, *args) -> None:
-        self.events.append((event, args))
+class _Block:
+    def __init__(self, instruction: _Instruction) -> None:
+        self.head = instruction
 
 
-class _Lifecycle:
-    def __init__(self, generation: int = 3) -> None:
-        self.generation = int(generation)
+class _Mba:
+    def __init__(self, *blocks: _Block, maturity: int) -> None:
+        self._blocks = blocks
+        self.qty = len(blocks)
+        self.entry_ea = 0x401000
+        self.maturity = int(maturity)
 
-    def current_mba_generation(self, *, function_ea: int) -> int:
-        assert int(function_ea) == 0x401000
-        return self.generation
+    def get_mblock(self, serial: int) -> _Block:
+        return self._blocks[serial]
 
 
-def _manager(*, maturity: int, generation: int = 3):
-    manager = object.__new__(BlockOptimizerManager)
-    manager.event_emitter = _Emitter()
-    manager._decompilation_lifecycle = _Lifecycle(generation)
-    manager.optimize = lambda _blk: 0
-    mba = SimpleNamespace(
-        entry_ea=0x401000,
-        maturity=int(maturity),
+def test_global_const_observer_runs_once_after_complete_calls_maturity() -> None:
+    """The maturity transition, not the first CALLS block, is the seam."""
+
+    from d810.backends.hexrays.global_const_observer import GlobalConstObserver
+    from d810.core.events import EventEmitter
+    from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
+    from d810.passes.constant_simplification_options import (
+        ConstantPreparationOptions,
     )
-    block = SimpleNamespace(mba=mba)
-    return manager, block, mba
 
-
-def test_calls_post_d810_emits_once_for_one_mba_generation() -> None:
-    manager, block, mba = _manager(maturity=ida_hexrays.MMAT_CALLS)
-
-    assert manager._optimize_block_and_emit(block) == 0
-    assert manager._optimize_block_and_emit(block) == 0
-
-    assert manager.event_emitter.events == [
-        (
-            DecompilationEvent.HEXRAYS_CALLS_POST_D810,
-            (mba, ida_hexrays.MMAT_CALLS),
+    discovered: list[int] = []
+    queued: list[int] = []
+    observer = GlobalConstObserver(
+        preparation_options=ConstantPreparationOptions(
+            enabled=True,
+            discover_bounded_tables=True,
+        ),
+        database_identity="runtime-test",
+        calls_maturity=ida_hexrays.MMAT_CALLS,
+        discover=lambda instruction: discovered.append(instruction.ea)
+        or SimpleNamespace(instruction_ea=instruction.ea),
+        queue=lambda access, *, function_ea: queued.append(
+            int(access.instruction_ea)
         )
-    ]
-    assert manager._calls_post_d810_last_emitted == (
-        0x401000,
-        3,
-        ida_hexrays.MMAT_CALLS,
+        or SimpleNamespace(queued_count=1),
+        pending_proposals=lambda: (),
+    )
+    runtime = HexRaysPostD810Runtime(
+        preanalysis_runtime=None,
+        block_optimizer=SimpleNamespace(),
+        global_const_observer=observer,
+        mba_generation_provider=lambda function_ea: 7,
+    )
+    emitter = EventEmitter()
+    emitter.on(DecompilationEvent.POST_D810_CAPTURE, runtime.observe_global_const_types)
+
+    # Two blocks represent the complete CALLS callback stream.  No observer
+    # callback occurs at either block boundary; the adapter no longer owns a
+    # block-local CALLS event.
+    mba = _Mba(
+        _Block(_Instruction(0x401010)),
+        _Block(_Instruction(0x401020)),
+        maturity=ida_hexrays.MMAT_CALLS,
+    )
+    assert discovered == []
+    assert queued == []
+
+    # POST_D810_CAPTURE is emitted once when Hex-Rays transitions away from
+    # CALLS, after all CALLS blocks have been optimized.
+    emitter.emit(DecompilationEvent.POST_D810_CAPTURE, mba, ida_hexrays.MMAT_CALLS)
+
+    assert discovered == [0x401010, 0x401020]
+    assert queued == [0x401010, 0x401020]
+    assert observer.pending_reason == "next preparation round"
+
+
+def test_global_const_observer_ignores_non_calls_capture() -> None:
+    from d810.backends.hexrays.global_const_observer import GlobalConstObserver
+    from d810.core.events import EventEmitter
+    from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
+    from d810.passes.constant_simplification_options import (
+        ConstantPreparationOptions,
     )
 
-
-def test_calls_post_d810_emits_again_for_a_new_mba_generation() -> None:
-    manager, block, mba = _manager(maturity=ida_hexrays.MMAT_CALLS)
-
-    manager._optimize_block_and_emit(block)
-    manager._decompilation_lifecycle.generation = 4
-    manager._optimize_block_and_emit(block)
-
-    assert [event for event, _args in manager.event_emitter.events] == [
-        DecompilationEvent.HEXRAYS_CALLS_POST_D810,
-        DecompilationEvent.HEXRAYS_CALLS_POST_D810,
-    ]
-    assert manager._calls_post_d810_last_emitted == (
-        0x401000,
-        4,
-        ida_hexrays.MMAT_CALLS,
+    discovered: list[int] = []
+    observer = GlobalConstObserver(
+        preparation_options=ConstantPreparationOptions(
+            enabled=True,
+            discover_bounded_tables=True,
+        ),
+        database_identity="runtime-test",
+        calls_maturity=ida_hexrays.MMAT_CALLS,
+        discover=lambda instruction: discovered.append(instruction.ea),
+        pending_proposals=lambda: (),
     )
-
-
-@pytest.mark.parametrize(
-    "maturity",
-    (
-        ida_hexrays.MMAT_PREOPTIMIZED,
-        ida_hexrays.MMAT_LOCOPT,
-        ida_hexrays.MMAT_GLBOPT1,
-        ida_hexrays.MMAT_GLBOPT2,
-    ),
-)
-def test_calls_post_d810_rejects_other_live_maturities(maturity: int) -> None:
-    manager, block, _mba = _manager(maturity=maturity)
-
-    manager._optimize_block_and_emit(block)
-
-    assert manager.event_emitter.events == []
-
-
-def test_calls_post_d810_does_not_emit_after_optimize_exception() -> None:
-    manager, block, _mba = _manager(maturity=ida_hexrays.MMAT_CALLS)
-
-    def fail(_blk):
-        raise RuntimeError("optimizer failed")
-
-    manager.optimize = fail
-
-    with pytest.raises(RuntimeError, match="optimizer failed"):
-        manager._optimize_block_and_emit(block)
-
-    assert manager.event_emitter.events == []
-
-
-@pytest.mark.parametrize("lifecycle", (None, SimpleNamespace()))
-def test_calls_post_d810_abstains_without_a_native_bound_generation(
-    lifecycle,
-) -> None:
-    manager, block, _mba = _manager(maturity=ida_hexrays.MMAT_CALLS)
-    if lifecycle is not None:
-        lifecycle.current_mba_generation = lambda *, function_ea: 0
-    manager._decompilation_lifecycle = lifecycle
-
-    manager._optimize_block_and_emit(block)
-
-    assert manager.event_emitter.events == []
-    assert getattr(manager, "_calls_post_d810_last_emitted", None) is None
-
-
-def test_event_key_is_distinct_from_legacy_post_d810_capture() -> None:
-    assert DecompilationEvent.HEXRAYS_CALLS_POST_D810 is not (
-        DecompilationEvent.POST_D810_CAPTURE
+    runtime = HexRaysPostD810Runtime(
+        preanalysis_runtime=None,
+        block_optimizer=SimpleNamespace(),
+        global_const_observer=observer,
+        mba_generation_provider=lambda function_ea: 7,
     )
+    emitter = EventEmitter()
+    emitter.on(DecompilationEvent.POST_D810_CAPTURE, runtime.observe_global_const_types)
+
+    mba = _Mba(
+        _Block(_Instruction(0x401010)),
+        maturity=ida_hexrays.MMAT_LOCOPT,
+    )
+    emitter.emit(DecompilationEvent.POST_D810_CAPTURE, mba, ida_hexrays.MMAT_LOCOPT)
+
+    assert discovered == []
 
 
-def test_global_const_observer_is_wired_only_to_calls_post_d810() -> None:
+def test_global_const_observer_is_wired_to_maturity_wide_post_capture() -> None:
     manager_source = (
         Path(__file__).resolve().parents[4] / "src/d810/manager/manager.py"
     ).read_text(encoding="utf-8")
@@ -139,8 +131,15 @@ def test_global_const_observer_is_wired_only_to_calls_post_d810() -> None:
     assert (
         "DecompilationEvent.POST_D810_CAPTURE,\n"
         f"            {observer},"
-    ) not in manager_source
+    ) in manager_source
     assert (
         "DecompilationEvent.HEXRAYS_CALLS_POST_D810,\n"
         f"            {observer},"
-    ) in manager_source
+    ) not in manager_source
+
+    adapter_source = (
+        Path(__file__).resolve().parents[4]
+        / "src/d810/hexrays/hooks/optblock_adapter.py"
+    ).read_text(encoding="utf-8")
+    assert "_emit_calls_post_d810_if_needed" not in adapter_source
+    assert "_calls_post_d810_last_emitted" not in adapter_source
