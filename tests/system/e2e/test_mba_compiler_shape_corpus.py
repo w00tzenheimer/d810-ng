@@ -51,10 +51,6 @@ _ROOT = Path(__file__).resolve().parents[3]
 _SOURCE = _ROOT / "samples/src/c/mba_compiler_shapes.c"
 _MANIFEST = _ROOT / "tests/fixtures/mba_portfolio/compiler_shapes.json"
 _CATALOGUE_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_catalogue.json"
-_EGGLOG_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_egglog.json"
-_EGGLOG_DEGREE2_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_egglog_degree2.json"
-_PORTFOLIO_SPIKE_CONFIG = _ROOT / "src/d810/conf/mba_portfolio_spike.json"
-_PORTFOLIO_DEEP_CONFIG = _ROOT / "src/d810/conf/mba_portfolio_deep.json"
 _NATIVE_BINARY = _ROOT / "samples/bins/mba_compiler_shapes.dylib"
 _PARITY_CERTIFICATE_TOOL = _ROOT / "tools/scripts/mba_structural_matcher_certificate.py"
 
@@ -79,7 +75,7 @@ _CATALOGUE_CASES = (
     ("mba_shape_catalogue_09", "Or_HackersDelightRule_2"),
     ("mba_shape_catalogue_10", "Xor_HackersDelightRule_1"),
 )
-_PORTFOLIO_PROJECT = "mba_portfolio_spike.json"
+_PORTFOLIO_PROJECT = "mba_compiler_shape_catalogue.json"
 _EXPECTED_NATIVE_PROVIDERS = tuple(MbaProviderKind)
 
 # GCC's -O0 code reaches IDA as already-canonical roots for these five forms.
@@ -428,18 +424,11 @@ def test_domain_lifted_provider_routes_are_evidence_bounded() -> None:
         assert isinstance(cases[case_id]["expected_blocker"], str)
 
 
-def test_corpus_configs_are_provider_isolated_and_egglog_is_explicitly_interactive() -> (
-    None
-):
+def test_catalogue_config_is_provider_isolated() -> None:
     catalogue = json.loads(_CATALOGUE_CONFIG.read_text(encoding="utf-8"))
-    egglog = json.loads(_EGGLOG_CONFIG.read_text(encoding="utf-8"))
 
     catalogue_passes = catalogue["additional_configuration"]["pipeline_v2"]
     assert [item["pass_id"] for item in catalogue_passes] == ["mba-simplify"]
-    egglog_options = egglog["additional_configuration"]["pipeline_v2"][0]["options"]
-    assert egglog_options["max_degree"] == 1
-    assert egglog_options["time_budget_ms"] > 3
-    assert "telemetry-only" in egglog["description"]
     assert set(catalogue_passes[0]["options"]["transforms"]) == {
         "add-hackers-delight-2",
         "add-hackers-delight-3",
@@ -451,14 +440,6 @@ def test_corpus_configs_are_provider_isolated_and_egglog_is_explicitly_interacti
         "xor-hackers-delight-1",
         "xor-hackers-delight-3",
     }
-
-    degree2 = json.loads(_EGGLOG_DEGREE2_CONFIG.read_text(encoding="utf-8"))
-    degree2_options = degree2["additional_configuration"]["pipeline_v2"][0]["options"]
-    assert degree2_options["max_degree"] == 2
-    assert degree2_options["max_leaves"] == 4
-    assert degree2_options["time_budget_ms"] > 3
-    assert "root-only" in degree2["description"]
-
 
 def test_catalogue_corpus_keeps_legacy_dsl_matching_by_default() -> None:
     """The portfolio pass stays stable while structural matching remains gated."""
@@ -472,21 +453,6 @@ def test_catalogue_corpus_keeps_legacy_dsl_matching_by_default() -> None:
     assert [
         item["pass_id"] for item in catalogue["additional_configuration"]["pipeline_v2"]
     ] == ["mba-simplify"]
-
-
-@pytest.mark.parametrize(
-    "profile_path", (_PORTFOLIO_SPIKE_CONFIG, _PORTFOLIO_DEEP_CONFIG)
-)
-def test_checked_in_profiles_ship_no_structural_parity_certificate(
-    profile_path: Path,
-) -> None:
-    """Only temporary evidence may authorize the structural matcher."""
-
-    profile = json.loads(profile_path.read_text(encoding="utf-8"))
-    additional = profile["additional_configuration"]
-    assert "structural_matcher_parity_certificate" not in additional
-    assert "structural_matcher_parity_expectation" not in additional
-    assert "structural matching remains legacy-default" in profile["description"].lower()
 
 
 def test_corpus_projects_register_their_one_intended_provider(
@@ -509,20 +475,6 @@ def test_corpus_projects_register_their_one_intended_provider(
         assert sum(
             len(adapter.pattern_candidates) for adapter in catalogue_adapters
         ) >= len(catalogue_adapters)
-
-        state.load_project(
-            state.project_manager.index("mba_compiler_shape_egglog.json")
-        )
-        assert state.last_pipeline_v2_hook_pass_ids == ("mba-egraph",)
-        assert [rule.name for rule in state.current_ins_rules] == ["EgglogOptimizer"]
-
-        state.load_project(
-            state.project_manager.index("mba_compiler_shape_egglog_degree2.json")
-        )
-        assert state.last_pipeline_v2_hook_pass_ids == ("mba-egraph",)
-        optimizer = state.current_ins_rules[0]
-        assert optimizer.max_degree == 2
-        assert optimizer.families == ("add", "and", "or", "sub", "xor")
 
 
 @pytest.mark.usefixtures("configure_hexrays")

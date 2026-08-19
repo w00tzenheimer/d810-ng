@@ -142,6 +142,36 @@ class TestNativeMbaExtensionHost:
             known_constants=None,
         )
 
+    def test_nested_expression_rebuild_preserves_legacy_move_shape(self):
+        """Nested optinsn expressions have mop_z destinations by design.
+
+        The pre-extraction handler materialized these ASTs as an m_mov whose
+        source is the rebuilt expression.  Calling AstNode.create_minsn()
+        directly produces an operation instruction with a mop_z destination,
+        which is the wrong API shape for the outer optinsn swap and is rejected
+        by the host's top-level destination validator.
+        """
+
+        host = native_mba_host_services()
+        source = _node(ida_hexrays.m_xor, _leaf("x", 1), _constant(0))
+        instruction = source.create_minsn(0x401000)
+        assert instruction.d.t == ida_hexrays.mop_z
+        candidate = host.capture_instruction(instruction)
+        assert candidate is not None
+        assert candidate.raw_term is not None
+        leaf = next(
+            node for node in candidate.raw_term.children if node.leaf_key is not None
+        )
+
+        reconstruction = host.rebuild(candidate, leaf)
+
+        assert reconstruction is not None
+        replacement = reconstruction.replacement_instruction
+        assert replacement.opcode == ida_hexrays.m_mov
+        assert replacement.d.t == ida_hexrays.mop_z
+        assert replacement.d.size == 4
+        assert replacement.l.t == ida_hexrays.mop_r
+
     def test_rebuild_rejects_ast_candidate_without_destination(self):
         host = native_mba_host_services()
         source = _node(ida_hexrays.m_xor, _leaf("x", 1), _constant(0))

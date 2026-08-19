@@ -61,6 +61,13 @@ def test_optimizer_runtime_contract_is_exported_through_extension_api() -> None:
         assert hasattr(extension_api, name), name
 
 
+def test_canonical_fixed_bindings_is_an_extension_api_dto() -> None:
+    from d810.mba.canonical_pattern import CanonicalFixedBindings
+
+    assert extension_api.CanonicalFixedBindings is CanonicalFixedBindings
+    assert "CanonicalFixedBindings" in extension_api.__all__
+
+
 def test_host_protocol_exposes_native_maturity_resolution() -> None:
     assert "maturities_for_names" in NativeMbaHostServices.__dict__
 
@@ -200,9 +207,10 @@ def test_typed_term_proof_is_the_single_native_and_portable_authority(
         "prove_typed_term_equivalence",
         lambda _left, _right: True,
     )
-    assert native_z3_proof_template.prove_typed_term_equivalence(
-        valid_left, valid_right
-    ) is True
+    assert (
+        native_z3_proof_template.prove_typed_term_equivalence(valid_left, valid_right)
+        is True
+    )
 
 
 def test_typed_term_proof_parity_when_z3_is_unavailable(

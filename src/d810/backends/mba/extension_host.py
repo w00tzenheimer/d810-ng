@@ -387,9 +387,7 @@ class _NativeMbaHostServices:
         if not isinstance(names, (list, tuple)) or not names:
             raise ValueError("maturities must be a non-empty sequence")
         try:
-            return tuple(
-                ir_maturity_to_ida(IRMaturity[str(name)]) for name in names
-            )
+            return tuple(ir_maturity_to_ida(IRMaturity[str(name)]) for name in names)
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("maturities must be IRMaturity names") from exc
 
@@ -453,7 +451,11 @@ def _materialize_instruction(
     destination_size: int,
 ) -> object | None:
     destination = _copy_destination(context.destination)
-    if not _valid_destination(destination, destination_size):
+    create_mop = getattr(replacement_ast, "create_mop", None)
+    ast_materialization = callable(create_mop)
+    if not _valid_destination(destination, destination_size) and not (
+        ast_materialization and _valid_nested_destination(destination, destination_size)
+    ):
         return None
 
     # Rotate helper reconstruction already returns a live minsn_t.  Preserve
@@ -469,6 +471,33 @@ def _materialize_instruction(
             )
 
     ea = _native_ea(context.source_instruction, context.source_ast)
+
+    # A rebuilt AstNode is an expression value, not an instruction-level
+    # replacement.  The legacy handler materialized that value as an m_mov
+    # whose source is ``create_mop(ea)`` and whose destination is the original
+    # instruction destination.  Calling AstNode.create_minsn(ea, destination)
+    # first changes the API shape: it returns the expression opcode itself and
+    # retains mop_z for nested optinsn expressions.  Keep the old move shape
+    # for AST values; native rotate helpers return a live minsn_t and continue
+    # through the instruction path below.
+    if ast_materialization:
+        try:
+            import ida_hexrays
+
+            instruction = ida_hexrays.minsn_t(ea)
+            instruction.opcode = ida_hexrays.m_mov
+            instruction.l = create_mop(ea)
+            instruction.r = ida_hexrays.mop_t()
+            instruction.r.erase()
+            instruction.d = destination
+            if not _valid_expression_instruction_destination(
+                instruction, destination_size
+            ):
+                return None
+            return instruction
+        except Exception:
+            return None
+
     try:
         create_minsn = getattr(replacement_ast, "create_minsn", None)
         if callable(create_minsn):
@@ -536,6 +565,39 @@ def _valid_destination(destination: object | None, destination_size: int) -> boo
             and type(getattr(destination, "size")) is int
             and destination.size == destination_size
         )
+    except Exception:
+        return False
+
+
+def _valid_nested_destination(
+    destination: object | None, destination_size: int
+) -> bool:
+    """Accept the mop_z destination carried by a nested expression minsn."""
+
+    if destination is None:
+        return False
+    try:
+        import ida_hexrays
+
+        return (
+            int(getattr(destination, "t")) == int(ida_hexrays.mop_z)
+            and type(getattr(destination, "size")) is int
+            and destination.size == destination_size
+        )
+    except Exception:
+        return False
+
+
+def _valid_expression_instruction_destination(
+    instruction: object | None,
+    destination_size: int,
+) -> bool:
+    """Validate both top-level and nested AST-to-move destinations."""
+
+    if _valid_instruction_destination(instruction, destination_size):
+        return True
+    try:
+        return _valid_nested_destination(getattr(instruction, "d"), destination_size)
     except Exception:
         return False
 

@@ -25,6 +25,7 @@ from d810.mba.certified_rule_compiler import (
 from d810.mba.certified_catalogue import build_certified_catalogue_snapshot
 from d810.mba.canonical_pattern import (
     CanonicalCompiledPattern,
+    CanonicalFixedBindings,
     CanonicalPatternMalformed,
     CanonicalPatternUnsupported,
     compile_canonical_pattern,
@@ -185,9 +186,7 @@ def _is_validated_typed_term(term: object, *, width: int, active: set[int]) -> b
         ):
             return False
         expected_arity = (
-            1
-            if term.operation in {"bnot", "neg"} | FIXED_SHIFT_OPERATIONS
-            else 2
+            1 if term.operation in {"bnot", "neg"} | FIXED_SHIFT_OPERATIONS else 2
         )
         if len(term.children) != expected_arity:
             return False
@@ -206,7 +205,9 @@ def _is_validated_typed_term(term: object, *, width: int, active: set[int]) -> b
         active.remove(id(term))
 
 
-def _lower_typed_term(term: TypedBvTerm, *, variables: dict[tuple[object, ...], object], z3):
+def _lower_typed_term(
+    term: TypedBvTerm, *, variables: dict[tuple[object, ...], object], z3
+):
     if term.operation is None:
         if term.value is not None:
             return z3.BitVecVal(term.value, term.width)
@@ -456,6 +457,7 @@ __all__ = [
     "CANONICALIZER_SCHEMA_VERSION",
     "AcMatchStopReason",
     "CanonicalCompiledPattern",
+    "CanonicalFixedBindings",
     "CanonicalMbaTermView",
     "CanonicalMbaRuleCatalogue",
     "CanonicalPatternComparisonBudgetExceeded",
