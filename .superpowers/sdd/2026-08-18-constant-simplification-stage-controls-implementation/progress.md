@@ -46,7 +46,7 @@
 | 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix5b` | PASS | PASS | 129 Python + 129 Cython + 15 focused resolver + 1 parity + 1 AstProxy + 14 def-search + 2 cumulative probes in both modes; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `35e114973`, `a4b5e045c`, `540995e67` | complete after 5 fix rounds |
 | 6 | `6446f49f1` | `/root/constant_stage_task6` + `/root/constant_stage_task6_defaults_fix` | PASS | PASS | 152 focused/adjacent units + 18 normal/18 Cython IDA runtime; final controller rerun 134 units; Ruff/py_compile/sg/import-linter/diff-check passed | `b7cee6071`, `9034ae5ad`, `4b0f03a23`, `7d40d1f8f` | complete after 3 review fix rounds |
 | 7 | `63d4eb393` | `/root/constant_stage_task7_retry` | PASS | PASS | 150 focused; 68 JSON/171 pipeline configs; adjacent 235 pass with one base-reproduced failure; controller reran 150; ruff/py_compile/sg/import-linter/diff-check passed | `446b1d6b9`, `ea064b829`, `7fc778080` | complete |
-| 8 | `84db1bcd4` | `/root/constant_stage_task8_retry` | PASS | PASS | 11 compiled E2E + 217 focused units + 2 native order tests; sg/import-linter/diff-check passed | this commit | acceptance green; provenance fix re-review pending |
+| 8 | `84db1bcd4` | `/root/constant_stage_task8_retry` | PASS | PASS | 11 compiled E2E + 258 final focused units + ordered 34-case E2E + 11 activation/lifecycle tests; sg/import-linter/diff-check passed | `b6617eb44`, `495e92d76`, `9a2785233`, `a6f0a6b97` | complete after acceptance hardening and lifecycle repair |
 
 ## Controller rulings
 
@@ -276,3 +276,33 @@
   E2E suite (`4616` deselected, no skips). Architecture gates, Ruff, shell
   syntax, and diff-check passed. Final artifact:
   `.tmp/constant_stage_controls_e2e_review_fix1_final.txt`.
+
+## Final branch verification and review
+
+- Final focused units passed `258/258` on HEAD `a6f0a6b97`; the corrected
+  canonical stage/editor assertions independently passed `78/78`.
+- Final IDA activation and maturity-wide observer contracts passed `11/11` in
+  `.tmp/root_final_activation_lifecycle.txt`, including the test that had
+  appeared in the earlier contaminated-suite teardown stack.
+- Constant-stage acceptance passed `11/11` in
+  `.tmp/calls_observer_constant_stage_e2e.txt`; the ordered predecessor matrix
+  passed `34/34` in `.tmp/ordered_constant_stage_post_capture.txt`.
+- The fresh full-system attempt passed all constant-stage cases before reaching
+  the unrelated dead-edge cluster. An exact clean-base comparison reproduced
+  the same `4 failed, 1 passed` results, all caused by fixture functions absent
+  from the committed base DLL. The full-system gate therefore remains open and
+  is not represented as green.
+- Broad host units are likewise not represented as green: host Unicorn raises
+  `SIGILL`, private RHAD inventories are absent, local socket tests are sandbox
+  blocked, and representative residual failures reproduce on the base. Both
+  Unicorn oracle files pass in Docker; all branch-introduced stale assertions
+  were fixed and rerun.
+- Final independent Luna-max review on `a6f0a6b97` found no P0/P1 defect and
+  returned specification PASS and code-quality PASS. It specifically passed
+  the maturity-wide `POST_D810_CAPTURE` seam, exact `MMAT_CALLS` filtering,
+  multi-block coverage, pre-GLBOPT lifecycle interpretation, shared immutable
+  runtime/Workbench schedule, preparation/folding separation, independent Z3
+  policies, fail-closed behavior, migration, and fixture integrity.
+- Final architecture gates passed (`sg`: 14 kept/0 broken; import-linter:
+  14 kept/0 broken), as did shell syntax and diff checks. The broader-suite
+  limitations above are retained as open plan checkboxes rather than hidden.

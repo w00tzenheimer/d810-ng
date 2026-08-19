@@ -146,12 +146,12 @@ Extend `ExecutionStageDescriptor` with `lifecycle_domain` and `supported_maturit
 
 ### TDD steps
 
-- [ ] Add parameterized tests for the canonical defaults and every explicit field. Assert all frozen compiled values, not just parser acceptance.
-- [ ] Add tests proving legacy flat options compile to the exact canonical schedule and that the current default mutation coverage is unchanged.
-- [ ] Add rejection tests for mixed legacy/canonical input, unknown nested keys, malformed types, unsupported maturities, and enabled-empty intersections. Assert diagnostic substrings specified above.
-- [ ] Add normalization tests using duplicate portable/provider spellings and assert one deterministic tuple.
-- [ ] Add immutability tests that attempt to mutate nested compiled options.
-- [ ] Run the focused tests and retain the expected RED result:
+- [x] Add parameterized tests for the canonical defaults and every explicit field. Assert all frozen compiled values, not just parser acceptance.
+- [x] Add tests proving legacy flat options compile to the exact canonical schedule and that the current default mutation coverage is unchanged.
+- [x] Add rejection tests for mixed legacy/canonical input, unknown nested keys, malformed types, unsupported maturities, and enabled-empty intersections. Assert diagnostic substrings specified above.
+- [x] Add normalization tests using duplicate portable/provider spellings and assert one deterministic tuple.
+- [x] Add immutability tests that attempt to mutate nested compiled options.
+- [x] Run the focused tests and retain the expected RED result:
 
   ```bash
   PYTHONPATH=src pytest -q \
@@ -160,11 +160,11 @@ Extend `ExecutionStageDescriptor` with `lifecycle_domain` and `supported_maturit
     tests/unit/passes/test_execution_stages.py
   ```
 
-- [ ] Implement the portable models, contracts, parser, and compiler with no IDA imports.
-- [ ] Replace the old flat `_parse_options` result with the compiled canonical schedule while preserving `build_constant_simplification_pass` as the public registry builder.
-- [ ] Rerun the focused tests GREEN.
-- [ ] Run `PYTHONPATH=src pytest -q tests/unit/passes/test_operational_config_v2.py tests/unit/core/test_config_v2_defaults.py`.
-- [ ] Commit only Task 1 files with message `feat(config): compile constant simplification stages`.
+- [x] Implement the portable models, contracts, parser, and compiler with no IDA imports.
+- [x] Replace the old flat `_parse_options` result with the compiled canonical schedule while preserving `build_constant_simplification_pass` as the public registry builder.
+- [x] Rerun the focused tests GREEN.
+- [x] Run `PYTHONPATH=src pytest -q tests/unit/passes/test_operational_config_v2.py tests/unit/core/test_config_v2_defaults.py`.
+- [x] Commit only Task 1 files with message `feat(config): compile constant simplification stages`.
 
 ---
 
@@ -221,12 +221,12 @@ Do not use this live check as the schedule source. It is an assertion against th
 
 ### TDD steps
 
-- [ ] Add bridge tests proving each of the eight enable/disable combinations emits the correct ordered instruction and block rule names.
-- [ ] Add tests proving pass gates and stage maturities produce the exact `maturities` private config and no other stage is altered.
-- [ ] Add a test proving the bridge carries the identical compiled schedule object/value into the project-runtime snapshot.
-- [ ] Add a test that simulates a live default-support drift and asserts fail-closed startup with the implementation and stage named.
-- [ ] Add a system test inside IDA that instantiates all three rules from a narrowed schedule and asserts their native `maturities` equal the selected provider constants.
-- [ ] Run the focused unit tests RED:
+- [x] Add bridge tests proving each of the eight enable/disable combinations emits the correct ordered instruction and block rule names.
+- [x] Add tests proving pass gates and stage maturities produce the exact `maturities` private config and no other stage is altered.
+- [x] Add a test proving the bridge carries the identical compiled schedule object/value into the project-runtime snapshot.
+- [x] Add a test that simulates a live default-support drift and asserts fail-closed startup with the implementation and stage named.
+- [x] Add a system test inside IDA that instantiates all three rules from a narrowed schedule and asserts their native `maturities` equal the selected provider constants.
+- [x] Run the focused unit tests RED:
 
   ```bash
   PYTHONPATH=src pytest -q \
@@ -234,9 +234,9 @@ Do not use this live check as the schedule source. It is an assertion against th
     tests/unit/manager/test_project_runtime.py
   ```
 
-- [ ] Implement activation and project-runtime propagation.
-- [ ] Rerun the unit tests GREEN.
-- [ ] From the main repo root, run the IDA test:
+- [x] Implement activation and project-runtime propagation.
+- [x] Rerun the unit tests GREEN.
+- [x] From the main repo root, run the IDA test:
 
   ```bash
   ./tools/scripts/run_system_tests_docker.sh test \
@@ -245,7 +245,7 @@ Do not use this live check as the schedule source. It is an assertion against th
     tests/system/runtime/test_constant_simplification_stage_activation.py -q
   ```
 
-- [ ] Commit Task 2 with message `feat(runtime): activate compiled constant stages`.
+- [x] Commit Task 2 with message `feat(runtime): activate compiled constant stages`.
 
 ---
 
@@ -294,12 +294,12 @@ Remove `_persist_proven_global_consts`, dynamic-table discovery state, and the `
 
 ### TDD steps
 
-- [ ] Add a unit test proving whole-item const preparation is called when preparation is enabled while `fold-readonly-data` is disabled.
-- [ ] Add a unit test proving readonly folding may be enabled while preparation is disabled and no type proposal is queued.
-- [ ] Add a policy test proving aggressive readonly folding still cannot persist a writable object as const.
-- [ ] Add observer tests for disabled preparation, disabled dynamic discovery, wrong maturity, exact CALLS traversal, duplicate events, and queue failures. Queue failures must abstain/fail closed without mutation.
-- [ ] Add a test asserting no restart request/event is emitted and the pending reason is exactly `next preparation round`.
-- [ ] Run focused tests RED:
+- [x] Add a unit test proving whole-item const preparation is called when preparation is enabled while `fold-readonly-data` is disabled.
+- [x] Add a unit test proving readonly folding may be enabled while preparation is disabled and no type proposal is queued.
+- [x] Add a policy test proving aggressive readonly folding still cannot persist a writable object as const.
+- [x] Add observer tests for disabled preparation, disabled dynamic discovery, wrong maturity, exact CALLS traversal, duplicate events, and queue failures. Queue failures must abstain/fail closed without mutation.
+- [x] Add a test asserting no restart request/event is emitted and the pending reason is exactly `next preparation round`.
+- [x] Run focused tests RED:
 
   ```bash
   PYTHONPATH=src pytest -q \
@@ -307,9 +307,9 @@ Remove `_persist_proven_global_consts`, dynamic-table discovery state, and the `
     tests/unit/manager/test_global_const_observer.py
   ```
 
-- [ ] Implement the separation and observer.
-- [ ] Rerun focused tests GREEN.
-- [ ] Run the global const system tests from the main root:
+- [x] Implement the separation and observer.
+- [x] Rerun focused tests GREEN.
+- [x] Run the global const system tests from the main root:
 
   ```bash
   ./tools/scripts/run_system_tests_docker.sh test \
@@ -319,7 +319,7 @@ Remove `_persist_proven_global_consts`, dynamic-table discovery state, and the `
     tests/system/e2e/test_pre_hexrays_idb_preparation.py -q
   ```
 
-- [ ] Commit Task 3 with message `refactor(constants): separate preparation from folding`.
+- [x] Commit Task 3 with message `refactor(constants): separate preparation from folding`.
 
 ---
 
@@ -390,13 +390,13 @@ Group instruction and flow stages independently at a maturity. Do not fabricate 
 
 ### TDD steps
 
-- [ ] Add pure editor-spec tests for all nested paths, defaults, choice vocabularies, and validation.
-- [ ] Add logic tests proving a choice-backed string list rejects unknown values and round-trips a subset without changing its order/value semantics.
-- [ ] Add Qt host-contract tests proving the control is editable and emits the selected list. Keep GUI mechanics minimal and test pure normalization separately.
-- [ ] Add schedule tests proving Workbench output equals the compiled schedule even when fake live rule objects advertise conflicting maturities.
-- [ ] Add preparation-row tests for pending/applied/conflicting/restored and the next-round reason.
-- [ ] Add rendering tests proving supported/requested/gates/effective/source/pipeline order are visible and disabled stages remain visible rather than disappearing.
-- [ ] Run focused tests RED:
+- [x] Add pure editor-spec tests for all nested paths, defaults, choice vocabularies, and validation.
+- [x] Add logic tests proving a choice-backed string list rejects unknown values and round-trips a subset without changing its order/value semantics.
+- [x] Add Qt host-contract tests proving the control is editable and emits the selected list. Keep GUI mechanics minimal and test pure normalization separately.
+- [x] Add schedule tests proving Workbench output equals the compiled schedule even when fake live rule objects advertise conflicting maturities.
+- [x] Add preparation-row tests for pending/applied/conflicting/restored and the next-round reason.
+- [x] Add rendering tests proving supported/requested/gates/effective/source/pipeline order are visible and disabled stages remain visible rather than disappearing.
+- [x] Run focused tests RED:
 
   ```bash
   PYTHONPATH=src pytest -q \
@@ -409,9 +409,9 @@ Group instruction and flow stages independently at a maturity. Do not fabricate 
     tests/unit/ui/test_project_config_adapter_contract.py
   ```
 
-- [ ] Implement generic editor and Workbench projection changes.
-- [ ] Rerun focused tests GREEN.
-- [ ] Commit Task 4 with message `feat(workbench): expose constant stage schedule`.
+- [x] Implement generic editor and Workbench projection changes.
+- [x] Rerun focused tests GREEN.
+- [x] Commit Task 4 with message `feat(workbench): expose constant stage schedule`.
 
 ---
 
@@ -476,12 +476,12 @@ Do not merely call an existing post-construction node counter.
 
 ### TDD steps
 
-- [ ] Add pure policy validation and immutability tests.
-- [ ] Add unit tests around a portable/fake expansion walker proving exact occurrence counts and pre-construction cutoff.
-- [ ] Add IDA system tests for an in-budget proof, one-node-too-small abstention, timeout/unknown, unsupported expression, and cache isolation between different policies.
-- [ ] Add a test proving the process-global solver timeout is unchanged after a bounded proof.
-- [ ] Run pure tests RED, implement the policy types and budget primitive, then rerun GREEN.
-- [ ] Run IDA tests from the main root:
+- [x] Add pure policy validation and immutability tests.
+- [x] Add unit tests around a portable/fake expansion walker proving exact occurrence counts and pre-construction cutoff.
+- [x] Add IDA system tests for an in-budget proof, one-node-too-small abstention, timeout/unknown, unsupported expression, and cache isolation between different policies.
+- [x] Add a test proving the process-global solver timeout is unchanged after a bounded proof.
+- [x] Run pure tests RED, implement the policy types and budget primitive, then rerun GREEN.
+- [x] Run IDA tests from the main root:
 
   ```bash
   ./tools/scripts/run_system_tests_docker.sh test \
@@ -491,7 +491,7 @@ Do not merely call an existing post-construction node counter.
     tests/system/runtime/backends/ast/test_z3_set_comparisons.py -q
   ```
 
-- [ ] Commit Task 5 with message `feat(z3): bound predicate proof resources`.
+- [x] Commit Task 5 with message `feat(z3): bound predicate proof resources`.
 
 ---
 
@@ -547,12 +547,12 @@ For `setz`, `setnz`, and `lnot`:
 
 ### TDD steps
 
-- [ ] Add parser/editor tests for defaults, explicit values, range/type rejection, and unknown keys for all three transform IDs.
-- [ ] Add construction tests that configure three rules with distinct values and assert three distinct immutable policies.
-- [ ] Add tests covering every prover creation branch in each predicate, using a fake result API to prove the configured policy is preserved.
-- [ ] Add a cross-rule isolation test: force `setz` to hit a low node limit, then prove `setnz` succeeds under a larger limit, and verify `lnot` retains its unrelated timeout.
-- [ ] Add receipt tests for proved and each abstention reason. Assert routine abstentions do not emit ERROR logs.
-- [ ] Run focused unit tests RED:
+- [x] Add parser/editor tests for defaults, explicit values, range/type rejection, and unknown keys for all three transform IDs.
+- [x] Add construction tests that configure three rules with distinct values and assert three distinct immutable policies.
+- [x] Add tests covering every prover creation branch in each predicate, using a fake result API to prove the configured policy is preserved.
+- [x] Add a cross-rule isolation test: force `setz` to hit a low node limit, then prove `setnz` succeeds under a larger limit, and verify `lnot` retains its unrelated timeout.
+- [x] Add receipt tests for proved and each abstention reason. Assert routine abstentions do not emit ERROR logs.
+- [x] Run focused unit tests RED:
 
   ```bash
   PYTHONPATH=src pytest -q \
@@ -562,9 +562,9 @@ For `setz`, `setnz`, and `lnot`:
     tests/unit/optimizers/test_z3_predicate_options.py
   ```
 
-- [ ] Implement transform schema, rule configuration, proof use, and diagnostics.
-- [ ] Rerun focused tests GREEN.
-- [ ] Run IDA test from the main root:
+- [x] Implement transform schema, rule configuration, proof use, and diagnostics.
+- [x] Rerun focused tests GREEN.
+- [x] Run IDA test from the main root:
 
   ```bash
   ./tools/scripts/run_system_tests_docker.sh test \
@@ -573,7 +573,7 @@ For `setz`, `setnz`, and `lnot`:
     tests/system/runtime/test_z3_predicate_bounds.py -q
   ```
 
-- [ ] Commit Task 6 with message `feat(mba): configure bounded z3 predicates`.
+- [x] Commit Task 6 with message `feat(mba): configure bounded z3 predicates`.
 
 ---
 
@@ -603,9 +603,9 @@ For `setz`, `setnz`, and `lnot`:
 
 ### TDD steps
 
-- [ ] Add a repository-profile test that enumerates all bundled config files, locates constant simplification entries, rejects legacy keys, compiles every entry, and snapshots/asserts expected effective behavior for the Eid-prefixed v3/v4 profiles plus the default profiles.
-- [ ] Add an external legacy load/save test proving output is canonical and equivalent.
-- [ ] Run focused tests RED:
+- [x] Add a repository-profile test that enumerates all bundled config files, locates constant simplification entries, rejects legacy keys, compiles every entry, and snapshots/asserts expected effective behavior for the Eid-prefixed v3/v4 profiles plus the default profiles.
+- [x] Add an external legacy load/save test proving output is canonical and equivalent.
+- [x] Run focused tests RED:
 
   ```bash
   PYTHONPATH=src pytest -q \
@@ -615,10 +615,10 @@ For `setz`, `setnz`, and `lnot`:
     tests/unit/ui/test_config_v2_editing_logic.py
   ```
 
-- [ ] Migrate configurations and serialization.
-- [ ] Rerun focused tests GREEN.
-- [ ] Validate every JSON file with Python's JSON parser and the project's config parser.
-- [ ] Commit Task 7 with message `chore(config): migrate constant stage controls`.
+- [x] Migrate configurations and serialization.
+- [x] Rerun focused tests GREEN.
+- [x] Validate every JSON file with Python's JSON parser and the project's config parser.
+- [x] Commit Task 7 with message `chore(config): migrate constant stage controls`.
 
 ---
 
@@ -715,6 +715,15 @@ An eligible rule, a log line saying it started, or a nonzero generic mutation co
   PYTHONPATH=src pytest -q tests/unit
   ```
 
+  Attempted on the final branch. The host run reached `10845 passed`,
+  `47 skipped`, `214 subtests passed`, and `37 failed` after excluding the two
+  host-Unicorn files that each terminate this machine with `SIGILL`. Every
+  branch-introduced stale assertion was corrected and rerun (`78 passed`);
+  representative remaining failures reproduce on base, require absent private
+  RHAD inventories, or are local socket/Unicorn environment failures. The two
+  Unicorn files pass in the IDA Docker runtime. This gate remains open because
+  the literal whole host command is not green.
+
 - [ ] Run the full Docker system suite from the main root and retain the output:
 
   ```bash
@@ -724,6 +733,15 @@ An eligible rule, a log line saying it started, or a nonzero generic mutation co
     -o constant_stage_controls_full_system.txt -- \
     -vv
   ```
+
+  Attempted twice and retained. The first run cascaded through shared state and
+  terminated in IDA netnode teardown at 83%. After the CALLS lifecycle repair,
+  the fresh run passed all `11/11` constant-stage cases in-suite before reaching
+  four unrelated dead-edge fixture failures; the same `4 failed, 1 passed`
+  cluster reproduces on clean base `a44278899`. The exact former teardown test
+  passes in a fresh focused process (`11 passed` across activation and observer
+  contracts). This gate remains open because the repository-wide suite is not
+  green on either the feature branch or its exact base.
 
 - [x] Classify every failure as introduced, pre-existing, or environmental with exact test names and logs. Fix every introduced failure before completion; do not hide it with a skip/quarantine.
 - [x] Attempt `graphify update .` from the worktree and inspect the resulting diff. The incremental scanner entered its known silent rebuild interval and was interrupted after bounded observation; it produced no tracked graph diff.
@@ -737,16 +755,16 @@ An eligible rule, a log line saying it started, or a nonzero generic mutation co
 
 ## Final Review and Handoff Checklist
 
-- [ ] Verify `git diff <plan-base>...HEAD` contains only the planned feature, tests, configs, fixture, documentation, and any expected graph update.
-- [ ] Verify no legacy `persist_global_const_annotations` behavior remains inside `FoldReadonlyDataRule`.
-- [ ] Verify runtime activation and Workbench use the same compiled constant schedule value.
-- [ ] Verify disabled stages are absent from live worklists but visible as disabled in Workbench.
-- [ ] Verify no configuration can add an unsupported maturity or silently collapse an enabled stage to an empty schedule.
-- [ ] Verify const preparation works with readonly folding disabled and readonly folding works with const preparation disabled.
-- [ ] Verify dynamic discovery works with readonly folding disabled, observes only CALLS, queues next-round proposals, and never forces restart.
-- [ ] Verify all three generic predicates have independent defaults/overrides and no solver, timeout, node budget, or cache state leaks between them.
-- [ ] Verify bounded abstentions cannot mutate and do not log as routine errors.
-- [ ] Verify all dedicated fixture cases show before/after pseudocode plus schedule/mutation/preparation/proof receipts.
-- [ ] Run a final independent code-review agent against this plan and the full diff. Resolve every spec or quality finding, then rerun affected tests.
-- [ ] Run the verification-before-completion checklist and record exact commands, exit codes, and output artifact paths.
-- [ ] Do not merge, push, or remove the worktree unless the user explicitly requests integration after reviewing the completed result.
+- [x] Verify `git diff <plan-base>...HEAD` contains only the planned feature, tests, configs, fixture, documentation, and any expected graph update.
+- [x] Verify no legacy `persist_global_const_annotations` behavior remains inside `FoldReadonlyDataRule`.
+- [x] Verify runtime activation and Workbench use the same compiled constant schedule value.
+- [x] Verify disabled stages are absent from live worklists but visible as disabled in Workbench.
+- [x] Verify no configuration can add an unsupported maturity or silently collapse an enabled stage to an empty schedule.
+- [x] Verify const preparation works with readonly folding disabled and readonly folding works with const preparation disabled.
+- [x] Verify dynamic discovery works with readonly folding disabled, observes only CALLS, queues next-round proposals, and never forces restart.
+- [x] Verify all three generic predicates have independent defaults/overrides and no solver, timeout, node budget, or cache state leaks between them.
+- [x] Verify bounded abstentions cannot mutate and do not log as routine errors.
+- [x] Verify all dedicated fixture cases show before/after pseudocode plus schedule/mutation/preparation/proof receipts.
+- [x] Run a final independent code-review agent against this plan and the full diff. Resolve every spec or quality finding, then rerun affected tests.
+- [x] Run the verification-before-completion checklist and record exact commands, exit codes, and output artifact paths.
+- [x] Do not merge, push, or remove the worktree unless the user explicitly requests integration after reviewing the completed result.
