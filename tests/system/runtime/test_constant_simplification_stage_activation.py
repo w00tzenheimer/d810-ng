@@ -88,14 +88,78 @@ def _live_rule_names(state) -> set[str]:
 
 def _prepare_started_manager(state) -> None:
     class RecordingOptimizer:
-        def __init__(self, rules):
+        """Small adapter model covering the live configure/reset state."""
+
+        def __init__(self, rules, *, pipeline: str):
+            self.pipeline = pipeline
             self.rules = list(rules)
+            self.cfg_rules = self.rules
+            self._execution_scope_service = None
+            self._execution_scope_project_name = "baseline"
+            self._execution_scope_idb_key = "baseline-idb"
+            self._execution_scope_func_ea = 0x401000
+            self._active_instruction_rule_names_by_maturity = {
+                1: frozenset({"baseline-rule"})
+            }
+            self._residual_admission_cache_key = (1, frozenset({"baseline-rule"}))
+            self._residual_admission_cache_value = True
+            self._active_optimizers = ["baseline-optimizer"]
+            self._indexed_storage = {"baseline": "index"}
+            self._generation = 11
+            self._flow_context = "baseline-flow-context"
+            self._flow_context_key = (1, 2, 3, 4, 5)
+            self._project_config = {"project_name": "baseline"}
+            self.fail_restore = False
 
         def configure(self, **kwargs):
             self.configuration = kwargs
+            self._execution_scope_service = kwargs.get(
+                "execution_scope_service", self._execution_scope_service
+            )
+            self._execution_scope_project_name = kwargs.get(
+                "execution_scope_project_name", self._execution_scope_project_name
+            )
+            self._execution_scope_idb_key = kwargs.get(
+                "execution_scope_idb_key", self._execution_scope_idb_key
+            )
+            self._execution_scope_func_ea = -1
+            self._active_instruction_rule_names_by_maturity.clear()
+            self._residual_admission_cache_key = None
+            self._residual_admission_cache_value = False
+            self._active_optimizers = []
+            self._indexed_storage = {"candidate": "index"}
+            self._flow_context = None
+            self._flow_context_key = None
+            self._project_config = dict(kwargs)
+            self._generation += 1
 
         def replace_rules(self, rules):
             self.rules = list(rules)
+            self.cfg_rules = self.rules
+            self._active_instruction_rule_names_by_maturity.clear()
+            self._residual_admission_cache_key = None
+            self._residual_admission_cache_value = False
+            self._active_optimizers = []
+            self._indexed_storage = {"candidate": "index"}
+            self._flow_context = None
+            self._flow_context_key = None
+            self._generation += 1
+
+        def capture_runtime_state(self):
+            return {
+                name: value.copy() if isinstance(value, dict) else value
+                for name, value in vars(self).items()
+                if name != "fail_restore"
+            }
+
+        def restore_runtime_state(self, snapshot):
+            if self.fail_restore:
+                raise RuntimeError(f"{self.pipeline} adapter restore failed")
+            for name in tuple(vars(self)):
+                if name not in snapshot and name != "fail_restore":
+                    delattr(self, name)
+            for name, value in snapshot.items():
+                setattr(self, name, value.copy() if isinstance(value, dict) else value)
 
         def remove(self):
             return None
@@ -104,9 +168,11 @@ def _prepare_started_manager(state) -> None:
     manager.instruction_optimizer_rules = list(state.current_ins_rules)
     manager.block_optimizer_rules = list(state.current_blk_rules)
     manager.instruction_optimizer = RecordingOptimizer(
-        manager.instruction_optimizer_rules
+        manager.instruction_optimizer_rules, pipeline="instruction"
     )
-    manager.block_optimizer = RecordingOptimizer(manager.block_optimizer_rules)
+    manager.block_optimizer = RecordingOptimizer(
+        manager.block_optimizer_rules, pipeline="block"
+    )
     manager._sync_native_preanalysis_handlers = lambda: None
     manager._started = True
 
@@ -243,9 +309,12 @@ def test_started_activation_drift_preserves_previous_state_and_scope(
     with d810_state() as state:
         original_index = state.current_project_index
         baseline = _project_with_constant_stages(enabled=True)
-        known_rules = list(state.known_ins_rules)
-        if not any(rule.name == "FoldReadonlyDataRule" for rule in known_rules):
-            known_rules.append(FoldReadonlyDataRule())
+        known_rules = [
+            rule
+            for rule in state.known_ins_rules
+            if rule.name != "FoldReadonlyDataRule"
+        ]
+        known_rules.append(FoldReadonlyDataRule())
         monkeypatch.setattr(
             state,
             "_build_known_instruction_rules",
@@ -327,5 +396,140 @@ def test_started_activation_drift_preserves_previous_state_and_scope(
             assert tuple(manager.execution_scope_service._stages) == before_scope
         finally:
             monkeypatch.undo()
+            state.load_project(original_index)
+            state.manager._started = False
+
+
+@pytest.mark.ida_required
+def test_started_activation_restores_scope_caches_and_adapter_context_after_late_failure(
+    d810_state, monkeypatch
+) -> None:
+    """A late live failure restores adapter context and non-empty scope caches."""
+    from d810.core.execution_scope import ExecutionScopeInvalidation
+
+    with d810_state() as state:
+        original_index = state.current_project_index
+        baseline = _project_with_constant_stages(enabled=True)
+        known_rules = [
+            rule
+            for rule in state.known_ins_rules
+            if rule.name != "FoldReadonlyDataRule"
+        ]
+        known_rules.append(FoldReadonlyDataRule())
+        monkeypatch.setattr(
+            state,
+            "_build_known_instruction_rules",
+            lambda: list(known_rules),
+        )
+        state._activate_runtime_project(
+            project_index=8998,
+            source_project=baseline,
+            runtime_project=baseline,
+            default_selection=None,
+        )
+        _prepare_started_manager(state)
+        manager = state.manager
+        scope = manager.execution_scope_service
+        scope._stages = ("baseline-stage",)
+        scope._generation = 17
+        scope._active_cache = {
+            ("baseline", "baseline-idb", 0x401000, "pass", 1): (
+                "baseline-decision",
+            )
+        }
+        scope._metadata_cache = {0x401000: "baseline-metadata"}
+        before_scope_stages = scope._stages
+        before_scope_generation = scope._generation
+        before_active_cache = dict(scope._active_cache)
+        before_metadata_cache = dict(scope._metadata_cache)
+        instruction = manager.instruction_optimizer
+        block = manager.block_optimizer
+        before_adapter_state = {
+            "instruction": instruction.capture_runtime_state(),
+            "block": block.capture_runtime_state(),
+        }
+
+        def invalidate(reason, **kwargs):
+            scope.invalidate(
+                ExecutionScopeInvalidation(
+                    reason=reason,
+                    project_name=kwargs.get("project_name"),
+                )
+            )
+
+        monkeypatch.setattr(manager, "emit_execution_scope_invalidation", invalidate)
+        monkeypatch.setattr(
+            manager,
+            "_compile_execution_scope",
+            lambda: (_ for _ in ()).throw(RuntimeError("late scope compilation failure")),
+        )
+        try:
+            with pytest.raises(RuntimeError, match="late scope compilation failure"):
+                state._activate_runtime_project(
+                    project_index=9004,
+                    source_project=_project_with_constant_stages(enabled=False),
+                    runtime_project=_project_with_constant_stages(enabled=False),
+                    default_selection=None,
+                )
+            assert scope._stages == before_scope_stages
+            assert scope._generation == before_scope_generation
+            assert scope._active_cache == before_active_cache
+            assert scope._metadata_cache == before_metadata_cache
+            assert instruction.capture_runtime_state() == before_adapter_state["instruction"]
+            assert block.capture_runtime_state() == before_adapter_state["block"]
+        finally:
+            monkeypatch.undo()
+            state.load_project(original_index)
+            state.manager._started = False
+
+
+@pytest.mark.ida_required
+def test_started_activation_marks_runtime_invalid_when_adapter_rollback_fails(
+    d810_state, monkeypatch
+) -> None:
+    """A failed adapter restore must not report the live manager as healthy."""
+    with d810_state() as state:
+        original_index = state.current_project_index
+        baseline = _project_with_constant_stages(enabled=True)
+        known_rules = [
+            rule
+            for rule in state.known_ins_rules
+            if rule.name != "FoldReadonlyDataRule"
+        ]
+        known_rules.append(FoldReadonlyDataRule())
+        monkeypatch.setattr(
+            state,
+            "_build_known_instruction_rules",
+            lambda: list(known_rules),
+        )
+        state._activate_runtime_project(
+            project_index=8997,
+            source_project=baseline,
+            runtime_project=baseline,
+            default_selection=None,
+        )
+        _prepare_started_manager(state)
+        manager = state.manager
+        manager.instruction_optimizer.fail_restore = True
+        monkeypatch.setattr(
+            manager,
+            "_compile_execution_scope",
+            lambda: (_ for _ in ()).throw(RuntimeError("late scope compilation failure")),
+        )
+        try:
+            with pytest.raises(RuntimeError, match="rollback") as failure:
+                state._activate_runtime_project(
+                    project_index=9005,
+                    source_project=_project_with_constant_stages(enabled=False),
+                    runtime_project=_project_with_constant_stages(enabled=False),
+                    default_selection=None,
+                )
+            assert "instruction" in str(failure.value)
+            assert "adapter restore failed" in str(failure.value)
+            assert manager.started is False
+            assert getattr(manager, "runtime_invalidated", False) is True
+        finally:
+            monkeypatch.undo()
+            state.manager._runtime_invalidated = False
             state.load_project(original_index)
             state.manager._started = False

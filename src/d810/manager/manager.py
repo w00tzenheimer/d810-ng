@@ -634,6 +634,110 @@ def _maturity_name(maturity: int) -> str:
         return f"MMAT_{maturity}"
 
 
+class OptimizerRuntimeStateRestoreError(RuntimeError):
+    """Raised when a started optimizer cannot be restored after activation."""
+
+
+@dataclasses.dataclass(frozen=True)
+class _OptimizerRuntimeObjectSnapshot:
+    object: object
+    fields: dict[str, object]
+
+
+def _copy_optimizer_runtime_value(value):
+    """Copy mutable adapter containers while preserving runtime object identity."""
+
+    if isinstance(value, _OptimizerRuntimeObjectSnapshot):
+        _restore_optimizer_runtime_object(
+            {"object": value.object, "fields": value.fields}
+        )
+        return value.object
+    if isinstance(value, dict):
+        default_factory = getattr(value, "default_factory", None)
+        try:
+            copied = (
+                type(value)(default_factory)
+                if default_factory is not None
+                else type(value)()
+            )
+        except TypeError:
+            copied = {}
+        for key, item in value.items():
+            copied[key] = _copy_optimizer_runtime_value(item)
+        return copied
+    if isinstance(value, list):
+        return [_copy_optimizer_runtime_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_optimizer_runtime_value(item) for item in value)
+    if isinstance(value, set):
+        return {_copy_optimizer_runtime_value(item) for item in value}
+    if isinstance(value, frozenset):
+        return frozenset(_copy_optimizer_runtime_value(item) for item in value)
+    if hasattr(value, "_rules") and isinstance(getattr(value, "_rules"), dict):
+        fields = {
+            name: _copy_optimizer_runtime_value(item)
+            for name, item in vars(value).items()
+        }
+        return _OptimizerRuntimeObjectSnapshot(value, fields)
+    return value
+
+
+def _capture_optimizer_runtime_object(obj) -> dict[str, object]:
+    """Capture one adapter/child object's mutable fields without deep-copying rules."""
+
+    try:
+        fields = {
+            name: _copy_optimizer_runtime_value(value)
+            for name, value in vars(obj).items()
+        }
+    except TypeError:
+        fields = {}
+    return {"object": obj, "fields": fields}
+
+
+def _capture_optimizer_runtime_state(adapter) -> tuple[dict[str, object], ...]:
+    """Capture adapter context, worklist indexes, and admission caches.
+
+    Adapter rules remain the same live objects, while every mutable container
+    they own is copied.  This is deliberately manager-owned so older IDA
+    adapter implementations without a public snapshot API still participate
+    in activation rollback.
+    """
+
+    objects = [adapter]
+    objects.extend(getattr(adapter, "instruction_optimizers", ()) or ())
+    analyzer = getattr(adapter, "analyzer", None)
+    if analyzer is not None:
+        objects.append(analyzer)
+    objects.extend(getattr(adapter, "cfg_rules", ()) or ())
+    snapshots: list[dict[str, object]] = []
+    seen: set[int] = set()
+    for obj in objects:
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        snapshots.append(_capture_optimizer_runtime_object(obj))
+    return tuple(snapshots)
+
+
+def _restore_optimizer_runtime_object(snapshot: dict[str, object]) -> None:
+    obj = snapshot["object"]
+    fields = snapshot["fields"]
+    current_fields = vars(obj)
+    for name in tuple(current_fields):
+        if name not in fields:
+            delattr(obj, name)
+    for name, value in fields.items():
+        setattr(obj, name, _copy_optimizer_runtime_value(value))
+
+
+def _restore_optimizer_runtime_state(
+    snapshots: tuple[dict[str, object], ...],
+) -> None:
+    for snapshot in snapshots:
+        _restore_optimizer_runtime_object(snapshot)
+
+
 @dataclasses.dataclass
 class D810Manager:
     log_dir: pathlib.Path
@@ -684,6 +788,7 @@ class D810Manager:
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
     hx_decompiler_hook: HexraysDecompilationHook = dataclasses.field(init=False)
     _started: bool = dataclasses.field(default=False, init=False)
+    _runtime_invalidated: bool = dataclasses.field(default=False, init=False)
     _telemetry_lifecycle_stack: list[tuple[str, object, str, int, int]] = (
         dataclasses.field(
             default_factory=list,
@@ -809,6 +914,94 @@ class D810Manager:
     @property
     def started(self):
         return self._started
+
+    @property
+    def runtime_invalidated(self) -> bool:
+        """Whether a failed live activation forced this manager safe-invalid."""
+
+        return self._runtime_invalidated
+
+    def capture_started_optimizer_runtime_state(self) -> dict[str, object]:
+        """Capture both live optimizer adapters before a project switch.
+
+        A native adapter may provide ``capture_runtime_state`` itself.  The
+        manager-owned fallback captures the adapter and its mutable child
+        stores, including execution-scope context, active-rule indexes,
+        residual admission caches, and project/flow context.
+        """
+
+        if not self.started:
+            return {}
+        snapshots: dict[str, object] = {}
+        for name in ("instruction_optimizer", "block_optimizer"):
+            adapter = getattr(self, name, None)
+            if adapter is None:
+                continue
+            capture = getattr(adapter, "capture_runtime_state", None)
+            if callable(capture):
+                snapshots[name] = {
+                    "adapter": adapter,
+                    "protocol": True,
+                    "state": capture(),
+                }
+            else:
+                snapshots[name] = {
+                    "adapter": adapter,
+                    "protocol": False,
+                    "state": _capture_optimizer_runtime_state(adapter),
+                }
+        return snapshots
+
+    def restore_started_optimizer_runtime_state(
+        self,
+        snapshots: dict[str, object],
+    ) -> None:
+        """Restore both live optimizer adapters, aggregating every failure."""
+
+        errors: list[tuple[str, BaseException]] = []
+        for name, raw_snapshot in snapshots.items():
+            snapshot = raw_snapshot  # type: ignore[assignment]
+            adapter = snapshot["adapter"]  # type: ignore[index]
+            try:
+                if snapshot["protocol"]:  # type: ignore[index]
+                    restore = getattr(adapter, "restore_runtime_state")
+                    restore(snapshot["state"])  # type: ignore[index]
+                else:
+                    _restore_optimizer_runtime_state(snapshot["state"])  # type: ignore[index]
+            except BaseException as exc:
+                errors.append((name, exc))
+        if errors:
+            details = "; ".join(
+                f"{name}: {type(error).__name__}: {error}"
+                for name, error in errors
+            )
+            raise OptimizerRuntimeStateRestoreError(
+                f"optimizer runtime restoration failed: {details}"
+            ) from errors[0][1]
+
+    def invalidate_runtime_after_activation_rollback(self) -> tuple[BaseException, ...]:
+        """Stop and explicitly invalidate hooks after lossless restore fails."""
+
+        self._started = False
+        self._runtime_invalidated = True
+        errors: list[BaseException] = []
+        for name in ("instruction_optimizer", "block_optimizer"):
+            adapter = getattr(self, name, None)
+            remove = getattr(adapter, "remove", None)
+            if not callable(remove):
+                continue
+            try:
+                remove()
+            except BaseException as exc:
+                errors.append(exc)
+        hook = getattr(self, "hx_decompiler_hook", None)
+        unhook = getattr(hook, "unhook", None)
+        if callable(unhook):
+            try:
+                unhook()
+            except BaseException as exc:
+                errors.append(exc)
+        return tuple(errors)
 
     @property
     def profiler(self):
@@ -2062,6 +2255,7 @@ class D810Manager:
     def start(self):
         if self._started:
             self.stop()
+        self._runtime_invalidated = False
         logger.debug("Starting manager...")
         load_optimizer_registries()
         # Ensure side-effect registrants are loaded before manager construction.
@@ -3988,6 +4182,21 @@ class D810Manager:
         replace_rules = getattr(optimizer, "replace_rules", None)
         if callable(replace_rules):
             replace_rules(rules)
+            optimizer._active_optimizers = []
+            optimizer._active_instruction_rule_names_by_maturity.clear()
+            optimizer._execution_scope_func_ea = -1
+            invalidate_cache = getattr(
+                optimizer, "_invalidate_residual_admission_cache", None
+            )
+            if callable(invalidate_cache):
+                invalidate_cache()
+            for child in (
+                list(getattr(optimizer, "instruction_optimizers", ()) or ())
+                + [getattr(optimizer, "analyzer", None)]
+            ):
+                invalidate = getattr(child, "invalidate", None)
+                if callable(invalidate):
+                    invalidate()
             return
 
         children = list(getattr(optimizer, "instruction_optimizers", ()))
@@ -4003,15 +4212,9 @@ class D810Manager:
                 elif hasattr(collection, "_rules"):
                     collection._rules.clear()
             if hasattr(child, "pattern_storage"):
-                try:
-                    child.pattern_storage = type(child.pattern_storage)(depth=1)
-                except Exception:  # noqa: BLE001 - best-effort adapter reset
-                    pass
+                child.pattern_storage = type(child.pattern_storage)(depth=1)
             if hasattr(child, "_indexed_storage"):
-                try:
-                    child._indexed_storage = type(child._indexed_storage)()
-                except Exception:  # noqa: BLE001 - best-effort adapter reset
-                    pass
+                child._indexed_storage = type(child._indexed_storage)()
             structural_rules = getattr(child, "_structural_rules_by_root_opcode", None)
             if structural_rules is not None:
                 structural_rules.clear()
@@ -4044,6 +4247,12 @@ class D810Manager:
         replace_rules = getattr(optimizer, "replace_rules", None)
         if callable(replace_rules):
             replace_rules(rules)
+            invalidate_context = getattr(optimizer, "_invalidate_flow_context", None)
+            if callable(invalidate_context):
+                invalidate_context("project rule collection replaced")
+            reset_pipeline = getattr(optimizer, "reset_pipeline_tracker", None)
+            if callable(reset_pipeline):
+                reset_pipeline()
             return
         optimizer.cfg_rules = list(rules)
         configure_scheduler = getattr(optimizer, "_configure_rule_scheduler", None)

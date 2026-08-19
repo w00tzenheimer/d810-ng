@@ -117,6 +117,10 @@ logger = getLogger("d810")
 D810_LOG_DIR_NAME = "d810_logs"
 
 
+class RuntimeActivationRollbackError(RuntimeError):
+    """The previous live runtime could not be re-established after failure."""
+
+
 class D810State(metaclass=SingletonMeta):
     """
     State class representing the runtime state of the D810 plugin.
@@ -359,72 +363,100 @@ class D810State(metaclass=SingletonMeta):
         manager = self.manager
         service = manager.execution_scope_service
         captured["manager"] = {
-            "instruction_optimizer_rules": manager.instruction_optimizer_rules,
-            "instruction_optimizer_config": manager.instruction_optimizer_config,
-            "block_optimizer_rules": manager.block_optimizer_rules,
-            "block_optimizer_config": manager.block_optimizer_config,
-            "config": manager.config,
+            "instruction_optimizer_rules": list(manager.instruction_optimizer_rules),
+            "instruction_optimizer_config": dict(manager.instruction_optimizer_config),
+            "block_optimizer_rules": list(manager.block_optimizer_rules),
+            "block_optimizer_config": dict(manager.block_optimizer_config),
+            "config": dict(manager.config),
             "semantic_registry": manager._semantic_route_reference_oracle_registry,
-            "function_analysis_priors": manager._function_analysis_priors,
+            "function_analysis_priors": dict(manager._function_analysis_priors),
             "native_handlers_installed": manager._native_preanalysis_handlers_installed,
             "constant_schedule": manager._constant_simplification_schedule,
-            "scope_stages": service._stages,
+            "runtime_invalidated": manager.runtime_invalidated,
+            "scope_stages": tuple(service._stages),
             "scope_generation": service._generation,
-            "scope_active_cache": service._active_cache,
-            "scope_metadata_cache": service._metadata_cache,
+            "scope_active_cache": dict(service._active_cache),
+            "scope_metadata_cache": dict(service._metadata_cache),
             "started": manager.started,
+            "started_optimizer_state": manager.capture_started_optimizer_runtime_state(),
         }
         return captured
 
     def _restore_runtime_activation_state(
-        self, captured: dict[str, object]
+        self,
+        captured: dict[str, object],
+        activation_error: BaseException | None = None,
     ) -> None:
         """Restore the exact pre-activation state after a failed candidate."""
 
         missing = captured["_missing"]
+        errors: list[tuple[str, BaseException]] = []
+
+        def attempt(label: str, callback) -> None:
+            try:
+                callback()
+            except BaseException as exc:
+                errors.append((label, exc))
+
         for name, value in captured["state"].items():  # type: ignore[union-attr]
             if value is missing:
-                with contextlib.suppress(AttributeError):
-                    delattr(self, name)
+                if hasattr(self, name):
+                    attempt(f"state.{name}.delete", lambda name=name: delattr(self, name))
             else:
-                setattr(self, name, value)
+                attempt(f"state.{name}", lambda name=name, value=value: setattr(self, name, value))
 
         previous = captured["manager"]  # type: ignore[assignment]
         manager = self.manager
-        manager.instruction_optimizer_rules = previous[  # type: ignore[index]
-            "instruction_optimizer_rules"
-        ]
-        manager.instruction_optimizer_config = previous[  # type: ignore[index]
-            "instruction_optimizer_config"
-        ]
-        manager.block_optimizer_rules = previous["block_optimizer_rules"]  # type: ignore[index]
-        manager.block_optimizer_config = previous["block_optimizer_config"]  # type: ignore[index]
-        manager.config = previous["config"]  # type: ignore[index]
+        manager.instruction_optimizer_rules = list(
+            previous["instruction_optimizer_rules"]  # type: ignore[index]
+        )
+        manager.instruction_optimizer_config = dict(
+            previous["instruction_optimizer_config"]  # type: ignore[index]
+        )
+        manager.block_optimizer_rules = list(previous["block_optimizer_rules"])  # type: ignore[index]
+        manager.block_optimizer_config = dict(previous["block_optimizer_config"])  # type: ignore[index]
+        manager.config = dict(previous["config"])  # type: ignore[index]
         manager._semantic_route_reference_oracle_registry = previous[  # type: ignore[index]
             "semantic_registry"
         ]
-        manager._function_analysis_priors = previous["function_analysis_priors"]  # type: ignore[index]
-        manager._native_preanalysis_handlers_installed = False
+        manager._function_analysis_priors = dict(previous["function_analysis_priors"])  # type: ignore[index]
         manager._constant_simplification_schedule = previous[  # type: ignore[index]
             "constant_schedule"
         ]
         if previous["started"]:  # type: ignore[index]
-            with contextlib.suppress(Exception):
-                manager._sync_native_preanalysis_handlers()
-            with contextlib.suppress(Exception):
-                manager._replace_started_instruction_rules(
-                    manager.instruction_optimizer_rules
-                )
-            with contextlib.suppress(Exception):
-                manager._replace_started_block_rules(manager.block_optimizer_rules)
+            attempt(
+                "started optimizer adapters",
+                lambda: manager.restore_started_optimizer_runtime_state(
+                    previous["started_optimizer_state"]  # type: ignore[index]
+                ),
+            )
+            attempt("native preanalysis handlers", manager._sync_native_preanalysis_handlers)
         service = manager.execution_scope_service
-        service._stages = previous["scope_stages"]  # type: ignore[index]
+        service._stages = tuple(previous["scope_stages"])  # type: ignore[index]
         service._generation = previous["scope_generation"]  # type: ignore[index]
-        service._active_cache = previous["scope_active_cache"]  # type: ignore[index]
-        service._metadata_cache = previous["scope_metadata_cache"]  # type: ignore[index]
-        manager._native_preanalysis_handlers_installed = previous[  # type: ignore[index]
-            "native_handlers_installed"
-        ]
+        service._active_cache = dict(previous["scope_active_cache"])  # type: ignore[index]
+        service._metadata_cache = dict(previous["scope_metadata_cache"])  # type: ignore[index]
+        if not errors:
+            manager._native_preanalysis_handlers_installed = previous[  # type: ignore[index]
+                "native_handlers_installed"
+            ]
+            manager._runtime_invalidated = previous["runtime_invalidated"]  # type: ignore[index]
+            manager._started = previous["started"]  # type: ignore[index]
+            return
+
+        invalidation_errors = manager.invalidate_runtime_after_activation_rollback()
+        errors.extend(
+            ("runtime invalidation", error) for error in invalidation_errors
+        )
+        detail = "; ".join(
+            f"{label}: {type(error).__name__}: {error}" for label, error in errors
+        )
+        rollback_error = RuntimeActivationRollbackError(
+            f"runtime activation rollback failed: {detail}"
+        )
+        if activation_error is None:
+            raise rollback_error from errors[0][1]
+        raise rollback_error from activation_error
 
     def _activate_runtime_project(
         self,
@@ -442,8 +474,8 @@ class D810State(metaclass=SingletonMeta):
                 runtime_project=runtime_project,
                 default_selection=default_selection,
             )
-        except BaseException:
-            self._restore_runtime_activation_state(captured)
+        except BaseException as activation_error:
+            self._restore_runtime_activation_state(captured, activation_error)
             raise
 
     def _activate_runtime_project_unchecked(
