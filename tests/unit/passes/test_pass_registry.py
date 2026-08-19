@@ -114,6 +114,25 @@ def test_state_machine_pass_ids_resolve_to_pass_specs():
         assert spec.pass_factory().name == spec.pass_id
 
 
+def test_state_machine_stages_declare_d810_owned_function_execution():
+    registry = state_machine_pass_registry()
+
+    for pass_id in (
+        "recover_dispatcher",
+        "recover_state_transitions",
+        "plan_semantic_regions",
+        "lower_state_machine",
+        "cleanup_residual_dispatcher",
+    ):
+        stages = registry.stages_for(pass_id)
+        assert len(stages) == 1
+        stage = stages[0]
+        assert stage.pipeline is ExecutionPipeline.FLOW
+        assert stage.ownership is ExecutionOwnership.D810_OWNED
+        assert stage.host is ExecutionHost.D810_PIPELINE
+        assert stage.scope is IRScope.FUNCTION
+
+
 def test_state_machine_registry_builds_typed_threshold_into_recovery_pass():
     registry = state_machine_pass_registry()
     template = registry.config_template_for("recover_dispatcher")
