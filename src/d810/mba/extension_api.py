@@ -442,6 +442,7 @@ class NativeMbaHostServices(Protocol):
         *,
         certificate: str | None,
         known_constants: object | None,
+        proof_timeout_ms: int | None = None,
     ) -> bool: ...
 
     def profile_metadata(

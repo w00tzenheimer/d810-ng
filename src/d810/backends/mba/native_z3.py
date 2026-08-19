@@ -24,6 +24,7 @@ def prove_native_ast_equivalence(
     known_constants: Mapping[tuple[object, ...], int] | None = None,
     certificate: str | None = None,
     generic_native_z3_before_certificate: bool = False,
+    timeout_ms: int = 50,
 ) -> bool:
     """Prove two same-width supported native ASTs equal with bit-vector Z3.
 
@@ -43,7 +44,12 @@ def prove_native_ast_equivalence(
     ordering for diagnosis or comparison.
     """
 
-    if type(width) is not int or width not in {8, 16, 32, 64}:
+    if (
+        type(width) is not int
+        or width not in {8, 16, 32, 64}
+        or type(timeout_ms) is not int
+        or timeout_ms <= 0
+    ):
         return False
     try:
         destination_size = width // 8
@@ -71,12 +77,14 @@ def prove_native_ast_equivalence(
                 original_lowering.term,
                 replacement_lowering.term,
                 width=width,
+                timeout_ms=timeout_ms,
             )
         if _prove_generic_native_terms(
             original_lowering.term,
             replacement_lowering.term,
             width=width,
             assumptions=assumptions,
+            timeout_ms=timeout_ms,
         ):
             return True
         if certificate == _COMPLEMENT_MASK_HODUR_CERTIFICATE:
@@ -84,6 +92,7 @@ def prove_native_ast_equivalence(
                 original_lowering.term,
                 replacement_lowering.term,
                 width=width,
+                timeout_ms=timeout_ms,
             )
         return False
     except Exception:
@@ -96,6 +105,7 @@ def _prove_generic_native_terms(
     *,
     width: int,
     assumptions: Mapping[tuple[object, ...], int],
+    timeout_ms: int = 50,
 ) -> bool:
     """Run the legacy bounded bit-vector proof over already-lowered terms."""
 
@@ -154,7 +164,7 @@ def _prove_generic_native_terms(
     if not set(assumptions).issubset(observed_leaf_keys):
         return False
     solver = z3.Solver()
-    solver.set(timeout=50)
+    solver.set(timeout=timeout_ms)
     solver.add(original_term != replacement_term)
     return solver.check() == z3.unsat
 
@@ -188,6 +198,7 @@ def _prove_complement_mask_hodur_native_certificate(
     replacement: TypedBvTerm,
     *,
     width: int,
+    timeout_ms: int = 50,
 ) -> bool:
     """Discharge the bounded native proof plan for the Hodur residual.
 
@@ -248,20 +259,18 @@ def _prove_complement_mask_hodur_native_certificate(
 
         def prove(formula: Any) -> bool:
             solver = z3.Solver()
-            solver.set(timeout=50)
+            solver.set(timeout=timeout_ms)
             solver.add(formula)
             return solver.check() == z3.unsat
 
         if not prove(native_masked + native_complement_masked != native_value):
             return False
         if not prove(
-            (native_value | native_mask)
-            != native_mask + native_complement_masked
+            (native_value | native_mask) != native_mask + native_complement_masked
         ):
             return False
         if not prove(
-            (native_value | native_complement)
-            != native_complement + native_masked
+            (native_value | native_complement) != native_complement + native_masked
         ):
             return False
 

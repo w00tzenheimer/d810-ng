@@ -142,6 +142,38 @@ class TestNativeMbaExtensionHost:
             known_constants=None,
         )
 
+    def test_proof_timeout_is_forwarded_without_changing_default(self, monkeypatch):
+        host = native_mba_host_services()
+        source = _node(ida_hexrays.m_xor, _leaf("x", 1), _constant(0))
+        source.dst_mop = _leaf("out", 7).create_mop(0x401000)
+        candidate = host.capture_ast(source, destination_size=4)
+        leaf = next(node for node in candidate.raw_term.children if node.leaf_key)
+        reconstruction = host.rebuild(candidate, leaf)
+        assert reconstruction is not None
+        forwarded: list[int] = []
+
+        def prove(_original, _replacement, *, width, timeout_ms, **_kwargs):
+            assert width == 32
+            forwarded.append(timeout_ms)
+            return True
+
+        monkeypatch.setattr(extension_host, "prove_native_ast_equivalence", prove)
+
+        assert host.prove(
+            candidate,
+            reconstruction,
+            certificate=None,
+            known_constants=None,
+        )
+        assert host.prove(
+            candidate,
+            reconstruction,
+            certificate=None,
+            known_constants=None,
+            proof_timeout_ms=250,
+        )
+        assert forwarded == [50, 250]
+
     def test_nested_expression_rebuild_preserves_legacy_move_shape(self):
         """Nested optinsn expressions have mop_z destinations by design.
 

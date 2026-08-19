@@ -340,6 +340,7 @@ class _NativeMbaHostServices:
         *,
         certificate: str | None,
         known_constants: object | None,
+        proof_timeout_ms: int | None = None,
     ) -> bool:
         context = _host_context(candidate)
         if context is None or context.source_ast is None:
@@ -356,6 +357,7 @@ class _NativeMbaHostServices:
                 width=candidate.destination_size * 8,
                 certificate=certificate,
                 known_constants=assumptions,
+                timeout_ms=(50 if proof_timeout_ms is None else proof_timeout_ms),
             )
         except Exception:
             return False
