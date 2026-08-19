@@ -270,6 +270,248 @@ def test_recursive_cache_distinguishes_same_ea_microinstructions(monkeypatch):
         assert calls == [first, second]
 
 
+class _ProofOriginBlock:
+    """Minimal single-entry block model for proof-origin tests."""
+
+    def __init__(self, serial, *, start=0x4000):
+        self.serial = serial
+        self.start = start
+        self.end = start + 0x20
+        self.mba = object()
+
+    def npred(self):
+        return 0
+
+
+def _proof_origin_leaf(name, *, register=1, size=4, valnum=0):
+    from d810.hexrays.expr.ast import AstLeaf
+
+    leaf = AstLeaf(name)
+    leaf.mop = SimpleNamespace(
+        t=ida_hexrays.mop_r,
+        size=size,
+        r=register,
+        valnum=valnum,
+    )
+    leaf.dest_size = size
+    return leaf
+
+
+@pytest.mark.parametrize(
+    "resolver_name",
+    ["_py_slow_recursively_resolve_ast", "recursively_resolve_ast"],
+)
+def test_recursive_resolver_attaches_same_origin_to_rebuilt_entry_leaves(
+    monkeypatch, resolver_name
+):
+    """One proof-root register rebuilt through separate chains shares one token."""
+
+    monkeypatch.setattr(def_search, "resolve_mop_to_ast", lambda *_a, **_k: None)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_a: None)
+    monkeypatch.setattr(def_search, "_proof_operand_has_location", lambda *_a: True)
+    block = _ProofOriginBlock(7)
+    cache = {}
+    resolver = getattr(def_search, resolver_name)
+
+    first = resolver(
+        _proof_origin_leaf("first"),
+        block,
+        SimpleNamespace(ea=0x5000, this=object()),
+        cache=cache,
+    )
+    second = resolver(
+        _proof_origin_leaf("second"),
+        block,
+        SimpleNamespace(ea=0x5000, this=object()),
+        cache=cache,
+    )
+
+    assert first.proof_origin is not None
+    assert second.proof_origin == first.proof_origin
+
+
+def test_proof_origins_separate_distinct_entry_blocks(monkeypatch):
+    """An unversioned register at different block entries stays distinct."""
+
+    from d810.backends.ast.z3 import create_z3_vars
+
+    monkeypatch.setattr(def_search, "resolve_mop_to_ast", lambda *_a, **_k: None)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_a: None)
+    monkeypatch.setattr(def_search, "_proof_operand_has_location", lambda *_a: True)
+    cache = {}
+    first = _proof_origin_leaf("first")
+    second = _proof_origin_leaf("second")
+    resolver = def_search._py_slow_recursively_resolve_ast
+
+    resolver(first, _ProofOriginBlock(7), SimpleNamespace(this=object()), cache=cache)
+    resolver(second, _ProofOriginBlock(8), SimpleNamespace(this=object()), cache=cache)
+
+    assert first.proof_origin is not None
+    assert second.proof_origin is not None
+    assert first.proof_origin != second.proof_origin
+    assert len(create_z3_vars([first, second])) == 2
+
+
+def test_terminal_origin_normalizes_distinct_mba_wrappers(monkeypatch):
+    """Equivalent SWIG MBA wrappers use their native pointer identity."""
+
+    monkeypatch.setattr(def_search, "_proof_operand_has_location", lambda *_a: True)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_a: None)
+    first_block = _ProofOriginBlock(7)
+    second_block = _ProofOriginBlock(7)
+
+    class MbaWrapper:
+        this = 0x1234
+
+    first_block.mba = MbaWrapper()
+    second_block.mba = MbaWrapper()
+    leaf = _proof_origin_leaf("entry")
+    scope = object()
+    first = def_search._terminal_proof_origin(
+        leaf.mop,
+        first_block,
+        SimpleNamespace(this=object()),
+        max_predecessor_blocks=1,
+        scope=scope,
+    )
+    second = def_search._terminal_proof_origin(
+        leaf.mop,
+        second_block,
+        SimpleNamespace(this=object()),
+        max_predecessor_blocks=1,
+        scope=scope,
+    )
+
+    assert first is not None
+    assert second == first
+
+
+def test_resolver_move_ast_preserves_source_operand(monkeypatch):
+    """Resolver definitions must not overwrite a move's source with its dst."""
+
+    from d810.hexrays.expr.ast import AstLeaf
+
+    source = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=16, valnum=0)
+    destination = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=8, valnum=0)
+    source_ast = AstLeaf("source")
+    source_ast.mop = source
+    monkeypatch.setattr(def_search, "mop_to_ast", lambda mop, **_kwargs: source_ast)
+    instruction = SimpleNamespace(
+        opcode=ida_hexrays.m_mov,
+        l=source,
+        d=destination,
+        ea=0x401000,
+    )
+
+    result = def_search._minsn_to_ast_with_budget(instruction, None)
+
+    assert result is source_ast
+    assert result.mop is source
+
+
+def test_recursive_origin_fixture_uses_compiled_backend_when_enabled():
+    """The parity fixture must not silently exercise Python in Cython mode."""
+
+    from d810.core.cymode import CythonMode
+
+    if CythonMode().is_enabled():
+        assert def_search.get_recursive_resolver_backend() == "cython"
+
+
+def test_terminal_origin_fails_closed_for_ambiguous_or_exhausted_paths(monkeypatch):
+    """Joins and depth cutoffs are not unique block-entry proofs."""
+
+    monkeypatch.setattr(def_search, "_proof_operand_has_location", lambda *_a: True)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_a: None)
+    leaf = _proof_origin_leaf("entry")
+
+    class JoinBlock(_ProofOriginBlock):
+        def npred(self):
+            return 2
+
+    assert (
+        def_search._terminal_proof_origin(
+            leaf.mop,
+            JoinBlock(7),
+            SimpleNamespace(this=object()),
+            max_predecessor_blocks=1,
+            scope=object(),
+        )
+        is None
+    )
+
+    class ChainBlock(_ProofOriginBlock):
+        def __init__(self, serial, predecessor):
+            super().__init__(serial)
+            self._predecessor = predecessor
+
+        def npred(self):
+            return 1
+
+        def pred(self, index):
+            assert index == 0
+            return self._predecessor.serial
+
+    terminal = _ProofOriginBlock(9)
+
+    class Mba:
+        def get_mblock(self, serial):
+            assert serial == terminal.serial
+            return terminal
+
+    chain = ChainBlock(8, terminal)
+    chain.mba = Mba()
+    assert (
+        def_search._terminal_proof_origin(
+            leaf.mop,
+            chain,
+            SimpleNamespace(this=object()),
+            max_predecessor_blocks=0,
+            scope=object(),
+        )
+        is None
+    )
+
+
+def test_terminal_origin_fails_closed_for_reaching_definition_or_location_error(
+    monkeypatch,
+):
+    """A definition, empty location, or API error cannot create provenance."""
+
+    leaf = _proof_origin_leaf("entry")
+    block = _ProofOriginBlock(7)
+    ins = SimpleNamespace(this=object())
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_a: object())
+    monkeypatch.setattr(def_search, "_proof_operand_has_location", lambda *_a: True)
+    assert (
+        def_search._terminal_proof_origin(
+            leaf.mop, block, ins, max_predecessor_blocks=1, scope=object()
+        )
+        is None
+    )
+
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_a: None)
+    monkeypatch.setattr(def_search, "_proof_operand_has_location", lambda *_a: False)
+    assert (
+        def_search._terminal_proof_origin(
+            leaf.mop, block, ins, max_predecessor_blocks=1, scope=object()
+        )
+        is None
+    )
+
+    monkeypatch.setattr(
+        def_search,
+        "_proof_operand_has_location",
+        lambda *_a: (_ for _ in ()).throw(RuntimeError("location")),
+    )
+    assert (
+        def_search._terminal_proof_origin(
+            leaf.mop, block, ins, max_predecessor_blocks=1, scope=object()
+        )
+        is None
+    )
+
+
 def _resolver_width_test_leaf(name: str, size: int):
     """Build a register AST leaf with an explicit Hex-Rays byte width."""
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 
 import ida_hexrays
 
@@ -46,6 +47,181 @@ _RESOLVE_NODE_BUDGET = 4096
 # Hard upper bound on single-predecessor chain walks (defensive; the loop itself
 # already caps at _MAX_PRED_DEPTH, this guards against a malformed CFG cycle).
 _MAX_PRED_DEPTH = 8
+
+
+@dataclass(frozen=True, slots=True)
+class _ProofLocalInputOrigin:
+    """Transient identity for one uniquely proven block-entry input.
+
+    ``scope`` is an object owned by one recursive-resolution cache.  Keeping it
+    in the value prevents unrelated proofs from aliasing merely because IDA
+    reused block serials or physical registers.  The remaining fields make the
+    identity explicit within that proof: MBA, terminal block, storage, width,
+    and any usable native value number.
+    """
+
+    scope: object
+    mba_identity: int
+    entry_block: tuple[int, int, int]
+    storage: tuple[str, int]
+    width: int
+    valnum: int
+
+
+def _proof_storage_identity(mop: object) -> tuple[str, int] | None:
+    """Return a size-independent scalar storage identity for a register/stack mop."""
+
+    try:
+        mop_type = int(mop.t)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if mop_type == ida_hexrays.mop_r:
+        try:
+            return ("r", int(mop.r))
+        except (AttributeError, TypeError, ValueError):
+            return None
+    if mop_type == ida_hexrays.mop_S:
+        try:
+            return ("S", int(mop.s.off))
+        except (AttributeError, TypeError, ValueError):
+            return None
+    return None
+
+
+def _proof_block_identity(blk: object) -> tuple[int, int, int] | None:
+    """Return a local terminal-block identity with native EA anchors when present."""
+
+    try:
+        serial = int(blk.serial)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    try:
+        start = int(getattr(blk, "start", -1))
+    except (TypeError, ValueError):
+        start = -1
+    try:
+        end = int(getattr(blk, "end", -1))
+    except (TypeError, ValueError):
+        end = -1
+    return serial, start, end
+
+
+def _proof_mba_identity(mba: object) -> int | None:
+    """Normalize SWIG MBA wrappers to their native pointer when available."""
+
+    if mba is None:
+        return None
+    try:
+        return int(mba.this)
+    except (AttributeError, TypeError, ValueError):
+        return id(mba)
+
+
+def _proof_operand_has_location(
+    mop: ida_hexrays.mop_t,
+    blk: ida_hexrays.mblock_t,
+) -> bool:
+    """Require IDA to materialize a non-empty use location before proving origin."""
+
+    try:
+        tracked = _materialize_mop_for_tracking(
+            mop,
+            "_terminal_proof_origin",
+            mba=getattr(blk, "mba", None),
+        )
+        if tracked is None:
+            return False
+        locations = ida_hexrays.mlist_t()
+        blk.append_use_list(locations, tracked, ida_hexrays.MUST_ACCESS)
+        return not locations.empty()
+    except Exception:
+        return False
+
+
+def _terminal_proof_origin(
+    mop: ida_hexrays.mop_t,
+    blk: ida_hexrays.mblock_t,
+    ins: ida_hexrays.minsn_t,
+    *,
+    max_predecessor_blocks: int,
+    scope: object,
+) -> _ProofLocalInputOrigin | None:
+    """Prove that *mop* is an unresolved unique block-entry input.
+
+    This intentionally repeats only the bounded, single-predecessor search. A
+    resolver ``None`` can also mean an unsupported operand, an ambiguous join,
+    a tracker failure, or a depth cutoff; none of those cases may become a
+    symbolic-variable alias. A token is emitted only after every inspected
+    block has no reaching definition and the terminal block has zero
+    predecessors.
+    """
+
+    storage = _proof_storage_identity(mop)
+    if storage is None:
+        return None
+    try:
+        has_location = _proof_operand_has_location(mop, blk)
+    except Exception:
+        return None
+    if not has_location:
+        return None
+    try:
+        width = int(mop.size)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if width <= 0:
+        return None
+
+    current = blk
+    before = ins
+    visited: set[int] = set()
+    for depth in range(max_predecessor_blocks + 1):
+        block_identity = _proof_block_identity(current)
+        if block_identity is None:
+            return None
+        try:
+            serial = int(current.serial)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if serial in visited:
+            return None
+        visited.add(serial)
+
+        try:
+            definition = find_def_in_block(mop, current, before)
+        except Exception:
+            return None
+        if definition is not None:
+            return None
+        try:
+            predecessor_count = int(current.npred())
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if predecessor_count == 0:
+            mba_identity = _proof_mba_identity(getattr(current, "mba", None))
+            if mba_identity is None:
+                return None
+            try:
+                valnum = int(getattr(mop, "valnum", 0))
+            except (TypeError, ValueError):
+                valnum = 0
+            origin = _ProofLocalInputOrigin(
+                scope=scope,
+                mba_identity=mba_identity,
+                entry_block=block_identity,
+                storage=storage,
+                width=width,
+                valnum=max(0, valnum),
+            )
+            return origin
+        if predecessor_count != 1 or depth >= max_predecessor_blocks:
+            return None
+        try:
+            current = current.mba.get_mblock(current.pred(0))
+        except Exception:
+            return None
+        before = None
+    return None
 
 
 def _valid_predecessor_search_budget(
@@ -156,6 +332,18 @@ def _minsn_to_ast_with_budget(
     node_budget: AstNodeBudget | None,
 ) -> AstNode | AstLeaf | None:
     """Build a definition AST while preserving the legacy unbounded call path."""
+
+    # A move definition represents the value of its source operand.  The
+    # general minsn builder annotates a leaf with ``dst_mop`` for mutation
+    # bookkeeping; that is correct for rewrite patterns but incorrect while
+    # recursively following def-use edges: it replaces the source snapshot
+    # with the destination and makes the resolver chase the wrong register.
+    if instruction.opcode == ida_hexrays.m_mov and instruction.l is not None:
+        ast = _mop_to_ast_with_budget(instruction.l, node_budget)
+        if ast is not None:
+            ast.ea = instruction.ea
+            ast.ins = instruction
+        return ast
 
     if node_budget is None:
         return minsn_to_ast(instruction)
@@ -827,6 +1015,19 @@ def _py_slow_recursively_resolve_ast(
                         res = _truncate_ast_to_use_width(res, use_width, node_budget)
                     cache[cache_key] = res
                     return res
+                origin_scope = cache.get("__resolve_origin_scope__")
+                if origin_scope is None:
+                    origin_scope = object()
+                    cache["__resolve_origin_scope__"] = origin_scope
+                origin = _terminal_proof_origin(
+                    ast_leaf.mop,
+                    blk,
+                    ins,
+                    max_predecessor_blocks=1,
+                    scope=origin_scope,
+                )
+                if origin is not None:
+                    ast_leaf.proof_origin = origin
                 cache[cache_key] = ast
         return ast
 

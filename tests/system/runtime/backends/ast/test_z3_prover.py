@@ -24,6 +24,100 @@ except ImportError:
 class TestZ3MopProverAPI:
     """Verify the Z3MopProver class exists and has the expected methods."""
 
+    @staticmethod
+    def _register_leaf(*, name, register=1, size=4, valnum=0):
+        from d810.hexrays.expr.ast import AstLeaf
+        from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+        leaf = AstLeaf(name)
+        leaf.mop = MopSnapshot(
+            t=ida_hexrays.mop_r,
+            size=size,
+            valnum=valnum,
+            reg=register,
+        )
+        leaf.dest_size = size
+        return leaf
+
+    def test_z3_vars_coalesce_independently_rebuilt_same_version_snapshots(self):
+        """Independent AST rebuilds of one version share one symbolic input."""
+        from d810.backends.ast.z3 import create_z3_vars
+
+        left = self._register_leaf(name="left", register=3, valnum=17)
+        right = self._register_leaf(name="right", register=3, valnum=17)
+
+        variables = create_z3_vars([left, right])
+
+        assert len(variables) == 1
+        assert left.z3_var is right.z3_var
+
+    def test_z3_vars_keep_distinct_register_versions_separate(self):
+        """A new SSA version is not silently identified with its predecessor."""
+        from d810.backends.ast.z3 import create_z3_vars
+
+        first = self._register_leaf(name="first", register=3, valnum=17)
+        second = self._register_leaf(name="second", register=3, valnum=18)
+
+        variables = create_z3_vars([first, second])
+
+        assert len(variables) == 2
+        assert first.z3_var is not second.z3_var
+
+    def test_z3_vars_keep_widths_separate_without_an_explicit_conversion(self):
+        """The same register/version at different widths cannot share a BV."""
+        from d810.backends.ast.z3 import create_z3_vars
+
+        byte = self._register_leaf(name="byte", register=3, size=1, valnum=17)
+        dword = self._register_leaf(name="dword", register=3, size=4, valnum=17)
+
+        variables = create_z3_vars([byte, dword])
+
+        assert len(variables) == 2
+        assert byte.z3_var.size() == 8
+        assert dword.z3_var.size() == 32
+        assert byte.z3_var is not dword.z3_var
+
+    def test_z3_vars_coalesce_only_explicit_proof_origins_for_unversioned_leaves(self):
+        """Valnum-zero leaves need resolver-attested provenance to coalesce."""
+        from d810.backends.ast.z3 import create_z3_vars
+
+        left = self._register_leaf(name="left", register=3, valnum=0)
+        right = self._register_leaf(name="right", register=3, valnum=0)
+        left.proof_origin = ("scope", "entry", "r3", 4)
+        right.proof_origin = ("scope", "entry", "r3", 4)
+
+        variables = create_z3_vars([left, right])
+
+        assert len(variables) == 1
+        assert left.z3_var is right.z3_var
+
+    def test_z3_vars_keep_unversioned_leaves_without_proof_origin_opaque(self):
+        """Display/storage equality alone must not invent an unresolved alias."""
+        from d810.backends.ast.z3 import create_z3_vars
+
+        left = self._register_leaf(name="left", register=3, valnum=0)
+        right = self._register_leaf(name="right", register=3, valnum=0)
+
+        variables = create_z3_vars([left, right])
+
+        assert len(variables) == 2
+
+    def test_z3_vars_keep_complex_operands_opaque(self):
+        """Complex mops do not acquire identity from a partial snapshot."""
+        from d810.backends.ast.z3 import create_z3_vars
+        from d810.hexrays.expr.ast import AstLeaf
+        from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+        left = AstLeaf("left")
+        right = AstLeaf("right")
+        left.mop = MopSnapshot(t=ida_hexrays.mop_d, size=4, valnum=0)
+        right.mop = MopSnapshot(t=ida_hexrays.mop_d, size=4, valnum=0)
+        left.dest_size = right.dest_size = 4
+
+        variables = create_z3_vars([left, right])
+
+        assert len(variables) == 2
+
     def test_prover_instantiation_no_context(self):
         from d810.backends.ast.z3 import Z3MopProver
 

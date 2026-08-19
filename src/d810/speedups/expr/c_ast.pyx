@@ -614,6 +614,7 @@ cdef class AstNode(AstBase):
 
 cdef class AstLeaf(AstBase):
     cdef public object name
+    cdef public object proof_origin
     cdef public object z3_var
     cdef public object z3_var_name
     cdef public bint _is_frozen
@@ -624,6 +625,7 @@ cdef class AstLeaf(AstBase):
         self.ast_index: None
 
         self.mop = None
+        self.proof_origin = None
         self.z3_var = None
         self.z3_var_name = NOT_GIVEN
 
@@ -668,6 +670,7 @@ cdef class AstLeaf(AstBase):
         # Manually copy attribute
         new_leaf.ast_index = self.ast_index
         new_leaf.mop = self.mop
+        new_leaf.proof_origin = self.proof_origin
         new_leaf.dest_size = self.dest_size
         new_leaf.ea = self.ea
 
@@ -795,6 +798,7 @@ cdef class AstLeaf(AstBase):
     def reset_mops(self):
         self.z3_var = None
         self.z3_var_name = NOT_GIVEN
+        self.proof_origin = None
         self.mop = None
 
     def _copy_mops_from_ast(self, other, read_only: bool = False):
@@ -813,6 +817,7 @@ cdef class AstLeaf(AstBase):
             )
         if not read_only:
             self.mop = other.mop
+            self.proof_origin = getattr(other, "proof_origin", None)
         return True
 
     @staticmethod

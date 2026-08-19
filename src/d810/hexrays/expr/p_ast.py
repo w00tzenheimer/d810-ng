@@ -573,6 +573,7 @@ class AstLeaf(AstBase):
         self.ast_index: int | None = None
 
         self.mop = None
+        self.proof_origin = None
         self.z3_var = None
         self.z3_var_name: str | NotGiven = NOT_GIVEN
 
@@ -621,6 +622,7 @@ class AstLeaf(AstBase):
         new_leaf.name = self.name
         new_leaf.ast_index = self.ast_index
         new_leaf.mop = self.mop
+        new_leaf.proof_origin = self.proof_origin
         new_leaf.dest_size = self.dest_size
         new_leaf.ea = self.ea
         # AstConstant carries extra matching state not present on AstLeaf.
@@ -763,6 +765,7 @@ class AstLeaf(AstBase):
     def reset_mops(self):
         self.z3_var = None
         self.z3_var_name = NOT_GIVEN
+        self.proof_origin = None
         self.mop = None
 
     def _copy_mops_from_ast(self, other, read_only: bool = False):
@@ -781,6 +784,7 @@ class AstLeaf(AstBase):
             )
         if not read_only:
             self.mop = other.mop
+            self.proof_origin = getattr(other, "proof_origin", None)
         return True
 
     @staticmethod

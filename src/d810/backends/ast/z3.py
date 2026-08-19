@@ -71,7 +71,7 @@ from d810.hexrays.utils.hexrays_formatters import (
     format_mop_t,
     opcode_to_string,
 )
-from d810.hexrays.utils.hexrays_helpers import get_mop_index, structural_mop_hash
+from d810.hexrays.utils.hexrays_helpers import structural_mop_hash
 from d810.speedups.bootstrap import ensure_speedups_on_path
 from d810.backends.ast.z3_proof_policy import (
     Z3ExpressionNodeBudget,
@@ -231,20 +231,107 @@ def _node_limit_result(
     )
 
 
+def _z3_leaf_width_bits(leaf: AstLeaf) -> int:
+    """Return the width that will be used for one symbolic leaf."""
+
+    try:
+        width = int(
+            getattr(leaf, "dest_size", None)
+            or getattr(leaf.mop, "size", None)
+            or 4
+        ) * 8
+    except (TypeError, ValueError):
+        width = 32
+    if width not in {8, 16, 32, 64, 128}:
+        return 32
+    return width
+
+
+def _z3_mop_identity(mop: object, *, proof_origin: object = None) -> tuple:
+    """Return an immutable identity safe for Z3 leaf canonicalisation.
+
+    ``equal_mops_ignore_size`` is intentionally a storage-oriented helper. It
+    drops both operand width and SSA ``valnum`` and, with Cython enabled, its
+    structural hasher assumes every input is a native ``mop_t``.  Z3 leaves
+    are built from ``MopSnapshot`` values as well as native mops, so using that
+    helper here can both merge distinct versions and produce different results
+    between the Python and Cython backends.
+
+    Resolver-attested proof origins are stronger than the physical storage
+    fields and are accepted first.  An unversioned leaf without such an origin
+    remains identity-based rather than guessed from display text or register
+    number.
+    """
+
+    scalar_types = (
+        ida_hexrays.mop_r,
+        ida_hexrays.mop_S,
+        ida_hexrays.mop_v,
+        ida_hexrays.mop_l,
+        ida_hexrays.mop_b,
+        ida_hexrays.mop_h,
+        ida_hexrays.mop_str,
+    )
+
+    def _snapshot_key(snapshot: object, owner: object) -> tuple:
+        # Complex snapshots intentionally omit their owned instruction/list
+        # payload from to_cache_key().  They cannot be safely canonicalised by
+        # this leaf-only identity layer.
+        if getattr(snapshot, "t", None) not in scalar_types:
+            return ("opaque-complex", id(owner))
+
+        # Hex-Rays uses valnum=0 for an operand without a usable SSA version.
+        # Do not turn that unknown into a process-wide physical-register alias.
+        valnum = getattr(snapshot, "valnum", 0)
+        if type(valnum) is not int or valnum <= 0:
+            return ("opaque-unversioned", id(owner))
+
+        to_cache_key = getattr(snapshot, "to_cache_key", None)
+        if not callable(to_cache_key):
+            return ("opaque-scalar", id(owner))
+        try:
+            return tuple(to_cache_key())
+        except Exception:
+            return ("opaque-scalar", id(owner))
+
+    if proof_origin is not None:
+        return ("proof-origin", proof_origin)
+
+    to_cache_key = getattr(mop, "to_cache_key", None)
+    if callable(to_cache_key):
+        return _snapshot_key(mop, mop)
+
+    try:
+        snapshot = MopSnapshot.from_mop(mop)
+        return _snapshot_key(snapshot, mop)
+    except Exception:
+        # Never identify opaque operands by dstr()/repr(): those are display
+        # labels, not immutable semantic provenance.
+        return ("opaque", id(mop))
+
+
 @requires_z3_installed
 def create_z3_vars(leaf_list: list[AstLeaf]):
-    known_leaf_list = []
+    known_leaf_index_by_key = {}
     known_leaf_z3_var_list = []
     for leaf in leaf_list:
         if leaf.is_constant() or leaf.mop is None:
             continue
-        leaf_index = get_mop_index(leaf.mop, known_leaf_list)
-        if leaf_index == -1:
-            known_leaf_list.append(leaf.mop)
-            leaf_index = len(known_leaf_list) - 1
-            width = int(getattr(leaf, "dest_size", None) or leaf.mop.size or 4) * 8
-            if width not in {8, 16, 32, 64, 128}:
-                width = 32
+        # Width is part of the symbolic sort as well as the operand identity.
+        # A conversion node (xdu/low/etc.) must make that conversion explicit;
+        # create_z3_vars itself must never alias mixed-width leaves.
+        width = _z3_leaf_width_bits(leaf)
+        leaf_key = (
+            width,
+            _z3_mop_identity(
+                leaf.mop,
+                proof_origin=getattr(leaf, "proof_origin", None),
+            ),
+        )
+        leaf_index = known_leaf_index_by_key.get(leaf_key)
+        if leaf_index is None:
+            leaf_index = len(known_leaf_z3_var_list)
+            known_leaf_index_by_key[leaf_key] = leaf_index
             known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), width))
         leaf.z3_var = known_leaf_z3_var_list[leaf_index]
         leaf.z3_var_name = "x_{0}".format(leaf_index)

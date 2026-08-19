@@ -24,6 +24,8 @@ cdef object _resolve(
     object instruction_identity,
     object width_of_ast,
     object truncate_ast,
+    object terminal_origin,
+    object origin_scope,
     list budget,
     object node_budget,
 ):
@@ -95,6 +97,8 @@ cdef object _resolve(
                 instruction_identity,
                 width_of_ast,
                 truncate_ast,
+                terminal_origin,
+                origin_scope,
                 budget,
                 node_budget,
             )
@@ -102,6 +106,15 @@ cdef object _resolve(
                 result = truncate_ast(result, use_width, node_budget)
             cache[cache_key] = result
             return result
+        origin = terminal_origin(
+            mop,
+            blk,
+            ins,
+            max_predecessor_blocks=1,
+            scope=origin_scope,
+        )
+        if origin is not None:
+            ast.proof_origin = origin
         cache[cache_key] = ast
         return ast
 
@@ -117,6 +130,8 @@ cdef object _resolve(
             instruction_identity,
             width_of_ast,
             truncate_ast,
+            terminal_origin,
+            origin_scope,
             budget,
             node_budget,
         )
@@ -135,6 +150,8 @@ cdef object _resolve(
             instruction_identity,
             width_of_ast,
             truncate_ast,
+            terminal_origin,
+            origin_scope,
             budget,
             node_budget,
         )
@@ -170,18 +187,26 @@ def recursively_resolve_ast(
     object node_budget=None,
     object width_of_ast=None,
     object truncate_ast=None,
+    object terminal_origin=None,
 ):
     """Compiled equivalent of the bounded Python recursive resolver."""
 
     cdef list budget
     if cache is None:
         cache = {}
+    origin_scope = cache.get("__resolve_origin_scope__")
+    if origin_scope is None:
+        origin_scope = object()
+        cache["__resolve_origin_scope__"] = origin_scope
     budget = cache.get("__resolve_budget__")
     if budget is None:
         budget = [resolver_node_budget]
         cache["__resolve_budget__"] = budget
     if resolve_mop_to_ast is None:
         from d810.evaluator.hexrays_microcode.def_search import resolve_mop_to_ast
+    if terminal_origin is None:
+        from d810.evaluator.hexrays_microcode.def_search import _terminal_proof_origin
+        terminal_origin = _terminal_proof_origin
     if instruction_identity is None:
         from d810.evaluator.hexrays_microcode.def_search import _microcode_instruction_identity
     if width_of_ast is None or truncate_ast is None:
@@ -204,6 +229,8 @@ def recursively_resolve_ast(
         instruction_identity,
         width_of_ast,
         truncate_ast,
+        terminal_origin,
+        origin_scope,
         budget,
         node_budget,
     )
