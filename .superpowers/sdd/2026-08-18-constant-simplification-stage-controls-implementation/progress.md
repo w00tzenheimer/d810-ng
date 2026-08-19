@@ -138,5 +138,6 @@
   `task6_defaults_authority_normal.txt` and
   `task6_defaults_authority_cython.txt`.
 - Product/test commit: `4b0f03a23` (`fix(mba): centralize bounded z3 policy limits`).
+- Final review cleanup commit: `7d40d1f8f` (`test(z3): clean bounded policy authority regression`); Ruff and the normal 18-case Docker runtime were rerun and passed.
 - Task 7 and Task 8 were not started; final Task 6 review remains with the
   controller.

@@ -149,6 +149,28 @@ Ruff, `PYTHONPATH=src python3 -m py_compile`, `sg scan`, import-linter, and
 `git diff --check` all passed. No broad suites were run; Task 7 and Task 8 were
 not started.
 
+Final review cleanup is in `7d40d1f8f`:
+
+```text
+test(z3): clean bounded policy authority regression
+```
+
+It removes the unused runtime-test import only. Ruff on the affected test and
+the normal Docker runtime were rerun afterward:
+
+```text
+ruff check tests/system/runtime/test_z3_predicate_bounds.py
+All checks passed!
+
+./tools/scripts/run_system_tests_docker.sh test \
+  -w constant-simplification-stage-controls \
+  -o task6_defaults_authority_review_normal.txt -- \
+  tests/system/runtime/test_z3_predicate_bounds.py -q
+18 passed, 118 warnings in 0.06s
+```
+
+`git diff --check` and the repository pre-commit gates also passed.
+
 ## Review fix round
 
 The independent review identified two Task 6 defects: the portable receipt
