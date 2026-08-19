@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from d810.core.config import RuleConfiguration
 from d810.core.pass_editor_spec import PassEditorKind, PassEditorSpec
 from d810.core.plugins import PassImplementationRequirement
 from d810.core.typing import Callable
@@ -35,6 +36,9 @@ class PassRegistry:
         self._factories: dict[str, Callable[..., PipelinePass]] = {}
         self._configured_factories: dict[
             str, Callable[[PipelineConfig], PipelinePass]
+        ] = {}
+        self._hosted_factories: dict[
+            str, Callable[[PipelineConfig], RuleConfiguration]
         ] = {}
         self._config_templates: dict[str, PipelineConfig] = {}
         self._stages: dict[str, tuple[ExecutionStageDescriptor, ...]] = {}
@@ -392,7 +396,11 @@ class PassRegistry:
         """Register ``pass_factory`` under ``pass_id``."""
         if not pass_id:
             raise PassRegistryError("pass_id must be non-empty")
-        if pass_id in self._factories or pass_id in self._configured_factories:
+        if (
+            pass_id in self._factories
+            or pass_id in self._configured_factories
+            or pass_id in self._hosted_factories
+        ):
             raise DuplicatePassIdError(f"duplicate pass id: {pass_id!r}")
         self._record_catalog_metadata(
             pass_id,
@@ -421,7 +429,11 @@ class PassRegistry:
         """Register a pass factory that is built from its ``PipelineConfig``."""
         if not pass_id:
             raise PassRegistryError("pass_id must be non-empty")
-        if pass_id in self._factories or pass_id in self._configured_factories:
+        if (
+            pass_id in self._factories
+            or pass_id in self._configured_factories
+            or pass_id in self._hosted_factories
+        ):
             raise DuplicatePassIdError(f"duplicate pass id: {pass_id!r}")
         self._record_catalog_metadata(
             pass_id,
@@ -434,6 +446,55 @@ class PassRegistry:
             config_aware=True,
         )
         self._configured_factories[pass_id] = pass_factory
+
+    def register_configured_stage(
+        self,
+        pass_id: str,
+        stage_factory: Callable[[PipelineConfig], RuleConfiguration],
+        *,
+        config_template: PipelineConfig | None = None,
+        stages: tuple[ExecutionStageDescriptor, ...] = (),
+        transform_ids: tuple[str, ...] = (),
+        editor_spec: PassEditorSpec | None = None,
+        public: bool = True,
+    ) -> None:
+        """Register config metadata for a callback-hosted stage.
+
+        A hosted stage has no portable ``PipelinePass`` factory.  Its typed
+        factory validates the durable options and produces the legacy live
+        hook configuration consumed by the callback bridge.  Keeping that
+        factory separate from ``register_configured`` prevents an empty
+        pipeline adapter from becoming a second execution owner.
+        """
+        if not pass_id:
+            raise PassRegistryError("pass_id must be non-empty")
+        if not callable(stage_factory):
+            raise TypeError("stage_factory must be callable")
+        if (
+            pass_id in self._factories
+            or pass_id in self._configured_factories
+            or pass_id in self._hosted_factories
+        ):
+            raise DuplicatePassIdError(f"duplicate pass id: {pass_id!r}")
+        if len(stages) != 1:
+            raise PassRegistryError(
+                "configured hosted stage registration requires exactly one stage"
+            )
+        stage = stages[0]
+        if stage.ownership is not ExecutionOwnership.HEXRAYS_HOSTED:
+            raise PassRegistryError(
+                "configured hosted stage registration requires hosted ownership"
+            )
+        self._record_catalog_metadata(
+            pass_id,
+            config_template=config_template,
+            stages=stages,
+            transform_ids=transform_ids,
+            editor_spec=editor_spec,
+            public=public,
+            config_aware=True,
+        )
+        self._hosted_factories[pass_id] = stage_factory
 
     def registered_pass_ids(self) -> tuple[str, ...]:
         """Return stable registered pass IDs in deterministic catalog order."""
@@ -474,7 +535,39 @@ class PassRegistry:
 
     def is_configured(self, pass_id: str) -> bool:
         self.config_template_for(pass_id)
-        return pass_id in self._configured_factories
+        return (
+            pass_id in self._configured_factories
+            or pass_id in self._hosted_factories
+        )
+
+    def is_hosted(self, pass_id: str) -> bool:
+        """Return whether a pass is registered as callback-hosted metadata."""
+        return pass_id in self._hosted_factories
+
+    def hosted_rule_for(self, config: PipelineConfig) -> RuleConfiguration:
+        """Validate and build the live rule config for one hosted stage."""
+        try:
+            factory = self._hosted_factories[config.pass_id]
+        except KeyError as exc:
+            raise PassRegistryError(
+                f"pass {config.pass_id!r} is not a hosted stage"
+            ) from exc
+        rule = factory(config)
+        if not isinstance(rule, RuleConfiguration):
+            raise PassRegistryError(
+                f"hosted stage {config.pass_id!r} factory must return RuleConfiguration"
+            )
+        stage = self.stages_for(config.pass_id)[0]
+        if rule.name != stage.implementation_name:
+            raise PassRegistryError(
+                f"hosted stage {config.pass_id!r} factory returned rule "
+                f"{rule.name!r}; expected {stage.implementation_name!r}"
+            )
+        if not rule.is_activated:
+            raise PassRegistryError(
+                f"hosted stage {config.pass_id!r} factory must activate its rule"
+            )
+        return rule
 
     def factory_for(self, pass_id: str) -> Callable[..., PipelinePass]:
         """Return the registered factory for ``pass_id``."""
@@ -494,6 +587,28 @@ class PassRegistry:
             )
         pass_factory: Callable[..., PipelinePass]
         configured_factory = self._configured_factories.get(config.pass_id)
+        hosted_factory = self._hosted_factories.get(config.pass_id)
+        if configured_factory is None and hosted_factory is not None:
+            # Validate options and rule identity, but do not construct a
+            # portable PipelinePass for a callback-owned stage.  The hosted
+            # stage is consumed by ``pipeline_v2_hook_bridge`` instead.
+            self.hosted_rule_for(config)
+            return PassSpec(
+                config.pass_id,
+                None,
+                config.requirements,
+                config.safety_policy,
+                maturity_gates=config.maturity_gates,
+                granularity=config.granularity,
+                analyses=config.analyses,
+                preservation=config.preservation,
+                scheduler_policy=config.scheduler_policy,
+                backend_route=config.backend_route,
+                contract=config.contract,
+                workflow_stage=config.workflow_stage,
+                target=config.target,
+                options=config.options,
+            )
         if configured_factory is None:
             pass_factory = self.factory_for(config.pass_id)
         else:

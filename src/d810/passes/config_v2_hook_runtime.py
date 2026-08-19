@@ -43,11 +43,8 @@ from d810.passes.mba_egraph import (
     MBA_EGRAPH_PASS_ID,
     build_mba_egraph_pass,
 )
-from d810.passes.rotate_idiom_recovery import (
-    ROTATE_IDIOM_RECOVERY_IMPLEMENTATION,
-    ROTATE_IDIOM_RECOVERY_PASS_ID,
-    build_rotate_idiom_recovery_pass,
-)
+from d810.passes.execution_stages import ExecutionHost
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import (
     require_config_v2_project,
@@ -271,11 +268,6 @@ def _mba_egraph_options(config: PipelineConfig) -> dict[str, object]:
     }
 
 
-def _rotate_idiom_recovery_options(config: PipelineConfig) -> dict[str, object]:
-    adapter = build_rotate_idiom_recovery_pass(config)
-    return {"maturities": list(adapter.maturities)}
-
-
 def _flow_rule_from(config: PipelineConfig) -> RuleConfiguration:
     adapter = build_hook_transform_pass(config)
     return _rule_config(adapter.implementation_name, adapter.transform_options)
@@ -390,6 +382,7 @@ def compile_config_v2_hook_schedule(project_config) -> ConfigV2HookSchedule:
 
     instruction_bindings: list[ConfigV2HookBinding] = []
     block_bindings: list[ConfigV2HookBinding] = []
+    registry = operational_config_v2_pass_registry()
     global_const_persistence_enabled = False
     constant_simplification_schedule = None
     native_present = any(
@@ -406,6 +399,21 @@ def compile_config_v2_hook_schedule(project_config) -> ConfigV2HookSchedule:
 
     for config in configs:
         pass_id = config.pass_id
+        if registry.is_hosted(pass_id):
+            hosted_stage = registry.stages_for(pass_id)[0]
+            hosted_rule = registry.hosted_rule_for(config)
+            if hosted_stage.host is ExecutionHost.HEXRAYS_OPTINSN:
+                instruction_bindings.append(
+                    _hook_binding(pass_id, "instruction", hosted_rule)
+                )
+            elif hosted_stage.host is ExecutionHost.HEXRAYS_OPTBLOCK:
+                block_bindings.append(_hook_binding(pass_id, "block", hosted_rule))
+            else:
+                raise PipelineConfigError(
+                    f"hosted stage {hosted_stage.stage_id!r} has unsupported host "
+                    f"{hosted_stage.host.value!r}"
+                )
+            continue
         if pass_id == CONSTANT_SIMPLIFICATION_PASS_ID:
             constant_simplification_schedule = build_constant_simplification_pass(
                 config
@@ -487,18 +495,6 @@ def compile_config_v2_hook_schedule(project_config) -> ConfigV2HookSchedule:
                     pass_id,
                     "instruction",
                     _rule_config(candidate.rule_name, _mba_egraph_options(config)),
-                )
-            )
-            continue
-        if pass_id == ROTATE_IDIOM_RECOVERY_PASS_ID:
-            block_bindings.append(
-                _hook_binding(
-                    pass_id,
-                    "block",
-                    _rule_config(
-                        ROTATE_IDIOM_RECOVERY_IMPLEMENTATION,
-                        _rotate_idiom_recovery_options(config),
-                    ),
                 )
             )
             continue

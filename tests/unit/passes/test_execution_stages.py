@@ -15,6 +15,8 @@ from d810.passes.execution_stages import (
 )
 from d810.ir.maturity import IRMaturity
 from d810.passes.constant_simplification_options import StageLifecycleDomain
+from d810.core.config import RuleConfiguration
+from d810.passes.pass_pipeline import PipelineConfig
 from d810.passes.registry import PassRegistry, PassRegistryError
 
 
@@ -154,6 +156,30 @@ def test_constant_simplification_owns_three_stable_stages() -> None:
         IRMaturity.GLOBAL_OPTIMIZED,
         IRMaturity.STRUCTURED,
     )
+
+
+def test_hosted_stage_registration_keeps_catalog_metadata_without_building_pass():
+    registry = PassRegistry()
+    config = PipelineConfig(pass_id="hosted", options={"maturities": ["GLOBAL_OPTIMIZED"]})
+
+    registry.register_configured_stage(
+        "hosted",
+        lambda _config: RuleConfiguration(name="HostedRule", is_activated=True),
+        config_template=config,
+        stages=(
+            ExecutionStageDescriptor(
+                "hosted",
+                "hosted",
+                ExecutionPipeline.FLOW,
+                "HostedRule",
+            ),
+        ),
+        public=False,
+    )
+
+    assert registry.is_hosted("hosted") is True
+    assert registry.config_template_for("hosted") is config
+    assert registry.build_spec(config).pass_factory is None
 
 
 def test_registry_rejects_stage_owned_by_a_different_pass() -> None:

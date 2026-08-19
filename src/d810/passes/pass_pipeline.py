@@ -948,7 +948,10 @@ class PassSpec:
     """Declarative registration of a pass: how to build it + its policies."""
 
     name: str
-    pass_factory: Callable[..., PipelinePass]
+    # ``None`` denotes a callback-hosted descriptor-only stage.  Such stages
+    # remain visible to config/editor/catalog consumers but are never sent to
+    # the portable pipeline driver.
+    pass_factory: Callable[..., PipelinePass] | None
     requirements: CapabilityPolicy
     safety_policy: SafetyPolicy
     maturity_gates: frozenset[IRMaturity] = frozenset()

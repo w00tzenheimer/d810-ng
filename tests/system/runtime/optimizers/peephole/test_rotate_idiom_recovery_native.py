@@ -513,10 +513,15 @@ class TestRotateIdiomRecoveryNative:
             state.start_d810()
             function_ea = idc.get_name_ea_simple("Eid_ComputeTwoQwordBufferHash")
             report = state.manager.get_effective_execution_report(function_ea)
-            assert any(
-                decision.stage_id == "rotate-idiom-recovery" and decision.active
+            rotate_decisions = [
+                decision
                 for decision in report.decisions
-            ), report
+                if decision.stage_id == "rotate-idiom-recovery" and decision.active
+            ]
+            assert len(rotate_decisions) == 1, report
+            assert rotate_decisions[0].ownership.value == "hexrays_hosted"
+            assert rotate_decisions[0].host.value == "hexrays_optblock"
+            assert rotate_decisions[0].scope.value == "block"
 
     def test_masm_fixture_renders_two_nested_rol8_calls(
         self,

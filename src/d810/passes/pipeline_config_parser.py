@@ -162,8 +162,14 @@ def pass_specs_from_project_config(
     project_config,
     registry: PassRegistry,
 ):
-    """Build typed PassSpecs from a project's ``pipeline_v2`` config."""
-    return tuple(
-        registry.build_spec(config)
-        for config in pipeline_configs_from_project_config(project_config)
-    )
+    """Build shadow PassSpecs from optional project ``pipeline_v2`` config."""
+    specs = []
+    for config in pipeline_configs_from_project_config(project_config):
+        spec = registry.build_spec(config)
+        # Callback-hosted stages are published through the Hex-Rays hook
+        # bridge.  They still validate and remain in the durable config/editor
+        # catalog, but must not enter the portable pass driver.
+        if registry.is_hosted(config.pass_id):
+            continue
+        specs.append(spec)
+    return tuple(specs)
