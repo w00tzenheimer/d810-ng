@@ -91,6 +91,37 @@ def assert_current_typed_term_type(
         )
 
 
+def structural_rule_semantic_fingerprint(rule: object) -> str:
+    """Build the canonical fingerprint for one structural rule's live fields."""
+
+    family = getattr(rule, "family")
+    source_name = getattr(rule, "source_name")
+    width = getattr(rule, "width")
+    direction = getattr(rule, "direction")
+    count = getattr(rule, "count")
+    if (
+        type(family) is not str
+        or not family
+        or type(source_name) is not str
+        or not source_name
+        or type(width) is not int
+        or type(direction) is not str
+        or type(count) is not int
+    ):
+        raise ValueError("structural rule fingerprint fields are malformed")
+    return "|".join(
+        (
+            family,
+            source_name,
+            str(width),
+            direction,
+            str(count),
+            term_fingerprint(getattr(rule, "pattern")),
+            term_fingerprint(getattr(rule, "replacement")),
+        )
+    )
+
+
 class CanonicalPatternComparisonBudgetExceeded(RuntimeError):
     """A canonical rule matcher exhausted its caller-supplied comparison cap."""
 
@@ -428,6 +459,7 @@ __all__ = [
     "prove_typed_term_equivalence",
     "require_admitted_compiled_rules",
     "match_canonical_term_pattern",
+    "structural_rule_semantic_fingerprint",
     "term_cost",
     "term_fingerprint",
     "typed_term_identity_is_current",

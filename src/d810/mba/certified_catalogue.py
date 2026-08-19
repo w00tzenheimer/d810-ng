@@ -29,7 +29,7 @@ from d810.mba.canonical_pattern import (
     compile_canonical_pattern,
 )
 from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
-from d810.mba.typed_term import TypedBvTerm
+from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
 
 RootShape: TypeAlias = tuple[str | None, int, int]
@@ -55,40 +55,194 @@ _STRUCTURAL_RULE_ADMISSION_TOKEN = object()
 _ADMITTED_STRUCTURAL_RULES: weakref.WeakValueDictionary[int, Any] = (
     weakref.WeakValueDictionary()
 )
+_STRUCTURAL_PROOF_CACHE_CAPACITY = 256
+_STRUCTURAL_PROOF_CACHE_LOCK = RLock()
+_STRUCTURAL_PROOF_CACHE: OrderedDict[tuple[object, ...], bool] = OrderedDict()
+_ADMITTED_STRUCTURAL_IDENTITIES: dict[
+    int, tuple[weakref.ReferenceType[Any], tuple[object, ...]]
+] = {}
 
 
-def _enroll_structural_rule(rule: object) -> None:
-    """Record exact live identity after a backend proof compiler admits it."""
+def _is_exact_typed_term(term: object, active: set[int] | None = None) -> bool:
+    if type(term) is not TypedBvTerm:
+        return False
+    active_ids = set() if active is None else active
+    identity = id(term)
+    if identity in active_ids:
+        return False
+    active_ids.add(identity)
+    try:
+        children = getattr(term, "children", None)
+        return type(children) is tuple and all(
+            _is_exact_typed_term(child, active_ids) for child in children
+        )
+    finally:
+        active_ids.remove(identity)
+
+
+def _fixed_rotate_identity(rule: object) -> tuple[object, ...]:
+    """Validate and return the live identity of one fixed-rotate rule."""
 
     try:
-        _ADMITTED_STRUCTURAL_RULES[id(rule)] = rule
+        source_name = getattr(rule, "source_name")
+        width = getattr(rule, "width")
+        direction = getattr(rule, "direction")
+        count = getattr(rule, "count")
+        pattern = getattr(rule, "pattern")
+        replacement = getattr(rule, "replacement")
+        proof_verdict = getattr(rule, "proof_verdict")
+        family = getattr(rule, "family")
+        aliases = getattr(rule, "aliases")
+        proof_widths = getattr(rule, "proof_widths")
+        claimed_fingerprint = getattr(rule, "semantic_fingerprint")
+    except Exception as exc:
+        raise ValueError("structural rule fields are incomplete") from exc
+    if type(source_name) is not str or not source_name:
+        raise ValueError("structural rule source_name must be non-empty")
+    if type(width) is not int or width not in {8, 16, 32, 64}:
+        raise ValueError("structural rule width is unsupported")
+    if type(direction) is not str or direction not in {"rol", "ror"}:
+        raise ValueError("structural rule direction is unsupported")
+    if type(count) is not int or not 1 <= count < width:
+        raise ValueError("structural rule count is unsupported")
+    if proof_verdict is not True:
+        raise ValueError("structural rule proof_verdict must be true")
+    if type(family) is not str or family != "fixed_rotate":
+        raise ValueError("structural rule family is unsupported")
+    if type(aliases) is not tuple or any(
+        type(alias) is not str or not alias for alias in aliases
+    ):
+        raise ValueError("structural rule aliases are malformed")
+    if type(proof_widths) is not tuple or proof_widths != (width,):
+        raise ValueError("structural rule proof_widths are malformed")
+    if not _is_exact_typed_term(pattern) or not _is_exact_typed_term(replacement):
+        raise ValueError("structural rule terms must be exact TypedBvTerm values")
+    if (
+        type(pattern.operation) is not str
+        or pattern.operation != "or"
+        or pattern.width != width
+        or pattern.value is not None
+        or pattern.leaf_key is not None
+        or pattern.shift_count is not None
+        or len(pattern.children) != 2
+    ):
+        raise ValueError("structural rule pattern shape is unsupported")
+    left, right = pattern.children
+    first_operation, second_operation = (
+        ("shl", "lshr") if direction == "rol" else ("lshr", "shl")
+    )
+    if (
+        type(left.operation) is not str
+        or type(right.operation) is not str
+        or left.operation != first_operation
+        or right.operation != second_operation
+        or left.width != width
+        or right.width != width
+        or type(left.shift_count) is not int
+        or type(right.shift_count) is not int
+        or left.shift_count != count
+        or right.shift_count != width - count
+        or len(left.children) != 1
+        or len(right.children) != 1
+        or left.children[0] != right.children[0]
+    ):
+        raise ValueError("structural rule pattern is not complementary")
+    if (
+        type(replacement.operation) is not str
+        or replacement.operation != direction
+        or replacement.width != width
+        or type(replacement.shift_count) is not int
+        or replacement.shift_count != count
+        or len(replacement.children) != 1
+        or replacement.children[0] != left.children[0]
+    ):
+        raise ValueError("structural rule replacement shape is unsupported")
+    try:
+        from d810.mba.extension_api import structural_rule_semantic_fingerprint
+
+        expected_fingerprint = structural_rule_semantic_fingerprint(rule)
+    except Exception as exc:
+        raise ValueError("structural rule fingerprint cannot be recomputed") from exc
+    if type(claimed_fingerprint) is not str or claimed_fingerprint != expected_fingerprint:
+        raise ValueError("structural rule semantic fingerprint is dishonest")
+    return (
+        family,
+        source_name,
+        width,
+        direction,
+        count,
+        term_fingerprint(pattern),
+        term_fingerprint(replacement),
+    )
+
+
+def _enroll_structural_rule(
+    rule: object, identity: tuple[object, ...] | None = None
+) -> None:
+    """Record exact live identity after a backend proof compiler admits it."""
+
+    rule_id = id(rule)
+    validated_identity = (
+        _fixed_rotate_identity(rule) if identity is None else identity
+    )
+
+    def _cleanup(reference: weakref.ReferenceType[Any]) -> None:
+        current = _ADMITTED_STRUCTURAL_IDENTITIES.get(rule_id)
+        if current is not None and current[0] is reference:
+            _ADMITTED_STRUCTURAL_IDENTITIES.pop(rule_id, None)
+
+    try:
+        reference = weakref.ref(rule, _cleanup)
     except TypeError as exc:
         raise TypeError("admitted structural rules must support weak references") from exc
+    _ADMITTED_STRUCTURAL_RULES[rule_id] = rule
+    _ADMITTED_STRUCTURAL_IDENTITIES[rule_id] = (reference, validated_identity)
 
 
 def _is_enrolled_structural_rule(rule: object) -> bool:
     """Return whether this exact live object was enrolled by a proof compiler."""
 
-    return _ADMITTED_STRUCTURAL_RULES.get(id(rule)) is rule
+    rule_id = id(rule)
+    record = _ADMITTED_STRUCTURAL_IDENTITIES.get(rule_id)
+    if record is None or record[0]() is not rule:
+        return False
+    try:
+        return _fixed_rotate_identity(rule) == record[1]
+    except Exception:
+        return False
 
 
 def enroll_structural_rule(rule: object) -> None:
     """Enroll one proof-gated structural rule in the portable certificate set."""
 
-    if getattr(rule, "proof_verdict", None) is not True:
-        raise ValueError("structural rule proof_verdict must be true")
+    identity = _fixed_rotate_identity(rule)
     try:
         from d810.mba.extension_api import prove_typed_term_equivalence
-
+    except Exception as exc:
+        raise ValueError("structural rule proof authority unavailable") from exc
+    cache_key = (prove_typed_term_equivalence, *identity)
+    with _STRUCTURAL_PROOF_CACHE_LOCK:
+        cached_verdict = _STRUCTURAL_PROOF_CACHE.get(cache_key)
+        if cached_verdict is not None:
+            _STRUCTURAL_PROOF_CACHE.move_to_end(cache_key)
+            if cached_verdict is not True:
+                raise ValueError("structural rule proof failed")
+            _enroll_structural_rule(rule, identity)
+            return
+    try:
         proof_verdict = prove_typed_term_equivalence(
-            getattr(rule, "pattern"),
-            getattr(rule, "replacement"),
+            getattr(rule, "pattern"), getattr(rule, "replacement")
         )
     except Exception as exc:
         raise ValueError("structural rule proof failed") from exc
+    with _STRUCTURAL_PROOF_CACHE_LOCK:
+        _STRUCTURAL_PROOF_CACHE[cache_key] = proof_verdict is True
+        _STRUCTURAL_PROOF_CACHE.move_to_end(cache_key)
+        while len(_STRUCTURAL_PROOF_CACHE) > _STRUCTURAL_PROOF_CACHE_CAPACITY:
+            _STRUCTURAL_PROOF_CACHE.popitem(last=False)
     if proof_verdict is not True:
         raise ValueError("structural rule proof failed")
-    _enroll_structural_rule(rule)
+    _enroll_structural_rule(rule, identity)
 
 
 def is_enrolled_structural_rule(rule: object) -> bool:
