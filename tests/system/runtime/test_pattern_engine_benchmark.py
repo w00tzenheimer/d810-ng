@@ -398,6 +398,7 @@ class TestCythonPythonParity:
         from d810.hexrays.expr.ast import AstNode as RuntimeAstNode
 
         replacement = RuntimeAstLeaf("resolved")
+        replacement.dest_size = 4
 
         def _resolve(_mop, _blk, _ins, *, node_budget=None):
             assert node_budget is budget_under_test
