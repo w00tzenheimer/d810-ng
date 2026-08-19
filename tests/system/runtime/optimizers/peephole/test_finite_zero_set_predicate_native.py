@@ -11,8 +11,14 @@ import ida_hexrays
 import idaapi
 import idc
 
+from d810.hexrays.mutation import deferred_modifier as deferred_modifier_module
+from d810.hexrays.mutation.block_instruction_commit import (
+    HexRaysBlockInstructionCommitter,
+)
+from d810.hexrays.mutation.instruction_commit import NativeEpoch
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from tests.system.runtime.conftest import gen_microcode_at_maturity
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 
 class TestFiniteZeroSetPredicateNative:
@@ -60,12 +66,34 @@ class TestFiniteZeroSetPredicateNative:
             block = mba.get_mblock(serial)
             if block is None:
                 continue
+            before_proposal = tuple(
+                format_minsn_t(instruction)
+                for instruction in _instructions(block)
+            )
+            candidate = rule.propose_instruction_batch(
+                block,
+                epoch=NativeEpoch.from_mba(mba),
+            )
+            if candidate is None:
+                continue
+            assert len(candidate.edits) == 1
+            assert tuple(
+                format_minsn_t(instruction)
+                for instruction in _instructions(block)
+            ) == before_proposal
+            modifier = deferred_modifier_module.DeferredGraphModifier(
+                mba,
+                mutation_gateway=make_mutation_gateway(mba),
+            )
+            receipt = HexRaysBlockInstructionCommitter(
+                epoch_provider=lambda _block, epoch=candidate.epoch_before: epoch,
+            ).commit(block=block, candidate=candidate, modifier=modifier)
+            assert receipt.committed, receipt
+            assert receipt.applied_edit_count == 1
             instruction = block.head
             while instruction is not None:
                 observed.append(format_minsn_t(instruction))
                 instruction = instruction.next
-            if not rule.optimize(block):
-                continue
             rendered = []
             instruction = block.head
             while instruction is not None:
@@ -100,7 +128,66 @@ class TestFiniteZeroSetPredicateNative:
         rule = FiniteZeroSetPredicateBlockRule()
 
         assert any(
-            rule.optimize(mba.get_mblock(serial))
+            rule.propose_instruction_batch(
+                mba.get_mblock(serial),
+                epoch=NativeEpoch.from_mba(mba),
+            )
+            is not None
             for serial in range(mba.qty)
             if mba.get_mblock(serial) is not None
         )
+
+    def test_failed_z3_proof_abstains_before_materialization(
+        self,
+        libobfuscated_setup,
+        monkeypatch,
+    ):
+        from d810.optimizers.microcode.instructions.peephole import (
+            predicate_root_recovery_native as native,
+        )
+        from d810.optimizers.microcode.instructions.peephole.predicate_root_recovery_native import (
+            FiniteZeroSetPredicateBlockRule,
+        )
+
+        function_ea = idc.get_name_ea_simple("finite_zero_set_predicate32")
+        if function_ea == idaapi.BADADDR:
+            pytest.skip("MASM fixture is absent from this platform build")
+        mba = gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_GLBOPT2)
+        assert mba is not None
+        monkeypatch.setattr(
+            native,
+            "z3_proves_finite_zero_set_predicate",
+            lambda *_args, **_kwargs: False,
+        )
+        monkeypatch.setattr(
+            native,
+            "_fresh_byte_kreg",
+            lambda *_args, **_kwargs: pytest.fail(
+                "failed proof must not reach materialization"
+            ),
+        )
+        rule = FiniteZeroSetPredicateBlockRule()
+        for serial in range(mba.qty):
+            block = mba.get_mblock(serial)
+            if block is None:
+                continue
+            before = tuple(format_minsn_t(ins) for ins in _instructions(block))
+            assert (
+                rule.propose_instruction_batch(
+                    block,
+                    epoch=NativeEpoch.from_mba(mba),
+                )
+                is None
+            )
+            assert tuple(format_minsn_t(ins) for ins in _instructions(block)) == before
+
+
+def _instructions(block):
+    instruction = block.head
+    seen = set()
+    while instruction is not None and id(instruction) not in seen:
+        seen.add(id(instruction))
+        yield instruction
+        if instruction is block.tail:
+            break
+        instruction = instruction.next

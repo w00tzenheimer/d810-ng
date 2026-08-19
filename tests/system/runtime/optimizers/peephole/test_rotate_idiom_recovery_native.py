@@ -15,6 +15,11 @@ import idaapi
 import idc
 
 from d810.core import MOP_TO_AST_CACHE
+from d810.hexrays.mutation import deferred_modifier as dm
+from d810.hexrays.mutation.block_instruction_commit import (
+    HexRaysBlockInstructionCommitter,
+)
+from d810.hexrays.mutation.instruction_commit import NativeEpoch
 from d810.hexrays.utils.hexrays_helpers import dup_mop
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.backends.mba.hexrays_island import (
@@ -29,6 +34,7 @@ from d810.hexrays.expr import ast as ast_dispatcher
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from tests.system.runtime.conftest import gen_microcode_at_maturity
+from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 
 def _find_64_bit_value_and_destination(mba):
@@ -399,10 +405,17 @@ class TestRotateIdiomRecoveryNative:
         assert rebuilt_args[1].size == 1
         assert rebuilt_args[1].nnn.value == count
 
-    def test_native_rule_matches_both_masm_murmur_shapes(self, libobfuscated_setup):
+    def test_native_rule_matches_both_masm_murmur_shapes(
+        self,
+        libobfuscated_setup,
+        monkeypatch,
+    ):
         from d810.optimizers.microcode.instructions.peephole.rotate_idiom_recovery_native import (
             RotateIdiomRecoveryBlockRule,
             _expression_from_mop,
+        )
+        from d810.optimizers.microcode.instructions.peephole import (
+            rotate_idiom_recovery_native as native,
         )
         from d810.optimizers.microcode.instructions.peephole.rotate_idiom_recovery import (
             match_rol64_idiom,
@@ -437,67 +450,93 @@ class TestRotateIdiomRecoveryNative:
 
         assert len(or_expressions) == 2, "\n".join(candidates)
         assert all(match_rol64_idiom(expression) is not None for expression in or_expressions), or_expressions
-        # Formatting is not enough: mutate and verify the live MBA. This is
-        # the exact helper-lowering boundary used by the optblock callback.
-        for block_serial in range(mba.qty):
-            block = mba.get_mblock(block_serial)
-            if block is None:
-                continue
-            if rule.optimize(block):
-                rendered = []
+
+        def unexpected_materialization(*_args, **_kwargs):
+            pytest.fail("proposal must not allocate or build native helper calls")
+
+        monkeypatch.setattr(
+            native,
+            "_fresh_kreg_output_from_context",
+            unexpected_materialization,
+        )
+        monkeypatch.setattr(
+            native,
+            "_helper_call_from_detached_root",
+            unexpected_materialization,
+        )
+
+        def render_mba():
+            rendered = []
+            for serial in range(mba.qty):
+                block = mba.get_mblock(serial)
+                if block is None:
+                    continue
                 instruction = block.head
                 while instruction is not None:
                     rendered.append(format_minsn_t(instruction))
                     instruction = instruction.next
-                try:
-                    mba.verify(True)
-                except RuntimeError as error:
-                    pytest.fail(f"MBA verification failed: {error}\n" + "\n".join(rendered))
-                assert sum("call !__ROL8__" in line for line in rendered) == 2
-                # GLBOPT2 may revisit a block after a reported mutation. A
-                # value lift is terminal for this MBA/site; revisiting it must
-                # never emit another helper call or keep the decompiler busy.
-                assert rule.optimize(block) == 0
-                return
-        pytest.fail("the native Murmur fixture did not expose a replaceable instruction")
+            return tuple(rendered)
 
-    def test_nonmatching_nested_values_do_not_allocate_kregs(
-        self,
-        libobfuscated_setup,
-        monkeypatch,
-    ):
-        """A recursive scan must not perturb the MBA unless it will rewrite."""
+        before_proposal = render_mba()
+        proposals = []
+        for block_serial in range(mba.qty):
+            block = mba.get_mblock(block_serial)
+            if block is None:
+                continue
+            candidate = rule.propose_instruction_batch(
+                block,
+                epoch=NativeEpoch.from_mba(mba),
+            )
+            if candidate is not None:
+                proposals.append((block, candidate))
 
-        from d810.optimizers.microcode.instructions.peephole import (
-            rotate_idiom_recovery_native as native,
+        assert proposals, "the native Murmur fixture did not expose a replaceable block"
+        assert sum(
+            len(getattr(edit.materializer, "roots", ()))
+            for _block, candidate in proposals
+            for edit in candidate.edits
+        ) == 2
+        assert all(
+            len({edit.anchor for edit in candidate.edits}) == len(candidate.edits)
+            for _block, candidate in proposals
         )
+        assert render_mba() == before_proposal
 
-        function_ea = idc.get_name_ea_simple("Eid_ComputeTwoQwordBufferHash")
-        mba = gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_GLBOPT2)
-        assert mba is not None
-        block, instruction, _, _ = _find_64_bit_value_and_destination(mba)
+        with pytest.raises(RuntimeError, match="optblock-owned commit"):
+            rule.optimize(proposals[0][0])
 
-        left = ida_hexrays.mop_t()
-        left.make_number(0x1234, 8, instruction.ea)
-        right = ida_hexrays.mop_t()
-        right.make_number(0x5678, 8, instruction.ea)
-        nested = ida_hexrays.minsn_t(instruction.ea)
-        nested.opcode = ida_hexrays.m_add
-        nested.l = left
-        nested.r = right
-        nonmatching_value = ida_hexrays.mop_t()
-        nonmatching_value.create_from_insn(nested)
+        # The proposal is detached; the central committer owns all helper
+        # construction, insertion, swap, dirty-list, and verification writes.
+        monkeypatch.undo()
+        for block, candidate in proposals:
+            modifier = dm.DeferredGraphModifier(
+                mba,
+                mutation_gateway=make_mutation_gateway(mba),
+            )
+            committer = HexRaysBlockInstructionCommitter(
+                epoch_provider=lambda _block, epoch=candidate.epoch_before: epoch,
+            )
+            receipt = committer.commit(
+                block=block,
+                candidate=candidate,
+                modifier=modifier,
+            )
+            assert receipt.committed, receipt
+            assert receipt.applied_edit_count == len(candidate.edits)
+            assert receipt.epoch_after == candidate.epoch_before
 
-        def unexpected_allocation(*_args, **_kwargs):
-            pytest.fail("nonmatching value tree allocated a kreg")
+        try:
+            mba.verify(True)
+        except RuntimeError as error:
+            pytest.fail(f"MBA verification failed after hosted commit: {error}")
 
-        monkeypatch.setattr(native, "_fresh_kreg_output", unexpected_allocation)
-        _, helpers = native._recover_nested_value_mop(
-            block,
-            ea=instruction.ea,
-            mop=nonmatching_value,
-        )
-        assert helpers == ()
+        rendered = render_mba()
+        assert sum("call !__ROL8__" in line for line in rendered) == 2
+        for block, _candidate in proposals:
+            assert rule.propose_instruction_batch(
+                block,
+                epoch=NativeEpoch.from_mba(mba),
+            ) is None
 
     def test_eid_profile_installs_rotate_rule(self, libobfuscated_setup, d810_state):
         with d810_state() as state:
@@ -527,6 +566,7 @@ class TestRotateIdiomRecoveryNative:
         self,
         libobfuscated_setup,
         d810_state,
+        monkeypatch,
         pseudocode_to_string,
     ):
         """Prove the real hook, helper lowering, and ctree renderer together.
@@ -538,6 +578,29 @@ class TestRotateIdiomRecoveryNative:
         """
 
         with d810_state() as state:
+            # IDA's SWIG binding creates a fresh ``mba_t`` proxy for each
+            # ``block.mba`` access.  Hosted admission compares two epochs in
+            # one callback, so use the stable native pointer identity for this
+            # end-to-end fixture rather than the transient Python proxy id.
+            original_epoch_from_mba = NativeEpoch.from_mba
+
+            def stable_epoch_from_mba(cls, mba, **kwargs):
+                epoch = original_epoch_from_mba.__func__(cls, mba, **kwargs)
+                stable_identity = getattr(mba, "this", None)
+                if stable_identity is None:
+                    return epoch
+                return type(epoch)(
+                    function_ea=epoch.function_ea,
+                    mba_identity=int(stable_identity),
+                    maturity=epoch.maturity,
+                    generation=epoch.generation,
+                )
+
+            monkeypatch.setattr(
+                NativeEpoch,
+                "from_mba",
+                classmethod(stable_epoch_from_mba),
+            )
             index = next(
                 index
                 for index, project in enumerate(state.project_manager.projects())

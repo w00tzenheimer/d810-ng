@@ -75,13 +75,21 @@ class NativeEpoch:
         # keep NativeEpoch itself non-negative and map only at this capture
         # boundary to the synthetic unknown value 0.
         safe_maturity = 0 if raw_maturity == -1 else raw_maturity
+        # ``mblock_t.mba`` may manufacture a new SWIG proxy on every access.
+        # The Python wrapper identity is therefore not a native-epoch identity.
+        # Prefer the underlying C++ address and retain ``id`` only for fakes
+        # and compatibility objects that do not expose a SWIG ``this`` field.
+        try:
+            mba_identity = int(mba.this)
+        except (AttributeError, TypeError, ValueError):
+            mba_identity = id(mba)
         return cls(
             function_ea=(
                 int(getattr(mba, "entry_ea", 0) or 0)
                 if function_ea is None
                 else int(function_ea)
             ),
-            mba_identity=id(mba),
+            mba_identity=mba_identity,
             maturity=safe_maturity,
             generation=int(generation),
         )

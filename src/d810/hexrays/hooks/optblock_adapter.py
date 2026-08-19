@@ -1762,10 +1762,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     def _capture_hosted_block_epoch(
         self,
         blk: ida_hexrays.mblock_t,
+        *,
+        mba: object | None = None,
     ) -> NativeEpoch | None:
         """Capture the coordinator-owned lifecycle generation for this callback."""
 
-        mba = getattr(blk, "mba", None)
+        # ``mblock_t.mba`` can yield a fresh SWIG proxy rather than the
+        # callback's retained ``mbl_array_t`` wrapper.  A hosted proposal and
+        # its DGM must agree on the same live snapshot, so callers that have a
+        # flow context pass its retained MBA explicitly.
+        if mba is None:
+            mba = getattr(blk, "mba", None)
         lifecycle = getattr(self, "_decompilation_lifecycle", None)
         generation_getter = getattr(lifecycle, "current_mba_generation", None)
         if mba is None or not callable(generation_getter):
@@ -1798,7 +1805,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         terminally.  Only an explicit ``None`` proposal may fall through.
         """
 
-        epoch = self._capture_hosted_block_epoch(blk)
+        callback_mba = getattr(flow_context, "mba", None)
+        if callback_mba is None:
+            return 0, None, True
+        epoch = self._capture_hosted_block_epoch(blk, mba=callback_mba)
         lifecycle = getattr(self, "_decompilation_lifecycle", None)
         observe_quarantine = getattr(
             lifecycle,
@@ -1861,12 +1871,15 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             return 0, None, True
 
         modifier = DeferredGraphModifier(
-            blk.mba,
+            callback_mba,
             mutation_gateway=mutation_gateway,
         )
         committer = HexRaysBlockInstructionCommitter(
             lifecycle_authority=lifecycle_authority,
-            epoch_provider=self._capture_hosted_block_epoch,
+            epoch_provider=lambda _block: self._capture_hosted_block_epoch(
+                blk,
+                mba=callback_mba,
+            ),
         )
         receipt = committer.commit(
             block=blk,

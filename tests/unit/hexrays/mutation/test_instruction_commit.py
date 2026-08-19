@@ -32,6 +32,14 @@ class FakeMba:
         self.maturity = maturity
 
 
+class SwigMbaProxy:
+    """Two Python wrappers for the same fake native MBA address."""
+
+    def __init__(self, native_address: int, maturity: int = 7) -> None:
+        self.this = native_address
+        self.maturity = maturity
+
+
 class FakeInstruction:
     def __init__(
         self,
@@ -174,6 +182,15 @@ def _committer(
         producer_cycle_quarantine=quarantine,
         native_failure_quarantine=native_failure_quarantine,
     )
+
+
+def test_native_epoch_uses_stable_swig_address_not_proxy_identity() -> None:
+    first = SwigMbaProxy(0x1234)
+    second = SwigMbaProxy(0x1234)
+
+    assert first is not second
+    assert NativeEpoch.from_mba(first) == NativeEpoch.from_mba(second)
+    assert NativeEpoch.from_mba(first).mba_identity == 0x1234
 
 
 def test_recover_candidate_commits_one_instruction_transaction() -> None:
