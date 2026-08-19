@@ -300,3 +300,84 @@ Production fix commit SHA: `35e114973` (`fix(z3): account cached subtree occurre
 Commit message: `feat(z3): bound predicate proof resources`
 
 Feature commit SHA: de9194b1b.
+
+## Task 5 Fix Round 4
+
+The independent review's three P1 resource-bound findings were reproduced
+before the production changes.
+
+Pure RED:
+
+```text
+PYTHONPATH=src pytest -q tests/unit/backends/ast/test_z3_proof_policy.py
+10 passed, 1 failed
+```
+
+The failure was the lifetime-safe identity regression against the old raw
+integer-id occurrence store. The required Docker pair RED was:
+
+```text
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round4_red.txt -- tests/system/runtime/backends/ast/test_z3_prover.py tests/system/runtime/backends/ast/test_z3_set_comparisons.py -q
+117 passed, 3 failed, 118 warnings
+```
+
+The three failures were the repeated cached `m_ldc` nested-source charge,
+contextual replacement pre-construction cutoff, and compiled-resolver budget
+threading regressions.
+
+The fix uses generic per-AST extra logical-occurrence metadata in
+`AstBuilderContext`; cache hits replay unrepresented source occurrences (such
+as an `m_ldc` wrapper's numeric source) while retaining repeated AST identity
+multiplicity. `Z3ExpressionNodeBudget` now retains strong occurrence
+references and compares them with `is`, so object lifetime/id reuse and custom
+equality cannot alias a charge. The resolver path exposes the backend-neutral
+`AstNodeBudget` protocol. Python and Cython recursive resolvers consume and
+mark every rebuilt `AstNode` before construction, while the independent 4096
+leaf-resolution cap remains unchanged when no policy is supplied. The Z3
+preparation path passes the same policy budget into contextual resolution.
+
+The m_ldc regression asserts the exact five logical occurrences for
+`m_add(m_ldc(7), m_ldc(7))`: max=4 aborts at observed=4, max=5 succeeds at
+observed=5, and the real visitor preserves that receipt. A permanent
+Python/Cython parity regression exercises the pre-construction cutoff in both
+selected resolver backends.
+
+Final verification:
+
+```text
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round4_green_final2.txt -- tests/system/runtime/backends/ast/test_z3_prover.py tests/system/runtime/backends/ast/test_z3_set_comparisons.py -q
+120 passed, 118 warnings
+
+D810_NO_CYTHON=0 ./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round4_cython_final2.txt -- tests/system/runtime/backends/ast/test_z3_prover.py tests/system/runtime/backends/ast/test_z3_set_comparisons.py -q
+120 passed, 118 warnings
+
+D810_NO_CYTHON=0 ./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round4_backend_parity_final.txt -- tests/system/runtime/test_pattern_engine_benchmark.py::TestCythonPythonParity::test_recursive_def_resolver_budget_cutoff_matches_python -q
+1 passed, 118 warnings
+
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round4_astproxy_final.txt -- tests/system/runtime/test_z3_astproxy_regression.py -q
+1 passed, 122 warnings
+
+PYTHONPATH=src pytest -q tests/unit/backends/ast/test_z3_proof_policy.py tests/unit/mba/backends/test_z3_no_global_state.py tests/unit/mba/test_native_z3_proof_template.py
+103 passed
+
+ruff check [all changed Python source/test files]
+All checks passed!
+
+PYTHONPATH=src python3 -m py_compile [all changed Python source/test files]
+clean
+
+sg scan --config sgconfig.yml --report-style short
+exit 0
+
+PYTHONPATH=src lint-imports --config .importlinter
+Contracts: 14 kept, 0 broken.
+
+git diff --check
+clean
+```
+
+`graphify update .` was attempted after the changes; its watch rebuild was
+blocked by the environment with `[Errno 1] Operation not permitted`.
+
+Atomic code/test commit: `a4b5e045c`
+(`fix(z3): close bounded resource accounting gaps`).
