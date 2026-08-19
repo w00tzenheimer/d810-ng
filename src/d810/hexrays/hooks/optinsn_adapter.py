@@ -474,18 +474,27 @@ class LegacyInstructionRuleAdapter:
         except (TypeError, ValueError):
             rank_after = 0
 
+        has_block = bool(
+            context.block is not None
+            and context.capabilities.block_context_available
+            and _callback_mba(context.block) is not None
+        )
         may_touch = bool(metadata.get(
             "may_touch_neighboring_instructions",
             getattr(pending_rule, "may_touch_neighboring_instructions", False),
         ))
         may_mark = bool(metadata.get(
-            "may_mark_lists_dirty", getattr(pending_rule, "may_mark_lists_dirty", False)
+            "may_mark_lists_dirty", getattr(pending_rule, "may_mark_lists_dirty", has_block)
         ))
         may_verify = bool(metadata.get(
-            "may_verify_mba", getattr(pending_rule, "may_verify_mba", False)
+            "may_verify_mba", getattr(pending_rule, "may_verify_mba", has_block)
         ))
         proof = metadata.get("proof", metadata.get("proof_result"))
-        if proof is None and getattr(manager, "generate_z3_code", False):
+        if (
+            proof is None
+            and context.capabilities.block_context_available
+            and getattr(manager, "generate_z3_code", False)
+        ):
             try:
                 proof = build_z3_equivalence_proof(replacement, context.instruction)
                 if proof is not None:
@@ -520,7 +529,8 @@ class LegacyInstructionRuleAdapter:
             may_touch_neighboring_instructions=may_touch,
             may_mark_lists_dirty=may_mark,
             may_verify_mba=may_verify,
-            optimize_solo=bool(metadata.get("optimize_solo", False)),
+            optimize_solo=bool(metadata.get("optimize_solo", True)),
+            legacy_compatibility=True,
             producer_rule_name=producer_rule_name,
             history_key=history_key,
             epoch_before=context.epoch,

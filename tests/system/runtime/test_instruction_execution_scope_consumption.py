@@ -209,9 +209,6 @@ class _CallbackOptimizer:
         self.calls += 1
         return self.replacements[0] if self.replacements else None
 
-    def execution_metadata(self):
-        return {"rewrite_mode": "solve"}
-
     def record_mutation_accepted(self) -> None:
         self.accepted += 1
 
@@ -220,7 +217,9 @@ class _CallbackOptimizer:
 
 
 def _make_block(func_ea: int) -> SimpleNamespace:
-    return SimpleNamespace(mba=SimpleNamespace(entry_ea=func_ea), serial=0)
+    block = SimpleNamespace(mba=SimpleNamespace(entry_ea=func_ea), serial=0)
+    block.mark_lists_dirty = lambda: None
+    return block
 
 
 def _make_callback_manager(*optimizers) -> InstructionOptimizerManager:
@@ -546,9 +545,6 @@ def test_instruction_callback_null_block_skips_block_required_rule_before_mba_ac
                     return replacement
             return None
 
-        def execution_metadata(self):
-            return {"rewrite_mode": "solve"}
-
         def record_mutation_accepted(self):
             self.accepted += 1
 
@@ -575,6 +571,10 @@ def test_instruction_callback_commits_first_matching_rule_once(monkeypatch):
         "d810.hexrays.hooks.optinsn_adapter.check_ins_mop_size_are_ok",
         lambda _instruction: True,
     )
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.optinsn_adapter._safe_verify",
+        lambda *_args, **_kwargs: None,
+    )
     first = _CallbackInstruction(2)
     second = _CallbackInstruction(3)
     winner = _CallbackOptimizer((first,))
@@ -597,6 +597,10 @@ def test_instruction_callback_does_not_visit_nested_rules_after_rejection(monkey
     monkeypatch.setattr(
         "d810.hexrays.hooks.optinsn_adapter.check_ins_mop_size_are_ok",
         lambda _instruction: True,
+    )
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.optinsn_adapter._safe_verify",
+        lambda *_args, **_kwargs: None,
     )
     optimizer = _CallbackOptimizer((_CallbackInstruction(1),))
     manager = _make_callback_manager(optimizer)

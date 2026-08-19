@@ -119,8 +119,9 @@ def _candidate(
     rule_id: str = "test-rule",
     producer_rule_name: str = "",
     history_key: object | None = None,
+    legacy_compatibility: bool = False,
 ) -> InstructionRewriteCandidate:
-    return InstructionRewriteCandidate(
+    fields = dict(
         replacement=replacement,
         before_fingerprint=before_fingerprint,
         mode=mode,
@@ -146,11 +147,15 @@ def _candidate(
         producer_rule_name=producer_rule_name,
         history_key=history_key,
     )
+    if legacy_compatibility:
+        fields["legacy_compatibility"] = True
+    return InstructionRewriteCandidate(**fields)
 
 
 def _committer(
     *,
     proof_result: object = "proof",
+    proof_calls: list[bool] | None = None,
     verify=None,
     quarantine=None,
     history=None,
@@ -159,7 +164,10 @@ def _committer(
         hash_minsn=lambda instruction, _function_ea=0: instruction.fingerprint,
         count_minsn_nodes=lambda instruction: int(instruction.fingerprint),
         check_ins_mop_size_are_ok=lambda instruction: bool(instruction.operand_size_ok),
-        build_z3_equivalence_proof=lambda _original, _replacement: proof_result,
+        build_z3_equivalence_proof=lambda _original, _replacement: (
+            proof_calls.append(True) if proof_calls is not None else None
+        )
+        or proof_result,
         safe_verify=verify or (lambda _mba, _ctx: None),
         rewrite_history=history if history is not None else {},
         producer_cycle_quarantine=quarantine,
@@ -372,6 +380,42 @@ def test_directional_cost_and_semantic_rank_admission_is_stable() -> None:
     )
     assert recover.reason == REASON_SEMANTIC_RANK_REJECTED
     assert instruction.swap_count == 0
+
+
+def test_legacy_compatibility_accepts_equal_cost_without_proof_and_runs_postconditions() -> None:
+    mba = FakeMba()
+    block = FakeBlock(mba)
+    instruction = FakeInstruction(fingerprint=1)
+    replacement = FakeInstruction(fingerprint=2)
+    verified = []
+    proof_calls = []
+    context = _context(
+        instruction,
+        block=block,
+        capabilities=NativeCallbackCapabilities(True, True, True, True),
+    )
+
+    receipt = _committer(
+        proof_result=None,
+        proof_calls=proof_calls,
+        verify=lambda live_mba, _ctx: verified.append(live_mba),
+    ).commit(
+        context,
+        _candidate(
+            replacement,
+            mode=RewriteMode.SIMPLIFY,
+            cost_before=RewriteCost(node_count=4),
+            cost_after=RewriteCost(node_count=4),
+            proof_required=True,
+            legacy_compatibility=True,
+        ),
+    )
+
+    assert receipt.committed is True
+    assert proof_calls == []
+    assert block.mark_lists_dirty_count == 1
+    assert verified == [mba]
+    assert receipt.primitive_fields()["legacy_compatibility"] is True
 
 
 def test_null_block_rejects_effectful_candidate_but_allows_instruction_only() -> None:

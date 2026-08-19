@@ -215,6 +215,7 @@ class InstructionRewriteCandidate:
     may_mark_lists_dirty: bool = False
     may_verify_mba: bool = False
     optimize_solo: bool = True
+    legacy_compatibility: bool = False
     producer_rule_name: str = ""
     history_key: object | None = None
     epoch_before: NativeEpoch | None = None
@@ -244,6 +245,7 @@ class InstructionRewriteCandidate:
             "may_mark_lists_dirty",
             "may_verify_mba",
             "optimize_solo",
+            "legacy_compatibility",
         ):
             object.__setattr__(self, name, _bool(getattr(self, name), name))
         if not isinstance(self.producer_rule_name, str):
@@ -275,6 +277,7 @@ class InstructionRewriteReceipt:
     semantic_rank_before: int = 0
     semantic_rank_after: int = 0
     producer_rule_name: str = ""
+    legacy_compatibility: bool = False
 
     def __post_init__(self) -> None:
         committed = _bool(self.committed, "committed")
@@ -310,6 +313,11 @@ class InstructionRewriteReceipt:
             raise TypeError("receipt mode must be a RewriteMode")
         for name in ("semantic_rank_before", "semantic_rank_after"):
             object.__setattr__(self, name, _non_negative(getattr(self, name), name))
+        object.__setattr__(
+            self,
+            "legacy_compatibility",
+            _bool(self.legacy_compatibility, "legacy_compatibility"),
+        )
         if not isinstance(self.producer_rule_name, str):
             raise TypeError("producer_rule_name must be a string")
         if self.producer_rule_name and self.producer_rule_name != self.rule_id:
@@ -345,6 +353,7 @@ class InstructionRewriteReceipt:
             "semantic_rank_before": self.semantic_rank_before,
             "semantic_rank_after": self.semantic_rank_after,
             "producer_rule_name": self.producer_rule_name,
+            "legacy_compatibility": self.legacy_compatibility,
         }
 
 
@@ -423,6 +432,7 @@ class HexRaysInstructionCommitter:
             semantic_rank_before=candidate.semantic_rank_before,
             semantic_rank_after=candidate.semantic_rank_after,
             producer_rule_name=candidate.producer_rule_name,
+            legacy_compatibility=candidate.legacy_compatibility,
         )
 
     def _quarantine(self, error: BaseException) -> None:
@@ -535,7 +545,7 @@ class HexRaysInstructionCommitter:
             return self._rejected(
                 context, candidate, REASON_CAPABILITY_REJECTED, fingerprint
             )
-        if candidate.mode is RewriteMode.LOWER:
+        if not candidate.legacy_compatibility and candidate.mode is RewriteMode.LOWER:
             return self._rejected(
                 context, candidate, REASON_LOWER_REJECTED, fingerprint
             )
@@ -550,7 +560,7 @@ class HexRaysInstructionCommitter:
             )
 
         proof_required = candidate.proof_required or candidate.mode is RewriteMode.SOLVE
-        if proof_required:
+        if not candidate.legacy_compatibility and proof_required:
             proof = candidate.proof
             if proof is None:
                 try:
@@ -572,21 +582,22 @@ class HexRaysInstructionCommitter:
                 context, candidate, REASON_EXPRESSION_BLOAT, fingerprint
             )
 
-        before_key = candidate.cost_before.key()
-        after_key = candidate.cost_after.key()
-        if candidate.mode is RewriteMode.SIMPLIFY and not after_key < before_key:
-            return self._rejected(context, candidate, REASON_COST_REJECTED, fingerprint)
-        if candidate.mode is RewriteMode.RECOVER:
-            if candidate.semantic_rank_after <= candidate.semantic_rank_before:
-                return self._rejected(
-                    context, candidate, REASON_SEMANTIC_RANK_REJECTED, fingerprint
-                )
-            if candidate.cost_after.target_risk > candidate.cost_before.target_risk:
-                return self._rejected(
-                    context, candidate, REASON_COST_REJECTED, fingerprint
-                )
-        if candidate.mode is RewriteMode.SOLVE and after_key > before_key:
-            return self._rejected(context, candidate, REASON_COST_REJECTED, fingerprint)
+        if not candidate.legacy_compatibility:
+            before_key = candidate.cost_before.key()
+            after_key = candidate.cost_after.key()
+            if candidate.mode is RewriteMode.SIMPLIFY and not after_key < before_key:
+                return self._rejected(context, candidate, REASON_COST_REJECTED, fingerprint)
+            if candidate.mode is RewriteMode.RECOVER:
+                if candidate.semantic_rank_after <= candidate.semantic_rank_before:
+                    return self._rejected(
+                        context, candidate, REASON_SEMANTIC_RANK_REJECTED, fingerprint
+                    )
+                if candidate.cost_after.target_risk > candidate.cost_before.target_risk:
+                    return self._rejected(
+                        context, candidate, REASON_COST_REJECTED, fingerprint
+                    )
+            if candidate.mode is RewriteMode.SOLVE and after_key > before_key:
+                return self._rejected(context, candidate, REASON_COST_REJECTED, fingerprint)
 
         try:
             _invoke(getattr(instruction, "swap"), candidate.replacement)
@@ -679,6 +690,7 @@ class HexRaysInstructionCommitter:
                 semantic_rank_before=candidate.semantic_rank_before,
                 semantic_rank_after=candidate.semantic_rank_after,
                 producer_rule_name=candidate.producer_rule_name,
+                legacy_compatibility=candidate.legacy_compatibility,
             )
         except Exception as error:
             self._rollback(
