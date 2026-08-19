@@ -240,7 +240,7 @@
   preparation apply/restore, natural second-round table application, and named
   Z3 setz/setnz/lnot rules. All three one-node policies abstained without
   replacing the original predicate.
-- Focused verification passed `217` units, the direct native rule-order oracle
+- Focused verification passed `218` units, the direct native rule-order oracle
   passed `2` tests, and the tightened scoped-export builder regression passed.
   `sg`, import-linter, and diff-check passed. Artifacts are
   `.tmp/constant_stage_controls_e2e_compiled_v2.txt` and
@@ -250,3 +250,29 @@
   tracked graph output changed.
 - Task 8 acceptance is green. The broader plan remains open while the separate
   provenance repair completes its independent re-review.
+
+### Task 8 independent-review fix round 1
+
+- Explicit `D810_EXPORT` directives are now part of the post-link required
+  export set. Verification remains scoped to the PE Export Table, so a symbol
+  appearing only in another object table cannot satisfy the check. Behavioral
+  builder tests cover present, absent, and out-of-table symbol cases while
+  preserving the existing rule that unrelated `PUBLIC` symbols are not
+  exported automatically.
+- Every mutation family now has a paired negative baseline: disabled readonly
+  folding, disabled readonly/subtree composition, maturity-gated forward
+  propagation, and one-node-budget predicate proofs all retain the unmodified
+  semantic form and have no accepted mutation receipt. Positive receipts pin
+  the exact optimizer owner and raw IDA SDK maturity value. The assertions use
+  raw metadata deliberately because the legacy human formatter is offset by
+  `MMAT_ZERO` in IDA 9.4.
+- Pre-Hex preparation captures both rendered states but permits equality when
+  native Hex-Rays already folds the value; exact proposal, journal, live type,
+  and restoration snapshots remain the mutation authority. The bounded-table
+  test likewise names and checks its first/second natural-round renderings and
+  exact journal lifecycle.
+- Review-fix verification passed `218` focused units, `2` native rule-order
+  tests, `7` focused compiled E2E regressions, and the final compiled `11/11`
+  E2E suite (`4616` deselected, no skips). Architecture gates, Ruff, shell
+  syntax, and diff-check passed. Final artifact:
+  `.tmp/constant_stage_controls_e2e_review_fix1_final.txt`.

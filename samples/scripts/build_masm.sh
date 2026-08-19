@@ -15,6 +15,59 @@
 #   CC / ML64 / LINKER  toolchain overrides
 set -euo pipefail
 
+verify_required_exports() {
+    local export_dump="$1"
+    shift
+    local export_names
+    local symbol
+    local missing=0
+
+    export_names="$(awk '
+        /^Export Table:$/ { in_exports = 1; next }
+        in_exports && /^[[:alpha:]][^:]*Table:$/ { in_exports = 0 }
+        in_exports && $1 ~ /^[0-9]+$/ && $2 ~ /^0x[0-9A-Fa-f]+$/ { print $3 }
+    ' "$export_dump")"
+    for symbol in "$@"; do
+        if printf '%s\n' "$export_names" | grep -Fxq -- "$symbol"; then
+            echo "  ok: $symbol"
+        else
+            echo "error: MISSING required MASM export: $symbol" >&2
+            missing=1
+        fi
+    done
+    return "$missing"
+}
+
+explicit_d810_exports() {
+    sed -nE 's/^[[:space:]]*;[[:space:]]*D810_EXPORT[[:space:]]+([A-Za-z0-9_]+)[[:space:]]*$/\1/p' "$1"
+}
+
+callsite_marker_exports() {
+    sed -nE 's/^[[:space:]]*PUBLIC[[:space:]]+(d810_callsite_[A-Za-z0-9_]+)[[:space:]]*$/\1/p' "$1"
+}
+
+# Narrow test seam for the post-link contract.  The normal build writes the
+# real llvm-objdump output and derives required names with the same directive
+# parser below.
+if [ "${1:-}" = "--verify-source-exports" ]; then
+    [ "$#" -eq 4 ] || {
+        echo "usage: $0 --verify-source-exports <objdump-output> <basename> <asm-source>" >&2
+        exit 2
+    }
+    export_dump="$2"
+    basename="$3"
+    asm_source="$4"
+    required=("$basename")
+    for symbol in $(explicit_d810_exports "$asm_source"); do
+        required+=("$symbol")
+    done
+    for symbol in $(callsite_marker_exports "$asm_source"); do
+        required+=("$symbol")
+    done
+    verify_required_exports "$export_dump" "${required[@]}"
+    exit $?
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLES_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$SAMPLES_DIR"
@@ -72,7 +125,7 @@ echo "C objects: compiled=$compiled skipped=$skipped"
 
 # --- assemble the MASM functions -------------------------------------------
 export_flags=()
-callsite_markers=()
+required_exports=()
 for f in $MASM_FUNCS; do
     # src/masm/<f>.asm must be compilable MASM from the in-IDA "Export disassembly
     # -> MASM" action (materialized data + relocatable symbols).
@@ -83,20 +136,22 @@ for f in $MASM_FUNCS; do
         || { echo "error: assembling $f.asm failed:" >&2; cat "$BUILD_DIR/$f.asm.log" >&2; exit 1; }
     objs+=("$obj")
     export_flags+=("/EXPORT:$f")
+    required_exports+=("$f")
     # A source may contain additional fixture anchors.  They must opt in with
     # an explicit ``; D810_EXPORT <symbol>`` directive; exporting every PUBLIC
     # symbol would leak unrelated data/labels from large MASM exports.
-    public_names="$(sed -nE 's/^[[:space:]]*;[[:space:]]*D810_EXPORT[[:space:]]+([A-Za-z0-9_]+)[[:space:]]*$/\1/p' "$src")"
+    public_names="$(explicit_d810_exports "$src")"
     for public_name in $public_names; do
         export_flags+=("/EXPORT:$public_name")
+        required_exports+=("$public_name")
     done
     # Explicit call-site markers are source-to-native oracle anchors.  Export
     # only the opt-in PUBLIC labels rather than guessing from imported call
     # targets, which may be linked as generic unresolved slots in the fixture.
-    marker_names="$(sed -nE 's/^[[:space:]]*PUBLIC[[:space:]]+(d810_callsite_[A-Za-z0-9_]+)[[:space:]]*$/\1/p' "$src")"
+    marker_names="$(callsite_marker_exports "$src")"
     for marker in $marker_names; do
         export_flags+=("/EXPORT:$marker")
-        callsite_markers+=("$marker")
+        required_exports+=("$marker")
         echo "  exported callsite marker $marker"
     done
     echo "  assembled $f.asm"
@@ -116,13 +171,8 @@ undef=$(grep -c "undefined symbol" "$linklog" 2>/dev/null || echo 0)
 [ -s "$pdb" ] || { echo "error: linker did not produce $pdb" >&2; exit 1; }
 echo "linked $out and $pdb  (${undef} unresolved externs tolerated; log: $linklog)"
 file "$out" 2>/dev/null || true
-echo "exported MASM funcs:"
-for f in $MASM_FUNCS; do
-    "${LLVM_BIN}/llvm-objdump" -p "$out" 2>/dev/null | grep -A500 "Export Table" | grep -qw "$f" \
-        && echo "  ok: $f" || echo "  MISSING export: $f"
-done
-for marker in "${callsite_markers[@]}"; do
-    "${LLVM_BIN}/llvm-objdump" -p "$out" 2>/dev/null | grep -A500 "Export Table" | grep -qw "$marker" \
-        || { echo "error: MISSING callsite marker export: $marker" >&2; exit 1; }
-    echo "  ok: $marker"
-done
+export_dump="$BUILD_DIR/export_table.txt"
+"${LLVM_BIN}/llvm-objdump" -p "$out" >"$export_dump" 2>/dev/null \
+    || { echo "error: failed to inspect exports in $out" >&2; exit 1; }
+echo "required MASM exports:"
+verify_required_exports "$export_dump" "${required_exports[@]}"

@@ -727,7 +727,11 @@ An eligible rule, a log line saying it started, or a nonzero generic mutation co
 
 - [x] Classify every failure as introduced, pre-existing, or environmental with exact test names and logs. Fix every introduced failure before completion; do not hide it with a skip/quarantine.
 - [x] Attempt `graphify update .` from the worktree and inspect the resulting diff. The incremental scanner entered its known silent rebuild interval and was interrupted after bounded observation; it produced no tracked graph diff.
-- [ ] Commit Task 8 with message `test(system): cover constant stage controls`.
+- [x] Commit Task 8 with message `test(system): cover constant stage controls`.
+  Independent-review fix round 1 additionally made explicit MASM exports
+  fail-closed at post-link verification and strengthened paired before/after
+  system assertions with exact raw provider maturity and optimizer ownership.
+  The final compiled acceptance artifact passed `11/11` selected tests.
 
 ---
 

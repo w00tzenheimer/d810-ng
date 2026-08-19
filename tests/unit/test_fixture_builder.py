@@ -175,15 +175,75 @@ def test_build_fixture_dll_invokes_build_masm_sh(tmp_path):
     assert calls["env"].get("BINARY_NAME") == "tmpfx"
 
 
-def test_masm_builder_uses_scoped_d810_export_directives():
+def test_masm_builder_verifies_scoped_d810_exports_behaviorally(tmp_path):
+    """The real post-link verifier accepts present exports and rejects missing ones."""
+
+    script = REPO / "samples/scripts/build_masm.sh"
+    asm_source = tmp_path / "fixture.asm"
+    asm_source.write_text(
+        "PUBLIC fixture_basename\n"
+        "PUBLIC unrelated_public_symbol\n"
+        "; D810_EXPORT explicit_fixture_anchor\n"
+    )
+    export_dump = tmp_path / "exports.txt"
+    export_dump.write_text(
+        "Import Table:\n"
+        "  missing_explicit_anchor\n"
+        "Export Table:\n"
+        "  1 0x1000 fixture_basename\n"
+        "  2 0x1010 explicit_fixture_anchor\n"
+        "Debug Table:\n"
+        "  missing_explicit_anchor\n"
+    )
+
+    present = _sp.run(
+        [
+            "bash",
+            str(script),
+            "--verify-source-exports",
+            str(export_dump),
+            "fixture_basename",
+            str(asm_source),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert present.returncode == 0, present.stderr
+
+    missing_dump = tmp_path / "missing-exports.txt"
+    missing_dump.write_text(
+        "Export Table:\n"
+        "  1 0x1000 fixture_basename\n"
+        "Debug Table:\n"
+        "  explicit_fixture_anchor\n"
+        "  unrelated_public_symbol\n"
+    )
+    missing = _sp.run(
+        [
+            "bash",
+            str(script),
+            "--verify-source-exports",
+            str(missing_dump),
+            "fixture_basename",
+            str(asm_source),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert missing.returncode != 0
+    assert "MISSING required MASM export: explicit_fixture_anchor" in missing.stderr
+    assert "unrelated_public_symbol" not in missing.stderr
+
+
+def test_masm_builder_exports_only_explicit_d810_directives():
     """Additional MASM exports are opt-in, never every PUBLIC symbol."""
 
-    script = (Path(__file__).parents[2] / "samples/scripts/build_masm.sh").read_text()
+    script = (REPO / "samples/scripts/build_masm.sh").read_text()
     assert "D810_EXPORT" in script
-    assert "public_names=\"$(sed -nE" in script
+    assert 'public_names="$(explicit_d810_exports "$src")"' in script
     assert 'export_flags+=("/EXPORT:$public_name")' in script
     assert 'export_flags+=("/EXPORT:$marker")' in script
-    assert "One exported MASM source can contain several" not in script
+    assert "PUBLIC[[:space:]]+([A-Za-z0-9_]+)" not in script
 
 
 def test_verify_sets_test_binary_env(tmp_path):
