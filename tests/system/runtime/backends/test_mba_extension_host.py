@@ -109,6 +109,7 @@ class TestNativeMbaExtensionHost:
     def test_leaf_root_rebuild_and_native_proof(self):
         host = native_mba_host_services()
         source = _node(ida_hexrays.m_xor, _leaf("x", 1), _constant(0))
+        source.dst_mop = _leaf("out", 7).create_mop(0x401000)
         candidate = host.capture_ast(source, destination_size=4)
         assert candidate.raw_term is not None
         leaf = next(
@@ -131,6 +132,32 @@ class TestNativeMbaExtensionHost:
             known_constants=None,
         )
 
+    def test_rebuild_rejects_ast_candidate_without_destination(self):
+        host = native_mba_host_services()
+        source = _node(ida_hexrays.m_xor, _leaf("x", 1), _constant(0))
+        candidate = host.capture_ast(source, destination_size=4)
+        assert candidate.raw_term is not None
+        leaf = next(
+            node for node in candidate.raw_term.children if node.leaf_key is not None
+        )
+
+        assert host.rebuild(candidate, leaf) is None
+
+    def test_rebuild_rejects_destination_copy_failure(self, monkeypatch):
+        host = native_mba_host_services()
+        source = _node(ida_hexrays.m_xor, _leaf("x", 1), _constant(0))
+        source.dst_mop = _leaf("out", 7).create_mop(0x401000)
+        candidate = host.capture_ast(source, destination_size=4)
+        assert candidate.raw_term is not None
+        leaf = next(
+            node for node in candidate.raw_term.children if node.leaf_key is not None
+        )
+        monkeypatch.setattr(
+            extension_host, "_copy_destination", lambda _destination: None
+        )
+
+        assert host.rebuild(candidate, leaf) is None
+
     def test_mixed_width_capture_and_rebuild_fail_closed(self):
         host = native_mba_host_services()
         mixed = _node(ida_hexrays.m_add, _leaf("wide", 1, 4), _leaf("narrow", 2, 2))
@@ -151,12 +178,31 @@ class TestNativeMbaExtensionHost:
         left.delete("sample")
         right.delete("sample")
 
-        left.put_json("sample", {"width": 32, "nested": {"ok": True}})
+        payload = {"width": 32, "nested": {"items": [{"ok": True}]}}
+        left.put_json("sample", payload)
+        payload["nested"]["items"][0]["ok"] = False
+        payload["nested"]["items"].append({"caller": "only"})
 
-        assert left.get_json("sample") == {"width": 32, "nested": {"ok": True}}
+        stored = left.get_json("sample")
+        assert stored["width"] == 32
+        assert stored["nested"]["items"][0] == {"ok": True}
+        assert len(stored["nested"]["items"]) == 1
+        assert isinstance(stored["nested"]["items"], tuple)
+        with pytest.raises(TypeError):
+            stored["nested"]["items"][0]["ok"] = False
         assert right.get_json("sample") is None
         assert left.keys(prefix="sam") == ("sample",)
         assert right.keys() == ()
+
+        for invalid in (
+            {"nested": {1: "non-string key"}},
+            {"nested": [{"nan": float("nan")}]},
+            {"nested": [{"inf": float("inf")}]},
+            {"nested": [{"neg_inf": float("-inf")}]},
+            {"nested": [object()]},
+        ):
+            with pytest.raises(TypeError):
+                left.put_json("invalid", invalid)
 
         left.delete("sample")
         assert left.get_json("sample") is None

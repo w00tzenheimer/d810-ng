@@ -9,8 +9,10 @@ immutable for the lifetime of one callback candidate.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from d810.core.typing import Protocol
 from d810.mba.island_profile import (
@@ -22,6 +24,47 @@ from d810.mba.typed_term import TypedBvTerm
 
 
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
+
+
+def _copy_json_value(value: object) -> object:
+    """Copy one JSON value into a plain, validated storage structure.
+
+    This helper is intentionally private: the extension contract exposes the
+    persistence protocol, not a second JSON implementation.  Keeping the
+    value boundary here makes the host's storage implementation independent of
+    caller-owned containers while remaining IDA-free.
+    """
+
+    if value is None or type(value) in {bool, int, str}:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise TypeError("persistence values must contain finite JSON numbers")
+        return value
+    if isinstance(value, Mapping):
+        copied: dict[str, object] = {}
+        for key, item in value.items():
+            if type(key) is not str:
+                raise TypeError("persistence mapping keys must be strings")
+            copied[key] = _copy_json_value(item)
+        return copied
+    if isinstance(value, list):
+        return [_copy_json_value(item) for item in value]
+    raise TypeError("persistence value must be JSON-safe")
+
+
+def _freeze_json_value(value: object) -> object:
+    """Return a recursively immutable snapshot of a copied JSON value."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _freeze_json_value(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_json_value(item) for item in value)
+    if value is None or type(value) in {bool, int, float, str}:
+        return value
+    raise TypeError("persistence value must be JSON-safe")
 
 
 @dataclass(frozen=True, slots=True)

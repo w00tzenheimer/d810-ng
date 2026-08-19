@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from d810.mba import extension_api
 from d810.mba.extension_api import (
     EgraphPersistenceService,
     MbaIslandProfile,
@@ -76,6 +78,32 @@ def test_reconstruction_requires_native_objects() -> None:
         NativeMbaReconstruction(None, object())
     with pytest.raises(TypeError):
         NativeMbaReconstruction(object(), None)
+
+
+def test_json_values_are_recursively_copied_frozen_and_validated() -> None:
+    copy_json_value = getattr(extension_api, "_copy_json_value")
+    freeze_json_value = getattr(extension_api, "_freeze_json_value")
+    source = {"nested": [{"value": 1}]}
+
+    copied = copy_json_value(source)
+    source["nested"][0]["value"] = 2
+    source["nested"].append({"value": 3})
+
+    frozen = freeze_json_value(copied)
+    assert frozen["nested"][0]["value"] == 1
+    assert isinstance(frozen["nested"], tuple)
+    with pytest.raises(TypeError):
+        frozen["nested"][0]["value"] = 4
+
+    for invalid in (
+        {1: "non-string key"},
+        {"nested": {"nan": math.nan}},
+        {"nested": [{"inf": math.inf}]},
+        {"nested": [{"neg_inf": -math.inf}]},
+        {"unsupported": object()},
+    ):
+        with pytest.raises(TypeError):
+            copy_json_value(invalid)
 
 
 def test_portable_api_imports_without_ida_packages() -> None:

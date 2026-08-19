@@ -8,7 +8,6 @@ behind this facade.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -31,6 +30,8 @@ from d810.mba.extension_api import (
     NativeMbaCandidate,
     NativeMbaHostServices,
     NativeMbaReconstruction,
+    _copy_json_value,
+    _freeze_json_value,
 )
 from d810.mba.island_profile import profile_to_dict
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
@@ -78,13 +79,10 @@ class _JsonPersistenceService:
     def _validate_json_mapping(value: Mapping[str, object]) -> dict[str, object]:
         if not isinstance(value, Mapping):
             raise TypeError("persistence values must be mappings")
-        if any(type(key) is not str for key in value):
-            raise TypeError("persistence mapping keys must be strings")
-        try:
-            json.dumps(dict(value), ensure_ascii=True, allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise TypeError("persistence value must be JSON-safe") from exc
-        return dict(value)
+        copied = _copy_json_value(value)
+        if not isinstance(copied, dict):
+            raise TypeError("persistence values must be mappings")
+        return copied
 
     def get_json(self, key: str) -> Mapping[str, object] | None:
         key = self._validate_key(key)
@@ -92,7 +90,11 @@ class _JsonPersistenceService:
         if value is None or not isinstance(value, Mapping):
             return None
         try:
-            return MappingProxyType(self._validate_json_mapping(value))
+            copied = self._validate_json_mapping(value)
+            frozen = _freeze_json_value(copied)
+            if not isinstance(frozen, Mapping):
+                return None
+            return frozen
         except (TypeError, ValueError):
             return None
 
@@ -386,20 +388,32 @@ def _materialize_instruction(
     context: _NativeMbaContext,
     destination_size: int,
 ) -> object | None:
+    destination = _copy_destination(context.destination)
+    if not _valid_destination(destination, destination_size):
+        return None
+
     # Rotate helper reconstruction already returns a live minsn_t.  Preserve
     # that exact native result instead of wrapping it in a synthetic move.
     if not hasattr(replacement_ast, "create_minsn"):
         if getattr(replacement_ast, "opcode", None) is not None and not hasattr(
             replacement_ast, "is_leaf"
         ):
-            return replacement_ast
+            return (
+                replacement_ast
+                if _valid_instruction_destination(replacement_ast, destination_size)
+                else None
+            )
 
     ea = _native_ea(context.source_instruction, context.source_ast)
-    destination = _copy_destination(context.destination)
     try:
         create_minsn = getattr(replacement_ast, "create_minsn", None)
         if callable(create_minsn):
-            return create_minsn(ea, destination)
+            instruction = create_minsn(ea, destination)
+            return (
+                instruction
+                if _valid_instruction_destination(instruction, destination_size)
+                else None
+            )
     except Exception:
         return None
 
@@ -413,10 +427,9 @@ def _materialize_instruction(
         instruction.l = replacement_ast.create_mop(ea)
         instruction.r = ida_hexrays.mop_t()
         instruction.r.erase()
-        instruction.d = destination or ida_hexrays.mop_t()
-        if destination is None:
-            instruction.d.erase()
-            instruction.d.size = destination_size
+        instruction.d = destination
+        if not _valid_instruction_destination(instruction, destination_size):
+            return None
         return instruction
     except Exception:
         return None
@@ -446,6 +459,30 @@ def _copy_destination(destination: object | None) -> object | None:
         return copied
     except Exception:
         return None
+
+
+def _valid_destination(destination: object | None, destination_size: int) -> bool:
+    if destination is None:
+        return False
+    try:
+        import ida_hexrays
+
+        return (
+            int(getattr(destination, "t")) != int(ida_hexrays.mop_z)
+            and type(getattr(destination, "size")) is int
+            and destination.size == destination_size
+        )
+    except Exception:
+        return False
+
+
+def _valid_instruction_destination(
+    instruction: object | None, destination_size: int
+) -> bool:
+    try:
+        return _valid_destination(getattr(instruction, "d"), destination_size)
+    except Exception:
+        return False
 
 
 __all__ = ["native_mba_host_services"]
