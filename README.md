@@ -112,6 +112,16 @@ class Xor_HackersDelightRule_1(VerifiableRule):
 
 **Extensible constraints:** Constraints are declarative and backend-agnostic. The `VerificationEngine` protocol is provider-neutral, and core ships the Z3 provider. Egglog rule analysis and execution are owned by the optional `d810-egglog` extension, so Egglog is not a core dependency. Constraint forms include:
 
+Install the optional e-graph provider through the convenience extra when that
+backend is needed:
+
+```bash
+python -m pip install "d810-ng[egraph]"
+```
+
+This extra resolves the separately packaged `d810-egglog` provider; the core
+distribution itself has no Egglog or cloudpickle runtime dependency.
+
 * Declarative `ConstraintExpr` (e.g. `bnot_x == ~x`, `c_minus_2 == Const("-2", -2)`)
 * Runtime predicates (`when.equal_mops`, `when.is_bnot`) for IDA-specific checks; optionally attach additional backends for verification.
 * Per-backend overrides via `get_constraints()` when a rule needs solver-specific logic.
