@@ -169,23 +169,27 @@ class Z3lnotRuleGeneric(Z3Rule):
     def check_candidate(self, candidate):
         # lnot result is a boolean (0 or 1), get size from destination operand
         res_size = candidate.dst_mop.size if candidate.dst_mop else 1
-        # For comparing x_0 against 0, use the operand's size
-        operand_size = candidate["x_0"].size or 1
-        val_0_mop = ida_hexrays.mop_t()
-        safe_make_number(val_0_mop, 0, operand_size)
-        equal_result = Z3MopProver(policy=self.z3_proof_policy).prove_equal(
-            candidate["x_0"].mop, val_0_mop
+        prover = Z3MopProver(
+            blk=self._current_blk,
+            ins=self._current_ins,
+            policy=self.z3_proof_policy,
         )
-        if self.observe_z3_proof("prove_equal", equal_result) and (
-            equal_result.status is Z3ProofStatus.PROVED
+        # Resolve the operand through the current CFG context. Pair proving
+        # treats a reaching register definition as an unconstrained variable;
+        # the single-operand queries expand that definition before asking Z3.
+        zero_result = prover.prove_always_zero(
+            candidate["x_0"].mop
+        )
+        if self.observe_z3_proof("prove_always_zero", zero_result) and (
+            zero_result.status is Z3ProofStatus.PROVED
         ):
             candidate.add_constant_leaf("val_res", 1, res_size)
             return True
-        unequal_result = Z3MopProver(policy=self.z3_proof_policy).prove_unequal(
-            candidate["x_0"].mop, val_0_mop
+        nonzero_result = prover.prove_always_nonzero(
+            candidate["x_0"].mop
         )
-        if self.observe_z3_proof("prove_unequal", unequal_result) and (
-            unequal_result.status is Z3ProofStatus.PROVED
+        if self.observe_z3_proof("prove_always_nonzero", nonzero_result) and (
+            nonzero_result.status is Z3ProofStatus.PROVED
         ):
             candidate.add_constant_leaf("val_res", 0, res_size)
             return True

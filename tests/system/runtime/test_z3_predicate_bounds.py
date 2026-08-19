@@ -247,8 +247,12 @@ def test_authority_reaches_editor_pass_bridge_and_direct_rule_configuration(
                 "prove_always_nonzero",
             ),
         ),
-        ("lnot", "prove_equal", ("prove_equal",)),
-        ("lnot", "prove_unequal", ("prove_equal", "prove_unequal")),
+        ("lnot", "prove_always_zero", ("prove_always_zero",)),
+        (
+            "lnot",
+            "prove_always_nonzero",
+            ("prove_always_zero", "prove_always_nonzero"),
+        ),
     ),
 )
 def test_every_generic_prover_branch_forwards_exact_policy(
@@ -301,16 +305,6 @@ def test_every_generic_prover_branch_forwards_exact_policy(
             return self._result("prove_always_nonzero")
 
     monkeypatch.setattr(predicates, "Z3MopProver", _RecordingProver)
-    if rule_name == "lnot":
-        # The fake prover does not need a native zero mop. Constructing an
-        # ``ida_hexrays.mop_t`` without an initialized Hex-Rays database can
-        # segfault in the runtime image, so keep this branch test portable.
-        monkeypatch.setattr(
-            predicates.ida_hexrays,
-            "mop_t",
-            lambda: SimpleNamespace(t=ida_hexrays.mop_n, size=4),
-        )
-        monkeypatch.setattr(predicates, "safe_make_number", lambda *_args: None)
     rule_class = {
         "setz": predicates.Z3setzRuleGeneric,
         "setnz": predicates.Z3setnzRuleGeneric,
@@ -347,9 +341,161 @@ def test_every_generic_prover_branch_forwards_exact_policy(
                  "prove_always_zero": 1, "prove_always_nonzero": 0},
         "setnz": {"prove_equal": 0, "prove_unequal": 1,
                    "prove_always_zero": 0, "prove_always_nonzero": 1},
-        "lnot": {"prove_equal": 1, "prove_unequal": 0},
+        "lnot": {"prove_always_zero": 1, "prove_always_nonzero": 0},
     }[rule_name][target_operation]
     assert additions == [("val_res", expected_value, 1)]
+
+
+@pytest.mark.runtime
+def test_lnot_uses_contextual_zero_then_nonzero_proofs_and_stops(
+    monkeypatch,
+) -> None:
+    """The lnot rule must resolve its operand through the live CFG context."""
+    import ida_hexrays
+
+    from d810.backends.ast.z3_proof_policy import (
+        Z3ProofResult,
+        Z3ProofStatus,
+    )
+    import d810.optimizers.microcode.instructions.z3.predicates as predicates
+
+    class _ContextualProver:
+        instances: list["_ContextualProver"] = []
+
+        def __init__(self, *, blk=None, ins=None, policy=None):
+            self.blk = blk
+            self.ins = ins
+            self.policy = policy
+            self.operations: list[str] = []
+            type(self).instances.append(self)
+
+        def _result(self, operation: str, status: Z3ProofStatus) -> Z3ProofResult:
+            self.operations.append(operation)
+            return Z3ProofResult(
+                status=status,
+                reason=None,
+                observed_expression_nodes=7,
+                elapsed_ms=0.5,
+            )
+
+        def prove_always_zero(self, *_args, **_kwargs):
+            return self._result("prove_always_zero", Z3ProofStatus.PROVED)
+
+        def prove_always_nonzero(self, *_args, **_kwargs):
+            raise AssertionError("nonzero proof must not run after zero is proved")
+
+        def prove_equal(self, *_args, **_kwargs):
+            raise AssertionError("lnot must not use context-free pair proving")
+
+        def prove_unequal(self, *_args, **_kwargs):
+            raise AssertionError("lnot must not use context-free pair proving")
+
+    monkeypatch.setattr(predicates, "Z3MopProver", _ContextualProver)
+    rule = predicates.Z3lnotRuleGeneric()
+    rule.configure({"max_expression_nodes": 41, "proof_timeout_ms": 43})
+    block = object()
+    instruction = object()
+    rule._current_blk = block
+    rule._current_ins = instruction
+    candidate, additions = _candidate(
+        _mop(mop_type=ida_hexrays.mop_r),
+        _mop(mop_type=ida_hexrays.mop_n, value=0),
+    )
+
+    assert rule.check_candidate(candidate) is True
+    assert additions == [("val_res", 1, 1)]
+    assert len(_ContextualProver.instances) == 1
+    prover = _ContextualProver.instances[0]
+    assert prover.blk is block
+    assert prover.ins is instruction
+    assert prover.policy is rule.z3_proof_policy
+    assert prover.policy.max_expression_nodes == 41
+    assert prover.policy.proof_timeout_ms == 43
+    assert prover.operations == ["prove_always_zero"]
+
+
+@pytest.mark.runtime
+def test_lnot_contextual_proofs_fall_back_to_nonzero_and_fail_closed(
+    monkeypatch,
+) -> None:
+    """A disproved/abstained first query may fall through, never force a result."""
+    import ida_hexrays
+
+    from d810.backends.ast.z3_proof_policy import (
+        Z3ProofAbstentionReason,
+        Z3ProofResult,
+        Z3ProofStatus,
+    )
+    import d810.optimizers.microcode.instructions.z3.predicates as predicates
+
+    class _FallbackProver:
+        instances: list["_FallbackProver"] = []
+        zero_status = Z3ProofStatus.DISPROVED
+        nonzero_status = Z3ProofStatus.PROVED
+
+        def __init__(self, *, blk=None, ins=None, policy=None):
+            self.blk = blk
+            self.ins = ins
+            self.policy = policy
+            self.operations: list[str] = []
+            type(self).instances.append(self)
+
+        def _result(self, operation: str, status: Z3ProofStatus) -> Z3ProofResult:
+            self.operations.append(operation)
+            return Z3ProofResult(
+                status=status,
+                reason=(
+                    Z3ProofAbstentionReason.NODE_LIMIT
+                    if status is Z3ProofStatus.ABSTAINED
+                    else None
+                ),
+                observed_expression_nodes=9,
+                elapsed_ms=0.5,
+            )
+
+        def prove_always_zero(self, *_args, **_kwargs):
+            return self._result("prove_always_zero", self.zero_status)
+
+        def prove_always_nonzero(self, *_args, **_kwargs):
+            return self._result("prove_always_nonzero", self.nonzero_status)
+
+        def prove_equal(self, *_args, **_kwargs):
+            raise AssertionError("lnot must not use context-free pair proving")
+
+        def prove_unequal(self, *_args, **_kwargs):
+            raise AssertionError("lnot must not use context-free pair proving")
+
+    monkeypatch.setattr(predicates, "Z3MopProver", _FallbackProver)
+    rule = predicates.Z3lnotRuleGeneric()
+    rule.configure({"max_expression_nodes": 47, "proof_timeout_ms": 53})
+    rule._current_blk = object()
+    rule._current_ins = object()
+    candidate, additions = _candidate(
+        _mop(mop_type=ida_hexrays.mop_r),
+        _mop(mop_type=ida_hexrays.mop_n, value=0),
+    )
+
+    assert rule.check_candidate(candidate) is True
+    assert additions == [("val_res", 0, 1)]
+    assert _FallbackProver.instances[0].operations == [
+        "prove_always_zero",
+        "prove_always_nonzero",
+    ]
+
+    _FallbackProver.instances.clear()
+    _FallbackProver.zero_status = Z3ProofStatus.ABSTAINED
+    _FallbackProver.nonzero_status = Z3ProofStatus.DISPROVED
+    candidate, additions = _candidate(
+        _mop(mop_type=ida_hexrays.mop_r),
+        _mop(mop_type=ida_hexrays.mop_n, value=0),
+    )
+
+    assert rule.check_candidate(candidate) is False
+    assert additions == []
+    assert _FallbackProver.instances[0].operations == [
+        "prove_always_zero",
+        "prove_always_nonzero",
+    ]
 
 
 @pytest.mark.runtime
