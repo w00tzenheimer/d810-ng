@@ -419,6 +419,12 @@ class NativeMbaHostServices(Protocol):
         replacement: TypedBvTerm,
     ) -> NativeMbaReconstruction | None: ...
 
+    def rebuild_ast(
+        self,
+        candidate: NativeMbaCandidate,
+        replacement: TypedBvTerm,
+    ) -> object | None: ...
+
     def prove(
         self,
         candidate: NativeMbaCandidate,

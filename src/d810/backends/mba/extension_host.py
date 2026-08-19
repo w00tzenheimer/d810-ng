@@ -282,6 +282,26 @@ class _NativeMbaHostServices:
             return None
         return NativeMbaReconstruction(replacement_ast, replacement_instruction)
 
+    def rebuild_ast(
+        self,
+        candidate: NativeMbaCandidate,
+        replacement: TypedBvTerm,
+    ) -> object | None:
+        """Rebuild a native AST when no mutation destination is available."""
+
+        if not isinstance(replacement, TypedBvTerm):
+            return None
+        if replacement.width != candidate.destination_size * 8:
+            return None
+        context = _host_context(candidate)
+        if context is None or context.lowering is None:
+            return None
+        return rebuild_hexrays_island(
+            replacement,
+            lowering=context.lowering,
+            destination_size=candidate.destination_size,
+        )
+
     def prove(
         self,
         candidate: NativeMbaCandidate,
