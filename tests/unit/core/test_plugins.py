@@ -1020,6 +1020,37 @@ class TestPassImplementations(unittest.TestCase):
         with self.assertRaises(PassImplementationMisdeclared):
             reg.implementation_candidates_for("mba-egraph")
 
+    def test_typed_manifest_with_malformed_rules_is_misdeclared(self):
+        """Runtime callers can bypass dataclass annotations; validate anyway."""
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION,
+            provides=Recorder(result=object()),
+            rules="bad",
+            implements={"mba-egraph": "EgglogOptimizer"},
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+
+        with self.assertRaises(PassImplementationMisdeclared):
+            reg.require_unique_implementation("mba-egraph", install_hint="d810-egglog")
+
+    def test_duck_typed_manifest_with_non_iterable_rules_is_misdeclared(self):
+        raw = {
+            "name": "cobra",
+            "api_version": PLUGIN_API_VERSION,
+            "provides": Recorder(result=object()),
+            "rules": 42,
+            "implements": {"mba-egraph": "EgglogOptimizer"},
+        }
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: raw)]
+        )
+
+        with self.assertRaises(PassImplementationMisdeclared):
+            reg.require_unique_implementation("mba-egraph", install_hint="d810-egglog")
+
     def test_candidate_read_does_not_probe_or_resolve_backend(self):
         probe_calls = []
 

@@ -389,7 +389,17 @@ class PassImplementationMisdeclared(PassImplementationError):
 def manifest_of(raw: Any) -> BackendManifest:
     """Coerce a duck-typed manifest into a :class:`BackendManifest`."""
     if isinstance(raw, BackendManifest):
-        return raw
+        rules = _validate_rules(raw.rules)
+        if rules == raw.rules:
+            return raw
+        return BackendManifest(
+            name=raw.name,
+            api_version=raw.api_version,
+            provides=raw.provides,
+            capabilities=raw.capabilities,
+            rules=rules,
+            implements=raw.implements,
+        )
 
     getter = (
         (lambda key: raw[key])
@@ -465,13 +475,32 @@ def _coerce_rules(raw: Any) -> tuple[str, ...]:
         declared = raw["rules"] if isinstance(raw, Mapping) else raw.rules
     except (KeyError, AttributeError):
         return ()
+    return _validate_rules(declared)
+
+
+def _validate_rules(declared: Any) -> tuple[str, ...]:
+    """Validate and freeze an ordered manifest rule-module declaration."""
     if declared is None:
         return ()
 
     if isinstance(declared, str):
         raise ManifestError(
-            f"rules must be a sequence of import paths, not a bare string: "
+            f"rules must be an ordered sequence of import paths, not a bare string: "
             f"{declared!r} (did you mean ({declared!r},)?)"
+        )
+    if isinstance(declared, (bytes, bytearray, memoryview)):
+        raise ManifestError(
+            "rules must be an ordered sequence of text import paths, not "
+            f"{type(declared).__name__}"
+        )
+    if isinstance(declared, Mapping):
+        raise ManifestError(
+            "rules must be an ordered sequence of import paths, not a mapping"
+        )
+    if not isinstance(declared, Sequence):
+        raise ManifestError(
+            "rules must be an ordered tuple/list-like sequence of import "
+            f"paths, got {type(declared).__name__}: {declared!r}"
         )
 
     modules = tuple(declared)
@@ -481,6 +510,8 @@ def _coerce_rules(raw: Any) -> tuple[str, ...]:
                 f"rules entries must be import-path strings, "
                 f"got {type(module).__name__}: {module!r}"
             )
+        if not module:
+            raise ManifestError("rules entries must be nonempty import paths")
     return modules
 
 
