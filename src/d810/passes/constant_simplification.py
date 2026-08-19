@@ -13,29 +13,30 @@ from d810.core.pass_editor_spec import (
     FieldEditorSpec,
     PassEditorSpec,
 )
+from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PipelineConfig,
-    PipelineConfigError,
     PipelinePass,
     PassResult,
 )
 from d810.passes.registry import PassRegistry
-from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
+from d810.passes.execution_stages import (
+    ExecutionPipeline,
+    ExecutionStageDescriptor,
+)
+from d810.passes.constant_simplification_options import (
+    AGGRESSIVE_MEMORY_POLICY as COMPILED_AGGRESSIVE_MEMORY_POLICY,
+    CompiledConstantSimplificationSchedule,
+    STRICT_MEMORY_POLICY as COMPILED_STRICT_MEMORY_POLICY,
+    StageLifecycleDomain,
+    compile_constant_simplification_schedule,
+)
 
 #: Back-reference to the shared vocabulary; see :mod:`d810.core.pass_ids`.
 CONSTANT_SIMPLIFICATION_PASS_ID = PassId.CONSTANT_SIMPLIFICATION
-STRICT_MEMORY_POLICY = "strict"
-AGGRESSIVE_MEMORY_POLICY = "aggressive_no_direct_writes"
-_MEMORY_POLICIES = frozenset({STRICT_MEMORY_POLICY, AGGRESSIVE_MEMORY_POLICY})
-_OPTION_NAMES = frozenset(
-    {
-        "memory_policy",
-        "allow_executable_readonly",
-        "rva_guard",
-        "persist_global_const_annotations",
-    }
-)
+STRICT_MEMORY_POLICY = COMPILED_STRICT_MEMORY_POLICY
+AGGRESSIVE_MEMORY_POLICY = COMPILED_AGGRESSIVE_MEMORY_POLICY
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,53 +65,69 @@ class ConstantSimplificationHookRules:
 class ConstantSimplificationPass(PipelinePass):
     """Portable descriptor; the live hook bridge executes its private stages."""
 
-    options: ConstantSimplificationOptions
+    options: CompiledConstantSimplificationSchedule
     name: str = CONSTANT_SIMPLIFICATION_PASS_ID
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
         return PassResult()
 
 
-def _parse_options(config: PipelineConfig) -> ConstantSimplificationOptions:
-    if config.pass_id != CONSTANT_SIMPLIFICATION_PASS_ID:
-        raise PipelineConfigError(
-            f"expected {CONSTANT_SIMPLIFICATION_PASS_ID!r}, got {config.pass_id!r}"
-        )
-    unknown = tuple(sorted(set(config.options) - _OPTION_NAMES))
-    if unknown:
-        raise PipelineConfigError(
-            f"constant-simplification has unknown options: {list(unknown)}"
-        )
-    memory_policy = config.options.get("memory_policy", STRICT_MEMORY_POLICY)
-    if not isinstance(memory_policy, str) or memory_policy not in _MEMORY_POLICIES:
-        raise PipelineConfigError(
-            "constant-simplification options.memory_policy must be one of: "
-            f"{', '.join(sorted(_MEMORY_POLICIES))}"
-        )
-    dangerous = config.options.get("allow_executable_readonly", False)
-    if not isinstance(dangerous, bool):
-        raise PipelineConfigError(
-            "constant-simplification options.allow_executable_readonly must be boolean"
-        )
-    rva_guard = config.options.get("rva_guard", True)
-    if not isinstance(rva_guard, bool):
-        raise PipelineConfigError(
-            "constant-simplification options.rva_guard must be boolean"
-        )
-    persist_global_const_annotations = config.options.get(
-        "persist_global_const_annotations", False
+def _parse_options(config: PipelineConfig) -> CompiledConstantSimplificationSchedule:
+    return compile_constant_simplification_schedule(
+        config,
+        constant_simplification_stage_descriptors(),
     )
-    if not isinstance(persist_global_const_annotations, bool):
-        raise PipelineConfigError(
-            "constant-simplification options.persist_global_const_annotations "
-            "must be boolean"
-        )
-    return ConstantSimplificationOptions(
-        memory_policy=memory_policy,
-        allow_executable_readonly=dangerous,
-        persist_global_const_annotations=persist_global_const_annotations,
-        rva_guard=rva_guard,
-    )
+
+
+def constant_simplification_stage_descriptors() -> tuple[ExecutionStageDescriptor, ...]:
+    """Return the portable registration authority for the three live stages."""
+
+    return _CONSTANT_STAGE_DESCRIPTORS
+
+
+_CONSTANT_STAGE_DESCRIPTORS = (
+    ExecutionStageDescriptor(
+        CONSTANT_SIMPLIFICATION_PASS_ID,
+        "fold-readonly-data",
+        ExecutionPipeline.INSTRUCTION,
+        "FoldReadonlyDataRule",
+        lifecycle_domain=StageLifecycleDomain.MICROCODE,
+        supported_maturities=(
+            IRMaturity.CANONICAL,
+            IRMaturity.LOCAL_OPTIMIZED,
+            IRMaturity.CALL_MODELED,
+            IRMaturity.GLOBAL_ANALYZED,
+            IRMaturity.STRUCTURED,
+        ),
+    ),
+    ExecutionStageDescriptor(
+        CONSTANT_SIMPLIFICATION_PASS_ID,
+        "fold-constant-subtree",
+        ExecutionPipeline.INSTRUCTION,
+        "ConstantSubtreeFoldRule",
+        lifecycle_domain=StageLifecycleDomain.MICROCODE,
+        supported_maturities=(
+            IRMaturity.LOCAL_OPTIMIZED,
+            IRMaturity.CALL_MODELED,
+            IRMaturity.GLOBAL_ANALYZED,
+            IRMaturity.GLOBAL_OPTIMIZED,
+            IRMaturity.STRUCTURED,
+        ),
+    ),
+    ExecutionStageDescriptor(
+        CONSTANT_SIMPLIFICATION_PASS_ID,
+        "forward-constants",
+        ExecutionPipeline.FLOW,
+        "ForwardConstantPropagationRule",
+        lifecycle_domain=StageLifecycleDomain.MICROCODE,
+        supported_maturities=(
+            IRMaturity.CALL_MODELED,
+            IRMaturity.GLOBAL_ANALYZED,
+            IRMaturity.GLOBAL_OPTIMIZED,
+            IRMaturity.STRUCTURED,
+        ),
+    ),
+)
 
 
 def build_constant_simplification_pass(
@@ -135,15 +152,16 @@ def constant_simplification_hook_rules(
 ) -> ConstantSimplificationHookRules:
     """Expand the logical pass into its ordered live Hex-Rays stages."""
     options = _parse_options(config)
+    readonly_options = options.stage("fold-readonly-data").options
     memory_options: dict[str, object] = {
         # Private bundle-owned behavior. Direct/legacy activation of the
         # implementation rule does not persist IDB type metadata.
         "persist_global_const_annotations": options.persist_global_const_annotations,
-        "rva_guard": options.rva_guard,
+        "rva_guard": readonly_options["rva_guard"],
     }
-    if options.memory_policy == AGGRESSIVE_MEMORY_POLICY:
+    if readonly_options["memory_policy"] == AGGRESSIVE_MEMORY_POLICY:
         memory_options["fold_writable_constants"] = True
-    if options.allow_executable_readonly:
+    if readonly_options["allow_executable_readonly"]:
         memory_options["allow_executable_readonly"] = True
     return ConstantSimplificationHookRules(
         instruction_rules=(
@@ -171,26 +189,7 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                 "persist_global_const_annotations": False,
             },
         ),
-        stages=(
-            ExecutionStageDescriptor(
-                CONSTANT_SIMPLIFICATION_PASS_ID,
-                "fold-readonly-data",
-                ExecutionPipeline.INSTRUCTION,
-                "FoldReadonlyDataRule",
-            ),
-            ExecutionStageDescriptor(
-                CONSTANT_SIMPLIFICATION_PASS_ID,
-                "fold-constant-subtree",
-                ExecutionPipeline.INSTRUCTION,
-                "ConstantSubtreeFoldRule",
-            ),
-            ExecutionStageDescriptor(
-                CONSTANT_SIMPLIFICATION_PASS_ID,
-                "forward-constants",
-                ExecutionPipeline.FLOW,
-                "ForwardConstantPropagationRule",
-            ),
-        ),
+        stages=constant_simplification_stage_descriptors(),
         editor_spec=PassEditorSpec.fields_editor(
             (
                 FieldEditorSpec(
@@ -256,5 +255,6 @@ __all__ = [
     "STRICT_MEMORY_POLICY",
     "build_constant_simplification_pass",
     "constant_simplification_hook_rules",
+    "constant_simplification_stage_descriptors",
     "register_constant_simplification_pass",
 ]

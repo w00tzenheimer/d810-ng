@@ -9,6 +9,7 @@ from d810.passes.constant_simplification import (
     build_constant_simplification_pass,
     constant_simplification_hook_rules,
 )
+from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError, PassResult
 
 
@@ -104,6 +105,10 @@ def test_global_const_persistence_is_an_explicit_opt_in() -> None:
         _config(persist_global_const_annotations=True)
     )
 
+    assert default_pass.options.preparation.enabled is False
+    assert enabled_pass.options.preparation.enabled is True
+    # Compatibility projection remains available while the live bridge is
+    # migrated to the compiled schedule in the next task.
     assert default_pass.options.persist_global_const_annotations is False
     assert enabled_pass.options.persist_global_const_annotations is True
     enabled_rules = constant_simplification_hook_rules(
@@ -113,3 +118,33 @@ def test_global_const_persistence_is_an_explicit_opt_in() -> None:
         enabled_rules.instruction_rules[0].config["persist_global_const_annotations"]
         is True
     )
+
+
+def test_canonical_stage_options_are_accepted_by_the_public_builder() -> None:
+    configured = build_constant_simplification_pass(
+        PipelineConfig(
+            pass_id=CONSTANT_SIMPLIFICATION_PASS_ID,
+            maturity_gates=frozenset({IRMaturity.GLOBAL_ANALYZED}),
+            options={
+                "stages": {
+                    "fold-readonly-data": {
+                        "maturities": ["CANONICAL", "GLOBAL_ANALYZED"],
+                        "rva_guard": False,
+                    },
+                    "fold-constant-subtree": {"enabled": False},
+                    "forward-constants": {"enabled": False},
+                }
+            },
+        )
+    )
+
+    readonly = next(
+        stage
+        for stage in configured.options.stages
+        if stage.stage_id == "fold-readonly-data"
+    )
+    assert readonly.requested_maturities == (
+        IRMaturity.CANONICAL,
+        IRMaturity.GLOBAL_ANALYZED,
+    )
+    assert readonly.effective_maturities == (IRMaturity.GLOBAL_ANALYZED,)

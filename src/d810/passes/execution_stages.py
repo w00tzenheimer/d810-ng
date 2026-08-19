@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 
 from d810.core.execution_scope import ExecutionPipeline
+from d810.ir.maturity import IRMaturity, IR_MATURITY_ORDER
+from d810.passes.constant_simplification_options import StageLifecycleDomain
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +18,8 @@ class ExecutionStageDescriptor:
     stage_id: str
     pipeline: ExecutionPipeline
     implementation_name: str
+    lifecycle_domain: StageLifecycleDomain = StageLifecycleDomain.MICROCODE
+    supported_maturities: tuple[IRMaturity, ...] = ()
 
     def __post_init__(self) -> None:
         for field_name in ("pass_id", "stage_id", "implementation_name"):
@@ -26,6 +30,20 @@ class ExecutionStageDescriptor:
                 raise ValueError(f"{field_name} must not contain outer whitespace")
         if not isinstance(self.pipeline, ExecutionPipeline):
             raise TypeError("pipeline must be an ExecutionPipeline")
+        if not isinstance(self.lifecycle_domain, StageLifecycleDomain):
+            raise TypeError("lifecycle_domain must be a StageLifecycleDomain")
+        if not isinstance(self.supported_maturities, tuple):
+            raise TypeError("supported_maturities must be a tuple")
+        if any(not isinstance(value, IRMaturity) for value in self.supported_maturities):
+            raise TypeError("supported_maturities must contain IRMaturity values")
+        if len(set(self.supported_maturities)) != len(self.supported_maturities):
+            raise ValueError("supported_maturities must not contain duplicates")
+        if self.supported_maturities != tuple(
+            maturity
+            for maturity in IR_MATURITY_ORDER
+            if maturity in self.supported_maturities
+        ):
+            raise ValueError("supported_maturities must follow IR_MATURITY_ORDER")
 
 
 def canonical_transform_id(implementation_name: str) -> str:
@@ -58,5 +76,6 @@ def canonical_transform_id(implementation_name: str) -> str:
 __all__ = [
     "ExecutionPipeline",
     "ExecutionStageDescriptor",
+    "StageLifecycleDomain",
     "canonical_transform_id",
 ]
