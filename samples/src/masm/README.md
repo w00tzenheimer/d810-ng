@@ -13,6 +13,11 @@ this directory, so these functions exist **only in the PE `.dll`**.
 DSL cases for them set `skip_if_function_absent=True` so they SKIP (not fail) on
 non-Windows builds.
 
+Small semantic probes whose link layout must not perturb the comprehensive
+fixture live under `src/masm_probes/`. Build the Hodur Egglog probe with
+`make hodur-egglog-probe`; this produces the MASM-only
+`bins/hodur_egglog_probe.dll` and its PDB.
+
 Authoritative build path (per `../../README.md`): `reversepc.local`,
 `samples/scripts/build_windows.ps1`.
 
@@ -161,5 +166,8 @@ asserted AFTER the retarget made it real). Verify with:
 - `sub_7FFD3338C040.asm` — earlier Hodur extraction.
 - `sub_7FF85A13D930.asm` — Hodur-like dispatcher with a cross-block constant
   return chain; guards forward propagation before subtree folding.
+- `Hodur_ComplementMaskResidual.asm` — focused native form of the generalized
+  complementary-mask MBA; guards Egglog extraction and native-Z3 validation
+  independently of the large dispatcher's linker-sensitive temporary layout.
 - `sub_7FF85A59E4D0.asm` — live Eid state-machine export. Guards removal
   of effect-free residual stack-state writes after dispatcher recovery.

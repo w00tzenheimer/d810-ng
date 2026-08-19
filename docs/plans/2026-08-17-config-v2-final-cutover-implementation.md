@@ -1131,7 +1131,7 @@ git commit -m "test(config-v2): close final cutover regressions"
 
 - [ ] **Step 1: Run representative profile oracles**
 
-Run the exact OLLVM, Tigress indirect, Approov/Hodur, and Eidolon fixture tests
+Run the exact OLLVM, Tigress indirect, Approov/Hodur, and constant-solver fixture tests
 already referenced by the canonical configurations. Include at minimum:
 
 ```text

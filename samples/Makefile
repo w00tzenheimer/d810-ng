@@ -324,7 +324,7 @@ OBJS := $(SRCS:.c=.o)
 endif
 
 # ----------------------------- Rules -----------------------------
-.PHONY: all clean masm docker-windows-dockerfile docker-windows-setup docker-linux-dockerfile docker-linux-setup docker-windows-build test-all-platforms
+.PHONY: all clean masm hodur-egglog-probe docker-windows-dockerfile docker-windows-setup docker-linux-dockerfile docker-linux-setup docker-windows-build test-all-platforms
 
 # If using Docker, intercept and run in container.
 ifeq ($(USE_DOCKER_WINDOWS),1)
@@ -428,6 +428,12 @@ endif
 masm:
 	@MASM_FUNCS="$(MASM_FUNCS)" BINARY_NAME="$(BINARY_NAME)" \
 		bash scripts/build_masm.sh
+
+# A MASM-only semantic probe has its own image so adding or changing it cannot
+# perturb the shared libobfuscated.dll link layout and Hex-Rays baselines.
+hodur-egglog-probe:
+	@MASM_SOURCE_DIR=src/masm_probes MASM_INCLUDE_C=0 \
+		BINARY_NAME=hodur_egglog_probe bash scripts/build_masm.sh
 
 clean:
 	-$(RM) $(TARGET_LIB) $(OBJS) $(MASM_OBJS) $(SRCS:.c=.d) $(AUTO_EXPORTS_RSP) 2>/dev/null || true

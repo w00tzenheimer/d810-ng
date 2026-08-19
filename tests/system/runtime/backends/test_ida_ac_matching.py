@@ -285,6 +285,10 @@ def test_native_shadow_proof_uses_fixed_width_bit_vector_semantics() -> None:
     assert prove_native_ast_equivalence(source, source.left, width=32)
     assert not prove_native_ast_equivalence(source, _constant(1), width=32)
     assert not prove_native_ast_equivalence(source, source.left, width=7)
+    assert not prove_native_ast_equivalence(source, source.left, width=32, timeout_ms=0)
+    assert not prove_native_ast_equivalence(
+        source, source.left, width=32, timeout_ms=251
+    )
 
 
 def test_shadow_matcher_never_claims_legacy_binding_parity() -> None:

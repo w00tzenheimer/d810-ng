@@ -65,6 +65,7 @@ pytestmark = [
 ida_bytes = pytest.importorskip("ida_bytes")
 ida_funcs = pytest.importorskip("ida_funcs")
 ida_hexrays = pytest.importorskip("ida_hexrays")
+ida_segment = pytest.importorskip("ida_segment")
 idaapi = pytest.importorskip("idaapi")
 idc = pytest.importorskip("idc")
 
@@ -122,10 +123,58 @@ EXPECTED_CURRENT_TARGET_OFFSET = 0x18
 EXPECTED_PROPOSED_TARGET_OFFSET = 0x38
 
 
+_PRIVATE_FIXTURE_SIGNATURES = {
+    "single_iteration_simple": bytes.fromhex(
+        "4883ec10894c240c8b44240c89442408c744240434120000"
+        "8b4424043d3412000075158b44240883c00a89442408"
+        "c744240478560000ebe08b4424084883c410c3"
+    ),
+    "fake_jump_opaque_predicate": bytes.fromhex(
+        "4883ec108954240c894c24088b4424080344240c89442404"
+        "8b44240883e8010faf44240883e001890424833c2400750c"
+        "8b442404d1e089442404eb096b4424040389442404"
+        "8b4424044883c410c3"
+    ),
+}
+
+
+def _find_unique_executable_signature(signature: bytes) -> int:
+    matches: list[int] = []
+    segment = ida_segment.get_first_seg()
+    while segment is not None:
+        if int(segment.perm) & int(ida_segment.SEGPERM_EXEC):
+            contents = bytes(
+                ida_bytes.get_bytes(
+                    int(segment.start_ea),
+                    int(segment.end_ea - segment.start_ea),
+                )
+                or b""
+            )
+            offset = contents.find(signature)
+            while offset >= 0:
+                matches.append(int(segment.start_ea) + offset)
+                offset = contents.find(signature, offset + 1)
+        segment = ida_segment.get_next_seg(int(segment.start_ea))
+    assert len(matches) == 1, (
+        "private fixture signature must resolve uniquely; "
+        f"found {len(matches)} matches"
+    )
+    return matches[0]
+
+
 def _get_func_ea(name: str) -> int:
     ea = idc.get_name_ea_simple(name)
     if ea == idaapi.BADADDR:
         ea = idc.get_name_ea_simple("_" + name)
+    if ea == idaapi.BADADDR and name in _PRIVATE_FIXTURE_SIGNATURES:
+        ea = _find_unique_executable_signature(_PRIVATE_FIXTURE_SIGNATURES[name])
+        function = ida_funcs.get_func(ea)
+        if function is None:
+            assert ida_funcs.add_func(ea, ea + len(_PRIVATE_FIXTURE_SIGNATURES[name]))
+            idaapi.auto_wait()
+            function = ida_funcs.get_func(ea)
+        assert function is not None and int(function.start_ea) == int(ea)
+        assert idaapi.set_name(ea, name, idaapi.SN_NOCHECK)
     return ea
 
 

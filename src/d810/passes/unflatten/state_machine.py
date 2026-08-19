@@ -3231,6 +3231,11 @@ class LowerStateMachine(PipelinePass):
                 ),
                 state_var_reg=state_var_reg,
                 dispatcher_entry_serial=int(dispatcher_entry),
+                default_target_serial=(
+                    getattr(dmap, "default_target_block", None)
+                    if dmap is not None
+                    else None
+                ),
                 pre_header_serial=getattr(range_evidence, "pre_header_serial", None),
                 initial_state=initial_state,
                 native_bound_transition_routes=native_bound_transition_routes,

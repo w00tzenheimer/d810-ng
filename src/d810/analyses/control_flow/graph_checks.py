@@ -305,6 +305,7 @@ def check_effectful_reachability_preserved(
     *,
     post_cfg: FlowGraph | None = None,
     post_adj: dict[int, list[int]] | dict[int, tuple[int, ...]] | None = None,
+    allowed_lost_block_serials: frozenset[int] = frozenset(),
 ) -> EffectfulReachabilityResult:
     """Reject a rewrite that strands a formerly reachable CALL/STORE block.
 
@@ -334,9 +335,10 @@ def check_effectful_reachability_preserved(
         if post_cfg is not None
         else reachable_from_adjacency(post_adj or {}, pre_cfg.entry_serial)
     )
+    allowed_lost = frozenset(int(serial) for serial in allowed_lost_block_serials)
     if post_cfg is None:
         retained = frozenset(pre_effectful & post_reachable)
-        lost = frozenset(pre_effectful - post_reachable)
+        lost = frozenset((pre_effectful - post_reachable) - allowed_lost)
     else:
         reachable_effects: Counter[tuple[object, ...]] = Counter(
             effect_identity
@@ -359,7 +361,7 @@ def check_effectful_reachability_preserved(
             else:
                 lost_serials.add(int(serial))
         retained = frozenset(retained_serials)
-        lost = frozenset(lost_serials)
+        lost = frozenset(lost_serials - allowed_lost)
     if lost:
         return EffectfulReachabilityResult(
             passed=False,

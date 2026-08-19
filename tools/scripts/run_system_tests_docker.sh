@@ -71,6 +71,7 @@
 #   D810_CYTHON_PROFILE    Test-only Cython trace/profile build (requires D810_NO_CYTHON=0)
 #   D810_NATIVE_PROFILE    Opt-in perf/py-spy tooling plus PERFMON/SYS_PTRACE (default: 0)
 #   D810_TEST_BINARY       Passed into container (default: libobfuscated.dll)
+#   D810_SYSTEM_BATCH_SIZE  Tests per fresh interpreter in system mode (default: 20).
 #   D810_EGGLOG_ROOT       Optional absolute host path to a d810-egglog checkout
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #
@@ -211,6 +212,7 @@ _trace_default_override D810_NO_CYTHON 1
 _trace_default_override D810_CYTHON_PROFILE 0
 _trace_default_override D810_NATIVE_PROFILE 0
 _trace_default_override D810_TEST_BINARY libobfuscated.dll
+_trace_default_override D810_SYSTEM_BATCH_SIZE 20
 _trace_default_override D810_WORKTREE_ROOT .worktrees
 
 DOCKER_IMAGE="${D810_DOCKER_IMAGE-idapro-9.4}"
@@ -219,8 +221,12 @@ NO_CYTHON="${D810_NO_CYTHON-1}"
 CYTHON_PROFILE="${D810_CYTHON_PROFILE-0}"
 NATIVE_PROFILE="${D810_NATIVE_PROFILE-0}"
 TEST_BINARY="${D810_TEST_BINARY-libobfuscated.dll}"
+SYSTEM_BATCH_SIZE="${D810_SYSTEM_BATCH_SIZE-20}"
 [ -n "$DOCKER_IMAGE" ] || { echo "ERROR: D810_DOCKER_IMAGE is set but empty" >&2; exit 1; }
 [ -n "$DOCKER_MEMORY" ] || { echo "ERROR: D810_DOCKER_MEMORY is set but empty" >&2; exit 1; }
+case "$SYSTEM_BATCH_SIZE" in
+  ''|*[!0-9]*|0) echo "ERROR: D810_SYSTEM_BATCH_SIZE must be a positive integer" >&2; exit 1 ;;
+esac
 case "$CYTHON_PROFILE" in
   0|1) ;;
   *) echo "ERROR: D810_CYTHON_PROFILE must be 0 or 1" >&2; exit 1 ;;
@@ -481,7 +487,7 @@ fi
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
 _d810_extra_env_flags() {
-  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES "
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE "
   local _out=""
   local _var _val
   for _var in ${!D810_@}; do
@@ -646,7 +652,7 @@ if [ "$CMD" = "system" ]; then
     SYS_TRUNCATE=": > \"$SYS_LOG\"; "
     SYS_REDIR="> \"$SYS_LOG\" 2>&1"
   fi
-  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v $PYTEST_EXTENSION_ARGS $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
+  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON tools/scripts/run_system_test_batches.py --python $IDA_VENV_PYTHON --batch-size $SYSTEM_BATCH_SIZE tests/system -- $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
   exit 0
 fi
 

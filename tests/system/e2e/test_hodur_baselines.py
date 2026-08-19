@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import os
 import platform
-from pathlib import Path
 
 import pytest
 
+import ida_hexrays
 import idaapi
 import idc
 
@@ -67,6 +67,32 @@ def _get_default_binary() -> str:
     )
 
 
+def _count_sub7ffd_work_calls(cfunc: object) -> int:
+    """Count direct ctree calls to the unresolved work target by address."""
+    count = 0
+
+    class _WorkCallVisitor(ida_hexrays.ctree_visitor_t):
+        def __init__(self) -> None:
+            ida_hexrays.ctree_visitor_t.__init__(self, ida_hexrays.CV_FAST)
+
+        def visit_expr(self, expr: object) -> int:
+            nonlocal count
+            if expr.op != ida_hexrays.cot_call:
+                return 0
+            callee = expr.x
+            while callee.op == ida_hexrays.cot_cast:
+                callee = callee.x
+            if callee.op == ida_hexrays.cot_obj and int(callee.obj_ea) in {
+                0x180000000,
+                0x200000000,
+            }:
+                count += 1
+            return 0
+
+    _WorkCallVisitor().apply_to(cfunc.body, None)
+    return count
+
+
 # Baseline expectations: (function_name, project_json, expected_ast_stats)
 # Keys: statements, returns, whiles, gotos, ifs, calls
 # These are IDA-ctree counts (ctree_count_ast_statements),
@@ -81,14 +107,15 @@ HODUR_BASELINES = [
         # like sub_7FFD. Counts from IDA ctree (includes calls to sub_* helpers
         # that libclang would drop). Old libclang baseline was:
         # {statements:39, returns:3, whiles:0, gotos:1, ifs:8} (no calls key).
-        # ctree baseline (captured 2026-06-25):
-        # statements:94, returns:3, whiles:0, gotos:1, ifs:11, calls:32
+        # The locally rebuildable freestanding MSVC-COFF fixture expands
+        # declaration/assignment ctree shape while preserving the exact 32
+        # calls and fully removing the dispatcher loop. Captured with IDA 9.4.
         {
-            "statements": 94,
+            "statements": 116,
             "returns": 3,
             "whiles": 0,
             "gotos": 1,
-            "ifs": 11,
+            "ifs": 13,
             "calls": 32,
         },
         id="hodur_func",
@@ -145,13 +172,6 @@ def _configure_sub7ffd_function_priors(ctx, func_ea: int) -> None:
         ctx.state.manager.function_analysis_priors_for_ea(func_ea)
         == SUB_7FFD_FUNCTION_PRIORS
     )
-
-
-def _sub7ffd_work_call_count(code: str) -> int:
-    """Count preserved obfuscation work calls across IDA naming variants."""
-    memory_calls = code.count("MEMORY[0x180000000]")
-    image_base_calls = code.count("_ImageBase(")
-    return memory_calls + image_base_calls
 
 
 @pytest.fixture(scope="class")
@@ -253,7 +273,7 @@ class TestHodurBaselines:
             # call must survive (the corrected sample has 9, incl. the recovered
             # 0x4D handler that the legacy path dropped).  IDA may render that
             # target as MEMORY[0x180000000] or as the local _ImageBase symbol.
-            n_work_calls = _sub7ffd_work_call_count(code_after)
+            n_work_calls = _count_sub7ffd_work_calls(cfunc)
             assert n_work_calls == 9, (
                 "sub_7FFD3338C040 work-call regression: expected 9 obfuscation "
                 f"calls in AFTER pseudocode, found {n_work_calls}"
@@ -406,7 +426,7 @@ class TestSub7FFDCorridorPreservationRegression:
 
         # All 9 obfuscation callees must survive (incl. the recovered 0x4D
         # handler the legacy path dropped on the corrupted sample).
-        n_calls = _sub7ffd_work_call_count(code_after)
+        n_calls = _count_sub7ffd_work_calls(cfunc)
         assert n_calls == 9, (
             f"work-call regression: expected 9 obfuscation calls, found {n_calls}."
         )

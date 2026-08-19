@@ -708,6 +708,7 @@ class HexRaysPatchTransactionParticipant:
                 entry_passed=entry_reachability.passed,
                 switch_cycle_hazard=projected_switch_cycle_hazard,
             )
+            entry_allowance_reason = candidate_allowance.reason
             if (
                 not entry_reachability.passed
                 or projected_switch_cycle_hazard

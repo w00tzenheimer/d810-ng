@@ -7,6 +7,8 @@ import pytest
 import idaapi
 import idc
 
+from d810.testing.runner import _resolve_test_project_index
+
 
 def _get_default_binary() -> str:
     return (
@@ -31,6 +33,52 @@ KNOWN_FLATTENED = [
 ]
 
 
+@pytest.fixture(scope="class")
+def known_flattened_preanalysis():
+    """Analyze the asserted functions instead of depending on test order."""
+    from d810.manager import D810State
+    from d810.passes.store import PreanalysisStore
+
+    state = D810State()
+    was_loaded = state.is_loaded()
+    if not was_loaded:
+        state.load(gui=False)
+    project_index = _resolve_test_project_index(
+        state, "default_unflattening_ollvm.json"
+    )
+    state.load_project(project_index)
+    was_started = state.manager.started
+    if not was_started:
+        state.start_d810()
+
+    try:
+        resolved = {name: _resolve_ea(name) for name in KNOWN_FLATTENED}
+        for name, func_ea in resolved.items():
+            if func_ea == idaapi.BADADDR:
+                pytest.fail(f"Known flattened fixture function {name!r} is absent")
+            cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+            assert cfunc is not None, f"Failed to decompile {name} for preanalysis"
+
+        db_path = state.manager.analysis_db
+        assert db_path is not None, "Preanalysis runtime did not expose a database"
+        with PreanalysisStore(db_path) as store:
+            records = {
+                name: {
+                    "ea": func_ea,
+                    "hints": store.load_hints(func_ea=func_ea),
+                    "summary": store.load_session_summary(func_ea),
+                    "outcomes": store.load_consumer_outcomes(func_ea),
+                }
+                for name, func_ea in resolved.items()
+            }
+        yield records
+    finally:
+        if not was_started:
+            state.stop_d810()
+        if not was_loaded:
+            state.unload(gui=False)
+
+
 @pytest.mark.e2e
 @pytest.mark.usefixtures(
     "ida_database", "configure_hexrays", "setup_libobfuscated_funcs"
@@ -44,18 +92,13 @@ class TestAnalysisPipelineSpotChecks:
     def test_flattened_function_classified_correctly(
         self,
         func_name,
-        analysis_store_session,
+        known_flattened_preanalysis,
     ):
         """Known-flattened functions should be classified as flattening."""
-        if analysis_store_session is None:
-            pytest.skip("Preanalysis pipeline disabled")
-        func_ea = _resolve_ea(func_name)
-        if func_ea == idaapi.BADADDR:
-            pytest.skip(f"Function {func_name} not found in IDB")
-
-        hints = analysis_store_session.load_hints(func_ea=func_ea)
+        record = known_flattened_preanalysis[func_name]
+        hints = record["hints"]
         assert hints is not None, (
-            f"{func_name} (0x{func_ea:x}): no hints in preanalysis DB"
+            f"{func_name} (0x{record['ea']:x}): no hints in preanalysis DB"
         )
         assert hints.obfuscation_type in _FLATTENING_TYPES, (
             f"{func_name}: expected one of {_FLATTENING_TYPES}, "
@@ -66,16 +109,10 @@ class TestAnalysisPipelineSpotChecks:
     def test_flattened_function_high_confidence(
         self,
         func_name,
-        analysis_store_session,
+        known_flattened_preanalysis,
     ):
         """Known-flattened functions should have confidence >= 0.7."""
-        if analysis_store_session is None:
-            pytest.skip("Preanalysis pipeline disabled")
-        func_ea = _resolve_ea(func_name)
-        if func_ea == idaapi.BADADDR:
-            pytest.skip(f"Function {func_name} not found in IDB")
-
-        hints = analysis_store_session.load_hints(func_ea=func_ea)
+        hints = known_flattened_preanalysis[func_name]["hints"]
         assert hints is not None
         assert hints.confidence >= 0.7, (
             f"{func_name}: confidence {hints.confidence:.2f} < 0.7"
@@ -85,16 +122,10 @@ class TestAnalysisPipelineSpotChecks:
     def test_flattened_function_recommends_unflattening(
         self,
         func_name,
-        analysis_store_session,
+        known_flattened_preanalysis,
     ):
         """Known-flattened functions should recommend 'unflattening' inference."""
-        if analysis_store_session is None:
-            pytest.skip("Preanalysis pipeline disabled")
-        func_ea = _resolve_ea(func_name)
-        if func_ea == idaapi.BADADDR:
-            pytest.skip(f"Function {func_name} not found in IDB")
-
-        hints = analysis_store_session.load_hints(func_ea=func_ea)
+        hints = known_flattened_preanalysis[func_name]["hints"]
         assert hints is not None
         assert "unflattening" in hints.recommended_inferences, (
             f"{func_name}: 'unflattening' not in {hints.recommended_inferences}"
@@ -104,17 +135,14 @@ class TestAnalysisPipelineSpotChecks:
     def test_flattened_function_session_summary_has_inference(
         self,
         func_name,
-        analysis_store_session,
+        known_flattened_preanalysis,
     ):
         """Session summary for flattened functions should list unflattening."""
-        if analysis_store_session is None:
-            pytest.skip("Preanalysis pipeline disabled")
-        func_ea = _resolve_ea(func_name)
-        if func_ea == idaapi.BADADDR:
-            pytest.skip(f"Function {func_name} not found in IDB")
-
-        summary = analysis_store_session.load_session_summary(func_ea)
-        assert summary is not None, f"{func_name} (0x{func_ea:x}): no session summary"
+        record = known_flattened_preanalysis[func_name]
+        summary = record["summary"]
+        assert summary is not None, (
+            f"{func_name} (0x{record['ea']:x}): no session summary"
+        )
         assert "unflattening" in summary["inferences"], (
             f"{func_name}: 'unflattening' not in session inferences: "
             f"{summary['inferences']}"
@@ -124,16 +152,11 @@ class TestAnalysisPipelineSpotChecks:
     def test_flattened_function_consumer_outcome(
         self,
         func_name,
-        analysis_store_session,
+        known_flattened_preanalysis,
     ):
         """Flattened functions should have consumer outcomes recorded."""
-        if analysis_store_session is None:
-            pytest.skip("Preanalysis pipeline disabled")
-        func_ea = _resolve_ea(func_name)
-        if func_ea == idaapi.BADADDR:
-            pytest.skip(f"Function {func_name} not found in IDB")
-
-        outcomes = analysis_store_session.load_consumer_outcomes(func_ea)
+        record = known_flattened_preanalysis[func_name]
+        outcomes = record["outcomes"]
         assert len(outcomes) > 0, (
-            f"{func_name} (0x{func_ea:x}): no consumer outcomes recorded"
+            f"{func_name} (0x{record['ea']:x}): no consumer outcomes recorded"
         )

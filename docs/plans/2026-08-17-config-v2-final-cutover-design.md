@@ -249,7 +249,7 @@ Run from the main repository root through
 
 1. focused project loading and operational config-v2 tests;
 2. all unflattening fixture tests whose configuration names changed;
-3. OLLVM, Tigress indirect, Approov, Hodur, and Eidolon semantic/golden oracles;
+3. OLLVM, Tigress indirect, Approov, Hodur, and constant-solver semantic/golden oracles;
 4. the complete system suite.
 
 The same fixture binary, function, configuration, and output oracle must be
@@ -271,4 +271,4 @@ The cutover is complete only when all of the following are true:
 - the repository inventory, unit, architecture, focused system, and full system
   gates pass;
 - before/after unflattening outputs remain semantically equivalent for the
-  representative OLLVM, Tigress, Approov, Hodur, and Eidolon fixtures.
+  representative OLLVM, Tigress, Approov, Hodur, and constant-solver fixtures.

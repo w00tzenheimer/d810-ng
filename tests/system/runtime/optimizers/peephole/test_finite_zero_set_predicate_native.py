@@ -80,3 +80,27 @@ class TestFiniteZeroSetPredicateNative:
             "fixture did not expose a Z3-proven finite-zero-set predicate\n"
             + "\n".join(observed)
         )
+
+    @pytest.mark.parametrize(
+        "maturity",
+        (ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1),
+        ids=("calls", "glbopt1"),
+    )
+    def test_masm_fixture_is_available_before_glbopt2(
+        self, libobfuscated_setup, maturity
+    ):
+        from d810.optimizers.microcode.instructions.peephole.predicate_root_recovery_native import (
+            FiniteZeroSetPredicateBlockRule,
+        )
+
+        function_ea = idc.get_name_ea_simple("finite_zero_set_predicate32")
+        assert function_ea != idaapi.BADADDR
+        mba = gen_microcode_at_maturity(function_ea, maturity)
+        assert mba is not None
+        rule = FiniteZeroSetPredicateBlockRule()
+
+        assert any(
+            rule.optimize(mba.get_mblock(serial))
+            for serial in range(mba.qty)
+            if mba.get_mblock(serial) is not None
+        )

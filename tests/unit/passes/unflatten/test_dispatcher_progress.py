@@ -57,6 +57,133 @@ def test_committed_progress_clears_stall_history_for_candidate():
     assert ledger.excluded_identities(0x401000, _MAT, "graph-a") == frozenset()
 
 
+def test_clean_noop_fence_counts_distinct_graph_revisions_only():
+    ledger = DispatcherProgressLedger(
+        stall_threshold=2,
+        clean_noop_graph_threshold=3,
+    )
+
+    ledger.record_clean_noop(0x401000, _MAT, "graph-a", _OUTER)
+    ledger.record_clean_noop(0x401000, _MAT, "graph-a", _OUTER)
+    ledger.record_clean_noop(0x401000, _MAT, "graph-b", _OUTER)
+
+    assert ledger.excluded_identities(0x401000, _MAT, "graph-c") == frozenset()
+
+    ledger.record_clean_noop(0x401000, _MAT, "graph-c", _OUTER)
+
+    assert ledger.excluded_identities(0x401000, _MAT, "graph-d") == frozenset(
+        {_OUTER}
+    )
+
+
+def test_clean_noop_fence_is_maturity_scoped_and_clears_on_progress():
+    ledger = DispatcherProgressLedger(
+        stall_threshold=2,
+        clean_noop_graph_threshold=2,
+    )
+    ledger.record_clean_noop(0x401000, _MAT, "graph-a", _OUTER)
+    ledger.record_clean_noop(0x401000, _MAT, "graph-b", _OUTER)
+
+    assert ledger.excluded_identities(0x401000, _MAT, "graph-c") == frozenset(
+        {_OUTER}
+    )
+    assert ledger.excluded_identities(0x401000, _MAT2, "graph-c") == frozenset()
+
+    ledger.record_progress(0x401000, _MAT, _OUTER)
+
+    assert ledger.excluded_identities(0x401000, _MAT, "graph-c") == frozenset()
+
+
+def test_clean_noop_exhaustion_is_maturity_scoped():
+    ledger = DispatcherProgressLedger(
+        stall_threshold=2,
+        clean_noop_graph_threshold=2,
+    )
+    ledger.record_clean_noop(0x401000, _MAT, "graph-a", _OUTER)
+    ledger.record_clean_noop(0x401000, _MAT, "graph-b", _OUTER)
+    excluded = ledger.excluded_identities(0x401000, _MAT, "graph-c")
+
+    assert ledger.all_excluded_by_cross_graph_clean_noop(
+        0x401000, _MAT, excluded
+    )
+    ledger.record_exhausted(
+        0x401000,
+        _MAT,
+        "graph-c",
+        cross_graph_clean_noop=True,
+    )
+
+    assert ledger.is_maturity_exhausted(0x401000, _MAT)
+    assert ledger.is_exhausted(0x401000, _MAT, "graph-d")
+    assert not ledger.is_maturity_exhausted(0x401000, _MAT2)
+
+
+def test_repeated_preflight_failure_excludes_candidate_across_graph_drift():
+    ledger = DispatcherProgressLedger(stall_threshold=2)
+
+    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
+    assert ledger.excluded_identities(0x401000, _MAT, "graph-a") == frozenset()
+
+    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
+
+    assert ledger.excluded_identities(0x401000, _MAT, "graph-b") == frozenset(
+        {_OUTER}
+    )
+
+
+def test_distinct_preflight_failures_do_not_combine_into_exclusion():
+    ledger = DispatcherProgressLedger(stall_threshold=2)
+
+    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
+    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-b")
+
+    assert ledger.excluded_identities(0x401000, _MAT, "graph-a") == frozenset()
+
+
+def test_committed_progress_clears_stable_preflight_failure_fence():
+    ledger = DispatcherProgressLedger(stall_threshold=2)
+    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
+    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
+    assert ledger.excluded_identities(0x401000, _MAT, "graph-a") == frozenset(
+        {_OUTER}
+    )
+
+    ledger.record_progress(0x401000, _MAT, _OUTER)
+
+    assert ledger.excluded_identities(0x401000, _MAT, "graph-b") == frozenset()
+
+
+def test_stable_preflight_exhaustion_survives_graph_drift_but_not_maturity_drift():
+    ledger = DispatcherProgressLedger(stall_threshold=2)
+    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
+    ledger.record_preflight_failure(0x401000, _MAT, _OUTER, "failure-a")
+
+    excluded = ledger.excluded_identities(0x401000, _MAT, "graph-a")
+    assert ledger.all_excluded_by_stable_preflight_failure(
+        0x401000, _MAT, excluded
+    )
+    ledger.record_exhausted(
+        0x401000,
+        _MAT,
+        "graph-a",
+        stable_preflight_failure=True,
+    )
+
+    assert ledger.is_exhausted(0x401000, _MAT, "graph-b")
+    assert ledger.is_maturity_exhausted(0x401000, _MAT)
+    assert not ledger.is_exhausted(0x401000, _MAT2, "graph-b")
+    assert not ledger.is_maturity_exhausted(0x401000, _MAT2)
+
+
+def test_exact_graph_exhaustion_does_not_become_maturity_wide():
+    ledger = DispatcherProgressLedger(stall_threshold=2)
+    ledger.record_exhausted(0x401000, _MAT, "graph-a")
+
+    assert ledger.is_exhausted(0x401000, _MAT, "graph-a")
+    assert not ledger.is_exhausted(0x401000, _MAT, "graph-b")
+    assert not ledger.is_exhausted(0x401000, _MAT2, "graph-a")
+
+
 def test_reset_function_does_not_clear_other_function_history():
     ledger = DispatcherProgressLedger(stall_threshold=1)
     ledger.record_no_progress(0x401000, _MAT, "graph-a", _OUTER)

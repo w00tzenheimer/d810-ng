@@ -13,8 +13,23 @@
 
 #include "polyfill.h"
 #include "platform.h"
-#include <stdio.h>
-#include <string.h>
+
+/*
+ * The MASM fixture build targets freestanding MSVC COFF on non-Windows hosts,
+ * where a Windows CRT sysroot is intentionally unavailable.  The linker keeps
+ * these calls unresolved for structural decompiler fixtures, so declarations
+ * are sufficient and keep this source buildable in both fixture flows.
+ */
+extern int printf(const char *format, ...);
+
+/*
+ * Keep fixed-size fixture copies as LLVM memcpy intrinsics even though the
+ * corpus build globally uses -fno-builtin.  Declaring an unresolved memcpy
+ * turns all six copies into indistinguishable calls to the linker's forced
+ * unresolved target, changing both the fixture semantics and its ctree oracle.
+ */
+#define memcpy(destination, source, count) \
+    __builtin_memcpy((destination), (source), (count))
 
 // Global timeout variable
 DWORD g_timeout_msec = 10000;

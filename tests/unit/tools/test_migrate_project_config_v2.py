@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import errno
+import gzip
 import json
 import os
 import re
@@ -121,8 +122,8 @@ LEGACY_MIGRATION_FIXTURE_DIR = (
 )
 LEGACY_MIGRATION_FIXTURES = {
     "eidolon.json": (
-        "eidolon_historical.json",
-        "eidolon_mainline.json",
+        "constant_solver_historical.json.gz",
+        "constant_solver_mainline.json.gz",
     ),
     "default_unflattening_tigress_engine_transition_facts.json": (
         "tigress_transition_facts_historical.json",
@@ -138,7 +139,11 @@ def _load(name: str) -> dict[str, typing.Any]:
 def _load_legacy_fixture(name: str) -> dict[str, typing.Any]:
     """Load a committed historical migration corpus document."""
 
-    return json.loads((LEGACY_MIGRATION_FIXTURE_DIR / name).read_text(encoding="utf-8"))
+    path = LEGACY_MIGRATION_FIXTURE_DIR / name
+    if path.suffix == ".gz":
+        with gzip.open(path, mode="rt", encoding="utf-8") as fixture:
+            return json.load(fixture)
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _pipeline(document: dict[str, typing.Any]) -> list[tuple[str, dict[str, typing.Any]]]:

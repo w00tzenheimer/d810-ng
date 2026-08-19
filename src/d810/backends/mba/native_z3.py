@@ -14,6 +14,7 @@ from d810.mba.typed_term import (
 
 
 _COMPLEMENT_MASK_HODUR_CERTIFICATE = "complement-mask-hodur-v1"
+_MAX_NATIVE_Z3_TIMEOUT_MS = 250
 
 
 def prove_native_ast_equivalence(
@@ -21,6 +22,7 @@ def prove_native_ast_equivalence(
     replacement: Any,
     *,
     width: int,
+    timeout_ms: int = 50,
     known_constants: Mapping[tuple[object, ...], int] | None = None,
     certificate: str | None = None,
     generic_native_z3_before_certificate: bool = False,
@@ -37,6 +39,10 @@ def prove_native_ast_equivalence(
     occur in the original/replacement proof and is constrained to its value;
     an unknown key, invalid width, or malformed value rejects the proof.
 
+    ``timeout_ms`` is deliberately bounded to the same 250 ms ceiling used by
+    the noninteractive Egglog proof pipeline; invalid or unbounded values fail
+    closed.
+
     A recognized ``certificate`` still validates both lowered native terms.
     It skips the generic bit-vector query by default because the certificate
     is the narrower, independently checked proof plan. Set
@@ -50,6 +56,8 @@ def prove_native_ast_equivalence(
         or type(timeout_ms) is not int
         or timeout_ms <= 0
     ):
+        return False
+    if type(timeout_ms) is not int or not 0 < timeout_ms <= _MAX_NATIVE_Z3_TIMEOUT_MS:
         return False
     try:
         destination_size = width // 8

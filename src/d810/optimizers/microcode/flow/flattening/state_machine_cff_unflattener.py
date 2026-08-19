@@ -1391,16 +1391,23 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     identity,
                 )
                 return
-            # A fail-closed preflight rejection is still a no-progress result
-            # for this exact candidate and topology epoch. Retrying it up to
-            # the coarse 64-round budget cannot make the proof succeed; any
-            # real graph change gets a new fingerprint and reopens recovery.
-            self._dispatcher_progress.record_no_progress(
-                func_ea,
-                maturity,
-                graph_fingerprint,
-                identity,
-            )
+            # Clean no-ops can be fenced across graph churn; rejected plans
+            # remain exact-graph no-progress unless the typed preflight fence
+            # above proves them stable.
+            if patch_failure is None:
+                self._dispatcher_progress.record_clean_noop(
+                    func_ea,
+                    maturity,
+                    graph_fingerprint,
+                    identity,
+                )
+            else:
+                self._dispatcher_progress.record_no_progress(
+                    func_ea,
+                    maturity,
+                    graph_fingerprint,
+                    identity,
+                )
             excluded_next = identity in self._dispatcher_progress.excluded_identities(
                 func_ea, maturity, graph_fingerprint
             )

@@ -7,6 +7,7 @@ IDA-bound extract/resolve worker is covered by
 
 import re
 from pathlib import Path
+import struct
 
 from d810.testing.fixture_builder import CallSiteFold, detect_indirect_call_folds
 
@@ -23,6 +24,78 @@ def test_committed_windows_fixture_contains_every_masm_export():
         if source.stem.encode("ascii") + b"\0" not in fixture
     ]
     assert missing == []
+
+
+def test_committed_windows_fixture_exports_required_system_cases():
+    """Required named cases must remain discoverable in a fresh IDA DB."""
+    fixture = (REPO / "samples/bins/libobfuscated.dll").read_bytes()
+    required_exports = (
+        "_hodur_func",
+        "abc_f6_add_dispatch",
+        "approov_real_pattern",
+        "high_fan_in_pattern",
+        "resolve_api",
+    )
+    missing = [
+        name for name in required_exports if name.encode("ascii") + b"\0" not in fixture
+    ]
+    assert missing == []
+
+
+def test_committed_hodur_egglog_probe_is_isolated_from_comprehensive_fixture():
+    """The focused native proof probe must not perturb shared fixture layout."""
+    comprehensive = (REPO / "samples/bins/libobfuscated.dll").read_bytes()
+    probe = (REPO / "samples/bins/hodur_egglog_probe.dll").read_bytes()
+    export = b"Hodur_ComplementMaskResidual\0"
+
+    assert export not in comprehensive
+    assert export in probe
+
+
+def test_masm_builder_supports_masm_only_probe_source_directory():
+    """A dedicated probe build links only its explicitly scoped MASM corpus."""
+    build_script = (REPO / "samples/scripts/build_masm.sh").read_text()
+    makefile = (REPO / "samples/Makefile").read_text()
+
+    assert "MASM_SOURCE_DIR" in build_script
+    assert "MASM_INCLUDE_C" in build_script
+    assert "hodur-egglog-probe:" in makefile
+    assert "MASM_SOURCE_DIR=src/masm_probes" in makefile
+    assert "MASM_INCLUDE_C=0" in makefile
+
+
+def _pe_section_characteristics(image: bytes) -> dict[str, int]:
+    """Read the PE section table without adding a fixture-test dependency."""
+    pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+    number_of_sections = struct.unpack_from("<H", image, pe_offset + 6)[0]
+    optional_header_size = struct.unpack_from("<H", image, pe_offset + 20)[0]
+    section_table = pe_offset + 24 + optional_header_size
+    sections: dict[str, int] = {}
+    for index in range(number_of_sections):
+        offset = section_table + index * 40
+        name = image[offset : offset + 8].rstrip(b"\0").decode("ascii")
+        sections[name] = struct.unpack_from("<I", image, offset + 36)[0]
+    return sections
+
+
+def test_committed_hodur_constants_are_read_only_without_reclassifying_all_data():
+    """The Hodur oracle is immutable without making unrelated fixture data const."""
+    fixture = (REPO / "samples/bins/libobfuscated.dll").read_bytes()
+    sections = _pe_section_characteristics(fixture)
+    image_scn_mem_write = 0x80000000
+    assert sections["HODCONST"] & image_scn_mem_write == 0
+    assert sections["CONST"] & image_scn_mem_write != 0
+
+    build_script = (REPO / "samples/scripts/build_masm.sh").read_text()
+    assert "/SECTION:HODCONST,R" in build_script
+    assert "/SECTION:CONST,R" not in build_script
+
+
+def test_masm_builder_exports_public_c_text_symbols():
+    build_script = (REPO / "samples/scripts/build_masm.sh").read_text()
+    assert "llvm-nm" in build_script
+    assert "--defined-only --extern-only" in build_script
+    assert 'export_flags+=("/EXPORT:$symbol")' in build_script
 
 
 def test_detects_slot_const_and_reg_from_committed_asm():

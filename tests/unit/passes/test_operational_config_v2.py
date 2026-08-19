@@ -37,7 +37,7 @@ _BUNDLED_PROJECTS = (
     "default_unflattening_tigress_engine",
     "default_unflattening_tigress_engine_transition_facts",
     "default_unflattening_tigress_indirect",
-    "eidolon",
+    "eidolon.json",
     "example_hodur",
     "example_libobfuscated",
     "example_libobfuscated_abc",
@@ -53,7 +53,8 @@ _BUNDLED_PROJECTS = (
 
 def _canonical_project(config_name: str) -> ProjectConfiguration:
     assert not config_name.endswith("_config_v2_" + "canary")
-    return ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
+    filename = config_name if config_name.endswith(".json") else f"{config_name}.json"
+    return ProjectConfiguration.from_file(_CONF_DIR / filename)
 
 
 @pytest.mark.parametrize(

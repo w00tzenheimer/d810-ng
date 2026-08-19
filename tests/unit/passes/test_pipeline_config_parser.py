@@ -41,6 +41,11 @@ _STATE_MACHINE_NATIVE_PIPELINE = [
 ]
 
 
+def _config_path(config_name: str) -> Path:
+    filename = config_name if config_name.endswith(".json") else f"{config_name}.json"
+    return _CONF_DIR / filename
+
+
 _REMAINING_CANONICAL_PROJECTS = (
     (
         "bogus_loops",
@@ -64,7 +69,7 @@ _REMAINING_CANONICAL_PROJECTS = (
             "jump-fixer",
         ),
     ),
-    ("eidolon", ("mba-simplify",)),
+    ("eidolon.json", ("mba-simplify",)),
     (
         "example_hodur",
         (
@@ -420,7 +425,7 @@ def test_example_libobfuscated_bundled_project_is_canonical_v2():
     ],
 )
 def test_hodur_bundled_projects_are_canonical_v2(config_name):
-    project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
+    project = ProjectConfiguration.from_file(_config_path(config_name))
 
     assert project.ins_rules == []
     assert project.blk_rules == []
@@ -480,7 +485,7 @@ def test_hodur_config_v2_project_is_operational():
     ],
 )
 def test_tigress_bundled_projects_are_canonical_v2(config_name):
-    project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
+    project = ProjectConfiguration.from_file(_config_path(config_name))
 
     assert project.ins_rules == []
     assert project.blk_rules == []
@@ -491,7 +496,7 @@ def test_tigress_bundled_projects_are_canonical_v2(config_name):
     ("config_name", "expected_pass_ids"), _REMAINING_CANONICAL_PROJECTS
 )
 def test_remaining_bundled_projects_are_canonical_v2(config_name, expected_pass_ids):
-    project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
+    project = ProjectConfiguration.from_file(_config_path(config_name))
 
     assert project.ins_rules == []
     assert project.blk_rules == []
