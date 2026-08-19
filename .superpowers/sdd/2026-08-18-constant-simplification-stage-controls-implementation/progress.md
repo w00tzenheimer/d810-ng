@@ -44,7 +44,7 @@
 | 3 | `d4051c063` | `/root/constant_stage_task3` | PASS | PASS | 35 focused + 289 manager + 11 journal; 12 global/pre-Hex + 8 activation Docker passed; ruff/sg/import-linter passed | `be510fabb`, `fafc35c5f`, `01a6cafc0`, `37eebd18a` | complete after 3 fix rounds |
 | 4 | `37eebd18a` | `/root/constant_stage_task4` | PASS | PASS | 98 focused + 88 adjacent + 22 renderer tests passed; ruff/sg/import-linter passed | `d946f4b99`, `6d9ea61c1`, `cf9020f08`, `a7ecc6a76` | complete after 1 fix round |
 | 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix5b` | PASS | PASS | 129 Python + 129 Cython + 15 focused resolver + 1 parity + 1 AstProxy + 14 def-search + 2 cumulative probes in both modes; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `35e114973`, `a4b5e045c`, `540995e67` | complete after 5 fix rounds |
-| 6 | pending | pending | pending | pending | pending | pending | pending |
+| 6 | `6446f49f1` | `/root/constant_stage_task6` | pending | pending | 127 focused/adjacent units + 13 IDA runtime; Ruff/py_compile/sg/import-linter/diff-check passed | `b7cee6071` | complete |
 | 7 | pending | pending | pending | pending | pending | pending | pending |
 | 8 | pending | pending | pending | pending | pending | pending | pending |
 
@@ -85,3 +85,21 @@
   Ruff/py_compile/sg/import-linter/diff gates passed.
 - `graphify update .` was attempted after the final edits and blocked by
   `[Errno 1] Operation not permitted` during its watch rebuild.
+
+## Task 6 ledger
+
+- RED: the focused parser/catalog run failed `7` tests (`3` explicit policy
+  cases, `1` omitted-default case, and `3` catalog cases) before the new
+  transform fields existed. The first receipt test collection also failed
+  with `ImportError: cannot import name 'Z3PredicateProofObserved'`.
+- Implementation: the three generic transforms now expose independent node
+  and timeout fields; one shared MBA materializer supplies defaults only to
+  selected parameterized transforms; every Z3 prover construction receives the
+  rule's frozen policy; conclusive results alone mutate; and typed proof events
+  persist through the existing lifecycle model and handler.
+- Verification: the focused/adjacent unit command passed `127` tests, and the
+  required Docker command passed `13` tests with `118` existing SWIG warnings.
+  Ruff, py_compile, `sg scan`, `lint-imports`, and `git diff --check` passed.
+- `graphify update .` was attempted after Task 6 edits and its watch rebuild
+  was blocked by `[Errno 1] Operation not permitted`.
+- Product/test commit: `b7cee6071` (`feat(mba): configure bounded z3 predicates`).
