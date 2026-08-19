@@ -239,6 +239,15 @@ class SemanticRouteOracleComparisonRecord(BaseModel):
 
 
 class LifecycleEvent(BaseModel):
+    """Ordered diagnostic timeline event.
+
+    Generic predicate proof receipts use the existing lifecycle model with
+    ``event_kind`` set to :attr:`Z3_PREDICATE_PROOF_EVENT_KIND` and their
+    typed fields stored in ``payload_json`` by the observability handler.
+    """
+
+    Z3_PREDICATE_PROOF_EVENT_KIND = "z3_predicate_proof"
+
     event_id = AutoField()
     session = ForeignKeyField(
         DiagnosticSession,

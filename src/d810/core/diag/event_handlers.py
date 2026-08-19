@@ -37,7 +37,7 @@ from d810._vendor.peewee import fn
 from d810.core import logging as _d810_logging
 from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
 from d810.core.diag.deobfuscation_case import materialize_closed_deobfuscation_case
-from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
+from d810.core.diag.models import CfgProvenance, FactConsumer, LifecycleEvent, Snapshot
 from d810.core.diag.lifecycle import (
     persist_cfg_transaction_attempt,
     persist_diagnostic_session_transition,
@@ -110,6 +110,7 @@ from d810.core.observability_events import (
     PassContractEvidencePublished,
     SemanticFragmentRouteOracleComparedObserved,
     SemanticOutputVerifiedObserved,
+    Z3PredicateProofObserved,
     ReachabilityObserved,
     RenderedProgramObserved,
     StateDispatcherRowsObserved,
@@ -298,6 +299,51 @@ def _handle_lifecycle_event(ev: LifecycleEventObserved) -> None:
         return
     snapshot_id = None if ev.snapshot is None else _resolve_snapshot_id(ev.snapshot)
     persist_lifecycle_event(conn, ev, snapshot_id=snapshot_id)
+
+
+def _handle_z3_predicate_proof(ev: Z3PredicateProofObserved) -> None:
+    """Persist a generic predicate proof through the lifecycle event model."""
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None:
+        return
+    session_id = ev.session_id
+    if not session_id:
+        row = conn.execute(
+            "SELECT session_id FROM diagnostic_sessions "
+            "WHERE func_ea_i64=? AND status='active' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (int(ev.func_ea),),
+        ).fetchone()
+        if row is None:
+            return
+        session_id = str(row[0])
+    persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=session_id,
+            func_ea=int(ev.func_ea),
+            event_kind=LifecycleEvent.Z3_PREDICATE_PROOF_EVENT_KIND,
+            provider=f"d810.mba:{ev.transform_id}",
+            phase="proof",
+            correlation_id=f"{ev.transform_id}:{ev.operation}",
+            summary=f"{ev.transform_id} {ev.operation}: {ev.status}",
+            payload={
+                "transform_id": ev.transform_id,
+                "operation": ev.operation,
+                "max_expression_nodes": int(ev.max_expression_nodes),
+                "proof_timeout_ms": int(ev.proof_timeout_ms),
+                "observed_expression_nodes": ev.observed_expression_nodes,
+                "elapsed_ms": float(ev.elapsed_ms),
+                "status": ev.status,
+                "reason": ev.reason,
+            },
+            timestamp=ev.timestamp,
+        ),
+        snapshot_id=None,
+    )
 
 
 def _handle_evidence_generation(ev: EvidenceGenerationObserved) -> None:
@@ -1198,6 +1244,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (DiagnosticSessionObserved, _handle_diagnostic_session),
     (InputIdentityResolutionObserved, _handle_input_identity_resolution),
     (LifecycleEventObserved, _handle_lifecycle_event),
+    (Z3PredicateProofObserved, _handle_z3_predicate_proof),
     (EvidenceGenerationObserved, _handle_evidence_generation),
     (IdentityDecisionObserved, _handle_identity_decision),
     (

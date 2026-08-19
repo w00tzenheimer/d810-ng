@@ -134,6 +134,43 @@ def test_mba_simplify_pass_invokes_capability_with_ordered_rules_and_options():
     assert request.rule_options["RuleA"] == {"limit": 3}
 
 
+def test_mba_simplify_pass_materializes_defaults_per_selected_transform():
+    capability = _MbaCapability()
+    adapter = MbaSimplifyPass(
+        transform_ids=(
+            "z-3-setz-generic",
+            "z-3-setnz-generic",
+            "z-3-lnot-generic",
+        ),
+        implementation_names=(
+            "Z3setzRuleGeneric",
+            "Z3setnzRuleGeneric",
+            "Z3lnotRuleGeneric",
+        ),
+        transform_options={
+            "z-3-setz-generic": {"max_expression_nodes": 7},
+            "z-3-setnz-generic": {"proof_timeout_ms": 125},
+        },
+    )
+
+    adapter.run(_context(capability))
+
+    assert capability.requests[0].rule_options == {
+        "Z3setzRuleGeneric": {
+            "max_expression_nodes": 7,
+            "proof_timeout_ms": 50,
+        },
+        "Z3setnzRuleGeneric": {
+            "max_expression_nodes": 256,
+            "proof_timeout_ms": 125,
+        },
+        "Z3lnotRuleGeneric": {
+            "max_expression_nodes": 256,
+            "proof_timeout_ms": 50,
+        },
+    }
+
+
 def test_mba_simplify_pass_requires_typed_capability():
     adapter = MbaSimplifyPass(
         transform_ids=("transform-a",),

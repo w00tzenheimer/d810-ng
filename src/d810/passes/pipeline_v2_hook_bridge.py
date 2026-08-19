@@ -27,7 +27,11 @@ from d810.passes.constant_simplification_options import (
     CompiledConstantSimplificationSchedule,
 )
 from d810.passes.hook_transform_passes import build_hook_transform_pass
-from d810.passes.mba_simplify import MBA_SIMPLIFY_PASS_ID, build_mba_simplify_pass
+from d810.passes.mba_simplify import (
+    MBA_SIMPLIFY_PASS_ID,
+    build_mba_simplify_pass,
+    materialize_mba_transform_options,
+)
 from d810.passes.mba_transform_options import mba_transform_stages
 from d810.passes.mba_solve import (
     MBA_SOLVE_PASS_ID,
@@ -142,6 +146,7 @@ def _mba_simplify_rules_from(
     stages_by_id = {stage.stage_id: stage for stage in mba_transform_stages()}
     instruction_rules: list[RuleConfiguration] = []
     block_rules: list[RuleConfiguration] = []
+
     for transform_id, implementation_name in zip(
         adapter.transform_ids,
         adapter.implementation_names,
@@ -153,7 +158,10 @@ def _mba_simplify_rules_from(
                 _rule_config(
                     implementation_name,
                     {
-                        **adapter.transform_options.get(transform_id, {}),
+                        **materialize_mba_transform_options(
+                            transform_id,
+                            adapter.transform_options.get(transform_id, {}),
+                        ),
                         "generate_commutative_permutations": (
                             adapter.generate_commutative_permutations
                         ),
@@ -164,7 +172,10 @@ def _mba_simplify_rules_from(
             block_rules.append(
                 _rule_config(
                     implementation_name,
-                    adapter.transform_options.get(transform_id, {}),
+                    materialize_mba_transform_options(
+                        transform_id,
+                        adapter.transform_options.get(transform_id, {}),
+                    ),
                 )
             )
         else:

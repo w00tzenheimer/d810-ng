@@ -97,6 +97,69 @@ class LifecycleEventObserved:
 
 
 @dataclass(frozen=True)
+class Z3PredicateProofObserved:
+    """One bounded generic-predicate proof attempt.
+
+    The predicate rules publish this portable receipt through the normal
+    observability bus. The diagnostic sink stores it as a lifecycle event,
+    keeping routine resource abstentions queryable without making logging part
+    of the optimizer's matching contract.
+    """
+
+    func_ea: int
+    transform_id: str
+    operation: str
+    max_expression_nodes: int
+    proof_timeout_ms: int
+    observed_expression_nodes: int | None
+    elapsed_ms: float
+    status: str
+    reason: str | None
+    session_id: str = ""
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        for field_name in ("transform_id", "operation", "status"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be non-empty")
+        if self.status not in {"proved", "disproved", "abstained"}:
+            raise ValueError("status must be proved, disproved, or abstained")
+        if self.status == "abstained":
+            if not isinstance(self.reason, str) or not self.reason.strip():
+                raise ValueError("abstained proof receipt requires a reason")
+        elif self.reason is not None:
+            raise ValueError("conclusive proof receipt reason must be omitted")
+        if self.session_id and not isinstance(self.session_id, str):
+            raise ValueError("session_id must be text when set")
+        if isinstance(self.max_expression_nodes, bool) or int(
+            self.max_expression_nodes
+        ) < 1:
+            raise ValueError("max_expression_nodes must be positive")
+        if isinstance(self.proof_timeout_ms, bool) or int(self.proof_timeout_ms) < 1:
+            raise ValueError("proof_timeout_ms must be positive")
+        if self.observed_expression_nodes is not None and (
+            isinstance(self.observed_expression_nodes, bool)
+            or int(self.observed_expression_nodes) < 0
+        ):
+            raise ValueError("observed_expression_nodes must be non-negative")
+        if float(self.elapsed_ms) < 0:
+            raise ValueError("elapsed_ms must be non-negative")
+        object.__setattr__(self, "func_ea", int(self.func_ea))
+        object.__setattr__(self, "max_expression_nodes", int(self.max_expression_nodes))
+        object.__setattr__(self, "proof_timeout_ms", int(self.proof_timeout_ms))
+        if self.observed_expression_nodes is not None:
+            object.__setattr__(
+                self,
+                "observed_expression_nodes",
+                int(self.observed_expression_nodes),
+            )
+        object.__setattr__(self, "elapsed_ms", float(self.elapsed_ms))
+
+
+@dataclass(frozen=True)
 class FrontendNormalizationPlanIntentObserved:
     """Receipt-backed, typed frontend normalization plan intent."""
 
@@ -1183,6 +1246,7 @@ __all__ = [
     "CaptureMbaSnapshotRequested",
     "DiagnosticSessionObserved",
     "InputIdentityResolutionObserved",
+    "Z3PredicateProofObserved",
     "FrontendNormalizationPlanIntentObserved",
     "PassContractEvidencePublished",
     "FragmentRootPublicationGroupObserved",

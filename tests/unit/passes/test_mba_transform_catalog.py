@@ -68,6 +68,40 @@ def test_mba_catalog_exposes_commutative_generation_as_a_boolean_option() -> Non
     assert field.default is True
 
 
+@pytest.mark.parametrize(
+    "transform_id",
+    ("z-3-setz-generic", "z-3-setnz-generic", "z-3-lnot-generic"),
+)
+def test_generic_z3_catalog_exposes_independent_bounded_proof_controls(
+    transform_id: str,
+) -> None:
+    catalog = _catalog_module()
+    item = _transform(transform_id)
+
+    assert item.option_fields == (
+        catalog.FieldEditorSpec(
+            field_id="max_expression_nodes",
+            label="Maximum expression nodes",
+            path=("max_expression_nodes",),
+            control=catalog.FieldControlKind.INTEGER,
+            description="Maximum expanded AST node occurrences for one proof.",
+            minimum=1,
+            maximum=4096,
+            default=256,
+        ),
+        catalog.FieldEditorSpec(
+            field_id="proof_timeout_ms",
+            label="Proof timeout (ms)",
+            path=("proof_timeout_ms",),
+            control=catalog.FieldControlKind.INTEGER,
+            description="Maximum solver time for one proof in milliseconds.",
+            minimum=1,
+            maximum=5000,
+            default=50,
+        ),
+    )
+
+
 @pytest.mark.parametrize("transform_id", ("mul-mba-2", "mul-mba-3"))
 def test_known_incorrect_mba_rules_remain_selectable_but_default_disabled(
     transform_id: str,

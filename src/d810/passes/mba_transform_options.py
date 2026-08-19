@@ -78,6 +78,72 @@ _PRIVATE_BINDING_OVERRIDES = {
 # parameters. The pass catalog renders these fixed controls; raw JSON cannot
 # introduce another transform option.
 MBA_TRANSFORM_OPTION_FIELDS: Mapping[str, tuple[FieldEditorSpec, ...]] = {
+    "z-3-setz-generic": (
+        FieldEditorSpec(
+            field_id="max_expression_nodes",
+            label="Maximum expression nodes",
+            path=("max_expression_nodes",),
+            control=FieldControlKind.INTEGER,
+            description="Maximum expanded AST node occurrences for one proof.",
+            minimum=1,
+            maximum=4096,
+            default=256,
+        ),
+        FieldEditorSpec(
+            field_id="proof_timeout_ms",
+            label="Proof timeout (ms)",
+            path=("proof_timeout_ms",),
+            control=FieldControlKind.INTEGER,
+            description="Maximum solver time for one proof in milliseconds.",
+            minimum=1,
+            maximum=5000,
+            default=50,
+        ),
+    ),
+    "z-3-setnz-generic": (
+        FieldEditorSpec(
+            field_id="max_expression_nodes",
+            label="Maximum expression nodes",
+            path=("max_expression_nodes",),
+            control=FieldControlKind.INTEGER,
+            description="Maximum expanded AST node occurrences for one proof.",
+            minimum=1,
+            maximum=4096,
+            default=256,
+        ),
+        FieldEditorSpec(
+            field_id="proof_timeout_ms",
+            label="Proof timeout (ms)",
+            path=("proof_timeout_ms",),
+            control=FieldControlKind.INTEGER,
+            description="Maximum solver time for one proof in milliseconds.",
+            minimum=1,
+            maximum=5000,
+            default=50,
+        ),
+    ),
+    "z-3-lnot-generic": (
+        FieldEditorSpec(
+            field_id="max_expression_nodes",
+            label="Maximum expression nodes",
+            path=("max_expression_nodes",),
+            control=FieldControlKind.INTEGER,
+            description="Maximum expanded AST node occurrences for one proof.",
+            minimum=1,
+            maximum=4096,
+            default=256,
+        ),
+        FieldEditorSpec(
+            field_id="proof_timeout_ms",
+            label="Proof timeout (ms)",
+            path=("proof_timeout_ms",),
+            control=FieldControlKind.INTEGER,
+            description="Maximum solver time for one proof in milliseconds.",
+            minimum=1,
+            maximum=5000,
+            default=50,
+        ),
+    ),
     "z-3-constant-optimization": (
         FieldEditorSpec(
             field_id="min_nb_opcode",
@@ -278,14 +344,28 @@ def parse_mba_simplify_options(
                 f"mba-simplify transform options for {transform_id!r} must be a mapping"
             )
         declared_fields = MBA_TRANSFORM_OPTION_FIELDS.get(transform_id, ())
-        allowed_names = {field.path[0] for field in declared_fields}
-        unknown_names = tuple(sorted(set(options).difference(allowed_names)))
+        fields_by_name = {field.path[0]: field for field in declared_fields}
+        unknown_names = tuple(
+            sorted(
+                (name for name in options if name not in fields_by_name),
+                key=str,
+            )
+        )
         if unknown_names:
             raise PipelineConfigError(
                 "mba-simplify transform options for "
                 f"{transform_id!r} have option(s) that are not editor-visible: "
                 f"{list(unknown_names)}"
             )
+        for field_name, value in options.items():
+            field = fields_by_name[field_name]
+            try:
+                field.validate_value(value)
+            except ValueError as exc:
+                raise PipelineConfigError(
+                    "mba-simplify transform options for "
+                    f"{transform_id!r} field {field_name!r} is invalid: {exc}"
+                ) from exc
         transform_options[transform_id] = dict(options)
     return MbaSimplifyOptions(
         tuple(transform_ids),

@@ -1,0 +1,370 @@
+"""Runtime contracts for independently bounded generic Z3 predicates."""
+
+from __future__ import annotations
+
+from dataclasses import FrozenInstanceError
+import logging
+from types import SimpleNamespace
+
+import pytest
+
+
+def _mop(*, mop_type: int, size: int = 4, value: int | None = None):
+    payload = SimpleNamespace(t=mop_type, size=size)
+    if value is not None:
+        payload.nnn = SimpleNamespace(value=value)
+    return payload
+
+
+def _candidate(x0_mop, x1_mop):
+    additions: list[tuple[object, int, int]] = []
+
+    class _Candidate:
+        dst_mop = SimpleNamespace(size=1)
+
+        def __getitem__(self, name: str):
+            if name == "x_0":
+                return SimpleNamespace(mop=x0_mop, size=x0_mop.size)
+            if name == "x_1":
+                return SimpleNamespace(mop=x1_mop, size=x1_mop.size)
+            raise KeyError(name)
+
+        def add_constant_leaf(self, name: str, value: int, size: int) -> None:
+            additions.append((name, value, size))
+
+    return _Candidate(), additions
+
+
+@pytest.mark.runtime
+def test_three_generic_rules_keep_distinct_immutable_policies() -> None:
+    from d810.optimizers.microcode.instructions.z3.predicates import (
+        Z3lnotRuleGeneric,
+        Z3setnzRuleGeneric,
+        Z3setzRuleGeneric,
+    )
+
+    rules = (
+        Z3setzRuleGeneric(),
+        Z3setnzRuleGeneric(),
+        Z3lnotRuleGeneric(),
+    )
+    rules[0].configure({"max_expression_nodes": 1, "proof_timeout_ms": 11})
+    rules[1].configure({"max_expression_nodes": 2, "proof_timeout_ms": 22})
+    rules[2].configure({"max_expression_nodes": 3, "proof_timeout_ms": 33})
+
+    policies = tuple(rule.z3_proof_policy for rule in rules)
+    assert len({id(policy) for policy in policies}) == 3
+    assert policies[0].max_expression_nodes == 1
+    assert policies[1].max_expression_nodes == 2
+    assert policies[2].max_expression_nodes == 3
+    assert policies[0].proof_timeout_ms == 11
+    assert policies[1].proof_timeout_ms == 22
+    assert policies[2].proof_timeout_ms == 33
+    assert policies[2].proof_timeout_ms != policies[0].proof_timeout_ms
+    with pytest.raises(FrozenInstanceError):
+        policies[0].max_expression_nodes = 4096  # type: ignore[misc]
+
+
+@pytest.mark.runtime
+@pytest.mark.parametrize(
+    ("rule_name", "target_operation", "expected_operations"),
+    (
+        ("setz", "prove_equal", ("prove_equal",)),
+        ("setz", "prove_unequal", ("prove_equal", "prove_unequal")),
+        (
+            "setz",
+            "prove_always_zero",
+            ("prove_equal", "prove_unequal", "prove_always_zero"),
+        ),
+        (
+            "setz",
+            "prove_always_nonzero",
+            (
+                "prove_equal",
+                "prove_unequal",
+                "prove_always_zero",
+                "prove_always_nonzero",
+            ),
+        ),
+        ("setnz", "prove_equal", ("prove_equal",)),
+        ("setnz", "prove_unequal", ("prove_equal", "prove_unequal")),
+        (
+            "setnz",
+            "prove_always_zero",
+            ("prove_equal", "prove_unequal", "prove_always_zero"),
+        ),
+        (
+            "setnz",
+            "prove_always_nonzero",
+            (
+                "prove_equal",
+                "prove_unequal",
+                "prove_always_zero",
+                "prove_always_nonzero",
+            ),
+        ),
+        ("lnot", "prove_equal", ("prove_equal",)),
+        ("lnot", "prove_unequal", ("prove_equal", "prove_unequal")),
+    ),
+)
+def test_every_generic_prover_branch_forwards_exact_policy(
+    monkeypatch,
+    rule_name: str,
+    target_operation: str,
+    expected_operations: tuple[str, ...],
+) -> None:
+    import ida_hexrays
+
+    from d810.backends.ast.z3_proof_policy import (
+        Z3ProofResult,
+        Z3ProofStatus,
+    )
+    import d810.optimizers.microcode.instructions.z3.predicates as predicates
+
+    class _RecordingProver:
+        instances: list["_RecordingProver"] = []
+
+        def __init__(self, *, blk=None, ins=None, policy=None):
+            self.blk = blk
+            self.ins = ins
+            self.policy = policy
+            self.operations: list[str] = []
+            type(self).instances.append(self)
+
+        def _result(self, operation: str) -> Z3ProofResult:
+            self.operations.append(operation)
+            return Z3ProofResult(
+                status=(
+                    Z3ProofStatus.PROVED
+                    if operation == target_operation
+                    else Z3ProofStatus.DISPROVED
+                ),
+                reason=None,
+                observed_expression_nodes=2,
+                elapsed_ms=0.75,
+            )
+
+        def prove_equal(self, *_args, **_kwargs):
+            return self._result("prove_equal")
+
+        def prove_unequal(self, *_args, **_kwargs):
+            return self._result("prove_unequal")
+
+        def prove_always_zero(self, *_args, **_kwargs):
+            return self._result("prove_always_zero")
+
+        def prove_always_nonzero(self, *_args, **_kwargs):
+            return self._result("prove_always_nonzero")
+
+    monkeypatch.setattr(predicates, "Z3MopProver", _RecordingProver)
+    if rule_name == "lnot":
+        # The fake prover does not need a native zero mop. Constructing an
+        # ``ida_hexrays.mop_t`` without an initialized Hex-Rays database can
+        # segfault in the runtime image, so keep this branch test portable.
+        monkeypatch.setattr(
+            predicates.ida_hexrays,
+            "mop_t",
+            lambda: SimpleNamespace(t=ida_hexrays.mop_n, size=4),
+        )
+        monkeypatch.setattr(predicates, "safe_make_number", lambda *_args: None)
+    rule_class = {
+        "setz": predicates.Z3setzRuleGeneric,
+        "setnz": predicates.Z3setnzRuleGeneric,
+        "lnot": predicates.Z3lnotRuleGeneric,
+    }[rule_name]
+    rule = rule_class()
+    rule.configure({"max_expression_nodes": 101, "proof_timeout_ms": 1101})
+    candidate, additions = _candidate(
+        _mop(mop_type=ida_hexrays.mop_r),
+        _mop(mop_type=ida_hexrays.mop_n, value=0),
+    )
+
+    assert rule.check_candidate(candidate) is True
+    assert [
+        operation
+        for instance in _RecordingProver.instances
+        for operation in instance.operations
+    ] == list(expected_operations)
+    assert all(
+        instance.policy is rule.z3_proof_policy
+        for instance in _RecordingProver.instances
+    )
+    for operation in expected_operations:
+        matching_instances = [
+            instance
+            for instance in _RecordingProver.instances
+            if operation in instance.operations
+        ]
+        assert len(matching_instances) == 1
+        assert matching_instances[0].policy is rule.z3_proof_policy
+
+    expected_value = {
+        "setz": {"prove_equal": 1, "prove_unequal": 0,
+                 "prove_always_zero": 1, "prove_always_nonzero": 0},
+        "setnz": {"prove_equal": 0, "prove_unequal": 1,
+                   "prove_always_zero": 0, "prove_always_nonzero": 1},
+        "lnot": {"prove_equal": 1, "prove_unequal": 0},
+    }[rule_name][target_operation]
+    assert additions == [("val_res", expected_value, 1)]
+
+
+@pytest.mark.runtime
+def test_low_node_setz_abstention_does_not_block_setnz_or_lnot_policy(
+    monkeypatch,
+) -> None:
+    import ida_hexrays
+
+    from d810.backends.ast.z3_proof_policy import (
+        Z3ProofAbstentionReason,
+        Z3ProofResult,
+        Z3ProofStatus,
+    )
+    import d810.optimizers.microcode.instructions.z3.predicates as predicates
+
+    class _IsolationProver:
+        instances: list["_IsolationProver"] = []
+
+        def __init__(self, *, policy, **_kwargs):
+            self.policy = policy
+            self.operations: list[str] = []
+            type(self).instances.append(self)
+
+        def _result(self, operation: str) -> Z3ProofResult:
+            self.operations.append(operation)
+            if self.policy.max_expression_nodes == 1:
+                return Z3ProofResult(
+                    status=Z3ProofStatus.ABSTAINED,
+                    reason=Z3ProofAbstentionReason.NODE_LIMIT,
+                    observed_expression_nodes=1,
+                    elapsed_ms=0.5,
+                )
+            return Z3ProofResult(
+                status=Z3ProofStatus.PROVED,
+                reason=None,
+                observed_expression_nodes=2,
+                elapsed_ms=0.75,
+            )
+
+        def prove_equal(self, *_args, **_kwargs):
+            return self._result("prove_equal")
+
+        def prove_unequal(self, *_args, **_kwargs):
+            return self._result("prove_unequal")
+
+        def prove_always_zero(self, *_args, **_kwargs):
+            return self._result("prove_always_zero")
+
+        def prove_always_nonzero(self, *_args, **_kwargs):
+            return self._result("prove_always_nonzero")
+
+    monkeypatch.setattr(predicates, "Z3MopProver", _IsolationProver)
+    setz = predicates.Z3setzRuleGeneric()
+    setz.configure({"max_expression_nodes": 1, "proof_timeout_ms": 17})
+    setnz = predicates.Z3setnzRuleGeneric()
+    setnz.configure({"max_expression_nodes": 2, "proof_timeout_ms": 29})
+    lnot = predicates.Z3lnotRuleGeneric()
+    lnot.configure({"max_expression_nodes": 3, "proof_timeout_ms": 73})
+
+    setz_candidate, setz_additions = _candidate(
+        _mop(mop_type=ida_hexrays.mop_r),
+        _mop(mop_type=ida_hexrays.mop_n, value=0),
+    )
+    setnz_candidate, setnz_additions = _candidate(
+        _mop(mop_type=ida_hexrays.mop_r),
+        _mop(mop_type=ida_hexrays.mop_n, value=0),
+    )
+
+    assert setz.check_candidate(setz_candidate) is False
+    assert setz_additions == []
+    assert setnz.check_candidate(setnz_candidate) is True
+    assert setnz_additions == [("val_res", 0, 1)]
+
+    setz_instances = [
+        instance
+        for instance in _IsolationProver.instances
+        if instance.policy is setz.z3_proof_policy
+    ]
+    setnz_instances = [
+        instance
+        for instance in _IsolationProver.instances
+        if instance.policy is setnz.z3_proof_policy
+    ]
+    assert [operation for instance in setz_instances for operation in instance.operations] == [
+        "prove_equal",
+        "prove_unequal",
+        "prove_always_zero",
+        "prove_always_nonzero",
+    ]
+    assert [operation for instance in setnz_instances for operation in instance.operations] == [
+        "prove_equal",
+    ]
+    assert lnot.z3_proof_policy.max_expression_nodes == 3
+    assert lnot.z3_proof_policy.proof_timeout_ms == 73
+    assert lnot.z3_proof_policy is not setz.z3_proof_policy
+    assert lnot.z3_proof_policy is not setnz.z3_proof_policy
+
+
+@pytest.mark.runtime
+def test_proof_receipts_preserve_conclusive_and_abstention_reasons_without_errors(
+    monkeypatch,
+    caplog,
+) -> None:
+    import ida_hexrays
+
+    from d810.backends.ast.z3_proof_policy import (
+        Z3ProofAbstentionReason,
+        Z3ProofResult,
+        Z3ProofStatus,
+    )
+    from d810.core.observability import reset_diagnostic_bus, subscribe
+    from d810.core.observability_events import Z3PredicateProofObserved
+    import d810.optimizers.microcode.instructions.z3.predicates as predicates
+
+    class _FakeProver:
+        def __init__(self, *, policy, **_kwargs):
+            self.policy = policy
+
+        def prove_equal(self, *_args, **_kwargs):
+            return Z3ProofResult(
+                status=Z3ProofStatus.ABSTAINED,
+                reason=Z3ProofAbstentionReason.TIMEOUT,
+                observed_expression_nodes=None,
+                elapsed_ms=4.5,
+            )
+
+        def prove_unequal(self, *_args, **_kwargs):
+            return Z3ProofResult(
+                status=Z3ProofStatus.PROVED,
+                reason=None,
+                observed_expression_nodes=4,
+                elapsed_ms=1.5,
+            )
+
+    monkeypatch.setattr(predicates, "Z3MopProver", _FakeProver)
+    from d810.optimizers.microcode.instructions.z3.predicates import Z3setzRuleGeneric
+
+    events: list[Z3PredicateProofObserved] = []
+    reset_diagnostic_bus()
+    subscribe(Z3PredicateProofObserved, events.append)
+    try:
+        rule = Z3setzRuleGeneric()
+        rule.configure({"max_expression_nodes": 19, "proof_timeout_ms": 23})
+        candidate, additions = _candidate(
+            _mop(mop_type=ida_hexrays.mop_r),
+            _mop(mop_type=ida_hexrays.mop_n, value=0),
+        )
+        with caplog.at_level(logging.ERROR):
+            assert rule.check_candidate(candidate) is True
+    finally:
+        reset_diagnostic_bus()
+
+    assert additions == [("val_res", 0, 1)]
+    assert [event.status for event in events] == ["abstained", "proved"]
+    assert [event.reason for event in events] == ["timeout", None]
+    assert all(event.transform_id == "z-3-setz-generic" for event in events)
+    assert all(event.max_expression_nodes == 19 for event in events)
+    assert all(event.proof_timeout_ms == 23 for event in events)
+    assert events[0].observed_expression_nodes is None
+    assert events[1].observed_expression_nodes == 4
+    assert all(event.elapsed_ms >= 0 for event in events)
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]

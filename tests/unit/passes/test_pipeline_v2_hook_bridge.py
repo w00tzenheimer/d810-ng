@@ -11,6 +11,10 @@ from d810.passes.cleanup_family_adapter import (
     SIMPLE_FLATTENING_CLEANUP_PASS_ID,
     SIMPLE_FLATTENING_CLEANUP_RULE,
 )
+from d810.passes.mba_simplify import (
+    build_mba_simplify_pass,
+    materialize_mba_transform_options,
+)
 from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_v2_hook_bridge import (
     STATE_MACHINE_NATIVE_PASS_IDS,
@@ -20,6 +24,7 @@ from d810.passes.pipeline_v2_hook_bridge import (
     pipeline_v2_native_state_machine_configs,
     requires_native_preanalysis_handlers,
 )
+from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
 
 _CONF_DIR = Path("src/d810/conf")
 
@@ -227,6 +232,74 @@ def test_default_instruction_only_bridge_derives_rules_from_pipeline_v2_only():
     assert all(rule.name != "CopiedLegacyBlockRule" for rule in activation.block_rules)
     jump_fixer = activation.block_rules[-1]
     assert "enabled_rules" in jump_fixer.config
+
+
+def test_generic_z3_bridge_materializes_defaults_per_selected_transform() -> None:
+    project = ProjectConfiguration(
+        path=Path("z3-predicate-bounds.runtime-config-v2.json"),
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {
+                    "pass_id": "mba-simplify",
+                    "options": {
+                        "transforms": [
+                            "z-3-setz-generic",
+                            "z-3-setnz-generic",
+                            "z-3-lnot-generic",
+                        ],
+                        "transform_options": {
+                            "z-3-setz-generic": {
+                                "max_expression_nodes": 7,
+                            },
+                            "z-3-setnz-generic": {
+                                "proof_timeout_ms": 125,
+                            },
+                        },
+                    },
+                }
+            ],
+        },
+    )
+
+    activation = pipeline_v2_hook_activation(project)
+
+    assert [rule.name for rule in activation.instruction_rules] == [
+        "Z3setzRuleGeneric",
+        "Z3setnzRuleGeneric",
+        "Z3lnotRuleGeneric",
+    ]
+    by_name = {rule.name: rule.config for rule in activation.instruction_rules}
+    assert by_name["Z3setzRuleGeneric"]["max_expression_nodes"] == 7
+    assert by_name["Z3setzRuleGeneric"]["proof_timeout_ms"] == 50
+    assert by_name["Z3setnzRuleGeneric"]["max_expression_nodes"] == 256
+    assert by_name["Z3setnzRuleGeneric"]["proof_timeout_ms"] == 125
+    assert by_name["Z3lnotRuleGeneric"] == {
+        "max_expression_nodes": 256,
+        "proof_timeout_ms": 50,
+        "generate_commutative_permutations": True,
+    }
+
+    mba_config = next(
+        config
+        for config in pipeline_configs_from_project_config(project)
+        if config.pass_id == "mba-simplify"
+    )
+    adapter = build_mba_simplify_pass(mba_config)
+    for transform_id, implementation_name in zip(
+        adapter.transform_ids,
+        adapter.implementation_names,
+        strict=True,
+    ):
+        request_options = materialize_mba_transform_options(
+            transform_id,
+            adapter.transform_options.get(transform_id),
+        )
+        live_options = {
+            field_name: by_name[implementation_name][field_name]
+            for field_name in request_options
+        }
+        assert live_options == request_options
 
 
 def test_hodur_bridge_derives_unflattener_trigger_and_simple_flow_rule():
