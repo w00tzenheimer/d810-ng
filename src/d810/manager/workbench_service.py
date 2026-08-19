@@ -295,7 +295,10 @@ class WorkbenchService:
             errors.append(f"preparation: {exc}")
 
         try:
-            effective_schedule = self._effective_schedule(runtime_project)
+            effective_schedule = self._effective_schedule(
+                runtime_project,
+                project_snapshot=project_snapshot,
+            )
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
             from d810.manager.workbench_models import EffectiveMaturitySchedule
 
@@ -340,8 +343,28 @@ class WorkbenchService:
             case=case,
         )
 
-    def _effective_schedule(self, runtime_project: object):
+    def _effective_schedule(
+        self,
+        runtime_project: object,
+        *,
+        project_snapshot: ProjectRuntimeSnapshot | None = None,
+    ):
         configs = pipeline_configs_from_project_config(runtime_project)
+        if project_snapshot is None:
+            project_snapshot = getattr(
+                self._manager,
+                "current_project_runtime_snapshot",
+                None,
+            )
+        constant_schedule = (
+            project_snapshot.constant_simplification_schedule
+            if project_snapshot is not None
+            else None
+        )
+        preparation_status = None
+        status_provider = getattr(self._manager, "preparation_status", None)
+        if callable(status_provider):
+            preparation_status = status_provider()
         return build_effective_maturity_schedule(
             configs,
             registry=self._registry,
@@ -357,6 +380,8 @@ class WorkbenchService:
                 ),
             },
             maturity_name_provider=self._maturity_name_provider,
+            constant_simplification_schedule=constant_schedule,
+            preparation_status=preparation_status,
         )
 
     @staticmethod

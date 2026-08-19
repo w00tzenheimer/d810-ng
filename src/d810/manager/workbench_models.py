@@ -301,6 +301,16 @@ class EffectiveScheduleStage:
     requirements: tuple[str, ...]
     provider_maturities: tuple[str, ...]
     maturity_source: str
+    enabled: bool = True
+    supported_maturities: tuple[str, ...] = ()
+    requested_maturities: tuple[str, ...] = ()
+    pass_maturity_gates: tuple[str, ...] = ()
+    effective_maturities: tuple[str, ...] = ()
+    lifecycle_domain: str = "microcode"
+    schedule_source: str = "live rule"
+    inactive_reason: str | None = None
+    preparation_state: str | None = None
+    preparation_reason: str | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

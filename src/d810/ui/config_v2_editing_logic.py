@@ -933,7 +933,24 @@ def _normalize_typed_field_value(field: FieldEditorSpec, value: object) -> objec
     if field.control is FieldControlKind.TEXT:
         return str(value)
     if field.control is FieldControlKind.STRING_LIST:
-        return [item.strip() for item in str(value).split(",") if item.strip()]
+        if isinstance(value, str):
+            values = [item.strip() for item in value.split(",") if item.strip()]
+        elif isinstance(value, (list, tuple)):
+            if any(not isinstance(item, str) for item in value):
+                raise ValueError(f"{field.label} must be a list of strings")
+            values = [item.strip() for item in value if item.strip()]
+        else:
+            raise ValueError(f"{field.label} must be a list of strings")
+        if field.choices:
+            unknown = sorted(set(values).difference(field.choices))
+            if unknown:
+                raise ValueError(
+                    f"{field.label} contains values outside its declared choices: "
+                    f"{unknown}"
+                )
+            selected = set(values)
+            return [choice for choice in field.choices if choice in selected]
+        return values
     raise ValueError(f"{field.label} has an unsupported editor control")
 
 

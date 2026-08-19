@@ -7,6 +7,10 @@ import pytest
 from d810.core.execution_scope import ExecutionPipeline
 from d810.ir.maturity import IRMaturity
 from d810.manager.effective_pipeline_schedule import build_effective_maturity_schedule
+from d810.passes.constant_simplification import constant_simplification_stage_descriptors
+from d810.passes.constant_simplification_options import (
+    compile_constant_simplification_schedule,
+)
 from d810.passes.execution_stages import ExecutionStageDescriptor
 from d810.passes.pass_pipeline import (
     FactRequirement,
@@ -146,3 +150,90 @@ def test_configured_mba_solver_runs_at_global_optimized_only() -> None:
 
     assert schedule.at("MMAT_GLBOPT2").contains("mba-solve")
     assert not schedule.at("MMAT_GLBOPT1").contains("mba-solve")
+
+
+def test_constant_bundle_projection_uses_compiled_schedule_over_live_rules() -> None:
+    config = _config(
+        "constant-simplification",
+        options={
+            "stages": {
+                "fold-readonly-data": {
+                    "maturities": ["CANONICAL"],
+                },
+                "fold-constant-subtree": {"enabled": False},
+                "forward-constants": {
+                    "maturities": ["CALL_MODELED"],
+                },
+            },
+        },
+    )
+    compiled = compile_constant_simplification_schedule(
+        config,
+        constant_simplification_stage_descriptors(),
+    )
+    descriptors = constant_simplification_stage_descriptors()
+    registry = _Registry((config,), {config.pass_id: descriptors})
+    schedule = build_effective_maturity_schedule(
+        (config,),
+        registry=registry,
+        implementations={
+            ExecutionPipeline.INSTRUCTION: (
+                SimpleNamespace(
+                    name="FoldReadonlyDataRule",
+                    maturities=("MMAT_GLBOPT2",),
+                ),
+                SimpleNamespace(
+                    name="ConstantSubtreeFoldRule",
+                    maturities=("MMAT_GLBOPT3",),
+                ),
+            ),
+            ExecutionPipeline.FLOW: (
+                SimpleNamespace(
+                    name="ForwardConstantPropagationRule",
+                    maturities=("MMAT_GLBOPT3",),
+                ),
+            ),
+        },
+        constant_simplification_schedule=compiled,
+    )
+
+    readonly = schedule.stage("fold-readonly-data")
+    subtree = schedule.stage("fold-constant-subtree")
+    forward = schedule.stage("forward-constants")
+    assert readonly.provider_maturities == ("MMAT_PREOPTIMIZED",)
+    assert readonly.schedule_source == "compiled stage contract"
+    assert subtree.enabled is False
+    assert subtree.provider_maturities == ()
+    assert subtree.inactive_reason == "disabled by configuration"
+    assert forward.provider_maturities == ("MMAT_CALLS",)
+
+
+def test_compiled_constant_stage_orders_are_independent_per_pipeline() -> None:
+    config = _config("constant-simplification")
+    compiled = compile_constant_simplification_schedule(
+        config,
+        constant_simplification_stage_descriptors(),
+    )
+    schedule = build_effective_maturity_schedule(
+        (config,),
+        registry=_Registry(
+            (config,),
+            {config.pass_id: constant_simplification_stage_descriptors()},
+        ),
+        implementations={
+            ExecutionPipeline.INSTRUCTION: (),
+            ExecutionPipeline.FLOW: (),
+        },
+        constant_simplification_schedule=compiled,
+    )
+
+    readonly = schedule.stage("fold-readonly-data")
+    subtree = schedule.stage("fold-constant-subtree")
+    forward = schedule.stage("forward-constants")
+    assert (readonly.pipeline, readonly.runtime_order) == ("instruction", 0)
+    assert (subtree.pipeline, subtree.runtime_order) == ("instruction", 1)
+    assert (forward.pipeline, forward.runtime_order) == ("flow", 0)
+    at_calls = schedule.at("MMAT_CALLS")
+    assert tuple(
+        (stage.pipeline, stage.runtime_order) for stage in at_calls.stages
+    ) == (("instruction", 0), ("instruction", 1), ("flow", 0))

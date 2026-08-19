@@ -411,3 +411,13 @@ def test_edit_pipeline_entry_text_exists_only_in_the_host_overview() -> None:
             owners.append(path)
 
     assert owners == [PIPELINE_OVERVIEW]
+
+
+def test_choice_backed_string_lists_use_an_editable_checkable_qt_list() -> None:
+    source = PROJECT_EDITOR.read_text(encoding="utf-8")
+
+    assert "QtWidgets.QListWidget()" in source
+    assert "ItemIsUserCheckable" in source
+    assert "setCheckState" in source
+    assert "checked_choices" in source
+    assert "apply_typed_field_option" in source

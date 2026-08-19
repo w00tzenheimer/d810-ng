@@ -25,6 +25,9 @@ from d810.manager.workbench_models import (
     RuntimeConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
+    EffectiveMaturitySchedule,
+    EffectiveMaturityScheduleRow,
+    EffectiveScheduleStage,
     WorkbenchCommandResult,
     WorkbenchComparisonSnapshot,
 )
@@ -160,6 +163,157 @@ def test_rows_preserve_pipeline_order_and_keep_consumers_supporting() -> None:
         next(row for row in supporting if row.key == "consumer:execution_scope").status
         is OutcomeStatus.ABSTAINED
     )
+
+
+def test_compiled_schedule_rows_show_contract_fields_and_preparation_state() -> None:
+    readonly = EffectiveScheduleStage(
+        configured_index=0,
+        runtime_order=0,
+        pass_id="constant-simplification",
+        stage_id="fold-readonly-data",
+        pipeline="instruction",
+        implementation_name="FoldReadonlyDataRule",
+        requirements=(),
+        provider_maturities=("MMAT_PREOPTIMIZED",),
+        maturity_source="compiled stage contract",
+        enabled=True,
+        supported_maturities=("CANONICAL", "LOCAL_OPTIMIZED"),
+        requested_maturities=("CANONICAL",),
+        pass_maturity_gates=("CANONICAL", "LOCAL_OPTIMIZED"),
+        effective_maturities=("CANONICAL",),
+        lifecycle_domain="microcode",
+        schedule_source="compiled stage contract",
+        inactive_reason=None,
+    )
+    disabled = dataclasses.replace(
+        readonly,
+        stage_id="fold-constant-subtree",
+        implementation_name="ConstantSubtreeFoldRule",
+        runtime_order=-1,
+        provider_maturities=(),
+        enabled=False,
+        requested_maturities=("LOCAL_OPTIMIZED",),
+        effective_maturities=(),
+        inactive_reason="disabled by configuration",
+    )
+    forward = dataclasses.replace(
+        readonly,
+        stage_id="forward-constants",
+        pipeline="flow",
+        implementation_name="ForwardConstantPropagationRule",
+        runtime_order=0,
+        provider_maturities=("MMAT_LOCOPT",),
+        supported_maturities=("CALL_MODELED",),
+        requested_maturities=("CALL_MODELED",),
+        pass_maturity_gates=("CALL_MODELED",),
+        effective_maturities=("CALL_MODELED",),
+    )
+    preparation = EffectiveScheduleStage(
+        configured_index=0,
+        runtime_order=-1,
+        pass_id="constant-simplification",
+        stage_id="global-const-types",
+        pipeline="",
+        implementation_name="",
+        requirements=(),
+        provider_maturities=(),
+        maturity_source="compiled stage contract",
+        enabled=True,
+        supported_maturities=(),
+        requested_maturities=(),
+        pass_maturity_gates=(),
+        effective_maturities=(),
+        lifecycle_domain="PRE_HEXRAYS",
+        schedule_source="compiled stage contract",
+        inactive_reason=None,
+        preparation_state="pending",
+        preparation_reason="next preparation round",
+    )
+    scheduled = dataclasses.replace(
+        _snapshot(),
+        effective_schedule=EffectiveMaturitySchedule(
+            rows=(
+                EffectiveMaturityScheduleRow(
+                    ordinal=1,
+                    ir_maturity="ir.local.optimized",
+                    provider_maturity="MMAT_LOCOPT",
+                    stages=(readonly, disabled, forward),
+                ),
+            ),
+            stages=(preparation, readonly, disabled, forward),
+        ),
+    )
+
+    rows = logic.project_workbench_rows(scheduled)
+    pipeline_rows = tuple(
+        row for row in rows if row.section is logic.WorkbenchSection.PIPELINE
+    )
+    detail = "\n".join(row.detail for row in pipeline_rows)
+
+    assert "supported: CANONICAL, LOCAL_OPTIMIZED" in detail
+    assert "requested: CANONICAL" in detail
+    assert "pass gates: CANONICAL, LOCAL_OPTIMIZED" in detail
+    assert "effective: CANONICAL" in detail
+    assert "source: compiled stage contract" in detail
+    assert "instruction pipeline" in detail
+    assert "flow pipeline" in detail
+    assert "no total callback order is implied" in detail
+    assert "runtime order: 0" in detail
+    assert "disabled by configuration" in detail
+    assert any(
+        row.key == "pipeline:stage:fold-constant-subtree" for row in pipeline_rows
+    )
+    assert "PRE_HEXRAYS" in detail
+    assert "pending" in detail
+    assert "next preparation round" in detail
+
+
+def test_preparation_row_projects_each_durable_proposal_state() -> None:
+    base = EffectiveScheduleStage(
+        configured_index=0,
+        runtime_order=-1,
+        pass_id="constant-simplification",
+        stage_id="global-const-types",
+        pipeline="",
+        implementation_name="",
+        requirements=(),
+        provider_maturities=(),
+        maturity_source="compiled stage contract",
+        enabled=True,
+        supported_maturities=(),
+        requested_maturities=(),
+        pass_maturity_gates=(),
+        effective_maturities=(),
+        lifecycle_domain="PRE_HEXRAYS",
+        schedule_source="compiled stage contract",
+        inactive_reason=None,
+    )
+    expected_status = {
+        "pending": OutcomeStatus.READY,
+        "applied": OutcomeStatus.CHANGED,
+        "conflicting": OutcomeStatus.BLOCKED,
+        "restored": OutcomeStatus.UNCHANGED,
+    }
+    for state in expected_status:
+        stage = dataclasses.replace(
+            base,
+            preparation_state=state,
+            preparation_reason=(
+                "next preparation round" if state == "pending" else None
+            ),
+        )
+        scheduled = dataclasses.replace(
+            _snapshot(),
+            effective_schedule=EffectiveMaturitySchedule(stages=(stage,)),
+        )
+
+        rows = logic.project_workbench_rows(scheduled)
+        preparation = next(row for row in rows if row.key == "pipeline:preparation:global-const-types")
+
+        assert state in preparation.detail
+        assert preparation.status is expected_status[state]
+        if state == "pending":
+            assert "next preparation round" in preparation.detail
 
 
 def test_supporting_rows_lead_with_session_execution_ledger_and_demote_counters() -> (

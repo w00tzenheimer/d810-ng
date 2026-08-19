@@ -100,8 +100,16 @@ def build_effective_maturity_schedule(
     registry: object,
     implementations: Mapping[ExecutionPipeline, Sequence[object]],
     maturity_name_provider: Callable[[int], str] = lambda value: f"MMAT_{value}",
+    constant_simplification_schedule: object | None = None,
+    preparation_status: object | None = None,
 ) -> EffectiveMaturitySchedule:
-    """Use live worklist objects first, then exact pass-owned maturity metadata."""
+    """Project configured passes onto their runtime maturity schedules.
+
+    The constant-simplification bundle is special: its immutable compiled
+    schedule is already carried by project runtime and is therefore the only
+    authority used for that pass.  Live rule objects remain a compatibility
+    fallback for other passes until their contracts are migrated.
+    """
 
     worklists = {
         pipeline: tuple(values) for pipeline, values in implementations.items()
@@ -126,6 +134,119 @@ def build_effective_maturity_schedule(
         spec = registry.build_spec(config)
         requirements = _requirements(spec.contract)
         descriptors = tuple(registry.stages_for(config.pass_id))
+        is_constant_bundle = (
+            str(getattr(config, "pass_id", "")) == "constant-simplification"
+            and constant_simplification_schedule is not None
+        )
+        if is_constant_bundle:
+            compiled_stages = tuple(
+                getattr(constant_simplification_schedule, "stages", ())
+            )
+            for compiled_stage in compiled_stages:
+                descriptor_pipeline = getattr(compiled_stage, "pipeline", None)
+                if not isinstance(descriptor_pipeline, ExecutionPipeline):
+                    continue
+                supported = tuple(
+                    str(getattr(maturity, "name", maturity))
+                    for maturity in getattr(compiled_stage, "supported_maturities", ())
+                )
+                requested = tuple(
+                    str(getattr(maturity, "name", maturity))
+                    for maturity in getattr(compiled_stage, "requested_maturities", ())
+                )
+                pass_gates = tuple(
+                    str(getattr(maturity, "name", maturity))
+                    for maturity in getattr(compiled_stage, "pass_maturity_gates", ())
+                )
+                effective_maturities = tuple(
+                    str(getattr(maturity, "name", maturity))
+                    for maturity in getattr(compiled_stage, "effective_maturities", ())
+                )
+                provider_maturities = tuple(
+                    _PROVIDER_BY_IR[maturity]
+                    for maturity in getattr(compiled_stage, "effective_maturities", ())
+                    if maturity in _PROVIDER_BY_IR
+                )
+                lifecycle = getattr(compiled_stage, "lifecycle_domain", None)
+                lifecycle_name = str(getattr(lifecycle, "name", lifecycle))
+                projected.append(
+                    EffectiveScheduleStage(
+                        configured_index=configured_index,
+                        runtime_order=(
+                            int(getattr(compiled_stage, "runtime_order"))
+                            if getattr(compiled_stage, "runtime_order", None)
+                            is not None
+                            else -1
+                        ),
+                        pass_id=str(getattr(compiled_stage, "pass_id", config.pass_id)),
+                        stage_id=str(getattr(compiled_stage, "stage_id")),
+                        pipeline=descriptor_pipeline.value,
+                        implementation_name=str(
+                            getattr(compiled_stage, "implementation_name", "") or ""
+                        ),
+                        requirements=requirements,
+                        provider_maturities=provider_maturities,
+                        maturity_source="compiled stage contract",
+                        enabled=bool(getattr(compiled_stage, "enabled", False)),
+                        supported_maturities=supported,
+                        requested_maturities=requested,
+                        pass_maturity_gates=pass_gates,
+                        effective_maturities=effective_maturities,
+                        lifecycle_domain=lifecycle_name,
+                        schedule_source="compiled stage contract",
+                        inactive_reason=getattr(compiled_stage, "inactive_reason", None),
+                    )
+                )
+            preparation = getattr(constant_simplification_schedule, "preparation", None)
+            if preparation is not None:
+                pending = int(getattr(preparation_status, "pending_count", 0) or 0)
+                applied = int(getattr(preparation_status, "applied_count", 0) or 0)
+                conflicting = int(
+                    getattr(preparation_status, "conflicting_count", 0) or 0
+                )
+                restored = int(getattr(preparation_status, "restored_count", 0) or 0)
+                if pending:
+                    preparation_state = "pending"
+                elif conflicting:
+                    preparation_state = "conflicting"
+                elif applied:
+                    preparation_state = "applied"
+                elif restored:
+                    preparation_state = "restored"
+                elif bool(getattr(preparation, "enabled", False)):
+                    preparation_state = "ready"
+                else:
+                    preparation_state = "disabled"
+                projected.append(
+                    EffectiveScheduleStage(
+                        configured_index=configured_index,
+                        runtime_order=-1,
+                        pass_id=str(getattr(config, "pass_id", "constant-simplification")),
+                        stage_id="global-const-types",
+                        pipeline="",
+                        implementation_name="",
+                        requirements=(),
+                        provider_maturities=(),
+                        maturity_source="compiled stage contract",
+                        enabled=bool(getattr(preparation, "enabled", False)),
+                        supported_maturities=(),
+                        requested_maturities=(),
+                        pass_maturity_gates=(),
+                        effective_maturities=(),
+                        lifecycle_domain="PRE_HEXRAYS",
+                        schedule_source="compiled stage contract",
+                        inactive_reason=(
+                            None
+                            if bool(getattr(preparation, "enabled", False))
+                            else "disabled by configuration"
+                        ),
+                        preparation_state=preparation_state,
+                        preparation_reason=getattr(
+                            preparation_status, "pending_reason", None
+                        ),
+                    )
+                )
+            continue
         for descriptor in descriptors:
             descriptor_pipeline = getattr(descriptor, "pipeline", None)
             if not isinstance(descriptor_pipeline, ExecutionPipeline):
@@ -186,6 +307,7 @@ def build_effective_maturity_schedule(
                     requirements=requirements,
                     provider_maturities=ordered_maturities,
                     maturity_source=maturity_source,
+                    schedule_source=maturity_source,
                 )
             )
 

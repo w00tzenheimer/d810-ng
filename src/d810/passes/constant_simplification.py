@@ -231,6 +231,16 @@ def constant_simplification_hook_rules(
 
 def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistry:
     """Register the one public constant-simplification operation."""
+    readonly_descriptor = _CONSTANT_STAGE_DESCRIPTORS[0]
+    subtree_descriptor = _CONSTANT_STAGE_DESCRIPTORS[1]
+    forward_descriptor = _CONSTANT_STAGE_DESCRIPTORS[2]
+
+    def maturity_choices(descriptor: ExecutionStageDescriptor) -> tuple[str, ...]:
+        return tuple(maturity.name for maturity in descriptor.supported_maturities)
+
+    readonly_maturities = list(maturity_choices(readonly_descriptor))
+    subtree_maturities = list(maturity_choices(subtree_descriptor))
+    forward_maturities = list(maturity_choices(forward_descriptor))
     registry.register_configured(
         CONSTANT_SIMPLIFICATION_PASS_ID,
         build_constant_simplification_pass,
@@ -238,28 +248,86 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
             pass_id=CONSTANT_SIMPLIFICATION_PASS_ID,
             workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
             options={
-                "memory_policy": STRICT_MEMORY_POLICY,
-                "rva_guard": True,
-                "allow_executable_readonly": False,
-                "persist_global_const_annotations": False,
+                "preparation": {
+                    "global_const_types": {
+                        "enabled": False,
+                        "discover_bounded_tables": True,
+                    }
+                },
+                "stages": {
+                    "fold-readonly-data": {
+                        "enabled": True,
+                        "maturities": readonly_maturities,
+                        "memory_policy": STRICT_MEMORY_POLICY,
+                        "rva_guard": True,
+                        "allow_executable_readonly": False,
+                    },
+                    "fold-constant-subtree": {
+                        "enabled": True,
+                        "maturities": subtree_maturities,
+                    },
+                    "forward-constants": {
+                        "enabled": True,
+                        "maturities": forward_maturities,
+                    },
+                },
             },
         ),
         stages=constant_simplification_stage_descriptors(),
         editor_spec=PassEditorSpec.fields_editor(
             (
                 FieldEditorSpec(
-                    field_id="memory_policy",
+                    field_id="preparation.global_const_types.enabled",
+                    label="Enable reversible global const types",
+                    path=("preparation", "global_const_types", "enabled"),
+                    control=FieldControlKind.BOOLEAN,
+                    description=(
+                        "Apply exact reversible const type metadata before Hex-Rays."
+                    ),
+                    default=False,
+                ),
+                FieldEditorSpec(
+                    field_id="preparation.global_const_types.discover_bounded_tables",
+                    label="Discover bounded tables from microcode",
+                    path=(
+                        "preparation",
+                        "global_const_types",
+                        "discover_bounded_tables",
+                    ),
+                    control=FieldControlKind.BOOLEAN,
+                    description=(
+                        "dynamic discoveries apply on the next natural preparation round."
+                    ),
+                    default=True,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.fold-readonly-data.enabled",
+                    label="Enable read-only data folding",
+                    path=("stages", "fold-readonly-data", "enabled"),
+                    control=FieldControlKind.BOOLEAN,
+                    default=True,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.fold-readonly-data.maturities",
+                    label="Read-only data maturities",
+                    path=("stages", "fold-readonly-data", "maturities"),
+                    control=FieldControlKind.STRING_LIST,
+                    choices=maturity_choices(readonly_descriptor),
+                    default=readonly_maturities,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.fold-readonly-data.memory_policy",
                     label="Memory policy",
-                    path=("memory_policy",),
+                    path=("stages", "fold-readonly-data", "memory_policy"),
                     control=FieldControlKind.ENUM,
                     description="Controls which read-only memory values may be materialized.",
                     choices=(STRICT_MEMORY_POLICY, AGGRESSIVE_MEMORY_POLICY),
                     default=STRICT_MEMORY_POLICY,
                 ),
                 FieldEditorSpec(
-                    field_id="rva_guard",
+                    field_id="stages.fold-readonly-data.rva_guard",
                     label="RVA guard",
-                    path=("rva_guard",),
+                    path=("stages", "fold-readonly-data", "rva_guard"),
                     control=FieldControlKind.BOOLEAN,
                     description=(
                         "Veto folds whose value is used as an address. On, the "
@@ -270,21 +338,13 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                     default=True,
                 ),
                 FieldEditorSpec(
-                    field_id="persist_global_const_annotations",
-                    label="Persist proven global constants in IDB",
-                    path=("persist_global_const_annotations",),
-                    control=FieldControlKind.BOOLEAN,
-                    description=(
-                        "Apply proven global const types through D810's reversible "
-                        "IDB preparation journal. Restore them from the "
-                        "Deobfuscation Workbench."
-                    ),
-                    default=False,
-                ),
-                FieldEditorSpec(
-                    field_id="allow_executable_readonly",
+                    field_id="stages.fold-readonly-data.allow_executable_readonly",
                     label="Allow executable read-only memory",
-                    path=("allow_executable_readonly",),
+                    path=(
+                        "stages",
+                        "fold-readonly-data",
+                        "allow_executable_readonly",
+                    ),
                     control=FieldControlKind.BOOLEAN,
                     description="Very dangerous override for executable read-only memory.",
                     default=False,
@@ -294,6 +354,36 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                         "Enable only when you have independently established that the "
                         "selected memory is safe to materialize."
                     ),
+                ),
+                FieldEditorSpec(
+                    field_id="stages.fold-constant-subtree.enabled",
+                    label="Enable constant subtree folding",
+                    path=("stages", "fold-constant-subtree", "enabled"),
+                    control=FieldControlKind.BOOLEAN,
+                    default=True,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.fold-constant-subtree.maturities",
+                    label="Constant subtree maturities",
+                    path=("stages", "fold-constant-subtree", "maturities"),
+                    control=FieldControlKind.STRING_LIST,
+                    choices=maturity_choices(subtree_descriptor),
+                    default=subtree_maturities,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.forward-constants.enabled",
+                    label="Enable forward constants",
+                    path=("stages", "forward-constants", "enabled"),
+                    control=FieldControlKind.BOOLEAN,
+                    default=True,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.forward-constants.maturities",
+                    label="Forward constants maturities",
+                    path=("stages", "forward-constants", "maturities"),
+                    control=FieldControlKind.STRING_LIST,
+                    choices=maturity_choices(forward_descriptor),
+                    default=forward_maturities,
                 ),
             )
         ),
