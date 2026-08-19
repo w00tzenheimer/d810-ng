@@ -44,7 +44,7 @@
 | 3 | `d4051c063` | `/root/constant_stage_task3` | PASS | PASS | 35 focused + 289 manager + 11 journal; 12 global/pre-Hex + 8 activation Docker passed; ruff/sg/import-linter passed | `be510fabb`, `fafc35c5f`, `01a6cafc0`, `37eebd18a` | complete after 3 fix rounds |
 | 4 | `37eebd18a` | `/root/constant_stage_task4` | PASS | PASS | 98 focused + 88 adjacent + 22 renderer tests passed; ruff/sg/import-linter passed | `d946f4b99`, `6d9ea61c1`, `cf9020f08`, `a7ecc6a76` | complete after 1 fix round |
 | 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix5b` | PASS | PASS | 129 Python + 129 Cython + 15 focused resolver + 1 parity + 1 AstProxy + 14 def-search + 2 cumulative probes in both modes; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `35e114973`, `a4b5e045c`, `540995e67` | complete after 5 fix rounds |
-| 6 | `6446f49f1` | `/root/constant_stage_task6` + `/root/constant_stage_task6_defaults_fix` | pending final re-review | pending final re-review | 152 focused/adjacent units + 18 normal/18 Cython IDA runtime; Ruff/py_compile/sg/import-linter/diff-check passed | `b7cee6071`, `9034ae5ad`, `4b0f03a23` | repair implemented; review pending |
+| 6 | `6446f49f1` | `/root/constant_stage_task6` + `/root/constant_stage_task6_defaults_fix` | PASS | PASS | 152 focused/adjacent units + 18 normal/18 Cython IDA runtime; final controller rerun 134 units; Ruff/py_compile/sg/import-linter/diff-check passed | `b7cee6071`, `9034ae5ad`, `4b0f03a23`, `7d40d1f8f` | complete after 3 review fix rounds |
 | 7 | pending | pending | pending | pending | pending | pending | pending |
 | 8 | pending | pending | pending | pending | pending | pending | pending |
 
@@ -139,5 +139,10 @@
   `task6_defaults_authority_cython.txt`.
 - Product/test commit: `4b0f03a23` (`fix(mba): centralize bounded z3 policy limits`).
 - Final review cleanup commit: `7d40d1f8f` (`test(z3): clean bounded policy authority regression`); Ruff and the normal 18-case Docker runtime were rerun and passed.
-- Task 7 and Task 8 were not started; final Task 6 review remains with the
-  controller.
+- Final independent review passed the specification. Its sole code-quality
+  finding was the unused import removed by `7d40d1f8f`; Ruff and the affected
+  normal 18-case runtime suite passed afterward, while the unchanged Cython
+  artifact retained its prior 18-pass result.
+- The controller independently reran 134 focused units, Ruff, and
+  `git diff --check` successfully. Task 6 is accepted; Task 7 and Task 8 were
+  not started by the Task 6 workers.
