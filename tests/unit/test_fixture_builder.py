@@ -235,6 +235,71 @@ def test_masm_builder_verifies_scoped_d810_exports_behaviorally(tmp_path):
     assert "unrelated_public_symbol" not in missing.stderr
 
 
+def test_masm_builder_rejects_required_symbol_present_only_in_import_table(tmp_path):
+    script = REPO / "samples/scripts/build_masm.sh"
+    asm_source = tmp_path / "fixture.asm"
+    asm_source.write_text("; D810_EXPORT explicit_fixture_anchor\n")
+    import_only_dump = tmp_path / "import-only.txt"
+    import_only_dump.write_text(
+        "Import Table:\n"
+        "  7 0x2000 explicit_fixture_anchor\n"
+        "Export Table:\n"
+        "  1 0x1000 fixture_basename\n"
+        "Debug Table:\n"
+    )
+
+    rejected = _sp.run(
+        [
+            "bash",
+            str(script),
+            "--verify-source-exports",
+            str(import_only_dump),
+            "fixture_basename",
+            str(asm_source),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert rejected.returncode != 0
+    assert "MISSING required MASM export: explicit_fixture_anchor" in rejected.stderr
+
+
+def test_masm_builder_failed_link_cannot_reuse_stale_outputs(tmp_path):
+    """A failed link must remove stale DLL, PDB, and export evidence first."""
+
+    script = REPO / "samples/scripts/build_masm.sh"
+    output_dir = tmp_path / "bins"
+    output_dir.mkdir()
+    dll = output_dir / "stale_fixture.dll"
+    pdb = output_dir / "stale_fixture.pdb"
+    export_dump = output_dir / "stale_fixture.exports.txt"
+    linklog = tmp_path / "link.log"
+    for artifact in (dll, pdb, export_dump):
+        artifact.write_bytes(b"stale artifact")
+    linklog.write_text("lld-link: fatal test failure\n")
+
+    failed = _sp.run(
+        [
+            "bash",
+            str(script),
+            "--test-failed-link-contract",
+            str(output_dir),
+            "stale_fixture",
+            str(export_dump),
+            str(linklog),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert failed.returncode != 0
+    assert "link failed" in failed.stderr
+    assert not dll.exists()
+    assert not pdb.exists()
+    assert not export_dump.exists()
+
+
 def test_masm_builder_exports_only_explicit_d810_directives():
     """Additional MASM exports are opt-in, never every PUBLIC symbol."""
 

@@ -46,6 +46,46 @@ callsite_marker_exports() {
     sed -nE 's/^[[:space:]]*PUBLIC[[:space:]]+(d810_callsite_[A-Za-z0-9_]+)[[:space:]]*$/\1/p' "$1"
 }
 
+validate_binary_name() {
+    case "$1" in
+        ""|.*|*[!A-Za-z0-9_.-]*)
+            echo "error: invalid output binary name: $1" >&2
+            return 2
+            ;;
+    esac
+}
+
+remove_link_artifacts() {
+    local artifact
+
+    for artifact in "$@"; do
+        case "$artifact" in
+            ""|/|.|..)
+                echo "error: refusing unsafe link artifact path: $artifact" >&2
+                return 2
+                ;;
+        esac
+    done
+    rm -f -- "$@"
+}
+
+report_link_failure() {
+    local link_status="$1"
+    local linklog="$2"
+
+    echo "error: link failed with status $link_status:" >&2
+    [ ! -f "$linklog" ] || cat "$linklog" >&2
+}
+
+discard_failed_link() {
+    local link_status="$1"
+    local linklog="$2"
+    shift 2
+
+    report_link_failure "$link_status" "$linklog"
+    remove_link_artifacts "$@"
+}
+
 # Narrow test seam for the post-link contract.  The normal build writes the
 # real llvm-objdump output and derives required names with the same directive
 # parser below.
@@ -68,12 +108,34 @@ if [ "${1:-}" = "--verify-source-exports" ]; then
     exit $?
 fi
 
+# Narrow behavioral seam for the fail-closed link contract.  It uses the same
+# validation, cleanup, and failure reporter as the real build without faking a
+# compiler, assembler, or linker.
+if [ "${1:-}" = "--test-failed-link-contract" ]; then
+    [ "$#" -eq 5 ] || {
+        echo "usage: $0 --test-failed-link-contract <output-dir> <stem> <export-dump> <link-log>" >&2
+        exit 2
+    }
+    output_dir="$2"
+    output_stem="$3"
+    export_dump="$4"
+    linklog="$5"
+    [ -d "$output_dir" ] || { echo "error: missing output directory: $output_dir" >&2; exit 2; }
+    validate_binary_name "$output_stem"
+    discard_failed_link 1 "$linklog" \
+        "$output_dir/$output_stem.dll" \
+        "$output_dir/$output_stem.pdb" \
+        "$export_dump"
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLES_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$SAMPLES_DIR"
 
 MASM_FUNCS="${MASM_FUNCS:-}"
 BINARY_NAME="${BINARY_NAME:-libobfuscated}"
+validate_binary_name "$BINARY_NAME"
 LLVM_BIN="$(brew --prefix llvm 2>/dev/null)/bin"
 
 # Resolve a tool: honor an executable path / on-PATH name, else look in LLVM_BIN.
@@ -163,15 +225,21 @@ done
 out="bins/$BINARY_NAME.dll"
 pdb="bins/$BINARY_NAME.pdb"
 linklog="$BUILD_DIR/link.log"
+export_dump="$BUILD_DIR/export_table.txt"
+remove_link_artifacts "$out" "$pdb" "$export_dump"
+link_status=0
 "$LINKER" /DLL /NOENTRY /DEBUG /FORCE:UNRESOLVED "${export_flags[@]}" \
     "/OUT:$out" "/PDB:$pdb" "/PDBALTPATH:$BINARY_NAME.pdb" \
-    /PDBSOURCEPATH:/src/d810/samples "${objs[@]}" 2>"$linklog" || true
+    /PDBSOURCEPATH:/src/d810/samples "${objs[@]}" 2>"$linklog" || link_status=$?
+if [ "$link_status" -ne 0 ]; then
+    discard_failed_link "$link_status" "$linklog" "$out" "$pdb" "$export_dump"
+    exit "$link_status"
+fi
 undef=$(grep -c "undefined symbol" "$linklog" 2>/dev/null || echo 0)
 [ -s "$out" ] || { echo "error: link failed:" >&2; cat "$linklog" >&2; exit 1; }
 [ -s "$pdb" ] || { echo "error: linker did not produce $pdb" >&2; exit 1; }
 echo "linked $out and $pdb  (${undef} unresolved externs tolerated; log: $linklog)"
 file "$out" 2>/dev/null || true
-export_dump="$BUILD_DIR/export_table.txt"
 "${LLVM_BIN}/llvm-objdump" -p "$out" >"$export_dump" 2>/dev/null \
     || { echo "error: failed to inspect exports in $out" >&2; exit 1; }
 echo "required MASM exports:"
