@@ -110,7 +110,7 @@ class Xor_HackersDelightRule_1(VerifiableRule):
 
 **Correctness by construction:** `verify_rule()` proves `PATTERN` and `REPLACEMENT` equivalent via the Z3 backend. If verification fails, Z3 returns a counterexample. Tests parametrize over all registered rules, so new rules are verified automatically.
 
-**Extensible constraints:** Constraints are declarative and backend-agnostic. The `VerificationEngine` protocol supports pluggable backends (Z3 and egglog today). Constraint forms include:
+**Extensible constraints:** Constraints are declarative and backend-agnostic. The `VerificationEngine` protocol is provider-neutral, and core ships the Z3 provider. Egglog rule analysis and execution are owned by the optional `d810-egglog` extension, so Egglog is not a core dependency. Constraint forms include:
 
 * Declarative `ConstraintExpr` (e.g. `bnot_x == ~x`, `c_minus_2 == Const("-2", -2)`)
 * Runtime predicates (`when.equal_mops`, `when.is_bnot`) for IDA-specific checks; optionally attach additional backends for verification.

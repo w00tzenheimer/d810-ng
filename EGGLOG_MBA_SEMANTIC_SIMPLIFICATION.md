@@ -113,11 +113,13 @@ The result carries the ordered derivation trace. Saturation is bounded by:
 An equal-cost canonical reshaping is telemetry only. A native mutation requires
 a strictly cheaper result and successful proof.
 
-Relevant implementation:
+Relevant implementation is owned by the optional `d810-egglog` distribution,
+not this core repository. Install it with `python -m pip install d810-egglog`;
+the corresponding installed modules are:
 
-- [`src/d810/backends/mba/egglog_saturation.py`](src/d810/backends/mba/egglog_saturation.py)
-- [`src/d810/backends/mba/egglog_structural_rules.py`](src/d810/backends/mba/egglog_structural_rules.py)
-- [`src/d810/optimizers/microcode/instructions/egraph/egglog_handler.py`](src/d810/optimizers/microcode/instructions/egraph/egglog_handler.py)
+- `d810_egglog.saturation`
+- `d810_egglog.structural_rules`
+- `d810_egglog.rules.egglog_optimizer`
 
 ### Fixed shifts and rotates
 
@@ -165,9 +167,14 @@ result, and proves it, but it can avoid another Egglog saturation run.
 
 ## Shipped profiles
 
+The profiles below are package resources in the optional `d810-egglog`
+distribution, not files in this core repository. After installing the package,
+copy the selected resource into `~/.idapro/cfg/d810` as described by the
+extension's install instructions.
+
 ### Interactive spike
 
-[`src/d810/conf/mba_portfolio_spike.json`](src/d810/conf/mba_portfolio_spike.json)
+`d810_egglog.profiles/mba_portfolio_spike.json`
 
 - fast chain/direct providers before Egglog;
 - ADD family;
@@ -183,7 +190,7 @@ This is the appropriate starting point for interactive use.
 
 ### Deep diagnostic profile
 
-[`src/d810/conf/mba_portfolio_deep.json`](src/d810/conf/mba_portfolio_deep.json)
+`d810_egglog.profiles/mba_portfolio_deep.json`
 
 - all eight certified MBA families: `add`, `and`, `bnot`, `mul`, `neg`, `or`,
   `sub`, and `xor`;
@@ -200,7 +207,7 @@ default everyday profile.
 
 ### 3 ms telemetry lane
 
-[`src/d810/conf/mba_portfolio_telemetry_3ms.json`](src/d810/conf/mba_portfolio_telemetry_3ms.json)
+`d810_egglog.profiles/mba_portfolio_telemetry_3ms.json`
 
 The 3 ms configuration is an explicit no-engine measurement lane. It is useful
 for measuring admission behavior, but it should not be used to expect Egglog
