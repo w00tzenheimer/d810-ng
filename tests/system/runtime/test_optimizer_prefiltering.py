@@ -10,9 +10,19 @@ import ida_hexrays
 from d810.core.decompilation_session import DecompilationEvent
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hooks import optinsn_adapter
+from d810.hexrays.hooks import optblock_adapter
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.hexrays.mutation.block_instruction_commit import (
+    BlockInstructionAnchor,
+    BlockInstructionBatchCandidate,
+    BlockInstructionBatchReceipt,
+    BlockInstructionEditIntent,
+)
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
+from d810.optimizers.microcode.instructions.block_handler import (
+    HostedBlockInstructionRule,
+)
 from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
     _has_potential_readonly_operand,
 )
@@ -757,6 +767,300 @@ def test_block_adapter_rebuilds_flow_context_for_new_mba_address() -> None:
         "state",
         "gateway",
     ]
+
+
+class _HostedMaterializer:
+    def materialize(self, _context):
+        raise AssertionError("the adapter tests replace the committer")
+
+
+class _HostedRule(HostedBlockInstructionRule):
+    name = "Hosted.Rule"
+    maturities = [ida_hexrays.MMAT_LOCOPT]
+
+    def __init__(self, outcome, *, rule_id: str = "hosted-rule"):
+        super().__init__()
+        self.outcome = outcome
+        self.rule_id = rule_id
+        self.proposals = []
+
+    def propose_instruction_batch(self, block, *, epoch):
+        self.proposals.append((block, epoch))
+        if self.outcome is None:
+            return None
+        anchor = BlockInstructionAnchor(
+            block_serial=int(block.serial),
+            block_start_ea=int(block.start),
+            ordinal=0,
+            instruction_ea=0x401010,
+            opcode=ida_hexrays.m_add,
+            before_fingerprint=0,
+        )
+        return BlockInstructionBatchCandidate(
+            edits=(
+                BlockInstructionEditIntent(
+                    anchor=anchor,
+                    materializer=_HostedMaterializer(),
+                    description="adapter test",
+                ),
+            ),
+            epoch_before=epoch,
+            pass_id="configured-pass",
+            stage_id="configured-stage",
+            rule_id=self.rule_id,
+        )
+
+
+class _LegacyRuleWithProposalMethod:
+    name = "Legacy.Rule.With.Proposal.Method"
+    maturities = [ida_hexrays.MMAT_LOCOPT]
+
+    def __init__(self):
+        self.optimize_calls = 0
+        self.proposal_calls = 0
+
+    def set_flow_context(self, _flow_context):
+        return None
+
+    def propose_instruction_batch(self, _block, *, epoch):
+        del epoch
+        self.proposal_calls += 1
+        raise AssertionError("an unrelated legacy rule must stay on the legacy path")
+
+    def optimize(self, _block):
+        self.optimize_calls += 1
+        return 1
+
+
+class _HostedLifecycle:
+    def __init__(self, *, generation: int = 17, quarantined: bool = False):
+        self.generation = generation
+        self.quarantined = quarantined
+        self.generation_calls = []
+        self.quarantine_calls = []
+
+    def current_mba_generation(self, *, function_ea: int) -> int:
+        self.generation_calls.append(function_ea)
+        return self.generation
+
+    def observe_native_mutation_quarantine(self, *, function_ea, maturity, boundary):
+        self.quarantine_calls.append((function_ea, maturity, boundary))
+        return self.quarantined
+
+
+class _HostedGateway:
+    def __init__(self):
+        self.lifecycle_authority = SimpleNamespace(native_mutation_quarantined=False)
+
+
+class _HostedContext:
+    def __init__(self, gateway):
+        self.gateway = gateway
+        self.gateway_calls = 0
+        self.current_rule_names = []
+
+    def new_mba_mutation_gateway(self):
+        self.gateway_calls += 1
+        return self.gateway
+
+    def execution_attempt_context(self):
+        return (None, None, None)
+
+    def set_current_rule_name(self, rule_name):
+        self.current_rule_names.append(rule_name)
+
+
+class _HostedDgm:
+    instances = []
+
+    def __init__(self, mba, *, mutation_gateway):
+        self.mba = mba
+        self.mutation_gateway = mutation_gateway
+        self.__class__.instances.append(self)
+
+
+class _HostedCommitter:
+    outcomes = {}
+    receipts = []
+    calls = []
+
+    def __init__(self, *, lifecycle_authority, epoch_provider):
+        self.lifecycle_authority = lifecycle_authority
+        self.epoch_provider = epoch_provider
+
+    def commit(self, *, block, candidate, modifier):
+        epoch = self.epoch_provider(block)
+        self.__class__.calls.append((block, candidate, modifier, epoch))
+        committed = bool(self.outcomes.get(candidate.rule_id, True))
+        receipt = BlockInstructionBatchReceipt(
+            committed=committed,
+            callback_result=1 if committed else 0,
+            applied_edit_count=1 if committed else 0,
+            inserted_instruction_count=0,
+            epoch_before=candidate.epoch_before,
+            epoch_after=candidate.epoch_before,
+            reason="committed" if committed else "rejected",
+            pass_id=candidate.pass_id,
+            stage_id=candidate.stage_id,
+            rule_id=candidate.rule_id,
+            mutation_batch_id="hosted-batch-1" if committed else None,
+        )
+        self.__class__.receipts.append(receipt)
+        return receipt
+
+
+def _new_hosted_adapter_manager(rules, *, lifecycle, context, block):
+    manager = BlockOptimizerManager.__new__(BlockOptimizerManager)
+    manager.cfg_rules = list(rules)
+    manager.current_maturity = ida_hexrays.MMAT_LOCOPT
+    manager._generation = 9
+    manager._flow_context = context
+    manager._decompilation_lifecycle = lifecycle
+    manager._perf_counters = {
+        "scoped_calls": 0,
+        "legacy_calls": 0,
+        "scoped_candidates_total": 0,
+        "legacy_candidates_total": 0,
+        "scoped_lookup_ns": 0,
+    }
+    manager._execution_scope_service = object()
+    manager._execution_scope_project_name = "project"
+    manager._execution_scope_idb_key = "idb"
+    manager._perf_compare_execution_scope = False
+    manager.stats = None
+    manager._resolve_active_rules = lambda _block: tuple(rules)
+    manager._get_or_create_flow_context = lambda *_args, **_kwargs: context
+    manager._frontend_generation_is_stale = lambda _flow_context: False
+    manager._capture_callback_block_nop_sites = lambda _block: None
+    manager._report_callback_block_nop_delta = lambda _block, **_kwargs: None
+    manager._record_run_later_requests = lambda *_args, **_kwargs: None
+    manager._maybe_rewrite_impossible_return_artifact_edges = lambda _block: 0
+    manager._maybe_rewrite_terminal_zero_guard_literal_edges = lambda _block: 0
+    return manager
+
+
+def _new_hosted_block():
+    mba = SimpleNamespace(
+        entry_ea=0x401000,
+        maturity=ida_hexrays.MMAT_LOCOPT,
+    )
+    return SimpleNamespace(mba=mba, serial=3, start=0x401000)
+
+
+def _patch_hosted_adapter(monkeypatch):
+    _HostedCommitter.outcomes = {}
+    _HostedCommitter.receipts = []
+    _HostedCommitter.calls = []
+    _HostedDgm.instances = []
+    monkeypatch.setattr(
+        optblock_adapter,
+        "HexRaysBlockInstructionCommitter",
+        _HostedCommitter,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        optblock_adapter,
+        "DeferredGraphModifier",
+        _HostedDgm,
+        raising=False,
+    )
+
+
+def test_hosted_block_abstention_falls_through_but_proposal_is_terminal(
+    monkeypatch,
+):
+    _patch_hosted_adapter(monkeypatch)
+    first = _HostedRule(None, rule_id="first")
+    second = _HostedRule(True, rule_id="second")
+    lifecycle = _HostedLifecycle()
+    gateway = _HostedGateway()
+    context = _HostedContext(gateway)
+    block = _new_hosted_block()
+    manager = _new_hosted_adapter_manager(
+        (first, second), lifecycle=lifecycle, context=context, block=block
+    )
+
+    assert manager.optimize(block) == 1
+    assert len(first.proposals) == 1
+    assert len(second.proposals) == 1
+    assert len(_HostedCommitter.calls) == 1
+
+
+def test_hosted_block_rejection_is_callback_terminal(monkeypatch):
+    _patch_hosted_adapter(monkeypatch)
+    first = _HostedRule(False, rule_id="first")
+    second = _HostedRule(True, rule_id="second")
+    _HostedCommitter.outcomes = {"first": False}
+    lifecycle = _HostedLifecycle()
+    gateway = _HostedGateway()
+    context = _HostedContext(gateway)
+    block = _new_hosted_block()
+    manager = _new_hosted_adapter_manager(
+        (first, second), lifecycle=lifecycle, context=context, block=block
+    )
+
+    assert manager.optimize(block) == 0
+    assert len(first.proposals) == 1
+    assert second.proposals == []
+
+
+def test_hosted_block_commit_preserves_lifecycle_epoch_and_invalidates_adapter_context(
+    monkeypatch,
+):
+    _patch_hosted_adapter(monkeypatch)
+    rule = _HostedRule(True, rule_id="configured-rule")
+    lifecycle = _HostedLifecycle(generation=17)
+    gateway = _HostedGateway()
+    context = _HostedContext(gateway)
+    block = _new_hosted_block()
+    manager = _new_hosted_adapter_manager(
+        (rule,), lifecycle=lifecycle, context=context, block=block
+    )
+
+    assert manager.optimize(block) == 1
+    receipt = _HostedCommitter.receipts[-1]
+    assert receipt.pass_id == "configured-pass"
+    assert receipt.stage_id == "configured-stage"
+    assert receipt.rule_id == "configured-rule"
+    assert receipt.epoch_before.generation == 17
+    assert receipt.epoch_after == receipt.epoch_before
+    assert _HostedCommitter.calls[-1][3].generation == 17
+    assert manager.generation == 10
+    assert manager._flow_context is None
+    assert lifecycle.generation == 17
+    assert context.gateway_calls == 1
+    assert _HostedDgm.instances[-1].mutation_gateway is gateway
+
+
+def test_hosted_block_quarantine_prevents_proposal_and_commit(monkeypatch):
+    _patch_hosted_adapter(monkeypatch)
+    rule = _HostedRule(True)
+    lifecycle = _HostedLifecycle(quarantined=True)
+    context = _HostedContext(_HostedGateway())
+    block = _new_hosted_block()
+    manager = _new_hosted_adapter_manager(
+        (rule,), lifecycle=lifecycle, context=context, block=block
+    )
+
+    assert manager.optimize(block) == 0
+    assert rule.proposals == []
+    assert _HostedCommitter.calls == []
+
+
+def test_unrelated_legacy_rule_with_proposal_method_stays_on_legacy_path(monkeypatch):
+    _patch_hosted_adapter(monkeypatch)
+    rule = _LegacyRuleWithProposalMethod()
+    lifecycle = _HostedLifecycle()
+    context = _HostedContext(_HostedGateway())
+    block = _new_hosted_block()
+    manager = _new_hosted_adapter_manager(
+        (rule,), lifecycle=lifecycle, context=context, block=block
+    )
+
+    assert manager.optimize(block) == 1
+    assert rule.optimize_calls == 1
+    assert rule.proposal_calls == 0
+    assert _HostedCommitter.calls == []
 
 
 class _MockOptimizer:

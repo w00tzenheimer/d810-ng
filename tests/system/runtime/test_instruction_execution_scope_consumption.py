@@ -12,8 +12,19 @@ import pytest
 
 from d810.core.stats import OptimizationStatistics
 from d810.core.execution_scope import ExecutionStageIdentity
+from d810.hexrays.hooks import optblock_adapter
+from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+from d810.hexrays.mutation.block_instruction_commit import (
+    BlockInstructionAnchor,
+    BlockInstructionBatchCandidate,
+    BlockInstructionBatchReceipt,
+    BlockInstructionEditIntent,
+)
 from d810.ir.maturity import IRMaturity
+from d810.optimizers.microcode.instructions.block_handler import (
+    HostedBlockInstructionRule,
+)
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
 from d810.optimizers.microcode.instructions.pattern_matching import (
     handler as _pattern_handler,
@@ -651,3 +662,173 @@ def test_instruction_callback_returns_zero_for_rejected_nested_proposal():
     )
 
     assert InstructionOptimizerManager.func(manager, _make_block(0x401000), nested) == 0
+
+
+class _JournalHostedMaterializer:
+    def materialize(self, _context):
+        raise AssertionError("the journal test replaces the committer")
+
+
+class _JournalHostedRule(HostedBlockInstructionRule):
+    name = "Journal.Hosted.Rule"
+    maturities = [ida_hexrays.MMAT_LOCOPT]
+
+    def __init__(self):
+        super().__init__()
+        self.proposals = 0
+
+    def propose_instruction_batch(self, block, *, epoch):
+        self.proposals += 1
+        anchor = BlockInstructionAnchor(
+            block_serial=int(block.serial),
+            block_start_ea=int(block.start),
+            ordinal=0,
+            instruction_ea=0x401010,
+            opcode=ida_hexrays.m_add,
+            before_fingerprint=0,
+        )
+        return BlockInstructionBatchCandidate(
+            edits=(
+                BlockInstructionEditIntent(
+                    anchor=anchor,
+                    materializer=_JournalHostedMaterializer(),
+                    description="journal adapter test",
+                ),
+            ),
+            epoch_before=epoch,
+            pass_id="journal-pass",
+            stage_id="journal-stage",
+            rule_id="journal-rule",
+        )
+
+
+class _Journal:
+    callback_detail_is_full = False
+
+    def __init__(self):
+        self.records = []
+
+    def record_terminal_attempts(self, session_id, *, parent_attempt_id, records):
+        self.records.append((session_id, parent_attempt_id, tuple(records)))
+
+
+class _JournalLifecycle:
+    def __init__(self):
+        self.journal = _Journal()
+        self.generation = 23
+
+    def current_mba_generation(self, *, function_ea):
+        return self.generation
+
+    def observe_native_mutation_quarantine(self, **_kwargs):
+        return False
+
+
+class _JournalGateway:
+    lifecycle_authority = SimpleNamespace(native_mutation_quarantined=False)
+
+
+class _JournalContext:
+    def __init__(self, lifecycle):
+        self.lifecycle = lifecycle
+        self.gateway = _JournalGateway()
+
+    def new_mba_mutation_gateway(self):
+        return self.gateway
+
+    def execution_attempt_context(self):
+        return (self.lifecycle.journal, "session", "parent")
+
+    def set_current_rule_name(self, _rule_name):
+        return None
+
+
+class _JournalDgm:
+    def __init__(self, _mba, *, mutation_gateway):
+        self.mutation_gateway = mutation_gateway
+
+
+class _JournalCommitter:
+    def __init__(self, *, lifecycle_authority, epoch_provider):
+        self.lifecycle_authority = lifecycle_authority
+        self.epoch_provider = epoch_provider
+
+    def commit(self, *, block, candidate, modifier):
+        del modifier
+        assert self.epoch_provider(block) == candidate.epoch_before
+        return BlockInstructionBatchReceipt(
+            committed=True,
+            callback_result=1,
+            applied_edit_count=1,
+            inserted_instruction_count=0,
+            epoch_before=candidate.epoch_before,
+            epoch_after=candidate.epoch_before,
+            reason="committed",
+            pass_id=candidate.pass_id,
+            stage_id=candidate.stage_id,
+            rule_id=candidate.rule_id,
+            mutation_batch_id="batch-receipt-id",
+        )
+
+
+def test_hosted_block_journal_uses_batch_receipt_effect_and_parent_attempt(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        optblock_adapter,
+        "HexRaysBlockInstructionCommitter",
+        _JournalCommitter,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        optblock_adapter,
+        "DeferredGraphModifier",
+        _JournalDgm,
+        raising=False,
+    )
+    lifecycle = _JournalLifecycle()
+    context = _JournalContext(lifecycle)
+    rule = _JournalHostedRule()
+    manager = BlockOptimizerManager.__new__(BlockOptimizerManager)
+    manager.cfg_rules = [rule]
+    manager.current_maturity = ida_hexrays.MMAT_LOCOPT
+    manager._generation = 4
+    manager._flow_context = context
+    manager._decompilation_lifecycle = lifecycle
+    manager._perf_counters = {
+        "scoped_calls": 0,
+        "legacy_calls": 0,
+        "scoped_candidates_total": 0,
+        "legacy_candidates_total": 0,
+        "scoped_lookup_ns": 0,
+    }
+    manager._execution_scope_service = object()
+    manager._execution_scope_project_name = "project"
+    manager._execution_scope_idb_key = "idb"
+    manager._perf_compare_execution_scope = False
+    manager.stats = None
+    manager._resolve_active_rules = lambda _block: (rule,)
+    manager._get_or_create_flow_context = lambda *_args, **_kwargs: context
+    manager._frontend_generation_is_stale = lambda _context: False
+    manager._capture_callback_block_nop_sites = lambda _block: None
+    manager._report_callback_block_nop_delta = lambda _block, **_kwargs: None
+    manager._record_run_later_requests = lambda *_args, **_kwargs: None
+    block = _make_block(0x401000)
+    block.serial = 3
+    block.start = 0x401000
+
+    assert manager.optimize(block) == 1
+    assert rule.proposals == 1
+    assert len(lifecycle.journal.records) == 1
+    _session_id, parent_attempt_id, records = lifecycle.journal.records[0]
+    assert parent_attempt_id == "parent"
+    assert len(records) == 2
+    assert records[0].effect_refs[0].kind == "mutation_receipt"
+    assert records[0].effect_refs[0].ref_id == "batch-receipt-id"
+    assert records[1].effect_refs[0].kind == "mutation_receipt"
+    assert records[1].effect_refs[0].ref_id == "batch-receipt-id"
+    assert all(
+        effect.kind != "mba_rule_edit"
+        for record in records
+        for effect in record.effect_refs
+    )
