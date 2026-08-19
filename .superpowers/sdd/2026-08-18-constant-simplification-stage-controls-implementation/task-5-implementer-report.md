@@ -126,4 +126,4 @@ PYTHONPATH=src lint-imports --config .importlinter
 
 Commit message: `feat(z3): bound predicate proof resources`
 
-Commit SHA: c64ca6fd5 (amended below to include this SHA in the report).
+Feature commit SHA: de9194b1b.
