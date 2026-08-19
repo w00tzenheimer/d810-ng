@@ -4022,7 +4022,7 @@ class D810Manager:
             self._ensure_post_d810_runtime().capture_mba,
         )
         self.event_emitter.on(
-            DecompilationEvent.POST_D810_CAPTURE,
+            DecompilationEvent.HEXRAYS_CALLS_POST_D810,
             self._ensure_post_d810_runtime().observe_global_const_types,
         )
         self.event_emitter.on(

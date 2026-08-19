@@ -263,6 +263,7 @@ class BlockOptimizerRuntimeState:
     pass_pipeline: object
     pipeline_last_maturity: int
     post_d810_pipeline_last_maturity: int
+    calls_post_d810_last_emitted: tuple[int, int, int] | None
     impossible_return_store: object
     impossible_return_values: frozenset[tuple[int, int]]
     terminal_zero_store: object
@@ -339,6 +340,13 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._pass_pipeline = None  # PassPipeline | None
         self._pipeline_last_maturity: int = -1
         self._post_d810_pipeline_last_maturity: int = -1
+        # The CALLS post-D810 observation is a callback-local notification, not
+        # a maturity-wide event.  Key it by the lifecycle-owned MBA generation
+        # so a fresh reimport may be observed while repeated block callbacks
+        # for the same live MBA remain one-shot.  Hex-Rays presents one live
+        # MBA stream to this adapter, so retaining only the last identity keeps
+        # this guard bounded instead of growing with every decompiled function.
+        self._calls_post_d810_last_emitted: tuple[int, int, int] | None = None
         self._impossible_return_artifact_rewrite_applied: set[tuple[int, int]] = set()
         self._terminal_zero_literal_rewrite_applied: set[tuple[int, int]] = set()
         self._terminal_tail_cascade_egress_applied: set[tuple[int, int]] = set()
@@ -692,7 +700,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # handler, which would continue with a corrupted MBA and hang at the
         # next maturity level.  Mirrors InstructionOptimizerManager.func().
         try:
-            nb_patch = self.optimize(blk)
+            nb_patch = self._optimize_block_and_emit(blk)
             return nb_patch
         except RuntimeError as e:
             optimizer_logger.warning(
@@ -721,6 +729,75 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
             self._pass_count = self._max_passes_current + 1
         return 0
+
+    def _optimize_block_and_emit(self, blk: ida_hexrays.mblock_t) -> int:
+        """Optimize one block, then publish the live CALLS post-D810 seam.
+
+        The event must be downstream of a successful ``optimize`` call.  Keep
+        the call and publication in one small wrapper so an optimizer
+        exception cannot accidentally publish a stale or partially-mutated
+        MBA.  The existing ``_func`` exception boundary remains responsible
+        for suppressing callback failures before they cross SWIG.
+        """
+        nb_patch = self.optimize(blk)
+        self._emit_calls_post_d810_if_needed(blk)
+        return nb_patch
+
+    def _current_mba_generation_for(self, function_ea: int) -> int | None:
+        """Read the active lifecycle generation owning the live MBA bindings."""
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        provider = getattr(lifecycle, "current_mba_generation", None)
+        if not callable(provider):
+            return None
+        try:
+            generation = int(provider(function_ea=int(function_ea)))
+        except Exception:
+            optimizer_logger.debug(
+                "current MBA generation unavailable for func=0x%x",
+                int(function_ea),
+                exc_info=True,
+            )
+            return None
+        # The lifecycle returns zero when no active native-bound session exists.
+        # Do not manufacture an identity for that state: this seam is only for
+        # observations tied to a real current MBA generation.
+        return generation if generation > 0 else None
+
+    def _emit_calls_post_d810_if_needed(self, blk: ida_hexrays.mblock_t) -> None:
+        """Publish exactly one live CALLS observation per MBA generation."""
+        emitter = getattr(self, "event_emitter", None)
+        if emitter is None or not callable(getattr(emitter, "emit", None)):
+            return
+        mba = getattr(blk, "mba", None)
+        if mba is None:
+            return
+        try:
+            live_maturity = int(getattr(mba, "maturity"))
+        except (AttributeError, TypeError, ValueError):
+            return
+        if live_maturity != int(ida_hexrays.MMAT_CALLS):
+            return
+        try:
+            function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        current_mba_generation = self._current_mba_generation_for(
+            function_ea,
+        )
+        if current_mba_generation is None:
+            return
+        key = (function_ea, current_mba_generation, live_maturity)
+        last_emitted = getattr(self, "_calls_post_d810_last_emitted", None)
+        if last_emitted == key:
+            return
+        # Claim the key before calling listeners.  A listener failure must not
+        # turn a one-shot lifecycle notification into repeated callbacks.
+        self._calls_post_d810_last_emitted = key
+        emitter.emit(
+            DecompilationEvent.HEXRAYS_CALLS_POST_D810,
+            mba,
+            live_maturity,
+        )
 
     def log_info_on_input(self, blk: ida_hexrays.mblock_t):
         mba: ida_hexrays.mbl_array_t = blk.mba
@@ -2350,6 +2427,30 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         terminal_tail_store = getattr(
             self, "_terminal_tail_cascade_egress_applied", None
         )
+        calls_post_d810_last_emitted = getattr(
+            self, "_calls_post_d810_last_emitted", None
+        )
+        if not (
+            calls_post_d810_last_emitted is None
+            or (
+                isinstance(calls_post_d810_last_emitted, tuple)
+                and len(calls_post_d810_last_emitted) == 3
+                and all(
+                    isinstance(value, int)
+                    for value in calls_post_d810_last_emitted
+                )
+            )
+        ):
+            raise TypeError(
+                "block adapter CALLS observation identity is not a tuple or None"
+            )
+        if not hasattr(self, "_calls_post_d810_last_emitted"):
+            # A few production test/bootstrap paths construct the SWIG adapter
+            # through a started-manager restoration path rather than invoking
+            # ``__init__``.  Lazily establish this additive cache so the
+            # existing allowlisted snapshot protocol remains lossless there.
+            calls_post_d810_last_emitted = None
+            self._calls_post_d810_last_emitted = None
         cfg_rules_store = getattr(self, "cfg_rules", None)
         if not isinstance(perf_counters_store, dict):
             raise TypeError("block adapter performance counters are not a dict")
@@ -2396,6 +2497,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             post_d810_pipeline_last_maturity=int(
                 self._post_d810_pipeline_last_maturity
             ),
+            calls_post_d810_last_emitted=calls_post_d810_last_emitted,
             impossible_return_store=impossible_return_store,
             impossible_return_values=frozenset(impossible_return_store),
             terminal_zero_store=terminal_zero_store,
@@ -2473,6 +2575,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._post_d810_pipeline_last_maturity = (
             snapshot.post_d810_pipeline_last_maturity
         )
+        self._calls_post_d810_last_emitted = snapshot.calls_post_d810_last_emitted
         self._impossible_return_artifact_rewrite_applied = (
             snapshot.impossible_return_store
         )
