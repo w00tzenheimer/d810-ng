@@ -787,6 +787,7 @@ cdef class AstLeaf(AstBase):
             self.value = source_value
             return True
 
+        self.proof_origin = None
         return False
 
     def check_pattern_and_copy_mops(self, ast, read_only: bool = False):

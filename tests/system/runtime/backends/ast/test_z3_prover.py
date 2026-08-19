@@ -102,6 +102,29 @@ class TestZ3MopProverAPI:
 
         assert len(variables) == 2
 
+    def test_z3_vars_keep_shared_unversioned_snapshot_leaves_distinct(self):
+        """A shared snapshot object is still not proof of a shared value."""
+        from d810.backends.ast.z3 import create_z3_vars
+        from d810.hexrays.expr.ast import AstLeaf
+        from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+        shared_snapshot = MopSnapshot(
+            t=ida_hexrays.mop_r,
+            size=4,
+            valnum=0,
+            reg=3,
+        )
+        left = AstLeaf("left")
+        right = AstLeaf("right")
+        left.mop = shared_snapshot
+        right.mop = shared_snapshot
+        left.dest_size = right.dest_size = 4
+
+        variables = create_z3_vars([left, right])
+
+        assert len(variables) == 2
+        assert left.z3_var is not right.z3_var
+
     def test_z3_vars_keep_complex_operands_opaque(self):
         """Complex mops do not acquire identity from a partial snapshot."""
         from d810.backends.ast.z3 import create_z3_vars

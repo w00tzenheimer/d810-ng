@@ -13,8 +13,8 @@ def test_terminal_origin_rejects_non_native_before_mlist(monkeypatch):
         raise AssertionError("native mlist must not be constructed")
 
     monkeypatch.setattr(ida_hexrays, "mlist_t", explode)
-    mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=1, valnum=0)
-    block = SimpleNamespace(serial=1, start=0, end=1, mba=None)
+    mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=1, valnum=0, this=1)
+    block = SimpleNamespace(serial=1, start=0, end=1, this=2, mba=None)
     assert not def_search._proof_operand_has_location(mop, block)
 
 
@@ -400,6 +400,86 @@ def test_terminal_origin_normalizes_distinct_mba_wrappers(monkeypatch):
     assert second == first
 
 
+@pytest.mark.parametrize("predecessor_location", ["empty", "raises"])
+def test_terminal_origin_validates_location_in_each_walk_block(
+    monkeypatch, predecessor_location
+):
+    """A use-site location cannot certify an invalid predecessor location."""
+
+    calls = []
+
+    class FakeLocations:
+        def __init__(self):
+            self._empty = True
+
+        def empty(self):
+            return self._empty
+
+    class Mba:
+        this = 0x1234
+
+        def __init__(self):
+            self.blocks = {}
+
+        def get_mblock(self, serial):
+            return self.blocks[serial]
+
+    class Block:
+        def __init__(self, serial, *, predecessor=None, location="valid"):
+            self.serial = serial
+            self.start = 0x4000 + serial * 0x20
+            self.end = self.start + 0x20
+            self.this = object()
+            self.mba = mba
+            self.predecessor = predecessor
+            self.location = location
+
+        def append_use_list(self, locations, _mop, _access):
+            calls.append(self.serial)
+            if self.location == "raises":
+                raise RuntimeError("predecessor location failed")
+            locations._empty = self.location == "empty"
+
+        def npred(self):
+            return 0 if self.predecessor is None else 1
+
+        def pred(self, index):
+            assert index == 0
+            return self.predecessor.serial
+
+    mba = Mba()
+    predecessor = Block(11, location=predecessor_location)
+    use_block = Block(10, predecessor=predecessor, location="valid")
+    mba.blocks[use_block.serial] = use_block
+    mba.blocks[predecessor.serial] = predecessor
+
+    monkeypatch.setattr(def_search.ida_hexrays, "mlist_t", FakeLocations)
+    monkeypatch.setattr(
+        def_search,
+        "_materialize_mop_for_tracking",
+        lambda mop, *_a, **_k: mop,
+    )
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_a: None)
+
+    mop = SimpleNamespace(
+        t=ida_hexrays.mop_r,
+        size=4,
+        r=1,
+        valnum=0,
+        this=object(),
+    )
+    origin = def_search._terminal_proof_origin(
+        mop,
+        use_block,
+        SimpleNamespace(this=object()),
+        max_predecessor_blocks=1,
+        scope=object(),
+    )
+
+    assert origin is None
+    assert calls == [use_block.serial, predecessor.serial]
+
+
 def test_resolver_move_ast_preserves_source_operand(monkeypatch):
     """Resolver definitions must not overwrite a move's source with its dst."""
 
@@ -421,6 +501,89 @@ def test_resolver_move_ast_preserves_source_operand(monkeypatch):
 
     assert result is source_ast
     assert result.mop is source
+
+
+def test_resolver_move_ast_preserves_source_width_anchor_and_budget(monkeypatch):
+    """Resolver-only moves use the source value, width, anchors, and budget."""
+
+    from d810.hexrays.expr.ast import AstLeaf
+
+    source = SimpleNamespace(t=ida_hexrays.mop_r, size=2, r=16, valnum=0)
+    destination = SimpleNamespace(t=ida_hexrays.mop_r, size=8, r=8, valnum=0)
+    instruction = SimpleNamespace(
+        opcode=ida_hexrays.m_mov,
+        l=source,
+        d=destination,
+        ea=0x401234,
+    )
+
+    class Budget:
+        def __init__(self):
+            self.consumed = 0
+            self.charged = []
+
+        def consume(self):
+            self.consumed += 1
+
+        def mark_charged(self, occurrence):
+            self.charged.append(occurrence)
+
+    budget = Budget()
+    seen = []
+
+    def build_source(mop, *, node_budget):
+        seen.append((mop, node_budget))
+        node_budget.consume()
+        ast = AstLeaf("source")
+        ast.mop = mop
+        ast.dest_size = mop.size
+        node_budget.mark_charged(ast)
+        return ast
+
+    monkeypatch.setattr(def_search, "mop_to_ast", build_source)
+    result = def_search._minsn_to_ast_with_budget(instruction, budget)
+
+    assert result.mop is source
+    assert result.dest_size == source.size
+    assert result.ea == instruction.ea
+    assert result.ins is instruction
+    assert seen == [(source, budget)]
+    assert budget.consumed == 1
+    assert budget.charged == [result]
+
+
+def test_ast_leaf_update_clears_stale_origin_without_replacement():
+    """A failed binding cannot retain provenance from a previous AST."""
+
+    from d810.hexrays.expr.ast import AstLeaf, AstNode
+
+    target = AstLeaf("x")
+    target.proof_origin = ("stale",)
+    source = AstLeaf("x")
+    candidate = AstNode(ida_hexrays.m_add, source, None)
+    candidate._check_implicit_equalities()
+
+    assert target.update_leafs_mop(candidate) is False
+    assert target.proof_origin is None
+
+
+def test_ast_leaf_update_copies_only_source_origin_with_source_mop():
+    """A successful binding takes provenance from its matching source leaf."""
+
+    from d810.hexrays.expr.ast import AstLeaf, AstNode
+
+    source_mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=16, valnum=0)
+    target = AstLeaf("x")
+    target.proof_origin = ("stale",)
+    source = AstLeaf("x")
+    source.mop = source_mop
+    source.proof_origin = ("source",)
+    candidate = AstNode(ida_hexrays.m_add, source, None)
+    candidate._check_implicit_equalities()
+
+    assert target.update_leafs_mop(candidate) is True
+    assert target.mop is source_mop
+    assert target.proof_origin == source.proof_origin
 
 
 def test_recursive_origin_fixture_uses_compiled_backend_when_enabled():
