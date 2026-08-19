@@ -499,6 +499,92 @@ def test_lnot_contextual_proofs_fall_back_to_nonzero_and_fail_closed(
 
 
 @pytest.mark.runtime
+def test_lnot_proof_receipts_show_order_and_zero_short_circuit(monkeypatch) -> None:
+    """The observable receipt stream mirrors lnot's fail-closed proof order."""
+    import ida_hexrays
+
+    from d810.backends.ast.z3_proof_policy import Z3ProofResult, Z3ProofStatus
+    from d810.core.observability import reset_diagnostic_bus, subscribe
+    from d810.core.observability_events import Z3PredicateProofObserved
+    import d810.optimizers.microcode.instructions.z3.predicates as predicates
+
+    class _ReceiptProver:
+        mode = "zero"
+
+        def __init__(self, *, blk=None, ins=None, policy=None):
+            self.blk = blk
+            self.ins = ins
+            self.policy = policy
+
+        @staticmethod
+        def _result(status: Z3ProofStatus) -> Z3ProofResult:
+            return Z3ProofResult(
+                status=status,
+                reason=None,
+                observed_expression_nodes=5,
+                elapsed_ms=0.5,
+            )
+
+        def prove_always_zero(self, *_args, **_kwargs):
+            return self._result(
+                Z3ProofStatus.PROVED
+                if self.mode == "zero"
+                else Z3ProofStatus.DISPROVED
+            )
+
+        def prove_always_nonzero(self, *_args, **_kwargs):
+            if self.mode == "zero":
+                raise AssertionError("zero proof must short-circuit nonzero")
+            return self._result(Z3ProofStatus.PROVED)
+
+    monkeypatch.setattr(predicates, "Z3MopProver", _ReceiptProver)
+    events: list[Z3PredicateProofObserved] = []
+    reset_diagnostic_bus()
+    subscribe(Z3PredicateProofObserved, events.append)
+    try:
+        rule = predicates.Z3lnotRuleGeneric()
+        rule.configure({"max_expression_nodes": 61, "proof_timeout_ms": 67})
+        rule._current_blk = SimpleNamespace(
+            mba=SimpleNamespace(entry_ea=0x401000)
+        )
+        rule._current_ins = object()
+
+        candidate, additions = _candidate(
+            _mop(mop_type=ida_hexrays.mop_r),
+            _mop(mop_type=ida_hexrays.mop_n, value=0),
+        )
+        assert rule.check_candidate(candidate) is True
+        assert additions == [("val_res", 1, 1)]
+        assert [event.operation for event in events] == ["prove_always_zero"]
+        assert [event.status for event in events] == [Z3ProofStatus.PROVED]
+
+        _ReceiptProver.mode = "fallback"
+        candidate, additions = _candidate(
+            _mop(mop_type=ida_hexrays.mop_r),
+            _mop(mop_type=ida_hexrays.mop_n, value=0),
+        )
+        assert rule.check_candidate(candidate) is True
+        assert additions == [("val_res", 0, 1)]
+    finally:
+        reset_diagnostic_bus()
+
+    assert [event.operation for event in events] == [
+        "prove_always_zero",
+        "prove_always_zero",
+        "prove_always_nonzero",
+    ]
+    assert [event.status for event in events] == [
+        Z3ProofStatus.PROVED,
+        Z3ProofStatus.DISPROVED,
+        Z3ProofStatus.PROVED,
+    ]
+    assert all(event.func_ea == 0x401000 for event in events)
+    assert all(event.transform_id == "z-3-lnot-generic" for event in events)
+    assert all(event.max_expression_nodes == 61 for event in events)
+    assert all(event.proof_timeout_ms == 67 for event in events)
+
+
+@pytest.mark.runtime
 def test_low_node_setz_abstention_does_not_block_setnz_or_lnot_policy(
     monkeypatch,
 ) -> None:
