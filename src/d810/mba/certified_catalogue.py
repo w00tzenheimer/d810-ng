@@ -29,7 +29,14 @@ from d810.mba.canonical_pattern import (
     compile_canonical_pattern,
 )
 from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
-from d810.mba.typed_term import TypedBvTerm, term_fingerprint
+from d810.mba.typed_term import (
+    FIXED_SHIFT_OPERATIONS,
+    SUPPORTED_OPERATIONS,
+    UNARY_OPERATIONS,
+    TypedBvTerm,
+    leaf_key_fingerprint,
+    term_fingerprint,
+)
 
 
 RootShape: TypeAlias = tuple[str | None, int, int]
@@ -69,10 +76,59 @@ def _is_exact_typed_term(term: object, active: set[int] | None = None) -> bool:
         return False
     active_ids.add(identity)
     try:
+        width = getattr(term, "width", None)
+        operation = getattr(term, "operation", None)
+        value = getattr(term, "value", None)
+        leaf_key = getattr(term, "leaf_key", None)
         children = getattr(term, "children", None)
-        return type(children) is tuple and all(
-            _is_exact_typed_term(child, active_ids) for child in children
+        shift_count = getattr(term, "shift_count", None)
+        if type(width) is not int or width <= 0:
+            return False
+        if type(children) is not tuple:
+            return False
+        if operation is not None and type(operation) is not str:
+            return False
+        if operation not in FIXED_SHIFT_OPERATIONS and shift_count is not None:
+            return False
+
+        if operation is None:
+            if children or (value is None) == (leaf_key is None):
+                return False
+            if value is not None:
+                if type(value) is not int:
+                    return False
+                return value == value & ((1 << width) - 1)
+            if type(leaf_key) is not tuple or not leaf_key:
+                return False
+            try:
+                hash(leaf_key)
+                leaf_key_fingerprint(leaf_key)
+            except Exception:
+                return False
+            return True
+
+        if operation not in SUPPORTED_OPERATIONS:
+            return False
+        if value is not None or leaf_key is not None:
+            return False
+        if operation in FIXED_SHIFT_OPERATIONS:
+            if type(shift_count) is not int or not 0 <= shift_count < width:
+                return False
+            if operation in {"rol", "ror"} and width not in {8, 16, 32, 64}:
+                return False
+        expected_arity = 1 if operation in UNARY_OPERATIONS else 2
+        if operation in FIXED_SHIFT_OPERATIONS:
+            expected_arity = 1
+        if len(children) != expected_arity:
+            return False
+        return all(
+            type(child) is TypedBvTerm
+            and child.width == width
+            and _is_exact_typed_term(child, active_ids)
+            for child in children
         )
+    except Exception:
+        return False
     finally:
         active_ids.remove(identity)
 
@@ -177,6 +233,19 @@ def _fixed_rotate_identity(rule: object) -> tuple[object, ...]:
     )
 
 
+def _structural_proof_semantic_key(identity: tuple[object, ...]) -> tuple[object, ...]:
+    """Return only the rewrite semantics relevant to proof reuse.
+
+    Source names, aliases, claimed metadata, and proof bookkeeping identify
+    provenance or admission state, but do not change the equation being
+    proved.  Keep the key explicit so adding an identity field cannot
+    accidentally make provenance part of the proof cache.
+    """
+
+    family, _source_name, width, direction, count, pattern, replacement = identity[:7]
+    return (family, width, direction, count, pattern, replacement)
+
+
 def _enroll_structural_rule(
     rule: object, identity: tuple[object, ...] | None = None
 ) -> None:
@@ -220,7 +289,10 @@ def enroll_structural_rule(rule: object) -> None:
         from d810.mba.extension_api import prove_typed_term_equivalence
     except Exception as exc:
         raise ValueError("structural rule proof authority unavailable") from exc
-    cache_key = (prove_typed_term_equivalence, *identity[:7])
+    cache_key = (
+        prove_typed_term_equivalence,
+        *_structural_proof_semantic_key(identity),
+    )
     with _STRUCTURAL_PROOF_CACHE_LOCK:
         cached_verdict = _STRUCTURAL_PROOF_CACHE.get(cache_key)
         if cached_verdict is not None:
