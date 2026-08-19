@@ -151,7 +151,7 @@ Contracts: 14 kept, 0 broken.
 ## Commit
 
 Feature commit SHA: `d946f4b99`.
-Fix Round 1 commit SHA: pending immediate post-fix commit update.
+Fix Round 1 commit SHA: `cf9020f08`.
 
 Required message:
 
