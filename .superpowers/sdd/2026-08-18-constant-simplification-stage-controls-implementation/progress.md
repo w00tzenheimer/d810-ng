@@ -45,7 +45,7 @@
 | 4 | `37eebd18a` | `/root/constant_stage_task4` | PASS | PASS | 98 focused + 88 adjacent + 22 renderer tests passed; ruff/sg/import-linter passed | `d946f4b99`, `6d9ea61c1`, `cf9020f08`, `a7ecc6a76` | complete after 1 fix round |
 | 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix5b` | PASS | PASS | 129 Python + 129 Cython + 15 focused resolver + 1 parity + 1 AstProxy + 14 def-search + 2 cumulative probes in both modes; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `35e114973`, `a4b5e045c`, `540995e67` | complete after 5 fix rounds |
 | 6 | `6446f49f1` | `/root/constant_stage_task6` + `/root/constant_stage_task6_defaults_fix` | PASS | PASS | 152 focused/adjacent units + 18 normal/18 Cython IDA runtime; final controller rerun 134 units; Ruff/py_compile/sg/import-linter/diff-check passed | `b7cee6071`, `9034ae5ad`, `4b0f03a23`, `7d40d1f8f` | complete after 3 review fix rounds |
-| 7 | pending | pending | pending | pending | pending | pending | pending |
+| 7 | `63d4eb393` | `/root/constant_stage_task7_retry` | pending | pending | 150 focused; 68 JSON/171 pipeline configs; adjacent 235 pass with one pre-existing base failure; ruff/py_compile/sg/import-linter/diff-check passed | `ea064b829` | implementation complete; independent review pending |
 | 8 | pending | pending | pending | pending | pending | pending | pending |
 
 ## Controller rulings
@@ -146,3 +146,27 @@
 - The controller independently reran 134 focused units, Ruff, and
   `git diff --check` successfully. Task 6 is accepted; Task 7 and Task 8 were
   not started by the Task 6 workers.
+
+## Task 7 implementation ledger
+
+- Genuine RED was captured against an archived clean `63d4eb393` tree with
+  only the new migration test applied: `5 failed`, retained at
+  `.tmp/task7-red-before-migration.txt`. The failures covered legacy bundled
+  profiles, the two EID profile assertions, external legacy save
+  canonicalization, and mixed-input rejection.
+- The 13 bundled config-v2 constant entries now use canonical
+  `preparation`/`stages` options. Preparation remains disabled for all shipped
+  entries because the legacy persist flag was absent; readonly memory policy,
+  RVA guard, executable-readonly setting, full stage maturities, and pass gates
+  were preserved.
+- Runtime parsing canonicalizes accepted legacy constant entries before public
+  registry validation. The same compiler performs the projection, so runtime
+  behavior is unchanged and mixed canonical/legacy input remains an error.
+  Config-v2 draft/load/save paths write the canonical equivalent.
+- Verification: 150 focused migration/compiler/editor tests passed; all 68
+  JSON files parsed and all 171 pipeline configs built through the project
+  parser and operational registry; ruff, py_compile, sg, import-linter, and
+  diff-check passed. The adjacent command had 235 passes plus one pre-existing
+  Tigress legacy-rule count failure reproduced on base `63d4eb393`.
+- Product commit: `ea064b829` (`chore(config): migrate constant stage controls`).
+- Independent specification and quality review remain pending.
