@@ -3945,6 +3945,8 @@ class D810Manager:
     def configure_instruction_optimizer(self, rules, **kwargs):
         self.instruction_optimizer_rules = list(rules)
         self.instruction_optimizer_config = kwargs
+        if self.started:
+            self._replace_started_instruction_rules(self.instruction_optimizer_rules)
 
     def configure_preparation_scripts(
         self,
@@ -3966,6 +3968,97 @@ class D810Manager:
     def configure_block_optimizer(self, rules, **kwargs):
         self.block_optimizer_rules = list(rules)
         self.block_optimizer_config = kwargs
+        if self.started:
+            self._replace_started_block_rules(self.block_optimizer_rules)
+
+    def _replace_started_instruction_rules(self, rules) -> None:
+        """Replace the rules owned by the already-installed instruction hook.
+
+        ``D810State`` keeps the portable project selection and the manager's
+        live hook collections in separate layers.  A project switch must update
+        both layers; otherwise the execution scope can name a newly enabled
+        implementation that the hook never registered.  Older adapter objects
+        do not expose a public replacement method, so the compatibility path
+        clears their registration stores before adding the candidate set.
+        """
+
+        optimizer = getattr(self, "instruction_optimizer", None)
+        if optimizer is None:
+            return
+        replace_rules = getattr(optimizer, "replace_rules", None)
+        if callable(replace_rules):
+            replace_rules(rules)
+            return
+
+        children = list(getattr(optimizer, "instruction_optimizers", ()))
+        analyzer = getattr(optimizer, "analyzer", None)
+        if analyzer is not None:
+            children.append(analyzer)
+        for child in children:
+            collection = getattr(child, "rules", None)
+            if collection is not None:
+                clear = getattr(collection, "clear", None)
+                if callable(clear):
+                    clear()
+                elif hasattr(collection, "_rules"):
+                    collection._rules.clear()
+            if hasattr(child, "pattern_storage"):
+                try:
+                    child.pattern_storage = type(child.pattern_storage)(depth=1)
+                except Exception:  # noqa: BLE001 - best-effort adapter reset
+                    pass
+            if hasattr(child, "_indexed_storage"):
+                try:
+                    child._indexed_storage = type(child._indexed_storage)()
+                except Exception:  # noqa: BLE001 - best-effort adapter reset
+                    pass
+            structural_rules = getattr(child, "_structural_rules_by_root_opcode", None)
+            if structural_rules is not None:
+                structural_rules.clear()
+            allowed_opcodes = getattr(child, "_allowed_root_opcodes", None)
+            if allowed_opcodes is not None:
+                allowed_opcodes.clear()
+            if hasattr(child, "_has_patternless_rule"):
+                child._has_patternless_rule = False
+            if hasattr(child, "_compiled_view"):
+                child._compiled_view = None
+            if hasattr(child, "_generation"):
+                child._generation += 1
+        optimizer._active_optimizers = []
+        optimizer._active_instruction_rule_names_by_maturity.clear()
+        optimizer._execution_scope_func_ea = -1
+        invalidate_cache = getattr(optimizer, "_invalidate_residual_admission_cache", None)
+        if callable(invalidate_cache):
+            invalidate_cache()
+        add_rule = getattr(optimizer, "add_rule", None)
+        if callable(add_rule):
+            for rule in rules:
+                add_rule(rule)
+
+    def _replace_started_block_rules(self, rules) -> None:
+        """Replace the rules owned by the already-installed block hook."""
+
+        optimizer = getattr(self, "block_optimizer", None)
+        if optimizer is None:
+            return
+        replace_rules = getattr(optimizer, "replace_rules", None)
+        if callable(replace_rules):
+            replace_rules(rules)
+            return
+        optimizer.cfg_rules = list(rules)
+        configure_scheduler = getattr(optimizer, "_configure_rule_scheduler", None)
+        configure_project = getattr(optimizer, "_configure_rule_project_config", None)
+        for rule in optimizer.cfg_rules:
+            if callable(configure_scheduler):
+                configure_scheduler(rule)
+            if callable(configure_project):
+                configure_project(rule)
+        invalidate_context = getattr(optimizer, "_invalidate_flow_context", None)
+        if callable(invalidate_context):
+            invalidate_context("project rule collection replaced")
+        reset_pipeline = getattr(optimizer, "reset_pipeline_tracker", None)
+        if callable(reset_pipeline):
+            reset_pipeline()
 
     def configure_ctree_optimizer(self, rules, **kwargs):
         self.ctree_optimizer_rules = list(rules)

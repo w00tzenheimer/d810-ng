@@ -331,6 +331,101 @@ class D810State(metaclass=SingletonMeta):
         )
         logger.debug("project activation traceback for %s", project.path, exc_info=True)
 
+    def _capture_runtime_activation_state(self) -> dict[str, object]:
+        """Capture state that must survive a rejected project activation."""
+
+        state_attributes = (
+            "current_project_index",
+            "current_project",
+            "current_runtime_project",
+            "current_ins_rules",
+            "current_blk_rules",
+            "known_ins_rules",
+            "known_blk_rules",
+            "last_pipeline_v2_hook_pass_ids",
+            "last_pipeline_v2_hook_mode",
+            "last_config_v2_default_selection",
+            "current_project_runtime_snapshot",
+            "current_certified_catalogue_snapshot",
+            "current_shadow_matcher_parity_ledger",
+        )
+        missing = object()
+        captured: dict[str, object] = {
+            "_missing": missing,
+            "state": {
+                name: getattr(self, name, missing) for name in state_attributes
+            },
+        }
+        manager = self.manager
+        service = manager.execution_scope_service
+        captured["manager"] = {
+            "instruction_optimizer_rules": manager.instruction_optimizer_rules,
+            "instruction_optimizer_config": manager.instruction_optimizer_config,
+            "block_optimizer_rules": manager.block_optimizer_rules,
+            "block_optimizer_config": manager.block_optimizer_config,
+            "config": manager.config,
+            "semantic_registry": manager._semantic_route_reference_oracle_registry,
+            "function_analysis_priors": manager._function_analysis_priors,
+            "native_handlers_installed": manager._native_preanalysis_handlers_installed,
+            "constant_schedule": manager._constant_simplification_schedule,
+            "scope_stages": service._stages,
+            "scope_generation": service._generation,
+            "scope_active_cache": service._active_cache,
+            "scope_metadata_cache": service._metadata_cache,
+            "started": manager.started,
+        }
+        return captured
+
+    def _restore_runtime_activation_state(
+        self, captured: dict[str, object]
+    ) -> None:
+        """Restore the exact pre-activation state after a failed candidate."""
+
+        missing = captured["_missing"]
+        for name, value in captured["state"].items():  # type: ignore[union-attr]
+            if value is missing:
+                with contextlib.suppress(AttributeError):
+                    delattr(self, name)
+            else:
+                setattr(self, name, value)
+
+        previous = captured["manager"]  # type: ignore[assignment]
+        manager = self.manager
+        manager.instruction_optimizer_rules = previous[  # type: ignore[index]
+            "instruction_optimizer_rules"
+        ]
+        manager.instruction_optimizer_config = previous[  # type: ignore[index]
+            "instruction_optimizer_config"
+        ]
+        manager.block_optimizer_rules = previous["block_optimizer_rules"]  # type: ignore[index]
+        manager.block_optimizer_config = previous["block_optimizer_config"]  # type: ignore[index]
+        manager.config = previous["config"]  # type: ignore[index]
+        manager._semantic_route_reference_oracle_registry = previous[  # type: ignore[index]
+            "semantic_registry"
+        ]
+        manager._function_analysis_priors = previous["function_analysis_priors"]  # type: ignore[index]
+        manager._native_preanalysis_handlers_installed = False
+        manager._constant_simplification_schedule = previous[  # type: ignore[index]
+            "constant_schedule"
+        ]
+        if previous["started"]:  # type: ignore[index]
+            with contextlib.suppress(Exception):
+                manager._sync_native_preanalysis_handlers()
+            with contextlib.suppress(Exception):
+                manager._replace_started_instruction_rules(
+                    manager.instruction_optimizer_rules
+                )
+            with contextlib.suppress(Exception):
+                manager._replace_started_block_rules(manager.block_optimizer_rules)
+        service = manager.execution_scope_service
+        service._stages = previous["scope_stages"]  # type: ignore[index]
+        service._generation = previous["scope_generation"]  # type: ignore[index]
+        service._active_cache = previous["scope_active_cache"]  # type: ignore[index]
+        service._metadata_cache = previous["scope_metadata_cache"]  # type: ignore[index]
+        manager._native_preanalysis_handlers_installed = previous[  # type: ignore[index]
+            "native_handlers_installed"
+        ]
+
     def _activate_runtime_project(
         self,
         *,
@@ -339,12 +434,63 @@ class D810State(metaclass=SingletonMeta):
         runtime_project: ProjectConfiguration,
         default_selection: ConfigV2DefaultSelection | None,
     ) -> ProjectConfiguration:
+        captured = self._capture_runtime_activation_state()
+        try:
+            return self._activate_runtime_project_unchecked(
+                project_index=project_index,
+                source_project=source_project,
+                runtime_project=runtime_project,
+                default_selection=default_selection,
+            )
+        except BaseException:
+            self._restore_runtime_activation_state(captured)
+            raise
+
+    def _activate_runtime_project_unchecked(
+        self,
+        *,
+        project_index: int,
+        source_project: ProjectConfiguration,
+        runtime_project: ProjectConfiguration,
+        default_selection: ConfigV2DefaultSelection | None,
+    ) -> ProjectConfiguration:
         """Configure one explicit source/runtime pair without rediscovering it."""
-        # Resolve the hook activation BEFORE touching any state: it is the step
-        # that validates the pipeline payload and therefore the step that can
-        # raise.  Doing it first keeps a malformed project from leaving the
-        # previous project half-replaced (lpccp-8c87).
+        # Resolve the hook activation before the state mutation below.  The
+        # outer activation wrapper also restores every state/scope/worklist
+        # field if later candidate rule validation or live reconfiguration
+        # rejects this project.
         hook_activation = pipeline_v2_hook_activation(runtime_project)
+
+        # Candidate rules must not reuse the live instances from the previous
+        # project: ``configure()`` mutates maturity/configuration state.  Build
+        # a fresh catalogue for this activation so a rejected candidate cannot
+        # poison the still-running project.
+        candidate_known_ins_rules = self._build_known_instruction_rules()
+        candidate_known_blk_rules = self._build_known_block_rules()
+        from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import (
+            ForwardConstantPropagationRule,
+        )
+        from d810.optimizers.microcode.instructions.peephole.fold_constant_subtree import (
+            ConstantSubtreeFoldRule,
+        )
+        from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
+            FoldReadonlyDataRule,
+        )
+
+        candidate_instruction_names = {
+            str(getattr(rule, "name", rule.__class__.__name__))
+            for rule in candidate_known_ins_rules
+        }
+        if "FoldReadonlyDataRule" not in candidate_instruction_names:
+            candidate_known_ins_rules.append(FoldReadonlyDataRule())
+        if "ConstantSubtreeFoldRule" not in candidate_instruction_names:
+            candidate_known_ins_rules.append(ConstantSubtreeFoldRule())
+        candidate_block_names = {
+            str(getattr(rule, "name", rule.__class__.__name__))
+            for rule in candidate_known_blk_rules
+        }
+        if "ForwardConstantPropagationRule" not in candidate_block_names:
+            candidate_known_blk_rules.append(ForwardConstantPropagationRule())
 
         constant_schedule = hook_activation.constant_simplification_schedule
         constant_stages_by_rule = {
@@ -432,12 +578,12 @@ class D810State(metaclass=SingletonMeta):
             rule_pairs = (
                 (rule_conf, rule)
                 for rule_conf in project_ins_rules
-                for rule in self.known_ins_rules
+                for rule in candidate_known_ins_rules
             )
         else:
             rule_pairs = (
                 (rule_conf, rule)
-                for rule in self.known_ins_rules
+                for rule in candidate_known_ins_rules
                 for rule_conf in project_ins_rules
             )
         for rule_conf, rule in rule_pairs:
@@ -536,7 +682,7 @@ class D810State(metaclass=SingletonMeta):
         else:
             self.current_certified_catalogue_snapshot = None
             self.current_shadow_matcher_parity_ledger = None
-        for blk_rule in self.known_blk_rules:
+        for blk_rule in candidate_known_blk_rules:
             for rule_conf in project_blk_rules:
                 if not rule_conf.is_activated:
                     continue
@@ -549,8 +695,22 @@ class D810State(metaclass=SingletonMeta):
                     blk_rule.set_log_dir(self.log_dir)
                     self.current_blk_rules.append(blk_rule)
         logger.debug("Block rules configured")
+        self.known_ins_rules = candidate_known_ins_rules
+        self.known_blk_rules = candidate_known_blk_rules
         self.manager.configure_constant_simplification_schedule(
             hook_activation.constant_simplification_schedule
+        )
+        # Keep manager-owned worklists synchronized with the state selection.
+        # When hooks are already installed these calls also replace the live
+        # adapter rule collections; startup uses the same lists on its first
+        # construction.
+        self.manager.configure_instruction_optimizer(
+            list(self.current_ins_rules),
+            **self.manager.instruction_optimizer_config,
+        )
+        self.manager.configure_block_optimizer(
+            list(self.current_blk_rules),
+            **self.manager.block_optimizer_config,
         )
         cfg = dict(runtime_project.additional_configuration)
         # This is derived from the validated config-v2 activation rather than

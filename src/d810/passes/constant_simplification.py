@@ -175,6 +175,10 @@ def _constant_stage_rule_config(
         )
     }
     if stage.stage_id == "fold-readonly-data":
+        # ``memory_policy`` is retained as public-schedule provenance at this
+        # boundary.  The private backend consumes only the explicit
+        # ``fold_writable_constants`` spelling below; it must not reinterpret
+        # the public policy field independently.
         config.update(stage.options)
         if stage.options["memory_policy"] == AGGRESSIVE_MEMORY_POLICY:
             # This is the private spelling; the public schedule deliberately

@@ -108,6 +108,34 @@ def test_constant_simplification_bundle_expands_to_private_live_stages():
     }
 
 
+def test_constant_bundle_keeps_memory_policy_as_provenance_and_maps_aggressive_flag():
+    project = ProjectConfiguration(
+        path=Path("constant-aggressive.runtime-config-v2.json"),
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {
+                    "pass_id": "constant-simplification",
+                    "options": {"memory_policy": "aggressive_no_direct_writes"},
+                }
+            ],
+        },
+    )
+
+    activation = pipeline_v2_hook_activation(project)
+
+    readonly_config = activation.instruction_rules[0].config
+    assert readonly_config["memory_policy"] == "aggressive_no_direct_writes"
+    assert readonly_config["fold_writable_constants"] is True
+    assert set(readonly_config) == {
+        "maturities",
+        "memory_policy",
+        "rva_guard",
+        "allow_executable_readonly",
+        "fold_writable_constants",
+    }
+
+
 def test_constant_simplification_projects_enabled_const_persistence() -> None:
     project = ProjectConfiguration(
         path=Path("constant-persistence.runtime-config-v2.json"),
