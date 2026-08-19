@@ -15,6 +15,9 @@ from d810.hexrays.mutation.instruction_commit import (
     NativeEpoch,
     fingerprint_minsn,
 )
+from d810.hexrays.mutation.fragment_publication_lifecycle import (
+    NativeMutationQuarantined,
+)
 
 
 def _integer(value: object, name: str) -> int:
@@ -275,6 +278,83 @@ class BlockInstructionBatchReceipt:
         }
 
 
+class HexRaysBlockInstructionCommitter:
+    """Admission boundary for one DGM-owned hosted block instruction batch."""
+
+    def __init__(
+        self,
+        *,
+        lifecycle_authority: object | None = None,
+        epoch_provider: Callable[[object], NativeEpoch] | None = None,
+    ) -> None:
+        self._lifecycle_authority = lifecycle_authority
+        self._epoch_provider = epoch_provider
+
+    @staticmethod
+    def _rejected(
+        candidate: BlockInstructionBatchCandidate,
+        reason: str,
+    ) -> BlockInstructionBatchReceipt:
+        return BlockInstructionBatchReceipt(
+            committed=False,
+            callback_result=0,
+            applied_edit_count=0,
+            inserted_instruction_count=0,
+            epoch_before=candidate.epoch_before,
+            epoch_after=candidate.epoch_before,
+            reason=reason,
+            pass_id=candidate.pass_id,
+            stage_id=candidate.stage_id,
+            rule_id=candidate.rule_id,
+            mutation_batch_id=None,
+        )
+
+    def commit(
+        self,
+        *,
+        block: object,
+        candidate: BlockInstructionBatchCandidate,
+        modifier: object,
+    ) -> BlockInstructionBatchReceipt:
+        """Admit a batch and delegate all live writes to the DGM."""
+
+        if block is None:
+            return self._rejected(candidate, "block-context-required")
+        mba = getattr(block, "mba", None)
+        if mba is None:
+            return self._rejected(candidate, "stale-epoch")
+        authority = self._lifecycle_authority
+        quarantined = getattr(authority, "native_mutation_quarantined", False)
+        if callable(quarantined):
+            quarantined = quarantined()
+        if quarantined:
+            return self._rejected(candidate, "native-mutation-quarantined")
+        if self._epoch_provider is None:
+            # A callback-local candidate cannot manufacture the lifecycle
+            # generation it claims. Only the adapter has that provenance.
+            return self._rejected(candidate, "epoch-context-required")
+        current_epoch = self._epoch_provider(block)
+        if not isinstance(current_epoch, NativeEpoch):
+            raise TypeError("epoch_provider must return NativeEpoch")
+        if current_epoch != candidate.epoch_before:
+            return self._rejected(candidate, "stale-epoch")
+        configure = getattr(modifier, "configure_instruction_batch_lifecycle", None)
+        if callable(configure):
+            configure(authority)
+        configure_epoch = getattr(modifier, "configure_instruction_batch_epoch", None)
+        if callable(configure_epoch):
+            configure_epoch(current_epoch)
+        queue = getattr(modifier, "queue_instruction_rewrite_batch", None)
+        apply = getattr(modifier, "apply_instruction_rewrite_batch", None)
+        if not callable(queue) or not callable(apply):
+            raise TypeError("modifier does not support hosted instruction batches")
+        queue(candidate)
+        try:
+            return apply()
+        except NativeMutationQuarantined:
+            raise
+
+
 __all__ = [
     "AllocatedKreg",
     "BlockInstructionAnchor",
@@ -283,6 +363,7 @@ __all__ = [
     "BlockInstructionEditIntent",
     "BlockInstructionMaterializationContext",
     "BlockInstructionMaterializer",
+    "HexRaysBlockInstructionCommitter",
     "MaterializedBlockInstructionEdit",
     "fingerprint_minsn",
 ]
