@@ -354,7 +354,7 @@ class InstructionRewriteReceipt:
         }
 
 
-def _default_hash(instruction: object, function_ea: int = 0) -> int:
+def fingerprint_minsn(instruction: object, function_ea: int = 0) -> int:
     try:
         rendered = instruction._print()
     except (AttributeError, TypeError):
@@ -387,7 +387,7 @@ class HexRaysInstructionCommitter:
     def __init__(
         self,
         *,
-        hash_minsn: Callable[..., int] = _default_hash,
+        hash_minsn: Callable[..., int] = fingerprint_minsn,
         count_minsn_nodes: Callable[..., int] = lambda _instruction: 0,
         check_ins_mop_size_are_ok: Callable[..., bool] = lambda _instruction: True,
         build_z3_equivalence_proof: Callable[..., object | None] = (
@@ -718,6 +718,7 @@ __all__ = [
     "NativeCallbackCapabilities",
     "NativeCallbackContext",
     "NativeEpoch",
+    "fingerprint_minsn",
     "REASON_BLOCK_CONTEXT_REQUIRED",
     "REASON_CAPABILITY_REJECTED",
     "REASON_COMMITTED",
