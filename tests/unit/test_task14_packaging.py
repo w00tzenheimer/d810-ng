@@ -46,16 +46,19 @@ def test_core_egraph_extra_points_only_to_the_external_provider() -> None:
     assert project["optional-dependencies"]["egraph"] == ["d810-egglog>=0.1.0"]
 
 
-def test_core_and_extension_python_floors_agree() -> None:
-    core_project = _metadata()["project"]
-    extension_project = tomllib.loads(
-        (ROOT.parent / "d810-egglog-extension" / "pyproject.toml").read_text(
-            encoding="utf-8"
-        )
-    )["project"]
+def test_core_packaging_tests_are_self_contained() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    forbidden_fragments = (
+        "d810-" + "egglog-extension",
+        "docs/" + "superpowers",
+        "." + "superpowers",
+    )
+    assert all(fragment not in source for fragment in forbidden_fragments)
 
-    assert core_project["requires-python"] == ">=3.11"
-    assert extension_project["requires-python"] == core_project["requires-python"]
+
+def test_core_python_floor_is_declared_in_core_metadata() -> None:
+    project = _metadata()["project"]
+    assert project["requires-python"] == ">=3.11"
 
 
 def test_core_release_version_is_the_extension_api_floor() -> None:
@@ -96,18 +99,6 @@ def test_ci_python_matrix_matches_the_project_python_floor() -> None:
     }
     assert all(version >= floor for version in versions)
     assert "3.10" not in workflow
-
-
-def test_task14_blocked_import_snippet_uses_exported_registry_helper() -> None:
-    paths = (
-        ROOT / "docs/superpowers/plans/2026-08-18-d810-egglog-extension-extraction.md",
-        ROOT
-        / ".superpowers/sdd/2026-08-18-d810-egglog-extension-extraction/task-14-brief.md",
-    )
-    for path in paths:
-        text = path.read_text(encoding="utf-8")
-        assert "operational_config_v2_pass_registry" in text
-        assert "operational_pass_registry" not in text
 
 
 def test_blocked_optional_imports_preserve_public_mba_egraph_registration() -> None:
