@@ -101,6 +101,20 @@ def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
                 cg.uninstall()
         finally:
             headless.stop()
+            # ``headless.stop()`` removes hooks but deliberately leaves the
+            # configured D810State loaded for callers that want to reuse it.
+            # This test opens a different IDB and is followed by tests whose
+            # lifecycle fixture assumes a fresh, unloaded singleton.  Leaving
+            # the headless state loaded therefore leaks the previous
+            # project's mutable config into the next database (notably its
+            # constant-simplification maturity gates).  Tear down the state
+            # owned by this headless run before closing its database.
+            from d810.manager import D810State
+
+            state = D810State()
+            if state.is_loaded():
+                state.unload(gui=False)
+            assert not state.is_loaded()
     finally:
         idapro.close_database(
             False
