@@ -2522,18 +2522,36 @@ class D810Manager:
             portable=True,
         )
         preparation_options = self._constant_preparation_options
+
+        def _discover_type_proposals(function_ea: int):
+            return annotate_function_global_consts(
+                function_ea,
+                database_identity=database_identity,
+            )
+
+        def _pending_type_proposals():
+            return pending_global_const_proposals(
+                database_identity=database_identity,
+            )
+
+        def _acknowledge_type_proposals(proposals):
+            return acknowledge_global_const_proposals(
+                proposals,
+                database_identity=database_identity,
+            )
+
         self.pre_hex_preparation = PreHexPreparationController(
             database_identity=database_identity,
             scripts=tuple(self._preparation_scripts),
             gateway=gateway,
-            prepared_records=journal.prepared,
+            prepared_records=journal.transactions,
             transaction_type_deltas=journal.type_deltas,
             # Keep the real IDA whole-item discovery callback installed for the
             # lifetime of the controller.  Its current policy gates invocation
             # so a project can enable preparation without reinstalling hooks.
-            discover_type_proposals=annotate_function_global_consts,
-            pending_type_proposals=pending_global_const_proposals,
-            acknowledge_type_proposals=acknowledge_global_const_proposals,
+            discover_type_proposals=_discover_type_proposals,
+            pending_type_proposals=_pending_type_proposals,
+            acknowledge_type_proposals=_acknowledge_type_proposals,
             type_step_descriptor=type_step,
             preparation_options=preparation_options,
         )

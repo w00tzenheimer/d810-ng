@@ -400,6 +400,34 @@ def test_preparation_status_surfaces_provider_failures_as_unknown() -> None:
     }
 
 
+def test_preparation_status_does_not_classify_provider_error_as_conflicting() -> None:
+    script = _script("d810-global-const-types")
+    record = _record(script)
+    before = SerializedTypeSnapshot.absent()
+    after = SerializedTypeSnapshot.from_parts(b"const", b"fields", b"comments")
+    delta = PreparationTypeDelta(0x500000, before, after)
+    gateway = _Gateway()
+
+    def fail_match(_transaction_id: PreparationTransactionId) -> bool:
+        raise RuntimeError("live type provider unavailable")
+
+    gateway.transaction_matches_after_image = fail_match  # type: ignore[method-assign]
+    controller = _controller(
+        gateway=gateway,
+        prepared=(record,),
+        transaction_types=lambda _transaction_id: (delta,),
+    )
+
+    status = controller.status_snapshot()
+
+    assert status.applied == ()
+    assert status.conflicting == ()
+    assert len(status.unknown) == 1
+    assert status.unknown[0].provider == (
+        f"transaction_matches_after_image:{record.transaction_id.value}"
+    )
+
+
 def test_distinct_serialized_proposals_do_not_collide_in_status() -> None:
     before_a = SerializedTypeSnapshot.absent()
     after_a = SerializedTypeSnapshot.from_parts(b"const-a", b"fields", b"comments")

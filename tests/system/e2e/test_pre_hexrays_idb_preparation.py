@@ -186,6 +186,14 @@ class TestPreHexraysIdbPreparation:
                 )
                 transaction_id = run_receipt.transaction_id
                 assert int(ida_bytes.get_byte(conditional_ea)) == 0xEB
+                live_records = state.manager.pre_hex_preparation._prepared_records(
+                    state.manager.pre_hex_preparation.database_identity
+                )
+                assert any(
+                    record.transaction_id == transaction_id
+                    and record.state is PreparationState.IDB_PREPARED
+                    for record in live_records
+                )
 
                 prepared_bytes = _function_bytes(function_ea)
                 prepared_patch_rows = IdaPatchLedger().capture()
@@ -222,6 +230,14 @@ class TestPreHexraysIdbPreparation:
 
                 restored = state.manager.restore_idb_preparation(transaction_id)
                 assert restored.ok, restored
+                restored_records = state.manager.pre_hex_preparation._prepared_records(
+                    state.manager.pre_hex_preparation.database_identity
+                )
+                assert any(
+                    record.transaction_id == transaction_id
+                    and record.state is PreparationState.RESTORED
+                    for record in restored_records
+                )
                 transaction_id = None
 
                 assert _function_bytes(function_ea) == before_bytes

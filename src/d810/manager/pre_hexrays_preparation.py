@@ -369,7 +369,11 @@ class PreHexPreparationController:
                             error,
                         )
                     )
-                    matches = False
+                    # An unavailable live provider is not evidence of a
+                    # conflicting after-image.  Keep this identity fail-closed
+                    # in ``unknown`` rather than inventing a destructive
+                    # conflict classification.
+                    continue
                 (applied if matches else conflicting).update(identities)
                 continue
             if record.state in {

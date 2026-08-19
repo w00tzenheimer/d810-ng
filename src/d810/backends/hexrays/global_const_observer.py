@@ -29,37 +29,90 @@ def discover_dynamic_global_table_access(instruction: object) -> object | None:
     return discover(instruction)
 
 
-def annotate_global_table_access(access: object, *, function_ea: int) -> object:
+def annotate_global_table_access(
+    access: object,
+    *,
+    function_ea: int,
+    database_identity: str = "",
+) -> object:
     """Delegate exact proposal queuing without importing IDA at module load."""
 
     from d810.backends.hexrays.global_const_annotation import (
         annotate_global_table_access as annotate,
     )
 
-    return annotate(access, function_ea=function_ea)
+    return annotate(
+        access,
+        function_ea=function_ea,
+        database_identity=database_identity,
+    )
 
 
-def pending_global_const_proposals() -> tuple[object, ...]:
+def pending_global_const_proposals(
+    *, database_identity: str | None = None
+) -> tuple[object, ...]:
     """Read the durable proposal queue without importing IDA at module load."""
 
     from d810.backends.hexrays.global_const_annotation import (
         pending_global_const_proposals as pending,
     )
 
-    return pending()
+    return pending(database_identity=database_identity)
 
 
 @dataclass(frozen=True, slots=True)
 class GlobalConstProposalIdentity:
-    """Identity of one observation in one database/function generation."""
+    """Canonical proposal identity in one database/function generation."""
 
     database_identity: str
     function_ea: int
     generation: int | None
-    item_head: int
-    item_end: int
-    element_size: int
-    element_count: int
+    proposal_identity: tuple[object, ...]
+
+    @property
+    def item_head(self) -> int:
+        return int(self.proposal_identity[1])
+
+    @property
+    def item_end(self) -> int:
+        return int(self.proposal_identity[2])
+
+    @property
+    def before(self) -> object:
+        return self.proposal_identity[3]
+
+    @property
+    def after(self) -> object:
+        return self.proposal_identity[4]
+
+    @classmethod
+    def from_proposal(
+        cls,
+        proposal: object,
+        *,
+        database_identity: str,
+        generation: int | None,
+    ) -> "GlobalConstProposalIdentity":
+        raw_identity = getattr(proposal, "identity", None)
+        if not isinstance(raw_identity, (tuple, list)) or len(raw_identity) != 5:
+            raise ValueError("proposal must expose its exact five-field identity")
+        try:
+            identity = (
+                int(raw_identity[0]),
+                int(raw_identity[1]),
+                int(raw_identity[2]),
+                raw_identity[3],
+                raw_identity[4],
+            )
+            hash(identity)
+        except (TypeError, ValueError, IndexError) as error:
+            raise ValueError("proposal identity is not hashable and exact") from error
+        return cls(
+            database_identity=str(database_identity),
+            function_ea=int(identity[0]),
+            generation=generation,
+            proposal_identity=identity,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,8 +150,18 @@ class GlobalConstObserver:
         self.database_identity = str(database_identity)
         self._calls_maturity = calls_maturity
         self._discover = discover or discover_dynamic_global_table_access
-        self._queue = queue or annotate_global_table_access
-        self._pending_proposals = pending_proposals or pending_global_const_proposals
+        self._queue = queue or (
+            lambda access, *, function_ea: annotate_global_table_access(
+                access,
+                function_ea=function_ea,
+                database_identity=self.database_identity,
+            )
+        )
+        self._pending_proposals = pending_proposals or (
+            lambda: pending_global_const_proposals(
+                database_identity=self.database_identity,
+            )
+        )
         self._seen: set[GlobalConstProposalIdentity] = set()
         self._current_generation: dict[tuple[str, int], int] = {}
         self.pending_reason: str | None = None
@@ -122,17 +185,13 @@ class GlobalConstObserver:
         for proposal in proposals:
             try:
                 identities.add(
-                    GlobalConstProposalIdentity(
+                    GlobalConstProposalIdentity.from_proposal(
+                        proposal,
                         database_identity=self.database_identity,
-                        function_ea=int(proposal.function_ea),
                         generation=None,
-                        item_head=int(proposal.item_head),
-                        item_end=int(proposal.item_end),
-                        element_size=0,
-                        element_count=0,
                     )
                 )
-            except (AttributeError, TypeError, ValueError):
+            except (AttributeError, TypeError, ValueError, IndexError):
                 logger.debug("malformed durable global-const proposal", exc_info=True)
         return tuple(
             sorted(
@@ -141,8 +200,8 @@ class GlobalConstObserver:
                     identity.function_ea,
                     identity.item_head,
                     identity.item_end,
-                    identity.element_size,
-                    identity.element_count,
+                    repr(identity.before),
+                    repr(identity.after),
                 ),
             )
         )
@@ -261,30 +320,6 @@ class GlobalConstObserver:
                 yield instruction
                 instruction = getattr(instruction, "next", None)
 
-    @staticmethod
-    def _access_identity(
-        access: object,
-        *,
-        database_identity: str,
-        function_ea: int,
-        generation: int,
-    ) -> GlobalConstProposalIdentity:
-        def _int(name: str) -> int:
-            try:
-                return int(getattr(access, name))
-            except (AttributeError, TypeError, ValueError):
-                return 0
-
-        return GlobalConstProposalIdentity(
-            database_identity=database_identity,
-            function_ea=function_ea,
-            generation=generation,
-            item_head=_int("item_head"),
-            item_end=_int("item_end"),
-            element_size=_int("element_size"),
-            element_count=_int("element_count"),
-        )
-
     def _rotate_generation(self, function_ea: int, generation: int) -> None:
         scope = (self.database_identity, function_ea)
         previous = self._current_generation.get(scope)
@@ -315,6 +350,21 @@ class GlobalConstObserver:
             return int(changed_count) > 0
         except (TypeError, ValueError):
             return False
+
+    @staticmethod
+    def _proposal_candidates(report: object) -> tuple[object, ...]:
+        """Read canonical proposal objects emitted by the annotation report."""
+
+        candidates: list[object] = []
+        for attribute in ("proposal_candidates", "queued_proposals"):
+            values = getattr(report, attribute, ())
+            if values is None:
+                continue
+            try:
+                candidates.extend(tuple(values))
+            except TypeError:
+                continue
+        return tuple(candidates)
 
     def observe(
         self,
@@ -351,14 +401,6 @@ class GlobalConstObserver:
                 continue
             if access is None:
                 continue
-            identity = self._access_identity(
-                access,
-                database_identity=self.database_identity,
-                function_ea=function_ea,
-                generation=generation,
-            )
-            if identity in self._seen:
-                continue
             try:
                 report = self._queue(access, function_ea=function_ea)
             except Exception:
@@ -371,7 +413,20 @@ class GlobalConstObserver:
                     exc_info=True,
                 )
                 continue
-            self._seen.add(identity)
+            for proposal in self._proposal_candidates(report):
+                try:
+                    self._seen.add(
+                        GlobalConstProposalIdentity.from_proposal(
+                            proposal,
+                            database_identity=self.database_identity,
+                            generation=generation,
+                        )
+                    )
+                except (AttributeError, TypeError, ValueError, IndexError):
+                    logger.debug(
+                        "global-const report omitted a canonical proposal identity",
+                        exc_info=True,
+                    )
             if self._is_new_queue(report):
                 self.pending_reason = PENDING_PREPARATION_REASON
         if self._durable_pending_exists():
