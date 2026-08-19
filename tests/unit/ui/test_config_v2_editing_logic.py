@@ -490,12 +490,186 @@ def test_fields_and_summary_inspector_layouts_do_not_reserve_catalog_space() -> 
     assert fields.layout.show_options is True
     assert fields.layout.show_rule_catalog is False
     assert fields.layout.show_transform_catalog is False
+    assert tuple(section.section_id for section in fields.field_sections) == (
+        "readonly-data-folding",
+    )
 
     assert summary.layout is not None
     assert summary.layout.primary_section is logic.ConfigV2InspectorPrimarySection.NONE
     assert summary.layout.show_options is False
     assert summary.layout.show_summary_message is True
     assert summary.layout.summary_message == "This pass exposes no editable controls."
+
+
+def _sectioned_fields_spec() -> PassEditorSpec:
+    return PassEditorSpec.fields_editor(
+        (
+            FieldEditorSpec(
+                field_id="enabled",
+                label="Enabled",
+                path=("enabled",),
+                control=FieldControlKind.BOOLEAN,
+                default=False,
+            ),
+            FieldEditorSpec(
+                field_id="limit",
+                label="Limit",
+                path=("limit",),
+                control=FieldControlKind.INTEGER,
+                default=17,
+            ),
+            FieldEditorSpec(
+                field_id="read_only",
+                label="Read only",
+                path=("read_only",),
+                control=FieldControlKind.INTEGER,
+                default=9,
+                read_only=True,
+            ),
+        ),
+        sections=(
+            PassEditorSectionSpec(
+                section_id="controls",
+                label="Controls",
+                field_ids=("enabled", "limit"),
+                description="Controller and subordinate fields.",
+                controller_field_id="enabled",
+                presentation=PassEditorSectionPresentation.PRIMARY,
+            ),
+            PassEditorSectionSpec(
+                section_id="metadata",
+                label="Metadata",
+                field_ids=("read_only",),
+            ),
+        ),
+    )
+
+
+def test_project_field_sections_preserves_declared_section_and_field_order() -> None:
+    spec = _sectioned_fields_spec()
+    options = {"read_only": 3, "limit": 11, "enabled": True}
+
+    sections = logic.project_field_sections(spec, options)
+
+    assert tuple(section.section_id for section in sections) == (
+        "controls",
+        "metadata",
+    )
+    assert tuple(entry.field.field_id for entry in sections[0].entries) == (
+        "enabled",
+        "limit",
+    )
+    assert tuple(entry.field.field_id for entry in sections[1].entries) == (
+        "read_only",
+    )
+
+
+def test_project_field_sections_hides_disabled_subordinates_without_editing_controller() -> None:
+    spec = _sectioned_fields_spec()
+
+    section = logic.project_field_sections(
+        spec,
+        {"enabled": False, "limit": 11, "read_only": 3},
+    )[0]
+
+    assert section.enabled is False
+    controller, subordinate = section.entries
+    assert (controller.is_controller, controller.visible, controller.editable) == (
+        True,
+        True,
+        True,
+    )
+    assert (subordinate.is_controller, subordinate.visible, subordinate.editable) == (
+        False,
+        False,
+        False,
+    )
+
+
+def test_project_field_sections_enables_subordinates_and_respects_read_only() -> None:
+    spec = _sectioned_fields_spec()
+
+    sections = logic.project_field_sections(
+        spec,
+        {"enabled": True, "limit": 11, "read_only": 3},
+    )
+
+    assert sections[0].enabled is True
+    assert sections[0].entries[1].visible is True
+    assert sections[0].entries[1].editable is True
+    assert sections[1].entries[0].visible is True
+    assert sections[1].entries[0].editable is False
+
+
+def test_project_field_sections_is_lossless_for_options() -> None:
+    spec = _sectioned_fields_spec()
+    options = {"read_only": 3, "limit": 11, "enabled": False, "unknown": {"keep": True}}
+    before = json.loads(json.dumps(options))
+
+    logic.project_field_sections(spec, options)
+
+    assert options == before
+
+
+def test_rule_catalog_keeps_primary_workspace_while_field_sections_are_secondary() -> None:
+    rule = RuleEditorSpec(
+        rule_id="rule",
+        label="Rule",
+        family_id="family",
+        family_label="Family",
+        subfamily_id=None,
+        subfamily_label=None,
+        description="Test rule.",
+        verification=VerificationStatus.UNAVAILABLE,
+        verification_reason="Test-only rule.",
+    )
+    field = FieldEditorSpec(
+        field_id="enabled",
+        label="Enabled",
+        path=("enabled",),
+        control=FieldControlKind.BOOLEAN,
+        default=True,
+    )
+    spec = PassEditorSpec.rule_catalog(
+        (rule,),
+        fields=(field,),
+        sections=(
+            PassEditorSectionSpec(
+                "options",
+                "Options",
+                ("enabled",),
+                presentation=PassEditorSectionPresentation.SECONDARY,
+            ),
+        ),
+    )
+    sections = logic.project_field_sections(spec, {"enabled": True})
+
+    assert tuple(section.section_id for section in sections) == ("options",)
+    assert sections[0].presentation is PassEditorSectionPresentation.SECONDARY
+    layout = logic.project_pass_inspector_layout(
+        spec,
+        rule_catalog=object(),
+        transform_catalog=None,
+        selected_transform_ids=frozenset(),
+        field_sections=sections,
+    )
+    assert layout.primary_section is logic.ConfigV2InspectorPrimarySection.RULES
+    assert layout.show_options is True
+
+
+def test_fields_only_editor_reports_options_as_primary_when_sections_exist() -> None:
+    spec = _sectioned_fields_spec()
+
+    layout = logic.project_pass_inspector_layout(
+        spec,
+        rule_catalog=None,
+        transform_catalog=None,
+        selected_transform_ids=frozenset(),
+        field_sections=logic.project_field_sections(spec, {}),
+    )
+
+    assert layout.primary_section is logic.ConfigV2InspectorPrimarySection.OPTIONS
+    assert layout.show_options is True
 
 
 def test_pass_inspector_view_defaults_new_optional_catalogs_for_overview_callers():

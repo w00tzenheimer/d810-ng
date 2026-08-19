@@ -5,15 +5,18 @@ import importlib.util
 import json
 import sys
 import types
+from types import SimpleNamespace
 from pathlib import Path
 
 from d810.manager.config_v2_edit_models import (
     ConfigV2ProjectDraft,
     ConfigV2ProjectValidation,
 )
-from d810.core.pass_editor_spec import PassEditorSpec
+from d810.core.pass_editor_spec import FieldControlKind, FieldEditorSpec, PassEditorSpec
 from d810.manager.workbench_recipe_models import PassCatalogEntry
 from d810.ui.config_v2_editing_logic import ConfigV2EditorScreen
+from d810.ui.config_v2_editing_logic import apply_typed_field_option
+from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
 from d810.ui.project_config_logic import resolve_config_v2_focus_target
 
 
@@ -175,6 +178,31 @@ def test_project_view_loads_active_pipeline_through_adapter_and_projection() -> 
     assert "set_overview" in calls
     assert "read_text" not in calls
     assert "open" not in calls
+
+
+def test_adapter_set_pass_options_preserves_disabled_subordinate_values() -> None:
+    events: list[dict[str, object]] = []
+    draft = object()
+    state = SimpleNamespace(
+        set_config_v2_pass_options=lambda candidate, **kwargs: (
+            events.append(kwargs["options"]) or candidate
+        ),
+        validate_config_v2_project_draft=lambda candidate: object(),
+    )
+    adapter = ConfigV2EditingAdapter(state, destination=Path("/tmp/profile.json"))
+    enabled = FieldEditorSpec(
+        field_id="enabled",
+        label="Enabled",
+        path=("enabled",),
+        control=FieldControlKind.BOOLEAN,
+        default=True,
+    )
+    options = {"enabled": True, "limit": 17}
+
+    updated = apply_typed_field_option(options, enabled, False)
+    adapter.set_pass_options(draft, pass_index=0, options=updated)
+
+    assert events == [{"enabled": False, "limit": 17}]
 
 
 def test_form_replaces_the_ownership_tree_with_active_pipeline_overview() -> None:
