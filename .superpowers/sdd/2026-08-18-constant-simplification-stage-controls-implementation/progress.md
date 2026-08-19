@@ -43,7 +43,7 @@
 | 2 | `f0b2088ae` | `/root/constant_stage_task2` | PASS | PASS | 46 units; 8 activation + 7 state-loading Docker passed; sg/import-linter passed | `d31017d96`, `e8759379c`, `b811ad09c`, `d4051c063` | complete after 3 fix rounds |
 | 3 | `d4051c063` | `/root/constant_stage_task3` | PASS | PASS | 35 focused + 289 manager + 11 journal; 12 global/pre-Hex + 8 activation Docker passed; ruff/sg/import-linter passed | `be510fabb`, `fafc35c5f`, `01a6cafc0`, `37eebd18a` | complete after 3 fix rounds |
 | 4 | `37eebd18a` | `/root/constant_stage_task4` | PASS | PASS | 98 focused + 88 adjacent + 22 renderer tests passed; ruff/sg/import-linter passed | `d946f4b99`, `6d9ea61c1`, `cf9020f08`, `a7ecc6a76` | complete after 1 fix round |
-| 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix5b` | pending | pending | 129 Python + 129 Cython + 1 parity + 1 AstProxy + 14 def-search Docker; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `a4b5e045c`, `540995e67` | fix round 5b complete; re-review pending |
+| 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix5b` | PASS | PASS | 129 Python + 129 Cython + 15 focused resolver + 1 parity + 1 AstProxy + 14 def-search + 2 cumulative probes in both modes; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `35e114973`, `a4b5e045c`, `540995e67` | complete after 5 fix rounds |
 | 6 | pending | pending | pending | pending | pending | pending | pending |
 | 7 | pending | pending | pending | pending | pending | pending | pending |
 | 8 | pending | pending | pending | pending | pending | pending | pending |
