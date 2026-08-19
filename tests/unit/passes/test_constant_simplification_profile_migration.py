@@ -27,6 +27,7 @@ LEGACY_KEYS = {
     "persist_global_const_annotations",
 }
 EXPECTED_MEMORY_POLICIES = {
+    "constant_stage_controls_config_v2_canary.json": AGGRESSIVE_MEMORY_POLICY,
     "dead_store_elimination_fixture_config_v2_canary.json": AGGRESSIVE_MEMORY_POLICY,
     "default_instruction_only_config_v2_canary.json": AGGRESSIVE_MEMORY_POLICY,
     "default_unflattening_ollvm_config_v2_canary.json": AGGRESSIVE_MEMORY_POLICY,

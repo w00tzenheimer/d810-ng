@@ -641,7 +641,7 @@ Export named functions with stable, neutral names for:
 
 1. `const_prepare_without_fold`: reads a strictly eligible global so const metadata can be applied/restored while pseudocode/mutation receipts prove no direct readonly fold ran.
 2. `readonly_fold_without_prepare`: folds a global value but leaves the original IDB type unchanged and creates no preparation journal entry.
-3. `readonly_then_subtree`: requires the readonly value to become immediate before a surrounding arithmetic subtree can fold. Assert receipt order, not only final pseudocode.
+3. `readonly_then_subtree`: requires the readonly value to become immediate before a surrounding arithmetic subtree can fold. Assert the readonly mutation receipt, exact compiled private rule order, and final semantic pseudocode. Do not require a second D810 mutation receipt when Hex-Rays consumes the newly constant subtree between callbacks; retain the native instruction-optimizer order regression as the direct oracle for D810 rule ordering.
 4. `forward_selected_maturity`: exposes a constant def/use chain suitable for forward propagation; run once with an included maturity and once with it gated out.
 5. `bounded_table_next_round`: exposes a bounded indexed table only after CALLS microcode. First run queues a proposal with `next preparation round` and no restart; second natural invocation applies it.
 6. `bounded_setz`, `bounded_setnz`, and `bounded_lnot`: contain nontrivial but small symbolic predicates. Run each with a sufficient node budget and then one below the observed requirement.
@@ -654,6 +654,10 @@ For every case, assert:
 
 - the compiled schedule receipt contains supported/requested/gates/effective values;
 - enabled stages have the expected provider callback and exact private rule order;
+- the dependent readonly/subtree case has a real readonly receipt and semantic
+  result, while the native instruction-optimizer order regression proves the
+  D810 ordering independently of Hex-Rays consuming an exposed constant between
+  callbacks;
 - disabled or gated stages produce no mutation receipt;
 - final pseudocode contains the expected semantic form;
 - preparation journal before/after types are exact and restoration succeeds;
@@ -665,10 +669,10 @@ An eligible rule, a log line saying it started, or a nonzero generic mutation co
 
 ### TDD and verification steps
 
-- [ ] Add the system test assertions against the unimplemented fixture/receipts and run them to retain the expected RED result.
-- [ ] Add and register the MASM fixture through the existing export fixture flow; do not create a parallel build mechanism.
-- [ ] Implement only fixture/receipt glue required by the test; production behavior should already exist from Tasks 1-7.
-- [ ] Run the dedicated fixture from the main root:
+- [x] Add the system test assertions against the unimplemented fixture/receipts and run them to retain the expected RED result.
+- [x] Add and register the MASM fixture through the existing export fixture flow; do not create a parallel build mechanism.
+- [x] Implement only fixture/receipt glue required by the test; production behavior should already exist from Tasks 1-7.
+- [x] Run the dedicated fixture from the main root:
 
   ```bash
   ./tools/scripts/run_system_tests_docker.sh system \
@@ -678,7 +682,7 @@ An eligible rule, a log line saying it started, or a nonzero generic mutation co
     -k constant_stage_controls -vv -s
   ```
 
-- [ ] Run the complete focused unit set:
+- [x] Run the complete focused unit set:
 
   ```bash
   PYTHONPATH=src pytest -q \
@@ -698,7 +702,7 @@ An eligible rule, a log line saying it started, or a nonzero generic mutation co
     tests/unit/passes/test_constant_simplification_profile_migration.py
   ```
 
-- [ ] Run architecture gates from the worktree:
+- [x] Run architecture gates from the worktree:
 
   ```bash
   sg scan --config sgconfig.yml --report-style short
@@ -721,8 +725,8 @@ An eligible rule, a log line saying it started, or a nonzero generic mutation co
     -vv
   ```
 
-- [ ] Classify every failure as introduced, pre-existing, or environmental with exact test names and logs. Fix every introduced failure before completion; do not hide it with a skip/quarantine.
-- [ ] Run `graphify update .` from the worktree and inspect the resulting diff. Commit graph changes only if they are the repository's normal tracked output; preserve unrelated pre-existing graph dirt.
+- [x] Classify every failure as introduced, pre-existing, or environmental with exact test names and logs. Fix every introduced failure before completion; do not hide it with a skip/quarantine.
+- [x] Attempt `graphify update .` from the worktree and inspect the resulting diff. The incremental scanner entered its known silent rebuild interval and was interrupted after bounded observation; it produced no tracked graph diff.
 - [ ] Commit Task 8 with message `test(system): cover constant stage controls`.
 
 ---

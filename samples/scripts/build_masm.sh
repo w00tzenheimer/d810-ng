@@ -83,6 +83,13 @@ for f in $MASM_FUNCS; do
         || { echo "error: assembling $f.asm failed:" >&2; cat "$BUILD_DIR/$f.asm.log" >&2; exit 1; }
     objs+=("$obj")
     export_flags+=("/EXPORT:$f")
+    # A source may contain additional fixture anchors.  They must opt in with
+    # an explicit ``; D810_EXPORT <symbol>`` directive; exporting every PUBLIC
+    # symbol would leak unrelated data/labels from large MASM exports.
+    public_names="$(sed -nE 's/^[[:space:]]*;[[:space:]]*D810_EXPORT[[:space:]]+([A-Za-z0-9_]+)[[:space:]]*$/\1/p' "$src")"
+    for public_name in $public_names; do
+        export_flags+=("/EXPORT:$public_name")
+    done
     # Explicit call-site markers are source-to-native oracle anchors.  Export
     # only the opt-in PUBLIC labels rather than guessing from imported call
     # targets, which may be linked as generic unresolved slots in the fixture.

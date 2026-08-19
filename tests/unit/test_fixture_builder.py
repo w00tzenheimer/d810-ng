@@ -175,6 +175,17 @@ def test_build_fixture_dll_invokes_build_masm_sh(tmp_path):
     assert calls["env"].get("BINARY_NAME") == "tmpfx"
 
 
+def test_masm_builder_uses_scoped_d810_export_directives():
+    """Additional MASM exports are opt-in, never every PUBLIC symbol."""
+
+    script = (Path(__file__).parents[2] / "samples/scripts/build_masm.sh").read_text()
+    assert "D810_EXPORT" in script
+    assert "public_names=\"$(sed -nE" in script
+    assert 'export_flags+=("/EXPORT:$public_name")' in script
+    assert 'export_flags+=("/EXPORT:$marker")' in script
+    assert "One exported MASM source can contain several" not in script
+
+
 def test_verify_sets_test_binary_env(tmp_path):
     seen = {}
 

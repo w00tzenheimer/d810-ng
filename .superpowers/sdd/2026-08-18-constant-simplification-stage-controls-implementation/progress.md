@@ -46,7 +46,7 @@
 | 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix5b` | PASS | PASS | 129 Python + 129 Cython + 15 focused resolver + 1 parity + 1 AstProxy + 14 def-search + 2 cumulative probes in both modes; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `35e114973`, `a4b5e045c`, `540995e67` | complete after 5 fix rounds |
 | 6 | `6446f49f1` | `/root/constant_stage_task6` + `/root/constant_stage_task6_defaults_fix` | PASS | PASS | 152 focused/adjacent units + 18 normal/18 Cython IDA runtime; final controller rerun 134 units; Ruff/py_compile/sg/import-linter/diff-check passed | `b7cee6071`, `9034ae5ad`, `4b0f03a23`, `7d40d1f8f` | complete after 3 review fix rounds |
 | 7 | `63d4eb393` | `/root/constant_stage_task7_retry` | PASS | PASS | 150 focused; 68 JSON/171 pipeline configs; adjacent 235 pass with one base-reproduced failure; controller reran 150; ruff/py_compile/sg/import-linter/diff-check passed | `446b1d6b9`, `ea064b829`, `7fc778080` | complete |
-| 8 | pending | pending | pending | pending | pending | pending | pending |
+| 8 | `84db1bcd4` | `/root/constant_stage_task8_retry` | PASS | PASS | 11 compiled E2E + 217 focused units + 2 native order tests; sg/import-linter/diff-check passed | this commit | acceptance green; provenance fix re-review pending |
 
 ## Controller rulings
 
@@ -176,3 +176,77 @@
 - Final independent verdict: specification PASS and code quality PASS. The
   single adjacent Tigress failure is unchanged and was reproduced on base
   `63d4eb393`; it is not masked or skipped by this work.
+
+## Task 8 runtime rulings
+
+- Ruling: do not add a PREOPT whole-MBA `m_lnot` sweep. A bounded live callback
+  probe proved that the ordinary recursive optimizer receives the nested
+  `m_lnot`, activates `Z3lnotRuleGeneric`, and invokes it exactly once. The
+  proof failed because the pairwise equality prover treats the one-bit flag
+  carrier as unconstrained; the existing single-operand
+  `prove_always_zero`/`prove_always_nonzero` path owns contextual reaching-def
+  expansion. Repair the rule at that existing boundary instead. The cost if
+  wrong is a focused lnot regression failure, not a new mutation lifecycle.
+- Ruling: the bounded-table fixture must take its index from the function
+  argument. Loading the index from global data let `FoldReadonlyDataRule`
+  collapse the whole lookup to `0x20` before post-D810 CALLS observation. The
+  pointer indirection remains readonly-foldable, while an argument-derived
+  index preserves the dynamic `[table + index*8]` access needed to test the
+  next natural preparation round.
+- Ruling: split the dependent readonly/subtree acceptance oracle. Bounded native
+  attempts (`imul`, separate arithmetic, larger MBA/sink, transform-isolated,
+  and `mov`/`rol`/`xor`) consistently produced the readonly D810 receipt and
+  correct final constant, but Hex-Rays consumed the exposed subtree before a
+  second D810 callback. Requiring two D810 mutation receipts would test a
+  scheduler race; changing scheduling to manufacture one is outside scope and
+  would alter optimizer semantics. The system fixture therefore proves the
+  readonly receipt plus final semantic result and exact compiled private order,
+  while the existing native instruction-optimizer order regression remains the
+  direct D810 ordering oracle. The cost if wrong is weaker evidence about the
+  vendor callback interleaving, not weaker evidence about D810's configured
+  order or output semantics.
+
+## Task 8a contextual lnot proof ledger
+
+- Live callback probe: nested `m_lnot` was delivered under `m_jcnd`, the exact
+  rule was active and invoked once, and pairwise `prove_equal`/`prove_unequal`
+  both returned `DISPROVED` for the unresolved one-bit carrier. No sweep or
+  lifecycle mutation was justified.
+- RED: the focused rule contract captured `16 passed, 4 failed` before the
+  single-operand proof change in `.tmp/task8a_lnot_red.txt`.
+- Repair: `Z3lnotRuleGeneric` now reuses one contextual, policy-bound prover;
+  `prove_always_zero` emits `1`, then `prove_always_nonzero` emits `0`, and all
+  inconclusive results remain fail-closed.
+- Commit: `4e41e2862` (`fix(z3): resolve contextual lnot predicates`).
+- Implementer Docker verification passed all `20` focused runtime tests. The
+  controller independently reran the same 20-test Docker file successfully;
+  output is `.tmp/root_task8a_lnot_runtime.txt`. The commit diff was reviewed
+  for exact context/policy threading, proof order, short-circuiting, and
+  fail-closed behavior with no finding.
+
+## Task 8 MASM acceptance ledger
+
+- RED evidence covered absent fixture exports, disabled-stage isolation,
+  preparation journal exactness, next-round bounded-table discovery, schedule
+  gating, and independently bounded setz/setnz/lnot transforms. No missing
+  export, unsupported fixture shape, or low-budget abstention was converted to
+  a skip or eligibility-only assertion.
+- Implementation adds eight deterministic MASM cases through the existing
+  builder, explicit scoped `D810_EXPORT` directives, a canonical config-v2
+  canary, and one disposable-IDB E2E contract. The source-basename compatibility
+  export has its own RVA so IDA retains all eight case names.
+- The final compiled-mode system run passed `11/11` selected tests and retained
+  typed mutation/proof receipts: readonly folding, forward propagation, exact
+  preparation apply/restore, natural second-round table application, and named
+  Z3 setz/setnz/lnot rules. All three one-node policies abstained without
+  replacing the original predicate.
+- Focused verification passed `217` units, the direct native rule-order oracle
+  passed `2` tests, and the tightened scoped-export builder regression passed.
+  `sg`, import-linter, and diff-check passed. Artifacts are
+  `.tmp/constant_stage_controls_e2e_compiled_v2.txt` and
+  `.tmp/constant_stage_controls_rule_order.txt`.
+- `graphify update .` was attempted once. Its incremental scanner remained in
+  a silent rebuild interval and was interrupted after bounded observation; no
+  tracked graph output changed.
+- Task 8 acceptance is green. The broader plan remains open while the separate
+  provenance repair completes its independent re-review.
