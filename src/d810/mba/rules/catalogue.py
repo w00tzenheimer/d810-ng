@@ -32,7 +32,7 @@ from d810.mba.rules import (
 from d810.mba.rules._base import VerifiableRule
 
 
-EGGLOG_CLOSED_FAMILIES = frozenset(
+EGRAPH_CLOSED_FAMILIES = frozenset(
     {"add", "xor", "sub", "and", "or", "bnot", "neg", "mul"}
 )
 

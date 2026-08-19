@@ -1,4 +1,4 @@
-"""Direct native-term matching for the certified Egglog MBA catalogue."""
+"""Direct native-term matching for the certified e-graph MBA catalogue."""
 
 from __future__ import annotations
 

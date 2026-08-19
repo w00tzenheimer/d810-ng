@@ -1,4 +1,4 @@
-"""Private config-v2 stage for bounded Egglog MBA extraction."""
+"""Private config-v2 stage for bounded e-graph MBA extraction."""
 
 from __future__ import annotations
 
@@ -363,7 +363,7 @@ def build_mba_egraph_pass(config: PipelineConfig) -> MbaEgraphPass:
 
 
 def mba_egraph_editor_spec() -> PassEditorSpec:
-    """Return the complete public config-v2 editor contract for Egglog."""
+    """Return the complete public config-v2 editor contract for e-graphs."""
     maturity_choices = tuple(member.name for member in IRMaturity)
     return PassEditorSpec.fields_editor(
         (
@@ -401,7 +401,7 @@ def mba_egraph_editor_spec() -> PassEditorSpec:
                 label="Saturation rounds",
                 path=("saturation_rounds",),
                 control=FieldControlKind.INTEGER,
-                description="Maximum bounded Egglog rounds after admission.",
+                description="Maximum bounded e-graph rounds after admission.",
                 minimum=1,
                 maximum=6,
                 default=2,
@@ -458,7 +458,7 @@ def mba_egraph_editor_spec() -> PassEditorSpec:
                 label="Learned replay",
                 path=("learned_replay_enabled",),
                 control=FieldControlKind.BOOLEAN,
-                description="Replay a previously accepted pure composite before fresh Egglog saturation.",
+                description="Replay a previously accepted pure composite before fresh e-graph saturation.",
                 default=DEFAULT_LEARNED_REPLAY_ENABLED,
             ),
             FieldEditorSpec(
@@ -490,7 +490,7 @@ def mba_egraph_editor_spec() -> PassEditorSpec:
                 minimum=1,
                 default=3,
                 advisory=AdvisoryTone.WARNING,
-                advisory_reason="Budgets below 50 ms deliberately do not invoke Egglog.",
+                advisory_reason="Budgets below 50 ms deliberately do not invoke the e-graph provider.",
             ),
             FieldEditorSpec(
                 field_id="function_time_budget_ms",
@@ -524,7 +524,7 @@ def mba_egraph_editor_spec() -> PassEditorSpec:
                 label="Collect stage timings",
                 path=("collect_stage_timings",),
                 control=FieldControlKind.BOOLEAN,
-                description="Record per-stage Egglog timing telemetry.",
+                description="Record per-stage e-graph timing telemetry.",
                 default=False,
             ),
             FieldEditorSpec(
@@ -532,7 +532,7 @@ def mba_egraph_editor_spec() -> PassEditorSpec:
                 label="Execution mode",
                 path=("execution_mode",),
                 control=FieldControlKind.ENUM,
-                description="Select interactive or noninteractive Egglog admission semantics.",
+                description="Select interactive or noninteractive e-graph admission semantics.",
                 choices=("interactive", "noninteractive"),
                 default="interactive",
             ),
@@ -550,7 +550,7 @@ def mba_egraph_editor_spec() -> PassEditorSpec:
                 label="Certified rule families",
                 path=("families",),
                 control=FieldControlKind.STRING_LIST,
-                description="Ordered subset of certified MBA rule families available to Egglog.",
+                description="Ordered subset of certified MBA rule families available to the e-graph provider.",
                 choices=MBA_EGRAPH_FAMILIES,
                 default=list(DEFAULT_FAMILIES),
             ),
@@ -559,7 +559,7 @@ def mba_egraph_editor_spec() -> PassEditorSpec:
                 label="Maturities",
                 path=("maturities",),
                 control=FieldControlKind.STRING_LIST,
-                description="Hex-Rays maturities at which Egglog candidate roots may run.",
+                description="Hex-Rays maturities at which e-graph candidate roots may run.",
                 choices=maturity_choices,
                 default=list(DEFAULT_MATURITIES),
             ),

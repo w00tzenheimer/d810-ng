@@ -247,7 +247,7 @@ def test_preparation_carries_only_exact_live_leaf_assumptions(monkeypatch):
 
 @pytest.mark.usefixtures("configure_hexrays")
 def test_def_use_preparation_specializes_only_a_resolved_literal(monkeypatch):
-    """One bounded def-use edge may provide an exact literal for Egglog only."""
+    """One bounded def-use edge may provide an exact literal for e-graph extraction only."""
 
     import d810.backends.mba.cross_block_preparation as preparation
 

@@ -121,6 +121,9 @@ python -m pip install "d810-ng[egraph]"
 
 This extra resolves the separately packaged `d810-egglog` provider; the core
 distribution itself has no Egglog or cloudpickle runtime dependency.
+Projects select the backend-neutral `mba-egraph` pass. The installed provider
+declares its concrete `EgglogOptimizer` implementation through the
+`d810.backends` entry-point group and is probed before that rule is imported.
 
 * Declarative `ConstraintExpr` (e.g. `bnot_x == ~x`, `c_minus_2 == Const("-2", -2)`)
 * Runtime predicates (`when.equal_mops`, `when.is_bnot`) for IDA-specific checks; optionally attach additional backends for verification.

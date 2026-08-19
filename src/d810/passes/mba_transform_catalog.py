@@ -350,7 +350,7 @@ _MBA_SIMPLIFY_EDITOR_FIELDS = (
         default=True,
         description=(
             "Generate legacy commutative pattern variants for selected MBA "
-            "transforms. Disable when using residual Egglog routing."
+            "transforms. Disable when using residual e-graph routing."
         ),
     ),
 )

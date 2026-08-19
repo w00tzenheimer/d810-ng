@@ -71,7 +71,7 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# Egglog-based Pattern Generation Helpers
+# E-graph-based Pattern Generation Helpers
 # =============================================================================
 
 # Map DSL operation names to commutative status
@@ -1559,7 +1559,7 @@ class IDAPatternAdapter:
 
             # Commutative permutations are correct BY CONSTRUCTION -- they are
             # generated from each operation's commutativity, so there is
-            # nothing to verify. An egglog equivalence check used to run here
+            # nothing to verify. An e-graph equivalence check used to run here
             # and was removed: it cost 30+ seconds at startup across 170+ rules
             # to confirm what the generator already guarantees.
             candidates = []

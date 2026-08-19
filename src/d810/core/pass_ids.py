@@ -50,7 +50,7 @@ class PassId(enum.StrEnum):
     #: itself arrives from an extension that declares this id in ``implements``.
     MBA_SOLVE = "mba-solve"
 
-    #: Bounded Egglog extraction with a proof-gated live hook implementation.
+    #: Bounded e-graph extraction with a proof-gated live hook implementation.
     MBA_EGRAPH = "mba-egraph"
 
     #: Exact 64-bit compiler idiom lifting after bounded MBA simplification.

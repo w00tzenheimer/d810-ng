@@ -46,7 +46,7 @@ def test_mul_mba_1_describes_costly_proof_without_runtime_claim() -> None:
 
 
 def test_hodur_complement_mask_is_registered_but_default_disabled() -> None:
-    """Egglog may select the certified rule without making it a fast-path default."""
+    """The e-graph provider may select a certified rule without becoming a fast path."""
 
     item = _transform("sub-complement-mask-hodur-1")
 

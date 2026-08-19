@@ -2,7 +2,7 @@
 
 This is deliberately a pre-provider gate.  It proves every emitted shape against
 its simple sibling before later portfolio tasks attribute a result to catalogue,
-Egglog, or coefficient routing.
+the e-graph provider, or coefficient routing.
 """
 
 from __future__ import annotations

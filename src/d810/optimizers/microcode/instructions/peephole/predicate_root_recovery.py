@@ -1,6 +1,6 @@
 """Pure matching for one certified mixed-width opaque predicate family.
 
-This deliberately does not enter the fixed-width MBA/Egglog island.  Its
+This deliberately does not enter the fixed-width MBA/e-graph island.  Its
 single byte extraction is part of the semantic identity, and its replacement
 is a boolean predicate rather than a same-width arithmetic value.
 """

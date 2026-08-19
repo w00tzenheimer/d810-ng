@@ -214,7 +214,7 @@ def _mba_egraph_options(config: PipelineConfig) -> dict[str, object]:
         "native_proof_mode": adapter.native_proof_mode,
         "families": list(adapter.families),
         # Keep portable maturity vocabulary across the config-v2 boundary.
-        # The live Egglog rule resolves it through d810.hexrays.ir_maturity.
+        # The live e-graph rule resolves it through d810.hexrays.ir_maturity.
         "maturities": list(adapter.maturities),
     }
 

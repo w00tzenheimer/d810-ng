@@ -4,7 +4,7 @@
 """Numeric structural matching for packed native MBA terms.
 
 This module receives only integer tuples.  It deliberately has no Hex-Rays,
-Egglog, constraint, or replacement-materialization dependency.
+e-graph, constraint, or replacement-materialization dependency.
 """
 
 from libcpp.vector cimport vector

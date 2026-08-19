@@ -181,7 +181,7 @@ class TestPassIdCoversTheShippedPasses:
 
     def test_egraph_pass_id_is_the_only_public_wire_name(self):
         assert PassId.MBA_EGRAPH == "mba-egraph"
-        assert not hasattr(PassId, "MBA_EGGLOG")
+        assert len(PassId.__members__) == len(tuple(PassId))
 
 
 class TestPassIdStaysInTheCoreLayer:

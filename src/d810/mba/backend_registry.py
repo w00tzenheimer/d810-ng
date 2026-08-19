@@ -29,7 +29,7 @@ def get_verification_engine(name: str = "z3") -> Any:
     """Load only the requested pure verification backend on demand.
 
     Verification is a portable MBA capability.  It must not discover the
-    entire backend tree because that tree also contains optional Egglog and
+    entire backend tree because that tree also contains optional e-graph and
     live IDA providers.  The explicit module map keeps discovery narrow while
     leaving provider registration in the backend module itself.
     """
