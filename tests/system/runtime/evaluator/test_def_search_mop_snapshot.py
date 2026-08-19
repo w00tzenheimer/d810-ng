@@ -270,6 +270,229 @@ def test_recursive_cache_distinguishes_same_ea_microinstructions(monkeypatch):
         assert calls == [first, second]
 
 
+def _resolver_width_test_leaf(name: str, size: int):
+    """Build a register AST leaf with an explicit Hex-Rays byte width."""
+
+    from d810.hexrays.expr.ast import AstLeaf
+
+    leaf = AstLeaf(name)
+    leaf.mop = SimpleNamespace(
+        t=ida_hexrays.mop_r,
+        size=size,
+        r=1,
+        valnum=0,
+    )
+    leaf.dest_size = size
+    return leaf
+
+
+def _resolver_width_test_definition(size: int):
+    """Build a definition AST whose result width is *size* bytes."""
+
+    from d810.hexrays.expr.ast import AstLeaf, AstNode
+
+    definition = AstNode(
+        ida_hexrays.m_add,
+        AstLeaf("definition_left"),
+        AstLeaf("definition_right"),
+    )
+    definition.dest_size = size
+    return definition
+
+
+@pytest.mark.parametrize(
+    "resolver_name",
+    ["_py_slow_recursively_resolve_ast", "recursively_resolve_ast"],
+)
+def test_recursive_resolver_truncates_wider_definition_to_use_width(
+    monkeypatch, resolver_name
+):
+    """A wider producer must be explicitly narrowed at a narrower use site."""
+
+    from d810.hexrays.expr.ast import AstNode
+
+    replacement = _resolver_width_test_definition(8)
+    use = _resolver_width_test_leaf("use", 4)
+
+    monkeypatch.setattr(
+        def_search,
+        "resolve_mop_to_ast",
+        lambda *_args, **_kwargs: replacement,
+    )
+    result = getattr(def_search, resolver_name)(
+        use,
+        SimpleNamespace(serial=7),
+        SimpleNamespace(this=1),
+        cache={},
+    )
+
+    assert isinstance(result, AstNode)
+    assert result.opcode == ida_hexrays.m_low
+    assert result.left is replacement
+    assert result.right is None
+    assert result.dest_size == 4
+
+
+@pytest.mark.parametrize(
+    "resolver_name",
+    ["_py_slow_recursively_resolve_ast", "recursively_resolve_ast"],
+)
+def test_recursive_resolver_keeps_equal_width_definition_unchanged(
+    monkeypatch, resolver_name
+):
+    """Equal-width replacement keeps the original definition shape."""
+
+    replacement = _resolver_width_test_definition(4)
+    use = _resolver_width_test_leaf("use", 4)
+
+    monkeypatch.setattr(
+        def_search,
+        "resolve_mop_to_ast",
+        lambda *_args, **_kwargs: replacement,
+    )
+    result = getattr(def_search, resolver_name)(
+        use,
+        SimpleNamespace(serial=7),
+        SimpleNamespace(this=1),
+        cache={},
+    )
+
+    assert result is replacement
+
+
+@pytest.mark.parametrize(
+    "resolver_name",
+    ["_py_slow_recursively_resolve_ast", "recursively_resolve_ast"],
+)
+def test_recursive_resolver_rejects_narrower_definition_for_wider_use(
+    monkeypatch, resolver_name
+):
+    """A partial-register definition is never widened by recursive resolution."""
+
+    replacement = _resolver_width_test_definition(4)
+    use = _resolver_width_test_leaf("use", 8)
+
+    monkeypatch.setattr(
+        def_search,
+        "resolve_mop_to_ast",
+        lambda *_args, **_kwargs: replacement,
+    )
+    result = getattr(def_search, resolver_name)(
+        use,
+        SimpleNamespace(serial=7),
+        SimpleNamespace(this=1),
+        cache={},
+    )
+
+    assert result is use
+
+
+@pytest.mark.parametrize(
+    "resolver_name",
+    ["_py_slow_recursively_resolve_ast", "recursively_resolve_ast"],
+)
+def test_recursive_resolver_cache_includes_use_width(monkeypatch, resolver_name):
+    """One storage identity cannot reuse a replacement at another width."""
+
+    replacement = _resolver_width_test_definition(8)
+    narrow_use = _resolver_width_test_leaf("narrow_use", 4)
+    wide_use = _resolver_width_test_leaf("wide_use", 8)
+    calls = []
+
+    def resolve(*_args, **_kwargs):
+        calls.append(1)
+        return replacement
+
+    monkeypatch.setattr(def_search, "get_mop_key", lambda _mop: ("r", 1))
+    monkeypatch.setattr(def_search, "resolve_mop_to_ast", resolve)
+    block = SimpleNamespace(serial=7)
+    instruction = SimpleNamespace(this=1)
+    cache = {}
+    resolver = getattr(def_search, resolver_name)
+
+    narrow_result = resolver(narrow_use, block, instruction, cache=cache)
+    wide_result = resolver(wide_use, block, instruction, cache=cache)
+
+    assert len(calls) == 2
+    assert narrow_result.opcode == ida_hexrays.m_low
+    assert wide_result is replacement
+
+
+@pytest.mark.parametrize(
+    "resolver_name",
+    ["_py_slow_recursively_resolve_ast", "recursively_resolve_ast"],
+)
+def test_recursive_resolver_fails_closed_when_definition_width_unknown(
+    monkeypatch, resolver_name
+):
+    """Unknown producer width must not be guessed from the use site."""
+
+    from d810.hexrays.expr.ast import AstLeaf, AstNode
+
+    replacement = AstNode(
+        ida_hexrays.m_add,
+        AstLeaf("definition_left"),
+        AstLeaf("definition_right"),
+    )
+    use = _resolver_width_test_leaf("use", 4)
+
+    monkeypatch.setattr(
+        def_search,
+        "resolve_mop_to_ast",
+        lambda *_args, **_kwargs: replacement,
+    )
+    result = getattr(def_search, resolver_name)(
+        use,
+        SimpleNamespace(serial=7),
+        SimpleNamespace(this=1),
+        cache={},
+    )
+
+    assert result is use
+
+
+@pytest.mark.parametrize(
+    "resolver_name",
+    ["_py_slow_recursively_resolve_ast", "recursively_resolve_ast"],
+)
+def test_recursive_resolver_charges_synthetic_truncation(
+    monkeypatch, resolver_name
+):
+    """The inserted low-part node participates in the caller's node budget."""
+
+    replacement = _resolver_width_test_definition(8)
+    use = _resolver_width_test_leaf("use", 4)
+
+    class Budget:
+        def __init__(self):
+            self.consumed = 0
+            self.charged = []
+
+        def consume(self):
+            self.consumed += 1
+
+        def mark_charged(self, occurrence):
+            self.charged.append(occurrence)
+
+    monkeypatch.setattr(
+        def_search,
+        "resolve_mop_to_ast",
+        lambda *_args, **_kwargs: replacement,
+    )
+    budget = Budget()
+    result = getattr(def_search, resolver_name)(
+        use,
+        SimpleNamespace(serial=7),
+        SimpleNamespace(this=1),
+        cache={},
+        node_budget=budget,
+    )
+
+    assert result.opcode == ida_hexrays.m_low
+    assert budget.consumed == 1
+    assert budget.charged == [result]
+
+
 def test_resolve_mop_to_ast_fails_closed_for_unowned_stack_snapshot(monkeypatch):
     class ExplodingTracker:
         @staticmethod

@@ -173,6 +173,48 @@ def _mop_to_ast_with_budget(
     return mop_to_ast(mop, node_budget=node_budget)
 
 
+def _ast_width_bytes(ast: AstNode | AstLeaf | None) -> int | None:
+    """Return an AST value width in bytes when its provenance is explicit.
+
+    ``dest_size`` is the width of the value produced by an AST instruction,
+    whereas a leaf's ``mop.size`` is the width at its use site.  Do not infer
+    a missing width from a surrounding expression: partial-register
+    definitions are precisely where that inference becomes unsound.
+    """
+
+    if ast is None:
+        return None
+
+    for candidate in (
+        getattr(ast, "dest_size", None),
+        getattr(getattr(ast, "mop", None), "size", None),
+    ):
+        if type(candidate) is int and candidate > 0:
+            return candidate
+    return None
+
+
+def _truncate_ast_to_use_width(
+    ast: AstNode | AstLeaf,
+    use_width: int,
+    node_budget: AstNodeBudget | None,
+) -> AstNode:
+    """Create a native low-part AST preserving a narrower use-site width."""
+
+    if node_budget is not None:
+        node_budget.consume()
+
+    truncated = AstNode(ida_hexrays.m_low, ast, None)
+    truncated.dest_size = use_width
+    truncated.ea = getattr(ast, "ea", None)
+    truncated.func_name = getattr(ast, "func_name", "")
+    truncated.ins = getattr(ast, "ins", None)
+
+    if node_budget is not None:
+        node_budget.mark_charged(truncated)
+    return truncated
+
+
 # ---------------------------------------------------------------------------
 # mlist helpers
 # ---------------------------------------------------------------------------
@@ -735,8 +777,10 @@ def _py_slow_recursively_resolve_ast(
 
             if is_resolvable and ins is not None:
                 mop_key = get_mop_key(ast_leaf.mop)
+                use_width = _ast_width_bytes(ast_leaf)
                 cache_key = (
                     mop_key,
+                    use_width,
                     _microcode_instruction_identity(blk, ins),
                 )
                 if cache_key in cache:
@@ -751,6 +795,18 @@ def _py_slow_recursively_resolve_ast(
                     node_budget=node_budget,
                 )
                 if resolved is not None and resolved is not ast:
+                    resolved_width = _ast_width_bytes(resolved)
+                    # A missing width is not permission to guess.  In
+                    # particular, a narrow partial-register definition must
+                    # never be widened into a full-register use.
+                    if (
+                        use_width is None
+                        or resolved_width is None
+                        or resolved_width < use_width
+                    ):
+                        cache[cache_key] = ast
+                        return ast
+
                     # Update search context for children: search from the defining instruction
                     # This correctly handles register redefinitions within the same block.
                     new_ins = ins
@@ -767,6 +823,8 @@ def _py_slow_recursively_resolve_ast(
                         cache,
                         node_budget,
                     )
+                    if resolved_width > use_width:
+                        res = _truncate_ast_to_use_width(res, use_width, node_budget)
                     cache[cache_key] = res
                     return res
                 cache[cache_key] = ast
