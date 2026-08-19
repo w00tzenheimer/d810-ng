@@ -357,9 +357,9 @@ _MBA_SIMPLIFY_EDITOR_FIELDS = (
 
 
 def mba_transform_editor_spec() -> PassEditorSpec:
-    """Return the fixed transform-catalog editor for ``mba-simplify``."""
+    """Return the transform-catalog editor with current portable defaults."""
     return PassEditorSpec.transform_catalog(
-        MBA_TRANSFORM_SPECS,
+        _build_specs(),
         fields=_MBA_SIMPLIFY_EDITOR_FIELDS,
     )
 

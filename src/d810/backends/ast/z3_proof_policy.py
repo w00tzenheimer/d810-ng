@@ -7,24 +7,43 @@ tests can use them without importing the IDA provider.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from d810.core.z3_proof import Z3ProofAbstentionReason, Z3ProofStatus
+from d810.core.z3_proof import (
+    Z3ProofAbstentionReason,
+    Z3ProofStatus,
+    get_z3_proof_policy_authority,
+)
+
+
+def _default_max_expression_nodes() -> int:
+    return get_z3_proof_policy_authority().max_expression_nodes.default
+
+
+def _default_proof_timeout_ms() -> int:
+    return get_z3_proof_policy_authority().proof_timeout_ms.default
 
 
 @dataclass(frozen=True, slots=True)
 class Z3ProofPolicy:
     """Immutable resource limits for one generic predicate proof."""
 
-    max_expression_nodes: int = 256
-    proof_timeout_ms: int = 50
+    max_expression_nodes: int = field(default_factory=_default_max_expression_nodes)
+    proof_timeout_ms: int = field(default_factory=_default_proof_timeout_ms)
 
     def __post_init__(self) -> None:
+        authority = get_z3_proof_policy_authority()
         _validate_bounded_integer(
-            "max_expression_nodes", self.max_expression_nodes, minimum=1, maximum=4096
+            "max_expression_nodes",
+            self.max_expression_nodes,
+            minimum=authority.max_expression_nodes.minimum,
+            maximum=authority.max_expression_nodes.maximum,
         )
         _validate_bounded_integer(
-            "proof_timeout_ms", self.proof_timeout_ms, minimum=1, maximum=5000
+            "proof_timeout_ms",
+            self.proof_timeout_ms,
+            minimum=authority.proof_timeout_ms.minimum,
+            maximum=authority.proof_timeout_ms.maximum,
         )
 
 
@@ -65,7 +84,13 @@ class Z3ExpressionNodeBudget:
             limit = policy.max_expression_nodes
         else:
             limit = policy
-        _validate_bounded_integer("max_expression_nodes", limit, minimum=1, maximum=4096)
+        authority = get_z3_proof_policy_authority()
+        _validate_bounded_integer(
+            "max_expression_nodes",
+            limit,
+            minimum=authority.max_expression_nodes.minimum,
+            maximum=authority.max_expression_nodes.maximum,
+        )
         self._limit = limit
         self._observed_nodes = 0
         # The AST builder consumes occurrences before it constructs them.  The

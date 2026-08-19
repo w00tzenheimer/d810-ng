@@ -4,6 +4,7 @@ import pytest
 
 from d810.passes.mba_simplify import build_mba_simplify_pass, mba_simplify_pass_registry
 from d810.passes.mba_transform_options import (
+    MBA_TRANSFORM_OPTION_FIELDS,
     MbaSimplifyOptions,
     parse_mba_simplify_options,
 )
@@ -18,6 +19,14 @@ def _config(
     if transform_options is not None:
         options["transform_options"] = transform_options
     return PipelineConfig(pass_id="mba-simplify", options=options)
+
+
+def test_transform_option_field_mapping_has_stable_generic_z3_order() -> None:
+    assert tuple(MBA_TRANSFORM_OPTION_FIELDS)[:3] == (
+        "z-3-setz-generic",
+        "z-3-setnz-generic",
+        "z-3-lnot-generic",
+    )
 
 
 def test_typed_mba_options_preserve_order_and_resolve_private_bindings() -> None:

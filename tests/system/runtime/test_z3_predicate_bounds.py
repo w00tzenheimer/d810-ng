@@ -67,25 +67,148 @@ def test_three_generic_rules_keep_distinct_immutable_policies() -> None:
 
 @pytest.mark.runtime
 def test_generic_rule_configure_uses_canonical_policy_defaults(monkeypatch) -> None:
-    import d810.optimizers.microcode.instructions.z3.handler as handler
+    from types import SimpleNamespace
+
+    import d810.core.z3_proof as z3_proof
+    from d810.backends.ast.z3_proof_policy import Z3ProofPolicy
+    from d810.core.z3_proof import Z3ProofFieldAuthority, Z3ProofPolicyAuthority
+    from d810.passes.mba_simplify import materialize_mba_transform_options
+    from d810.passes.mba_transform_options import MBA_TRANSFORM_OPTION_FIELDS
     from d810.optimizers.microcode.instructions.z3.predicates import (
         Z3lnotRuleGeneric,
         Z3setnzRuleGeneric,
         Z3setzRuleGeneric,
     )
 
-    class _CanonicalPolicy:
-        def __init__(self, max_expression_nodes=913, proof_timeout_ms=271):
-            self.max_expression_nodes = max_expression_nodes
-            self.proof_timeout_ms = proof_timeout_ms
-
-    monkeypatch.setattr(handler, "Z3ProofPolicy", _CanonicalPolicy)
+    authority = Z3ProofPolicyAuthority(
+        max_expression_nodes=Z3ProofFieldAuthority(
+            default=913, minimum=7, maximum=1913
+        ),
+        proof_timeout_ms=Z3ProofFieldAuthority(
+            default=271, minimum=11, maximum=2711
+        ),
+    )
+    monkeypatch.setattr(
+        z3_proof,
+        "Z3_PROOF_POLICY_AUTHORITY",
+        authority,
+        raising=False,
+    )
     for rule_class in (Z3setzRuleGeneric, Z3setnzRuleGeneric, Z3lnotRuleGeneric):
         rule = rule_class()
         rule.configure({})
 
         assert rule.z3_proof_policy.max_expression_nodes == 913
         assert rule.z3_proof_policy.proof_timeout_ms == 271
+
+    for transform_id in (
+        "z-3-setz-generic",
+        "z-3-setnz-generic",
+        "z-3-lnot-generic",
+    ):
+        assert materialize_mba_transform_options(transform_id, {}) == {
+            "max_expression_nodes": 913,
+            "proof_timeout_ms": 271,
+        }
+        fields = MBA_TRANSFORM_OPTION_FIELDS[transform_id]
+        assert fields[0].default == 913
+        assert fields[0].minimum == 7
+        assert fields[0].maximum == 1913
+        assert fields[1].default == 271
+        assert fields[1].minimum == 11
+        assert fields[1].maximum == 2711
+
+    with pytest.raises((TypeError, ValueError), match="max_expression_nodes"):
+        Z3ProofPolicy(max_expression_nodes=6)
+    with pytest.raises((TypeError, ValueError), match="max_expression_nodes"):
+        Z3ProofPolicy(max_expression_nodes=1914)
+    with pytest.raises((TypeError, ValueError), match="proof_timeout_ms"):
+        Z3ProofPolicy(proof_timeout_ms=10)
+    with pytest.raises((TypeError, ValueError), match="proof_timeout_ms"):
+        Z3ProofPolicy(proof_timeout_ms=2712)
+
+
+@pytest.mark.runtime
+def test_authority_reaches_editor_pass_bridge_and_direct_rule_configuration(
+    monkeypatch,
+) -> None:
+    """One portable authority drives every public/defaulting boundary."""
+    from pathlib import Path
+
+    import d810.core.z3_proof as z3_proof
+    from d810.backends.ast.z3_proof_policy import Z3ProofPolicy
+    from d810.core.config import ProjectConfiguration
+    from d810.core.z3_proof import Z3ProofFieldAuthority, Z3ProofPolicyAuthority
+    from d810.passes.mba_transform_catalog import mba_transform_editor_spec
+    from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+    from d810.optimizers.microcode.instructions.z3.predicates import (
+        Z3lnotRuleGeneric,
+        Z3setnzRuleGeneric,
+        Z3setzRuleGeneric,
+    )
+
+    authority = Z3ProofPolicyAuthority(
+        max_expression_nodes=Z3ProofFieldAuthority(
+            default=913, minimum=7, maximum=1913
+        ),
+        proof_timeout_ms=Z3ProofFieldAuthority(
+            default=271, minimum=11, maximum=2711
+        ),
+    )
+    monkeypatch.setattr(z3_proof, "Z3_PROOF_POLICY_AUTHORITY", authority)
+
+    for rule_class in (Z3setzRuleGeneric, Z3setnzRuleGeneric, Z3lnotRuleGeneric):
+        rule = rule_class()
+        rule.configure({})
+        assert rule.z3_proof_policy == Z3ProofPolicy(
+            max_expression_nodes=913,
+            proof_timeout_ms=271,
+        )
+
+    editor = mba_transform_editor_spec()
+    for transform_id in (
+        "z-3-setz-generic",
+        "z-3-setnz-generic",
+        "z-3-lnot-generic",
+    ):
+        item = next(
+            item for item in editor.transforms if item.transform_id == transform_id
+        )
+        assert tuple(
+            (field.default, field.minimum, field.maximum)
+            for field in item.option_fields
+        ) == ((913, 7, 1913), (271, 11, 2711))
+
+    project = ProjectConfiguration(
+        path=Path("z3-authority.runtime-config-v2.json"),
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {
+                    "pass_id": "mba-simplify",
+                    "options": {
+                        "transforms": [
+                            "z-3-setz-generic",
+                            "z-3-setnz-generic",
+                            "z-3-lnot-generic",
+                        ]
+                    },
+                }
+            ],
+        },
+    )
+    activation = pipeline_v2_hook_activation(project)
+    assert {
+        rule.name: (
+            rule.config["max_expression_nodes"],
+            rule.config["proof_timeout_ms"],
+        )
+        for rule in activation.instruction_rules
+    } == {
+        "Z3setzRuleGeneric": (913, 271),
+        "Z3setnzRuleGeneric": (913, 271),
+        "Z3lnotRuleGeneric": (913, 271),
+    }
 
 
 @pytest.mark.runtime
