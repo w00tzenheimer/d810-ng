@@ -256,7 +256,8 @@ Important metadata fields include:
 - native matcher comparisons, lazy swaps, and backend;
 - proof mode, verdict, and timing;
 - cache status and replay timing;
-- `egglog_run_count` and `replay_saved_egglog_runs`;
+- generic e-graph counters `egraph_run_count` and `replay_saved_egraph_runs`; the
+  lane may retain concrete Egglog backend metadata;
 - portable `mba_provider_outcome`.
 
 Set `collect_stage_timings` to `true` in the `mba-egraph` options to add a
@@ -269,8 +270,8 @@ A replayed result should report values equivalent to:
 ```text
 execution_path = learned_replay
 cache_status = hit
-egglog_run_count = 0
-replay_saved_egglog_runs > 0
+egraph_run_count = 0
+replay_saved_egraph_runs > 0
 ```
 
 The rebuilt result is still checked against the live candidate and proof gate.
