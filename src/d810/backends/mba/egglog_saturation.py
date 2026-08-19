@@ -7,7 +7,6 @@ so budget, receipt, and term contracts remain usable in portable unit tests.
 
 from __future__ import annotations
 
-import enum
 import importlib
 import time
 import json
@@ -17,6 +16,7 @@ from functools import partial
 
 from d810.core.typing import Any
 from d810.backends.mba.egglog_statistics import (
+    SUPPORTED_EGGLOG_VERSION,
     read_egraph_statistics,
     read_rule_firing_count,
     release_egraph_on_owner_thread,
@@ -35,6 +35,7 @@ from d810.mba.semantic_canonicalization import (
     CanonicalMbaTermView,
     canonicalize_mba_term,
 )
+from d810.mba.egraph_contracts import EgraphExtractionReceipt, EgraphSkipReason
 from d810.mba import typed_term as _typed_term
 from d810.mba.typed_term import (
     TypedBvTerm,
@@ -175,24 +176,6 @@ def _load_egglog_module() -> Any | None:
 _monotonic = time.monotonic
 
 
-class ExtractionSkipReason(enum.StrEnum):
-    """Stable wire values for successful no-op extraction outcomes."""
-
-    EGGLOG_UNAVAILABLE = "egglog_unavailable"
-    UNSUPPORTED_WIDTH_SEMANTICS = "unsupported_width_semantics"
-    NON_MBA_CANDIDATE = "non_mba_candidate"
-    CANDIDATE_BUDGET = "candidate_budget"
-    TIME_BUDGET = "time_budget"
-    ECLASS_BUDGET = "eclass_budget"
-    ENODE_BUDGET = "enode_budget"
-    RULE_FIRING_BUDGET = "rule_firing_budget"
-    NO_DEGREE_ELIGIBLE_IMPROVEMENT = "no_degree_eligible_improvement"
-    LOWERING_FAILED = "lowering_failed"
-    NATIVE_Z3_FAILED = "native_z3_failed"
-    INTERNAL_ERROR = "internal_error"
-    UNAVAILABLE_EGRAPH_STATISTICS = "unavailable_egraph_statistics"
-
-
 def _positive_integer(name: str, value: object) -> None:
     if type(value) is not int or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
@@ -270,179 +253,11 @@ class EgglogFunctionBudget:
 
 
 @dataclass(frozen=True)
-class EgglogExtractionReceipt:
-    """Immutable telemetry for either an extraction or a fail-closed skip."""
-
-    input_cost: tuple[int, int] | None = None
-    extracted_cost: tuple[int, int] | None = None
-    degree: int | None = None
-    eclass_count: int | None = None
-    enode_count: int | None = None
-    rule_firings: int = 0
-    elapsed_ms: float = 0.0
-    selected_family: str | None = None
-    selected_source: str | None = None
-    selected_aliases: tuple[str, ...] = ()
-    derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
-    island_class: str | None = None
-    island_fingerprint: str | None = None
-    operator_count: int | None = None
-    distinct_leaf_count: int | None = None
-    nonlinear_product_count: int | None = None
-    blockers: tuple[str, ...] = ()
-    native_profile: Mapping[str, object] | None = None
-    proof_mode: str = "legacy"
-    template_source_name: str | None = None
-    template_fallback_reason: str | None = None
-    template_proof_verdict: bool | None = None
-    legacy_proof_verdict: bool | None = None
-    template_proof_elapsed_ms: float | None = None
-    legacy_proof_elapsed_ms: float | None = None
-    native_matcher_backend: str | None = None
-    native_matcher_comparisons: int | None = None
-    native_matcher_lazy_swaps: int | None = None
-    native_fixed_binding_count: int | None = None
-    native_matcher_elapsed_ms: float | None = None
-    skip_reason: ExtractionSkipReason | None = None
-    canonicalizer_version: int | None = None
-    canonical_input_cost: tuple[int, int] | None = None
-    normalization_steps: tuple[str, ...] = ()
-    execution_path: str | None = None
-    cache_status: str | None = None
-    cache_key: str | None = None
-    replayed_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
-    cache_lookup_elapsed_ms: float | None = None
-    replay_rebuild_elapsed_ms: float | None = None
-    replay_proof_elapsed_ms: float | None = None
-    egglog_work_units: int = 0
-    replay_fallback_reason: str | None = None
-    # ``None`` means the producer did not measure an Egglog invocation.  A
-    # concrete value is emitted only by the saturation seam after it enters
-    # ``EGraph.run`` (or by the handler's explicit no-run paths).
-    egglog_run_count: int | None = None
-    # Explicit producer-side savings carried by a learned template.  A
-    # replay's zero runs do not establish how many fresh runs it replaced.
-    replay_saved_egglog_runs: int | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
-        if self.canonicalizer_version is not None and (
-            type(self.canonicalizer_version) is not int
-            or self.canonicalizer_version <= 0
-        ):
-            raise ValueError("canonicalizer_version must be a positive integer or null")
-        if self.proof_mode not in {"legacy", "shadow"}:
-            raise ValueError("unknown native proof mode")
-        object.__setattr__(self, "blockers", tuple(sorted(map(str, self.blockers))))
-        object.__setattr__(
-            self,
-            "derivation_trace",
-            tuple(
-                (str(family), str(source_name), tuple(aliases))
-                for family, source_name, aliases in self.derivation_trace
-            ),
-        )
-        if self.input_cost is not None:
-            object.__setattr__(self, "input_cost", tuple(self.input_cost))
-        if self.canonical_input_cost is not None:
-            object.__setattr__(
-                self, "canonical_input_cost", tuple(self.canonical_input_cost)
-            )
-        if self.extracted_cost is not None:
-            object.__setattr__(self, "extracted_cost", tuple(self.extracted_cost))
-        object.__setattr__(
-            self,
-            "normalization_steps",
-            tuple(str(step) for step in self.normalization_steps),
-        )
-        object.__setattr__(
-            self,
-            "replayed_trace",
-            tuple(
-                (str(family), str(source_name), tuple(aliases))
-                for family, source_name, aliases in self.replayed_trace
-            ),
-        )
-        if self.execution_path not in {
-            None,
-            "telemetry_only",
-            "direct_catalogue",
-            "fresh_saturation",
-            "learned_replay",
-        }:
-            raise ValueError("unknown Egglog execution path")
-        if self.cache_status not in {
-            None,
-            "disabled",
-            "miss",
-            "hit",
-            "stale",
-            "malformed",
-            "evicted",
-        }:
-            raise ValueError("unknown Egglog cache status")
-        if self.cache_key is not None and type(self.cache_key) is not str:
-            raise ValueError("cache_key must be a string or null")
-        if type(self.egglog_work_units) is not int or self.egglog_work_units < 0:
-            raise ValueError("egglog_work_units must be a non-negative integer")
-        if self.egglog_run_count is not None and (
-            type(self.egglog_run_count) is not int or self.egglog_run_count < 0
-        ):
-            raise ValueError("egglog_run_count must be a non-negative integer or null")
-        if self.replay_saved_egglog_runs is not None and (
-            type(self.replay_saved_egglog_runs) is not int
-            or self.replay_saved_egglog_runs < 0
-        ):
-            raise ValueError(
-                "replay_saved_egglog_runs must be a non-negative integer or null"
-            )
-        if self.replay_fallback_reason is not None and (
-            type(self.replay_fallback_reason) is not str
-            or not self.replay_fallback_reason
-        ):
-            raise ValueError("replay_fallback_reason must be a non-empty string or null")
-        for name in (
-            "cache_lookup_elapsed_ms",
-            "replay_rebuild_elapsed_ms",
-            "replay_proof_elapsed_ms",
-        ):
-            value = getattr(self, name)
-            if value is not None and (
-                type(value) not in (int, float) or value < 0
-            ):
-                raise ValueError(f"{name} must be a non-negative number or null")
-        if (
-            self.native_matcher_backend is not None
-            and self.native_matcher_backend
-            not in {
-                "python",
-                "cython",
-            }
-        ):
-            raise ValueError("unknown native matcher backend")
-        for name in (
-            "native_matcher_comparisons",
-            "native_matcher_lazy_swaps",
-            "native_fixed_binding_count",
-        ):
-            value = getattr(self, name)
-            if value is not None and (type(value) is not int or value < 0):
-                raise ValueError(f"{name} must be a non-negative integer or null")
-        if self.native_matcher_elapsed_ms is not None and (
-            type(self.native_matcher_elapsed_ms) is not float
-            or self.native_matcher_elapsed_ms < 0
-        ):
-            raise ValueError(
-                "native_matcher_elapsed_ms must be a non-negative float or null"
-            )
-
-
-@dataclass(frozen=True)
 class EgglogExtractionResult:
     """One immutable candidate extraction outcome and its selected provenance."""
 
     replacement_ast: Any | None
-    receipt: EgglogExtractionReceipt
+    receipt: EgraphExtractionReceipt
     replacement_term: TypedBvTerm | None = None
     selected_provenance: tuple[str, str, tuple[str, ...]] | None = None
     derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
@@ -612,10 +427,10 @@ def _extraction_result(
     cache_lookup_elapsed_ms: float | None = None,
     replay_rebuild_elapsed_ms: float | None = None,
     replay_proof_elapsed_ms: float | None = None,
-    egglog_work_units: int = 0,
+    egraph_work_units: int = 0,
     replay_fallback_reason: str | None = None,
-    egglog_run_count: int | None = None,
-    replay_saved_egglog_runs: int | None = None,
+    egraph_run_count: int | None = None,
+    replay_saved_egraph_runs: int | None = None,
     extracted_cost: tuple[int, int] | None = None,
     degree: int | None = None,
     eclass_count: int | None = None,
@@ -625,7 +440,7 @@ def _extraction_result(
     derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
     replacement_ast: Any | None = None,
     replacement_term: TypedBvTerm | None = None,
-    skip_reason: ExtractionSkipReason | None = None,
+    skip_reason: EgraphSkipReason | None = None,
     elapsed_ms: float | None = None,
     lowering: HexRaysIslandLowering | None = None,
     profile: Any | None = None,
@@ -642,7 +457,7 @@ def _extraction_result(
     return EgglogExtractionResult(
         replacement_ast=replacement_ast,
         replacement_term=replacement_term,
-        receipt=EgglogExtractionReceipt(
+        receipt=EgraphExtractionReceipt(
             input_cost=input_cost,
             canonicalizer_version=canonicalizer_version,
             canonical_input_cost=canonical_input_cost,
@@ -654,10 +469,12 @@ def _extraction_result(
             cache_lookup_elapsed_ms=cache_lookup_elapsed_ms,
             replay_rebuild_elapsed_ms=replay_rebuild_elapsed_ms,
             replay_proof_elapsed_ms=replay_proof_elapsed_ms,
-            egglog_work_units=egglog_work_units,
+            egraph_work_units=egraph_work_units,
             replay_fallback_reason=replay_fallback_reason,
-            egglog_run_count=egglog_run_count,
-            replay_saved_egglog_runs=replay_saved_egglog_runs,
+            egraph_run_count=egraph_run_count,
+            replay_saved_egraph_runs=replay_saved_egraph_runs,
+            backend="egglog",
+            backend_version=SUPPORTED_EGGLOG_VERSION,
             extracted_cost=extracted_cost,
             degree=degree,
             eclass_count=eclass_count,
@@ -695,12 +512,12 @@ _build_extraction_result = _extraction_result
 
 def extraction_receipt_for_lowering(
     lowering: HexRaysIslandLowering,
-    skip_reason: ExtractionSkipReason,
-) -> EgglogExtractionReceipt:
+    skip_reason: EgraphSkipReason,
+) -> EgraphExtractionReceipt:
     """Return a profile-bearing no-op receipt for a known native candidate."""
 
     profile = lowering.profile
-    return EgglogExtractionReceipt(
+    return EgraphExtractionReceipt(
         island_class=profile.island_class.value,
         island_fingerprint=profile.fingerprint,
         operator_count=profile.operator_count,
@@ -709,16 +526,18 @@ def extraction_receipt_for_lowering(
         blockers=tuple(blocker.value for blocker in profile.blockers),
         native_profile=profile_to_dict(profile),
         skip_reason=skip_reason,
+        backend="egglog",
+        backend_version=SUPPORTED_EGGLOG_VERSION,
     )
 
 
 def extraction_receipt_for_profile(
     profile: Any,
-    skip_reason: ExtractionSkipReason,
-) -> EgglogExtractionReceipt:
+    skip_reason: EgraphSkipReason,
+) -> EgraphExtractionReceipt:
     """Return a profile-bearing no-op receipt without requiring a native AST."""
 
-    return EgglogExtractionReceipt(
+    return EgraphExtractionReceipt(
         island_class=str(profile.island_class.value),
         island_fingerprint=str(profile.fingerprint),
         operator_count=int(profile.operator_count),
@@ -727,6 +546,8 @@ def extraction_receipt_for_profile(
         blockers=tuple(blocker.value for blocker in profile.blockers),
         native_profile=profile_to_dict(profile),
         skip_reason=skip_reason,
+        backend="egglog",
+        backend_version=SUPPORTED_EGGLOG_VERSION,
     )
 
 
@@ -804,7 +625,7 @@ def _extract_bounded_term(
         started = 0.0
     input_cost: tuple[int, int] | None = None
     canonical_view: CanonicalMbaTermView | None = None
-    egglog_run_count: int | None = None
+    egraph_run_count: int | None = None
     _base_extraction_result = partial(
         _build_extraction_result,
         lowering=lowering,
@@ -812,7 +633,7 @@ def _extract_bounded_term(
     )
 
     def _extraction_result(**kwargs):
-        kwargs["egglog_run_count"] = egglog_run_count
+        kwargs["egraph_run_count"] = egraph_run_count
         return _base_extraction_result(**kwargs)
 
     egraph: Any | None = None
@@ -824,7 +645,7 @@ def _extract_bounded_term(
                 input_cost=None,
                 execution_path="telemetry_only",
                 cache_status="disabled",
-                skip_reason=ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS,
+                skip_reason=EgraphSkipReason.UNSUPPORTED_WIDTH_SEMANTICS,
             )
         canonical_view = canonicalize_mba_term(term)
         term = canonical_view.canonical_term
@@ -849,26 +670,26 @@ def _extract_bounded_term(
             return _extraction_result(
                 started=started,
                 input_cost=input_cost,
-                skip_reason=ExtractionSkipReason.CANDIDATE_BUDGET,
+                skip_reason=EgraphSkipReason.CANDIDATE_BUDGET,
             )
         if len(_term_leafs(term)) > budget.max_leaves:
             return _extraction_result(
                 started=started,
                 input_cost=input_cost,
-                skip_reason=ExtractionSkipReason.CANDIDATE_BUDGET,
+                skip_reason=EgraphSkipReason.CANDIDATE_BUDGET,
             )
         if budget.time_budget_ms < _MINIMUM_EGGLOG_RUN_BUDGET_MS:
             return _extraction_result(
                 started=started,
                 input_cost=input_cost,
-                skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                skip_reason=EgraphSkipReason.TIME_BUDGET,
             )
         elapsed = _elapsed_ms(started)
         if elapsed > budget.time_budget_ms:
             return _extraction_result(
                 started=started,
                 input_cost=input_cost,
-                skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                skip_reason=EgraphSkipReason.TIME_BUDGET,
                 elapsed_ms=elapsed,
             )
 
@@ -881,7 +702,7 @@ def _extract_bounded_term(
             return _extraction_result(
                 started=started,
                 input_cost=input_cost,
-                skip_reason=ExtractionSkipReason.EGGLOG_UNAVAILABLE,
+                skip_reason=EgraphSkipReason.RUNTIME_UNAVAILABLE,
                 elapsed_ms=elapsed,
             )
         ordered_rules = tuple(rules)
@@ -911,7 +732,7 @@ def _extract_bounded_term(
                     return _extraction_result(
                         started=started,
                         input_cost=input_cost,
-                        skip_reason=ExtractionSkipReason.CANDIDATE_BUDGET,
+                        skip_reason=EgraphSkipReason.CANDIDATE_BUDGET,
                     )
 
                 for rule, application, catalogue_index in applications:
@@ -920,7 +741,7 @@ def _extract_bounded_term(
                         return _extraction_result(
                             started=started,
                             input_cost=input_cost,
-                            skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                            skip_reason=EgraphSkipReason.TIME_BUDGET,
                             elapsed_ms=elapsed,
                         )
                     replacement = application
@@ -929,14 +750,14 @@ def _extract_bounded_term(
                         return _extraction_result(
                             started=started,
                             input_cost=input_cost,
-                            skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                            skip_reason=EgraphSkipReason.TIME_BUDGET,
                             elapsed_ms=elapsed,
                         )
                     if len(rewrites) + 1 > budget.max_rule_firings:
                         return _extraction_result(
                             started=started,
                             input_cost=input_cost,
-                            skip_reason=ExtractionSkipReason.RULE_FIRING_BUDGET,
+                            skip_reason=EgraphSkipReason.RULE_FIRING_BUDGET,
                         )
                     projected_work_unit_keys = (
                         registration_work_unit_keys
@@ -950,13 +771,13 @@ def _extract_bounded_term(
                         return _extraction_result(
                             started=started,
                             input_cost=input_cost,
-                            skip_reason=ExtractionSkipReason.ECLASS_BUDGET,
+                            skip_reason=EgraphSkipReason.ECLASS_BUDGET,
                         )
                     if projected_work_units > budget.max_enodes:
                         return _extraction_result(
                             started=started,
                             input_cost=input_cost,
-                            skip_reason=ExtractionSkipReason.ENODE_BUDGET,
+                            skip_reason=EgraphSkipReason.ENODE_BUDGET,
                         )
                     source_expression = DegreeExpr.at(
                         degree,
@@ -1019,7 +840,7 @@ def _extract_bounded_term(
             return _extraction_result(
                 started=started,
                 input_cost=input_cost,
-                skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                skip_reason=EgraphSkipReason.TIME_BUDGET,
                 elapsed_ms=elapsed,
             )
         egraph = egglog.EGraph()
@@ -1039,10 +860,10 @@ def _extract_bounded_term(
                     started=started,
                     input_cost=input_cost,
                     rule_firings=sum(matches_per_rule.values()),
-                    skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                    skip_reason=EgraphSkipReason.TIME_BUDGET,
                     elapsed_ms=elapsed,
                 )
-            egglog_run_count = (egglog_run_count or 0) + 1
+            egraph_run_count = (egraph_run_count or 0) + 1
             round_report = egraph.run(1)
             round_firings = read_rule_firing_count(round_report)
             statistics = read_egraph_statistics(egraph)
@@ -1052,7 +873,7 @@ def _extract_bounded_term(
                     started=started,
                     input_cost=input_cost,
                     rule_firings=sum(matches_per_rule.values()) + (round_firings or 0),
-                    skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                    skip_reason=EgraphSkipReason.TIME_BUDGET,
                     elapsed_ms=elapsed,
                 )
             if round_firings is None or statistics is None:
@@ -1060,7 +881,7 @@ def _extract_bounded_term(
                     started=started,
                     input_cost=input_cost,
                     rule_firings=sum(matches_per_rule.values()) + (round_firings or 0),
-                    skip_reason=ExtractionSkipReason.UNAVAILABLE_EGRAPH_STATISTICS,
+                    skip_reason=EgraphSkipReason.RUNTIME_UNAVAILABLE,
                     elapsed_ms=elapsed,
                 )
             for declaration, count in round_report.num_matches_per_rule.items():
@@ -1076,7 +897,7 @@ def _extract_bounded_term(
                     eclass_count=eclass_count,
                     enode_count=enode_count,
                     rule_firings=current_firings,
-                    skip_reason=ExtractionSkipReason.ECLASS_BUDGET,
+                    skip_reason=EgraphSkipReason.ECLASS_BUDGET,
                 )
             if enode_count > budget.max_enodes:
                 return _extraction_result(
@@ -1085,7 +906,7 @@ def _extract_bounded_term(
                     eclass_count=eclass_count,
                     enode_count=enode_count,
                     rule_firings=current_firings,
-                    skip_reason=ExtractionSkipReason.ENODE_BUDGET,
+                    skip_reason=EgraphSkipReason.ENODE_BUDGET,
                 )
             if current_firings > budget.max_rule_firings:
                 return _extraction_result(
@@ -1094,7 +915,7 @@ def _extract_bounded_term(
                     eclass_count=eclass_count,
                     enode_count=enode_count,
                     rule_firings=current_firings,
-                    skip_reason=ExtractionSkipReason.RULE_FIRING_BUDGET,
+                    skip_reason=EgraphSkipReason.RULE_FIRING_BUDGET,
                 )
             if not getattr(round_report, "updated", True):
                 break
@@ -1114,17 +935,17 @@ def _extract_bounded_term(
         if eclass_count > budget.max_eclasses:
             return _extraction_result(
                 **common,
-                skip_reason=ExtractionSkipReason.ECLASS_BUDGET,
+                skip_reason=EgraphSkipReason.ECLASS_BUDGET,
             )
         if enode_count > budget.max_enodes:
             return _extraction_result(
                 **common,
-                skip_reason=ExtractionSkipReason.ENODE_BUDGET,
+                skip_reason=EgraphSkipReason.ENODE_BUDGET,
             )
         if rule_firings > budget.max_rule_firings:
             return _extraction_result(
                 **common,
-                skip_reason=ExtractionSkipReason.RULE_FIRING_BUDGET,
+                skip_reason=EgraphSkipReason.RULE_FIRING_BUDGET,
             )
 
         selections: list[
@@ -1172,7 +993,7 @@ def _extract_bounded_term(
         if not selections:
             return _extraction_result(
                 **common,
-                skip_reason=ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+                skip_reason=EgraphSkipReason.NON_MBA_CANDIDATE,
             )
         selection_key, replacement, selected = min(
             selections,
@@ -1182,7 +1003,7 @@ def _extract_bounded_term(
         if elapsed > budget.time_budget_ms:
             return _extraction_result(
                 **common,
-                skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                skip_reason=EgraphSkipReason.TIME_BUDGET,
                 elapsed_ms=elapsed,
             )
         return _extraction_result(
@@ -1191,7 +1012,7 @@ def _extract_bounded_term(
             degree=selected.degree,
             provenance=selected.provenance,
             derivation_trace=selected.derivation_trace,
-            egglog_work_units=scheduled_work_units,
+            egraph_work_units=scheduled_work_units,
             replacement_ast=None if lowering is None else replacement,
             replacement_term=selected.term,
         )
@@ -1203,7 +1024,7 @@ def _extract_bounded_term(
         return _extraction_result(
             started=started,
             input_cost=input_cost,
-            skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
+            skip_reason=EgraphSkipReason.INTERNAL_ERROR,
             elapsed_ms=elapsed,
         )
     finally:
@@ -1280,9 +1101,7 @@ __all__ = [
     "EGGLOG_EXPLORATION_SCOPE",
     "EgglogFunctionBudget",
     "EgglogExtractionBudget",
-    "EgglogExtractionReceipt",
     "EgglogExtractionResult",
-    "ExtractionSkipReason",
     "TypedBvTerm",
     "canonicalize_ac_term",
     "extract_bounded_candidate",

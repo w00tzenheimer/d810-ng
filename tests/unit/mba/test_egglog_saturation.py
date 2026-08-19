@@ -24,9 +24,7 @@ from d810.backends.mba.egglog_structural_rules import (
 from d810.backends.mba.egglog_saturation import (
     EgglogFunctionBudget,
     EgglogExtractionBudget,
-    EgglogExtractionReceipt,
     EgglogExtractionResult,
-    ExtractionSkipReason,
     TypedBvTerm,
     canonicalize_ac_term,
     extract_bounded_candidate,
@@ -42,7 +40,31 @@ from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.sub import Sub_ComplementMaskHodurRule_1
 from d810.mba.rules.xor import Xor_NestedStuff
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
-from d810.mba.differential_report import egglog_receipt_to_outcome
+from d810.mba.differential_report import egraph_receipt_to_outcome
+from d810.mba.egraph_contracts import EgraphExtractionReceipt, EgraphSkipReason
+
+
+def test_saturation_uses_the_portable_receipt_contract() -> None:
+    profile = MbaIslandProfile(
+        width_bits=32,
+        operator_count=1,
+        total_node_count=1,
+        distinct_leaf_count=1,
+        constant_count=0,
+        operations=(("add", 1),),
+        has_boolean=False,
+        has_arithmetic=True,
+        nonlinear_product_count=0,
+        island_class=MbaIslandClass.LINEAR_MBA,
+        blockers=(),
+        fingerprint="portable-contract",
+    )
+    receipt = egglog_saturation.extraction_receipt_for_profile(
+        profile,
+        EgraphSkipReason.CANDIDATE_BUDGET,
+    )
+    assert type(receipt) is EgraphExtractionReceipt
+    assert type(receipt.skip_reason) is EgraphSkipReason
 
 
 def _leaf(name: str, *, width: int = 32) -> TypedBvTerm:
@@ -142,7 +164,7 @@ def test_full_structural_inventory_registers_one_semantic_rotate_application():
     )
     assert result.replacement_term == _fixed_shift("rol", x, 31)
     assert result.receipt.rule_firings == 1
-    assert result.receipt.egglog_work_units > 0
+    assert result.receipt.egraph_work_units > 0
     assert result.receipt.derivation_trace == (
         ("fixed_rotate", "rol_64_31", ("ror_64_33",)),
     )
@@ -423,7 +445,7 @@ def test_leaf_key_rejects_same_repr_opaque_parts_before_ac_sorting():
 
 def test_budget_and_receipt_are_immutable_and_have_stable_contracts():
     budget = EgglogExtractionBudget()
-    receipt = EgglogExtractionReceipt()
+    receipt = EgraphExtractionReceipt()
 
     assert budget == EgglogExtractionBudget(
         max_leaves=2,
@@ -444,7 +466,7 @@ def test_budget_and_receipt_are_immutable_and_have_stable_contracts():
 
 
 def test_receipt_positional_prefix_keeps_legacy_field_order():
-    receipt = EgglogExtractionReceipt(
+    receipt = EgraphExtractionReceipt(
         (1, 2),
         (3, 4),
         5,
@@ -468,7 +490,7 @@ def test_receipt_positional_prefix_keeps_legacy_field_order():
 
 def test_replay_receipt_and_provider_outcome_keep_path_latency_and_work_telemetry():
     trace = (("xor", "Xor_HackersDelightRule_3", ()),)
-    receipt = EgglogExtractionReceipt(
+    receipt = EgraphExtractionReceipt(
         input_cost=(5, 8),
         extracted_cost=(2, 3),
         execution_path="learned_replay",
@@ -478,20 +500,20 @@ def test_replay_receipt_and_provider_outcome_keep_path_latency_and_work_telemetr
         cache_lookup_elapsed_ms=0.25,
         replay_rebuild_elapsed_ms=0.75,
         replay_proof_elapsed_ms=1.25,
-        egglog_work_units=0,
-        egglog_run_count=0,
+        egraph_work_units=0,
+        egraph_run_count=0,
         derivation_trace=trace,
     )
 
-    outcome = egglog_receipt_to_outcome(receipt)
+    outcome = egraph_receipt_to_outcome(receipt)
     assert outcome.metadata["execution_path"] == "learned_replay"
     assert outcome.metadata["cache_status"] == "hit"
     assert outcome.metadata["replayed_trace"] == trace
     assert outcome.metadata["cache_lookup_elapsed_ms"] == 0.25
     assert outcome.metadata["replay_rebuild_elapsed_ms"] == 0.75
     assert outcome.metadata["replay_proof_elapsed_ms"] == 1.25
-    assert outcome.metadata["egglog_work_units"] == 0
-    assert outcome.metadata["egglog_run_count"] == 0
+    assert outcome.metadata["egraph_work_units"] == 0
+    assert outcome.metadata["egraph_run_count"] == 0
 
 
 def test_run_count_is_present_only_after_an_actual_egglog_invocation(monkeypatch):
@@ -546,7 +568,7 @@ def test_run_count_is_present_only_after_an_actual_egglog_invocation(monkeypatch
     )
 
     assert run_calls == [1]
-    assert result.receipt.egglog_run_count == 1
+    assert result.receipt.egraph_run_count == 1
 
     telemetry = egglog_saturation.extract_bounded_term(
         raw,
@@ -555,7 +577,7 @@ def test_run_count_is_present_only_after_an_actual_egglog_invocation(monkeypatch
         destination_size=4,
         catalogue=catalogue,
     )
-    assert telemetry.receipt.egglog_run_count is None
+    assert telemetry.receipt.egraph_run_count is None
 
 
 def test_profile_receipt_preserves_portable_native_capture_metadata():
@@ -576,9 +598,9 @@ def test_profile_receipt_preserves_portable_native_capture_metadata():
 
     receipt = egglog_saturation.extraction_receipt_for_profile(
         profile,
-        ExtractionSkipReason.CANDIDATE_BUDGET,
+        EgraphSkipReason.CANDIDATE_BUDGET,
     )
-    outcome = egglog_receipt_to_outcome(receipt)
+    outcome = egraph_receipt_to_outcome(receipt)
 
     assert outcome.fingerprint == profile.fingerprint
     assert outcome.metadata["native_profile"]["fingerprint"] == profile.fingerprint
@@ -637,7 +659,7 @@ def test_canonical_match_budget_never_registers_partial_catalogue_application(
     )
 
     assert events == []
-    assert result.receipt.skip_reason is ExtractionSkipReason.CANDIDATE_BUDGET
+    assert result.receipt.skip_reason is EgraphSkipReason.CANDIDATE_BUDGET
 
 
 def test_invalid_automatic_catalogue_fails_closed_before_egglog_construct(
@@ -675,7 +697,7 @@ def test_invalid_automatic_catalogue_fails_closed_before_egglog_construct(
     )
 
     assert events == []
-    assert result.receipt.skip_reason is ExtractionSkipReason.INTERNAL_ERROR
+    assert result.receipt.skip_reason is EgraphSkipReason.INTERNAL_ERROR
 
 
 def test_budget_accepts_only_supported_semantic_degrees():
@@ -687,20 +709,18 @@ def test_budget_accepts_only_supported_semantic_degrees():
 
 
 def test_extraction_skip_reason_wire_values_are_stable():
-    assert {reason.name: reason.value for reason in ExtractionSkipReason} == {
-        "EGGLOG_UNAVAILABLE": "egglog_unavailable",
-        "UNSUPPORTED_WIDTH_SEMANTICS": "unsupported_width_semantics",
+    assert {reason.name: reason.value for reason in EgraphSkipReason} == {
+        "RUNTIME_UNAVAILABLE": "runtime_unavailable",
         "NON_MBA_CANDIDATE": "non_mba_candidate",
+        "UNSUPPORTED_WIDTH_SEMANTICS": "unsupported_width_semantics",
         "CANDIDATE_BUDGET": "candidate_budget",
         "TIME_BUDGET": "time_budget",
         "ECLASS_BUDGET": "eclass_budget",
         "ENODE_BUDGET": "enode_budget",
         "RULE_FIRING_BUDGET": "rule_firing_budget",
-        "NO_DEGREE_ELIGIBLE_IMPROVEMENT": "no_degree_eligible_improvement",
         "LOWERING_FAILED": "lowering_failed",
-        "NATIVE_Z3_FAILED": "native_z3_failed",
+        "PROOF_FAILED": "proof_failed",
         "INTERNAL_ERROR": "internal_error",
-        "UNAVAILABLE_EGRAPH_STATISTICS": "unavailable_egraph_statistics",
     }
 
 
@@ -1097,7 +1117,7 @@ def test_native_reconstruction_compares_typed_live_key_components(
 
 
 def test_extraction_result_is_immutable_and_carries_tuple_provenance():
-    receipt = EgglogExtractionReceipt(
+    receipt = EgraphExtractionReceipt(
         selected_family="xor",
         selected_source="CanonicalRule",
         selected_aliases=("AliasRule",),
@@ -1137,7 +1157,7 @@ def test_egglog_unavailability_returns_exact_noop_receipt(
     )
 
     assert result.replacement_ast is None
-    assert result.receipt.skip_reason is ExtractionSkipReason.EGGLOG_UNAVAILABLE
+    assert result.receipt.skip_reason is EgraphSkipReason.RUNTIME_UNAVAILABLE
     assert result.receipt.island_class == "not_mba"
     assert result.receipt.island_fingerprint is not None
     assert result.receipt.operator_count == 1
@@ -1188,7 +1208,7 @@ def test_operator_budget_returns_candidate_budget_before_registration(
     assert result.receipt.input_cost == (2, 5)
     assert result.receipt.island_class == "linear_mba"
     assert result.receipt.operator_count == 2
-    assert result.receipt.skip_reason is ExtractionSkipReason.CANDIDATE_BUDGET
+    assert result.receipt.skip_reason is EgraphSkipReason.CANDIDATE_BUDGET
 
 
 def test_injected_monotonic_clock_returns_time_budget_noop(
@@ -1223,7 +1243,7 @@ def test_injected_monotonic_clock_returns_time_budget_noop(
 
     assert result.replacement_ast is None
     assert result.receipt.elapsed_ms == pytest.approx(4.0)
-    assert result.receipt.skip_reason is ExtractionSkipReason.TIME_BUDGET
+    assert result.receipt.skip_reason is EgraphSkipReason.TIME_BUDGET
 
 
 def test_default_time_budget_does_not_load_or_construct_egglog(
@@ -1251,7 +1271,7 @@ def test_default_time_budget_does_not_load_or_construct_egglog(
 
     assert result.replacement_ast is None
     assert result.receipt.input_cost == (1, 3)
-    assert result.receipt.skip_reason is ExtractionSkipReason.TIME_BUDGET
+    assert result.receipt.skip_reason is EgraphSkipReason.TIME_BUDGET
 
 
 def test_distinct_live_leaf_cap_returns_candidate_budget(
@@ -1283,7 +1303,7 @@ def test_distinct_live_leaf_cap_returns_candidate_budget(
     )
 
     assert result.receipt.input_cost == (1, 3)
-    assert result.receipt.skip_reason is ExtractionSkipReason.CANDIDATE_BUDGET
+    assert result.receipt.skip_reason is EgraphSkipReason.CANDIDATE_BUDGET
 
 
 @pytest.mark.parametrize("malformation", ["missing", "truncated", "unknown"])
@@ -1396,7 +1416,7 @@ def test_bounded_extraction_releases_egraph_on_its_owner_thread(monkeypatch):
 
     assert (
         result.receipt.skip_reason
-        is ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT
+        is EgraphSkipReason.NON_MBA_CANDIDATE
     )
     assert released == [egraph]
 
@@ -1700,7 +1720,7 @@ def test_unknown_runtime_statistics_return_exact_unavailable_receipt(
 
     assert result.replacement_ast is None
     assert (
-        result.receipt.skip_reason is ExtractionSkipReason.UNAVAILABLE_EGRAPH_STATISTICS
+        result.receipt.skip_reason is EgraphSkipReason.RUNTIME_UNAVAILABLE
     )
     assert result.receipt.rule_firings == (0 if malformation == "run-report" else 2)
 
@@ -1758,7 +1778,7 @@ def test_frontier_time_exhaustion_stops_before_run(
     )
 
     assert len(applications) == 1
-    assert result.receipt.skip_reason is ExtractionSkipReason.TIME_BUDGET
+    assert result.receipt.skip_reason is EgraphSkipReason.TIME_BUDGET
 
 
 def test_pre_run_frontier_firing_cap_avoids_registration_and_execution(
@@ -1825,7 +1845,7 @@ def test_pre_run_frontier_firing_cap_avoids_registration_and_execution(
         catalogue=_explicit_legacy_test_catalogue(rules),
     )
 
-    assert result.receipt.skip_reason is ExtractionSkipReason.RULE_FIRING_BUDGET
+    assert result.receipt.skip_reason is EgraphSkipReason.RULE_FIRING_BUDGET
 
 
 def test_default_three_ms_guard_rejects_estimated_run_before_egglog_execution(
@@ -1874,7 +1894,7 @@ def test_default_three_ms_guard_rejects_estimated_run_before_egglog_execution(
     result = extract_bounded_candidate(candidate, (rule,), EgglogExtractionBudget(), 4)
 
     assert calls == []
-    assert result.receipt.skip_reason is ExtractionSkipReason.TIME_BUDGET
+    assert result.receipt.skip_reason is EgraphSkipReason.TIME_BUDGET
 
 
 def test_canonicalization_only_shrinkage_is_not_an_eligible_rewrite(monkeypatch):
@@ -1933,7 +1953,7 @@ def test_canonicalization_only_shrinkage_is_not_an_eligible_rewrite(monkeypatch)
     assert result.receipt.canonical_input_cost == typed_term.term_cost(canonical)
     assert (
         result.receipt.skip_reason
-        is ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT
+        is EgraphSkipReason.NON_MBA_CANDIDATE
     )
 
 

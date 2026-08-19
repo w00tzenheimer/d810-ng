@@ -163,11 +163,11 @@ def test_complementary_rotate_residual_uses_only_width_correct_certified_rule() 
 def test_refusal_rows_are_explicit_and_never_provider_yield() -> None:
     cases = _manifest_cases()
     assert tuple(cases) == _TASK13_CASE_IDS
-    assert cases["fixed_rotate_complementary_32"]["expected_route"] == ["egglog"]
+    assert cases["fixed_rotate_complementary_32"]["expected_route"] == ["egraph"]
     for case_id, blocker in (
         (
             "fixed_shift_noncomplementary_32",
-            "no_degree_eligible_improvement",
+            "non_mba_candidate",
         ),
         ("fixed_shift_arithmetic_right_32", "ambiguous_shift"),
         ("fixed_shift_variable_count_32", "ambiguous_shift"),
@@ -231,9 +231,9 @@ def test_native_ast_negative_fixed_shifts_are_noops_with_stable_blockers() -> No
     import ida_hexrays
     from d810.backends.mba.egglog_saturation import (
         EgglogExtractionBudget,
-        ExtractionSkipReason,
         extract_bounded_candidate,
     )
+    from d810.mba.egraph_contracts import EgraphSkipReason
     from d810.backends.mba.egglog_structural_rules import (
         compile_all_fixed_rotate_rules,
         structural_catalogue_for_rules,
@@ -274,7 +274,7 @@ def test_native_ast_negative_fixed_shifts_are_noops_with_stable_blockers() -> No
     assert no_rule.replacement_ast is None
     assert (
         no_rule.receipt.skip_reason
-        is ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT
+        is EgraphSkipReason.NON_MBA_CANDIDATE
     )
 
     arithmetic_lowering = lower_hexrays_island(
@@ -521,12 +521,12 @@ def test_native_ast_real_handler_route_measures_egglog_and_proof(
         assert receipt.execution_path == "fresh_saturation"
         assert receipt.selected_family == "xor"
         assert receipt.selected_source == "Xor_HackersDelightRule_3"
-        assert receipt.egglog_run_count == len(run_calls) == 1
+        assert receipt.egraph_run_count == len(run_calls) == 1
         assert receipt.legacy_proof_verdict is True
         assert first_handler.last_rule_family == "xor"
         first_template = first_handler._pending_composite_rewrite
         assert first_template is not None
-        assert first_template.egglog_run_count == receipt.egglog_run_count
+        assert first_template.egraph_run_count == receipt.egraph_run_count
         first_handler.record_mutation_accepted()
         assert first_handler.provider_outcomes()[-1].status is ProviderOutcomeStatus.APPLIED
     finally:
@@ -553,8 +553,8 @@ def test_native_ast_real_handler_route_measures_egglog_and_proof(
         replay_receipt = second_handler.last_extraction_receipt
         assert replay_receipt is not None
         assert replay_receipt.execution_path == "learned_replay"
-        assert replay_receipt.egglog_run_count == 0
-        assert replay_receipt.replay_saved_egglog_runs == 1
+        assert replay_receipt.egraph_run_count == 0
+        assert replay_receipt.replay_saved_egraph_runs == 1
         assert replay_receipt.legacy_proof_verdict is True
         assert len(run_calls) == before_replay_runs
         second_handler.record_mutation_accepted()
@@ -578,7 +578,7 @@ def test_native_ast_real_handler_route_measures_egglog_and_proof(
             output_term=replacement_term,
             derivation_trace=first_template.derivation_trace,
             semantics=stale_semantics,
-            egglog_run_count=first_template.egglog_run_count,
+            egraph_run_count=first_template.egraph_run_count,
         )
 
         class StaleCache:
@@ -599,7 +599,7 @@ def test_native_ast_real_handler_route_measures_egglog_and_proof(
             assert stale_receipt.execution_path == "fresh_saturation"
             assert stale_receipt.cache_status == "stale"
             assert stale_receipt.replay_fallback_reason == "stale_template"
-            assert stale_receipt.egglog_run_count == 1
+            assert stale_receipt.egraph_run_count == 1
             assert len(run_calls) == before_fresh_runs + 1
             assert stale_receipt.legacy_proof_verdict is True
             stale_handler.record_mutation_accepted()
@@ -742,5 +742,5 @@ class TestNativeFixedShiftResidual:
         assert result.receipt.selected_source == "rol_32_7"
         assert result.receipt.degree == 1
         assert result.receipt.rule_firings == 1
-        assert result.receipt.egglog_run_count is not None
-        assert result.receipt.egglog_run_count >= 1
+        assert result.receipt.egraph_run_count is not None
+        assert result.receipt.egraph_run_count >= 1

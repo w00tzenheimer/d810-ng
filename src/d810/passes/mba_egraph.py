@@ -13,6 +13,7 @@ from d810.core.pass_editor_spec import (
     PassEditorSpec,
 )
 from d810.core.typing import Mapping
+from d810.mba.egraph_contracts import MbaEgraphOptions as _MbaEgraphOptions
 from d810.ir.maturity import IRMaturity
 from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
 from d810.passes.pass_pipeline import (
@@ -48,33 +49,6 @@ MBA_EGRAPH_FAMILIES = (
 
 
 @dataclass(frozen=True)
-class MbaEgraphOptions:
-    """Validated portable options for one bounded Egglog extraction."""
-
-    max_leaves: int = 2
-    max_operator_nodes: int = 10
-    max_degree: int = 1
-    saturation_rounds: int = 2
-    max_eclasses: int = 64
-    max_enodes: int = 128
-    max_rule_firings: int = 32
-    cross_block_constant_preparation: bool = False
-    cross_block_def_use_preparation: bool = False
-    learned_replay_enabled: bool = DEFAULT_LEARNED_REPLAY_ENABLED
-    learned_replay_max_entries: int = DEFAULT_LEARNED_REPLAY_MAX_ENTRIES
-    learned_replay_max_bytes: int = DEFAULT_LEARNED_REPLAY_MAX_BYTES
-    time_budget_ms: int = 3
-    function_time_budget_ms: int | None = None
-    residual_only: bool = False
-    require_proof: bool = True
-    collect_stage_timings: bool = False
-    execution_mode: str = "interactive"
-    native_proof_mode: str = "legacy"
-    families: tuple[str, ...] = DEFAULT_FAMILIES
-    maturities: tuple[str, ...] = DEFAULT_MATURITIES
-
-
-@dataclass(frozen=True)
 class MbaEgraphPass(PipelinePass):
     """Portable descriptor; the live hook stage performs the extraction."""
 
@@ -107,7 +81,7 @@ class MbaEgraphPass(PipelinePass):
 
 def parse_mba_egraph_options(
     config: PipelineConfig,
-) -> MbaEgraphOptions:
+) -> _MbaEgraphOptions:
     if config.pass_id != MBA_EGRAPH_PASS_ID:
         raise PipelineConfigError(
             f"expected {MBA_EGRAPH_PASS_ID!r}, got {config.pass_id!r}"
@@ -302,7 +276,7 @@ def parse_mba_egraph_options(
         raise PipelineConfigError(
             "mba-egraph options.maturities must name supported IR maturities"
         )
-    return MbaEgraphOptions(
+    return _MbaEgraphOptions(
         max_leaves=max_leaves,
         max_operator_nodes=max_operator_nodes,
         max_degree=max_degree,
@@ -607,7 +581,6 @@ __all__ = [
     "MBA_EGRAPH_FAMILIES",
     "MBA_EGRAPH_PASS_ID",
     "MBA_EGRAPH_STAGE_ID",
-    "MbaEgraphOptions",
     "build_mba_egraph_pass",
     "mba_egraph_editor_spec",
     "parse_mba_egraph_options",

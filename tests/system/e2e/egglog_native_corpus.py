@@ -76,8 +76,8 @@ def build_native_egglog_attempt_receipt(
     outcomes = tuple(attempts)
     if not outcomes:
         raise ValueError("corpus must contain at least one live attempt")
-    if any(outcome.provider.value != "egglog" for outcome in outcomes):
-        raise ValueError("corpus must contain only Egglog provider attempts")
+    if any(outcome.provider.value != "egraph" for outcome in outcomes):
+        raise ValueError("corpus must contain only e-graph provider attempts")
 
     stage_counts = Counter()
     serialized_attempts: list[dict[str, object]] = []

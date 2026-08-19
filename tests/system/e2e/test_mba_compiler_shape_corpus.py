@@ -412,13 +412,13 @@ def test_domain_lifted_provider_routes_are_evidence_bounded() -> None:
     }
     assert cases["canonical_xor_negative_coefficient_32"]["expected_route"] == [
         "catalogue",
-        "egglog",
+        "egraph",
     ]
     assert cases["equivalent_xor_replay_32"]["expected_route"] == [
         "catalogue",
-        "egglog",
+        "egraph",
     ]
-    assert cases["fixed_rotate_complementary_32"]["expected_route"] == ["egglog"]
+    assert cases["fixed_rotate_complementary_32"]["expected_route"] == ["egraph"]
     for case_id in (
         "fixed_shift_noncomplementary_32",
         "fixed_shift_arithmetic_right_32",

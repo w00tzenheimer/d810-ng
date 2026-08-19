@@ -20,7 +20,7 @@ def test_native_egglog_profile_keeps_outcomes_and_partial_stages_separate():
             SimpleNamespace(
                 rule_name="EgglogOptimizer",
                 metadata={
-                    "skip_reason": "native_z3_failed",
+                    "skip_reason": "proof_failed",
                     "stage_timings_ms": {
                         "root_eligibility": 2.0,
                         "ast_construction": 3.0,
@@ -34,7 +34,7 @@ def test_native_egglog_profile_keeps_outcomes_and_partial_stages_separate():
     assert build_native_egglog_profile(stats, corpus="fixture") == {
         "corpus": "fixture",
         "execution_count": 2,
-        "outcomes": {"accepted": 1, "native_z3_failed": 1},
+        "outcomes": {"accepted": 1, "proof_failed": 1},
         "source_names": [["Add_HackersDelightRule_2"]],
         "stage_sample_counts": {"ast_construction": 1, "root_eligibility": 2},
         "stage_timing_ms": {

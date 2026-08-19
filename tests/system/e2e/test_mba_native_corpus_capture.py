@@ -138,7 +138,7 @@ def _assert_task13_capture_rows(
                 if outcome.status is not ProviderOutcomeStatus.APPLIED:
                     continue
                 assert outcome.source_provenance
-                if outcome.provider is MbaProviderKind.EGGLOG:
+                if outcome.provider is MbaProviderKind.EGRAPH:
                     metadata = outcome.metadata or {}
                     assert metadata["execution_path"] in {
                         "direct_catalogue",
@@ -431,7 +431,7 @@ class TestNativeMbaCorpusCapture:
                 "provider_execution_modes": {
                     MbaProviderKind.STRUCTURAL_CHAIN.value: "interactive",
                     MbaProviderKind.CATALOGUE.value: "interactive",
-                    MbaProviderKind.EGGLOG.value: egglog_mode,
+                    MbaProviderKind.EGRAPH.value: egglog_mode,
                     MbaProviderKind.COEFFICIENT_SOLVER.value: "extension_unavailable",
                 },
                 "whole_function_elapsed_ms_by_case": whole_function_elapsed_ms,
@@ -495,7 +495,7 @@ class TestNativeMbaCorpusCapture:
                             {
                                 "population": "candidate",
                                 "mode": egglog_mode,
-                                "provider": MbaProviderKind.EGGLOG.value,
+                                "provider": MbaProviderKind.EGRAPH.value,
                             }
                         ],
                     }
@@ -554,7 +554,7 @@ class TestNativeMbaCorpusCapture:
             {
                 "population": "candidate",
                 "mode": egglog_mode,
-                "provider": MbaProviderKind.EGGLOG.value,
+                "provider": MbaProviderKind.EGRAPH.value,
             },
         ]
         _assert_task13_capture_rows(
@@ -567,7 +567,7 @@ class TestNativeMbaCorpusCapture:
         evidence = report["summary"]["rollout_evidence"]
         assert egglog_mode in evidence["whole_function_latency_by_mode"], evidence
         whole_function_lane = evidence["whole_function_latency_by_mode"][egglog_mode][
-            MbaProviderKind.EGGLOG.value
+            MbaProviderKind.EGRAPH.value
         ]
         assert whole_function_lane["count"] == len(whole_function_elapsed_ms)
         assert whole_function_lane["p50_ms"] is not None
@@ -578,7 +578,7 @@ class TestNativeMbaCorpusCapture:
             assert "interactive" in evidence["candidate_latency_by_mode"], evidence
         else:
             zero_sample_lane = evidence["candidate_latency_by_mode"][egglog_mode][
-                MbaProviderKind.EGGLOG.value
+                MbaProviderKind.EGRAPH.value
             ]
             assert zero_sample_lane == {
                 "count": 0,
@@ -589,7 +589,7 @@ class TestNativeMbaCorpusCapture:
                 outcome
                 for case in report["cases"]
                 for outcome in case["outcomes"]
-                if outcome["provider"] == MbaProviderKind.EGGLOG.value
+                if outcome["provider"] == MbaProviderKind.EGRAPH.value
             )
             assert all(row["status"] != ProviderOutcomeStatus.APPLIED.value for row in egglog_rows)
 

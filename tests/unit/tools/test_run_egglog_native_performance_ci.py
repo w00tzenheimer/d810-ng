@@ -378,7 +378,7 @@ def test_comparator_rejects_incomplete_real_corpus_receipts(
             "stage sample counts must equal execution_count",
         ),
         (
-            lambda _python, cython: cython[0].update(outcomes={"native_z3_failed": 1}),
+            lambda _python, cython: cython[0].update(outcomes={"proof_failed": 1}),
             "native_outcomes_match",
         ),
         (
@@ -569,7 +569,7 @@ def test_comparator_accepts_provenance_bearing_shadow_divergence() -> None:
         attempt = real["attempts"][0]
         attempt.update(
             status="proof_failed",
-            refusal_reason="native_z3_failed",
+            refusal_reason="proof_failed",
             template_proof_verdict=False,
             legacy_proof_verdict=True,
             template_fallback_reason="shadow_divergence",
@@ -586,7 +586,7 @@ def test_comparator_rejects_provenance_free_proof_failure_and_unreached_proof() 
     attempt = cython_rows[1]["attempts"][0]
     attempt.update(
         status="proof_failed",
-        refusal_reason="native_z3_failed",
+        refusal_reason="proof_failed",
         source_names=[],
         template_proof_verdict=False,
         legacy_proof_verdict=True,

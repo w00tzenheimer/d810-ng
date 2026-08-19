@@ -82,11 +82,11 @@ def test_domain_lifted_rows_declare_source_truth_and_native_evidence() -> None:
         assert isinstance(case["semantic_form"], str)
         assert isinstance(case["semantic_seed"], int)
         if case["stratum"] == "semantic_canonicalization":
-            assert case["expected_route"] == ["catalogue", "egglog"]
+            assert case["expected_route"] == ["catalogue", "egraph"]
             assert case["expected_canonical_root"] == "sub"
             assert case["expected_truth_operation"] == "xor"
         elif case["case_id"] == "fixed_rotate_complementary_32":
-            assert case["expected_route"] == ["egglog"]
+            assert case["expected_route"] == ["egraph"]
             assert case["expected_canonical_root"] == "or"
             assert case["expected_truth_operation"] == "rol"
         else:
@@ -98,7 +98,7 @@ def test_manifest_declares_the_complete_native_provider_matrix() -> None:
     assert _payload()["provider_matrix"] == [
         "structural_chain",
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver",
     ]
 
@@ -166,7 +166,7 @@ def test_cases_declare_routes_degree_and_stable_refusal_semantics() -> None:
         assert isinstance(case["semantic_seed"], int)
         if case["stratum"] == "degree2":
             assert case["expected_minimum_degree"] == 2
-            assert "egglog" in case["expected_route"]
+            assert "egraph" in case["expected_route"]
         if case["stratum"] == "coefficient":
             assert case["expected_route"] == ["coefficient_solver"]
         if case["stratum"] == "nonlinear":

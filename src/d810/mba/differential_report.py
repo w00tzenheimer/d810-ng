@@ -92,6 +92,9 @@ def egraph_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
             receipt, "replay_rebuild_elapsed_ms", None
         ),
         "replay_proof_elapsed_ms": getattr(receipt, "replay_proof_elapsed_ms", None),
+        "derivation_trace": tuple(
+            tuple(row) for row in getattr(receipt, "derivation_trace", ())
+        ),
         "egraph_work_units": getattr(receipt, "egraph_work_units", 0),
         "replay_saved_egraph_runs": getattr(
             receipt, "replay_saved_egraph_runs", None

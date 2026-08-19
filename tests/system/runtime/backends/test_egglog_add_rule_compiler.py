@@ -12,7 +12,7 @@ from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
     compile_add_rule_catalogue,
     specialize,
 )
-from d810.backends.mba.egglog_saturation import EgglogExtractionReceipt  # noqa: E402
+from d810.mba.egraph_contracts import EgraphExtractionReceipt  # noqa: E402
 from d810.core.stats import OptimizationStatistics  # noqa: E402
 from d810.hexrays.expr.ast import (  # noqa: E402
     AstConstant,
@@ -284,7 +284,7 @@ def test_central_statistics_records_and_serializes_egglog_provenance(monkeypatch
         "Add_HackersDelightRule_2",
         "Add_OllvmRule_3",
     )
-    handler.last_extraction_receipt = EgglogExtractionReceipt(
+    handler.last_extraction_receipt = EgraphExtractionReceipt(
         selected_family="add",
         selected_source="Add_HackersDelightRule_2",
         selected_aliases=("Add_OllvmRule_3",),

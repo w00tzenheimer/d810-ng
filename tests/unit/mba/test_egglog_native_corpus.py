@@ -30,7 +30,7 @@ def _outcome(
     refusal_reason: str | None = None,
 ) -> MbaProviderOutcome:
     return MbaProviderOutcome(
-        provider=MbaProviderKind.EGGLOG,
+        provider=MbaProviderKind.EGRAPH,
         status=status,
         fingerprint=fingerprint,
         source_provenance=sources,
@@ -89,7 +89,7 @@ def test_real_corpus_receipt_keeps_every_attempt_and_exact_stage_schema() -> Non
         (
             (
                 MbaProviderOutcome(
-                    provider=MbaProviderKind.EGGLOG,
+                    provider=MbaProviderKind.EGRAPH,
                     status=ProviderOutcomeStatus.APPLIED,
                     fingerprint="candidate-a",
                     source_provenance=("Add_HackersDelightRule_2",),
@@ -137,7 +137,7 @@ def test_real_corpus_entry_allows_an_expected_structural_nonmatch() -> None:
             _outcome(
                 status=ProviderOutcomeStatus.OVER_BUDGET,
                 sources=(),
-                refusal_reason="no_degree_eligible_improvement",
+                refusal_reason="non_mba_candidate",
             ),
         ),
         entry=entry,

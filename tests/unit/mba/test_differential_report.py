@@ -18,6 +18,7 @@ from d810.mba.differential_report import (
     report_from_dict,
     summary_markdown,
 )
+from d810.mba.egraph_contracts import EgraphExtractionReceipt, EgraphSkipReason
 from d810.mba.island_profile import IslandBlocker, MbaIslandClass, MbaIslandProfile
 from d810.mba.provider_outcome import (
     MbaProviderKind,
@@ -484,6 +485,45 @@ def test_report_does_not_infer_egraph_runs_from_a_replay_path() -> None:
     outcome = egraph_receipt_to_outcome(Receipt())
 
     assert "egraph_run_count" not in outcome.metadata
+
+
+def test_egraph_receipt_conversion_preserves_trace_and_generic_skip_semantics() -> None:
+    trace = (("add", "add.identity", ("add.alias",)),)
+    proof_failed = EgraphExtractionReceipt(
+        input_cost=(5, 8),
+        extracted_cost=(2, 3),
+        derivation_trace=trace,
+        egraph_work_units=7,
+        egraph_run_count=1,
+        replay_saved_egraph_runs=0,
+        backend="egglog",
+        backend_version="13.2.0",
+        skip_reason=EgraphSkipReason.PROOF_FAILED,
+    )
+
+    outcome = egraph_receipt_to_outcome(proof_failed)
+
+    assert outcome.status is ProviderOutcomeStatus.PROOF_FAILED
+    assert outcome.metadata["derivation_trace"] == trace
+    assert outcome.metadata["egraph_work_units"] == 7
+    assert outcome.metadata["egraph_run_count"] == 1
+    assert outcome.metadata["replay_saved_egraph_runs"] == 0
+    assert outcome.metadata["backend"] == "egglog"
+    assert outcome.metadata["backend_version"] == "13.2.0"
+    serialized = json.loads(outcome.to_json())
+    assert serialized["metadata"]["derivation_trace"] == [
+        ["add", "add.identity", ["add.alias"]]
+    ]
+
+    unavailable = EgraphExtractionReceipt(
+        skip_reason=EgraphSkipReason.RUNTIME_UNAVAILABLE,
+        backend="egglog",
+        backend_version="13.2.0",
+    )
+    assert (
+        egraph_receipt_to_outcome(unavailable).status
+        is ProviderOutcomeStatus.UNAVAILABLE
+    )
 
 
 def test_report_requires_explicit_replay_saved_runs_measurement() -> None:

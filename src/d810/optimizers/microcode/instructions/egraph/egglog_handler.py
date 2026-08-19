@@ -26,14 +26,13 @@ from d810.backends.mba.egglog_add_rule_compiler import (
 from d810.backends.mba.egglog_saturation import (
     EgglogFunctionBudget,
     EgglogExtractionBudget,
-    EgglogExtractionReceipt,
     EgglogExtractionResult,
-    ExtractionSkipReason,
     extraction_receipt_for_lowering,
     extraction_receipt_for_profile,
     extract_bounded_candidate,
     extract_bounded_term,
 )
+from d810.mba.egraph_contracts import EgraphExtractionReceipt, EgraphSkipReason
 from d810.backends.mba import egglog_saturation
 from d810.backends.mba.egglog_idb_composite_cache import EgglogIdbCompositeCache
 from d810.backends.mba.cross_block_preparation import (
@@ -67,7 +66,7 @@ from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.ir.maturity import IRMaturity
-from d810.mba.differential_report import egglog_receipt_to_outcome
+from d810.mba.differential_report import egraph_receipt_to_outcome
 from d810.mba.egglog_composite_rewrite import (
     CompositeRewriteMalformed,
     CompositeRewriteSemantics,
@@ -167,7 +166,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.native_proof_mode = "legacy"
         self.execution_mode = "interactive"
         self._catalogue_configured = False
-        self.last_extraction_receipt: EgglogExtractionReceipt | None = None
+        self.last_extraction_receipt: EgraphExtractionReceipt | None = None
         self.last_rule_family: str | None = None
         self.last_rule_provenance: tuple[str, ...] | None = None
         self.last_derivation_trace: (
@@ -649,11 +648,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         cache_status: str,
         cache_key: str | None,
         cache_lookup_elapsed_ms: float | None = None,
-        replay_saved_egglog_runs: int | None = None,
+        replay_saved_egraph_runs: int | None = None,
     ) -> EgglogExtractionResult:
         input_cost = term_cost(candidate_term)
         extracted_cost = term_cost(replacement_term)
-        receipt = EgglogExtractionReceipt(
+        receipt = EgraphExtractionReceipt(
             input_cost=input_cost,
             extracted_cost=extracted_cost,
             degree=len(derivation_trace) if execution_path == "learned_replay" else 0,
@@ -676,11 +675,13 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 derivation_trace if execution_path == "learned_replay" else ()
             ),
             cache_lookup_elapsed_ms=cache_lookup_elapsed_ms,
-            egglog_work_units=0,
+            egraph_work_units=0,
             # Direct catalogue and learned replay are explicit no-run paths;
             # the saturation producer records actual ``EGraph.run`` calls.
-            egglog_run_count=0,
-            replay_saved_egglog_runs=replay_saved_egglog_runs,
+            egraph_run_count=0,
+            replay_saved_egraph_runs=replay_saved_egraph_runs,
+            backend="egglog",
+            backend_version=SUPPORTED_EGGLOG_VERSION,
         )
         return EgglogExtractionResult(
             replacement_ast=None,
@@ -763,7 +764,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     cache_status="hit",
                     cache_key=cache_key,
                     cache_lookup_elapsed_ms=lookup_elapsed_ms,
-                    replay_saved_egglog_runs=rewrite.egglog_run_count,
+                    replay_saved_egraph_runs=rewrite.egraph_run_count,
                 )
             except Exception:
                 continue
@@ -836,7 +837,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._record_extraction_receipt(
                 replace(
                     extraction.receipt,
-                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    skip_reason=EgraphSkipReason.LOWERING_FAILED,
                     derivation_trace=(),
                 )
             )
@@ -856,7 +857,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._record_extraction_receipt(
                 replace(
                     extraction.receipt,
-                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    skip_reason=EgraphSkipReason.LOWERING_FAILED,
                     derivation_trace=(),
                 )
             )
@@ -888,7 +889,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._record_extraction_receipt(
                 replace(
                     extraction.receipt,
-                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    skip_reason=EgraphSkipReason.LOWERING_FAILED,
                     derivation_trace=(),
                 )
             )
@@ -903,7 +904,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._record_extraction_receipt(
                 replace(
                     extraction.receipt,
-                    skip_reason=ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+                    skip_reason=EgraphSkipReason.NON_MBA_CANDIDATE,
                 )
             )
             return None
@@ -915,7 +916,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._record_extraction_receipt(
                 replace(
                     extraction.receipt,
-                    skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
+                    skip_reason=EgraphSkipReason.INTERNAL_ERROR,
                 )
             )
             return None
@@ -957,7 +958,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._record_extraction_receipt(
                 replace(
                     extraction.receipt,
-                    skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED,
+                    skip_reason=EgraphSkipReason.PROOF_FAILED,
                     derivation_trace=(),
                     proof_mode=self.native_proof_mode,
                     template_source_name=template_source,
@@ -996,7 +997,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._record_extraction_receipt(
                 replace(
                     extraction.receipt,
-                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    skip_reason=EgraphSkipReason.LOWERING_FAILED,
                     derivation_trace=(),
                 )
             )
@@ -1013,7 +1014,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     output_term=replacement_term,
                     derivation_trace=extraction.derivation_trace,
                     semantics=self._current_replay_semantics(),
-                    egglog_run_count=extraction.receipt.egglog_run_count,
+                    egraph_run_count=extraction.receipt.egraph_run_count,
                 )
             except (CompositeRewriteMalformed, TypeError, ValueError):
                 self._pending_composite_rewrite = None
@@ -1048,8 +1049,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             try:
                 if ins.opcode not in _SUPPORTED_ROOT_OPCODES:
                     self._record_extraction_receipt(
-                        EgglogExtractionReceipt(
-                            skip_reason=ExtractionSkipReason.NON_MBA_CANDIDATE
+                        EgraphExtractionReceipt(
+                            skip_reason=EgraphSkipReason.NON_MBA_CANDIDATE
                         )
                     )
                     return None
@@ -1059,11 +1060,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         except Exception:  # Never leak an exception through Hex-Rays' callback.
             receipt = self.last_extraction_receipt
             self._record_extraction_receipt(
-                EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.INTERNAL_ERROR)
+                EgraphExtractionReceipt(skip_reason=EgraphSkipReason.INTERNAL_ERROR)
                 if receipt is None
                 else replace(
                     receipt,
-                    skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
+                    skip_reason=EgraphSkipReason.INTERNAL_ERROR,
                 )
             )
             logger.exception(
@@ -1086,8 +1087,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._begin_provider_attempt()
         if ins.d is None or type(getattr(ins.d, "size", None)) is not int:
             self._record_extraction_receipt(
-                EgglogExtractionReceipt(
-                    skip_reason=ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+                EgraphExtractionReceipt(
+                    skip_reason=EgraphSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
                 )
             )
             return None
@@ -1109,7 +1110,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 self._record_extraction_receipt(
                     extraction_receipt_for_profile(
                         native_result.profile,
-                        ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS,
+                        EgraphSkipReason.UNSUPPORTED_WIDTH_SEMANTICS,
                     )
                 )
                 return None
@@ -1118,7 +1119,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             # useful unsafe-input evidence.
             self.last_extraction_receipt = extraction_receipt_for_profile(
                 native_result.profile,
-                ExtractionSkipReason.INTERNAL_ERROR,
+                EgraphSkipReason.INTERNAL_ERROR,
             )
             candidate_skip_reason = self._native_view_skip_reason(native_result.profile)
             if candidate_skip_reason is not None:
@@ -1145,7 +1146,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     self._record_extraction_receipt(
                         extraction_receipt_for_profile(
                             native_result.profile,
-                            ExtractionSkipReason.CANDIDATE_BUDGET,
+                            EgraphSkipReason.CANDIDATE_BUDGET,
                         )
                     )
                     return None
@@ -1165,7 +1166,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     self._with_native_match_telemetry(
                         extraction_receipt_for_profile(
                             native_result.profile,
-                            ExtractionSkipReason.CANDIDATE_BUDGET,
+                            EgraphSkipReason.CANDIDATE_BUDGET,
                         ),
                         match_result,
                         elapsed_ms=matcher_elapsed_ms,
@@ -1185,7 +1186,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                         self._with_native_match_telemetry(
                             extraction_receipt_for_profile(
                                 native_result.profile,
-                                ExtractionSkipReason.CANDIDATE_BUDGET,
+                                EgraphSkipReason.CANDIDATE_BUDGET,
                             ),
                             canonical_match_result,
                             elapsed_ms=matcher_elapsed_ms,
@@ -1204,7 +1205,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         if extraction_budget is None:
             receipt = extraction_receipt_for_profile(
                 native_result.profile,
-                ExtractionSkipReason.TIME_BUDGET,
+                EgraphSkipReason.TIME_BUDGET,
             )
             if telemetry_match_result is not None:
                 receipt = self._with_native_match_telemetry(
@@ -1219,13 +1220,13 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         if extraction_budget.time_budget_ms < 50:
             receipt = extraction_receipt_for_profile(
                 native_result.profile,
-                ExtractionSkipReason.TIME_BUDGET,
+                EgraphSkipReason.TIME_BUDGET,
             )
             receipt = replace(
                 receipt,
                 execution_path="telemetry_only",
                 cache_status="disabled",
-                egglog_run_count=0,
+                egraph_run_count=0,
             )
             if telemetry_match_result is not None:
                 receipt = self._with_native_match_telemetry(
@@ -1348,7 +1349,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._finish_stage("ast_construction")
         if ast is None:
             self._record_extraction_receipt(
-                EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.INTERNAL_ERROR)
+                EgraphExtractionReceipt(skip_reason=EgraphSkipReason.INTERNAL_ERROR)
             )
             return None
         self._begin_stage("native_preflight")
@@ -1356,7 +1357,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             lowering = lower_hexrays_island(ast, destination_size=destination_size)
             self.last_extraction_receipt = extraction_receipt_for_lowering(
                 lowering,
-                ExtractionSkipReason.INTERNAL_ERROR,
+                EgraphSkipReason.INTERNAL_ERROR,
             )
             candidate_skip_reason = self._candidate_skip_reason(ast, ins)
             if candidate_skip_reason is not None:
@@ -1391,7 +1392,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             if extraction_budget is None:
                 self._record_extraction_receipt(
                     extraction_receipt_for_lowering(
-                        lowering, ExtractionSkipReason.TIME_BUDGET
+                        lowering, EgraphSkipReason.TIME_BUDGET
                     )
                 )
                 return None
@@ -1404,7 +1405,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 self._record_extraction_receipt(
                     extraction_receipt_for_lowering(
                         lowering,
-                        ExtractionSkipReason.LOWERING_FAILED,
+                        EgraphSkipReason.LOWERING_FAILED,
                     )
                 )
                 return None
@@ -1423,7 +1424,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._record_extraction_receipt(
                 extraction_receipt_for_lowering(
                     lowering,
-                    ExtractionSkipReason.CANDIDATE_BUDGET,
+                    EgraphSkipReason.CANDIDATE_BUDGET,
                 )
             )
             return None
@@ -1433,7 +1434,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 replace(
                     extraction_receipt_for_lowering(
                         lowering,
-                        ExtractionSkipReason.CANDIDATE_BUDGET,
+                        EgraphSkipReason.CANDIDATE_BUDGET,
                     ),
                     native_matcher_comparisons=canonical_match_result.comparisons,
                     native_matcher_lazy_swaps=canonical_match_result.commuted_branches,
@@ -1446,11 +1447,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 replace(
                     extraction_receipt_for_lowering(
                         lowering,
-                        ExtractionSkipReason.TIME_BUDGET,
+                        EgraphSkipReason.TIME_BUDGET,
                     ),
                     execution_path="telemetry_only",
                     cache_status="disabled",
-                    egglog_run_count=0,
+                    egraph_run_count=0,
                     native_matcher_comparisons=canonical_match_result.comparisons,
                     native_matcher_lazy_swaps=canonical_match_result.commuted_branches,
                     native_matcher_elapsed_ms=matcher_elapsed_ms,
@@ -1620,9 +1621,15 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         if self._attempt_outcome_index is not None:
             self.provider_outcome_history.replace(self._attempt_outcome_index, outcome)
 
-    def _record_extraction_receipt(self, receipt: EgglogExtractionReceipt) -> None:
+    def _record_extraction_receipt(self, receipt: EgraphExtractionReceipt) -> None:
+        if receipt.backend is None and receipt.backend_version is None:
+            receipt = replace(
+                receipt,
+                backend="egglog",
+                backend_version=SUPPORTED_EGGLOG_VERSION,
+            )
         self.last_extraction_receipt = receipt
-        outcome = egglog_receipt_to_outcome(receipt)
+        outcome = egraph_receipt_to_outcome(receipt)
         self._last_provider_outcome = outcome
         if self._provider_outcome_history_enabled():
             if self._attempt_outcome_index is None:
@@ -1735,9 +1742,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             "cache_lookup_elapsed_ms": receipt.cache_lookup_elapsed_ms,
             "replay_rebuild_elapsed_ms": receipt.replay_rebuild_elapsed_ms,
             "replay_proof_elapsed_ms": receipt.replay_proof_elapsed_ms,
-            "egglog_work_units": receipt.egglog_work_units,
-            "egglog_run_count": receipt.egglog_run_count,
-            "replay_saved_egglog_runs": receipt.replay_saved_egglog_runs,
+            "egraph_work_units": receipt.egraph_work_units,
+            "egraph_run_count": receipt.egraph_run_count,
+            "replay_saved_egraph_runs": receipt.replay_saved_egraph_runs,
             "replay_fallback_reason": receipt.replay_fallback_reason,
             "extracted_cost": receipt.extracted_cost,
             "degree": receipt.degree,
@@ -1801,7 +1808,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             return self._last_provider_outcome
         if self.last_extraction_receipt is None:
             return None
-        return egglog_receipt_to_outcome(self.last_extraction_receipt)
+        return egraph_receipt_to_outcome(self.last_extraction_receipt)
 
     def _candidate_extraction_budget(
         self,
@@ -1978,9 +1985,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def _is_candidate(self, ast, ins) -> bool:
         return self._candidate_skip_reason(ast, ins) is None
 
-    def _candidate_skip_reason(self, ast, ins) -> ExtractionSkipReason | None:
+    def _candidate_skip_reason(self, ast, ins) -> EgraphSkipReason | None:
         if ins.d is None or int(ins.d.size) not in _VALID_SIZES:
-            return ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+            return EgraphSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
         leaves = ast.get_leaf_list()
         variable_leaves = [leaf for leaf in leaves if not leaf.is_constant()]
         unique_variable_leaves = {
@@ -1990,34 +1997,34 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             int(getattr(leaf.mop, "size", 0)) != int(ins.d.size)
             for leaf in unique_variable_leaves.values()
         ):
-            return ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+            return EgraphSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
         if not unique_variable_leaves or len(unique_variable_leaves) > self.max_leaves:
-            return ExtractionSkipReason.CANDIDATE_BUDGET
+            return EgraphSkipReason.CANDIDATE_BUDGET
         opcodes = self._opcodes(ast)
         if not opcodes or not opcodes <= _SUPPORTED_ROOT_OPCODES:
-            return ExtractionSkipReason.NON_MBA_CANDIDATE
+            return EgraphSkipReason.NON_MBA_CANDIDATE
         if len(opcodes) > self.max_operator_nodes:
             # The exact operator-node count is checked below; this cheap set-size
             # gate only avoids walking obviously oversized heterogeneous trees.
-            return ExtractionSkipReason.CANDIDATE_BUDGET
+            return EgraphSkipReason.CANDIDATE_BUDGET
         if self._operator_node_count(ast) > self.max_operator_nodes:
-            return ExtractionSkipReason.CANDIDATE_BUDGET
+            return EgraphSkipReason.CANDIDATE_BUDGET
         return None
 
-    def _native_view_skip_reason(self, profile) -> ExtractionSkipReason | None:
+    def _native_view_skip_reason(self, profile) -> EgraphSkipReason | None:
         """Apply the live limits to a direct read-only microcode view."""
 
         if profile.blockers:
-            return ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+            return EgraphSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
         if profile.operator_count > self.max_operator_nodes:
-            return ExtractionSkipReason.CANDIDATE_BUDGET
+            return EgraphSkipReason.CANDIDATE_BUDGET
         if (
             not profile.distinct_leaf_count
             or profile.distinct_leaf_count > self.max_leaves
         ):
-            return ExtractionSkipReason.CANDIDATE_BUDGET
+            return EgraphSkipReason.CANDIDATE_BUDGET
         if not profile.operations:
-            return ExtractionSkipReason.NON_MBA_CANDIDATE
+            return EgraphSkipReason.NON_MBA_CANDIDATE
         return None
 
     @staticmethod

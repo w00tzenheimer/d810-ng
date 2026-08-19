@@ -8,11 +8,11 @@ from pathlib import Path
 from d810.core.config import ProjectConfiguration
 from d810.core.pass_editor_spec import FieldControlKind
 from d810.core.pass_ids import PassId
+from d810.mba.egraph_contracts import MbaEgraphOptions
 from d810.passes.mba_egraph import (
     MBA_EGRAPH_IMPLEMENTATION,
     MBA_EGRAPH_PASS_ID,
     MbaEgraphPass,
-    MbaEgraphOptions,
     build_mba_egraph_pass,
     parse_mba_egraph_options,
     register_mba_egraph_pass,
@@ -30,6 +30,11 @@ def _config(options: dict | None = None) -> PipelineConfig:
 
 
 class TestMbaEgraphOptions(unittest.TestCase):
+    def test_parser_returns_the_portable_options_type(self):
+        options = parse_mba_egraph_options(_config())
+
+        self.assertIs(type(options), MbaEgraphOptions)
+
     def test_defaults_are_degree_one_add_only_and_proof_gated(self):
         options = parse_mba_egraph_options(_config())
 

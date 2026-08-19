@@ -20,9 +20,9 @@ from d810.backends.mba import egglog_add_rule_compiler as catalogue_compiler  # 
 from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
     compiled_rules_for_families,
 )
-from d810.backends.mba.egglog_saturation import (  # noqa: E402
-    EgglogExtractionReceipt,
-    ExtractionSkipReason,
+from d810.mba.egraph_contracts import (  # noqa: E402
+    EgraphExtractionReceipt,
+    EgraphSkipReason,
 )
 from d810.backends.mba.hexrays_island import lower_hexrays_island  # noqa: E402
 from d810.backends.mba.native_mba_term_view import (  # noqa: E402
@@ -72,11 +72,11 @@ def test_synthetic_stage_profile_note_names_both_mocked_boundaries() -> None:
 
 _CAP_SKIP_REASONS = frozenset(
     {
-        ExtractionSkipReason.CANDIDATE_BUDGET.value,
-        ExtractionSkipReason.TIME_BUDGET.value,
-        ExtractionSkipReason.ECLASS_BUDGET.value,
-        ExtractionSkipReason.ENODE_BUDGET.value,
-        ExtractionSkipReason.RULE_FIRING_BUDGET.value,
+        EgraphSkipReason.CANDIDATE_BUDGET.value,
+        EgraphSkipReason.TIME_BUDGET.value,
+        EgraphSkipReason.ECLASS_BUDGET.value,
+        EgraphSkipReason.ENODE_BUDGET.value,
+        EgraphSkipReason.RULE_FIRING_BUDGET.value,
     }
 )
 _OPCODE_BY_OPERATION = {
@@ -193,7 +193,7 @@ def _percentile(values: tuple[float, ...], percentile: int) -> float:
 
 def _build_receipt_report(
     candidate_names: tuple[str, ...],
-    receipts: tuple[EgglogExtractionReceipt, ...],
+    receipts: tuple[EgraphExtractionReceipt, ...],
 ) -> dict[str, object]:
     if len(candidate_names) != len(receipts):
         raise ValueError("candidate identity count must equal receipt count")
@@ -263,7 +263,7 @@ def _build_stage_timing_report(
 
 
 def _build_stage_attempt_outcome_report(
-    receipts: tuple[EgglogExtractionReceipt, ...],
+    receipts: tuple[EgraphExtractionReceipt, ...],
 ) -> dict[str, int]:
     """Count accepted and refused timed attempts without conflating them."""
 
@@ -326,27 +326,27 @@ def _assert_comparable_baseline(
 
 def test_controlled_receipts_report_quantiles_distributions_and_skips() -> None:
     receipts = (
-        EgglogExtractionReceipt(
+        EgraphExtractionReceipt(
             elapsed_ms=1.0,
             degree=1,
             eclass_count=10,
             enode_count=20,
         ),
-        EgglogExtractionReceipt(
+        EgraphExtractionReceipt(
             elapsed_ms=2.0,
             degree=1,
             eclass_count=12,
             enode_count=24,
         ),
-        EgglogExtractionReceipt(
+        EgraphExtractionReceipt(
             elapsed_ms=4.0,
             eclass_count=14,
             enode_count=28,
-            skip_reason=ExtractionSkipReason.TIME_BUDGET,
+            skip_reason=EgraphSkipReason.TIME_BUDGET,
         ),
-        EgglogExtractionReceipt(
+        EgraphExtractionReceipt(
             elapsed_ms=8.0,
-            skip_reason=ExtractionSkipReason.CANDIDATE_BUDGET,
+            skip_reason=EgraphSkipReason.CANDIDATE_BUDGET,
         ),
     )
 
@@ -369,15 +369,15 @@ def test_controlled_receipts_report_quantiles_distributions_and_skips() -> None:
 def test_stage_attempt_outcomes_keep_acceptance_and_refusals_separate() -> None:
     report = _build_stage_attempt_outcome_report(
         (
-            EgglogExtractionReceipt(),
-            EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED),
-            EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.TIME_BUDGET),
+            EgraphExtractionReceipt(),
+            EgraphExtractionReceipt(skip_reason=EgraphSkipReason.PROOF_FAILED),
+            EgraphExtractionReceipt(skip_reason=EgraphSkipReason.TIME_BUDGET),
         )
     )
 
     assert report == {
         "accepted": 1,
-        "native_z3_failed": 1,
+        "proof_failed": 1,
         "time_budget": 1,
     }
 
@@ -544,7 +544,7 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
     )
     rules_by_key = {(rule.family, rule.source_name): rule for rule in compiled_rules}
     corpus_names: list[str] = []
-    receipts: list[EgglogExtractionReceipt] = []
+    receipts: list[EgraphExtractionReceipt] = []
     for repetition in range(_REPETITIONS):
         for family, source_name in _CANDIDATE_CORPUS:
             rule = rules_by_key[(family, source_name)]
@@ -578,7 +578,7 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
     # are synthetic boundaries; their stages remain visible but ungated.
     monkeypatch.setattr(stage_handler, "_create_instruction", lambda *_args: object())
     stage_records: list[dict[str, float]] = []
-    stage_receipts: list[EgglogExtractionReceipt] = []
+    stage_receipts: list[EgraphExtractionReceipt] = []
     for family, source_name in _CANDIDATE_CORPUS:
         rule = rules_by_key[(family, source_name)]
         candidate = _candidate_from_pattern(rule.pattern)

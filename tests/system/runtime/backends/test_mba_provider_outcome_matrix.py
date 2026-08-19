@@ -12,9 +12,9 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
-from d810.backends.mba.egglog_saturation import (
-    EgglogExtractionReceipt,
-    ExtractionSkipReason,
+from d810.mba.egraph_contracts import (
+    EgraphExtractionReceipt,
+    EgraphSkipReason,
 )
 from d810.backends.mba.ida import IDAPatternAdapter
 from d810.mba.provider_outcome import ProviderOutcomeStatus
@@ -31,10 +31,10 @@ def test_egglog_attempt_matrix_retains_one_final_row_per_skip_or_proof_result() 
     handler = EgglogOptimizer()
     handler.begin_provider_outcome_capture()
     receipts = (
-        EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.EGGLOG_UNAVAILABLE),
-        EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.TIME_BUDGET),
-        EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED),
-        EgglogExtractionReceipt(input_cost=(4, 7), extracted_cost=(4, 7)),
+        EgraphExtractionReceipt(skip_reason=EgraphSkipReason.RUNTIME_UNAVAILABLE),
+        EgraphExtractionReceipt(skip_reason=EgraphSkipReason.TIME_BUDGET),
+        EgraphExtractionReceipt(skip_reason=EgraphSkipReason.PROOF_FAILED),
+        EgraphExtractionReceipt(input_cost=(4, 7), extracted_cost=(4, 7)),
     )
 
     for receipt in receipts:
@@ -50,10 +50,10 @@ def test_egglog_attempt_matrix_retains_one_final_row_per_skip_or_proof_result() 
 
     handler._begin_provider_attempt()
     handler._record_extraction_receipt(
-        EgglogExtractionReceipt(input_cost=(4, 7), extracted_cost=(2, 3))
+        EgraphExtractionReceipt(input_cost=(4, 7), extracted_cost=(2, 3))
     )
     handler._record_extraction_receipt(
-        EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED)
+        EgraphExtractionReceipt(skip_reason=EgraphSkipReason.PROOF_FAILED)
     )
     assert len(handler.provider_outcomes()) == 5
     assert handler.provider_outcomes()[-1].status is ProviderOutcomeStatus.PROOF_FAILED
@@ -64,7 +64,7 @@ def test_egglog_candidate_is_only_applied_after_outer_mutation_acceptance() -> N
     handler.begin_provider_outcome_capture()
     handler._begin_provider_attempt()
     handler._record_extraction_receipt(
-        EgglogExtractionReceipt(input_cost=(4, 7), extracted_cost=(2, 3))
+        EgraphExtractionReceipt(input_cost=(4, 7), extracted_cost=(2, 3))
     )
 
     assert handler.provider_outcomes()[-1].status is ProviderOutcomeStatus.IMPROVED
