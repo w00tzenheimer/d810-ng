@@ -33,8 +33,8 @@ _WIN_STATUSES = frozenset(
 )
 
 
-def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
-    """Convert a receipt-shaped Egglog result without invoking Egglog or IDA.
+def egraph_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
+    """Convert a receipt-shaped e-graph result without invoking a backend or IDA.
 
     The structural attribute protocol keeps the report/CLI importable in a
     plain Python process.  The native handler owns the actual receipt type and
@@ -45,13 +45,12 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
     skip_reason = getattr(raw_skip, "value", raw_skip)
     skip_text = None if skip_reason is None else str(skip_reason)
     status_by_skip = {
-        "egglog_unavailable": ProviderOutcomeStatus.UNAVAILABLE,
-        "unavailable_egraph_statistics": ProviderOutcomeStatus.UNAVAILABLE,
+        "runtime_unavailable": ProviderOutcomeStatus.UNAVAILABLE,
         "time_budget": ProviderOutcomeStatus.OVER_BUDGET,
         "eclass_budget": ProviderOutcomeStatus.OVER_BUDGET,
         "enode_budget": ProviderOutcomeStatus.OVER_BUDGET,
         "rule_firing_budget": ProviderOutcomeStatus.OVER_BUDGET,
-        "native_z3_failed": ProviderOutcomeStatus.PROOF_FAILED,
+        "proof_failed": ProviderOutcomeStatus.PROOF_FAILED,
         "lowering_failed": ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
         "internal_error": ProviderOutcomeStatus.ERROR,
     }
@@ -73,6 +72,8 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
     input_cost = getattr(receipt, "input_cost", None)
     extracted_cost = getattr(receipt, "extracted_cost", None)
     metadata = {
+        "backend": getattr(receipt, "backend", None),
+        "backend_version": getattr(receipt, "backend_version", None),
         "canonicalizer_version": getattr(receipt, "canonicalizer_version", None),
         "canonical_input_cost": getattr(receipt, "canonical_input_cost", None),
         "normalization_steps": tuple(
@@ -91,9 +92,9 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
             receipt, "replay_rebuild_elapsed_ms", None
         ),
         "replay_proof_elapsed_ms": getattr(receipt, "replay_proof_elapsed_ms", None),
-        "egglog_work_units": getattr(receipt, "egglog_work_units", 0),
-        "replay_saved_egglog_runs": getattr(
-            receipt, "replay_saved_egglog_runs", None
+        "egraph_work_units": getattr(receipt, "egraph_work_units", 0),
+        "replay_saved_egraph_runs": getattr(
+            receipt, "replay_saved_egraph_runs", None
         ),
         "replay_fallback_reason": getattr(receipt, "replay_fallback_reason", None),
         "degree": getattr(receipt, "degree", None),
@@ -136,14 +137,14 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
     # Run counts are producer evidence, not report inference.  Missing
     # measurements remain absent so a path label cannot masquerade as proof of
     # a runtime call.
-    raw_run_count = getattr(receipt, "egglog_run_count", None)
+    raw_run_count = getattr(receipt, "egraph_run_count", None)
     if type(raw_run_count) is int and raw_run_count >= 0:
-        metadata["egglog_run_count"] = raw_run_count
+        metadata["egraph_run_count"] = raw_run_count
     native_profile = getattr(receipt, "native_profile", None)
     if isinstance(native_profile, Mapping):
         metadata["native_profile"] = dict(native_profile)
     return MbaProviderOutcome(
-        provider=MbaProviderKind.EGGLOG,
+        provider=MbaProviderKind.EGRAPH,
         status=status,
         fingerprint=str(getattr(receipt, "island_fingerprint", None) or "unprofiled"),
         input_cost=None if input_cost is None else tuple(input_cost),
@@ -410,7 +411,7 @@ class RolloutEvidence:
     incomplete run from being rendered as a measured zero.
     """
 
-    egglog_unique_wins_by_degree: Mapping[int, int]
+    egraph_unique_wins_by_degree: Mapping[int, int]
     external_reference_unique_wins: int
     nonlinear_residuals: int
     refusals_by_reason: Mapping[str, int]
@@ -440,7 +441,7 @@ class RolloutEvidence:
     )
     execution_path_counts: Mapping[str, int] = field(default_factory=dict)
     execution_path_latency: Mapping[str, LatencyStats] = field(default_factory=dict)
-    replay_saved_egglog_runs: int | None = None
+    replay_saved_egraph_runs: int | None = None
     cache_status_counts: Mapping[str, int] = field(default_factory=dict)
     cache_peak_entries: int | None = None
     cache_peak_bytes: int | None = None
@@ -449,9 +450,9 @@ class RolloutEvidence:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "egglog_unique_wins_by_degree": {
+            "egraph_unique_wins_by_degree": {
                 str(degree): count
-                for degree, count in sorted(self.egglog_unique_wins_by_degree.items())
+                for degree, count in sorted(self.egraph_unique_wins_by_degree.items())
             },
             "external_reference_unique_wins": self.external_reference_unique_wins,
             "nonlinear_residuals": self.nonlinear_residuals,
@@ -498,7 +499,7 @@ class RolloutEvidence:
                 path: stats.to_dict()
                 for path, stats in sorted(self.execution_path_latency.items())
             },
-            "replay_saved_egglog_runs": self.replay_saved_egglog_runs,
+            "replay_saved_egraph_runs": self.replay_saved_egraph_runs,
             "cache_status_counts": dict(sorted(self.cache_status_counts.items())),
             "cache_peak_entries": self.cache_peak_entries,
             "cache_peak_bytes": self.cache_peak_bytes,
@@ -782,8 +783,8 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
     """Aggregate explicit rollout instrumentation from captured provider rows."""
 
     refusals: dict[str, int] = defaultdict(int)
-    egglog_unique_by_degree: dict[int, int] = defaultdict(int)
-    observed_egglog_degrees: set[int] = set()
+    egraph_unique_by_degree: dict[int, int] = defaultdict(int)
+    observed_egraph_degrees: set[int] = set()
     external_unique = 0
     nonlinear_residuals = 0
     bucket_sizes: list[float] = []
@@ -813,8 +814,8 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
     rotate_extractions: dict[str, int] = defaultdict(int)
     execution_path_counts: dict[str, int] = defaultdict(int)
     execution_path_latencies: dict[str, list[float]] = defaultdict(list)
-    replay_saved_egglog_runs: int | None = None
-    row_replay_saved_egglog_runs = 0
+    replay_saved_egraph_runs: int | None = None
+    row_replay_saved_egraph_runs = 0
     row_replay_savings_observed = False
     cache_status_counts: dict[str, int] = defaultdict(int)
     cache_peak_entries: int | None = None
@@ -906,7 +907,7 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
             target.update(value)
 
     # Keep an explicit zero-sample lane for every configured provider.  An
-    # unavailable extension or a telemetry-only Egglog admission must be
+    # unavailable extension or a telemetry-only e-graph admission must be
     # visible as "measured, no candidate" rather than disappear from the
     # portfolio report.
     for provider, mode in provider_modes.items():
@@ -1018,19 +1019,19 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
             nonlinear_residuals += 1
         if len(winners) == 1:
             winner = winners[0]
-            if winner.provider is MbaProviderKind.EGGLOG:
+            if winner.provider is MbaProviderKind.EGRAPH:
                 degree = _metadata_int(winner.metadata, "degree")
                 if degree is not None:
-                    egglog_unique_by_degree[degree] += 1
+                    egraph_unique_by_degree[degree] += 1
             if winner.provider is MbaProviderKind.EXTERNAL_REFERENCE:
                 external_unique += 1
 
         for outcome in case.outcomes:
             metadata = outcome.metadata
-            if outcome.provider is MbaProviderKind.EGGLOG:
+            if outcome.provider is MbaProviderKind.EGRAPH:
                 degree = _metadata_int(metadata, "degree")
                 if degree is not None:
-                    observed_egglog_degrees.add(degree)
+                    observed_egraph_degrees.add(degree)
             if outcome.refusal_reason is not None:
                 refusals[outcome.refusal_reason] += 1
 
@@ -1117,10 +1118,10 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
                     execution_path_latencies[execution_path].append(
                         float(outcome.elapsed_ms)
                     )
-            explicit_replay_savings = _metadata_int(metadata, "replay_saved_egglog_runs")
+            explicit_replay_savings = _metadata_int(metadata, "replay_saved_egraph_runs")
             if explicit_replay_savings is not None:
                 row_replay_savings_observed = True
-                row_replay_saved_egglog_runs += explicit_replay_savings
+                row_replay_saved_egraph_runs += explicit_replay_savings
 
             cache_status = metadata.get("cache_status")
             if type(cache_status) is str and cache_status:
@@ -1172,7 +1173,7 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
             if metadata.get("catalogue_cache_hit") is True:
                 lifecycle_samples["catalogue_cache_hits"].append(1.0)
 
-            mode = metadata.get("egglog_execution_mode")
+            mode = metadata.get("egraph_execution_mode")
             if type(mode) is not str or not mode:
                 configured_mode = provider_modes.get(outcome.provider.value)
                 mode = configured_mode if type(configured_mode) is str else None
@@ -1206,15 +1207,15 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
         cache_status_counts.update(capture_cache_status_counts)
     if row_replay_savings_observed:
         # Only the producer's explicit template measurement is additive
-        # evidence.  A zero ``egglog_run_count`` on a replay is not itself a
+        # evidence.  A zero ``egraph_run_count`` on a replay is not itself a
         # measurement of the fresh work that the template replaced.
-        replay_saved_egglog_runs = row_replay_saved_egglog_runs
+        replay_saved_egraph_runs = row_replay_saved_egraph_runs
 
-    # A zero-win lane is evidence only when an Egglog outcome explicitly
+    # A zero-win lane is evidence only when an e-graph outcome explicitly
     # reports that degree. Unavailable rows without degree metadata remain
     # unmeasured rather than being materialized as synthetic zeroes.
-    for degree in observed_egglog_degrees:
-        egglog_unique_by_degree.setdefault(degree, 0)
+    for degree in observed_egraph_degrees:
+        egraph_unique_by_degree.setdefault(degree, 0)
 
     def latency_stats(
         values: Mapping[str, Mapping[str, list[float]]],
@@ -1275,7 +1276,7 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
         }
     )
     return RolloutEvidence(
-        egglog_unique_wins_by_degree=MappingProxyType(dict(egglog_unique_by_degree)),
+        egraph_unique_wins_by_degree=MappingProxyType(dict(egraph_unique_by_degree)),
         external_reference_unique_wins=external_unique,
         nonlinear_residuals=nonlinear_residuals,
         refusals_by_reason=MappingProxyType(dict(sorted(refusals.items()))),
@@ -1324,7 +1325,7 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
             dict(sorted(execution_path_counts.items()))
         ),
         execution_path_latency=execution_latency,
-        replay_saved_egglog_runs=replay_saved_egglog_runs,
+        replay_saved_egraph_runs=replay_saved_egraph_runs,
         cache_status_counts=MappingProxyType(dict(sorted(cache_status_counts.items()))),
         cache_peak_entries=cache_peak_entries,
         cache_peak_bytes=cache_peak_bytes,
@@ -1499,12 +1500,12 @@ def summary_markdown(summary: DifferentialSummary) -> str:
             "",
             "## Rollout evidence",
             "",
-            "Egglog unique wins by degree: "
+            "E-graph unique wins by degree: "
             + (
                 ", ".join(
                     f"degree {degree}={count}"
                     for degree, count in sorted(
-                        evidence.egglog_unique_wins_by_degree.items()
+                        evidence.egraph_unique_wins_by_degree.items()
                     )
                 )
                 or "unmeasured"
@@ -1609,11 +1610,11 @@ def summary_markdown(summary: DifferentialSummary) -> str:
                 )
                 or "not measured"
             ),
-            "Replay saved Egglog runs: "
+            "Replay saved e-graph runs: "
             + (
                 "not measured"
-                if evidence.replay_saved_egglog_runs is None
-                else str(evidence.replay_saved_egglog_runs)
+                if evidence.replay_saved_egraph_runs is None
+                else str(evidence.replay_saved_egraph_runs)
             ),
             "Cache status counts: "
             + (
@@ -1677,6 +1678,7 @@ __all__ = [
     "ProviderDifferentialStats",
     "RolloutEvidence",
     "compare_provider_outcomes",
+    "egraph_receipt_to_outcome",
     "normalize_outcome_rows",
     "outcome_from_dict",
     "profile_to_dict",

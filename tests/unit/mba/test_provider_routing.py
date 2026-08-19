@@ -62,7 +62,7 @@ def _chain_descriptor(
 def test_small_linear_mba_routes_all_eligible_providers_in_portfolio_order() -> None:
     assert provider_route(_profile()) == (
         MbaProviderKind.CATALOGUE,
-        MbaProviderKind.EGGLOG,
+        MbaProviderKind.EGRAPH,
         MbaProviderKind.COEFFICIENT_SOLVER,
     )
 
@@ -100,30 +100,30 @@ def test_root_chain_descriptor_precedes_catalogue_without_general_ac_grouping() 
     ] is MbaProviderOmissionReason.ROOT_CHAIN_FINGERPRINT_MISMATCH
 
 
-def test_egglog_stops_at_inclusive_leaf_and_operator_boundaries() -> None:
+def test_egraph_stops_at_inclusive_leaf_and_operator_boundaries() -> None:
     at_boundary = _profile(leaves=2, operators=10)
     too_many_leaves = replace(at_boundary, distinct_leaf_count=3)
     too_many_operators = replace(at_boundary, operator_count=11)
 
-    assert MbaProviderKind.EGGLOG in provider_route(at_boundary)
-    assert MbaProviderKind.EGGLOG not in provider_route(too_many_leaves)
-    assert MbaProviderKind.EGGLOG not in provider_route(too_many_operators)
-    assert provider_omission_reasons(too_many_leaves)[MbaProviderKind.EGGLOG] is (
+    assert MbaProviderKind.EGRAPH in provider_route(at_boundary)
+    assert MbaProviderKind.EGRAPH not in provider_route(too_many_leaves)
+    assert MbaProviderKind.EGRAPH not in provider_route(too_many_operators)
+    assert provider_omission_reasons(too_many_leaves)[MbaProviderKind.EGRAPH] is (
         MbaProviderOmissionReason.LEAF_BUDGET
     )
-    assert provider_omission_reasons(too_many_operators)[MbaProviderKind.EGGLOG] is (
+    assert provider_omission_reasons(too_many_operators)[MbaProviderKind.EGRAPH] is (
         MbaProviderOmissionReason.OPERATOR_BUDGET
     )
 
 
-def test_larger_linear_mba_skips_egglog_but_keeps_coefficient_solver_to_boundary() -> None:
+def test_larger_linear_mba_skips_egraph_but_keeps_coefficient_solver_to_boundary() -> None:
     profile = _profile(leaves=8, operators=11)
 
     assert provider_route(profile) == (
         MbaProviderKind.CATALOGUE,
         MbaProviderKind.COEFFICIENT_SOLVER,
     )
-    assert provider_omission_reasons(profile)[MbaProviderKind.EGGLOG] is (
+    assert provider_omission_reasons(profile)[MbaProviderKind.EGRAPH] is (
         MbaProviderOmissionReason.LEAF_BUDGET
     )
 
@@ -134,11 +134,11 @@ def test_larger_linear_mba_skips_egglog_but_keeps_coefficient_solver_to_boundary
     )
 
 
-def test_nonlinear_solver_is_explicit_opt_in_and_egglog_is_never_routed() -> None:
+def test_nonlinear_solver_is_explicit_opt_in_and_egraph_is_never_routed() -> None:
     profile = _profile(island_class=MbaIslandClass.NONLINEAR_MBA)
 
     assert provider_route(profile) == (MbaProviderKind.CATALOGUE,)
-    assert provider_omission_reasons(profile)[MbaProviderKind.EGGLOG] is (
+    assert provider_omission_reasons(profile)[MbaProviderKind.EGRAPH] is (
         MbaProviderOmissionReason.NONLINEAR_ISLAND
     )
     assert provider_route(

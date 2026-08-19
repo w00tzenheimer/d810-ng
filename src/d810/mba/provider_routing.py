@@ -14,7 +14,7 @@ class MbaProviderKind(enum.StrEnum):
 
     STRUCTURAL_CHAIN = "structural_chain"
     CATALOGUE = "catalogue"
-    EGGLOG = "egglog"
+    EGRAPH = "egraph"
     COEFFICIENT_SOLVER = "coefficient_solver"
     EXTERNAL_REFERENCE = "external_reference"
 
@@ -38,16 +38,16 @@ class MbaRoutingPolicy:
     """Portable route limits; availability and consent remain runtime concerns."""
 
     ac_match_comparison_budget: int = 256
-    egglog_max_leaves: int = 2
-    egglog_max_operators: int = 10
+    egraph_max_leaves: int = 2
+    egraph_max_operators: int = 10
     coefficient_max_leaves: int = 8
     allow_nonlinear_solver: bool = False
 
     def __post_init__(self) -> None:
         for field_name in (
             "ac_match_comparison_budget",
-            "egglog_max_leaves",
-            "egglog_max_operators",
+            "egraph_max_leaves",
+            "egraph_max_operators",
             "coefficient_max_leaves",
         ):
             value = getattr(self, field_name)
@@ -75,7 +75,7 @@ def _structural_chain_omission(
     return None
 
 
-def _egglog_omission(
+def _egraph_omission(
     profile: MbaIslandProfile,
     policy: MbaRoutingPolicy,
 ) -> MbaProviderOmissionReason | None:
@@ -83,9 +83,9 @@ def _egglog_omission(
         return MbaProviderOmissionReason.NONLINEAR_ISLAND
     if profile.island_class is not MbaIslandClass.LINEAR_MBA:
         return MbaProviderOmissionReason.NOT_LINEAR_MBA
-    if profile.distinct_leaf_count > policy.egglog_max_leaves:
+    if profile.distinct_leaf_count > policy.egraph_max_leaves:
         return MbaProviderOmissionReason.LEAF_BUDGET
-    if profile.operator_count > policy.egglog_max_operators:
+    if profile.operator_count > policy.egraph_max_operators:
         return MbaProviderOmissionReason.OPERATOR_BUDGET
     return None
 
@@ -130,9 +130,9 @@ def provider_omission_reasons(
     chain_omission = _structural_chain_omission(profile, chain_descriptor)
     if chain_omission is not None:
         omissions[MbaProviderKind.STRUCTURAL_CHAIN] = chain_omission
-    egglog_omission = _egglog_omission(profile, policy)
-    if egglog_omission is not None:
-        omissions[MbaProviderKind.EGGLOG] = egglog_omission
+    egraph_omission = _egraph_omission(profile, policy)
+    if egraph_omission is not None:
+        omissions[MbaProviderKind.EGRAPH] = egraph_omission
     solver_omission = _coefficient_solver_omission(profile, policy)
     if solver_omission is not None:
         omissions[MbaProviderKind.COEFFICIENT_SOLVER] = solver_omission
@@ -157,7 +157,7 @@ def provider_route(
     ordered = (
         MbaProviderKind.STRUCTURAL_CHAIN,
         MbaProviderKind.CATALOGUE,
-        MbaProviderKind.EGGLOG,
+        MbaProviderKind.EGRAPH,
         MbaProviderKind.COEFFICIENT_SOLVER,
     )
     return tuple(provider for provider in ordered if provider not in omissions)
