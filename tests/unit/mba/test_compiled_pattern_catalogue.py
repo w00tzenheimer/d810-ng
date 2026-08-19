@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from d810.backends.mba.egglog_add_rule_compiler import (
-    CompiledEgglogAddRule,
+from d810.mba.certified_rule_compiler import (
+    CompiledMbaRule,
     _enroll_admitted_rule,
     compile_add_rule_catalogue,
 )
@@ -34,7 +34,7 @@ def _rule(name: str):
 
 
 def _xor_rule(name: str):
-    from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
 
     return compile_mba_rule_catalogue().receipt_for("xor", name).compiled_rule
 
@@ -51,9 +51,7 @@ def _admitted_probe_rule(name: str, pattern: SymbolicExpression):
             "CONSTRAINTS": (),
         },
     )
-    return _enroll_admitted_rule(
-        CompiledEgglogAddRule(name, (), rule_type, (32,), False)
-    )
+    return _enroll_admitted_rule(CompiledMbaRule(name, (), rule_type, (32,), False))
 
 
 def test_compiled_catalogue_matches_ac_operands_without_variant_rules() -> None:
@@ -292,7 +290,7 @@ def test_canonical_catalogue_preserves_earlier_match_at_declaration_budget_bound
 
 
 def test_canonical_catalogue_keeps_constraint_derived_bindings_without_paths():
-    from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
     rule = compile_mba_rule_catalogue().receipt_for(
@@ -323,7 +321,7 @@ def test_canonical_catalogue_keeps_constraint_derived_bindings_without_paths():
 
 def test_canonical_catalogue_uses_frozen_constraints_at_match_time(monkeypatch):
     import d810.backends.mba.compiled_pattern_catalogue as catalogue_module
-    from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
     rule = compile_mba_rule_catalogue().receipt_for(

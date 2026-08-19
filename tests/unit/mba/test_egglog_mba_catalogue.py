@@ -4,8 +4,8 @@ import importlib
 
 import pytest
 
-from d810.backends.mba import egglog_add_rule_compiler
-from d810.backends.mba.egglog_add_rule_compiler import (
+from d810.mba import certified_rule_compiler
+from d810.mba.certified_rule_compiler import (
     CERTIFICATE_WIDTHS,
     MbaRuleCatalogue,
     RuleCompilationStatus,
@@ -380,7 +380,7 @@ def test_unsupported_family_and_custom_guard_reasons_are_stable(mba_catalogue):
 
 def test_catalogue_rejects_unclassified_families(monkeypatch):
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "MBA_RULE_FAMILIES",
         {"unclassified": ()},
     )
@@ -410,7 +410,7 @@ def test_catalogue_turns_constructor_failures_into_rejected_receipts(
         },
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "ADD_RULE_CLASSES",
         (malformed_rule,),
     )
@@ -454,7 +454,7 @@ def test_canonical_template_projection_consumes_existing_admitted_rules_only(
     ).compiled_rule
     assert rule is not None
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "verify_rule",
         lambda *_args, **_kwargs: pytest.fail("canonical projection recompiled proof"),
     )
@@ -478,7 +478,7 @@ def test_add_catalogue_remains_a_source_name_compatible_view(mba_catalogue):
 
 
 def test_public_catalogue_compilers_reuse_immutable_certificates():
-    egglog_add_rule_compiler._compile_selected_rule_catalogue.cache_clear()
+    certified_rule_compiler._compile_selected_rule_catalogue.cache_clear()
 
     mba_catalogue = compile_mba_rule_catalogue()
     add_catalogue = compile_add_rule_catalogue()
@@ -488,20 +488,20 @@ def test_public_catalogue_compilers_reuse_immutable_certificates():
 
 
 def test_public_catalogue_cache_misses_changed_family_declarations(monkeypatch):
-    egglog_add_rule_compiler._compile_selected_rule_catalogue.cache_clear()
+    certified_rule_compiler._compile_selected_rule_catalogue.cache_clear()
     calls = []
 
     def observe(rule_families):
         calls.append(tuple(rule_families.items()))
         return MbaRuleCatalogue(())
 
-    monkeypatch.setattr(egglog_add_rule_compiler, "_compile_rule_families", observe)
+    monkeypatch.setattr(certified_rule_compiler, "_compile_rule_families", observe)
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "MBA_RULE_FAMILIES",
         {"add": ()},
     )
-    monkeypatch.setattr(egglog_add_rule_compiler, "ADD_RULE_CLASSES", ())
+    monkeypatch.setattr(certified_rule_compiler, "ADD_RULE_CLASSES", ())
 
     mba_catalogue = compile_mba_rule_catalogue()
     add_catalogue = compile_add_rule_catalogue()
@@ -515,12 +515,12 @@ def test_public_catalogue_cache_misses_changed_family_declarations(monkeypatch):
         {"PATTERN": Var("x"), "REPLACEMENT": Var("x")},
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "MBA_RULE_FAMILIES",
         {"add": (changed_rule,)},
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "ADD_RULE_CLASSES",
         (changed_rule,),
     )
@@ -539,7 +539,7 @@ def test_live_family_selector_preserves_catalogue_order_and_add_compatibility(
 ):
     requested_families = ("xor", "add", "mul", "add")
 
-    selected = egglog_add_rule_compiler.compiled_rules_for_families(requested_families)
+    selected = certified_rule_compiler.compiled_rules_for_families(requested_families)
     expected = tuple(
         rule
         for rule in mba_catalogue.compiled_rules
@@ -547,9 +547,9 @@ def test_live_family_selector_preserves_catalogue_order_and_add_compatibility(
     )
 
     assert selected == expected
-    repeated = egglog_add_rule_compiler.compiled_rules_for_families(requested_families)
+    repeated = certified_rule_compiler.compiled_rules_for_families(requested_families)
     assert all(left is right for left, right in zip(selected, repeated, strict=True))
-    assert egglog_add_rule_compiler.compiled_rules_for_families(("add",)) == (
+    assert certified_rule_compiler.compiled_rules_for_families(("add",)) == (
         compile_add_rule_catalogue().compiled_rules
     )
 
@@ -559,35 +559,35 @@ def test_add_only_live_selection_does_not_compile_the_whole_corpus(monkeypatch):
         raise AssertionError("ADD selection must not certify unrelated families")
 
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "compile_mba_rule_catalogue",
         reject_whole_corpus_compile,
     )
 
-    selected = egglog_add_rule_compiler.compiled_rules_for_families(("add",))
+    selected = certified_rule_compiler.compiled_rules_for_families(("add",))
 
     assert selected == compile_add_rule_catalogue().compiled_rules
 
 
 def test_live_selection_cache_reuses_only_the_same_declaration_version(monkeypatch):
-    egglog_add_rule_compiler._compile_selected_rule_catalogue.cache_clear()
+    certified_rule_compiler._compile_selected_rule_catalogue.cache_clear()
     calls = []
 
     def observe(rule_families):
         calls.append(tuple(rule_families.items()))
         return MbaRuleCatalogue(())
 
-    monkeypatch.setattr(egglog_add_rule_compiler, "_compile_rule_families", observe)
+    monkeypatch.setattr(certified_rule_compiler, "_compile_rule_families", observe)
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "MBA_RULE_FAMILIES",
         {"add": ()},
     )
 
     with pytest.raises(ValueError, match="no compiled rules"):
-        egglog_add_rule_compiler.compiled_rules_for_families(("add",))
+        certified_rule_compiler.compiled_rules_for_families(("add",))
     with pytest.raises(ValueError, match="no compiled rules"):
-        egglog_add_rule_compiler.compiled_rules_for_families(("add",))
+        certified_rule_compiler.compiled_rules_for_families(("add",))
     assert len(calls) == 1
 
     fake_rule = type(
@@ -596,12 +596,12 @@ def test_live_selection_cache_reuses_only_the_same_declaration_version(monkeypat
         {"PATTERN": Var("x"), "REPLACEMENT": Var("x")},
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "MBA_RULE_FAMILIES",
         {"add": (fake_rule,)},
     )
     with pytest.raises(ValueError, match="no compiled rules"):
-        egglog_add_rule_compiler.compiled_rules_for_families(("add",))
+        certified_rule_compiler.compiled_rules_for_families(("add",))
     assert len(calls) == 2
 
 
@@ -617,11 +617,11 @@ def test_live_family_selector_rejects_unknown_and_receipts_only_families(
     message,
 ):
     with pytest.raises(ValueError, match=message):
-        egglog_add_rule_compiler.compiled_rules_for_families(families)
+        certified_rule_compiler.compiled_rules_for_families(families)
 
 
 def test_live_family_selector_keeps_aliases_as_provenance_not_executable_rules():
-    selected = egglog_add_rule_compiler.compiled_rules_for_families(("add", "xor"))
+    selected = certified_rule_compiler.compiled_rules_for_families(("add", "xor"))
     aliases_by_canonical = {
         rule.source_name: rule.aliases for rule in selected if rule.aliases
     }

@@ -8,7 +8,7 @@ import pytest
 
 from d810.backends.mba import native_pod_matcher
 from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-from d810.backends.mba.egglog_add_rule_compiler import (
+from d810.mba.certified_rule_compiler import (
     _compile_rule_families,
     compile_add_rule_catalogue,
 )

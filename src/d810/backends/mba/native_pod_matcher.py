@@ -388,7 +388,7 @@ def _match_cython_catalogue(
         NativePatternMatch,
         NativePatternMatchResult,
     )
-    from d810.backends.mba.egglog_add_rule_compiler import _constraints_match_term
+    from d810.mba.certified_rule_compiler import _constraints_match_term
     from d810.mba.typed_term import term_fingerprint
 
     if comparison_budget > _MAX_CYTHON_COMPARISONS:

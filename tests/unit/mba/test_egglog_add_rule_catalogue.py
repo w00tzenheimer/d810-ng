@@ -1,7 +1,7 @@
 import pytest
 
-from d810.backends.mba import egglog_add_rule_compiler
-from d810.backends.mba.egglog_add_rule_compiler import (
+from d810.mba import certified_rule_compiler
+from d810.mba.certified_rule_compiler import (
     RuleCompilationStatus,
     compile_add_rule_catalogue,
 )
@@ -19,7 +19,7 @@ def test_add_catalogue_rejects_non_dsl_pattern_or_replacement(
     attributes[malformed_attribute] = object()
     malformed_rule = type("MalformedRule", (VerifiableRule,), attributes)
     monkeypatch.setattr(
-        egglog_add_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
+        certified_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
     )
 
     catalogue = compile_add_rule_catalogue()
@@ -43,7 +43,7 @@ def test_add_catalogue_rejects_unknown_comparison_constraint_operation(monkeypat
         },
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
+        certified_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
     )
 
     receipt = compile_add_rule_catalogue().receipt_for("UnknownComparisonRule")
@@ -67,7 +67,7 @@ def test_add_catalogue_rejects_logical_constraint_the_verifier_cannot_convert(
         },
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
+        certified_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
     )
 
     receipt = compile_add_rule_catalogue().receipt_for("ContradictoryAndRule")
@@ -93,7 +93,7 @@ def test_add_catalogue_rejects_hidden_get_constraints_override(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
+        certified_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
     )
 
     receipt = compile_add_rule_catalogue().receipt_for("HiddenConstraintRule")

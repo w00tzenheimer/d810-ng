@@ -5,14 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from d810.backends.mba import egglog_add_rule_compiler, egglog_saturation
+from d810.backends.mba import egglog_saturation
 from d810.backends.mba import hexrays_island
 from d810.backends.mba import egglog_statistics
 from d810.backends.mba import native_z3
 from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-from d810.backends.mba.egglog_add_rule_compiler import (
+from d810.mba import certified_rule_compiler
+from d810.mba.certified_rule_compiler import (
     CERTIFICATE_WIDTHS,
-    CompiledEgglogRule,
+    CompiledMbaRule,
     _compile_rule_families,
     apply_compiled_rule_to_term,
 )
@@ -307,7 +308,7 @@ def _explicit_legacy_test_catalogue(rules):
         del comparison_budget
         applications = []
         for declaration_index, rule in enumerate(rules):
-            replacement = egglog_add_rule_compiler.apply_compiled_rule_to_term(
+            replacement = certified_rule_compiler.apply_compiled_rule_to_term(
                 rule, term
             )
             if replacement is not None:
@@ -1600,7 +1601,7 @@ def test_fabricated_skip_verification_compiled_rule_is_not_admitted():
         PATTERN = Xor_NestedStuff.x9 ^ Xor_NestedStuff.x10
         REPLACEMENT = Xor_NestedStuff.x9
 
-    fabricated = CompiledEgglogRule(
+    fabricated = CompiledMbaRule(
         family="xor",
         source_name="FabricatedUnverifiedRule",
         aliases=(),
@@ -1627,7 +1628,7 @@ def test_copied_self_authentication_fields_do_not_admit_fabricated_rule(
         for item in fields(canonical)
         if item.name.startswith("_admission_")
     }
-    fabricated = CompiledEgglogRule(
+    fabricated = CompiledMbaRule(
         family="xor",
         source_name="FabricatedUnverifiedRule",
         aliases=(),
@@ -1637,13 +1638,13 @@ def test_copied_self_authentication_fields_do_not_admit_fabricated_rule(
         **copied_credentials,
     )
     if hasattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "_compiled_rule_admission_signature",
     ):
         fabricated = replace(
             fabricated,
             _admission_signature=(
-                egglog_add_rule_compiler._compiled_rule_admission_signature(fabricated)
+                certified_rule_compiler._compiled_rule_admission_signature(fabricated)
             ),
         )
     candidate = _term_from_symbolic(fabricated.pattern)
@@ -1755,12 +1756,12 @@ def test_frontier_time_exhaustion_stops_before_run(
     )
     monkeypatch.setattr(egglog_saturation, "_monotonic", lambda: next(ticks))
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "executable_rule_order_key",
         lambda _rule: (),
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "apply_compiled_rule_to_term",
         lambda _rule, term: applications.append(term) or term,
     )
@@ -1809,12 +1810,12 @@ def test_pre_run_frontier_firing_cap_avoids_registration_and_execution(
         lambda: SimpleNamespace(EGraph=_FreshEGraph),
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "executable_rule_order_key",
         lambda rule: rule.source_name,
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "apply_compiled_rule_to_term",
         lambda _rule, term: term,
     )
@@ -1886,7 +1887,7 @@ def test_default_three_ms_guard_rejects_estimated_run_before_egglog_execution(
         ),
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "apply_compiled_rule_to_term",
         lambda _rule, term: term,
     )
@@ -1988,12 +1989,12 @@ def test_exploration_contract_is_candidate_root_only(
         lambda: SimpleNamespace(EGraph=_FreshEGraph),
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "executable_rule_order_key",
         lambda _rule: (),
     )
     monkeypatch.setattr(
-        egglog_add_rule_compiler,
+        certified_rule_compiler,
         "apply_compiled_rule_to_term",
         lambda _rule, term: visited.append(term) or None,
     )

@@ -1,7 +1,7 @@
 """Cached structural patterns for matching certified MBA rules to native views.
 
 This layer intentionally sits between the catalogue certificate boundary and
-Egglog.  It matches an immutable :class:`NativeMbaTermView` without converting
+the provider runtime. It matches an immutable :class:`NativeMbaTermView` without converting
 the candidate into a Hex-Rays AST or creating portable terms until a rule has
 matched.  The resulting bindings are fixed: later extraction only materializes
 the replacement from those bindings and never re-runs pattern matching.
@@ -13,8 +13,8 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from d810.backends.mba.egglog_add_rule_compiler import (
-    CompiledEgglogRule,
+from d810.mba.certified_rule_compiler import (
+    CompiledMbaRule,
     _constraints_match_term,
     _materialize_symbolic_term,
     require_admitted_compiled_rules,
@@ -66,7 +66,7 @@ class FixedBindings:
         object.__setattr__(self, "native", MappingProxyType(dict(self.native)))
         object.__setattr__(self, "terms", MappingProxyType(dict(self.terms)))
 
-    def materialize_replacement(self, rule: CompiledEgglogRule) -> TypedBvTerm:
+    def materialize_replacement(self, rule: CompiledMbaRule) -> TypedBvTerm:
         """Build a certified replacement from fixed bindings only."""
 
         return _materialize_symbolic_term(
@@ -80,7 +80,7 @@ class FixedBindings:
 class NativePatternMatch:
     """A single admitted root match, in certified declaration order."""
 
-    rule: CompiledEgglogRule
+    rule: CompiledMbaRule
     bindings: FixedBindings
     catalogue_index: int
 
@@ -105,7 +105,7 @@ class NativePatternMatchResult:
 
 @dataclass(frozen=True)
 class _CompiledPattern:
-    rule: CompiledEgglogRule
+    rule: CompiledMbaRule
     catalogue_index: int
     pod_pattern: _PodPattern | None
     structural_node_count: int
@@ -147,7 +147,7 @@ class CompiledPatternCatalogue:
 
     @classmethod
     def from_rules(
-        cls, rules: tuple[CompiledEgglogRule, ...]
+        cls, rules: tuple[CompiledMbaRule, ...]
     ) -> CompiledPatternCatalogue:
         # The POD encoder is intentionally loaded only while building the
         # immutable certified catalogue. Candidate matching must never walk a
@@ -330,7 +330,7 @@ class CompiledPatternCatalogue:
         candidate: TypedBvTerm,
         *,
         comparison_budget: int = 256,
-    ) -> tuple[tuple[CompiledEgglogRule, TypedBvTerm, int], ...]:
+    ) -> tuple[tuple[CompiledMbaRule, TypedBvTerm, int], ...]:
         """Return deduplicated replacements from frozen canonical templates.
 
         This is the only saturation-facing rule application projection.  It
@@ -347,7 +347,7 @@ class CompiledPatternCatalogue:
             raise CanonicalPatternComparisonBudgetExceeded(
                 "canonical matcher comparison budget exhausted"
             )
-        applications: list[tuple[CompiledEgglogRule, TypedBvTerm, int]] = []
+        applications: list[tuple[CompiledMbaRule, TypedBvTerm, int]] = []
         seen: set[tuple[int, str]] = set()
         for match in report.matches:
             compiled = match.compiled_pattern

@@ -19,7 +19,8 @@ from types import (
     MappingProxyType,
     ModuleType,
 )
-from d810.core.typing import Any, TypeAlias
+from d810.core.typing import Any, Protocol, TypeAlias
+from d810.mba.certified_rule_compiler import CompiledMbaRule
 from d810.mba.canonical_pattern import (
     CanonicalPatternMalformed,
     CanonicalPatternUnsupported,
@@ -32,7 +33,16 @@ from d810.mba.typed_term import TypedBvTerm
 
 
 RootShape: TypeAlias = tuple[str | None, int, int]
-CompiledRule: TypeAlias = Any
+class _CompiledRuleLike(Protocol):
+    source_name: str
+    aliases: tuple[str, ...]
+    family: str
+    pattern: object
+    replacement: object
+    proof_widths: tuple[int, ...]
+
+
+CompiledRule: TypeAlias = CompiledMbaRule | _CompiledRuleLike
 
 
 _SNAPSHOT_FINGERPRINT_VERSION = 5

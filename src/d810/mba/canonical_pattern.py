@@ -1,6 +1,6 @@
 """Portable canonical templates for already-certified MBA rules.
 
-The canonical template layer deliberately knows nothing about IDA, Egglog, or
+The canonical template layer deliberately knows nothing about IDA or provider
 Z3.  It lowers the existing symbolic DSL into :class:`TypedBvTerm` values,
 preserving the distinction between a wildcard variable and a constrained
 constant placeholder.  Rule admission and proof certification remain owned by
@@ -33,7 +33,7 @@ from d810.mba.typed_term import (
 )
 
 if TYPE_CHECKING:
-    from d810.backends.mba.egglog_add_rule_compiler import CompiledEgglogRule
+    from d810.mba.certified_rule_compiler import CompiledMbaRule
 
 
 PatternLeafKey = tuple[str, str]
@@ -80,7 +80,7 @@ class FrozenConstraint:
 class CanonicalCompiledPattern:
     """One width-specific canonical pattern and replacement template."""
 
-    rule: "CompiledEgglogRule"
+    rule: "CompiledMbaRule"
     width: int
     pattern_term: TypedBvTerm
     replacement_template: TypedBvTerm
@@ -724,7 +724,7 @@ def canonical_rule_fingerprint(
 
 
 def compile_canonical_pattern(
-    rule: "CompiledEgglogRule",
+    rule: "CompiledMbaRule",
     *,
     width: int,
     declaration_index: int,

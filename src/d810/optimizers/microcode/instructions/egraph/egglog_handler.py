@@ -17,11 +17,13 @@ from types import MappingProxyType
 import ida_hexrays
 
 from d810.backends.mba.egglog_add_rule_compiler import (
-    CompiledEgglogRule,
     EgglogAddSpecialization,
     canonical_pattern_catalogue_for_rules,
-    compiled_rules_for_families,
     specialize,
+)
+from d810.mba.certified_rule_compiler import (
+    CompiledMbaRule,
+    compiled_rules_for_families,
 )
 from d810.backends.mba.egglog_saturation import (
     EgglogFunctionBudget,
@@ -131,7 +133,7 @@ _REPLAY_SEMANTICS_UNAVAILABLE = object()
 
 @dataclass(frozen=True)
 class _SelectedRuleCatalogue:
-    compiled_rules: tuple[CompiledEgglogRule, ...]
+    compiled_rules: tuple[CompiledMbaRule, ...]
 
 
 class EgglogOptimizer(PeepholeSimplificationRule):
@@ -159,7 +161,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._publish_budget_attributes(self.extraction_budget)
         self.families = _DEFAULT_FAMILIES
         self.__catalogue = _SelectedRuleCatalogue(())
-        self._compiled_rules: tuple[CompiledEgglogRule, ...] = ()
+        self._compiled_rules: tuple[CompiledMbaRule, ...] = ()
         self._rules_by_root_opcode = MappingProxyType({})
         self._native_pattern_catalogue = CompiledPatternCatalogue.from_rules(())
         self._proof_templates = MappingProxyType({})
@@ -1962,9 +1964,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     def _build_root_opcode_buckets(
         self,
-        rules: tuple[CompiledEgglogRule, ...],
+        rules: tuple[CompiledMbaRule, ...],
     ) -> MappingProxyType:
-        buckets: dict[int, list[CompiledEgglogRule]] = {}
+        buckets: dict[int, list[CompiledMbaRule]] = {}
         for rule in rules:
             operation = getattr(getattr(rule, "pattern", None), "operation", None)
             if operation is None and self.families == _DEFAULT_FAMILIES:

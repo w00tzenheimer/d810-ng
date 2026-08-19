@@ -12,7 +12,7 @@ import pytest
 
 from d810.core.logging import getLogger
 from d810.core.typing import Iterator
-from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
+from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
 from d810.mba.certified_catalogue import (
     ShadowMatcherParityLedger,
     StructuralMatcherParityCertificate,
