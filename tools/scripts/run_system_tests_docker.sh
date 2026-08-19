@@ -468,6 +468,10 @@ fi
 if [ -n "$ENABLE_LLVM_OPT" ]; then
   ENV_TEST="$ENV_TEST D810_REQUIRE_LLVM_OPT=1"
 fi
+PYTEST_EXTENSION_ARGS=""
+if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
+  PYTEST_EXTENSION_ARGS="-p no:cacheprovider"
+fi
 
 LLVM_OPT_SETUP=""
 if [ -n "$ENABLE_LLVM_OPT" ]; then
@@ -536,7 +540,7 @@ else
 fi
 EXTENSION_SETUP=""
 if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
-  EXTENSION_SETUP="EXTENSION_WHEEL=\$(find /opt/d810-egglog/dist -maxdepth 1 -type f -name 'd810_egglog-*.whl' -print -quit 2>/dev/null); if [ -n \"\$EXTENSION_WHEEL\" ]; then $IDA_VENV_PIP install \"\$EXTENSION_WHEEL[test]\" --no-deps -q; else EXTENSION_BUILD_DIR=\$(mktemp -d); cp -a /opt/d810-egglog/. \"\$EXTENSION_BUILD_DIR/\"; $IDA_VENV_PIP install \"\$EXTENSION_BUILD_DIR[test]\" --no-deps -q; fi; $IDA_VENV_PIP install 'egglog>=13.2.0,<14' -q; $IDA_VENV_PYTHON -c 'import d810_egglog, egglog'"
+  EXTENSION_SETUP="EXTENSION_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-egglog/. \"\$EXTENSION_BUILD_DIR/\" && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$EXTENSION_BUILD_DIR/pyproject.toml\" > \"\$EXTENSION_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$EXTENSION_BUILD_DIR[test]\" --no-deps -q && $IDA_VENV_PIP install -r \"\$EXTENSION_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'import d810_egglog, egglog'"
 fi
 SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON $ENV_GIT && $PROFILE_SETUP${PROFILE_SETUP:+ && }$DEPENDENCY_SETUP"
 if [ -n "$EXTENSION_SETUP" ]; then
@@ -642,7 +646,7 @@ if [ "$CMD" = "system" ]; then
     SYS_TRUNCATE=": > \"$SYS_LOG\"; "
     SYS_REDIR="> \"$SYS_LOG\" 2>&1"
   fi
-  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
+  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest tests/system -v $PYTEST_EXTENSION_ARGS $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
   exit 0
 fi
 
@@ -657,7 +661,7 @@ if [ "$CMD" = "test" ]; then
     SYS_TRUNCATE=": > \"$SYS_LOG\"; "
     SYS_REDIR="> \"$SYS_LOG\" 2>&1"
   fi
-  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest -v $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
+  run_bash "$SETUP_CMD && ${SYS_TRUNCATE}$ENV_TEST $IDA_VENV_PYTHON -m pytest -v $PYTEST_EXTENSION_ARGS $(_d810_quote_args "${SYSTEM_ARGS[@]}") $SYS_REDIR"
   exit 0
 fi
 
@@ -693,5 +697,5 @@ if [ -n "$DUMP_OUT" ]; then
   REDIR="> \"$LOG_PATH\" 2>&1"
 fi
 
-INNER="$SETUP_CMD && ${TRUNCATE_CMD}$ENV_TEST $PYTEST_DUMP $(_d810_quote_args "${DUMP_ARGS[@]}") -v $REDIR"
+INNER="$SETUP_CMD && ${TRUNCATE_CMD}$ENV_TEST $PYTEST_DUMP $PYTEST_EXTENSION_ARGS $(_d810_quote_args "${DUMP_ARGS[@]}") -v $REDIR"
 run_bash "$INNER"

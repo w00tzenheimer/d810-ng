@@ -142,6 +142,7 @@ def test_core_mode_does_not_mount_or_forward_extension_root(
     assert "/opt/d810-egglog" not in command
     assert "D810_EGGLOG_ROOT=" not in command
     assert "egglog" not in command
+    assert "-p no:cacheprovider" not in command
 
 
 @pytest.mark.parametrize("root", ["relative/extension", "missing-extension"])
@@ -178,13 +179,113 @@ def test_extension_mode_mounts_installs_and_probes_once(tmp_path: Path) -> None:
     command = _container_run(calls)
     mount = f"{extension_root}:/opt/d810-egglog:ro"
     assert calls.count(f"run-arg {mount}") == 1
-    assert "find /opt/d810-egglog/dist" in command
-    assert 'pip install "$EXTENSION_WHEEL[test]" --no-deps -q' in command
+    assert "find /opt/d810-egglog/dist" not in command
     assert 'cp -a /opt/d810-egglog/. "$EXTENSION_BUILD_DIR/"' in command
+    assert 'pip install "$EXTENSION_BUILD_DIR[test]" --no-deps -q' in command
+    assert 'pip install -r "$EXTENSION_BUILD_DIR/requirements.txt" -q' in command
+    assert "tomllib" in command
+    assert "optional-dependencies" in command
+    assert "d810-ng" in command
     assert "pip install -e '/opt/d810-egglog" not in command
-    assert "pip install 'egglog>=13.2.0,<14' -q" in command
+    assert "egglog>=" not in command
+    assert "egglog<" not in command
     assert "import d810_egglog, egglog" in command
     assert f"D810_EGGLOG_ROOT={extension_root}" not in command
+
+
+def test_extension_install_uses_current_source_not_stale_wheel(
+    tmp_path: Path,
+) -> None:
+    extension_root = tmp_path / "extension"
+    (extension_root / "dist").mkdir(parents=True)
+    (extension_root / "dist" / "d810_egglog-0.0.0-stale.whl").write_bytes(
+        b"stale wheel"
+    )
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_EGGLOG_ROOT": str(extension_root)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "find /opt/d810-egglog/dist" not in command
+    assert 'cp -a /opt/d810-egglog/. "$EXTENSION_BUILD_DIR/"' in command
+    assert 'pip install "$EXTENSION_BUILD_DIR[test]" --no-deps -q' in command
+
+
+def test_extension_dependencies_come_from_copied_metadata(
+    tmp_path: Path,
+) -> None:
+    extension_root = tmp_path / "extension"
+    extension_root.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_EGGLOG_ROOT": str(extension_root)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "tomllib" in command
+    assert "optional-dependencies" in command
+    assert "requirements.txt" in command
+    assert 'pip install -r "$EXTENSION_BUILD_DIR/requirements.txt" -q' in command
+    assert "d810-ng" in command
+    assert "egglog>=" not in command
+    assert "egglog<" not in command
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("system",),
+        ("test",),
+        ("dump",),
+        ("shell",),
+        ("exec", "--", "true"),
+    ],
+)
+def test_extension_mounts_once_in_every_docker_mode(
+    tmp_path: Path,
+    args: tuple[str, ...],
+) -> None:
+    extension_root = tmp_path / "extension"
+    extension_root.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        *args,
+        extra_env={"D810_EGGLOG_ROOT": str(extension_root)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    mount = f"{extension_root}:/opt/d810-egglog:ro"
+    assert calls.count(f"run-arg {mount}") == 1
+
+
+def test_extension_pytest_disables_read_only_cache_provider(tmp_path: Path) -> None:
+    extension_root = tmp_path / "extension"
+    extension_root.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        "test",
+        "--",
+        "/opt/d810-egglog/tests/unit/test_manifest.py",
+        "-q",
+        extra_env={"D810_EGGLOG_ROOT": str(extension_root)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "-p no:cacheprovider" in command
 
 
 def test_extension_path_with_spaces_remains_one_mount_argument(tmp_path: Path) -> None:
