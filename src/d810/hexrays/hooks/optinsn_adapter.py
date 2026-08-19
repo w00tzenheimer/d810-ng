@@ -1572,7 +1572,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             function_ea = 0
         try:
             maturity = (
-                int(getattr(mba, "maturity", self.current_maturity) or 0)
+                int(
+                    getattr(mba, "maturity", getattr(self, "current_maturity", -1))
+                    or 0
+                )
                 if has_block
                 else int(getattr(self, "current_maturity", -1) or -1)
             )

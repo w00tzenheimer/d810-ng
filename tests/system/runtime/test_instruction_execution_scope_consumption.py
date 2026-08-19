@@ -495,6 +495,23 @@ def test_instruction_callback_rejects_unknown_sdk_argument_count():
         InstructionOptimizerManager.func(manager, None, _CallbackInstruction(1), 0, 1)
 
 
+def test_instruction_context_builder_uses_mba_maturity_without_manager_state():
+    """Quarantine callbacks may use object.__new__ manager test doubles."""
+    manager = object.__new__(InstructionOptimizerManager)
+    mba = SimpleNamespace(entry_ea=0x401000, maturity=ida_hexrays.MMAT_LOCOPT)
+    block = SimpleNamespace(mba=mba)
+
+    context = InstructionOptimizerManager._build_instruction_commit_context(
+        manager,
+        block,
+        _CallbackInstruction(1),
+        0,
+    )
+
+    assert context.epoch.function_ea == 0x401000
+    assert context.epoch.maturity == ida_hexrays.MMAT_LOCOPT
+
+
 def test_instruction_callback_null_block_skips_block_required_rule_before_mba_access(
     monkeypatch,
 ):
