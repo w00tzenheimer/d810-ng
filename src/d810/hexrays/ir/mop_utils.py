@@ -458,6 +458,8 @@ def mop_to_ast_internal(
         if ldc_src is not None and ldc_src.t == ida_hexrays.mop_n:
             const_val = int(ldc_src.nnn.value)
             const_size = ldc_src.size
+            if node_budget is not None:
+                node_budget.consume()
 
             const_leaf = AstConstant(hex(const_val), const_val, const_size)
             _native_perf_ast_constructed()

@@ -148,6 +148,13 @@ def _new_query_solver(
         return solver if solver is not None else get_solver()
 
     query_solver = z3.Solver()
+    if solver is not None:
+        try:
+            query_solver.add(*solver.assertions())
+        except Exception as exc:
+            raise D810Z3Exception(
+                "bounded proof solver must expose copyable assertions"
+            ) from exc
     query_solver.set(timeout=policy.proof_timeout_ms)
     return query_solver
 
@@ -629,6 +636,22 @@ class Z3MopProver:
                 k1, k2 = k2, k1
         return self._policy, k1, k2
 
+    @staticmethod
+    def _cache_is_context_free(
+        *operands: ida_hexrays.mop_t | MopSnapshot | None,
+        blk: ida_hexrays.mblock_t | None,
+        ins: ida_hexrays.minsn_t | None,
+        solver: z3.Solver | None,
+    ) -> bool:
+        """Allow reuse only when no semantic context can affect a proof."""
+
+        return (
+            blk is None
+            and ins is None
+            and solver is None
+            and not any(isinstance(operand, MopSnapshot) for operand in operands)
+        )
+
     def _prepare_operand_pair(
         self,
         mop1: ida_hexrays.mop_t | MopSnapshot | None,
@@ -680,11 +703,19 @@ class Z3MopProver:
         if prepared is None:
             return _unsupported_result(started_at)
         left_mop, right_mop, native_size = prepared
+        cache_allowed = self._cache_is_context_free(
+            mop1,
+            mop2,
+            blk=blk,
+            ins=ins,
+            solver=solver,
+        )
         cache_key = self._ordered_pair_key(left_mop, right_mop)
         cache = self._eq_cache if equality else self._neq_cache
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
+        if cache_allowed:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
 
         budget = (
             Z3ExpressionNodeBudget(self._policy)
@@ -741,7 +772,10 @@ class Z3MopProver:
                 started_at,
                 budget.observed_nodes if budget is not None else None,
             )
-        if result.status in {Z3ProofStatus.PROVED, Z3ProofStatus.DISPROVED}:
+        if cache_allowed and result.status in {
+            Z3ProofStatus.PROVED,
+            Z3ProofStatus.DISPROVED,
+        }:
             cache[cache_key] = result
         return result
 
@@ -866,6 +900,13 @@ class Z3MopProver:
             return None
 
         blk, ins = self._resolve_context(blk, ins)
+        cache_allowed = self._cache_is_context_free(
+            mop1,
+            mop2,
+            blk=blk,
+            ins=ins,
+            solver=solver,
+        )
         destination_mba = getattr(blk, "mba", None)
         if isinstance(mop1, MopSnapshot):
             mop1 = mop1.to_mop(destination_mba)
@@ -898,7 +939,7 @@ class Z3MopProver:
             _operand_key(mop1),
             _operand_key(mop2),
         )
-        if cache_key in self._comparison_cache:
+        if cache_allowed and cache_key in self._comparison_cache:
             return self._comparison_cache[cache_key]
 
         budget = (
@@ -957,7 +998,7 @@ class Z3MopProver:
                 else:
                     result = predicate_valid
 
-        if result is not None:
+        if cache_allowed and result is not None:
             self._comparison_cache[cache_key] = result
         return result
 
@@ -1058,6 +1099,12 @@ class Z3MopProver:
             return _unsupported_result(started_at)
         if native_mop is None:
             return _unsupported_result(started_at)
+        cache_allowed = self._cache_is_context_free(
+            mop,
+            blk=blk,
+            ins=ins,
+            solver=solver,
+        )
         try:
             identity = structural_mop_hash(native_mop, 0)
         except Exception:
@@ -1068,9 +1115,10 @@ class Z3MopProver:
             )
         cache_key = (self._policy, int(native_mop.t), int(native_mop.size), identity)
         cache = self._always_nonzero_cache if nonzero else self._always_zero_cache
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
+        if cache_allowed:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
         try:
             prepared = self._prepare_single_ast(
                 native_mop,
@@ -1093,7 +1141,6 @@ class Z3MopProver:
         if prepared is None:
             return _unsupported_result(started_at)
         native_mop, ast, budget, visitor_needs_budget = prepared
-        observed = budget.observed_nodes if budget is not None else None
         try:
             create_z3_vars(ast.get_leaf_list())
             visitor = (
@@ -1107,7 +1154,9 @@ class Z3MopProver:
             return _node_limit_result(started_at, budget)
         except Exception as exc:
             logger.debug("bounded zero translation failed: %s", exc)
+            observed = budget.observed_nodes if budget is not None else None
             return _unsupported_result(started_at, observed)
+        observed = budget.observed_nodes if budget is not None else None
         if z3_expr is None:
             return _unsupported_result(started_at, observed)
         try:
@@ -1135,7 +1184,10 @@ class Z3MopProver:
                 started_at,
                 observed,
             )
-        if result.status in {Z3ProofStatus.PROVED, Z3ProofStatus.DISPROVED}:
+        if cache_allowed and result.status in {
+            Z3ProofStatus.PROVED,
+            Z3ProofStatus.DISPROVED,
+        }:
             cache[cache_key] = result
         return result
 

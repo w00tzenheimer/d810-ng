@@ -704,3 +704,251 @@ class TestZ3MopProverAPI:
         assert one_node_too_small.observed_expression_nodes == 1
         assert len(builder_budgets) == 2
         assert builder_budgets[0] is builder_budgets[1]
+
+    def test_context_resolved_zero_cache_is_bypassed_and_receipt_is_live(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofPolicy, Z3ProofStatus
+
+        class _FakeAst:
+            def __init__(self, value):
+                self.value = value
+
+            def is_leaf(self):
+                return True
+
+            def get_leaf_list(self):
+                return []
+
+        class _FakeVisitor:
+            def __init__(self, node_budget=None):
+                self.node_budget = node_budget
+
+            def visit(self, ast):
+                if self.node_budget is not None:
+                    self.node_budget.consume()
+                return z3.BitVecVal(ast.value, 32)
+
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="same-register")
+        blk_a = SimpleNamespace(mba=SimpleNamespace(owner="mba-a"))
+        blk_b = SimpleNamespace(mba=SimpleNamespace(owner="mba-b"))
+        ins_a = SimpleNamespace(label="ins-a")
+        ins_b = SimpleNamespace(label="ins-b")
+
+        monkeypatch.setattr(z3mod, "structural_mop_hash", lambda _mop, _depth: 17)
+        monkeypatch.setattr(z3mod, "AstNodeZ3Visitor", _FakeVisitor)
+        monkeypatch.setattr(
+            z3mod,
+            "mop_to_ast",
+            lambda _mop, *, node_budget: node_budget.consume() or _FakeAst(99),
+        )
+        monkeypatch.setattr(
+            z3mod,
+            "_resolve_mop_to_ast",
+            lambda _mop, _blk, ins: _FakeAst(0 if ins.label == "ins-a" else 1),
+        )
+        monkeypatch.setattr(
+            z3mod, "_recursively_resolve_ast", lambda ast, _blk, _ins: ast
+        )
+
+        prover = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=1, proof_timeout_ms=100)
+        )
+        first = prover.prove_always_zero(mop, blk=blk_a, ins=ins_a)
+        second = prover.prove_always_zero(mop, blk=blk_b, ins=ins_b)
+
+        assert first.status is Z3ProofStatus.PROVED
+        assert first.observed_expression_nodes == 1
+        assert second.status is Z3ProofStatus.DISPROVED
+        assert second.observed_expression_nodes == 1
+
+    @pytest.mark.parametrize(
+        ("method_name", "first_expected", "second_expected"),
+        (
+            ("prove_equal", "proved", "disproved"),
+            ("prove_unequal", "disproved", "proved"),
+            ("prove_comparison", True, False),
+        ),
+    )
+    def test_context_bypasses_pair_and_comparison_caches(
+        self, monkeypatch, method_name, first_expected, second_expected
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofPolicy
+
+        left = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="context-left")
+        right = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="context-right")
+        blk_a = SimpleNamespace(mba=SimpleNamespace(owner="pair-mba-a"))
+        blk_b = SimpleNamespace(mba=SimpleNamespace(owner="pair-mba-b"))
+        ins_a = SimpleNamespace(label="pair-ins-a")
+        ins_b = SimpleNamespace(label="pair-ins-b")
+        attempts = []
+
+        monkeypatch.setattr(z3mod, "structural_mop_hash", lambda _mop, _depth: 23)
+
+        def _translate(_mops, **_kwargs):
+            attempts.append(True)
+            value = 7 if len(attempts) == 1 else 8
+            return [z3.BitVecVal(7, 32), z3.BitVecVal(value, 32)]
+
+        monkeypatch.setattr(z3mod, "mop_list_to_z3_expression_list", _translate)
+        prover = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=8, proof_timeout_ms=100)
+        )
+
+        def _invoke(blk, ins):
+            method = getattr(prover, method_name)
+            if method_name == "prove_comparison":
+                return method(left, right, "eq", blk=blk, ins=ins)
+            return method(left, right, blk=blk, ins=ins)
+
+        first = _invoke(blk_a, ins_a)
+        second = _invoke(blk_b, ins_b)
+
+        if method_name == "prove_comparison":
+            assert first is first_expected
+            assert second is second_expected
+        else:
+            assert first.status.value == first_expected
+            assert second.status.value == second_expected
+        assert attempts == [True, True]
+
+    def test_bounded_proof_copies_caller_assertions_without_mutating_global_solver(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofPolicy, Z3ProofStatus
+
+        left = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="assert-left")
+        right = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="assert-right")
+        x = z3.BitVec("assert_x", 32)
+        y = z3.BitVec("assert_y", 32)
+        caller_solver = z3.Solver()
+        caller_solver.add(x == y)
+        global_solver = z3mod.get_solver()
+        global_before = global_solver.sexpr()
+
+        monkeypatch.setattr(
+            z3mod,
+            "structural_mop_hash",
+            lambda mop, _depth: hash(mop.name),
+        )
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda _mops, **_kwargs: [x, y],
+        )
+
+        result = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=8, proof_timeout_ms=100)
+        ).prove_equal(left, right, solver=caller_solver)
+
+        assert result.status is Z3ProofStatus.PROVED
+        assert global_solver.sexpr() == global_before
+
+    def test_context_resolved_zero_node_limit_receipt_uses_live_budget(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ProofAbstentionReason,
+            Z3ProofPolicy,
+            Z3ProofStatus,
+        )
+
+        class _FakeAst:
+            def is_leaf(self):
+                return True
+
+            def get_leaf_list(self):
+                return []
+
+        class _FakeVisitor:
+            def __init__(self, node_budget=None):
+                self.node_budget = node_budget
+
+            def visit(self, _ast):
+                self.node_budget.consume()
+                self.node_budget.consume()
+                return z3.BitVecVal(0, 32)
+
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="limited-register")
+        blk = SimpleNamespace(mba=SimpleNamespace(owner="limited-mba"))
+        ins = SimpleNamespace(label="limited-ins")
+        monkeypatch.setattr(z3mod, "structural_mop_hash", lambda _mop, _depth: 19)
+        monkeypatch.setattr(z3mod, "AstNodeZ3Visitor", _FakeVisitor)
+        monkeypatch.setattr(
+            z3mod,
+            "mop_to_ast",
+            lambda _mop, *, node_budget: node_budget.consume() or _FakeAst(),
+        )
+        monkeypatch.setattr(z3mod, "_resolve_mop_to_ast", lambda *_args: _FakeAst())
+        monkeypatch.setattr(
+            z3mod, "_recursively_resolve_ast", lambda ast, _blk, _ins: ast
+        )
+
+        result = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=1, proof_timeout_ms=100)
+        ).prove_always_zero(mop, blk=blk, ins=ins)
+
+        assert result.status is Z3ProofStatus.ABSTAINED
+        assert result.reason is Z3ProofAbstentionReason.NODE_LIMIT
+        assert result.observed_expression_nodes == 1
+
+    def test_m_ldc_budget_charges_wrapper_and_nested_constant(self, monkeypatch):
+        import d810.hexrays.ir.mop_utils as mop_utils
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ExpressionNodeBudget,
+            Z3NodeLimitExceeded,
+            Z3ProofPolicy,
+        )
+
+        class _DetachedMop:
+            pass
+
+        wrapper = _DetachedMop()
+        wrapper.t = ida_hexrays.mop_d
+        wrapper.size = 4
+        wrapper.d = SimpleNamespace(
+            opcode=ida_hexrays.m_ldc,
+            ea=0,
+            size=4,
+            l=SimpleNamespace(
+                t=ida_hexrays.mop_n,
+                size=4,
+                nnn=SimpleNamespace(value=7),
+            ),
+            d=None,
+        )
+        monkeypatch.setattr(mop_utils, "get_mop_key", lambda _mop: ("ldc",))
+        monkeypatch.setattr(mop_utils, "safe_make_number", lambda *_args: None)
+        monkeypatch.setattr(mop_utils.ida_hexrays, "mop_t", _DetachedMop)
+
+        one_node_budget = Z3ExpressionNodeBudget(
+            Z3ProofPolicy(max_expression_nodes=1, proof_timeout_ms=100)
+        )
+        with pytest.raises(Z3NodeLimitExceeded):
+            mop_utils.mop_to_ast_internal(
+                wrapper,
+                mop_utils.AstBuilderContext(),
+                node_budget=one_node_budget,
+            )
+        assert one_node_budget.observed_nodes == 1
+
+        two_node_budget = Z3ExpressionNodeBudget(
+            Z3ProofPolicy(max_expression_nodes=2, proof_timeout_ms=100)
+        )
+        ast = mop_utils.mop_to_ast_internal(
+            wrapper,
+            mop_utils.AstBuilderContext(),
+            node_budget=two_node_budget,
+        )
+        assert ast is not None
+        assert ast.is_constant()
+        assert ast.expected_value == 7
+        assert two_node_budget.observed_nodes == 2
