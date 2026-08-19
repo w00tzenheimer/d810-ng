@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import math
 import pathlib
 import sqlite3
@@ -231,6 +232,51 @@ if typing.TYPE_CHECKING:
 
 FlowMaturityContext: typing.TypeAlias = typing.Any
 FlowOptimizationRule: typing.TypeAlias = typing.Any
+
+
+@dataclasses.dataclass(frozen=True)
+class BlockOptimizerRuntimeState:
+    """Lossless activation snapshot for the block optimizer adapter."""
+
+    execution_scope_service: object
+    execution_scope_project_name: str
+    execution_scope_idb_key: str
+    perf_compare_execution_scope: bool
+    perf_counters_store: object
+    perf_counters: dict[str, int]
+    current_maturity: object
+    pass_count: int
+    max_passes_current: int
+    generation: int
+    flow_context: object
+    flow_context_key: object
+    validated_fact_view_provider: object
+    fact_consumer_callback: object
+    flow_context_summary_provider: object
+    planner_outcome_callback: object
+    flow_gate_outcome_callback: object
+    decompilation_lifecycle: object
+    prefold_rccc_store: object
+    prefold_rccc_by_func: dict[int, frozenset[int]]
+    function_priors_provider: object
+    dispatcher_artifact_planner: object
+    pass_pipeline: object
+    pipeline_last_maturity: int
+    post_d810_pipeline_last_maturity: int
+    impossible_return_store: object
+    impossible_return_values: frozenset[tuple[int, int]]
+    terminal_zero_store: object
+    terminal_zero_values: frozenset[tuple[int, int]]
+    terminal_tail_store: object
+    terminal_tail_values: frozenset[tuple[int, int]]
+    project_config_store: object
+    project_config: dict[str, typing.Any]
+    pipeline_just_fired: bool
+    run_later_scheduler: object
+    scheduled_stage_identities: frozenset[object]
+    scheduled_flow_implementations: tuple[object, ...]
+    cfg_rules_store: object
+    cfg_rules: tuple[object, ...]
 
 
 class BlockOptimizerManager(ida_hexrays.optblock_t):
@@ -2288,6 +2334,165 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self.cfg_rules.append(cfg_rule)
         self._configure_rule_scheduler(cfg_rule)
         self._configure_rule_project_config(cfg_rule)
+
+    def capture_runtime_state(self) -> BlockOptimizerRuntimeState:
+        """Capture the adapter fields mutated by live project activation."""
+
+        perf_counters_store = getattr(self, "_perf_counters", None)
+        prefold_rccc_store = getattr(self, "_prefold_rccc_by_func", None)
+        project_config_store = getattr(self, "_project_config", None)
+        impossible_return_store = getattr(
+            self, "_impossible_return_artifact_rewrite_applied", None
+        )
+        terminal_zero_store = getattr(
+            self, "_terminal_zero_literal_rewrite_applied", None
+        )
+        terminal_tail_store = getattr(
+            self, "_terminal_tail_cascade_egress_applied", None
+        )
+        cfg_rules_store = getattr(self, "cfg_rules", None)
+        if not isinstance(perf_counters_store, dict):
+            raise TypeError("block adapter performance counters are not a dict")
+        if not isinstance(prefold_rccc_store, dict):
+            raise TypeError("block adapter prefold cache is not a dict")
+        if not isinstance(project_config_store, dict):
+            raise TypeError("block adapter project config is not a dict")
+        if not isinstance(impossible_return_store, set):
+            raise TypeError("block adapter return-artifact cache is not a set")
+        if not isinstance(terminal_zero_store, set):
+            raise TypeError("block adapter zero-literal cache is not a set")
+        if not isinstance(terminal_tail_store, set):
+            raise TypeError("block adapter tail-cascade cache is not a set")
+        if not isinstance(cfg_rules_store, list):
+            raise TypeError("block adapter rule worklist is not a list")
+        return BlockOptimizerRuntimeState(
+            execution_scope_service=self._execution_scope_service,
+            execution_scope_project_name=self._execution_scope_project_name,
+            execution_scope_idb_key=self._execution_scope_idb_key,
+            perf_compare_execution_scope=bool(self._perf_compare_execution_scope),
+            perf_counters_store=perf_counters_store,
+            perf_counters={str(key): int(value) for key, value in perf_counters_store.items()},
+            current_maturity=self.current_maturity,
+            pass_count=int(self._pass_count),
+            max_passes_current=int(self._max_passes_current),
+            generation=int(self._generation),
+            flow_context=self._flow_context,
+            flow_context_key=self._flow_context_key,
+            validated_fact_view_provider=self._validated_fact_view_provider,
+            fact_consumer_callback=self._fact_consumer_callback,
+            flow_context_summary_provider=self._flow_context_summary_provider,
+            planner_outcome_callback=self._planner_outcome_callback,
+            flow_gate_outcome_callback=self._flow_gate_outcome_callback,
+            decompilation_lifecycle=self._decompilation_lifecycle,
+            prefold_rccc_store=prefold_rccc_store,
+            prefold_rccc_by_func={
+                int(func_ea): frozenset(def_eas)
+                for func_ea, def_eas in prefold_rccc_store.items()
+            },
+            function_priors_provider=self._function_priors_provider,
+            dispatcher_artifact_planner=self._dispatcher_artifact_planner,
+            pass_pipeline=self._pass_pipeline,
+            pipeline_last_maturity=int(self._pipeline_last_maturity),
+            post_d810_pipeline_last_maturity=int(
+                self._post_d810_pipeline_last_maturity
+            ),
+            impossible_return_store=impossible_return_store,
+            impossible_return_values=frozenset(impossible_return_store),
+            terminal_zero_store=terminal_zero_store,
+            terminal_zero_values=frozenset(terminal_zero_store),
+            terminal_tail_store=terminal_tail_store,
+            terminal_tail_values=frozenset(terminal_tail_store),
+            project_config_store=project_config_store,
+            project_config=dict(project_config_store),
+            pipeline_just_fired=bool(self._pipeline_just_fired),
+            run_later_scheduler=self._run_later_scheduler,
+            scheduled_stage_identities=frozenset(self._scheduled_stage_identities),
+            scheduled_flow_implementations=tuple(
+                self._scheduled_flow_implementations
+            ),
+            cfg_rules_store=cfg_rules_store,
+            cfg_rules=tuple(cfg_rules_store),
+        )
+
+    def restore_runtime_state(self, snapshot: BlockOptimizerRuntimeState) -> None:
+        """Restore a state captured by :meth:`capture_runtime_state`."""
+
+        if not isinstance(snapshot, BlockOptimizerRuntimeState):
+            raise TypeError("unsupported block adapter runtime snapshot")
+        stores = (
+            snapshot.perf_counters_store,
+            snapshot.prefold_rccc_store,
+            snapshot.impossible_return_store,
+            snapshot.terminal_zero_store,
+            snapshot.terminal_tail_store,
+            snapshot.project_config_store,
+            snapshot.cfg_rules_store,
+        )
+        if not isinstance(snapshot.perf_counters_store, dict):
+            raise TypeError("block performance counter store cannot be restored")
+        if not isinstance(snapshot.prefold_rccc_store, dict):
+            raise TypeError("block prefold cache store cannot be restored")
+        if not all(isinstance(store, set) for store in stores[2:5]):
+            raise TypeError("block rewrite cache store cannot be restored")
+        if not isinstance(snapshot.project_config_store, dict):
+            raise TypeError("block project config store cannot be restored")
+        if not isinstance(snapshot.cfg_rules_store, list):
+            raise TypeError("block rule worklist store cannot be restored")
+
+        self._execution_scope_service = snapshot.execution_scope_service
+        self._execution_scope_project_name = snapshot.execution_scope_project_name
+        self._execution_scope_idb_key = snapshot.execution_scope_idb_key
+        self._perf_compare_execution_scope = snapshot.perf_compare_execution_scope
+        self._perf_counters = snapshot.perf_counters_store
+        snapshot.perf_counters_store.clear()
+        snapshot.perf_counters_store.update(snapshot.perf_counters)
+        self.current_maturity = snapshot.current_maturity
+        self._pass_count = snapshot.pass_count
+        self._max_passes_current = snapshot.max_passes_current
+        self._generation = snapshot.generation
+        self._flow_context = snapshot.flow_context
+        self._flow_context_key = snapshot.flow_context_key
+        self._validated_fact_view_provider = snapshot.validated_fact_view_provider
+        self._fact_consumer_callback = snapshot.fact_consumer_callback
+        self._flow_context_summary_provider = snapshot.flow_context_summary_provider
+        self._planner_outcome_callback = snapshot.planner_outcome_callback
+        self._flow_gate_outcome_callback = snapshot.flow_gate_outcome_callback
+        self._decompilation_lifecycle = snapshot.decompilation_lifecycle
+        self._prefold_rccc_by_func = snapshot.prefold_rccc_store
+        snapshot.prefold_rccc_store.clear()
+        snapshot.prefold_rccc_store.update(
+            {
+                func_ea: frozenset(def_eas)
+                for func_ea, def_eas in snapshot.prefold_rccc_by_func.items()
+            }
+        )
+        self._function_priors_provider = snapshot.function_priors_provider
+        self._dispatcher_artifact_planner = snapshot.dispatcher_artifact_planner
+        self._pass_pipeline = snapshot.pass_pipeline
+        self._pipeline_last_maturity = snapshot.pipeline_last_maturity
+        self._post_d810_pipeline_last_maturity = (
+            snapshot.post_d810_pipeline_last_maturity
+        )
+        self._impossible_return_artifact_rewrite_applied = (
+            snapshot.impossible_return_store
+        )
+        snapshot.impossible_return_store.clear()
+        snapshot.impossible_return_store.update(snapshot.impossible_return_values)
+        self._terminal_zero_literal_rewrite_applied = snapshot.terminal_zero_store
+        snapshot.terminal_zero_store.clear()
+        snapshot.terminal_zero_store.update(snapshot.terminal_zero_values)
+        self._terminal_tail_cascade_egress_applied = snapshot.terminal_tail_store
+        snapshot.terminal_tail_store.clear()
+        snapshot.terminal_tail_store.update(snapshot.terminal_tail_values)
+        self._project_config = snapshot.project_config_store
+        snapshot.project_config_store.clear()
+        snapshot.project_config_store.update(snapshot.project_config)
+        self._pipeline_just_fired = snapshot.pipeline_just_fired
+        self._run_later_scheduler = snapshot.run_later_scheduler
+        self._scheduled_stage_identities = snapshot.scheduled_stage_identities
+        self._scheduled_flow_implementations = snapshot.scheduled_flow_implementations
+        self.cfg_rules = snapshot.cfg_rules_store
+        snapshot.cfg_rules_store[:] = snapshot.cfg_rules
 
     def configure(self, **kwargs):
         if "project_name" in kwargs or any(

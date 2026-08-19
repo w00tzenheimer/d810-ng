@@ -638,104 +638,19 @@ class OptimizerRuntimeStateRestoreError(RuntimeError):
     """Raised when a started optimizer cannot be restored after activation."""
 
 
-@dataclasses.dataclass(frozen=True)
-class _OptimizerRuntimeObjectSnapshot:
-    object: object
-    fields: dict[str, object]
+class OptimizerRuntimeStateCaptureError(RuntimeError):
+    """Raised when a live adapter does not expose the snapshot protocol."""
 
 
-def _copy_optimizer_runtime_value(value):
-    """Copy mutable adapter containers while preserving runtime object identity."""
+class ManagerCleanupError(RuntimeError):
+    """One labelled failure from the full manager cleanup path."""
 
-    if isinstance(value, _OptimizerRuntimeObjectSnapshot):
-        _restore_optimizer_runtime_object(
-            {"object": value.object, "fields": value.fields}
+    def __init__(self, label: str, error: BaseException):
+        self.label = label
+        self.original_error = error
+        super().__init__(
+            f"{label}: {type(error).__name__}: {error}"
         )
-        return value.object
-    if isinstance(value, dict):
-        default_factory = getattr(value, "default_factory", None)
-        try:
-            copied = (
-                type(value)(default_factory)
-                if default_factory is not None
-                else type(value)()
-            )
-        except TypeError:
-            copied = {}
-        for key, item in value.items():
-            copied[key] = _copy_optimizer_runtime_value(item)
-        return copied
-    if isinstance(value, list):
-        return [_copy_optimizer_runtime_value(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_copy_optimizer_runtime_value(item) for item in value)
-    if isinstance(value, set):
-        return {_copy_optimizer_runtime_value(item) for item in value}
-    if isinstance(value, frozenset):
-        return frozenset(_copy_optimizer_runtime_value(item) for item in value)
-    if hasattr(value, "_rules") and isinstance(getattr(value, "_rules"), dict):
-        fields = {
-            name: _copy_optimizer_runtime_value(item)
-            for name, item in vars(value).items()
-        }
-        return _OptimizerRuntimeObjectSnapshot(value, fields)
-    return value
-
-
-def _capture_optimizer_runtime_object(obj) -> dict[str, object]:
-    """Capture one adapter/child object's mutable fields without deep-copying rules."""
-
-    try:
-        fields = {
-            name: _copy_optimizer_runtime_value(value)
-            for name, value in vars(obj).items()
-        }
-    except TypeError:
-        fields = {}
-    return {"object": obj, "fields": fields}
-
-
-def _capture_optimizer_runtime_state(adapter) -> tuple[dict[str, object], ...]:
-    """Capture adapter context, worklist indexes, and admission caches.
-
-    Adapter rules remain the same live objects, while every mutable container
-    they own is copied.  This is deliberately manager-owned so older IDA
-    adapter implementations without a public snapshot API still participate
-    in activation rollback.
-    """
-
-    objects = [adapter]
-    objects.extend(getattr(adapter, "instruction_optimizers", ()) or ())
-    analyzer = getattr(adapter, "analyzer", None)
-    if analyzer is not None:
-        objects.append(analyzer)
-    objects.extend(getattr(adapter, "cfg_rules", ()) or ())
-    snapshots: list[dict[str, object]] = []
-    seen: set[int] = set()
-    for obj in objects:
-        if id(obj) in seen:
-            continue
-        seen.add(id(obj))
-        snapshots.append(_capture_optimizer_runtime_object(obj))
-    return tuple(snapshots)
-
-
-def _restore_optimizer_runtime_object(snapshot: dict[str, object]) -> None:
-    obj = snapshot["object"]
-    fields = snapshot["fields"]
-    current_fields = vars(obj)
-    for name in tuple(current_fields):
-        if name not in fields:
-            delattr(obj, name)
-    for name, value in fields.items():
-        setattr(obj, name, _copy_optimizer_runtime_value(value))
-
-
-def _restore_optimizer_runtime_state(
-    snapshots: tuple[dict[str, object], ...],
-) -> None:
-    for snapshot in snapshots:
-        _restore_optimizer_runtime_object(snapshot)
 
 
 @dataclasses.dataclass
@@ -924,10 +839,9 @@ class D810Manager:
     def capture_started_optimizer_runtime_state(self) -> dict[str, object]:
         """Capture both live optimizer adapters before a project switch.
 
-        A native adapter may provide ``capture_runtime_state`` itself.  The
-        manager-owned fallback captures the adapter and its mutable child
-        stores, including execution-scope context, active-rule indexes,
-        residual admission caches, and project/flow context.
+        The adapters own their explicit, allowlisted snapshots.  Keeping this
+        boundary strict prevents activation rollback from inspecting arbitrary
+        IDA/SWIG object attributes.
         """
 
         if not self.started:
@@ -938,18 +852,12 @@ class D810Manager:
             if adapter is None:
                 continue
             capture = getattr(adapter, "capture_runtime_state", None)
-            if callable(capture):
-                snapshots[name] = {
-                    "adapter": adapter,
-                    "protocol": True,
-                    "state": capture(),
-                }
-            else:
-                snapshots[name] = {
-                    "adapter": adapter,
-                    "protocol": False,
-                    "state": _capture_optimizer_runtime_state(adapter),
-                }
+            restore = getattr(adapter, "restore_runtime_state", None)
+            if not callable(capture) or not callable(restore):
+                raise OptimizerRuntimeStateCaptureError(
+                    f"{name} adapter does not implement the runtime snapshot protocol"
+                )
+            snapshots[name] = {"adapter": adapter, "state": capture()}
         return snapshots
 
     def restore_started_optimizer_runtime_state(
@@ -963,11 +871,12 @@ class D810Manager:
             snapshot = raw_snapshot  # type: ignore[assignment]
             adapter = snapshot["adapter"]  # type: ignore[index]
             try:
-                if snapshot["protocol"]:  # type: ignore[index]
-                    restore = getattr(adapter, "restore_runtime_state")
-                    restore(snapshot["state"])  # type: ignore[index]
-                else:
-                    _restore_optimizer_runtime_state(snapshot["state"])  # type: ignore[index]
+                restore = getattr(adapter, "restore_runtime_state", None)
+                if not callable(restore):
+                    raise TypeError(
+                        f"{name} adapter lost the runtime snapshot protocol"
+                    )
+                restore(snapshot["state"])  # type: ignore[index]
             except BaseException as exc:
                 errors.append((name, exc))
         if errors:
@@ -982,25 +891,12 @@ class D810Manager:
     def invalidate_runtime_after_activation_rollback(self) -> tuple[BaseException, ...]:
         """Stop and explicitly invalidate hooks after lossless restore fails."""
 
-        self._started = False
         self._runtime_invalidated = True
         errors: list[BaseException] = []
-        for name in ("instruction_optimizer", "block_optimizer"):
-            adapter = getattr(self, name, None)
-            remove = getattr(adapter, "remove", None)
-            if not callable(remove):
-                continue
-            try:
-                remove()
-            except BaseException as exc:
-                errors.append(exc)
-        hook = getattr(self, "hx_decompiler_hook", None)
-        unhook = getattr(hook, "unhook", None)
-        if callable(unhook):
-            try:
-                unhook()
-            except BaseException as exc:
-                errors.append(exc)
+        try:
+            errors.extend(self.stop(full_cleanup=True))
+        except BaseException as exc:
+            errors.append(exc)
         return tuple(errors)
 
     @property
@@ -3204,7 +3100,10 @@ class D810Manager:
         try:
             callback(*args)
             return True
-        except BaseException:
+        except BaseException as exc:
+            cleanup_errors = getattr(self, "_cleanup_errors", None)
+            if isinstance(cleanup_errors, list):
+                cleanup_errors.append((label, exc))
             try:
                 logger.exception("Decompilation lifecycle cleanup failed: %s", label)
             except BaseException:
@@ -4273,8 +4172,11 @@ class D810Manager:
         self.ctree_optimizer_rules = list(rules)
         self.ctree_optimizer_config = kwargs
 
-    def stop(self):
-        if not self._started:
+    def stop(self, *, full_cleanup: bool = False):
+        cleanup_errors: list[tuple[str, BaseException]] = []
+        if full_cleanup:
+            self._cleanup_errors = cleanup_errors
+        if not self._started and not full_cleanup:
             telemetry_active = self._discard_telemetry_lifecycle()
             if telemetry_active:
                 self._safe_lifecycle_step(
@@ -4309,7 +4211,7 @@ class D810Manager:
                 self._idb_preparation_journal = None
             self._idb_preparation_gateway = None
             self.pre_hex_preparation = None
-            return
+            return None
         self._started = False
         telemetry_active = self._discard_telemetry_lifecycle()
         self._safe_lifecycle_step("profiling.stop", self.stop_profiling)
@@ -4336,28 +4238,37 @@ class D810Manager:
             "frontend.uninstall",
             _uninstall_frontend_normalization,
         )
-        self._safe_lifecycle_step(
-            "instruction.remove",
-            self.instruction_optimizer.remove,
+        instruction_remove = getattr(
+            getattr(self, "instruction_optimizer", None), "remove", None
         )
-        self._safe_lifecycle_step("block.remove", self.block_optimizer.remove)
-        self._safe_lifecycle_step("hooks.unhook", self.hx_decompiler_hook.unhook)
-        if self._analysis_runtime is not None:
+        if callable(instruction_remove):
+            self._safe_lifecycle_step("instruction.remove", instruction_remove)
+        block_remove = getattr(getattr(self, "block_optimizer", None), "remove", None)
+        if callable(block_remove):
+            self._safe_lifecycle_step("block.remove", block_remove)
+        hook_unhook = getattr(getattr(self, "hx_decompiler_hook", None), "unhook", None)
+        if callable(hook_unhook):
+            self._safe_lifecycle_step("hooks.unhook", hook_unhook)
+        analysis_runtime = getattr(self, "_analysis_runtime", None)
+        flush_active_session = getattr(analysis_runtime, "flush_active_session", None)
+        if callable(flush_active_session):
             self._safe_lifecycle_step(
                 "analysis.flush_active_session",
-                self._analysis_runtime.flush_active_session,
+                flush_active_session,
             )
         self._safe_lifecycle_step("writers.shutdown", shutdown_all_writers)
         execution_scope_service = getattr(self, "execution_scope_service", None)
         detach = getattr(execution_scope_service, "detach", None)
         if callable(detach):
             self._safe_lifecycle_step("execution_scope.detach", detach)
-        self._safe_lifecycle_step("event_emitter.clear", self.event_emitter.clear)
+        event_clear = getattr(getattr(self, "event_emitter", None), "clear", None)
+        if callable(event_clear):
+            self._safe_lifecycle_step("event_emitter.clear", event_clear)
         self._safe_lifecycle_step(
             "executor.clear",
             _clear_indirect_materialization_executor,
         )
-        native_patch_journal = self._native_patch_journal
+        native_patch_journal = getattr(self, "_native_patch_journal", None)
         if native_patch_journal is not None:
             self._safe_lifecycle_step(
                 "native.patch.close",
@@ -4375,23 +4286,32 @@ class D810Manager:
             self._idb_preparation_journal = None
         self._idb_preparation_gateway = None
         self.pre_hex_preparation = None
-        native_patch_execution_journal = self._native_patch_execution_journal
+        native_patch_execution_journal = getattr(
+            self, "_native_patch_execution_journal", None
+        )
         if native_patch_execution_journal is not None:
             self._safe_lifecycle_step(
                 "native.execution.close",
                 native_patch_execution_journal.close,
             )
             self._native_patch_execution_journal = None
-        self._safe_lifecycle_step(
-            "function_storage.close",
-            self.function_storage_runtime.close,
-        )
-        analysis_bundle = self._analysis_bundle
+        function_storage = getattr(self, "function_storage_runtime", None)
+        function_storage_close = getattr(function_storage, "close", None)
+        if callable(function_storage_close):
+            self._safe_lifecycle_step("function_storage.close", function_storage_close)
+        analysis_bundle = getattr(self, "_analysis_bundle", None)
         if analysis_bundle is not None:
             self._safe_lifecycle_step("analysis.bundle.close", analysis_bundle.close)
             self._analysis_bundle = None
         self._preanalysis_runtime = None
         self._analysis_runtime = None
+        lifecycle = getattr(self, "decompilation_lifecycle", None)
+        finish_hexrays_session = getattr(lifecycle, "finish_hexrays_session", None)
+        if callable(finish_hexrays_session):
+            self._safe_lifecycle_step(
+                "decompilation.lifecycle.finish",
+                finish_hexrays_session,
+            )
         self.decompilation_lifecycle = None
         self._post_d810_runtime = None
         self._recon_phase = None
@@ -4400,6 +4320,15 @@ class D810Manager:
         self._flowgraph_ready_subscriber = None
         self._stage_c_topology_consumer = None
         self._database_identity = ""
+        if full_cleanup:
+            self._cleanup_errors = cleanup_errors
+            errors = tuple(
+                ManagerCleanupError(label, error)
+                for label, error in cleanup_errors
+            )
+            del self._cleanup_errors
+            return errors
+        return None
 
 
 @contextlib.contextmanager

@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from d810.core.config import ProjectConfiguration
+from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
+from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.hexrays.utils.hexrays_formatters import string_to_maturity
 from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import (
     ForwardConstantPropagationRule,
@@ -173,6 +175,90 @@ def _prepare_started_manager(state) -> None:
     manager.block_optimizer = RecordingOptimizer(
         manager.block_optimizer_rules, pipeline="block"
     )
+    manager._sync_native_preanalysis_handlers = lambda: None
+    manager._started = True
+
+
+def _prepare_actual_started_manager(state) -> None:
+    """Install the production adapter classes for protocol/rollback coverage."""
+
+    manager = state.manager
+
+    class RuleStore:
+        def __init__(self):
+            self._rules = {}
+
+        def __iter__(self):
+            return iter(self._rules)
+
+    class Analyzer:
+        def __init__(self):
+            self.rules = RuleStore()
+
+        def add_rule(self, _rule):
+            return None
+
+    instruction = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    instruction.instruction_optimizers = []
+    instruction.analyzer = Analyzer()
+    instruction.current_maturity = None
+    instruction.current_blk_serial = None
+    instruction.generate_z3_code = False
+    instruction.dump_intermediate_microcode = False
+    instruction._execution_scope_service = None
+    instruction._execution_scope_project_name = ""
+    instruction._execution_scope_idb_key = ""
+    instruction._execution_scope_func_ea = -1
+    instruction._active_instruction_rule_names_by_maturity = {}
+    instruction._residual_admission_cache_key = None
+    instruction._residual_admission_cache_value = False
+    instruction._run_later_scheduler = None
+    instruction._scheduled_stage_identities = frozenset()
+    instruction._scheduled_implementation_names = frozenset()
+    instruction._active_optimizers = []
+    instruction._decompilation_lifecycle = None
+    instruction._fact_consumer_callback = None
+
+    block = BlockOptimizerManager.__new__(BlockOptimizerManager)
+    block.cfg_rules = []
+    block._execution_scope_service = None
+    block._execution_scope_project_name = ""
+    block._execution_scope_idb_key = ""
+    block._perf_compare_execution_scope = False
+    block._perf_counters = {}
+    block.current_maturity = None
+    block._pass_count = 0
+    block._max_passes_current = 2000
+    block._generation = 0
+    block._flow_context = None
+    block._flow_context_key = None
+    block._validated_fact_view_provider = None
+    block._fact_consumer_callback = None
+    block._flow_context_summary_provider = None
+    block._planner_outcome_callback = None
+    block._flow_gate_outcome_callback = None
+    block._decompilation_lifecycle = None
+    block._prefold_rccc_by_func = {}
+    block._function_priors_provider = None
+    block._dispatcher_artifact_planner = None
+    block._pass_pipeline = None
+    block._pipeline_last_maturity = -1
+    block._post_d810_pipeline_last_maturity = -1
+    block._impossible_return_artifact_rewrite_applied = set()
+    block._terminal_zero_literal_rewrite_applied = set()
+    block._terminal_tail_cascade_egress_applied = set()
+    block._project_config = {}
+    block._pipeline_just_fired = False
+    block._run_later_scheduler = None
+    block._scheduled_stage_identities = frozenset()
+    block._scheduled_flow_implementations = ()
+
+    manager.instruction_optimizer_rules = []
+    manager.block_optimizer_rules = []
+    manager.instruction_optimizer_config = {}
+    manager.block_optimizer_config = {}
+    manager.instruction_optimizer = instruction
+    manager.block_optimizer = block
     manager._sync_native_preanalysis_handlers = lambda: None
     manager._started = True
 
@@ -528,6 +614,185 @@ def test_started_activation_marks_runtime_invalid_when_adapter_rollback_fails(
             assert "adapter restore failed" in str(failure.value)
             assert manager.started is False
             assert getattr(manager, "runtime_invalidated", False) is True
+        finally:
+            monkeypatch.undo()
+            state.manager._runtime_invalidated = False
+            state.load_project(original_index)
+            state.manager._started = False
+
+
+@pytest.mark.ida_required
+def test_production_adapters_restore_allowlisted_runtime_state(d810_state) -> None:
+    """The live adapter classes own their explicit rollback protocol."""
+    with d810_state() as state:
+        _prepare_actual_started_manager(state)
+        instruction = state.manager.instruction_optimizer
+        block = state.manager.block_optimizer
+        assert isinstance(instruction, InstructionOptimizerManager)
+        assert isinstance(block, BlockOptimizerManager)
+
+        instruction._execution_scope_project_name = "baseline"
+        instruction._execution_scope_idb_key = "baseline-idb"
+        instruction._execution_scope_func_ea = 0x401000
+        instruction._active_instruction_rule_names_by_maturity = {
+            1: frozenset({"baseline-rule"})
+        }
+        instruction._residual_admission_cache_key = (1, "baseline")
+        instruction._residual_admission_cache_value = True
+        instruction._active_optimizers = ["baseline-optimizer"]
+        instruction._scheduled_stage_identities = frozenset({"baseline-stage"})
+        instruction._scheduled_implementation_names = ("BaselineRule",)
+        instruction.analyzer.rules._rules["baseline-rule"] = None
+        block._execution_scope_project_name = "baseline"
+        block._execution_scope_idb_key = "baseline-idb"
+        block.cfg_rules = ["baseline-block-rule"]
+        block._project_config = {"project_name": "baseline"}
+        block._flow_context = "baseline-flow"
+        block._flow_context_key = (1, 2, 3, 4, 5)
+        block._scheduled_stage_identities = frozenset({"baseline-stage"})
+        block._scheduled_flow_implementations = ("BaselineRule",)
+        block._perf_counters = {"scoped_calls": 7, "legacy_calls": 3}
+        before_instruction = instruction.capture_runtime_state()
+        before_block = block.capture_runtime_state()
+
+        candidate_scope = object()
+        instruction.configure(
+            execution_scope_service=candidate_scope,
+            execution_scope_project_name="candidate",
+            execution_scope_idb_key="candidate-idb",
+        )
+        block.configure(
+            execution_scope_service=candidate_scope,
+            execution_scope_project_name="candidate",
+            execution_scope_idb_key="candidate-idb",
+            project_name="candidate",
+        )
+        instruction.analyzer.rules._rules.clear()
+        block.cfg_rules.clear()
+        instruction._active_instruction_rule_names_by_maturity = {}
+        instruction._residual_admission_cache_key = None
+        instruction._residual_admission_cache_value = False
+        instruction._active_optimizers = []
+        instruction._scheduled_stage_identities = frozenset()
+        instruction._scheduled_implementation_names = ()
+        block._execution_scope_project_name = "candidate"
+        block._execution_scope_idb_key = "candidate-idb"
+        block._project_config = {"project_name": "candidate"}
+        block._flow_context = None
+        block._flow_context_key = None
+        block._scheduled_stage_identities = frozenset()
+        block._scheduled_flow_implementations = ()
+        block._perf_counters = {"scoped_calls": 0, "legacy_calls": 0}
+
+        instruction.restore_runtime_state(before_instruction)
+        block.restore_runtime_state(before_block)
+        assert instruction.capture_runtime_state() == before_instruction
+        assert block.capture_runtime_state() == before_block
+        assert tuple(instruction.analyzer.rules) == ("baseline-rule",)
+        assert block.cfg_rules == ["baseline-block-rule"]
+
+
+@pytest.mark.ida_required
+def test_actual_adapter_restore_failure_runs_full_manager_cleanup(
+    d810_state, monkeypatch
+) -> None:
+    """A failed live restore must leave every manager-owned hook/resource stopped."""
+    with d810_state() as state:
+        original_index = state.current_project_index
+        baseline = _project_with_constant_stages(enabled=False)
+        state._activate_runtime_project(
+            project_index=8996,
+            source_project=baseline,
+            runtime_project=baseline,
+            default_selection=None,
+        )
+        _prepare_actual_started_manager(state)
+        manager = state.manager
+        calls: list[str] = []
+
+        class Resource:
+            def close(self):
+                calls.append("resource.close")
+
+        class Hook:
+            def unhook(self):
+                calls.append("hooks.unhook")
+
+        manager._native_preanalysis_handlers_installed = True
+        manager._uninstall_native_preanalysis_handlers = lambda: calls.append(
+            "native.uninstall"
+        )
+        monkeypatch.setattr(
+            "d810.manager.hexrays_frontend_normalization.uninstall_live_frontend_normalization",
+            lambda: calls.append("frontend.uninstall"),
+        )
+        monkeypatch.setattr(
+            manager.instruction_optimizer,
+            "remove",
+            lambda: calls.append("instruction.remove"),
+        )
+        def block_remove():
+            calls.append("block.remove")
+            raise RuntimeError("forced block cleanup failure")
+
+        monkeypatch.setattr(manager.block_optimizer, "remove", block_remove)
+        manager.hx_decompiler_hook = Hook()
+        monkeypatch.setattr(
+            manager.execution_scope_service,
+            "detach",
+            lambda: calls.append("execution_scope.detach"),
+        )
+        monkeypatch.setattr(
+            manager.event_emitter,
+            "clear",
+            lambda: calls.append("event_emitter.clear"),
+        )
+        manager._idb_preparation_journal = Resource()
+        manager._native_patch_journal = Resource()
+        manager._native_patch_execution_journal = Resource()
+        manager.function_storage_runtime.close = lambda: calls.append(
+            "function_storage.close"
+        )
+        manager._analysis_bundle = Resource()
+        manager._started = True
+        manager.instruction_optimizer.restore_runtime_state = lambda _state: (_ for _ in ()).throw(
+            RuntimeError("forced instruction restore failure")
+        )
+        monkeypatch.setattr(
+            manager,
+            "_compile_execution_scope",
+            lambda: (_ for _ in ()).throw(RuntimeError("late scope compilation failure")),
+        )
+        try:
+            with pytest.raises(RuntimeError, match="rollback") as failure:
+                state._activate_runtime_project(
+                    project_index=9006,
+                    source_project=_project_with_constant_stages(enabled=False),
+                    runtime_project=_project_with_constant_stages(enabled=False),
+                    default_selection=None,
+                )
+            failure_message = str(failure.value)
+            assert "forced instruction restore failure" in failure_message
+            assert "block.remove" in failure_message
+            assert {
+                "native.uninstall",
+                "frontend.uninstall",
+                "instruction.remove",
+                "block.remove",
+                "hooks.unhook",
+                "execution_scope.detach",
+                "event_emitter.clear",
+                "resource.close",
+                "function_storage.close",
+            } <= set(calls)
+            assert manager.started is False
+            assert manager.runtime_invalidated is True
+            assert manager._native_preanalysis_handlers_installed is False
+            assert manager.decompilation_lifecycle is None
+            assert manager._idb_preparation_journal is None
+            assert manager._native_patch_journal is None
+            assert manager._native_patch_execution_journal is None
+            assert manager._analysis_bundle is None
         finally:
             monkeypatch.undo()
             state.manager._runtime_invalidated = False
