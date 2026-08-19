@@ -420,5 +420,5 @@ def test_canonical_constraints_preserve_operator_semantics_and_fingerprints() ->
 def test_native_core_consumers_import_the_portable_compiler(module_name: str) -> None:
     module = __import__(module_name, fromlist=["*"])
     source = inspect.getsource(module)
-    assert "d810.backends.mba.egglog_add_rule_compiler" not in source
+    assert "d810_egglog" not in source
     assert "CompiledMbaRule" in source

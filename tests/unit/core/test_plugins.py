@@ -694,7 +694,6 @@ class TestBuiltinBackends(unittest.TestCase):
     #: installed -- and pass for the wrong reason on one that has it.
     EXPECTED = {
         "mba.z3",
-        "mba.egglog",
         "emulation.triton",
         "emulation.unicorn",
         "ast.z3",
@@ -732,8 +731,8 @@ class TestBuiltinBackends(unittest.TestCase):
     def test_probe_hooks_agree_with_the_legacy_flags(self):
         """Backwards compatible: the old flags stay and remain authoritative.
 
-        Only backends importable outside IDA are checked here; ``ast.z3`` and
-        ``mba.egglog`` need ``ida_hexrays`` to import at all.
+        Only backends importable outside IDA are checked here; ``ast.z3`` needs
+        ``ida_hexrays`` to import at all.
         """
         import importlib
 

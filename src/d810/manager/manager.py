@@ -2053,19 +2053,6 @@ class D810Manager:
             experimental,
         )
 
-        try:
-            from d810.mba.backend_registry import get_egglog_provider
-
-            if bool(get_egglog_provider("egglog").is_available()):
-                from d810.optimizers.microcode.flow.egraph import (  # noqa: F401
-                    block_optimizer,
-                )
-                from d810.optimizers.microcode.instructions.egraph import (  # noqa: F401
-                    egglog_handler,
-                )
-        except ImportError:
-            pass
-
         self.execution_scope_service.attach(self.event_emitter)
         self._init_storage()
         self.execution_scope_service.set_metadata_provider(self._get_execution_metadata)
