@@ -248,6 +248,53 @@ clean
 
 Production fix commit SHA: `753507859` (`fix(z3): share bounded contextual AST budget`).
 
+## Task 5 Fix Round 3
+
+The final review probe was made permanent before the production change:
+
+```text
+git commit -m "test(z3): cover repeated cached subtree budget"
+28987e197
+```
+
+The probe builds a root `m_add` containing the same cached two-leaf `m_add`
+subtree twice. Its logical occurrence count is seven (root plus three nodes per
+subtree). RED, from the main repository root:
+
+```text
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round3_red.txt -- tests/system/runtime/backends/ast/test_z3_prover.py tests/system/runtime/backends/ast/test_z3_set_comparisons.py -q
+================= 1 failed, 116 passed, 118 warnings in 0.14s ==================
+```
+
+The failure was
+`test_repeated_cached_subtree_charges_all_descendant_occurrences`: the
+five-node budget did not raise because the local cache hit charged only the
+reused subtree root.
+
+The builder cache-hit path now recursively charges the reused AST's `left`,
+`right`, and `dst` descendants and records each reused identity multiplicity,
+without reconstructing nodes. No-budget cache behavior remains unchanged.
+
+GREEN and final verification:
+
+```text
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round3_green.txt -- tests/system/runtime/backends/ast/test_z3_prover.py tests/system/runtime/backends/ast/test_z3_set_comparisons.py -q
+====================== 117 passed, 118 warnings in 0.09s =======================
+
+PYTHONPATH=src pytest -q tests/unit/backends/ast/test_z3_proof_policy.py tests/unit/mba/backends/test_z3_no_global_state.py tests/unit/mba/test_native_z3_proof_template.py
+102 passed in 1.09s
+
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round3_astproxy.txt -- tests/system/runtime/test_z3_astproxy_regression.py -q
+1 passed, 122 warnings in 2.50s
+```
+
+The review-only snapshot probe remains absent; its retained artifact records
+`5 passed, 118 warnings`, and the permanent snapshot/context regressions are
+covered by the required suite. Ruff, `py_compile`, `sg`, lint-imports, and
+`git diff --check` all passed (`Contracts: 14 kept, 0 broken.`).
+
+Production fix commit SHA: `35e114973` (`fix(z3): account cached subtree occurrences`).
+
 ## Commit
 
 Commit message: `feat(z3): bound predicate proof resources`
