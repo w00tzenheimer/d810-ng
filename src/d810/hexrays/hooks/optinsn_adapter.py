@@ -1492,9 +1492,17 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             if callable(setter):
                 setter(admitted)
 
-    def optimize(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
+    def optimize(
+        self,
+        blk: ida_hexrays.mblock_t,
+        ins: ida_hexrays.minsn_t,
+        *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
+    ) -> bool:
         if d810_optimization_is_suppressed():
             return False
+        if contextual_anchor_ins is None:
+            contextual_anchor_ins = ins
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
         allowed_rule_names = self._resolve_active_instruction_rule_names(blk)
         scheduled_rule_names = self._scheduled_implementation_names
@@ -1529,6 +1537,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             new_ins = ins_optimizer.get_optimized_instruction(
                 blk,
                 ins,
+                contextual_anchor_ins=contextual_anchor_ins,
                 allowed_rule_names=allowed_rule_names,
                 scheduled_rule_names=scheduled_rule_names,
             )
@@ -1690,4 +1699,12 @@ class InstructionVisitorManager(ida_hexrays.minsn_visitor_t):
         self.instruction_optimizer = optimizer
 
     def visit_minsn(self) -> bool:
-        return self.instruction_optimizer.optimize(self.blk, self.curins)
+        candidate_ins = self.curins
+        owner_ins = getattr(self, "topins", None)
+        if owner_ins is None:
+            owner_ins = candidate_ins
+        return self.instruction_optimizer.optimize(
+            self.blk,
+            candidate_ins,
+            contextual_anchor_ins=owner_ins,
+        )

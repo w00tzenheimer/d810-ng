@@ -443,9 +443,11 @@ class PatternOptimizer2(InstructionOptimizer):  # type: ignore[misc]
         blk: ida_hexrays.mblock_t | None,
         ins: ida_hexrays.minsn_t,
         *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:  # type: ignore[override]
+        del contextual_anchor_ins
         # Respect the current maturity as in the original implementation
         if blk is not None:
             self.cur_maturity = blk.mba.maturity

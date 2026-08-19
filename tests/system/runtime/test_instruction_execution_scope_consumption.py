@@ -97,9 +97,11 @@ class _CaptureOptimizer:
         blk,
         ins,
         *,
+        contextual_anchor_ins=None,
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
     ):
+        del contextual_anchor_ins
         self.allowed.append(allowed_rule_names)
         self.scheduled.append(scheduled_rule_names)
         return None

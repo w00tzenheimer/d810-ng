@@ -30,6 +30,7 @@ class Z3Rule(GenericPatternRule):
         # Context for backward tracking (set during check_and_replace)
         self._current_blk: ida_hexrays.mblock_t | None = None
         self._current_ins: ida_hexrays.minsn_t | None = None
+        self._definition_search_ins: ida_hexrays.minsn_t | None = None
         self._z3_proof_policy = Z3ProofPolicy()
 
     def configure(self, kwargs) -> None:
@@ -60,6 +61,15 @@ class Z3Rule(GenericPatternRule):
     def z3_proof_policy(self) -> Z3ProofPolicy:
         """Return the immutable policy configured for this rule."""
         return self._z3_proof_policy
+
+    @property
+    def definition_search_ins(self) -> ida_hexrays.minsn_t | None:
+        """Return the owner instruction used for contextual def-use lookup."""
+        if self._definition_search_ins is not None:
+            return self._definition_search_ins
+        # Keep direct rule tests and legacy callers safe while the transient
+        # context is not bound by ``check_and_replace``.
+        return self._current_ins
 
     def observe_z3_proof(self, operation: str, result: object) -> bool:
         """Publish a valid proof receipt, rejecting malformed results."""
@@ -108,18 +118,40 @@ class Z3Rule(GenericPatternRule):
 
     @typing.override
     def check_and_replace(
-        self, blk: ida_hexrays.mblock_t, instruction: ida_hexrays.minsn_t
+        self,
+        blk: ida_hexrays.mblock_t,
+        instruction: ida_hexrays.minsn_t,
+        *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
     ) -> ida_hexrays.minsn_t | None:
         """Override to store context for backward tracking."""
         # Store context so check_candidate can access blk/ins for MopTracker
         self._current_blk = blk
         self._current_ins = instruction
+        self._definition_search_ins = (
+            instruction if contextual_anchor_ins is None else contextual_anchor_ins
+        )
         try:
             return super().check_and_replace(blk, instruction)
         finally:
             # Clear context after use
             self._current_blk = None
             self._current_ins = None
+            self._definition_search_ins = None
+
+    @typing.override
+    def check_and_replace_with_context(
+        self,
+        blk: ida_hexrays.mblock_t,
+        instruction: ida_hexrays.minsn_t,
+        *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
+    ) -> ida_hexrays.minsn_t | None:
+        return self.check_and_replace(
+            blk,
+            instruction,
+            contextual_anchor_ins=contextual_anchor_ins,
+        )
 
 
 class Z3Optimizer(InstructionOptimizer):
@@ -158,6 +190,7 @@ class Z3Optimizer(InstructionOptimizer):
         blk: ida_hexrays.mblock_t,
         ins: ida_hexrays.minsn_t,
         *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
     ):  # type: ignore[override]
@@ -166,6 +199,7 @@ class Z3Optimizer(InstructionOptimizer):
         return super().get_optimized_instruction(
             blk,
             ins,
+            contextual_anchor_ins=contextual_anchor_ins,
             allowed_rule_names=allowed_rule_names,
             scheduled_rule_names=scheduled_rule_names,
         )

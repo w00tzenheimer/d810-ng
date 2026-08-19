@@ -56,7 +56,7 @@ class Z3setzRuleGeneric(Z3Rule):
             # Pass block/instruction context for backward tracking of register definitions
             zero_result = Z3MopProver(
                 blk=self._current_blk,
-                ins=self._current_ins,
+                ins=self.definition_search_ins,
                 policy=self.z3_proof_policy,
             ).prove_always_zero(x0_mop)
             if self.observe_z3_proof("prove_always_zero", zero_result) and (
@@ -67,7 +67,7 @@ class Z3setzRuleGeneric(Z3Rule):
                 return True
             nonzero_result = Z3MopProver(
                 blk=self._current_blk,
-                ins=self._current_ins,
+                ins=self.definition_search_ins,
                 policy=self.z3_proof_policy,
             ).prove_always_nonzero(x0_mop)
             if self.observe_z3_proof("prove_always_nonzero", nonzero_result) and (
@@ -129,7 +129,7 @@ class Z3setnzRuleGeneric(Z3Rule):
             # Pass block/instruction context for backward tracking of register definitions
             zero_result = Z3MopProver(
                 blk=self._current_blk,
-                ins=self._current_ins,
+                ins=self.definition_search_ins,
                 policy=self.z3_proof_policy,
             ).prove_always_zero(x0_mop)
             if self.observe_z3_proof("prove_always_zero", zero_result) and (
@@ -140,7 +140,7 @@ class Z3setnzRuleGeneric(Z3Rule):
                 return True
             nonzero_result = Z3MopProver(
                 blk=self._current_blk,
-                ins=self._current_ins,
+                ins=self.definition_search_ins,
                 policy=self.z3_proof_policy,
             ).prove_always_nonzero(x0_mop)
             if self.observe_z3_proof("prove_always_nonzero", nonzero_result) and (
@@ -171,7 +171,7 @@ class Z3lnotRuleGeneric(Z3Rule):
         res_size = candidate.dst_mop.size if candidate.dst_mop else 1
         prover = Z3MopProver(
             blk=self._current_blk,
-            ins=self._current_ins,
+            ins=self.definition_search_ins,
             policy=self.z3_proof_policy,
         )
         # Resolve the operand through the current CFG context. Pair proving

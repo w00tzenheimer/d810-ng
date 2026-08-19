@@ -558,9 +558,11 @@ class PatternOptimizer(InstructionOptimizer):
         blk: ida_hexrays.mblock_t,
         ins: ida_hexrays.minsn_t,
         *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
+        del contextual_anchor_ins
         self._pending_replacement_rule = None
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
