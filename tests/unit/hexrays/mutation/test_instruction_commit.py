@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from d810.hexrays.mutation.fragment_publication_lifecycle import (
@@ -38,11 +40,13 @@ class FakeInstruction:
         opcode: int = 1,
         fingerprint: int = 1,
         operand_size_ok: bool = True,
+        optimize_fingerprint: int | None = None,
     ) -> None:
         self.ea = ea
         self.opcode = opcode
         self.fingerprint = fingerprint
         self.operand_size_ok = operand_size_ok
+        self.optimize_fingerprint = optimize_fingerprint
         self.swap_count = 0
         self.optimize_solo_count = 0
 
@@ -61,6 +65,8 @@ class FakeInstruction:
 
     def optimize_solo(self) -> None:
         self.optimize_solo_count += 1
+        if self.optimize_fingerprint is not None:
+            self.fingerprint = self.optimize_fingerprint
 
 
 class FakeBlock:
@@ -108,6 +114,9 @@ def _candidate(
     may_mark_lists_dirty: bool = True,
     may_verify_mba: bool = True,
     optimize_solo: bool = True,
+    pass_id: str = "test-pass",
+    stage_id: str = "test-stage",
+    rule_id: str = "test-rule",
     producer_rule_name: str = "",
     history_key: object | None = None,
 ) -> InstructionRewriteCandidate:
@@ -123,6 +132,9 @@ def _candidate(
         or RewriteCost(
             noncanonical_ops=2, opaque_ops=1, depth=3, node_count=4, target_risk=2
         ),
+        pass_id=pass_id,
+        stage_id=stage_id,
+        rule_id=rule_id,
         semantic_rank_before=semantic_rank_before,
         semantic_rank_after=semantic_rank_after,
         proof_required=proof_required,
@@ -177,6 +189,14 @@ def test_recover_candidate_commits_one_instruction_transaction() -> None:
     assert receipt.applied_count == 1
     assert receipt.epoch_after.generation == receipt.epoch_before.generation + 1
     assert receipt.after_fingerprint == 2
+    assert receipt.pass_id == "test-pass"
+    assert receipt.stage_id == "test-stage"
+    assert receipt.rule_id == "test-rule"
+    assert receipt.producer_rule_name == "test-rule"
+    primitive = receipt.primitive_fields()
+    assert primitive["pass_id"] == "test-pass"
+    assert primitive["stage_id"] == "test-stage"
+    assert primitive["rule_id"] == "test-rule"
 
 
 def test_stale_source_fingerprint_is_rejected_before_swap() -> None:
@@ -213,6 +233,60 @@ def test_same_fingerprint_rolls_back_without_follow_up_operations() -> None:
     assert instruction.optimize_solo_count == 0
     assert receipt.committed is False
     assert receipt.reason == REASON_REWRITE_NOOP
+
+
+def test_receipt_and_history_use_final_fingerprint_after_optimize_solo() -> None:
+    mba = FakeMba()
+    block = FakeBlock(mba)
+    instruction = FakeInstruction(fingerprint=1, optimize_fingerprint=3)
+    replacement = FakeInstruction(opcode=2, fingerprint=2)
+    history = {}
+    context = _context(
+        instruction,
+        block=block,
+        capabilities=NativeCallbackCapabilities(True, True, True, True),
+    )
+
+    receipt = _committer(history=history).commit(
+        context,
+        _candidate(replacement, history_key=("final",)),
+    )
+
+    assert receipt.committed is True
+    assert receipt.after_fingerprint == 3
+    assert history[("final",)] == {3}
+
+
+def test_provenance_fields_are_required_and_stable() -> None:
+    replacement = FakeInstruction(fingerprint=2)
+    with pytest.raises(ValueError, match="pass_id"):
+        _candidate(replacement, pass_id="")
+    with pytest.raises(ValueError, match="stage_id"):
+        _candidate(replacement, stage_id=" ")
+    with pytest.raises(ValueError, match="rule_id"):
+        _candidate(replacement, rule_id="")
+
+    receipt = _committer().commit(
+        _context(
+            FakeInstruction(),
+            block=FakeBlock(FakeMba()),
+            capabilities=NativeCallbackCapabilities(True, True, True, True),
+        ),
+        _candidate(replacement),
+    )
+    for field in ("pass_id", "stage_id", "rule_id"):
+        with pytest.raises(ValueError, match=field):
+            replace(receipt, **{field: ""})
+
+
+def test_context_capture_maps_unknown_maturity_sentinel_to_safe_zero() -> None:
+    mba = FakeMba(maturity=-1)
+    context = InstructionCommitContext.from_live(
+        FakeInstruction(),
+        FakeBlock(mba),
+    )
+
+    assert context.epoch.maturity == 0
 
 
 def test_invalid_operand_size_is_rejected_without_swap() -> None:
@@ -358,7 +432,12 @@ def test_existing_history_rejects_cycle_and_quarantines_only_the_producer() -> N
         quarantine=lambda *args: quarantined.append(args),
     ).commit(
         context,
-        _candidate(replacement, producer_rule_name="producer", history_key=("site",)),
+        _candidate(
+            replacement,
+            rule_id="producer",
+            producer_rule_name="producer",
+            history_key=("site",),
+        ),
     )
 
     assert receipt.reason == "rewrite-cycle"

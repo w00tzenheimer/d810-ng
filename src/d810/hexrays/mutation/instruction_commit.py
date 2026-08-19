@@ -68,6 +68,13 @@ class NativeEpoch:
     ) -> "NativeEpoch":
         """Capture only primitive MBA identity; never retain the live object."""
 
+        raw_maturity = (
+            int(getattr(mba, "maturity", 0) or 0) if maturity is None else int(maturity)
+        )
+        # Hex-Rays callback code uses -1 for an unknown/null-block maturity;
+        # keep NativeEpoch itself non-negative and map only at this capture
+        # boundary to the synthetic unknown value 0.
+        safe_maturity = 0 if raw_maturity == -1 else raw_maturity
         return cls(
             function_ea=(
                 int(getattr(mba, "entry_ea", 0) or 0)
@@ -75,11 +82,7 @@ class NativeEpoch:
                 else int(function_ea)
             ),
             mba_identity=id(mba),
-            maturity=(
-                int(getattr(mba, "maturity", 0) or 0)
-                if maturity is None
-                else int(maturity)
-            ),
+            maturity=safe_maturity,
             generation=int(generation),
         )
 
@@ -153,6 +156,44 @@ class InstructionCommitContext:
         if not isinstance(self.capabilities, NativeCallbackCapabilities):
             raise TypeError("capabilities must be NativeCallbackCapabilities")
 
+    @classmethod
+    def from_live(
+        cls,
+        instruction: object,
+        block: object | None,
+        *,
+        function_ea: int | None = None,
+        maturity: int | None = None,
+        generation: int = 0,
+        capabilities: NativeCallbackCapabilities | None = None,
+    ) -> "InstructionCommitContext":
+        """Capture callback values, mapping the existing ``maturity=-1`` sentinel."""
+
+        mba = None if block is None else getattr(block, "mba", None)
+        has_block = block is not None and mba is not None
+        if capabilities is None:
+            capabilities = NativeCallbackCapabilities(
+                block_context_available=has_block,
+                may_touch_neighboring_instructions=has_block,
+                may_mark_lists_dirty=has_block,
+                may_verify_mba=has_block,
+            )
+        if mba is None:
+            epoch = NativeEpoch(
+                function_ea=0 if function_ea is None else int(function_ea),
+                mba_identity=0,
+                maturity=0 if maturity in (None, -1) else int(maturity),
+                generation=int(generation),
+            )
+        else:
+            epoch = NativeEpoch.from_mba(
+                mba,
+                function_ea=function_ea,
+                maturity=maturity,
+                generation=generation,
+            )
+        return cls(instruction, block, epoch, capabilities)
+
 
 @dataclass(frozen=True, slots=True)
 class InstructionRewriteCandidate:
@@ -163,6 +204,9 @@ class InstructionRewriteCandidate:
     mode: RewriteMode
     cost_before: RewriteCost
     cost_after: RewriteCost
+    pass_id: str
+    stage_id: str
+    rule_id: str
     semantic_rank_before: int = 0
     semantic_rank_after: int = 0
     proof_required: bool = False
@@ -188,6 +232,10 @@ class InstructionRewriteCandidate:
             self.cost_after, RewriteCost
         ):
             raise TypeError("costs must be RewriteCost values")
+        for name in ("pass_id", "stage_id", "rule_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
         for name in ("semantic_rank_before", "semantic_rank_after"):
             object.__setattr__(self, name, _non_negative(getattr(self, name), name))
         for name in (
@@ -200,6 +248,9 @@ class InstructionRewriteCandidate:
             object.__setattr__(self, name, _bool(getattr(self, name), name))
         if not isinstance(self.producer_rule_name, str):
             raise TypeError("producer_rule_name must be a string")
+        if self.producer_rule_name and self.producer_rule_name != self.rule_id:
+            raise ValueError("producer_rule_name must match rule_id")
+        object.__setattr__(self, "producer_rule_name", self.rule_id)
         if self.epoch_before is not None and not isinstance(
             self.epoch_before, NativeEpoch
         ):
@@ -217,6 +268,9 @@ class InstructionRewriteReceipt:
     before_fingerprint: int | None
     after_fingerprint: int | None
     reason: str
+    pass_id: str
+    stage_id: str
+    rule_id: str
     mode: RewriteMode | None = None
     semantic_rank_before: int = 0
     semantic_rank_after: int = 0
@@ -248,12 +302,19 @@ class InstructionRewriteReceipt:
                 raise TypeError(f"{name} must be an integer or None")
         if not isinstance(self.reason, str) or not self.reason:
             raise ValueError("receipt reason is required")
+        for name in ("pass_id", "stage_id", "rule_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
         if self.mode is not None and not isinstance(self.mode, RewriteMode):
             raise TypeError("receipt mode must be a RewriteMode")
         for name in ("semantic_rank_before", "semantic_rank_after"):
             object.__setattr__(self, name, _non_negative(getattr(self, name), name))
         if not isinstance(self.producer_rule_name, str):
             raise TypeError("producer_rule_name must be a string")
+        if self.producer_rule_name and self.producer_rule_name != self.rule_id:
+            raise ValueError("producer_rule_name must match rule_id")
+        object.__setattr__(self, "producer_rule_name", self.rule_id)
 
     @property
     def pre_fingerprint(self) -> int | None:
@@ -277,6 +338,9 @@ class InstructionRewriteReceipt:
             "before_fingerprint": self.before_fingerprint,
             "after_fingerprint": self.after_fingerprint,
             "reason": self.reason,
+            "pass_id": self.pass_id,
+            "stage_id": self.stage_id,
+            "rule_id": self.rule_id,
             "mode": None if self.mode is None else self.mode.value,
             "semantic_rank_before": self.semantic_rank_before,
             "semantic_rank_after": self.semantic_rank_after,
@@ -352,6 +416,9 @@ class HexRaysInstructionCommitter:
             before_fingerprint=fingerprint,
             after_fingerprint=fingerprint,
             reason=reason,
+            pass_id=candidate.pass_id,
+            stage_id=candidate.stage_id,
+            rule_id=candidate.rule_id,
             mode=candidate.mode,
             semantic_rank_before=candidate.semantic_rank_before,
             semantic_rank_after=candidate.semantic_rank_after,
@@ -548,17 +615,6 @@ class HexRaysInstructionCommitter:
                 int(getattr(instruction, "ea", 0) or 0),
             )
             seen = set() if self._history is None else self._history.get(key, set())
-            if post_fingerprint in seen:
-                self._rollback(
-                    instruction,
-                    candidate.replacement,
-                    RuntimeError(REASON_REWRITE_CYCLE),
-                    quarantine=False,
-                )
-                self._record_cycle_producer(key, candidate.producer_rule_name)
-                return self._rejected(
-                    context, candidate, REASON_REWRITE_CYCLE, fingerprint
-                )
 
             if candidate.optimize_solo:
                 _invoke(getattr(instruction, "optimize_solo"))
@@ -574,8 +630,35 @@ class HexRaysInstructionCommitter:
                     f"instruction rewrite at 0x{int(getattr(instruction, 'ea', 0) or 0):X}",
                 )
 
+            # optimize_solo is native follow-up and may itself change the
+            # instruction.  The receipt and cycle history must describe this
+            # final callback-local state, not the pre-follow-up swap state.
+            final_fingerprint = int(
+                _invoke(self._hash, instruction, context.epoch.function_ea)
+            )
+            if final_fingerprint == fingerprint:
+                self._rollback(
+                    instruction,
+                    candidate.replacement,
+                    RuntimeError(REASON_REWRITE_NOOP),
+                    quarantine=False,
+                )
+                return self._rejected(
+                    context, candidate, REASON_REWRITE_NOOP, fingerprint
+                )
+            if final_fingerprint in seen:
+                self._rollback(
+                    instruction,
+                    candidate.replacement,
+                    RuntimeError(REASON_REWRITE_CYCLE),
+                    quarantine=False,
+                )
+                self._record_cycle_producer(key, candidate.rule_id)
+                return self._rejected(
+                    context, candidate, REASON_REWRITE_CYCLE, fingerprint
+                )
             if self._history is not None:
-                self._history.setdefault(key, seen).add(post_fingerprint)
+                self._history.setdefault(key, seen).add(final_fingerprint)
             return InstructionRewriteReceipt(
                 committed=True,
                 applied_count=1,
@@ -587,8 +670,11 @@ class HexRaysInstructionCommitter:
                     context.epoch.generation + 1,
                 ),
                 before_fingerprint=fingerprint,
-                after_fingerprint=post_fingerprint,
+                after_fingerprint=final_fingerprint,
                 reason=REASON_COMMITTED,
+                pass_id=candidate.pass_id,
+                stage_id=candidate.stage_id,
+                rule_id=candidate.rule_id,
                 mode=candidate.mode,
                 semantic_rank_before=candidate.semantic_rank_before,
                 semantic_rank_after=candidate.semantic_rank_after,
