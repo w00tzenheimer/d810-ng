@@ -109,8 +109,6 @@ def _proof_block_identity(blk: object) -> tuple[int, int, int] | None:
 def _proof_mba_identity(mba: object) -> int | None:
     """Normalize SWIG MBA wrappers to their native pointer when available."""
 
-    if mba is None:
-        return None
     try:
         return int(mba.this)
     except (AttributeError, TypeError, ValueError):
@@ -123,6 +121,14 @@ def _proof_operand_has_location(
 ) -> bool:
     """Require IDA to materialize a non-empty use location before proving origin."""
 
+    mba = getattr(blk, "mba", None)
+    if (
+        not hasattr(mop, "this")
+        or not hasattr(blk, "this")
+        or mba is None
+        or not hasattr(mba, "this")
+    ):
+        return False
     try:
         tracked = _materialize_mop_for_tracking(
             mop,
@@ -186,6 +192,8 @@ def _terminal_proof_origin(
         if serial in visited:
             return None
         visited.add(serial)
+        if not _proof_operand_has_location(mop, current):
+            return None
 
         try:
             definition = find_def_in_block(mop, current, before)

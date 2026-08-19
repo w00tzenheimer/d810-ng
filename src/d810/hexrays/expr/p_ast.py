@@ -735,11 +735,13 @@ class AstLeaf(AstBase):
             source_leaf = other2.leafs_by_name[self.name]
 
         if source_leaf is None:
+            self.proof_origin = None
             return False
 
         # Copy mop if available
         if source_leaf.mop is not None:
             self.mop = source_leaf.mop
+            self.proof_origin = getattr(source_leaf, "proof_origin", None)
             return True
 
         # For computed constants (e.g., c_res from constraints), copy the value
@@ -748,6 +750,7 @@ class AstLeaf(AstBase):
         if source_value is None:
             source_value = getattr(source_leaf, "expected_value", None)
         if source_value is not None:
+            self.proof_origin = None
             self.value = source_value
             return True
 

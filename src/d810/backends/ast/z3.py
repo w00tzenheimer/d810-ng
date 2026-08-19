@@ -247,7 +247,7 @@ def _z3_leaf_width_bits(leaf: AstLeaf) -> int:
     return width
 
 
-def _z3_mop_identity(mop: object, *, proof_origin: object = None) -> tuple:
+def _z3_mop_identity(mop: object, *, proof_origin: object = None, leaf_identity: object = None) -> tuple:
     """Return an immutable identity safe for Z3 leaf canonicalisation.
 
     ``equal_mops_ignore_size`` is intentionally a storage-oriented helper. It
@@ -278,21 +278,21 @@ def _z3_mop_identity(mop: object, *, proof_origin: object = None) -> tuple:
         # payload from to_cache_key().  They cannot be safely canonicalised by
         # this leaf-only identity layer.
         if getattr(snapshot, "t", None) not in scalar_types:
-            return ("opaque-complex", id(owner))
+            return ("opaque-complex", id(leaf_identity if leaf_identity is not None else owner))
 
         # Hex-Rays uses valnum=0 for an operand without a usable SSA version.
         # Do not turn that unknown into a process-wide physical-register alias.
         valnum = getattr(snapshot, "valnum", 0)
         if type(valnum) is not int or valnum <= 0:
-            return ("opaque-unversioned", id(owner))
+            return ("opaque-unversioned", id(leaf_identity if leaf_identity is not None else owner))
 
         to_cache_key = getattr(snapshot, "to_cache_key", None)
         if not callable(to_cache_key):
-            return ("opaque-scalar", id(owner))
+            return ("opaque-scalar", id(leaf_identity if leaf_identity is not None else owner))
         try:
             return tuple(to_cache_key())
         except Exception:
-            return ("opaque-scalar", id(owner))
+            return ("opaque-scalar", id(leaf_identity if leaf_identity is not None else owner))
 
     if proof_origin is not None:
         return ("proof-origin", proof_origin)
@@ -326,6 +326,7 @@ def create_z3_vars(leaf_list: list[AstLeaf]):
             _z3_mop_identity(
                 leaf.mop,
                 proof_origin=getattr(leaf, "proof_origin", None),
+                leaf_identity=leaf,
             ),
         )
         leaf_index = known_leaf_index_by_key.get(leaf_key)
