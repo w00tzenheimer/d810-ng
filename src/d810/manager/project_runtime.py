@@ -14,6 +14,9 @@ from d810.core.project_config_persistence import (
     clone_project_configuration,
 )
 from d810.passes.pipeline_v2_hook_bridge import PipelineV2HookActivation
+from d810.passes.constant_simplification_options import (
+    CompiledConstantSimplificationSchedule,
+)
 from d810.manager.preparation_scripts import PreparationScriptRegistry
 
 
@@ -45,6 +48,7 @@ class ProjectRuntimeSnapshot:
     effective_pass_ids: tuple[str, ...]
     preparation_scripts: tuple[PreparationScriptDescriptor, ...] = ()
     global_const_persistence_enabled: bool = False
+    constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = None
 
 
 def _identity(project: ProjectConfiguration) -> ProjectIdentitySnapshot:
@@ -87,6 +91,9 @@ def build_project_runtime_snapshot(
         preparation_scripts=preparation_registry.descriptors,
         global_const_persistence_enabled=(
             hook_activation.global_const_persistence_enabled
+        ),
+        constant_simplification_schedule=(
+            hook_activation.constant_simplification_schedule
         ),
     )
 

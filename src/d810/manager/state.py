@@ -97,6 +97,15 @@ from d810.passes.pipeline_v2_hook_bridge import (
     pipeline_v2_hook_activation,
     requires_native_preanalysis_handlers,
 )
+from d810.passes.constant_simplification import (
+    CONSTANT_SIMPLIFICATION_PASS_ID,
+    constant_simplification_provider_maturities,
+)
+from d810.optimizers.microcode.handler import (
+    configure_rule_with_maturity_contract,
+)
+from d810.hexrays.utils.hexrays_formatters import string_to_maturity
+from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.state_machine_options import StateMachineCffOptions
 
 if TYPE_CHECKING:
@@ -337,6 +346,41 @@ class D810State(metaclass=SingletonMeta):
         # previous project half-replaced (lpccp-8c87).
         hook_activation = pipeline_v2_hook_activation(runtime_project)
 
+        constant_schedule = hook_activation.constant_simplification_schedule
+        constant_stages_by_rule = {
+            stage.implementation_name: stage
+            for stage in (constant_schedule.stages if constant_schedule else ())
+            if stage.enabled and stage.implementation_name
+        }
+
+        def configure_rule(rule, effective_config):
+            stage = constant_stages_by_rule.get(rule.name)
+            if stage is None:
+                rule.configure(effective_config)
+                return
+            supported_names = constant_simplification_provider_maturities(
+                stage.supported_maturities
+            )
+            effective_names = constant_simplification_provider_maturities(
+                stage.effective_maturities
+            )
+            supported = tuple(string_to_maturity(name) for name in supported_names)
+            effective = tuple(string_to_maturity(name) for name in effective_names)
+            if any(value is None for value in (*supported, *effective)):
+                raise PipelineConfigError(
+                    f"{CONSTANT_SIMPLIFICATION_PASS_ID} stage {stage.stage_id} "
+                    f"implementation {stage.implementation_name} has an unknown "
+                    "provider maturity spelling"
+                )
+            configure_rule_with_maturity_contract(
+                rule,
+                effective_config,
+                pass_id=CONSTANT_SIMPLIFICATION_PASS_ID,
+                stage_id=stage.stage_id,
+                expected_supported=tuple(value for value in supported if value is not None),
+                expected_effective=tuple(value for value in effective if value is not None),
+            )
+
         old_project_name = (
             self.current_project.path.name
             if getattr(self, "current_project", None) is not None
@@ -404,7 +448,7 @@ class D810State(metaclass=SingletonMeta):
                 effective_config["dump_intermediate_microcode"] = self.d810_config.get(
                     "dump_intermediate_microcode"
                 )
-                rule.configure(effective_config)
+                configure_rule(rule, effective_config)
                 rule.set_log_dir(self.log_dir)
                 self.current_ins_rules.append(rule)
         logger.debug("Instruction rules configured")
@@ -501,10 +545,13 @@ class D810State(metaclass=SingletonMeta):
                     effective_config["dump_intermediate_microcode"] = (
                         self.d810_config.get("dump_intermediate_microcode")
                     )
-                    blk_rule.configure(effective_config)
+                    configure_rule(blk_rule, effective_config)
                     blk_rule.set_log_dir(self.log_dir)
                     self.current_blk_rules.append(blk_rule)
         logger.debug("Block rules configured")
+        self.manager.configure_constant_simplification_schedule(
+            hook_activation.constant_simplification_schedule
+        )
         cfg = dict(runtime_project.additional_configuration)
         # This is derived from the validated config-v2 activation rather than
         # user-editable project JSON.  A complete native state-machine spine

@@ -28,8 +28,10 @@ from d810.passes.execution_stages import (
 from d810.passes.constant_simplification_options import (
     AGGRESSIVE_MEMORY_POLICY as COMPILED_AGGRESSIVE_MEMORY_POLICY,
     CompiledConstantSimplificationSchedule,
+    CompiledConstantStage,
     STRICT_MEMORY_POLICY as COMPILED_STRICT_MEMORY_POLICY,
     StageLifecycleDomain,
+    _PROVIDER_BY_IR,
     compile_constant_simplification_schedule,
 )
 
@@ -145,32 +147,81 @@ def _rule(name: str, options: dict[str, object] | None = None) -> RuleConfigurat
     )
 
 
+def constant_simplification_provider_maturities(
+    maturities: tuple[IRMaturity, ...],
+) -> tuple[str, ...]:
+    """Map compiled portable maturities to the private Hex-Rays vocabulary.
+
+    The compiled schedule remains the authority.  This is only the one-way
+    spelling conversion required at the private rule boundary.
+    """
+
+    try:
+        return tuple(_PROVIDER_BY_IR[maturity] for maturity in maturities)
+    except KeyError as exc:
+        raise ValueError(
+            f"constant-simplification has no provider maturity for {exc.args[0]!r}"
+        ) from exc
+
+
+def _constant_stage_rule_config(
+    stage: CompiledConstantStage,
+    *,
+    forward_constant_options: dict[str, object] | None,
+) -> RuleConfiguration:
+    config: dict[str, object] = {
+        "maturities": list(
+            constant_simplification_provider_maturities(stage.effective_maturities)
+        )
+    }
+    if stage.stage_id == "fold-readonly-data":
+        config.update(stage.options)
+        if stage.options["memory_policy"] == AGGRESSIVE_MEMORY_POLICY:
+            # This is the private spelling; the public schedule deliberately
+            # retains its policy vocabulary.
+            config["fold_writable_constants"] = True
+    elif stage.stage_id == "forward-constants" and forward_constant_options:
+        # The state-machine path may add execution-only options, but it may
+        # not replace the compiled maturity set.
+        config.update(
+            {
+                key: value
+                for key, value in forward_constant_options.items()
+                if key != "maturities"
+            }
+        )
+    return _rule(stage.implementation_name or "", config)
+
+
 def constant_simplification_hook_rules(
     config: PipelineConfig,
     *,
     forward_constant_options: dict[str, object] | None = None,
+    schedule: CompiledConstantSimplificationSchedule | None = None,
 ) -> ConstantSimplificationHookRules:
     """Expand the logical pass into its ordered live Hex-Rays stages."""
-    options = _parse_options(config)
-    readonly_options = options.stage("fold-readonly-data").options
-    memory_options: dict[str, object] = {
-        # Private bundle-owned behavior. Direct/legacy activation of the
-        # implementation rule does not persist IDB type metadata.
-        "persist_global_const_annotations": options.persist_global_const_annotations,
-        "rva_guard": readonly_options["rva_guard"],
-    }
-    if readonly_options["memory_policy"] == AGGRESSIVE_MEMORY_POLICY:
-        memory_options["fold_writable_constants"] = True
-    if readonly_options["allow_executable_readonly"]:
-        memory_options["allow_executable_readonly"] = True
+    compiled = schedule if schedule is not None else _parse_options(config)
+    instruction_rules: list[RuleConfiguration] = []
+    block_rules: list[RuleConfiguration] = []
+    for stage in compiled.stages:
+        if not stage.enabled:
+            continue
+        rule = _constant_stage_rule_config(
+            stage,
+            forward_constant_options=forward_constant_options,
+        )
+        if stage.pipeline is ExecutionPipeline.INSTRUCTION:
+            instruction_rules.append(rule)
+        elif stage.pipeline is ExecutionPipeline.FLOW:
+            block_rules.append(rule)
+        else:
+            raise ValueError(
+                f"constant-simplification stage {stage.stage_id} has unsupported "
+                f"pipeline {stage.pipeline!r}"
+            )
     return ConstantSimplificationHookRules(
-        instruction_rules=(
-            _rule("FoldReadonlyDataRule", memory_options),
-            _rule("ConstantSubtreeFoldRule"),
-        ),
-        block_rules=(
-            _rule("ForwardConstantPropagationRule", forward_constant_options),
-        ),
+        instruction_rules=tuple(instruction_rules),
+        block_rules=tuple(block_rules),
     )
 
 
@@ -255,6 +306,7 @@ __all__ = [
     "STRICT_MEMORY_POLICY",
     "build_constant_simplification_pass",
     "constant_simplification_hook_rules",
+    "constant_simplification_provider_maturities",
     "constant_simplification_stage_descriptors",
     "register_constant_simplification_pass",
 ]

@@ -64,11 +64,16 @@ from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.hexrays.ir_maturity import HexRaysMaturity, maturity_to_name
+from d810.hexrays.utils.hexrays_formatters import string_to_maturity
 from d810.hexrays.lifecycle import HEXRAYS_MICROCODE_PROVIDER
 from d810.optimizers import load_optimizer_registries
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
+)
+from d810.optimizers.microcode.handler import (
+    MaturityContractError,
+    validate_rule_maturity_contract,
 )
 from d810.passes.function_prior_config import (
     function_prior_keys,
@@ -77,6 +82,14 @@ from d810.passes.function_prior_config import (
 from d810.passes.function_priors import FunctionAnalysisPriors
 from d810.passes.inferences import unflattening_inference
 from d810.passes.execution_stages import ExecutionPipeline
+from d810.passes.constant_simplification import (
+    CONSTANT_SIMPLIFICATION_PASS_ID,
+    constant_simplification_provider_maturities,
+)
+from d810.passes.constant_simplification_options import (
+    CompiledConstantSimplificationSchedule,
+)
+from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline_factory import (
@@ -728,6 +741,9 @@ class D810Manager:
     )
     _global_const_persistence_enabled: bool = dataclasses.field(
         default=False, init=False, repr=False
+    )
+    _constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = dataclasses.field(
+        default=None, init=False, repr=False
     )
     _idb_preparation_journal: typing.Any = dataclasses.field(
         default=None, init=False, repr=False
@@ -2843,8 +2859,17 @@ class D810Manager:
         }
         expanded: list[ExpandedExecutionStage] = []
         state_fallback_used = False
+        constant_schedule = self._constant_simplification_schedule
         for config in configs:
             for descriptor in registry.stages_for(config.pass_id):
+                constant_stage = None
+                if (
+                    constant_schedule is not None
+                    and str(config.pass_id) == str(CONSTANT_SIMPLIFICATION_PASS_ID)
+                ):
+                    constant_stage = constant_schedule.stage(str(descriptor.stage_id))
+                    if not constant_stage.enabled:
+                        continue
                 candidates = implementations[descriptor.pipeline]
                 implementation = next(
                     (
@@ -2870,11 +2895,55 @@ class D810Manager:
                         None,
                     )
                     state_fallback_used = implementation is not None
-                maturities = frozenset(
-                    int(value)
-                    for value in getattr(implementation, "maturities", ())
-                    if value is not None
-                )
+                if (
+                    constant_stage is not None
+                    and implementation is None
+                    and (self.instruction_optimizer_rules or self.block_optimizer_rules)
+                ):
+                    raise PipelineConfigError(
+                        f"{CONSTANT_SIMPLIFICATION_PASS_ID} stage "
+                        f"{constant_stage.stage_id} implementation "
+                        f"{constant_stage.implementation_name} is not registered"
+                    )
+                if constant_stage is not None:
+                    supported_names = constant_simplification_provider_maturities(
+                        constant_stage.supported_maturities
+                    )
+                    effective_names = constant_simplification_provider_maturities(
+                        constant_stage.effective_maturities
+                    )
+                    supported = tuple(string_to_maturity(name) for name in supported_names)
+                    effective = tuple(string_to_maturity(name) for name in effective_names)
+                    if any(value is None for value in (*supported, *effective)):
+                        raise PipelineConfigError(
+                            f"{CONSTANT_SIMPLIFICATION_PASS_ID} stage "
+                            f"{constant_stage.stage_id} has an unknown provider "
+                            "maturity spelling"
+                        )
+                    if implementation is not None:
+                        try:
+                            validate_rule_maturity_contract(
+                                implementation,
+                                pass_id=CONSTANT_SIMPLIFICATION_PASS_ID,
+                                stage_id=constant_stage.stage_id,
+                                expected_supported=tuple(
+                                    value for value in supported if value is not None
+                                ),
+                                expected_effective=tuple(
+                                    value for value in effective if value is not None
+                                ),
+                            )
+                        except MaturityContractError as exc:
+                            raise PipelineConfigError(str(exc)) from exc
+                    maturities = frozenset(
+                        int(value) for value in effective if value is not None
+                    )
+                else:
+                    maturities = frozenset(
+                        int(value)
+                        for value in getattr(implementation, "maturities", ())
+                        if value is not None
+                    )
                 expanded.append(
                     ExpandedExecutionStage(
                         descriptor=descriptor,
@@ -3885,6 +3954,14 @@ class D810Manager:
     ) -> None:
         self._preparation_scripts = tuple(scripts)
         self._global_const_persistence_enabled = bool(global_const_persistence_enabled)
+
+    def configure_constant_simplification_schedule(
+        self,
+        schedule: CompiledConstantSimplificationSchedule | None,
+    ) -> None:
+        """Install the immutable constant-stage schedule for live scoping."""
+
+        self._constant_simplification_schedule = schedule
 
     def configure_block_optimizer(self, rules, **kwargs):
         self.block_optimizer_rules = list(rules)

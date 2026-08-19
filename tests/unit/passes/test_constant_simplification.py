@@ -31,11 +31,34 @@ def test_default_bundle_expands_to_one_ordered_memory_fold_flow_pipeline():
         "ForwardConstantPropagationRule"
     ]
     assert rules.instruction_rules[0].config == {
-        "persist_global_const_annotations": False,
+        "maturities": [
+            "MMAT_PREOPTIMIZED",
+            "MMAT_LOCOPT",
+            "MMAT_CALLS",
+            "MMAT_GLBOPT1",
+            "MMAT_GLBOPT3",
+        ],
+        "memory_policy": "strict",
         "rva_guard": True,
+        "allow_executable_readonly": False,
     }
-    assert rules.instruction_rules[1].config == {}
-    assert rules.block_rules[0].config == {}
+    assert rules.instruction_rules[1].config == {
+        "maturities": [
+            "MMAT_LOCOPT",
+            "MMAT_CALLS",
+            "MMAT_GLBOPT1",
+            "MMAT_GLBOPT2",
+            "MMAT_GLBOPT3",
+        ],
+    }
+    assert rules.block_rules[0].config == {
+        "maturities": [
+            "MMAT_CALLS",
+            "MMAT_GLBOPT1",
+            "MMAT_GLBOPT2",
+            "MMAT_GLBOPT3",
+        ],
+    }
 
 
 def test_state_machine_bundle_configures_one_post_unflatten_flow_rule():
@@ -51,7 +74,12 @@ def test_state_machine_bundle_configures_one_post_unflatten_flow_rule():
         "ForwardConstantPropagationRule"
     ]
     assert rules.block_rules[0].config == {
-        "maturities": ["MMAT_GLBOPT2"],
+        "maturities": [
+            "MMAT_CALLS",
+            "MMAT_GLBOPT1",
+            "MMAT_GLBOPT2",
+            "MMAT_GLBOPT3",
+        ],
         "cython_enabled": False,
     }
 
@@ -65,13 +93,35 @@ def test_bundle_maps_aggressive_and_dangerous_options_only_to_memory_stage():
     )
 
     assert rules.instruction_rules[0].config == {
+        "maturities": [
+            "MMAT_PREOPTIMIZED",
+            "MMAT_LOCOPT",
+            "MMAT_CALLS",
+            "MMAT_GLBOPT1",
+            "MMAT_GLBOPT3",
+        ],
         "fold_writable_constants": True,
         "allow_executable_readonly": True,
-        "persist_global_const_annotations": False,
+        "memory_policy": "aggressive_no_direct_writes",
         "rva_guard": True,
     }
-    assert rules.instruction_rules[1].config == {}
-    assert rules.block_rules[0].config == {}
+    assert rules.instruction_rules[1].config == {
+        "maturities": [
+            "MMAT_LOCOPT",
+            "MMAT_CALLS",
+            "MMAT_GLBOPT1",
+            "MMAT_GLBOPT2",
+            "MMAT_GLBOPT3",
+        ],
+    }
+    assert rules.block_rules[0].config == {
+        "maturities": [
+            "MMAT_CALLS",
+            "MMAT_GLBOPT1",
+            "MMAT_GLBOPT2",
+            "MMAT_GLBOPT3",
+        ],
+    }
 
 
 @pytest.mark.parametrize(
@@ -107,16 +157,15 @@ def test_global_const_persistence_is_an_explicit_opt_in() -> None:
 
     assert default_pass.options.preparation.enabled is False
     assert enabled_pass.options.preparation.enabled is True
-    # Compatibility projection remains available while the live bridge is
-    # migrated to the compiled schedule in the next task.
+    # Compatibility projection remains available for callers that still read
+    # the legacy public option.
     assert default_pass.options.persist_global_const_annotations is False
     assert enabled_pass.options.persist_global_const_annotations is True
     enabled_rules = constant_simplification_hook_rules(
         _config(persist_global_const_annotations=True)
     )
-    assert (
-        enabled_rules.instruction_rules[0].config["persist_global_const_annotations"]
-        is True
+    assert "persist_global_const_annotations" not in (
+        enabled_rules.instruction_rules[0].config
     )
 
 
