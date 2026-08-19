@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from d810.core.pass_editor_spec import PassEditorKind, PassEditorSpec
 from d810.core.plugins import PassImplementationRequirement
 from d810.core.typing import Callable
-from d810.passes.execution_stages import ExecutionStageDescriptor
+from d810.passes.execution_stages import (
+    ExecutionHost,
+    ExecutionOwnership,
+    ExecutionStageDescriptor,
+    IRScope,
+)
 from d810.passes.pass_pipeline import PipelineConfig, PipelinePass, PassSpec
 
 
@@ -320,6 +325,15 @@ class PassRegistry:
                 raise PassRegistryError(
                     "stages must contain ExecutionStageDescriptor values"
                 )
+            for field_name, enum_type in (
+                ("ownership", ExecutionOwnership),
+                ("host", ExecutionHost),
+                ("scope", IRScope),
+            ):
+                if not isinstance(getattr(stage, field_name, None), enum_type):
+                    raise PassRegistryError(
+                        f"stage {stage.stage_id!r} has untyped {field_name} metadata"
+                    )
             if stage.pass_id != pass_id:
                 raise PassRegistryError(
                     f"stage {stage.stage_id!r} owning pass {stage.pass_id!r} "

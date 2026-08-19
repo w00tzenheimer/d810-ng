@@ -15,7 +15,13 @@ from d810.families.state_machine_cff.pipeline import (
 )
 from d810.passes.pass_pipeline import PipelineConfig, PassResult
 from d810.passes import pass_pipeline as pp
-from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
+from d810.passes.execution_stages import (
+    ExecutionHost,
+    ExecutionOwnership,
+    ExecutionPipeline,
+    ExecutionStageDescriptor,
+    IRScope,
+)
 from d810.passes.registry import (
     DuplicatePassIdError,
     PassRegistry,
@@ -260,6 +266,30 @@ def test_registry_exposes_deterministic_read_only_catalog_metadata():
     assert registry.is_configured("alpha") is False
     with pytest.raises(TypeError):
         template.options["new"] = True
+
+
+def test_registry_preserves_catalog_for_legacy_positional_descriptors():
+    registry = PassRegistry()
+    registry.register(
+        "legacy",
+        _FakePass,
+        stages=(
+            ExecutionStageDescriptor(
+                "legacy", "legacy-stage", ExecutionPipeline.FLOW, "Rule"
+            ),
+        ),
+        public=False,
+    )
+
+    assert registry.registered_pass_ids() == ("legacy",)
+    assert tuple(stage.stage_id for stage in registry.stages_for("legacy")) == (
+        "legacy-stage",
+    )
+    stage = registry.stages_for("legacy")[0]
+    assert stage.pipeline is ExecutionPipeline.FLOW
+    assert stage.ownership is ExecutionOwnership.HEXRAYS_HOSTED
+    assert stage.host is ExecutionHost.HEXRAYS_OPTBLOCK
+    assert stage.scope is IRScope.BLOCK
 
 
 def test_registry_catalog_rejects_unknown_metadata_lookup():

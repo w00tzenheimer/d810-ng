@@ -6,8 +6,11 @@ from d810.passes.constant_simplification import (
     register_constant_simplification_pass,
 )
 from d810.passes.execution_stages import (
+    ExecutionHost,
+    ExecutionOwnership,
     ExecutionPipeline,
     ExecutionStageDescriptor,
+    IRScope,
     canonical_transform_id,
 )
 from d810.ir.maturity import IRMaturity
@@ -20,6 +23,89 @@ class _FakePass:
 
     def run(self, _context):
         raise AssertionError("not executed")
+
+
+def test_legacy_descriptor_projects_explicit_execution_metadata() -> None:
+    descriptor = ExecutionStageDescriptor(
+        "legacy", "legacy", ExecutionPipeline.FLOW, "Rule"
+    )
+
+    assert descriptor.ownership is ExecutionOwnership.HEXRAYS_HOSTED
+    assert descriptor.host is ExecutionHost.HEXRAYS_OPTBLOCK
+    assert descriptor.scope is IRScope.BLOCK
+
+
+def test_explicit_execution_metadata_preserves_legacy_pipeline() -> None:
+    hosted_instruction = ExecutionStageDescriptor(
+        "test",
+        "hosted-insn",
+        ExecutionPipeline.INSTRUCTION,
+        "Rule",
+        ownership=ExecutionOwnership.HEXRAYS_HOSTED,
+        host=ExecutionHost.HEXRAYS_OPTINSN,
+        scope=IRScope.INSTRUCTION,
+    )
+    owned_function = ExecutionStageDescriptor(
+        "test",
+        "owned-function",
+        ExecutionPipeline.FLOW,
+        "Pass",
+        ownership=ExecutionOwnership.D810_OWNED,
+        host=ExecutionHost.D810_PIPELINE,
+        scope=IRScope.FUNCTION,
+    )
+
+    assert hosted_instruction.pipeline is ExecutionPipeline.INSTRUCTION
+    assert owned_function.pipeline is ExecutionPipeline.FLOW
+    assert owned_function.ownership is ExecutionOwnership.D810_OWNED
+    assert owned_function.host is ExecutionHost.D810_PIPELINE
+    assert owned_function.scope is IRScope.FUNCTION
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error_type"),
+    (
+        (
+            {
+                "ownership": ExecutionOwnership.D810_OWNED,
+                "host": ExecutionHost.HEXRAYS_OPTINSN,
+                "scope": IRScope.INSTRUCTION,
+            },
+            ValueError,
+        ),
+        (
+            {
+                "ownership": ExecutionOwnership.HEXRAYS_HOSTED,
+                "host": ExecutionHost.D810_PIPELINE,
+                "scope": IRScope.FUNCTION,
+            },
+            ValueError,
+        ),
+        (
+            {
+                "ownership": ExecutionOwnership.HEXRAYS_HOSTED,
+                "host": ExecutionHost.HEXRAYS_OPTINSN,
+                "scope": IRScope.FUNCTION,
+            },
+            ValueError,
+        ),
+        (
+            {
+                "ownership": "hexrays_hosted",
+            },
+            TypeError,
+        ),
+    ),
+)
+def test_descriptor_rejects_incoherent_or_untyped_metadata(kwargs, error_type) -> None:
+    with pytest.raises(error_type):
+        ExecutionStageDescriptor(
+            "test",
+            "invalid",
+            ExecutionPipeline.FLOW,
+            "Rule",
+            **kwargs,
+        )
 
 
 def test_private_implementation_names_normalize_to_stable_public_ids() -> None:
