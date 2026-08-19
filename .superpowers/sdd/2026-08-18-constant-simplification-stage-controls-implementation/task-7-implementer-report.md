@@ -19,8 +19,9 @@ editor contract is canonical-only, so allowing legacy data to reach it would
 reject otherwise supported external projects as editor-invisible. The
 canonicalizer calls the same portable schedule compiler used by runtime
 activation, serializes requested stage maturities (not gate-intersected
-effective maturities), and leaves pass metadata including `maturity_gates`
-unchanged. Therefore legacy runtime behavior is unchanged while all downstream
+effective maturities), and preserves pass metadata including `maturity_gates`
+semantically (the normal `PipelineConfig` serializer may normalize maturity
+spelling). Therefore legacy runtime behavior is unchanged while all downstream
 consumers see one canonical schedule. The compiler rejects any mixed
 canonical/legacy input before projection; there is no precedence rule.
 

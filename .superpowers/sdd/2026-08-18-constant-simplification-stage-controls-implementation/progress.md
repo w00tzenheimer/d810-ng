@@ -45,7 +45,7 @@
 | 4 | `37eebd18a` | `/root/constant_stage_task4` | PASS | PASS | 98 focused + 88 adjacent + 22 renderer tests passed; ruff/sg/import-linter passed | `d946f4b99`, `6d9ea61c1`, `cf9020f08`, `a7ecc6a76` | complete after 1 fix round |
 | 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix5b` | PASS | PASS | 129 Python + 129 Cython + 15 focused resolver + 1 parity + 1 AstProxy + 14 def-search + 2 cumulative probes in both modes; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `35e114973`, `a4b5e045c`, `540995e67` | complete after 5 fix rounds |
 | 6 | `6446f49f1` | `/root/constant_stage_task6` + `/root/constant_stage_task6_defaults_fix` | PASS | PASS | 152 focused/adjacent units + 18 normal/18 Cython IDA runtime; final controller rerun 134 units; Ruff/py_compile/sg/import-linter/diff-check passed | `b7cee6071`, `9034ae5ad`, `4b0f03a23`, `7d40d1f8f` | complete after 3 review fix rounds |
-| 7 | `63d4eb393` | `/root/constant_stage_task7_retry` | pending | pending | 150 focused; 68 JSON/171 pipeline configs; adjacent 235 pass with one pre-existing base failure; ruff/py_compile/sg/import-linter/diff-check passed | `ea064b829` | implementation complete; independent review pending |
+| 7 | `63d4eb393` | `/root/constant_stage_task7_retry` | PASS | PASS | 150 focused; 68 JSON/171 pipeline configs; adjacent 235 pass with one base-reproduced failure; controller reran 150; ruff/py_compile/sg/import-linter/diff-check passed | `446b1d6b9`, `ea064b829`, `7fc778080` | complete |
 | 8 | pending | pending | pending | pending | pending | pending | pending |
 
 ## Controller rulings
@@ -169,4 +169,10 @@
   diff-check passed. The adjacent command had 235 passes plus one pre-existing
   Tigress legacy-rule count failure reproduced on base `63d4eb393`.
 - Product commit: `ea064b829` (`chore(config): migrate constant stage controls`).
-- Independent specification and quality review remain pending.
+- Independent review added `7fc778080` to strengthen recursive input guards
+  and commit a non-empty maturity-gate round-trip assertion. The controller
+  inspected that narrow test commit and independently reran the exact 150-test
+  focused command, Ruff, and `git diff --check` successfully.
+- Final independent verdict: specification PASS and code quality PASS. The
+  single adjacent Tigress failure is unchanged and was reproduced on base
+  `63d4eb393`; it is not masked or skipped by this work.
