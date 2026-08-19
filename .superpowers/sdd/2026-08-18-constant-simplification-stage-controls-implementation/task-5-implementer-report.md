@@ -169,6 +169,85 @@ and zero/nonzero cache paths are covered by the context audit regressions.
 
 Fix commit SHA: 37ab47636.
 
+## Task 5 Fix Round 2
+
+The independent review's remaining P1 was committed as a permanent regression
+before the production fix:
+
+```text
+git commit -m "test(z3): cover contextual budget replacements"
+1399cbd50
+```
+
+RED checkpoint, run from the main repository root:
+
+```text
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round2_red.txt -- tests/system/runtime/backends/ast/test_z3_prover.py tests/system/runtime/backends/ast/test_z3_set_comparisons.py -q
+================= 2 failed, 114 passed, 118 warnings in 0.13s ==================
+```
+
+The failures were both parameters of
+`test_contextual_nonleaf_replacement_shares_policy_budget`: the one-node case
+incorrectly proved with a stale receipt, and the two-node case reported only
+the builder's root occurrence.
+
+GREEN checkpoint, using the same required Docker test paths from the main
+repository root:
+
+```text
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round2_green_final.txt -- tests/system/runtime/backends/ast/test_z3_prover.py tests/system/runtime/backends/ast/test_z3_set_comparisons.py -q
+====================== 116 passed, 118 warnings in 0.08s =======================
+```
+
+The fix gives the portable budget occurrence identities for AST builder
+charges. The actual builder marks each constructed or cached AST occurrence;
+the visitor consumes the same budget and skips only those already-charged
+objects. A contextual recursive replacement therefore retains the original
+builder charge and consumes every new replacement node. Direct root resolver
+replacement keeps its established replacement-tree budget behavior. The
+`m_ldc` regression now also runs the real visitor and asserts its exact receipt
+remains two occurrences after translation.
+
+Additional verification:
+
+```text
+PYTHONPATH=src pytest -q tests/unit/backends/ast/test_z3_proof_policy.py tests/unit/mba/backends/test_z3_no_global_state.py tests/unit/mba/test_native_z3_proof_template.py
+102 passed in 1.26s
+
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round2_astproxy.txt -- tests/system/runtime/test_z3_astproxy_regression.py -q
+1 passed, 122 warnings in 2.41s
+```
+
+The review-only snapshot probe is not present in the worktree; its retained
+Round 1 output artifact records `5 passed, 118 warnings`. The permanent
+context/MopSnapshot cache regressions were rerun in the required 116-test
+suite. No snapshot test file was recreated.
+
+`graphify update .` was attempted once after the changes and was blocked by
+the environment during its watch rebuild: `[Errno 1] Operation not permitted`.
+No retry was made.
+
+Final gates passed in the task worktree:
+
+```text
+ruff check [all changed source/test files]
+All checks passed!
+
+PYTHONPATH=src python3 -m py_compile [all changed source/test files]
+clean
+
+sg scan --config sgconfig.yml --report-style short
+exit 0
+
+PYTHONPATH=src lint-imports --config .importlinter
+Contracts: 14 kept, 0 broken.
+
+git diff --check
+clean
+```
+
+Production fix commit SHA: `753507859` (`fix(z3): share bounded contextual AST budget`).
+
 ## Commit
 
 Commit message: `feat(z3): bound predicate proof resources`
