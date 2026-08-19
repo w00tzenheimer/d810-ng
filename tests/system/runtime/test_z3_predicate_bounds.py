@@ -67,8 +67,6 @@ def test_three_generic_rules_keep_distinct_immutable_policies() -> None:
 
 @pytest.mark.runtime
 def test_generic_rule_configure_uses_canonical_policy_defaults(monkeypatch) -> None:
-    from types import SimpleNamespace
-
     import d810.core.z3_proof as z3_proof
     from d810.backends.ast.z3_proof_policy import Z3ProofPolicy
     from d810.core.z3_proof import Z3ProofFieldAuthority, Z3ProofPolicyAuthority
