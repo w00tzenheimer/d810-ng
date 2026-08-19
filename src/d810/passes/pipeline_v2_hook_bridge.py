@@ -32,7 +32,6 @@ from d810.passes.mba_solve import (
     mba_solve_implementation,
 )
 from d810.passes.mba_egraph import (
-    MBA_EGRAPH_IMPLEMENTATION,
     MBA_EGRAPH_PASS_ID,
     build_mba_egraph_pass,
 )
@@ -201,12 +200,8 @@ def _mba_egraph_options(config: PipelineConfig) -> dict[str, object]:
         "max_eclasses": adapter.max_eclasses,
         "max_enodes": adapter.max_enodes,
         "max_rule_firings": adapter.max_rule_firings,
-        "cross_block_constant_preparation": (
-            adapter.cross_block_constant_preparation
-        ),
-        "cross_block_def_use_preparation": (
-            adapter.cross_block_def_use_preparation
-        ),
+        "cross_block_constant_preparation": (adapter.cross_block_constant_preparation),
+        "cross_block_def_use_preparation": (adapter.cross_block_def_use_preparation),
         "learned_replay_enabled": adapter.learned_replay_enabled,
         "learned_replay_max_entries": adapter.learned_replay_max_entries,
         "learned_replay_max_bytes": adapter.learned_replay_max_bytes,
@@ -360,8 +355,16 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
             )
             continue
         if pass_id == MBA_EGRAPH_PASS_ID:
+            from d810.backends import registry
+
+            backend_registry = registry()
+            candidate = backend_registry.require_unique_implementation(
+                MBA_EGRAPH_PASS_ID,
+                install_hint="pip install d810-egglog",
+            )
+            backend_registry.activate_implementation(candidate)
             instruction_rules.append(
-                _rule_config(MBA_EGRAPH_IMPLEMENTATION, _mba_egraph_options(config))
+                _rule_config(candidate.rule_name, _mba_egraph_options(config))
             )
             continue
         if pass_id == ROTATE_IDIOM_RECOVERY_PASS_ID:

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from d810.core.config import ProjectConfiguration
+from d810.core.plugins import PassImplementationCandidate
 from d810.passes.mba_simplify import mba_simplify_pass_registry
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 
@@ -30,12 +31,32 @@ def _project(path: Path = _CONFIG) -> ProjectConfiguration:
     )
 
 
+def _patch_egraph_extension(monkeypatch, rule_name: str = "EgglogOptimizer") -> None:
+    candidate = PassImplementationCandidate(
+        pass_id="mba-egraph",
+        backend_name="egglog",
+        backend_origin="test-extension",
+        rule_modules=("test_extension.rule",),
+        rule_name=rule_name,
+    )
+
+    class _Registry:
+        def require_unique_implementation(self, pass_id, *, install_hint):
+            assert str(pass_id) == "mba-egraph"
+            assert install_hint == "pip install d810-egglog"
+            return candidate
+
+        def activate_implementation(self, selected):
+            assert selected is candidate
+
+    monkeypatch.setattr("d810.backends.registry", lambda: _Registry())
+
+
 def test_portfolio_spike_declares_fast_path_then_opt_in_egglog() -> None:
     project = _project()
 
     assert [
-        entry["pass_id"]
-        for entry in project.additional_configuration["pipeline_v2"]
+        entry["pass_id"] for entry in project.additional_configuration["pipeline_v2"]
     ] == ["mba-simplify", "mba-egraph"]
     assert "mba-solve" not in project.additional_configuration["pipeline_v2"]
     fast_options = project.additional_configuration["pipeline_v2"][0]["options"]
@@ -47,7 +68,10 @@ def test_portfolio_spike_declares_fast_path_then_opt_in_egglog() -> None:
     assert egglog_options["residual_only"] is True
 
 
-def test_hook_activation_keeps_chain_before_catalogue_before_egglog() -> None:
+def test_hook_activation_keeps_chain_before_catalogue_before_egglog(
+    monkeypatch,
+) -> None:
+    _patch_egraph_extension(monkeypatch)
     activation = pipeline_v2_hook_activation(_project())
 
     assert activation.configured_pass_ids == ("mba-simplify", "mba-egraph")
@@ -61,9 +85,10 @@ def test_hook_activation_keeps_chain_before_catalogue_before_egglog() -> None:
     assert len(implementation_names) > len(_CHAIN_IMPLEMENTATIONS) + 1
 
 
-def test_portfolio_spike_loads_without_a_solver_extension() -> None:
+def test_portfolio_spike_loads_without_a_solver_extension(monkeypatch) -> None:
     """The checked-in core profile never resolves the optional mba-solve stage."""
 
+    _patch_egraph_extension(monkeypatch)
     activation = pipeline_v2_hook_activation(_project())
 
     assert activation.enabled is True
@@ -84,9 +109,12 @@ def test_hodur_certificate_is_registered_but_not_a_portfolio_fast_path() -> None
         assert "sub-complement-mask-hodur-1" not in transforms
 
 
-def test_telemetry_profile_keeps_the_same_order_but_never_enables_egglog() -> None:
+def test_telemetry_profile_keeps_the_same_order_but_never_enables_egglog(
+    monkeypatch,
+) -> None:
     """Three milliseconds is a separate measurement lane, never an optimizer SLA."""
 
+    _patch_egraph_extension(monkeypatch)
     activation = pipeline_v2_hook_activation(_project(_TELEMETRY_CONFIG))
 
     assert activation.configured_pass_ids == ("mba-simplify", "mba-egraph")
@@ -98,7 +126,10 @@ def test_telemetry_profile_keeps_the_same_order_but_never_enables_egglog() -> No
     assert "cross_block_constant_preparation" not in egglog_options
 
 
-def test_deep_profile_is_explicitly_bounded_and_never_the_default_lane() -> None:
+def test_deep_profile_is_explicitly_bounded_and_never_the_default_lane(
+    monkeypatch,
+) -> None:
+    _patch_egraph_extension(monkeypatch)
     project = _project(_DEEP_CONFIG)
     activation = pipeline_v2_hook_activation(project)
     egglog_options = project.additional_configuration["pipeline_v2"][1]["options"]

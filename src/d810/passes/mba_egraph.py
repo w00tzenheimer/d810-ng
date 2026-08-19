@@ -12,6 +12,7 @@ from d810.core.pass_editor_spec import (
     FieldEditorSpec,
     PassEditorSpec,
 )
+from d810.core.plugins import PassImplementationCandidate
 from d810.core.typing import Mapping
 from d810.mba.egraph_contracts import MbaEgraphOptions as _MbaEgraphOptions
 from d810.ir.maturity import IRMaturity
@@ -27,7 +28,6 @@ from d810.passes.registry import PassRegistry
 
 MBA_EGRAPH_PASS_ID = PassId.MBA_EGRAPH
 MBA_EGRAPH_STAGE_ID = "mba-egraph"
-MBA_EGRAPH_IMPLEMENTATION = "EgglogOptimizer"
 DEFAULT_MATURITIES = ("GLOBAL_OPTIMIZED",)
 DEFAULT_FAMILIES = ("add",)
 DEFAULT_LEARNED_REPLAY_ENABLED = False
@@ -77,6 +77,37 @@ class MbaEgraphPass(PipelinePass):
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
         return PassResult()
+
+
+def mba_egraph_implementation() -> PassImplementationCandidate | None:
+    """Return the one compatible ``mba-egraph`` declaration, if unique.
+
+    Registration is declaration-only: it must keep the public pass visible
+    when the optional extension is absent, and it must not choose between
+    conflicting declarations.  Selected projects resolve strictly in the
+    hook bridge instead.
+    """
+    from d810.backends import registry
+
+    candidates = registry().implementation_candidates_for(MBA_EGRAPH_PASS_ID)
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
+def mba_egraph_stages() -> tuple[ExecutionStageDescriptor, ...]:
+    """Declare the live stage only for one compatible extension candidate."""
+    candidate = mba_egraph_implementation()
+    if candidate is None:
+        return ()
+    return (
+        ExecutionStageDescriptor(
+            pass_id=MBA_EGRAPH_PASS_ID,
+            stage_id=MBA_EGRAPH_STAGE_ID,
+            pipeline=ExecutionPipeline.INSTRUCTION,
+            implementation_name=candidate.rule_name,
+        ),
+    )
 
 
 def parse_mba_egraph_options(
@@ -201,11 +232,17 @@ def parse_mba_egraph_options(
         raise PipelineConfigError(
             "mba-egraph options.learned_replay_enabled must be boolean"
         )
-    if type(learned_replay_max_entries) is not int or not 1 <= learned_replay_max_entries <= MAX_LEARNED_REPLAY_ENTRIES:
+    if (
+        type(learned_replay_max_entries) is not int
+        or not 1 <= learned_replay_max_entries <= MAX_LEARNED_REPLAY_ENTRIES
+    ):
         raise PipelineConfigError(
             "mba-egraph options.learned_replay_max_entries must be an integer from 1 to 4096"
         )
-    if type(learned_replay_max_bytes) is not int or not 1 <= learned_replay_max_bytes <= MAX_LEARNED_REPLAY_BYTES:
+    if (
+        type(learned_replay_max_bytes) is not int
+        or not 1 <= learned_replay_max_bytes <= MAX_LEARNED_REPLAY_BYTES
+    ):
         raise PipelineConfigError(
             "mba-egraph options.learned_replay_max_bytes must be an integer from 1 to 16777216"
         )
@@ -563,26 +600,20 @@ def register_mba_egraph_pass(registry: PassRegistry) -> PassRegistry:
                 "maturities": list(DEFAULT_MATURITIES),
             },
         ),
-        stages=(
-            ExecutionStageDescriptor(
-                pass_id=MBA_EGRAPH_PASS_ID,
-                stage_id=MBA_EGRAPH_STAGE_ID,
-                pipeline=ExecutionPipeline.INSTRUCTION,
-                implementation_name=MBA_EGRAPH_IMPLEMENTATION,
-            ),
-        ),
+        stages=mba_egraph_stages(),
         editor_spec=mba_egraph_editor_spec(),
     )
     return registry
 
 
 __all__ = [
-    "MBA_EGRAPH_IMPLEMENTATION",
     "MBA_EGRAPH_FAMILIES",
     "MBA_EGRAPH_PASS_ID",
     "MBA_EGRAPH_STAGE_ID",
     "build_mba_egraph_pass",
+    "mba_egraph_implementation",
     "mba_egraph_editor_spec",
+    "mba_egraph_stages",
     "parse_mba_egraph_options",
     "register_mba_egraph_pass",
 ]

@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from d810.core.config import ProjectConfiguration
 from d810.core.pass_editor_spec import FieldControlKind
 from d810.core.pass_ids import PassId
+from d810.core.plugins import (
+    PassImplementationAmbiguous,
+    PassImplementationCandidate,
+    PassImplementationMissing,
+)
 from d810.mba.egraph_contracts import MbaEgraphOptions
 from d810.passes.mba_egraph import (
-    MBA_EGRAPH_IMPLEMENTATION,
     MBA_EGRAPH_PASS_ID,
     MbaEgraphPass,
     build_mba_egraph_pass,
+    mba_egraph_implementation,
+    mba_egraph_stages,
     parse_mba_egraph_options,
     register_mba_egraph_pass,
 )
@@ -27,6 +34,37 @@ def _config(options: dict | None = None) -> PipelineConfig:
         pass_id=MBA_EGRAPH_PASS_ID,
         options=options if options is not None else {},
     )
+
+
+def _candidate(rule_name: str = "EgglogOptimizer") -> PassImplementationCandidate:
+    return PassImplementationCandidate(
+        pass_id=str(MBA_EGRAPH_PASS_ID),
+        backend_name="egglog",
+        backend_origin="test-extension",
+        rule_modules=("test_extension.rule",),
+        rule_name=rule_name,
+    )
+
+
+class _FakeImplementationRegistry:
+    def __init__(self, candidates: tuple[PassImplementationCandidate, ...] = ()):
+        self.candidates = candidates
+        self.activated = []
+
+    def implementation_candidates_for(self, pass_id):
+        assert str(pass_id) == str(MBA_EGRAPH_PASS_ID)
+        return self.candidates
+
+    def require_unique_implementation(self, pass_id, *, install_hint):
+        candidates = self.implementation_candidates_for(pass_id)
+        if not candidates:
+            raise PassImplementationMissing(str(pass_id), install_hint)
+        if len(candidates) > 1:
+            raise PassImplementationAmbiguous(str(pass_id), candidates)
+        return candidates[0]
+
+    def activate_implementation(self, candidate):
+        self.activated.append(candidate)
 
 
 class TestMbaEgraphOptions(unittest.TestCase):
@@ -49,6 +87,7 @@ class TestMbaEgraphOptions(unittest.TestCase):
                 options.max_enodes,
                 options.max_rule_firings,
                 options.cross_block_constant_preparation,
+                options.cross_block_def_use_preparation,
                 options.learned_replay_enabled,
                 options.learned_replay_max_entries,
                 options.learned_replay_max_bytes,
@@ -69,6 +108,7 @@ class TestMbaEgraphOptions(unittest.TestCase):
                 64,
                 128,
                 32,
+                False,
                 False,
                 False,
                 256,
@@ -96,6 +136,7 @@ class TestMbaEgraphOptions(unittest.TestCase):
                     "max_enodes": 192,
                     "max_rule_firings": 48,
                     "cross_block_constant_preparation": True,
+                    "cross_block_def_use_preparation": True,
                     "learned_replay_enabled": True,
                     "learned_replay_max_entries": 64,
                     "learned_replay_max_bytes": 1_048_576,
@@ -120,6 +161,7 @@ class TestMbaEgraphOptions(unittest.TestCase):
                 built.max_enodes,
                 built.max_rule_firings,
                 built.cross_block_constant_preparation,
+                built.cross_block_def_use_preparation,
                 built.learned_replay_enabled,
                 built.learned_replay_max_entries,
                 built.learned_replay_max_bytes,
@@ -140,6 +182,7 @@ class TestMbaEgraphOptions(unittest.TestCase):
                 96,
                 192,
                 48,
+                True,
                 True,
                 True,
                 64,
@@ -254,11 +297,16 @@ class TestMbaEgraphOptions(unittest.TestCase):
 
 
 class TestMbaEgraphRegistration(unittest.TestCase):
-    def test_public_instruction_stage_names_the_live_rule_and_exposes_all_options(self):
-        registry = register_mba_egraph_pass(PassRegistry())
+    def test_public_instruction_stage_names_the_declared_rule_and_exposes_all_options(
+        self,
+    ):
+        candidate = _candidate("DeclaredEgglogOptimizer")
+        backend_registry = _FakeImplementationRegistry((candidate,))
+        with patch("d810.backends.registry", return_value=backend_registry):
+            registry = register_mba_egraph_pass(PassRegistry())
         descriptor = registry.stages_for(MBA_EGRAPH_PASS_ID)[0]
 
-        self.assertEqual(descriptor.implementation_name, MBA_EGRAPH_IMPLEMENTATION)
+        self.assertEqual(descriptor.implementation_name, candidate.rule_name)
         self.assertIn(MBA_EGRAPH_PASS_ID, registry.public_pass_ids())
         editor = registry.editor_spec_for(MBA_EGRAPH_PASS_ID)
         self.assertIsNotNone(editor)
@@ -301,6 +349,41 @@ class TestMbaEgraphRegistration(unittest.TestCase):
         )
         self.assertTrue(proof.read_only)
 
+    def test_absent_extension_keeps_public_pass_and_editor_visible(self):
+        backend_registry = _FakeImplementationRegistry()
+        with patch("d810.backends.registry", return_value=backend_registry):
+            registry = register_mba_egraph_pass(PassRegistry())
+
+        self.assertEqual(registry.stages_for(MBA_EGRAPH_PASS_ID), ())
+        self.assertIn(MBA_EGRAPH_PASS_ID, registry.public_pass_ids())
+        self.assertIsNotNone(registry.editor_spec_for(MBA_EGRAPH_PASS_ID))
+
+    def test_declaration_helper_returns_only_a_unique_candidate(self):
+        candidate = _candidate("DeclaredEgglogOptimizer")
+        with patch(
+            "d810.backends.registry",
+            return_value=_FakeImplementationRegistry((candidate,)),
+        ):
+            self.assertEqual(mba_egraph_implementation(), candidate)
+
+        for candidates in ((), (candidate, _candidate("OtherOptimizer"))):
+            with self.subTest(candidates=candidates):
+                with patch(
+                    "d810.backends.registry",
+                    return_value=_FakeImplementationRegistry(candidates),
+                ):
+                    self.assertIsNone(mba_egraph_implementation())
+
+    def test_declaration_only_stage_helper_is_empty_for_zero_or_multiple(self):
+        candidate = _candidate("DeclaredEgglogOptimizer")
+        for candidates in ((), (candidate, _candidate("OtherOptimizer"))):
+            with self.subTest(candidates=candidates):
+                with patch(
+                    "d810.backends.registry",
+                    return_value=_FakeImplementationRegistry(candidates),
+                ):
+                    self.assertEqual(mba_egraph_stages(), ())
+
     def test_hook_bridge_forwards_all_validated_options(self):
         project = ProjectConfiguration(
             path=Path("mba-egraph.runtime-config-v2.json"),
@@ -332,12 +415,16 @@ class TestMbaEgraphRegistration(unittest.TestCase):
             },
         )
 
-        activation = pipeline_v2_hook_activation(project)
+        candidate = _candidate("DeclaredEgglogOptimizer")
+        backend_registry = _FakeImplementationRegistry((candidate,))
+        with patch("d810.backends.registry", return_value=backend_registry):
+            activation = pipeline_v2_hook_activation(project)
 
         self.assertEqual(
             [rule.name for rule in activation.instruction_rules],
-            [MBA_EGRAPH_IMPLEMENTATION],
+            [candidate.rule_name],
         )
+        self.assertEqual(backend_registry.activated, [candidate])
         rule = activation.instruction_rules[0]
         self.assertEqual(
             rule.config,
@@ -365,3 +452,69 @@ class TestMbaEgraphRegistration(unittest.TestCase):
                 "maturities": ["GLOBAL_ANALYZED"],
             },
         )
+
+    def test_selected_absent_extension_is_an_install_error(self):
+        project = ProjectConfiguration(
+            path=Path("mba-egraph.missing.runtime-config-v2.json"),
+            additional_configuration={
+                "pipeline_v2_mode": "config-v2",
+                "pipeline_v2": [{"pass_id": PassId.MBA_EGRAPH, "options": {}}],
+            },
+        )
+
+        with patch(
+            "d810.backends.registry",
+            return_value=_FakeImplementationRegistry(),
+        ):
+            with self.assertRaisesRegex(
+                PassImplementationMissing,
+                "install d810-egglog",
+            ):
+                pipeline_v2_hook_activation(project)
+
+    def test_ambiguous_selected_extensions_fail_before_rule_config(self):
+        project = ProjectConfiguration(
+            path=Path("mba-egraph.ambiguous.runtime-config-v2.json"),
+            additional_configuration={
+                "pipeline_v2_mode": "config-v2",
+                "pipeline_v2": [{"pass_id": PassId.MBA_EGRAPH, "options": {}}],
+            },
+        )
+        candidates = (_candidate("FirstOptimizer"), _candidate("SecondOptimizer"))
+        with patch(
+            "d810.backends.registry",
+            return_value=_FakeImplementationRegistry(candidates),
+        ):
+            with patch(
+                "d810.passes.pipeline_v2_hook_bridge._rule_config",
+                side_effect=AssertionError("rule config emitted before resolution"),
+            ):
+                with self.assertRaises(PassImplementationAmbiguous):
+                    pipeline_v2_hook_activation(project)
+
+    def test_selected_extension_uses_strict_registry_activation(self):
+        project = ProjectConfiguration(
+            path=Path("mba-egraph.strict-activation.runtime-config-v2.json"),
+            additional_configuration={
+                "pipeline_v2_mode": "config-v2",
+                "pipeline_v2": [{"pass_id": PassId.MBA_EGRAPH, "options": {}}],
+            },
+        )
+        candidate = _candidate("DeclaredEgglogOptimizer")
+        activation_calls = []
+
+        class _StrictRegistry(_FakeImplementationRegistry):
+            def __init__(self):
+                super().__init__((candidate,))
+
+            def activate_implementation(self, selected):
+                activation_calls.append(selected)
+
+        with patch("d810.backends.registry", return_value=_StrictRegistry()):
+            with patch(
+                "d810.backends.load_extension_rule_for_candidate",
+                side_effect=AssertionError("raw lookup bypassed strict activation"),
+            ):
+                pipeline_v2_hook_activation(project)
+
+        self.assertEqual(activation_calls, [candidate])
