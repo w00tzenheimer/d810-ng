@@ -173,6 +173,7 @@ def _fixed_rotate_identity(rule: object) -> tuple[object, ...]:
         proof_verdict,
         proof_widths,
         aliases,
+        claimed_fingerprint,
     )
 
 
