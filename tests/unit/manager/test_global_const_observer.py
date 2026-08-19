@@ -66,7 +66,7 @@ def test_disabled_preparation_does_not_observe_or_queue(monkeypatch) -> None:
     )
     observer = _observer(enabled=False)
 
-    assert observer.observe(_Mba(_Block(instruction)), 17) is None
+    assert observer.observe(_Mba(_Block(instruction)), 17, generation=1) is None
     assert calls == []
     assert observer.pending_reason is None
 
@@ -81,7 +81,7 @@ def test_disabled_dynamic_discovery_does_not_observe_or_queue(monkeypatch) -> No
     )
     observer = _observer(discover=False)
 
-    observer.observe(_Mba(_Block(instruction)), 17)
+    observer.observe(_Mba(_Block(instruction)), 17, generation=1)
 
     assert calls == []
 
@@ -96,7 +96,7 @@ def test_only_exact_calls_maturity_is_observed(monkeypatch) -> None:
     )
     observer = _observer()
 
-    observer.observe(_Mba(_Block(instruction)), 18)
+    observer.observe(_Mba(_Block(instruction)), 18, generation=1)
 
     assert calls == []
 
@@ -119,7 +119,7 @@ def test_calls_traversal_is_deterministic_and_queues_exact_accesses(monkeypatch)
     )
     observer = _observer()
 
-    observer.observe(_Mba(_Block(first, second), _Block(third)), 17)
+    observer.observe(_Mba(_Block(first, second), _Block(third)), 17, generation=1)
 
     assert [access.instruction_ea for access, _ in queued] == [1, 2, 3]
     assert [function_ea for _, function_ea in queued] == [0x401000] * 3
@@ -143,8 +143,8 @@ def test_duplicate_event_is_deduplicated_for_same_function_generation(monkeypatc
     observer = _observer()
     mba = _Mba(_Block(instruction))
 
-    observer.observe(mba, 17)
-    observer.observe(mba, 17)
+    observer.observe(mba, 17, generation=1)
+    observer.observe(mba, 17, generation=1)
 
     assert len(queued) == 1
 
@@ -163,6 +163,110 @@ def test_queue_failure_abstains_without_restart_or_mutation(monkeypatch) -> None
     )
     observer = _observer()
 
-    assert observer.observe(_Mba(_Block(instruction)), 17) is None
+    assert observer.observe(_Mba(_Block(instruction)), 17, generation=1) is None
     assert observer.pending_reason is None
     assert observer.restart_requested is False
+
+
+def test_generation_rotation_preserves_durable_pending_and_reason(monkeypatch) -> None:
+    instruction = _Instruction(1)
+    durable_pending = [
+        SimpleNamespace(
+            function_ea=0x401000,
+            item_head=0x500001,
+            item_end=0x500021,
+            before=SimpleNamespace(),
+            after=SimpleNamespace(),
+        )
+    ]
+    queued: list[object] = []
+    monkeypatch.setattr(
+        observer_module,
+        "discover_dynamic_global_table_access",
+        lambda value: _access(value),
+    )
+    monkeypatch.setattr(
+        observer_module,
+        "annotate_global_table_access",
+        lambda access, *, function_ea: queued.append(access)
+        or SimpleNamespace(queued_count=1 if len(queued) == 1 else 0),
+    )
+    observer = GlobalConstObserver(
+        preparation_options=ConstantPreparationOptions(enabled=True),
+        database_identity="idb-a",
+        calls_maturity=17,
+        pending_proposals=lambda: tuple(durable_pending),
+    )
+
+    observer.observe(_Mba(_Block(instruction)), 17, generation=1)
+    observer.observe(_Mba(_Block(instruction)), 17, generation=2)
+
+    assert len(queued) == 2
+    assert observer.pending_reason == "next preparation round"
+    assert observer.pending_identities
+
+
+def test_acknowledged_proposal_is_rediscovered_in_new_generation(monkeypatch) -> None:
+    instruction = _Instruction(1)
+    queued: list[object] = []
+    monkeypatch.setattr(
+        observer_module,
+        "discover_dynamic_global_table_access",
+        lambda value: _access(value),
+    )
+    monkeypatch.setattr(
+        observer_module,
+        "annotate_global_table_access",
+        lambda access, *, function_ea: queued.append(access)
+        or SimpleNamespace(queued_count=1),
+    )
+    observer = _observer()
+    mba = _Mba(_Block(instruction))
+
+    observer.observe(mba, 17, generation=4)
+    observer.observe(mba, 17, generation=4)
+    observer.observe(mba, 17, generation=5)
+
+    assert len(queued) == 2
+
+
+def test_generation_is_required_and_mba_storage_identity_is_not_used(monkeypatch) -> None:
+    instruction = _Instruction(1)
+    monkeypatch.setattr(
+        observer_module,
+        "discover_dynamic_global_table_access",
+        lambda value: _access(value),
+    )
+    observer = _observer()
+
+    with pytest.raises(ValueError, match="generation"):
+        observer.observe(_Mba(_Block(instruction)), 17, generation=None)
+
+
+def test_observer_snapshot_restores_policy_and_generation_dedupe(monkeypatch) -> None:
+    instruction = _Instruction(1)
+    monkeypatch.setattr(
+        observer_module,
+        "discover_dynamic_global_table_access",
+        lambda value: _access(value),
+    )
+    monkeypatch.setattr(
+        observer_module,
+        "annotate_global_table_access",
+        lambda access, *, function_ea: SimpleNamespace(queued_count=1),
+    )
+    observer = _observer()
+    observer.observe(_Mba(_Block(instruction)), 17, generation=3)
+    observer.pending_reason = "next preparation round"
+    snapshot = observer.snapshot_state()
+
+    observer.configure(ConstantPreparationOptions(enabled=False))
+    observer._seen.clear()
+    observer._current_generation.clear()
+    observer.pending_reason = None
+    observer.restore_state(snapshot)
+
+    assert observer.preparation_options.enabled is True
+    assert observer.pending_reason == "next preparation round"
+    assert observer._seen == set(snapshot.seen)
+    assert observer._current_generation == {("idb-a", 0x401000): 3}

@@ -56,6 +56,7 @@ class HexRaysPostD810Runtime:
     handoff_detector: Callable[..., Any] | None = None
     environ: Mapping[str, str] | None = None
     global_const_observer: Any | None = None
+    mba_generation_provider: Callable[[int], int] | None = None
 
     def _maturity_name(self, maturity: int) -> str:
         return self.maturity_name_provider(int(maturity))
@@ -73,12 +74,17 @@ class HexRaysPostD810Runtime:
         ``POST_D810_CAPTURE`` and queues only reversible preparation proposals.
         """
 
-        del snapshot
         observer = self.global_const_observer
         if observer is None:
             return
         try:
-            observer.observe(mba, maturity)
+            del snapshot
+            generation_provider = self.mba_generation_provider
+            if not callable(generation_provider):
+                return
+            function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            generation = generation_provider(function_ea)
+            observer.observe(mba, maturity, generation=generation)
         except Exception:
             # Observation is optional enrichment.  A type/proposal backend
             # failure must not affect the decompilation callback.

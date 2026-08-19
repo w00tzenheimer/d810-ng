@@ -381,6 +381,26 @@ class D810State(metaclass=SingletonMeta):
             "started": manager.started,
             "started_optimizer_state": manager.capture_started_optimizer_runtime_state(),
         }
+        preparation_controller = getattr(manager, "pre_hex_preparation", None)
+        controller_snapshot = None
+        snapshot_controller = getattr(preparation_controller, "snapshot_state", None)
+        if callable(snapshot_controller):
+            controller_snapshot = snapshot_controller()
+        post_d810_runtime = getattr(manager, "_post_d810_runtime", None)
+        global_const_observer = getattr(post_d810_runtime, "global_const_observer", None)
+        observer_snapshot = None
+        snapshot_observer = getattr(global_const_observer, "snapshot_state", None)
+        if callable(snapshot_observer):
+            observer_snapshot = snapshot_observer()
+        captured["manager"].update(
+            {
+                "preparation_controller": preparation_controller,
+                "preparation_controller_state": controller_snapshot,
+                "post_d810_runtime": post_d810_runtime,
+                "global_const_observer": global_const_observer,
+                "global_const_observer_state": observer_snapshot,
+            }
+        )
         return captured
 
     def _restore_runtime_activation_state(
@@ -427,6 +447,25 @@ class D810State(metaclass=SingletonMeta):
         manager._constant_preparation_options = previous[  # type: ignore[index]
             "constant_preparation_options"
         ]
+        # Project activation can reconfigure these lanes before a later
+        # adapter/scope failure.  Restore their live policy and callback
+        # suppression state along with the manager's scalar fields.
+        manager.pre_hex_preparation = previous["preparation_controller"]  # type: ignore[index]
+        manager._post_d810_runtime = previous["post_d810_runtime"]  # type: ignore[index]
+        controller = previous["preparation_controller"]  # type: ignore[index]
+        controller_state = previous["preparation_controller_state"]  # type: ignore[index]
+        if controller is not None and controller_state is not None:
+            attempt(
+                "preparation controller",
+                lambda: controller.restore_state(controller_state),
+            )
+        observer = previous["global_const_observer"]  # type: ignore[index]
+        observer_state = previous["global_const_observer_state"]  # type: ignore[index]
+        if observer is not None and observer_state is not None:
+            attempt(
+                "global const observer",
+                lambda: observer.restore_state(observer_state),
+            )
         if previous["started"]:  # type: ignore[index]
             attempt(
                 "started optimizer adapters",

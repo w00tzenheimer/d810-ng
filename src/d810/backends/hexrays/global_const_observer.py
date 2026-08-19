@@ -39,13 +39,23 @@ def annotate_global_table_access(access: object, *, function_ea: int) -> object:
     return annotate(access, function_ea=function_ea)
 
 
+def pending_global_const_proposals() -> tuple[object, ...]:
+    """Read the durable proposal queue without importing IDA at module load."""
+
+    from d810.backends.hexrays.global_const_annotation import (
+        pending_global_const_proposals as pending,
+    )
+
+    return pending()
+
+
 @dataclass(frozen=True, slots=True)
 class GlobalConstProposalIdentity:
     """Identity of one observation in one database/function generation."""
 
     database_identity: str
     function_ea: int
-    generation: object
+    generation: int | None
     item_head: int
     item_end: int
     element_size: int
@@ -60,6 +70,16 @@ class _DisabledPreparationOptions:
     discover_bounded_tables: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class GlobalConstObserverRuntimeState:
+    """Rollback snapshot for observer policy and callback dedupe state."""
+
+    preparation_options: object
+    seen: frozenset[GlobalConstProposalIdentity]
+    current_generations: tuple[tuple[str, int, int], ...]
+    pending_reason: str | None
+
+
 class GlobalConstObserver:
     """Queue bounded-table const proposals without entering mutation paths."""
 
@@ -71,15 +91,16 @@ class GlobalConstObserver:
         calls_maturity: int | None = None,
         discover: Callable[[object], object | None] | None = None,
         queue: Callable[..., object] | None = None,
+        pending_proposals: Callable[[], tuple[object, ...]] | None = None,
     ) -> None:
         self.preparation_options = self._validate_options(preparation_options)
         self.database_identity = str(database_identity)
         self._calls_maturity = calls_maturity
         self._discover = discover or discover_dynamic_global_table_access
         self._queue = queue or annotate_global_table_access
+        self._pending_proposals = pending_proposals or pending_global_const_proposals
         self._seen: set[GlobalConstProposalIdentity] = set()
-        self._current_generation: dict[tuple[str, int], object] = {}
-        self._pending_identities: set[GlobalConstProposalIdentity] = set()
+        self._current_generation: dict[tuple[str, int], int] = {}
         self.pending_reason: str | None = None
 
     @property
@@ -90,9 +111,32 @@ class GlobalConstObserver:
 
     @property
     def pending_identities(self) -> tuple[GlobalConstProposalIdentity, ...]:
+        """Return pending identities from the durable queue, not a shadow set."""
+
+        try:
+            proposals = tuple(self._pending_proposals())
+        except Exception:
+            logger.debug("durable global-const proposal lookup failed", exc_info=True)
+            return ()
+        identities: set[GlobalConstProposalIdentity] = set()
+        for proposal in proposals:
+            try:
+                identities.add(
+                    GlobalConstProposalIdentity(
+                        database_identity=self.database_identity,
+                        function_ea=int(proposal.function_ea),
+                        generation=None,
+                        item_head=int(proposal.item_head),
+                        item_end=int(proposal.item_end),
+                        element_size=0,
+                        element_count=0,
+                    )
+                )
+            except (AttributeError, TypeError, ValueError):
+                logger.debug("malformed durable global-const proposal", exc_info=True)
         return tuple(
             sorted(
-                self._pending_identities,
+                identities,
                 key=lambda identity: (
                     identity.function_ea,
                     identity.item_head,
@@ -102,6 +146,48 @@ class GlobalConstObserver:
                 ),
             )
         )
+
+    def snapshot_runtime_state(self) -> GlobalConstObserverRuntimeState:
+        """Capture live options and per-generation suppression for rollback."""
+
+        return GlobalConstObserverRuntimeState(
+            preparation_options=self.preparation_options,
+            seen=frozenset(self._seen),
+            current_generations=tuple(
+                sorted(
+                    (
+                        database_identity,
+                        function_ea,
+                        generation,
+                    )
+                    for (
+                        database_identity,
+                        function_ea,
+                    ), generation in self._current_generation.items()
+                )
+            ),
+            pending_reason=self.pending_reason,
+        )
+
+    def restore_runtime_state(self, state: GlobalConstObserverRuntimeState) -> None:
+        """Restore a live observer snapshot captured before project activation."""
+
+        if not isinstance(state, GlobalConstObserverRuntimeState):
+            raise TypeError("state must be GlobalConstObserverRuntimeState")
+        self.preparation_options = self._validate_options(state.preparation_options)
+        self._seen = set(state.seen)
+        self._current_generation = {
+            (database_identity, function_ea): generation
+            for database_identity, function_ea, generation in state.current_generations
+        }
+        self.pending_reason = state.pending_reason
+
+    # Keep the snapshot protocol discoverable to manager-owned rollback code.
+    snapshot_state = snapshot_runtime_state
+    restore_state = restore_runtime_state
+
+    def _durable_pending_exists(self) -> bool:
+        return bool(self.pending_identities)
 
     def configure(self, preparation_options: object | bool | None) -> None:
         """Replace the immutable preparation policy at a manager boundary."""
@@ -151,21 +237,6 @@ class GlobalConstObserver:
             return False
 
     @staticmethod
-    def _generation_for(mba: object) -> object:
-        """Use the live MBA generation identity, never a process-global EA set."""
-
-        for name in ("this", "generation", "_generation"):
-            value = getattr(mba, name, None)
-            if value is None or value == 0:
-                continue
-            try:
-                hash(value)
-            except TypeError:
-                return repr(value)
-            return value
-        return id(mba)
-
-    @staticmethod
     def _function_ea_for(mba: object) -> int:
         try:
             return int(getattr(mba, "entry_ea", 0) or 0)
@@ -196,7 +267,7 @@ class GlobalConstObserver:
         *,
         database_identity: str,
         function_ea: int,
-        generation: object,
+        generation: int,
     ) -> GlobalConstProposalIdentity:
         def _int(name: str) -> int:
             try:
@@ -214,7 +285,7 @@ class GlobalConstObserver:
             element_count=_int("element_count"),
         )
 
-    def _rotate_generation(self, function_ea: int, generation: object) -> None:
+    def _rotate_generation(self, function_ea: int, generation: int) -> None:
         scope = (self.database_identity, function_ea)
         previous = self._current_generation.get(scope)
         if previous == generation:
@@ -230,17 +301,6 @@ class GlobalConstObserver:
                     and identity.generation == previous
                 )
             }
-            self._pending_identities = {
-                identity
-                for identity in self._pending_identities
-                if not (
-                    identity.database_identity == self.database_identity
-                    and identity.function_ea == function_ea
-                    and identity.generation == previous
-                )
-            }
-            if not self._pending_identities:
-                self.pending_reason = None
 
     @staticmethod
     def _is_new_queue(report: object) -> bool:
@@ -256,9 +316,21 @@ class GlobalConstObserver:
         except (TypeError, ValueError):
             return False
 
-    def observe(self, mba: object, maturity: object) -> None:
+    def observe(
+        self,
+        mba: object,
+        maturity: object,
+        *,
+        generation: int | None = None,
+    ) -> None:
         """Observe one post-D810 MBA at exactly the CALLS maturity."""
 
+        if generation is None:
+            raise ValueError("generation must be supplied by the lifecycle owner")
+        if isinstance(generation, bool) or not isinstance(generation, int):
+            raise TypeError("generation must be an int")
+        if generation < 0:
+            raise ValueError("generation must be non-negative")
         options = self.preparation_options
         if not options.enabled or not options.discover_bounded_tables:
             return None
@@ -266,7 +338,6 @@ class GlobalConstObserver:
             return None
 
         function_ea = self._function_ea_for(mba)
-        generation = self._generation_for(mba)
         self._rotate_generation(function_ea, generation)
         for instruction in self._instructions(mba):
             try:
@@ -302,8 +373,9 @@ class GlobalConstObserver:
                 continue
             self._seen.add(identity)
             if self._is_new_queue(report):
-                self._pending_identities.add(identity)
                 self.pending_reason = PENDING_PREPARATION_REASON
+        if self._durable_pending_exists():
+            self.pending_reason = PENDING_PREPARATION_REASON
         return None
 
 
@@ -316,7 +388,9 @@ __all__ = [
     "GlobalConstObservationSubscriber",
     "GlobalConstObserver",
     "GlobalConstProposalIdentity",
+    "GlobalConstObserverRuntimeState",
     "PENDING_PREPARATION_REASON",
     "annotate_global_table_access",
     "discover_dynamic_global_table_access",
+    "pending_global_const_proposals",
 ]

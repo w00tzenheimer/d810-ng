@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import platform
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,6 +27,7 @@ from d810.backends.hexrays.global_const_annotation import (
 from d810.backends.ida.type_serialization import capture_serialized_tinfo
 from d810.capabilities.idb_preparation import PreparationTransactionId
 from d810.core.persistence import Netnode
+from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
 
 
 def _get_default_binary() -> str:
@@ -121,6 +123,26 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
 
 class TestGlobalConstAnnotation:
     binary_name = _get_default_binary()
+
+    @pytest.mark.ida_required
+    def test_post_capture_passes_manager_generation_explicitly(self) -> None:
+        calls: list[tuple[object, object, int]] = []
+        observer = SimpleNamespace(
+            observe=lambda mba, maturity, *, generation: calls.append(
+                (mba, maturity, generation)
+            )
+        )
+        mba = SimpleNamespace(entry_ea=0x401000, qty=0)
+        runtime = HexRaysPostD810Runtime(
+            preanalysis_runtime=None,
+            block_optimizer=SimpleNamespace(cfg_rules=()),
+            global_const_observer=observer,
+            mba_generation_provider=lambda function_ea: function_ea + 9,
+        )
+
+        runtime.observe_global_const_types(mba, 17)
+
+        assert calls == [(mba, 17, 0x401009)]
 
     @pytest.mark.ida_required
     def test_runtime_index_still_discovers_complete_lookup_table(

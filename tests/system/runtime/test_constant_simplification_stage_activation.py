@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,7 @@ from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
 from d810.passes.constant_simplification import (
     constant_simplification_provider_maturities,
 )
+from d810.passes.constant_simplification_options import ConstantPreparationOptions
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 
 
@@ -515,6 +517,62 @@ def test_started_activation_restores_scope_caches_and_adapter_context_after_late
         )
         _prepare_started_manager(state)
         manager = state.manager
+        previous_controller = manager.pre_hex_preparation
+        previous_post_runtime = manager._post_d810_runtime
+
+        class LivePreparationController:
+            def __init__(self, options):
+                self.options = options
+                self.pending = ("pending-proposal",)
+
+            def configure_preparation_options(self, options):
+                self.options = options
+
+            def snapshot_state(self):
+                return self.options, self.pending
+
+            def restore_state(self, snapshot):
+                self.options, self.pending = snapshot
+
+        class LiveObservationSubscriber:
+            def __init__(self, options):
+                self.options = options
+                self.pending_reason = "next preparation round"
+                self.dedupe = {("idb-a", 0x401000, 11)}
+                self.pending = ("pending-proposal",)
+
+            def configure(self, options):
+                self.options = options
+
+            def snapshot_state(self):
+                return (
+                    self.options,
+                    self.pending_reason,
+                    frozenset(self.dedupe),
+                    self.pending,
+                )
+
+            def restore_state(self, snapshot):
+                (
+                    self.options,
+                    self.pending_reason,
+                    dedupe,
+                    self.pending,
+                ) = snapshot
+                self.dedupe = set(dedupe)
+
+        baseline_options = ConstantPreparationOptions(enabled=True)
+        live_controller = LivePreparationController(baseline_options)
+        live_observer = LiveObservationSubscriber(baseline_options)
+        manager.pre_hex_preparation = live_controller
+        manager._post_d810_runtime = SimpleNamespace(
+            global_const_observer=live_observer
+        )
+        before_preparation_lane = (
+            live_controller.options,
+            live_controller.pending,
+        )
+        before_observation_lane = live_observer.snapshot_state()
         scope = manager.execution_scope_service
         scope._stages = ("baseline-stage",)
         scope._generation = 17
@@ -544,10 +602,17 @@ def test_started_activation_restores_scope_caches_and_adapter_context_after_late
             )
 
         monkeypatch.setattr(manager, "emit_execution_scope_invalidation", invalidate)
+
+        def fail_after_live_lane_drift():
+            live_observer.dedupe.clear()
+            live_observer.pending_reason = None
+            live_observer.pending = ()
+            raise RuntimeError("late scope compilation failure")
+
         monkeypatch.setattr(
             manager,
             "_compile_execution_scope",
-            lambda: (_ for _ in ()).throw(RuntimeError("late scope compilation failure")),
+            fail_after_live_lane_drift,
         )
         try:
             with pytest.raises(RuntimeError, match="late scope compilation failure"):
@@ -563,8 +628,15 @@ def test_started_activation_restores_scope_caches_and_adapter_context_after_late
             assert scope._metadata_cache == before_metadata_cache
             assert instruction.capture_runtime_state() == before_adapter_state["instruction"]
             assert block.capture_runtime_state() == before_adapter_state["block"]
+            assert (
+                live_controller.options,
+                live_controller.pending,
+            ) == before_preparation_lane
+            assert live_observer.snapshot_state() == before_observation_lane
         finally:
             monkeypatch.undo()
+            manager.pre_hex_preparation = previous_controller
+            manager._post_d810_runtime = previous_post_runtime
             state.load_project(original_index)
             state.manager._started = False
 

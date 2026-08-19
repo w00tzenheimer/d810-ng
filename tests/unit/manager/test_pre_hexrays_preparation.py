@@ -265,6 +265,22 @@ def test_readonly_folding_does_not_enable_const_preparation() -> None:
     assert gateway.requests == []
 
 
+def test_disabled_preparation_can_be_enabled_without_reinstalling_discovery() -> None:
+    gateway = _Gateway()
+    discoveries: list[int] = []
+    controller = _controller(
+        gateway=gateway,
+        preparation_options=ConstantPreparationOptions(enabled=False),
+        discover_type_proposals=discoveries.append,
+    )
+
+    assert controller.prepare(0x401000, PreparationMode.AUTOMATIC).ok
+    controller.configure_preparation_options(ConstantPreparationOptions(enabled=True))
+    assert controller.prepare(0x401000, PreparationMode.AUTOMATIC).ok
+
+    assert discoveries == [0x401000]
+
+
 def test_preparation_status_uses_proposal_identities_and_pending_reason() -> None:
     before = SerializedTypeSnapshot.absent()
     after = SerializedTypeSnapshot.from_parts(b"const", b"fields", b"comments")
@@ -298,12 +314,130 @@ def test_preparation_status_uses_proposal_identities_and_pending_reason() -> Non
 
     status = controller.status_snapshot()
 
-    assert status.pending == ("function=0x401000:item=0x500000",)
+    assert status.pending[0].database_identity == "idb-a"
+    assert status.pending[0].function_ea == 0x401000
+    assert status.pending[0].item_head == 0x500000
     assert status.pending_reason == "next preparation round"
-    assert status.applied == ("function=0x401000:item=0x500000",)
-    assert status.conflicting == ("function=0x402000:item=0x500010",)
-    assert status.restored == ("function=0x403000:item=0x500020",)
+    assert status.applied[0].function_ea == 0x401000
+    assert status.conflicting[0].function_ea == 0x402000
+    assert status.restored[0].function_ea == 0x403000
     assert status.pending_count == status.applied_count == 1
+
+
+@pytest.mark.parametrize(
+    ("state", "bucket"),
+    (
+        (PreparationState.PREPARED, "pending"),
+        (PreparationState.SCRIPT_RUNNING, "pending"),
+        (PreparationState.CAPTURE_PENDING, "pending"),
+        (PreparationState.CAPTURED, "pending"),
+        (PreparationState.ANALYSIS_PENDING, "pending"),
+        (PreparationState.ROLLING_BACK, "pending"),
+        (PreparationState.IDB_PREPARED, "applied"),
+        (PreparationState.RESTORED, "restored"),
+        (PreparationState.RESTORING, "conflicting"),
+        (PreparationState.RESTORE_FAILED, "conflicting"),
+        (PreparationState.RECOVERY_REQUIRED, "conflicting"),
+        (PreparationState.REJECTED, "conflicting"),
+        (PreparationState.FAILED, "conflicting"),
+    ),
+)
+def test_preparation_status_classifies_every_transaction_state(
+    state: PreparationState,
+    bucket: str,
+) -> None:
+    type_script = _script("d810-global-const-types")
+    record = replace(_record(type_script), state=state)
+    before = SerializedTypeSnapshot.absent()
+    after = SerializedTypeSnapshot.from_parts(b"const", b"fields", b"comments")
+    delta = PreparationTypeDelta(0x500000, before, after)
+    gateway = _Gateway()
+    controller = _controller(
+        gateway=gateway,
+        prepared=(record,),
+        transaction_types=lambda transaction_id: (delta,),
+    )
+
+    status = controller.status_snapshot()
+
+    assert len(getattr(status, bucket)) == 1
+    for other in ("pending", "applied", "conflicting", "restored"):
+        if other != bucket:
+            assert getattr(status, other) == ()
+
+
+def test_preparation_status_surfaces_provider_failures_as_unknown() -> None:
+    gateway = _Gateway()
+
+    def fail_pending():
+        raise RuntimeError("proposal store unavailable")
+
+    def fail_records(_database_identity):
+        raise RuntimeError("journal unavailable")
+
+    controller = PreHexPreparationController(
+        database_identity="idb-a",
+        scripts=(),
+        gateway=gateway,
+        prepared_records=fail_records,
+        transaction_type_deltas=lambda _transaction_id: (),
+        discover_type_proposals=lambda _function_ea: None,
+        pending_type_proposals=fail_pending,
+        acknowledge_type_proposals=lambda _values: None,
+        type_step_descriptor=_script("d810-global-const-types"),
+        preparation_options=ConstantPreparationOptions(enabled=True),
+    )
+
+    status = controller.status_snapshot()
+
+    assert status.pending == ()
+    assert status.applied == ()
+    assert status.conflicting == ()
+    assert len(status.unknown) == 2
+    assert {failure.provider for failure in status.unknown} == {
+        "pending_type_proposals",
+        "prepared_records",
+    }
+
+
+def test_distinct_serialized_proposals_do_not_collide_in_status() -> None:
+    before_a = SerializedTypeSnapshot.absent()
+    after_a = SerializedTypeSnapshot.from_parts(b"const-a", b"fields", b"comments")
+    before_b = SerializedTypeSnapshot.absent()
+    after_b = SerializedTypeSnapshot.from_parts(b"const-b", b"fields", b"comments")
+    proposals = (
+        type(
+            "Proposal",
+            (),
+            {
+                "function_ea": 0x401000,
+                "item_head": 0x500000,
+                "item_end": 0x500010,
+                "before": before_a,
+                "after": after_a,
+                "type_delta": PreparationTypeDelta(0x500000, before_a, after_a),
+            },
+        )(),
+        type(
+            "Proposal",
+            (),
+            {
+                "function_ea": 0x401000,
+                "item_head": 0x500000,
+                "item_end": 0x500020,
+                "before": before_b,
+                "after": after_b,
+                "type_delta": PreparationTypeDelta(0x500000, before_b, after_b),
+            },
+        )(),
+    )
+    controller = _controller(gateway=_Gateway(), proposals=proposals)
+
+    status = controller.status_snapshot()
+
+    assert len(status.pending) == 2
+    assert status.pending[0] != status.pending[1]
+    assert {identity.item_end for identity in status.pending} == {0x500010, 0x500020}
 
 
 def test_generated_retry_does_not_reenter_controller() -> None:

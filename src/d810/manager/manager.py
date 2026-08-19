@@ -2102,6 +2102,9 @@ class D810Manager:
 
     def _ensure_post_d810_runtime(self) -> HexRaysPostD810Runtime:
         if self._post_d810_runtime is None:
+            from d810.backends.hexrays.global_const_annotation import (
+                pending_global_const_proposals,
+            )
             from d810.backends.hexrays.global_const_observer import GlobalConstObserver
 
             # The pre-Hex preparation journal and proposal netnode are scoped
@@ -2115,6 +2118,22 @@ class D810Manager:
                 "database_identity",
                 self._database_identity,
             )
+            lifecycle = getattr(self, "decompilation_lifecycle", None)
+            current_mba_generation = getattr(
+                lifecycle,
+                "current_mba_generation",
+                None,
+            )
+            if callable(current_mba_generation):
+
+                def mba_generation_provider(
+                    function_ea: int,
+                    _provider=current_mba_generation,
+                ) -> int:
+                    return int(_provider(function_ea=int(function_ea)))
+
+            else:
+                mba_generation_provider = None
             self._post_d810_runtime = HexRaysPostD810Runtime(
                 preanalysis_runtime=self._preanalysis_runtime,
                 block_optimizer=self.block_optimizer,
@@ -2123,7 +2142,9 @@ class D810Manager:
                 global_const_observer=GlobalConstObserver(
                     preparation_options=self._constant_preparation_options,
                     database_identity=database_identity,
+                    pending_proposals=pending_global_const_proposals,
                 ),
+                mba_generation_provider=mba_generation_provider,
             )
         return self._post_d810_runtime
 
@@ -2507,14 +2528,11 @@ class D810Manager:
             gateway=gateway,
             prepared_records=journal.prepared,
             transaction_type_deltas=journal.type_deltas,
-            discover_type_proposals=(
-                annotate_function_global_consts
-                if preparation_options.enabled
-                else lambda function_ea: None
-            ),
-            pending_type_proposals=(
-                pending_global_const_proposals
-            ),
+            # Keep the real IDA whole-item discovery callback installed for the
+            # lifetime of the controller.  Its current policy gates invocation
+            # so a project can enable preparation without reinstalling hooks.
+            discover_type_proposals=annotate_function_global_consts,
+            pending_type_proposals=pending_global_const_proposals,
             acknowledge_type_proposals=acknowledge_global_const_proposals,
             type_step_descriptor=type_step,
             preparation_options=preparation_options,

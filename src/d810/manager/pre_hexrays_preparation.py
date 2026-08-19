@@ -13,6 +13,7 @@ from d810.capabilities.idb_preparation import (
     PreparationTransactionId,
     PreparationTransactionRecord,
     PreparationTypeDelta,
+    SerializedTypeSnapshot,
 )
 from d810.core.execution_journal import DecompilationSessionId, ExecutionAttemptId
 from d810.core.typing import Callable, Protocol
@@ -22,6 +23,9 @@ __all__ = [
     "PreHexPreparationController",
     "PreparationBatchReceipt",
     "PreparationMode",
+    "PreparationControllerRuntimeState",
+    "PreparationProposalIdentity",
+    "PreparationProviderFailure",
     "PreparationStatusSnapshot",
 ]
 
@@ -68,13 +72,53 @@ class PreparationBatchReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparationProposalIdentity:
+    """Exact durable identity for one reversible type proposal.
+
+    The proposal netnode carries an item range while the preparation journal
+    currently persists the item head and the lossless before/after images.  A
+    journal projection therefore uses ``item_end=None``; it still retains the
+    complete canonical identity that is available from the journal rather than
+    collapsing proposals to a function/item display string.
+    """
+
+    database_identity: str
+    function_ea: int
+    item_head: int
+    item_end: int | None
+    before: SerializedTypeSnapshot
+    after: SerializedTypeSnapshot
+
+    @property
+    def item_range(self) -> tuple[int, int | None]:
+        return self.item_head, self.item_end
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationProviderFailure:
+    """An unavailable durable provider surfaced by the status projection."""
+
+    provider: str
+    error_type: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationControllerRuntimeState:
+    """Rollback snapshot for the live controller policy lane."""
+
+    preparation_options: ConstantPreparationOptions
+
+
+@dataclass(frozen=True, slots=True)
 class PreparationStatusSnapshot:
     """Portable proposal/transaction state for the preparation lane."""
 
-    pending: tuple[str, ...] = ()
-    applied: tuple[str, ...] = ()
-    conflicting: tuple[str, ...] = ()
-    restored: tuple[str, ...] = ()
+    pending: tuple[PreparationProposalIdentity, ...] = ()
+    applied: tuple[PreparationProposalIdentity, ...] = ()
+    conflicting: tuple[PreparationProposalIdentity, ...] = ()
+    restored: tuple[PreparationProposalIdentity, ...] = ()
+    unknown: tuple[PreparationProviderFailure, ...] = ()
     pending_reason: str | None = None
 
     @property
@@ -94,20 +138,24 @@ class PreparationStatusSnapshot:
         return len(self.restored)
 
     @property
-    def pending_identities(self) -> tuple[str, ...]:
+    def pending_identities(self) -> tuple[PreparationProposalIdentity, ...]:
         return self.pending
 
     @property
-    def applied_identities(self) -> tuple[str, ...]:
+    def applied_identities(self) -> tuple[PreparationProposalIdentity, ...]:
         return self.applied
 
     @property
-    def conflicting_identities(self) -> tuple[str, ...]:
+    def conflicting_identities(self) -> tuple[PreparationProposalIdentity, ...]:
         return self.conflicting
 
     @property
-    def restored_identities(self) -> tuple[str, ...]:
+    def restored_identities(self) -> tuple[PreparationProposalIdentity, ...]:
         return self.restored
+
+    @property
+    def unknown_count(self) -> int:
+        return len(self.unknown)
 
 
 PreparedRecordProvider = Callable[[str], tuple[PreparationTransactionRecord, ...]]
@@ -181,54 +229,131 @@ class PreHexPreparationController:
             )
         self._preparation_options = preparation_options
 
-    @staticmethod
-    def _type_identity(function_ea: int, item_ea: int) -> str:
-        return f"function=0x{int(function_ea):X}:item=0x{int(item_ea):X}"
+    def snapshot_runtime_state(self) -> PreparationControllerRuntimeState:
+        """Capture the live policy for transactional project rollback."""
 
-    @classmethod
-    def _proposal_identity(cls, proposal: PendingTypeProposal) -> str:
+        return PreparationControllerRuntimeState(self._preparation_options)
+
+    def restore_runtime_state(
+        self,
+        state: PreparationControllerRuntimeState,
+    ) -> None:
+        """Restore a previously captured live policy snapshot."""
+
+        if not isinstance(state, PreparationControllerRuntimeState):
+            raise TypeError("state must be PreparationControllerRuntimeState")
+        self.configure_preparation_options(state.preparation_options)
+
+    # Keep the protocol discoverable to manager-owned rollback code.
+    snapshot_state = snapshot_runtime_state
+    restore_state = restore_runtime_state
+
+    def _proposal_identity(
+        self,
+        proposal: PendingTypeProposal,
+    ) -> PreparationProposalIdentity | None:
         try:
             function_ea = int(proposal.function_ea)
-            item_ea = int(proposal.type_delta.item_ea)
+            type_delta = proposal.type_delta
+            item_head = int(type_delta.item_ea)
+            before = type_delta.before
+            after = type_delta.after
         except (AttributeError, TypeError, ValueError):
-            return repr(proposal)
-        return cls._type_identity(function_ea, item_ea)
+            return None
+        item_end = getattr(proposal, "item_end", None)
+        if item_end is not None:
+            try:
+                item_end = int(item_end)
+            except (TypeError, ValueError):
+                item_end = None
+        return PreparationProposalIdentity(
+            database_identity=self._database_identity,
+            function_ea=function_ea,
+            item_head=item_head,
+            item_end=item_end,
+            before=before,
+            after=after,
+        )
+
+    @staticmethod
+    def _identity_sort_key(identity: PreparationProposalIdentity) -> tuple[object, ...]:
+        def snapshot_key(snapshot: SerializedTypeSnapshot) -> tuple[object, ...]:
+            return (
+                snapshot.present,
+                snapshot.type_bytes or b"",
+                snapshot.field_bytes or b"",
+                snapshot.field_comment_bytes or b"",
+            )
+
+        return (
+            identity.database_identity,
+            identity.function_ea,
+            identity.item_head,
+            -1 if identity.item_end is None else identity.item_end,
+            snapshot_key(identity.before),
+            snapshot_key(identity.after),
+        )
+
+    @classmethod
+    def _provider_failure(
+        cls,
+        provider: str,
+        error: BaseException,
+    ) -> PreparationProviderFailure:
+        return PreparationProviderFailure(
+            provider=provider,
+            error_type=type(error).__name__,
+            message=str(error),
+        )
 
     def status_snapshot(self) -> PreparationStatusSnapshot:
         """Return durable proposal/transaction truth without mutating state."""
 
+        unknown: list[PreparationProviderFailure] = []
         try:
             proposals = tuple(self._pending_type_proposals())
-        except Exception:
+        except Exception as error:
+            unknown.append(self._provider_failure("pending_type_proposals", error))
             proposals = ()
-        pending = tuple(
-            sorted(
-                {
-                    self._proposal_identity(proposal)
-                    for proposal in proposals
-                }
-            )
-        )
-        applied: list[str] = []
-        conflicting: list[str] = []
-        restored: list[str] = []
+        pending = {
+            identity
+            for proposal in proposals
+            if (identity := self._proposal_identity(proposal)) is not None
+        }
+        applied: set[PreparationProposalIdentity] = set()
+        conflicting: set[PreparationProposalIdentity] = set()
+        restored: set[PreparationProposalIdentity] = set()
         try:
             records = self._prepared_records(self._database_identity)
-        except Exception:
+        except Exception as error:
+            unknown.append(self._provider_failure("prepared_records", error))
             records = ()
         for record in records:
             try:
                 type_deltas = self._transaction_type_deltas(record.transaction_id)
-            except Exception:
-                type_deltas = ()
+            except Exception as error:
+                unknown.append(
+                    self._provider_failure(
+                        f"transaction_type_deltas:{record.transaction_id.value}",
+                        error,
+                    )
+                )
+                continue
             if not type_deltas:
                 continue
-            identities = tuple(
-                self._type_identity(record.anchor_function_ea, delta.item_ea)
+            identities = {
+                PreparationProposalIdentity(
+                    database_identity=record.database_identity,
+                    function_ea=int(record.anchor_function_ea),
+                    item_head=int(delta.item_ea),
+                    item_end=None,
+                    before=delta.before,
+                    after=delta.after,
+                )
                 for delta in type_deltas
-            )
+            }
             if record.state is PreparationState.RESTORED:
-                restored.extend(identities)
+                restored.update(identities)
                 continue
             if record.state is PreparationState.IDB_PREPARED:
                 try:
@@ -237,9 +362,25 @@ class PreHexPreparationController:
                             record.transaction_id
                         )
                     )
-                except Exception:
+                except Exception as error:
+                    unknown.append(
+                        self._provider_failure(
+                            f"transaction_matches_after_image:{record.transaction_id.value}",
+                            error,
+                        )
+                    )
                     matches = False
-                (applied if matches else conflicting).extend(identities)
+                (applied if matches else conflicting).update(identities)
+                continue
+            if record.state in {
+                PreparationState.PREPARED,
+                PreparationState.SCRIPT_RUNNING,
+                PreparationState.CAPTURE_PENDING,
+                PreparationState.CAPTURED,
+                PreparationState.ANALYSIS_PENDING,
+                PreparationState.ROLLING_BACK,
+            }:
+                pending.update(identities)
                 continue
             if record.state in {
                 PreparationState.RESTORING,
@@ -248,12 +389,13 @@ class PreHexPreparationController:
                 PreparationState.FAILED,
                 PreparationState.REJECTED,
             }:
-                conflicting.extend(identities)
+                conflicting.update(identities)
         return PreparationStatusSnapshot(
-            pending=pending,
-            applied=tuple(sorted(applied)),
-            conflicting=tuple(sorted(conflicting)),
-            restored=tuple(sorted(restored)),
+            pending=tuple(sorted(pending, key=self._identity_sort_key)),
+            applied=tuple(sorted(applied, key=self._identity_sort_key)),
+            conflicting=tuple(sorted(conflicting, key=self._identity_sort_key)),
+            restored=tuple(sorted(restored, key=self._identity_sort_key)),
+            unknown=tuple(unknown),
             pending_reason=("next preparation round" if pending else None),
         )
 
