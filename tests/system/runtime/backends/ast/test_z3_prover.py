@@ -747,7 +747,9 @@ class TestZ3MopProverAPI:
         monkeypatch.setattr(
             z3mod,
             "_resolve_mop_to_ast",
-            lambda _mop, _blk, ins: _FakeAst(0 if ins.label == "ins-a" else 1),
+            lambda _mop, _blk, ins, *, node_budget=None: _FakeAst(
+                0 if ins.label == "ins-a" else 1
+            ),
         )
         monkeypatch.setattr(
             z3mod,
@@ -756,15 +758,15 @@ class TestZ3MopProverAPI:
         )
 
         prover = Z3MopProver(
-            policy=Z3ProofPolicy(max_expression_nodes=1, proof_timeout_ms=100)
+            policy=Z3ProofPolicy(max_expression_nodes=2, proof_timeout_ms=100)
         )
         first = prover.prove_always_zero(mop, blk=blk_a, ins=ins_a)
         second = prover.prove_always_zero(mop, blk=blk_b, ins=ins_b)
 
         assert first.status is Z3ProofStatus.PROVED
-        assert first.observed_expression_nodes == 1
+        assert first.observed_expression_nodes == 2
         assert second.status is Z3ProofStatus.DISPROVED
-        assert second.observed_expression_nodes == 1
+        assert second.observed_expression_nodes == 2
 
     @pytest.mark.parametrize(
         ("method_name", "first_expected", "second_expected"),
@@ -889,7 +891,11 @@ class TestZ3MopProverAPI:
             "mop_to_ast",
             lambda _mop, *, node_budget: node_budget.consume() or _FakeAst(),
         )
-        monkeypatch.setattr(z3mod, "_resolve_mop_to_ast", lambda *_args: _FakeAst())
+        monkeypatch.setattr(
+            z3mod,
+            "_resolve_mop_to_ast",
+            lambda *_args, node_budget=None: _FakeAst(),
+        )
         monkeypatch.setattr(
             z3mod,
             "_recursively_resolve_ast",
@@ -1131,6 +1137,302 @@ class TestZ3MopProverAPI:
         assert result.reason is Z3ProofAbstentionReason.NODE_LIMIT
         assert result.observed_expression_nodes == 1
         assert constructed == []
+
+    def test_bounded_minsn_gateway_routes_to_python_builder(self, monkeypatch):
+        import d810.hexrays.ir.minsn_utils as minsn_utils
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ExpressionNodeBudget,
+            Z3ProofPolicy,
+        )
+
+        compiled_calls = []
+        python_calls = []
+        compiled_result = object()
+        python_result = object()
+
+        monkeypatch.setattr(
+            minsn_utils,
+            "_minsn_to_ast_impl",
+            lambda _ins: compiled_calls.append(True) or compiled_result,
+        )
+        monkeypatch.setattr(
+            minsn_utils,
+            "_py_slow_minsn_to_ast",
+            lambda _ins, *, node_budget=None: python_calls.append(node_budget)
+            or python_result,
+        )
+
+        instruction = object()
+        budget = Z3ExpressionNodeBudget(
+            Z3ProofPolicy(max_expression_nodes=4, proof_timeout_ms=100)
+        )
+
+        assert minsn_utils.minsn_to_ast(instruction) is compiled_result
+        assert minsn_utils.minsn_to_ast(instruction, node_budget=budget) is python_result
+        assert compiled_calls == [True]
+        assert python_calls == [budget]
+
+    def test_bounded_minsn_builder_propagates_node_limit(self, monkeypatch):
+        import d810.hexrays.ir.minsn_utils as minsn_utils
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ExpressionNodeBudget,
+            Z3NodeLimitExceeded,
+            Z3ProofPolicy,
+        )
+
+        class _FakeMop:
+            def create_from_insn(self, _instruction):
+                return None
+
+        monkeypatch.setattr(minsn_utils.ida_hexrays, "mop_t", _FakeMop)
+
+        def _bounded_builder(_mop, *, node_budget):
+            node_budget.consume()
+            return None
+
+        monkeypatch.setattr(minsn_utils, "mop_to_ast", _bounded_builder)
+        instruction = SimpleNamespace(
+            opcode=ida_hexrays.m_add,
+            ea=0x1000,
+            dstr=lambda: "add",
+        )
+        budget = Z3ExpressionNodeBudget(
+            Z3ProofPolicy(max_expression_nodes=1, proof_timeout_ms=100)
+        )
+        budget.consume()
+
+        with pytest.raises(Z3NodeLimitExceeded):
+            minsn_utils._py_slow_minsn_to_ast(instruction, node_budget=budget)
+        assert budget.observed_nodes == 1
+
+    def test_direct_contextual_resolution_keeps_one_cumulative_budget(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofPolicy, Z3ProofStatus
+
+        class _FakeAst:
+            def __init__(self, *, leaf):
+                self.left = None
+                self.right = None
+                self._leaf = leaf
+
+            def is_leaf(self):
+                return self._leaf
+
+            def get_leaf_list(self):
+                return []
+
+        class _FakeVisitor:
+            def __init__(self, node_budget=None):
+                self.node_budget = node_budget
+
+            def visit(self, ast):
+                self.node_budget.consume_ast(ast)
+                return z3.BitVecVal(0, 32)
+
+        initial = _FakeAst(leaf=True)
+        definition = _FakeAst(leaf=False)
+        definition.left = _FakeAst(leaf=True)
+
+        def _initial_builder(_mop, *, node_budget):
+            node_budget.consume()
+            node_budget.mark_charged(initial)
+            return initial
+
+        def _definition_resolver(_mop, _blk, _ins, *, node_budget):
+            for occurrence in (definition, definition.left):
+                node_budget.consume()
+                node_budget.mark_charged(occurrence)
+            return definition
+
+        monkeypatch.setattr(z3mod, "mop_to_ast", _initial_builder)
+        monkeypatch.setattr(z3mod, "_resolve_mop_to_ast", _definition_resolver)
+        monkeypatch.setattr(
+            z3mod,
+            "_recursively_resolve_ast",
+            lambda ast, _blk, _ins, **_kwargs: ast,
+        )
+        monkeypatch.setattr(z3mod, "AstNodeZ3Visitor", _FakeVisitor)
+        monkeypatch.setattr(z3mod, "structural_mop_hash", lambda _mop, _depth: 37)
+
+        result = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=3, proof_timeout_ms=100)
+        ).prove_always_zero(
+            SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="cumulative"),
+            blk=SimpleNamespace(mba=SimpleNamespace(owner="cumulative-mba")),
+            ins=SimpleNamespace(label="cumulative-ins"),
+        )
+
+        assert result.status is Z3ProofStatus.PROVED
+        assert result.observed_expression_nodes == 3
+
+    @pytest.mark.parametrize("seam", ("native", "fallback", "memory_store"))
+    @pytest.mark.parametrize("max_expression_nodes", (2, 3))
+    def test_contextual_definition_builder_shares_policy_budget(
+        self, monkeypatch, seam, max_expression_nodes
+    ):
+        """Definition trees built by every resolver seam are policy-bounded."""
+        import d810.evaluator.hexrays_microcode.def_search as def_search
+        import d810.hexrays.ir.minsn_utils as minsn_utils
+        import d810.hexrays.ir.mop_utils as mop_utils
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ExpressionNodeBudget,
+            Z3NodeLimitExceeded,
+            Z3ProofPolicy,
+        )
+
+        class _FakeSnapshot:
+            @classmethod
+            def from_mop(cls, mop):
+                return SimpleNamespace(t=mop.t)
+
+        class _FakeMop:
+            pass
+
+        class _InstructionMop(_FakeMop):
+            def create_from_insn(self, instruction):
+                self.__dict__.update(vars(instruction.source))
+
+        def _number(name, value):
+            mop = _FakeMop()
+            mop.t = ida_hexrays.mop_n
+            mop.size = 4
+            mop.name = name
+            mop.nnn = SimpleNamespace(value=value)
+            mop.dstr = lambda: name
+            return mop
+
+        left = _number("left", 1)
+        right = _number("right", 2)
+        source = _FakeMop()
+        source.t = ida_hexrays.mop_d
+        source.size = 4
+        source.name = "definition"
+        source.d = SimpleNamespace(
+            opcode=ida_hexrays.m_add,
+            ea=0x1000,
+            l=left,
+            r=right,
+            d=None,
+        )
+        source.dstr = lambda: "definition"
+        definition = SimpleNamespace(
+            opcode=ida_hexrays.m_add,
+            d=SimpleNamespace(t=ida_hexrays.mop_r, r=7),
+            ea=0x1000,
+            source=source,
+        )
+
+        monkeypatch.setattr(mop_utils, "MopSnapshot", _FakeSnapshot)
+        monkeypatch.setattr(minsn_utils.ida_hexrays, "mop_t", _InstructionMop)
+        monkeypatch.setattr(
+            mop_utils,
+            "get_mop_key",
+            lambda mop: (getattr(mop, "name", "anonymous"),),
+        )
+        monkeypatch.setattr(mop_utils, "format_mop_t", lambda mop: mop.name)
+        monkeypatch.setattr(mop_utils, "sanitize_ea", lambda ea: ea)
+        monkeypatch.setattr(
+            mop_utils,
+            "get_constant_mop",
+            lambda value, size: SimpleNamespace(
+                t=ida_hexrays.mop_n,
+                size=size,
+                nnn=SimpleNamespace(value=value),
+            ),
+        )
+
+        def _build_definition(instruction, *, node_budget=None):
+            return minsn_utils.minsn_to_ast(instruction, node_budget=node_budget)
+
+        monkeypatch.setattr(def_search, "minsn_to_ast", _build_definition)
+
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=7)
+        block = SimpleNamespace(mba=None, serial=1)
+        instruction = SimpleNamespace(ea=0x2000, prev=None)
+
+        if seam == "native":
+            monkeypatch.setattr(
+                def_search,
+                "find_def_in_block",
+                lambda _mop, _blk, _before: definition,
+            )
+            monkeypatch.setattr(def_search, "_USE_NATIVE_DEF_SEARCH", True)
+            resolver_mop = mop
+        elif seam == "fallback":
+            class _Tracker:
+                @staticmethod
+                def reset():
+                    return None
+
+                def __init__(self, _mops, **_kwargs):
+                    pass
+
+                def search_backward(self, _blk, _ins):
+                    return [SimpleNamespace(history=[SimpleNamespace(ins_list=[definition])])]
+
+            monkeypatch.setattr(def_search, "_USE_NATIVE_DEF_SEARCH", False)
+            monkeypatch.setitem(
+                def_search.sys.modules,
+                "d810.evaluator.hexrays_microcode.tracker",
+                SimpleNamespace(MopTracker=_Tracker),
+            )
+            resolver_mop = mop
+        else:
+            address = SimpleNamespace(name="address")
+            store = SimpleNamespace(
+                opcode=ida_hexrays.m_stx,
+                l=source,
+                r=address,
+                ea=0x1001,
+                prev=None,
+            )
+            instruction.prev = store
+            block.tail = store
+            monkeypatch.setattr(def_search, "equal_mops_ignore_size", lambda *_args: True)
+            monkeypatch.setattr(
+                def_search,
+                "mop_to_ast",
+                lambda stored, *, node_budget=None: mop_utils.mop_to_ast(
+                    stored,
+                    node_budget=node_budget,
+                ),
+            )
+            resolver_mop = SimpleNamespace(
+                t=ida_hexrays.mop_d,
+                d=SimpleNamespace(
+                    opcode=ida_hexrays.m_ldx,
+                    d=SimpleNamespace(t=ida_hexrays.mop_n),
+                    r=address,
+                ),
+            )
+
+        budget = Z3ExpressionNodeBudget(
+            Z3ProofPolicy(
+                max_expression_nodes=max_expression_nodes,
+                proof_timeout_ms=100,
+            )
+        )
+        if max_expression_nodes == 2:
+            with pytest.raises(Z3NodeLimitExceeded):
+                def_search.resolve_mop_to_ast(
+                    resolver_mop,
+                    block,
+                    instruction,
+                    node_budget=budget,
+                )
+            assert budget.observed_nodes == 2
+        else:
+            ast = def_search.resolve_mop_to_ast(
+                resolver_mop,
+                block,
+                instruction,
+                node_budget=budget,
+            )
+            assert ast is not None
+            assert budget.observed_nodes == 3
 
     def test_compiled_recursive_resolver_receives_policy_budget(
         self, monkeypatch

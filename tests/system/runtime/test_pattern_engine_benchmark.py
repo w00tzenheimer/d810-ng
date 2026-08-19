@@ -399,14 +399,18 @@ class TestCythonPythonParity:
 
         replacement = RuntimeAstLeaf("resolved")
 
-        def _resolve(_mop, _blk, _ins):
+        def _resolve(_mop, _blk, _ins, *, node_budget=None):
+            assert node_budget is budget_under_test
             return replacement
 
         monkeypatch.setattr(def_search, "resolve_mop_to_ast", _resolve)
         block = SimpleNamespace(serial=1)
         instruction = SimpleNamespace(this=1)
 
+        budget_under_test = None
+
         def _run(resolver):
+            nonlocal budget_under_test
             leaf = RuntimeAstLeaf("register")
             leaf.mop = SimpleNamespace(
                 t=ida_hexrays.mop_r,
@@ -418,6 +422,7 @@ class TestCythonPythonParity:
             budget = Z3ExpressionNodeBudget(
                 Z3ProofPolicy(max_expression_nodes=1, proof_timeout_ms=100)
             )
+            budget_under_test = budget
             budget.consume()
             with pytest.raises(Z3NodeLimitExceeded):
                 resolver(

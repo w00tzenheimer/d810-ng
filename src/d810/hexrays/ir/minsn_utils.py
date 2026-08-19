@@ -11,7 +11,7 @@ import ida_hexrays
 import d810.core.typing as typing
 from d810.core import getLogger
 from d810.core.cymode import CythonMode
-from d810.hexrays.ir.mop_utils import mop_to_ast
+from d810.hexrays.ir.mop_utils import AstNodeBudget, mop_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t, opcode_to_string
 from d810.hexrays.utils.hexrays_helpers import (
     MBA_RELATED_OPCODES,
@@ -36,7 +36,10 @@ else:
     _MINSN_TO_AST_BACKEND = "python"
 
 
-def _py_slow_minsn_to_ast(instruction: ida_hexrays.minsn_t) -> typing.Any | None:
+def _py_slow_minsn_to_ast(
+    instruction: ida_hexrays.minsn_t,
+    node_budget: AstNodeBudget | None = None,
+) -> typing.Any | None:
     try:
         # Early filter: forbidden opcodes
         if instruction.opcode in MINSN_TO_AST_FORBIDDEN_OPCODES:
@@ -86,14 +89,20 @@ def _py_slow_minsn_to_ast(instruction: ida_hexrays.minsn_t) -> typing.Any | None
                 logger.debug(
                     "[minsn_to_ast] Unwrapping call with empty args; using destination expression for AST",
                 )
-            dest_ast = mop_to_ast(instruction.d)
+            if node_budget is None:
+                dest_ast = mop_to_ast(instruction.d)
+            else:
+                dest_ast = mop_to_ast(instruction.d, node_budget=node_budget)
             if dest_ast is not None:
                 return dest_ast
 
         ins_mop = ida_hexrays.mop_t()
         ins_mop.create_from_insn(instruction)
 
-        tmp = mop_to_ast(ins_mop)
+        if node_budget is None:
+            tmp = mop_to_ast(ins_mop)
+        else:
+            tmp = mop_to_ast(ins_mop, node_budget=node_budget)
         if tmp is None:
             if logger.debug_on:
                 logger.debug(
@@ -110,6 +119,10 @@ def _py_slow_minsn_to_ast(instruction: ida_hexrays.minsn_t) -> typing.Any | None
             tmp.dst_mop = instruction.d
         return tmp
     except RuntimeError as e:
+        # A bounded builder must preserve the typed pre-construction cutoff;
+        # the legacy unbounded path retains its historical fail-soft behavior.
+        if node_budget is not None:
+            raise
         logger.error(
             "Error while transforming instruction %s: %s",
             format_minsn_t(instruction),
@@ -117,15 +130,18 @@ def _py_slow_minsn_to_ast(instruction: ida_hexrays.minsn_t) -> typing.Any | None
         )
 
 
-def minsn_to_ast(ins: ida_hexrays.minsn_t) -> typing.Any | None:
+def minsn_to_ast(
+    ins: ida_hexrays.minsn_t,
+    node_budget: AstNodeBudget | None = None,
+) -> typing.Any | None:
     """Convert a microcode instruction to an AST tree.
 
     Public, unified entrypoint that callers can use instead of reaching into
     the Cython module directly.
     """
-    if _minsn_to_ast_impl is not None:
+    if _minsn_to_ast_impl is not None and node_budget is None:
         return _minsn_to_ast_impl(ins)
-    return _py_slow_minsn_to_ast(ins)
+    return _py_slow_minsn_to_ast(ins, node_budget=node_budget)
 
 
 def get_minsn_to_ast_backend() -> str:

@@ -123,6 +123,7 @@ def test_resolve_mop_to_ast_forwards_native_def_search_budget(monkeypatch):
         *,
         max_predecessor_blocks,
         max_paths,
+        node_budget=None,
     ):
         received_budgets.append((max_predecessor_blocks, max_paths))
         return None

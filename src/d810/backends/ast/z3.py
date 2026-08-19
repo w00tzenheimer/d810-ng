@@ -1041,15 +1041,22 @@ class Z3MopProver:
 
         if ast is None or (hasattr(ast, "is_leaf") and ast.is_leaf() and is_resolvable):
             if blk is not None and ins is not None:
-                resolved_ast = _resolve_mop_to_ast(mop, blk, ins)
+                if budget is None:
+                    resolved_ast = _resolve_mop_to_ast(mop, blk, ins)
+                else:
+                    resolved_ast = _resolve_mop_to_ast(
+                        mop,
+                        blk,
+                        ins,
+                        node_budget=budget,
+                    )
                 if resolved_ast is not None:
                     ast = resolved_ast
                     if self._policy is not None:
-                        # The resolver may expand a definition tree that is
-                        # not present in the original mop.  Discard the
-                        # builder's one-occurrence charge and count the real
-                        # resolved tree at the visitor recursion seam.
-                        budget = Z3ExpressionNodeBudget(self._policy)
+                        # The resolver uses this same budget while building
+                        # contextual definition ASTs.  Keep it live through
+                        # recursive resolution and visitor traversal so the
+                        # proof receipt accounts for the complete expansion.
                         visitor_needs_budget = True
                     if logger.debug_on:
                         logger.debug(

@@ -62,7 +62,7 @@ cdef object _resolve(
             return cache[cache_key]
 
         budget[0] -= 1
-        resolved = resolve_mop_to_ast(mop, blk, ins)
+        resolved = resolve_mop_to_ast(mop, blk, ins, node_budget=node_budget)
         if resolved is not None and resolved is not ast:
             new_ins = ins
             if hasattr(resolved, "ins") and resolved.ins is not None:

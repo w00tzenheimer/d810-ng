@@ -151,6 +151,28 @@ def _materialize_mop_for_tracking(
     return materialized
 
 
+def _minsn_to_ast_with_budget(
+    instruction: ida_hexrays.minsn_t,
+    node_budget: AstNodeBudget | None,
+) -> AstNode | AstLeaf | None:
+    """Build a definition AST while preserving the legacy unbounded call path."""
+
+    if node_budget is None:
+        return minsn_to_ast(instruction)
+    return minsn_to_ast(instruction, node_budget=node_budget)
+
+
+def _mop_to_ast_with_budget(
+    mop: ida_hexrays.mop_t,
+    node_budget: AstNodeBudget | None,
+) -> AstNode | AstLeaf | None:
+    """Build a stored-value AST with the caller's optional occurrence budget."""
+
+    if node_budget is None:
+        return mop_to_ast(mop)
+    return mop_to_ast(mop, node_budget=node_budget)
+
+
 # ---------------------------------------------------------------------------
 # mlist helpers
 # ---------------------------------------------------------------------------
@@ -218,6 +240,8 @@ def resolve_memory_load_via_store(
     ldx_ins: ida_hexrays.minsn_t,
     blk: ida_hexrays.mblock_t,
     ins: ida_hexrays.minsn_t,
+    *,
+    node_budget: AstNodeBudget | None = None,
 ) -> AstNode | AstLeaf | None:
     """Resolve a memory load (m_ldx) to its defining store (m_stx).
 
@@ -253,26 +277,31 @@ def resolve_memory_load_via_store(
             if store_addr is not None and load_addr is not None:
                 # Simple equality check - compare address operands
                 try:
-                    if equal_mops_ignore_size(load_addr, store_addr):
-                        # Found matching store - return AST of stored value
-                        # The stored value is in ldx_ins.l for stx
-                        stored_value = cur_ins.l
-                        if stored_value is not None:
-                            ast = mop_to_ast(stored_value)
-                            if ast is not None:
-                                ast.ea = cur_ins.ea
-                                ast.ins = cur_ins
-                            if logger.debug_on:
-                                logger.debug(
-                                    "resolve_memory_load_via_store: Resolved ldx to stx: %s -> %s",
-                                    format_minsn_t(ldx_ins),
-                                    format_minsn_t(cur_ins),
-                                )
-                            return ast
+                    addresses_match = equal_mops_ignore_size(load_addr, store_addr)
                 except Exception as e:
                     logger.debug(
                         "resolve_memory_load_via_store: Error comparing mops: %s", e
                     )
+                    addresses_match = False
+                if addresses_match:
+                    # Found matching store - return AST of stored value.  Keep
+                    # AST construction outside the comparison guard so a
+                    # caller's node-budget cutoff is never swallowed as a
+                    # recoverable address-comparison failure.
+                    # The stored value is in ldx_ins.l for stx.
+                    stored_value = cur_ins.l
+                    if stored_value is not None:
+                        ast = _mop_to_ast_with_budget(stored_value, node_budget)
+                        if ast is not None:
+                            ast.ea = cur_ins.ea
+                            ast.ins = cur_ins
+                        if logger.debug_on:
+                            logger.debug(
+                                "resolve_memory_load_via_store: Resolved ldx to stx: %s -> %s",
+                                format_minsn_t(ldx_ins),
+                                format_minsn_t(cur_ins),
+                            )
+                        return ast
 
         cur_ins = cur_ins.prev
 
@@ -332,6 +361,7 @@ def resolve_mop_via_predecessors(
     *,
     max_predecessor_blocks: int = 1,
     max_paths: int = 1,
+    node_budget: AstNodeBudget | None = None,
 ) -> AstNode | AstLeaf | None:
     """Resolve *mop* to an AST by following single-predecessor chains.
 
@@ -370,7 +400,7 @@ def resolve_mop_via_predecessors(
     # Fast path: try the current block first.
     def_ins = find_def_in_block(mop, blk, ins)
     if def_ins is not None:
-        ast = minsn_to_ast(def_ins)
+        ast = _minsn_to_ast_with_budget(def_ins, node_budget)
         if ast is not None:
             ast.ea = def_ins.ea
             ast.ins = def_ins
@@ -426,7 +456,7 @@ def resolve_mop_via_predecessors(
         # Search from the tail of the predecessor (no before_ins restriction).
         def_ins = find_def_in_block(mop, pred_blk, None)
         if def_ins is not None:
-            ast = minsn_to_ast(def_ins)
+            ast = _minsn_to_ast_with_budget(def_ins, node_budget)
             if ast is not None:
                 ast.ea = def_ins.ea
                 ast.ins = def_ins
@@ -455,6 +485,7 @@ def resolve_mop_to_ast(
     *,
     max_predecessor_blocks: int = 1,
     max_paths: int = 1,
+    node_budget: AstNodeBudget | None = None,
 ) -> AstNode | AstLeaf | None:
     """Use MopTracker to find the instruction that defines mop, return its AST.
 
@@ -518,10 +549,16 @@ def resolve_mop_to_ast(
                         ins,
                         max_predecessor_blocks=max_predecessor_blocks,
                         max_paths=max_paths,
+                        node_budget=node_budget,
                     )
             # If we can't resolve via destination, try the address operand
             # to find a matching store (m_stx) instruction
-            return resolve_memory_load_via_store(nested, blk, ins)
+            return resolve_memory_load_via_store(
+                nested,
+                blk,
+                ins,
+                node_budget=node_budget,
+            )
         # For other mop_d types, no resolution possible
         return None
 
@@ -539,6 +576,7 @@ def resolve_mop_to_ast(
             ins,
             max_predecessor_blocks=max_predecessor_blocks,
             max_paths=max_paths,
+            node_budget=node_budget,
         )
         if result is not None:
             return result
@@ -588,7 +626,7 @@ def resolve_mop_to_ast(
                 # For registers, check if it's the same register
                 if mop.t == ida_hexrays.mop_r and def_ins.d.r == mop.r:
                     # Build AST from the instruction's source operands
-                    ast = minsn_to_ast(def_ins)
+                    ast = _minsn_to_ast_with_budget(def_ins, node_budget)
                     if ast is not None:
                         ast.ea = def_ins.ea
                         ast.ins = def_ins
@@ -604,7 +642,7 @@ def resolve_mop_to_ast(
                 elif mop.t == ida_hexrays.mop_S:
                     try:
                         if def_ins.d.s.off == mop.s.off:
-                            ast = minsn_to_ast(def_ins)
+                            ast = _minsn_to_ast_with_budget(def_ins, node_budget)
                             if ast is not None:
                                 ast.ea = def_ins.ea
                                 ast.ins = def_ins
@@ -706,7 +744,12 @@ def _py_slow_recursively_resolve_ast(
 
                 # Charge the budget once per attempted leaf resolution.
                 budget[0] -= 1
-                resolved = resolve_mop_to_ast(ast_leaf.mop, blk, ins)
+                resolved = resolve_mop_to_ast(
+                    ast_leaf.mop,
+                    blk,
+                    ins,
+                    node_budget=node_budget,
+                )
                 if resolved is not None and resolved is not ast:
                     # Update search context for children: search from the defining instruction
                     # This correctly handles register redefinitions within the same block.
