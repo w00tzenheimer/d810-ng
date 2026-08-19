@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import functools
 import sys
+import time
 
 import ida_hexrays
 
@@ -72,6 +73,14 @@ from d810.hexrays.utils.hexrays_formatters import (
 )
 from d810.hexrays.utils.hexrays_helpers import get_mop_index, structural_mop_hash
 from d810.speedups.bootstrap import ensure_speedups_on_path
+from d810.backends.ast.z3_proof_policy import (
+    Z3ExpressionNodeBudget,
+    Z3NodeLimitExceeded,
+    Z3ProofAbstentionReason,
+    Z3ProofPolicy,
+    Z3ProofResult,
+    Z3ProofStatus,
+)
 
 logger = getLogger(__name__)
 
@@ -125,6 +134,96 @@ def get_solver() -> z3.Solver:
     return s
 
 
+def _new_query_solver(
+    policy: Z3ProofPolicy | None, solver: z3.Solver | None = None
+) -> z3.Solver:
+    """Return the solver for one query.
+
+    Policy-scoped proofs always receive a fresh solver.  In particular, they
+    never mutate the process-global ``get_solver()`` instance, even when a
+    caller supplies a solver for an unbounded compatibility query.
+    """
+
+    if policy is None:
+        return solver if solver is not None else get_solver()
+
+    query_solver = z3.Solver()
+    query_solver.set(timeout=policy.proof_timeout_ms)
+    return query_solver
+
+
+def _solver_unknown_reason(
+    solver: z3.Solver, policy: Z3ProofPolicy | None, elapsed_ms: float
+) -> Z3ProofAbstentionReason:
+    """Classify an explicit ``unknown`` result without treating it as false."""
+
+    try:
+        reason = str(solver.reason_unknown()).lower()
+    except Exception:
+        reason = ""
+    if any(token in reason for token in ("timeout", "canceled", "cancelled")):
+        return Z3ProofAbstentionReason.TIMEOUT
+    if policy is not None and elapsed_ms >= policy.proof_timeout_ms:
+        return Z3ProofAbstentionReason.TIMEOUT
+    return Z3ProofAbstentionReason.SOLVER_UNKNOWN
+
+
+def _classify_solver_result(
+    check_result: object,
+    solver: z3.Solver,
+    policy: Z3ProofPolicy | None,
+    started_at: float,
+    observed_expression_nodes: int | None,
+) -> Z3ProofResult:
+    elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+    if check_result == z3.unsat:
+        return Z3ProofResult(
+            status=Z3ProofStatus.PROVED,
+            reason=None,
+            observed_expression_nodes=observed_expression_nodes,
+            elapsed_ms=elapsed_ms,
+        )
+    if check_result == z3.sat:
+        return Z3ProofResult(
+            status=Z3ProofStatus.DISPROVED,
+            reason=None,
+            observed_expression_nodes=observed_expression_nodes,
+            elapsed_ms=elapsed_ms,
+        )
+    return Z3ProofResult(
+        status=Z3ProofStatus.ABSTAINED,
+        reason=_solver_unknown_reason(
+            solver,
+            policy,
+            elapsed_ms,
+        ),
+        observed_expression_nodes=observed_expression_nodes,
+        elapsed_ms=elapsed_ms,
+    )
+
+
+def _unsupported_result(
+    started_at: float, observed_expression_nodes: int | None = None
+) -> Z3ProofResult:
+    return Z3ProofResult(
+        status=Z3ProofStatus.ABSTAINED,
+        reason=Z3ProofAbstentionReason.UNSUPPORTED_EXPRESSION,
+        observed_expression_nodes=observed_expression_nodes,
+        elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+    )
+
+
+def _node_limit_result(
+    started_at: float, budget: Z3ExpressionNodeBudget
+) -> Z3ProofResult:
+    return Z3ProofResult(
+        status=Z3ProofStatus.ABSTAINED,
+        reason=Z3ProofAbstentionReason.NODE_LIMIT,
+        observed_expression_nodes=budget.observed_nodes,
+        elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+    )
+
+
 @requires_z3_installed
 def create_z3_vars(leaf_list: list[AstLeaf]):
     known_leaf_list = []
@@ -148,9 +247,14 @@ def create_z3_vars(leaf_list: list[AstLeaf]):
 class AstNodeZ3Visitor:
     """Visitor that converts AstNode/AstLeaf to Z3 expressions."""
 
-    def __init__(self, use_bitvecval: bool = False):
+    def __init__(
+        self,
+        use_bitvecval: bool = False,
+        node_budget: Z3ExpressionNodeBudget | None = None,
+    ):
         # Reserved for visitor configuration if width/sign modes are split later.
         self.use_bitvecval = use_bitvecval
+        self.node_budget = node_budget
 
     @staticmethod
     def _ast_bits(ast: AstNode | AstLeaf | None, fallback_bits: int = 32) -> int:
@@ -187,6 +291,8 @@ class AstNodeZ3Visitor:
     def visit(self, ast: AstNode | AstLeaf | None):
         if ast is None:
             raise ValueError("ast is None")
+        if self.node_budget is not None:
+            self.node_budget.consume()
 
         if ast.is_leaf():
             return self._visit_leaf(typing.cast(AstLeaf, ast))
@@ -205,7 +311,9 @@ class AstNodeZ3Visitor:
 
     def _visit_udiv_operand(self, node: AstNode | AstLeaf | None):
         # Preserve existing behavior by using a dedicated traversal path.
-        return AstNodeZ3Visitor(use_bitvecval=True).visit(node)
+        return AstNodeZ3Visitor(
+            use_bitvecval=True, node_budget=self.node_budget
+        ).visit(node)
 
     def _visit_node(self, ast: AstNode):
         left = self.visit(ast.left)
@@ -365,13 +473,20 @@ class AstNodeZ3Visitor:
 
 
 @requires_z3_installed
-def mop_list_to_z3_expression_list(mop_list: list[ida_hexrays.mop_t]):
+def mop_list_to_z3_expression_list(
+    mop_list: list[ida_hexrays.mop_t],
+    *,
+    node_budget: Z3ExpressionNodeBudget | None = None,
+):
     if logger.debug_on:
         logger.debug(
             "mop_list_to_z3_expression_list: mop_list: %s",
             [format_mop_t(mop) for mop in mop_list],
         )
-    ast_list = [mop_to_ast(mop) for mop in mop_list]
+    if node_budget is None:
+        ast_list = [mop_to_ast(mop) for mop in mop_list]
+    else:
+        ast_list = [mop_to_ast(mop, node_budget=node_budget) for mop in mop_list]
     # Filter out None ASTs - callers check length to detect conversion failures
     valid_ast_list = [ast for ast in ast_list if ast is not None]
     if len(valid_ast_list) != len(ast_list):
@@ -394,10 +509,21 @@ def mop_list_to_z3_expression_list(mop_list: list[ida_hexrays.mop_t]):
 
 
 def _translate_mop_pair(
-    mop1: ida_hexrays.mop_t, mop2: ida_hexrays.mop_t, *, operation: str
+    mop1: ida_hexrays.mop_t,
+    mop2: ida_hexrays.mop_t,
+    *,
+    operation: str,
+    node_budget: Z3ExpressionNodeBudget | None = None,
 ) -> tuple[z3.BitVecRef, z3.BitVecRef] | None:
     try:
-        expressions = mop_list_to_z3_expression_list([mop1, mop2])
+        if node_budget is None:
+            expressions = mop_list_to_z3_expression_list([mop1, mop2])
+        else:
+            expressions = mop_list_to_z3_expression_list(
+                [mop1, mop2], node_budget=node_budget
+            )
+    except Z3NodeLimitExceeded:
+        raise
     except Exception as exc:
         logger.debug("%s: failed to translate operands to Z3: %s", operation, exc)
         return None
@@ -422,31 +548,50 @@ class Z3MopProver:
         *,
         blk: ida_hexrays.mblock_t | None = None,
         ins: ida_hexrays.minsn_t | None = None,
+        policy: Z3ProofPolicy | None = None,
     ):
+        if policy is not None and not isinstance(policy, Z3ProofPolicy):
+            raise TypeError("policy must be a Z3ProofPolicy or None")
         self._blk = blk
         self._ins = ins
+        self._policy = policy
         self._eq_cache: Dict[
             typing.Tuple[
-                typing.Tuple[int, int, int | str], typing.Tuple[int, int, int | str]
+                Z3ProofPolicy | None,
+                typing.Tuple[int, int, int | str],
+                typing.Tuple[int, int, int | str],
             ],
-            bool,
+            Z3ProofResult,
         ] = {}
         self._neq_cache: Dict[
             typing.Tuple[
-                typing.Tuple[int, int, int | str], typing.Tuple[int, int, int | str]
+                Z3ProofPolicy | None,
+                typing.Tuple[int, int, int | str],
+                typing.Tuple[int, int, int | str],
             ],
-            bool,
+            Z3ProofResult,
         ] = {}
         self._comparison_cache: Dict[
             typing.Tuple[
                 str,
+                Z3ProofPolicy | None,
                 typing.Tuple[int, int, int | str],
                 typing.Tuple[int, int, int | str],
             ],
             bool | None,
         ] = {}
-        self._always_zero_cache: Dict[typing.Tuple[int, int, int | str], bool] = {}
-        self._always_nonzero_cache: Dict[typing.Tuple[int, int, int | str], bool] = {}
+        self._always_zero_cache: Dict[
+            typing.Tuple[Z3ProofPolicy | None, int, int, int | str], Z3ProofResult
+        ] = {}
+        self._always_nonzero_cache: Dict[
+            typing.Tuple[Z3ProofPolicy | None, int, int, int | str], Z3ProofResult
+        ] = {}
+
+    @property
+    def policy(self) -> Z3ProofPolicy | None:
+        """Immutable policy used by this prover, if it is bounded."""
+
+        return self._policy
 
     def _resolve_context(
         self,
@@ -459,6 +604,170 @@ class Z3MopProver:
             ins if ins is not None else self._ins,
         )
 
+    @staticmethod
+    def _operand_key(mop: ida_hexrays.mop_t) -> tuple[int, int, int | str]:
+        try:
+            identity = structural_mop_hash(mop, 0)
+        except Exception:
+            identity = mop.dstr() if hasattr(mop, "dstr") else repr(mop)
+        return (int(mop.t), int(mop.size), identity)
+
+    def _ordered_pair_key(
+        self, mop1: ida_hexrays.mop_t, mop2: ida_hexrays.mop_t
+    ) -> tuple[
+        Z3ProofPolicy | None,
+        tuple[int, int, int | str],
+        tuple[int, int, int | str],
+    ]:
+        k1 = self._operand_key(mop1)
+        k2 = self._operand_key(mop2)
+        try:
+            if k2 < k1:
+                k1, k2 = k2, k1
+        except TypeError:
+            if repr(k2) < repr(k1):
+                k1, k2 = k2, k1
+        return self._policy, k1, k2
+
+    def _prepare_operand_pair(
+        self,
+        mop1: ida_hexrays.mop_t | MopSnapshot | None,
+        mop2: ida_hexrays.mop_t | MopSnapshot | None,
+        *,
+        blk: ida_hexrays.mblock_t | None,
+        operation: str,
+    ) -> tuple[ida_hexrays.mop_t, ida_hexrays.mop_t, int] | None:
+        if mop1 is None or mop2 is None:
+            return None
+        destination_mba = getattr(blk, "mba", None)
+        if isinstance(mop1, MopSnapshot):
+            mop1 = mop1.to_mop(destination_mba)
+        if isinstance(mop2, MopSnapshot):
+            mop2 = mop2.to_mop(destination_mba)
+        if not hasattr(mop1, "t") or not hasattr(mop1, "size"):
+            logger.warning("%s: mop1 is invalid or freed SWIG object", operation)
+            return None
+        if not hasattr(mop2, "t") or not hasattr(mop2, "size"):
+            logger.warning("%s: mop2 is invalid or freed SWIG object", operation)
+            return None
+        native_size = int(mop1.size)
+        if native_size not in {1, 2, 4, 8, 16} or native_size != int(mop2.size):
+            return None
+        return mop1, mop2, native_size
+
+    def _prove_operand_pair(
+        self,
+        mop1: ida_hexrays.mop_t | MopSnapshot | None,
+        mop2: ida_hexrays.mop_t | MopSnapshot | None,
+        *,
+        equality: bool,
+        blk: ida_hexrays.mblock_t | None,
+        ins: ida_hexrays.minsn_t | None,
+        solver: z3.Solver | None,
+        operation: str,
+    ) -> Z3ProofResult:
+        started_at = time.perf_counter()
+        try:
+            prepared = self._prepare_operand_pair(
+                mop1,
+                mop2,
+                blk=blk,
+                operation=operation,
+            )
+        except Exception as exc:
+            logger.debug("%s: failed to prepare operands: %s", operation, exc)
+            return _unsupported_result(started_at)
+        if prepared is None:
+            return _unsupported_result(started_at)
+        left_mop, right_mop, native_size = prepared
+        cache_key = self._ordered_pair_key(left_mop, right_mop)
+        cache = self._eq_cache if equality else self._neq_cache
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        budget = (
+            Z3ExpressionNodeBudget(self._policy)
+            if self._policy is not None
+            else None
+        )
+        try:
+            expressions = _translate_mop_pair(
+                left_mop,
+                right_mop,
+                operation=operation,
+                node_budget=budget,
+            )
+        except Z3NodeLimitExceeded:
+            assert budget is not None
+            return _node_limit_result(started_at, budget)
+        if expressions is None:
+            return _unsupported_result(
+                started_at,
+                budget.observed_nodes if budget is not None else None,
+            )
+        z3_mop1, z3_mop2 = expressions
+        native_bits = native_size * 8
+        try:
+            if z3_mop1.size() != native_bits or z3_mop2.size() != native_bits:
+                return _unsupported_result(
+                    started_at,
+                    budget.observed_nodes if budget is not None else None,
+                )
+            predicate = z3_mop1 == z3_mop2
+            query = z3.Not(predicate) if equality else predicate
+            query_solver = _new_query_solver(self._policy, solver)
+            query_solver.push()
+            try:
+                query_solver.add(query)
+                check_result = query_solver.check()
+            finally:
+                query_solver.pop()
+        except Exception as exc:
+            logger.debug("%s: failed to discharge query: %s", operation, exc)
+            result = Z3ProofResult(
+                status=Z3ProofStatus.ABSTAINED,
+                reason=Z3ProofAbstentionReason.SOLVER_UNKNOWN,
+                observed_expression_nodes=(
+                    budget.observed_nodes if budget is not None else None
+                ),
+                elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+            )
+        else:
+            result = _classify_solver_result(
+                check_result,
+                query_solver,
+                self._policy,
+                started_at,
+                budget.observed_nodes if budget is not None else None,
+            )
+        if result.status in {Z3ProofStatus.PROVED, Z3ProofStatus.DISPROVED}:
+            cache[cache_key] = result
+        return result
+
+    @requires_z3_installed
+    def prove_equal(
+        self,
+        mop1: ida_hexrays.mop_t | None,
+        mop2: ida_hexrays.mop_t | None,
+        *,
+        blk: ida_hexrays.mblock_t | None = None,
+        ins: ida_hexrays.minsn_t | None = None,
+        solver: z3.Solver | None = None,
+    ) -> Z3ProofResult:
+        """Return the structured result for a universal equality proof."""
+
+        blk, ins = self._resolve_context(blk, ins)
+        return self._prove_operand_pair(
+            mop1,
+            mop2,
+            equality=True,
+            blk=blk,
+            ins=ins,
+            solver=solver,
+            operation="prove_equal",
+        )
+
     @requires_z3_installed
     def are_equal(
         self,
@@ -469,75 +778,35 @@ class Z3MopProver:
         ins: ida_hexrays.minsn_t | None = None,
         solver: z3.Solver | None = None,
     ) -> bool:
-        """Prove mop1 == mop2 for all inputs. Replaces z3_check_mop_equality."""
-        if mop1 is None or mop2 is None:
-            return False
+        """Compatibility wrapper returning ``True`` only for ``PROVED``."""
+
+        return (
+            self.prove_equal(mop1, mop2, blk=blk, ins=ins, solver=solver).status
+            is Z3ProofStatus.PROVED
+        )
+
+    @requires_z3_installed
+    def prove_unequal(
+        self,
+        mop1: ida_hexrays.mop_t | None,
+        mop2: ida_hexrays.mop_t | None,
+        *,
+        blk: ida_hexrays.mblock_t | None = None,
+        ins: ida_hexrays.minsn_t | None = None,
+        solver: z3.Solver | None = None,
+    ) -> Z3ProofResult:
+        """Return the structured result for a universal inequality proof."""
+
         blk, ins = self._resolve_context(blk, ins)
-        destination_mba = getattr(blk, "mba", None)
-        # Convert MopSnapshot to mop_t at boundary
-        if isinstance(mop1, MopSnapshot):
-            mop1 = mop1.to_mop(destination_mba)
-        if isinstance(mop2, MopSnapshot):
-            mop2 = mop2.to_mop(destination_mba)
-        # Validate SWIG objects before accessing their attributes
-        if not hasattr(mop1, "t") or not hasattr(mop1, "size"):
-            logger.warning("are_equal: mop1 is invalid or freed SWIG object")
-            return False
-        if not hasattr(mop2, "t") or not hasattr(mop2, "size"):
-            logger.warning("are_equal: mop2 is invalid or freed SWIG object")
-            return False
-        native_size = int(mop1.size)
-        if native_size not in {1, 2, 4, 8, 16} or native_size != int(mop2.size):
-            return False
-        if logger.debug_on:
-            logger.debug(
-                "are_equal: mop1: %s, mop2: %s",
-                format_mop_t(mop1),
-                format_mop_t(mop2),
-            )
-            logger.debug(
-                "are_equal:\n\tmop1.dstr(): %s\n\tmop2.dstr(): %s\n\thashes: %016X vs %016X",
-                mop1.dstr(),
-                mop2.dstr(),
-                structural_mop_hash(mop1, 0),
-                structural_mop_hash(mop2, 0),
-            )
-        try:
-            k1 = (int(mop1.t), int(mop1.size), structural_mop_hash(mop1, 0))
-            k2 = (int(mop2.t), int(mop2.size), structural_mop_hash(mop2, 0))
-        except Exception:
-            k1 = (
-                int(mop1.t),
-                int(mop1.size),
-                mop1.dstr() if hasattr(mop1, "dstr") else repr(mop1),
-            )
-            k2 = (
-                int(mop2.t),
-                int(mop2.size),
-                mop2.dstr() if hasattr(mop2, "dstr") else repr(mop2),
-            )
-        if k2 < k1:
-            k1, k2 = k2, k1
-        cache_key = (k1, k2)
-        cached = self._eq_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        expressions = _translate_mop_pair(mop1, mop2, operation="are_equal")
-        if expressions is None:
-            return False
-        z3_mop1, z3_mop2 = expressions
-        native_bits = native_size * 8
-        if z3_mop1.size() != native_bits or z3_mop2.size() != native_bits:
-            return False
-        _solver = solver if solver is not None else get_solver()
-        _solver.push()
-        try:
-            _solver.add(z3.Not(z3_mop1 == z3_mop2))
-            is_equal = _solver.check() == z3.unsat
-        finally:
-            _solver.pop()
-        self._eq_cache[cache_key] = is_equal
-        return is_equal
+        return self._prove_operand_pair(
+            mop1,
+            mop2,
+            equality=False,
+            blk=blk,
+            ins=ins,
+            solver=solver,
+            operation="prove_unequal",
+        )
 
     @requires_z3_installed
     def are_unequal(
@@ -549,85 +818,12 @@ class Z3MopProver:
         ins: ida_hexrays.minsn_t | None = None,
         solver: z3.Solver | None = None,
     ) -> bool:
-        """Prove mop1 != mop2 for all inputs. Replaces z3_check_mop_inequality."""
-        if mop1 is None or mop2 is None:
-            return False
-        blk, ins = self._resolve_context(blk, ins)
-        destination_mba = getattr(blk, "mba", None)
-        # Convert MopSnapshot to mop_t at boundary
-        if isinstance(mop1, MopSnapshot):
-            mop1 = mop1.to_mop(destination_mba)
-        if isinstance(mop2, MopSnapshot):
-            mop2 = mop2.to_mop(destination_mba)
-        # Validate SWIG objects
-        if not hasattr(mop1, "t") or not hasattr(mop1, "size"):
-            logger.warning("are_unequal: mop1 is invalid or freed SWIG object")
-            return False
-        if not hasattr(mop2, "t") or not hasattr(mop2, "size"):
-            logger.warning("are_unequal: mop2 is invalid or freed SWIG object")
-            return False
-        native_size = int(mop1.size)
-        if native_size not in {1, 2, 4, 8, 16} or native_size != int(mop2.size):
-            return False
-        if logger.debug_on:
-            logger.debug(
-                "are_unequal: mop1: %s, mop2: %s",
-                format_mop_t(mop1),
-                format_mop_t(mop2),
-            )
-            logger.debug(
-                "are_unequal:\n\tmop1.dstr(): %s\n\tmop2.dstr(): %s\n\thashes: %016X vs %016X",
-                mop1.dstr(),
-                mop2.dstr(),
-                structural_mop_hash(mop1, 0),
-                structural_mop_hash(mop2, 0),
-            )
-        try:
-            k1 = (int(mop1.t), int(mop1.size), structural_mop_hash(mop1, 0))
-            k2 = (int(mop2.t), int(mop2.size), structural_mop_hash(mop2, 0))
-        except Exception:
-            k1 = (
-                int(mop1.t),
-                int(mop1.size),
-                mop1.dstr() if hasattr(mop1, "dstr") else repr(mop1),
-            )
-            k2 = (
-                int(mop2.t),
-                int(mop2.size),
-                mop2.dstr() if hasattr(mop2, "dstr") else repr(mop2),
-            )
-        if k2 < k1:
-            k1, k2 = k2, k1
-        cache_key = (k1, k2)
-        cached = self._neq_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        expressions = _translate_mop_pair(mop1, mop2, operation="are_unequal")
-        if expressions is None:
-            # SOUNDNESS (ticket llr-mra1): proving inequality requires an actual Z3
-            # proof. When an operand fails AST conversion -- e.g. a memory load
-            # ``[ds:p].1`` (m_ldx is an unsupported root opcode for the AST builder) --
-            # we have NO information, so we must abstain (False = "not provably
-            # unequal"), mirroring are_equal's symmetric failure return. Returning
-            # True here was an UNSOUND default: it let ``Z3setzRuleGeneric`` fold
-            # ``setz(*p, 0) -> 0`` for an unconstrained dereference (claiming
-            # ``*p != 0`` always), deleting the real runtime two-way branch -- the
-            # Approov ``if (*v6)`` loop-exit, collapsing the function to an infinite
-            # loop. An unconvertible operand is unknown, never provably-unequal.
-            return False
-        z3_mop1, z3_mop2 = expressions
-        native_bits = native_size * 8
-        if z3_mop1.size() != native_bits or z3_mop2.size() != native_bits:
-            return False
-        _solver = solver if solver is not None else get_solver()
-        _solver.push()
-        try:
-            _solver.add(z3_mop1 == z3_mop2)
-            is_unequal = _solver.check() == z3.unsat
-        finally:
-            _solver.pop()
-        self._neq_cache[cache_key] = is_unequal
-        return is_unequal
+        """Compatibility wrapper returning ``True`` only for ``PROVED``."""
+
+        return (
+            self.prove_unequal(mop1, mop2, blk=blk, ins=ins, solver=solver).status
+            is Z3ProofStatus.PROVED
+        )
 
     @requires_z3_installed
     def prove_comparison(
@@ -696,20 +892,36 @@ class Z3MopProver:
                 identity = mop.dstr() if hasattr(mop, "dstr") else repr(mop)
             return (int(mop.t), int(mop.size), identity)
 
-        cache_key = (comparison, _operand_key(mop1), _operand_key(mop2))
+        cache_key = (
+            comparison,
+            self._policy,
+            _operand_key(mop1),
+            _operand_key(mop2),
+        )
         if cache_key in self._comparison_cache:
             return self._comparison_cache[cache_key]
 
-        expressions = _translate_mop_pair(mop1, mop2, operation="prove_comparison")
+        budget = (
+            Z3ExpressionNodeBudget(self._policy)
+            if self._policy is not None
+            else None
+        )
+        try:
+            expressions = _translate_mop_pair(
+                mop1,
+                mop2,
+                operation="prove_comparison",
+                node_budget=budget,
+            )
+        except Z3NodeLimitExceeded:
+            return None
         if expressions is None:
-            self._comparison_cache[cache_key] = None
             return None
         left, right = expressions
         native_bits = native_size * 8
         if left.size() != native_bits or right.size() != native_bits:
-            self._comparison_cache[cache_key] = None
             return None
-        _solver = solver if solver is not None else get_solver()
+        _solver = _new_query_solver(self._policy, solver)
         try:
             predicate = build_predicate(left, right)
 
@@ -732,15 +944,214 @@ class Z3MopProver:
             )
             result = None
         else:
-            predicate_valid = negated_result == z3.unsat
-            predicate_impossible = predicate_result == z3.unsat
-            if predicate_valid == predicate_impossible:
+            if (
+                negated_result == z3.unknown
+                or predicate_result == z3.unknown
+            ):
                 result = None
             else:
-                result = predicate_valid
+                predicate_valid = negated_result == z3.unsat
+                predicate_impossible = predicate_result == z3.unsat
+                if predicate_valid == predicate_impossible:
+                    result = None
+                else:
+                    result = predicate_valid
 
-        self._comparison_cache[cache_key] = result
+        if result is not None:
+            self._comparison_cache[cache_key] = result
         return result
+
+    def _prepare_single_ast(
+        self,
+        mop: ida_hexrays.mop_t | MopSnapshot | None,
+        *,
+        blk: ida_hexrays.mblock_t | None,
+        ins: ida_hexrays.minsn_t | None,
+        operation: str,
+    ) -> tuple[
+        ida_hexrays.mop_t,
+        AstNode | AstLeaf,
+        Z3ExpressionNodeBudget | None,
+        bool,
+    ] | None:
+        mop = self._coerce_single_operand(mop, blk=blk, operation=operation)
+        if mop is None:
+            return None
+        budget = (
+            Z3ExpressionNodeBudget(self._policy)
+            if self._policy is not None
+            else None
+        )
+        if budget is None:
+            ast = mop_to_ast(mop)
+        else:
+            ast = mop_to_ast(mop, node_budget=budget)
+        visitor_needs_budget = False
+
+        is_resolvable = mop.t in (ida_hexrays.mop_r, ida_hexrays.mop_S)
+        if not is_resolvable and mop.t == ida_hexrays.mop_d:
+            nested = mop.d
+            if nested is not None and nested.opcode == ida_hexrays.m_ldx:
+                is_resolvable = True
+
+        if ast is None or (hasattr(ast, "is_leaf") and ast.is_leaf() and is_resolvable):
+            if blk is not None and ins is not None:
+                resolved_ast = _resolve_mop_to_ast(mop, blk, ins)
+                if resolved_ast is not None:
+                    ast = resolved_ast
+                    if self._policy is not None:
+                        # The resolver may expand a definition tree that is
+                        # not present in the original mop.  Discard the
+                        # builder's one-occurrence charge and count the real
+                        # resolved tree at the visitor recursion seam.
+                        budget = Z3ExpressionNodeBudget(self._policy)
+                        visitor_needs_budget = True
+                    if logger.debug_on:
+                        logger.debug(
+                            "%s: Resolved %s via tracker to AST: %s",
+                            operation,
+                            format_mop_t(mop),
+                            ast,
+                        )
+
+        if ast is not None and blk is not None and ins is not None:
+            ast = _recursively_resolve_ast(ast, blk, ins)
+            if logger.debug_on:
+                logger.debug("%s: After recursive resolution: %s", operation, ast)
+        if ast is None:
+            return None
+        return mop, ast, budget, visitor_needs_budget
+
+    def _coerce_single_operand(
+        self,
+        mop: ida_hexrays.mop_t | MopSnapshot | None,
+        *,
+        blk: ida_hexrays.mblock_t | None,
+        operation: str,
+    ) -> ida_hexrays.mop_t | None:
+        if mop is None:
+            return None
+        if isinstance(mop, MopSnapshot):
+            mop = mop.to_mop(getattr(blk, "mba", None))
+        if not hasattr(mop, "t") or not hasattr(mop, "size"):
+            logger.warning("%s: mop is invalid or freed SWIG object", operation)
+            return None
+        return mop
+
+    def _prove_always_zero_or_nonzero(
+        self,
+        mop: ida_hexrays.mop_t | MopSnapshot | None,
+        *,
+        nonzero: bool,
+        blk: ida_hexrays.mblock_t | None,
+        ins: ida_hexrays.minsn_t | None,
+        solver: z3.Solver | None,
+    ) -> Z3ProofResult:
+        started_at = time.perf_counter()
+        operation = "prove_always_nonzero" if nonzero else "prove_always_zero"
+        try:
+            native_mop = self._coerce_single_operand(
+                mop, blk=blk, operation=operation
+            )
+        except Exception as exc:
+            logger.debug("bounded operand preparation failed: %s", exc)
+            return _unsupported_result(started_at)
+        if native_mop is None:
+            return _unsupported_result(started_at)
+        try:
+            identity = structural_mop_hash(native_mop, 0)
+        except Exception:
+            identity = (
+                native_mop.dstr()
+                if hasattr(native_mop, "dstr")
+                else repr(native_mop)
+            )
+        cache_key = (self._policy, int(native_mop.t), int(native_mop.size), identity)
+        cache = self._always_nonzero_cache if nonzero else self._always_zero_cache
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            prepared = self._prepare_single_ast(
+                native_mop,
+                blk=blk,
+                ins=ins,
+                operation=operation,
+            )
+        except Z3NodeLimitExceeded as exc:
+            # The builder raises with the consumed count.  Recreate the receipt
+            # without exposing its mutable budget implementation to callers.
+            return Z3ProofResult(
+                status=Z3ProofStatus.ABSTAINED,
+                reason=Z3ProofAbstentionReason.NODE_LIMIT,
+                observed_expression_nodes=exc.observed_nodes,
+                elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+            )
+        except Exception as exc:
+            logger.debug("bounded AST preparation failed: %s", exc)
+            return _unsupported_result(started_at)
+        if prepared is None:
+            return _unsupported_result(started_at)
+        native_mop, ast, budget, visitor_needs_budget = prepared
+        observed = budget.observed_nodes if budget is not None else None
+        try:
+            create_z3_vars(ast.get_leaf_list())
+            visitor = (
+                AstNodeZ3Visitor(node_budget=budget)
+                if visitor_needs_budget
+                else AstNodeZ3Visitor()
+            )
+            z3_expr = visitor.visit(ast)
+        except Z3NodeLimitExceeded:
+            assert budget is not None
+            return _node_limit_result(started_at, budget)
+        except Exception as exc:
+            logger.debug("bounded zero translation failed: %s", exc)
+            return _unsupported_result(started_at, observed)
+        if z3_expr is None:
+            return _unsupported_result(started_at, observed)
+        try:
+            query_solver = _new_query_solver(self._policy, solver)
+            query_solver.push()
+            try:
+                zero = z3.BitVecVal(0, z3_expr.size())
+                query_solver.add(z3_expr == zero if nonzero else z3_expr != zero)
+                check_result = query_solver.check()
+            finally:
+                query_solver.pop()
+        except Exception as exc:
+            logger.debug("bounded zero solver query failed: %s", exc)
+            result = Z3ProofResult(
+                status=Z3ProofStatus.ABSTAINED,
+                reason=Z3ProofAbstentionReason.SOLVER_UNKNOWN,
+                observed_expression_nodes=observed,
+                elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+            )
+        else:
+            result = _classify_solver_result(
+                check_result,
+                query_solver,
+                self._policy,
+                started_at,
+                observed,
+            )
+        if result.status in {Z3ProofStatus.PROVED, Z3ProofStatus.DISPROVED}:
+            cache[cache_key] = result
+        return result
+
+    @requires_z3_installed
+    def prove_always_zero(
+        self,
+        mop: ida_hexrays.mop_t | None,
+        *,
+        blk: ida_hexrays.mblock_t | None = None,
+        ins: ida_hexrays.minsn_t | None = None,
+        solver: z3.Solver | None = None,
+    ) -> Z3ProofResult:
+        blk, ins = self._resolve_context(blk, ins)
+        return self._prove_always_zero_or_nonzero(
+            mop, nonzero=False, blk=blk, ins=ins, solver=solver
+        )
 
     @requires_z3_installed
     def is_always_zero(
@@ -750,94 +1161,23 @@ class Z3MopProver:
         blk: ida_hexrays.mblock_t | None = None,
         ins: ida_hexrays.minsn_t | None = None,
     ) -> bool:
-        """Prove mop == 0 for all inputs. Replaces z3_check_always_zero."""
-        if mop is None:
-            return False
+        """Compatibility wrapper returning ``True`` only for ``PROVED``."""
+
+        return self.prove_always_zero(mop, blk=blk, ins=ins).status is Z3ProofStatus.PROVED
+
+    @requires_z3_installed
+    def prove_always_nonzero(
+        self,
+        mop: ida_hexrays.mop_t | None,
+        *,
+        blk: ida_hexrays.mblock_t | None = None,
+        ins: ida_hexrays.minsn_t | None = None,
+        solver: z3.Solver | None = None,
+    ) -> Z3ProofResult:
         blk, ins = self._resolve_context(blk, ins)
-        # Convert MopSnapshot to mop_t at boundary
-        if isinstance(mop, MopSnapshot):
-            mop = mop.to_mop(getattr(blk, "mba", None))
-        # Validate SWIG object
-        if not hasattr(mop, "t") or not hasattr(mop, "size"):
-            logger.warning("is_always_zero: mop is invalid or freed SWIG object")
-            return False
-
-        # Check cache first
-        try:
-            cache_key = (int(mop.t), int(mop.size), structural_mop_hash(mop, 0))
-        except Exception:
-            cache_key = (
-                int(mop.t),
-                int(mop.size),
-                mop.dstr() if hasattr(mop, "dstr") else repr(mop),
-            )
-
-        cached = self._always_zero_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        # First try direct AST conversion
-        ast = mop_to_ast(mop)
-
-        # Determine if mop is resolvable (register/stack var or memory load)
-        is_resolvable = mop.t in (ida_hexrays.mop_r, ida_hexrays.mop_S)
-        if not is_resolvable and mop.t == ida_hexrays.mop_d:
-            nested = mop.d
-            if nested is not None and nested.opcode == ida_hexrays.m_ldx:
-                is_resolvable = True
-
-        # If mop is resolvable and we have context, try to find its definition
-        if ast is None or (hasattr(ast, "is_leaf") and ast.is_leaf() and is_resolvable):
-            if blk is not None and ins is not None:
-                resolved_ast = _resolve_mop_to_ast(mop, blk, ins)
-                if resolved_ast is not None:
-                    ast = resolved_ast
-                    if logger.debug_on:
-                        logger.debug(
-                            "is_always_zero: Resolved %s via tracker to AST: %s",
-                            format_mop_t(mop),
-                            ast,
-                        )
-
-        # Recursively resolve any register/stack leaves in the AST
-        if ast is not None and blk is not None and ins is not None:
-            ast = _recursively_resolve_ast(ast, blk, ins)
-            if logger.debug_on:
-                logger.debug("is_always_zero: After recursive resolution: %s", ast)
-
-        if ast is None:
-            self._always_zero_cache[cache_key] = False
-            return False
-
-        leaf_list = ast.get_leaf_list()
-        create_z3_vars(leaf_list)
-
-        try:
-            z3_expr = AstNodeZ3Visitor().visit(ast)
-        except Exception as e:
-            logger.debug("is_always_zero: Failed to convert to Z3: %s", e)
-            self._always_zero_cache[cache_key] = False
-            return False
-
-        if z3_expr is None:
-            self._always_zero_cache[cache_key] = False
-            return False
-
-        solver = get_solver()
-        solver.push()
-        try:
-            # Try to find ANY input where expr != 0
-            # If unsat, expr is always 0
-            solver.add(z3_expr != z3.BitVecVal(0, z3_expr.size()))
-            result = solver.check() == z3.unsat
-        except Exception as e:
-            logger.debug("is_always_zero: Z3 solver error: %s", e)
-            result = False
-        finally:
-            solver.pop()
-
-        self._always_zero_cache[cache_key] = result
-        return result
+        return self._prove_always_zero_or_nonzero(
+            mop, nonzero=True, blk=blk, ins=ins, solver=solver
+        )
 
     @requires_z3_installed
     def is_always_nonzero(
@@ -847,94 +1187,12 @@ class Z3MopProver:
         blk: ida_hexrays.mblock_t | None = None,
         ins: ida_hexrays.minsn_t | None = None,
     ) -> bool:
-        """Prove mop != 0 for all inputs. Replaces z3_check_always_nonzero."""
-        if mop is None:
-            return False
-        blk, ins = self._resolve_context(blk, ins)
-        # Convert MopSnapshot to mop_t at boundary
-        if isinstance(mop, MopSnapshot):
-            mop = mop.to_mop(getattr(blk, "mba", None))
-        # Validate SWIG object
-        if not hasattr(mop, "t") or not hasattr(mop, "size"):
-            logger.warning("is_always_nonzero: mop is invalid or freed SWIG object")
-            return False
+        """Compatibility wrapper returning ``True`` only for ``PROVED``."""
 
-        # Check cache first
-        try:
-            cache_key = (int(mop.t), int(mop.size), structural_mop_hash(mop, 0))
-        except Exception:
-            cache_key = (
-                int(mop.t),
-                int(mop.size),
-                mop.dstr() if hasattr(mop, "dstr") else repr(mop),
-            )
-
-        cached = self._always_nonzero_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        # First try direct AST conversion
-        ast = mop_to_ast(mop)
-
-        # Determine if mop is resolvable (register/stack var or memory load)
-        is_resolvable = mop.t in (ida_hexrays.mop_r, ida_hexrays.mop_S)
-        if not is_resolvable and mop.t == ida_hexrays.mop_d:
-            nested = mop.d
-            if nested is not None and nested.opcode == ida_hexrays.m_ldx:
-                is_resolvable = True
-
-        # If mop is resolvable and we have context, try to find its definition
-        if ast is None or (hasattr(ast, "is_leaf") and ast.is_leaf() and is_resolvable):
-            if blk is not None and ins is not None:
-                resolved_ast = _resolve_mop_to_ast(mop, blk, ins)
-                if resolved_ast is not None:
-                    ast = resolved_ast
-                    if logger.debug_on:
-                        logger.debug(
-                            "is_always_nonzero: Resolved %s via tracker to AST: %s",
-                            format_mop_t(mop),
-                            ast,
-                        )
-
-        # Recursively resolve any register/stack leaves in the AST
-        if ast is not None and blk is not None and ins is not None:
-            ast = _recursively_resolve_ast(ast, blk, ins)
-            if logger.debug_on:
-                logger.debug("is_always_nonzero: After recursive resolution: %s", ast)
-
-        if ast is None:
-            self._always_nonzero_cache[cache_key] = False
-            return False
-
-        leaf_list = ast.get_leaf_list()
-        create_z3_vars(leaf_list)
-
-        try:
-            z3_expr = AstNodeZ3Visitor().visit(ast)
-        except Exception as e:
-            logger.debug("is_always_nonzero: Failed to convert to Z3: %s", e)
-            self._always_nonzero_cache[cache_key] = False
-            return False
-
-        if z3_expr is None:
-            self._always_nonzero_cache[cache_key] = False
-            return False
-
-        solver = get_solver()
-        solver.push()
-        try:
-            # Try to find ANY input where expr == 0
-            # If unsat, expr is always nonzero
-            solver.add(z3_expr == z3.BitVecVal(0, z3_expr.size()))
-            result = solver.check() == z3.unsat
-        except Exception as e:
-            logger.debug("is_always_nonzero: Z3 solver error: %s", e)
-            result = False
-        finally:
-            solver.pop()
-
-        self._always_nonzero_cache[cache_key] = result
-        return result
+        return (
+            self.prove_always_nonzero(mop, blk=blk, ins=ins).status
+            is Z3ProofStatus.PROVED
+        )
 
     @requires_z3_installed
     def prove_equivalence(

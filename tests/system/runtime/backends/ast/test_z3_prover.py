@@ -398,3 +398,309 @@ class TestZ3MopProverAPI:
         assert prover.are_unequal(a, b) is False
         # are_equal already abstains soundly on the same conversion failure.
         assert prover.are_equal(a, b) is False
+
+    def test_bounded_result_and_boolean_wrapper_are_fail_closed(self, monkeypatch):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ProofPolicy,
+            Z3ProofStatus,
+        )
+
+        class _StubMop:
+            t = ida_hexrays.mop_r
+            size = 4
+
+            def __init__(self, name):
+                self.name = name
+
+            def dstr(self):
+                return self.name
+
+        monkeypatch.setattr(
+            z3mod,
+            "structural_mop_hash",
+            lambda mop, _depth: hash(mop.name),
+        )
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda _mops, **_kwargs: [
+                z3.BitVecVal(7, 32),
+                z3.BitVecVal(7, 32),
+            ],
+        )
+        policy = Z3ProofPolicy(max_expression_nodes=8, proof_timeout_ms=100)
+        prover = Z3MopProver(policy=policy)
+        left = _StubMop("left")
+        right = _StubMop("right")
+
+        result = prover.prove_equal(left, right)
+
+        assert result.status is Z3ProofStatus.PROVED
+        assert result.reason is None
+        assert prover.are_equal(left, right) is True
+
+    def test_bounded_sat_is_disproved_and_never_a_positive_boolean(self, monkeypatch):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ProofPolicy,
+            Z3ProofStatus,
+        )
+
+        left = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="left")
+        right = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="right")
+        monkeypatch.setattr(
+            z3mod,
+            "structural_mop_hash",
+            lambda mop, _depth: hash(mop.name),
+        )
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda _mops, **_kwargs: [
+                z3.BitVec("left", 32),
+                z3.BitVec("right", 32),
+            ],
+        )
+
+        result = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=8, proof_timeout_ms=100)
+        ).prove_equal(left, right)
+
+        assert result.status is Z3ProofStatus.DISPROVED
+        assert result.reason is None
+        assert result.status is not Z3ProofStatus.PROVED
+
+    def test_bounded_unknown_maps_timeout_and_does_not_touch_global_solver(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ProofAbstentionReason,
+            Z3ProofPolicy,
+            Z3ProofStatus,
+        )
+
+        class _StubMop:
+            t = ida_hexrays.mop_r
+            size = 4
+            name = "stub"
+
+            def dstr(self):
+                return self.name
+
+        class _UnknownSolver:
+            def set(self, **_kwargs):
+                return None
+
+            def push(self):
+                return None
+
+            def pop(self):
+                return None
+
+            def add(self, _query):
+                return None
+
+            def check(self):
+                return z3.unknown
+
+            def reason_unknown(self):
+                return "timeout"
+
+        global_solver = z3.Solver()
+        global_solver.set(timeout=777)
+        global_solver_before = global_solver.sexpr()
+        global_solver_calls = []
+        monkeypatch.setattr(
+            z3mod,
+            "get_solver",
+            lambda: global_solver_calls.append(True) or global_solver,
+        )
+        monkeypatch.setattr(z3mod.z3, "Solver", _UnknownSolver)
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda _mops, **_kwargs: [
+                z3.BitVecVal(7, 32),
+                z3.BitVecVal(7, 32),
+            ],
+        )
+
+        result = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=8, proof_timeout_ms=1)
+        ).prove_equal(_StubMop(), _StubMop())
+
+        assert result.status is Z3ProofStatus.ABSTAINED
+        assert result.reason is Z3ProofAbstentionReason.TIMEOUT
+        assert global_solver_calls == []
+        assert global_solver.sexpr() == global_solver_before
+
+    def test_abstentions_are_not_cached_and_can_be_retried(self, monkeypatch):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ProofAbstentionReason,
+            Z3ProofPolicy,
+            Z3ProofStatus,
+        )
+        from d810.errors import D810Z3Exception
+
+        class _StubMop:
+            t = ida_hexrays.mop_r
+            size = 4
+            name = "retry"
+
+            def dstr(self):
+                return self.name
+
+        attempts = []
+
+        def _flaky_translation(_mops, **_kwargs):
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise D810Z3Exception("unsupported AST opcode")
+            return [z3.BitVecVal(7, 32), z3.BitVecVal(7, 32)]
+
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            _flaky_translation,
+        )
+        prover = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=8, proof_timeout_ms=100)
+        )
+        first = prover.prove_equal(_StubMop(), _StubMop())
+        second = prover.prove_equal(_StubMop(), _StubMop())
+
+        assert first.status is Z3ProofStatus.ABSTAINED
+        assert first.reason is Z3ProofAbstentionReason.UNSUPPORTED_EXPRESSION
+        assert second.status is Z3ProofStatus.PROVED
+        assert attempts == [True, True]
+
+    def test_comparison_abstention_is_not_cached_and_can_be_retried(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofPolicy
+        from d810.errors import D810Z3Exception
+
+        left = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="comparison-left")
+        right = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="comparison-right")
+        monkeypatch.setattr(
+            z3mod,
+            "structural_mop_hash",
+            lambda mop, _depth: hash(mop.name),
+        )
+        attempts = []
+
+        def _flaky_translation(_mops, **_kwargs):
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise D810Z3Exception("unsupported AST opcode")
+            return [z3.BitVecVal(7, 32), z3.BitVecVal(7, 32)]
+
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            _flaky_translation,
+        )
+        prover = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=8, proof_timeout_ms=100)
+        )
+
+        assert prover.prove_comparison(left, right, "eq") is None
+        assert prover.prove_comparison(left, right, "eq") is True
+        assert attempts == [True, True]
+
+    def test_policy_isolation_keeps_node_limit_and_conclusive_cache_separate(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ProofAbstentionReason,
+            Z3ProofPolicy,
+            Z3ProofStatus,
+        )
+
+        class _StubMop:
+            t = ida_hexrays.mop_r
+            size = 4
+            name = "isolated"
+
+            def dstr(self):
+                return self.name
+
+        def _two_occurrence_translation(_mops, *, node_budget):
+            node_budget.consume()
+            node_budget.consume()
+            return [z3.BitVecVal(7, 32), z3.BitVecVal(7, 32)]
+
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            _two_occurrence_translation,
+        )
+        left = _StubMop()
+        right = _StubMop()
+        low = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=1, proof_timeout_ms=100)
+        )
+        high = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=2, proof_timeout_ms=100)
+        )
+
+        low_result = low.prove_equal(left, right)
+        high_result = high.prove_equal(left, right)
+
+        assert low_result.status is Z3ProofStatus.ABSTAINED
+        assert low_result.reason is Z3ProofAbstentionReason.NODE_LIMIT
+        assert high_result.status is Z3ProofStatus.PROVED
+
+    def test_builder_budget_is_consumed_at_translation_seam_before_second_occurrence(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ProofAbstentionReason,
+            Z3ProofPolicy,
+            Z3ProofStatus,
+        )
+
+        class _StubMop:
+            t = ida_hexrays.mop_r
+            size = 4
+            name = "builder-shape"
+
+            def dstr(self):
+                return self.name
+
+        builder_budgets = []
+
+        def _builder(_mop, *, node_budget):
+            builder_budgets.append(node_budget)
+            node_budget.consume()
+            return None
+
+        monkeypatch.setattr(z3mod, "mop_to_ast", _builder)
+        monkeypatch.setattr(
+            z3mod,
+            "structural_mop_hash",
+            lambda _mop, _depth: 1,
+        )
+
+        one_node_too_small = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=1, proof_timeout_ms=100)
+        ).prove_equal(_StubMop(), _StubMop())
+
+        assert one_node_too_small.status is Z3ProofStatus.ABSTAINED
+        assert one_node_too_small.reason is Z3ProofAbstentionReason.NODE_LIMIT
+        assert one_node_too_small.observed_expression_nodes == 1
+        assert len(builder_budgets) == 2
+        assert builder_budgets[0] is builder_budgets[1]

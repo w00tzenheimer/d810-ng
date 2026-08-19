@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 try:
@@ -297,3 +299,49 @@ class TestZ3SetComparisons:
         solver = z3.Solver()
         solver.add(z3.Not(z3.Or(signed_lt, signed_ge)))
         assert solver.check() == z3.unsat  # no y falsifies the tautology
+
+    def test_bounded_zero_predicate_results_preserve_fail_closed_wrappers(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ProofPolicy,
+            Z3ProofStatus,
+        )
+
+        class _FakeAst:
+            def is_leaf(self):
+                return True
+
+            def get_leaf_list(self):
+                return []
+
+        class _FakeVisitor:
+            def visit(self, _ast):
+                return z3.BitVecVal(0, 32)
+
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, name="zero")
+        monkeypatch.setattr(
+            z3mod,
+            "structural_mop_hash",
+            lambda _mop, _depth: 1,
+        )
+        monkeypatch.setattr(z3mod, "AstNodeZ3Visitor", _FakeVisitor)
+
+        def _fake_mop_to_ast(_mop, *, node_budget):
+            node_budget.consume()
+            return _FakeAst()
+
+        monkeypatch.setattr(z3mod, "mop_to_ast", _fake_mop_to_ast)
+        prover = Z3MopProver(
+            policy=Z3ProofPolicy(max_expression_nodes=1, proof_timeout_ms=100)
+        )
+
+        zero_result = prover.prove_always_zero(mop)
+        nonzero_result = prover.prove_always_nonzero(mop)
+
+        assert zero_result.status is Z3ProofStatus.PROVED
+        assert nonzero_result.status is Z3ProofStatus.DISPROVED
+        assert prover.is_always_zero(mop) is True
+        assert prover.is_always_nonzero(mop) is False
