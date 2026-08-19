@@ -106,6 +106,32 @@ def test_json_values_are_recursively_copied_frozen_and_validated() -> None:
             copy_json_value(invalid)
 
 
+def test_json_value_cycles_are_rejected_as_type_errors() -> None:
+    copy_json_value = getattr(extension_api, "_copy_json_value")
+    direct_list: list[object] = []
+    direct_list.append(direct_list)
+    indirect_list: list[object] = []
+    indirect_list_child: list[object] = []
+    indirect_list.append(indirect_list_child)
+    indirect_list_child.append(indirect_list)
+    direct_dict: dict[str, object] = {}
+    direct_dict["self"] = direct_dict
+    indirect_dict: dict[str, object] = {}
+    indirect_dict_child: dict[str, object] = {}
+    indirect_dict["child"] = indirect_dict_child
+    indirect_dict_child["parent"] = indirect_dict
+
+    for cyclic in (direct_list, indirect_list, direct_dict, indirect_dict):
+        with pytest.raises(TypeError):
+            copy_json_value(cyclic)
+
+    shared = {"value": []}
+    copied = copy_json_value({"left": shared, "right": shared})
+    assert copied["left"] == copied["right"]
+    assert copied["left"] is not copied["right"]
+    assert copied["left"]["value"] is not copied["right"]["value"]
+
+
 def test_portable_api_imports_without_ida_packages() -> None:
     source_root = Path(__file__).parents[3] / "src"
     script = """

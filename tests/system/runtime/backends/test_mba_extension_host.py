@@ -206,3 +206,53 @@ class TestNativeMbaExtensionHost:
 
         left.delete("sample")
         assert left.get_json("sample") is None
+
+    def test_persistence_rejects_cycles_on_put_and_malformed_reads(self, monkeypatch):
+        host = native_mba_host_services()
+        persistence = host.persistence("extension-host-cycle-test")
+
+        direct_list = []
+        direct_list.append(direct_list)
+        indirect_list = []
+        indirect_list_child = []
+        indirect_list.append(indirect_list_child)
+        indirect_list_child.append(indirect_list)
+        direct_dict = {}
+        direct_dict["self"] = direct_dict
+        indirect_dict = {}
+        indirect_dict_child = {}
+        indirect_dict["child"] = indirect_dict_child
+        indirect_dict_child["parent"] = indirect_dict
+
+        for cyclic in (
+            {"nested": direct_list},
+            {"nested": indirect_list},
+            direct_dict,
+            indirect_dict,
+        ):
+            with pytest.raises(TypeError):
+                persistence.put_json("cyclic", cyclic)
+
+        malformed_list = []
+        malformed_list.append(malformed_list)
+        malformed_list_child = []
+        malformed_list_indirect = [malformed_list_child]
+        malformed_list_child.append(malformed_list_indirect)
+        malformed_dict = {}
+        malformed_dict["self"] = malformed_dict
+        malformed_dict_child = {}
+        malformed_dict_indirect = {"child": malformed_dict_child}
+        malformed_dict_child["parent"] = malformed_dict_indirect
+
+        for malformed in (
+            {"nested": malformed_list},
+            {"nested": malformed_list_indirect},
+            malformed_dict,
+            malformed_dict_indirect,
+        ):
+            monkeypatch.setattr(
+                persistence._storage,
+                "get_native_patch_blob",
+                lambda _scope, _key, malformed=malformed: malformed,
+            )
+            assert persistence.get_json("malformed") is None

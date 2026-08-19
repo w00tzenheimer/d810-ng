@@ -26,7 +26,9 @@ from d810.mba.typed_term import TypedBvTerm
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
 
 
-def _copy_json_value(value: object) -> object:
+def _copy_json_value(
+    value: object, *, _active_containers: set[int] | None = None
+) -> object:
     """Copy one JSON value into a plain, validated storage structure.
 
     This helper is intentionally private: the extension contract exposes the
@@ -41,15 +43,28 @@ def _copy_json_value(value: object) -> object:
         if not math.isfinite(value):
             raise TypeError("persistence values must contain finite JSON numbers")
         return value
-    if isinstance(value, Mapping):
-        copied: dict[str, object] = {}
-        for key, item in value.items():
-            if type(key) is not str:
-                raise TypeError("persistence mapping keys must be strings")
-            copied[key] = _copy_json_value(item)
-        return copied
-    if isinstance(value, list):
-        return [_copy_json_value(item) for item in value]
+    if isinstance(value, (Mapping, list)):
+        active_containers = set() if _active_containers is None else _active_containers
+        identity = id(value)
+        if identity in active_containers:
+            raise TypeError("persistence values must not contain cycles")
+        active_containers.add(identity)
+        try:
+            if isinstance(value, Mapping):
+                copied: dict[str, object] = {}
+                for key, item in value.items():
+                    if type(key) is not str:
+                        raise TypeError("persistence mapping keys must be strings")
+                    copied[key] = _copy_json_value(
+                        item, _active_containers=active_containers
+                    )
+                return copied
+            return [
+                _copy_json_value(item, _active_containers=active_containers)
+                for item in value
+            ]
+        finally:
+            active_containers.remove(identity)
     raise TypeError("persistence value must be JSON-safe")
 
 
