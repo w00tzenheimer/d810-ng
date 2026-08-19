@@ -4,7 +4,13 @@ import ast
 from pathlib import Path
 
 import d810.ui.panel_density_logic as panel_density_logic
-from d810.ui.panel_density_logic import MIN_TREE_ROWS, plan_panel_density
+from d810.ui.panel_density_logic import (
+    CHOICE_LIST_MAX_HEIGHT,
+    CHOICE_LIST_MIN_HEIGHT,
+    choice_list_height,
+    MIN_TREE_ROWS,
+    plan_panel_density,
+)
 
 
 ROW_PX = 20
@@ -97,3 +103,20 @@ def test_logic_module_imports_no_ida_or_qt_modules() -> None:
     assert imported_roots.isdisjoint(
         {"idaapi", "ida_kernwin", "ida_hexrays", "PyQt5", "PySide6"}
     )
+
+
+def test_choice_list_height_clamps_zero_and_small_row_counts_to_minimum() -> None:
+    assert choice_list_height(0) == CHOICE_LIST_MIN_HEIGHT
+    assert choice_list_height(1) == CHOICE_LIST_MIN_HEIGHT
+
+
+def test_choice_list_height_scales_dense_choice_lists_without_screen_geometry() -> None:
+    four_rows = choice_list_height(4)
+    twelve_rows = choice_list_height(12)
+
+    assert CHOICE_LIST_MIN_HEIGHT < four_rows < CHOICE_LIST_MAX_HEIGHT
+    assert twelve_rows == CHOICE_LIST_MAX_HEIGHT
+
+
+def test_choice_list_height_rejects_negative_visible_row_counts() -> None:
+    assert choice_list_height(-1) == CHOICE_LIST_MIN_HEIGHT

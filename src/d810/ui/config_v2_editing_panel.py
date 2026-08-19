@@ -11,6 +11,7 @@ from d810.core.logging import getLogger
 from d810.families.registry import registered_families
 from d810.ui.config_v2_editing_logic import (
     ConfigV2EditorScreen,
+    ConfigV2FieldSectionView,
     ConfigV2InspectorPrimarySection,
     apply_rule_catalog_selection,
     apply_rule_catalog_selection_to_options,
@@ -22,9 +23,8 @@ from d810.ui.config_v2_editing_logic import (
     project_config_v2_document,
     project_config_v2_editor_view,
     project_serializer_rows,
-    typed_field_option_value,
-    transform_option_fields,
 )
+from d810.ui.panel_density_logic import choice_list_height
 from d810.ui.project_config_logic import ConfigV2FocusTarget
 
 logger = getLogger("d810.ui")
@@ -184,11 +184,15 @@ if IDA_AVAILABLE:
                 on_query_changed=self._rule_catalog_query_changed,
                 on_selection_changed=self._apply_rule_catalog_selection,
             )
-            self.typed_options_body = QtWidgets.QWidget()
-            self.typed_options_layout = QtWidgets.QFormLayout(self.typed_options_body)
-            self.typed_options_layout.setContentsMargins(0, 0, 0, 0)
-            self.typed_options_layout.setSpacing(4)
-            configure_left_aligned_form(self.typed_options_layout)
+            self.options_sections_body = QtWidgets.QWidget()
+            self.options_sections_layout = QtWidgets.QVBoxLayout(
+                self.options_sections_body
+            )
+            self.options_sections_layout.setContentsMargins(0, 0, 0, 0)
+            self.options_sections_layout.setSpacing(4)
+            self.options_scroll = QtWidgets.QScrollArea()
+            self.options_scroll.setWidgetResizable(True)
+            self.field_section_widgets: dict[str, typing.Any] = {}
             self.raw_contract_button = QtWidgets.QToolButton()
             self.raw_contract_button.setText("View contract...")
             self.pipeline_button = QtWidgets.QToolButton()
@@ -302,7 +306,7 @@ if IDA_AVAILABLE:
             options_layout = QtWidgets.QVBoxLayout(self.options_group)
             options_layout.setContentsMargins(4, 4, 4, 4)
             options_layout.setSpacing(4)
-            options_layout.addWidget(self.typed_options_body)
+            options_layout.addWidget(self.options_sections_body)
             inspector_layout.addWidget(self.options_group, stretch=0)
             inspector_layout.addWidget(self.inspector_elastic_sink, stretch=0)
 
@@ -995,51 +999,85 @@ if IDA_AVAILABLE:
             )
 
         def _render_typed_options(self, inspector: typing.Any | None) -> None:
-            while self.typed_options_layout.count():
-                item = self.typed_options_layout.takeAt(0)
+            previous_primary = self.options_scroll.takeWidget()
+            if previous_primary is not None:
+                previous_primary.hide()
+                previous_primary.setParent(None)
+                previous_primary.deleteLater()
+            while self.options_sections_layout.count():
+                item = self.options_sections_layout.takeAt(0)
                 widget = item.widget()
-                if widget is not None:
+                if widget is not None and widget is not self.options_scroll:
                     widget.hide()
                     widget.setParent(None)
                     widget.deleteLater()
-            self.typed_options_body.setVisible(False)
+            self.field_section_widgets.clear()
+            self.options_scroll.setVisible(False)
+            self.options_sections_body.setVisible(False)
             self.options_group.setVisible(False)
             if inspector is None:
                 return
-            entry = self._catalog_by_pass_id.get(inspector.pass_id)
-            spec = entry.editor_spec if entry is not None else None
-            fields = tuple(spec.fields) if spec is not None else ()
-            if inspector.transform_catalog is not None:
-                fields += transform_option_fields(
-                    inspector.transform_catalog.pass_editor_spec,
-                    set(inspector.transform_catalog.selected_ids),
-                )
-            if spec is None or not fields:
+            sections = tuple(inspector.field_sections)
+            if not sections:
                 return
-            self.typed_options_body.setVisible(True)
+            self.options_sections_body.setVisible(True)
             self.options_group.setVisible(True)
-            for field in fields:
-                control = self._typed_option_control(
-                    field,
-                    typed_field_option_value(inspector.options, field),
-                )
+            for section in sections:
+                if not section.entries:
+                    continue
+                group, _body = self._build_field_section_widget(section)
+                self.field_section_widgets[section.section_id] = group
+                stretch = 1 if section.presentation.value == "primary" else 0
+                if stretch:
+                    self.options_scroll.setWidget(group)
+                    self.options_scroll.setVisible(True)
+                    self.options_sections_layout.addWidget(
+                        self.options_scroll,
+                        stretch=stretch,
+                    )
+                else:
+                    self.options_sections_layout.addWidget(group, stretch=stretch)
+
+        def _build_field_section_widget(
+            self,
+            section: ConfigV2FieldSectionView,
+        ) -> tuple[typing.Any, typing.Any]:
+            """Build one section from its immutable projection metadata."""
+
+            group = QtWidgets.QGroupBox(section.label)
+            group_layout = QtWidgets.QVBoxLayout(group)
+            group_layout.setContentsMargins(4, 4, 4, 4)
+            group_layout.setSpacing(4)
+            if section.description:
+                description = QtWidgets.QLabel(section.description)
+                description.setWordWrap(True)
+                group_layout.addWidget(description)
+            body = QtWidgets.QWidget(group)
+            section_form = QtWidgets.QFormLayout(body)
+            section_form.setContentsMargins(0, 0, 0, 0)
+            section_form.setSpacing(4)
+            configure_left_aligned_form(section_form)
+            group_layout.addWidget(body)
+            for entry in section.entries:
+                if not entry.visible and not entry.is_controller:
+                    continue
+                field = entry.field
+                control = self._typed_option_control(field, entry.value)
                 annotations: list[str] = []
                 if field.experimental:
                     annotations.append(f"Experimental: {field.experimental_reason}")
                 if field.read_only:
                     annotations.append("Fixed: this safety setting cannot be disabled.")
                 if field.advisory.value != "none":
-                    annotations.append(
-                        f"Advisory: {field.advisory_reason}"
-                    )
+                    annotations.append(f"Advisory: {field.advisory_reason}")
                 label = QtWidgets.QLabel(field.label)
                 label.setToolTip("\n".join((field.description, *annotations)))
                 control.setToolTip(field.description)
-                control.setEnabled(not field.read_only)
+                control.setEnabled(entry.editable)
                 if not annotations:
-                    self.typed_options_layout.addRow(label, control)
+                    section_form.addRow(label, control)
                     continue
-                annotated_control = QtWidgets.QWidget(self.typed_options_body)
+                annotated_control = QtWidgets.QWidget(body)
                 annotated_layout = QtWidgets.QVBoxLayout(annotated_control)
                 annotated_layout.setContentsMargins(0, 0, 0, 0)
                 annotated_layout.setSpacing(2)
@@ -1048,7 +1086,8 @@ if IDA_AVAILABLE:
                 annotation.setWordWrap(True)
                 annotation.setToolTip("\n".join(annotations))
                 annotated_layout.addWidget(annotation)
-                self.typed_options_layout.addRow(label, annotated_control)
+                section_form.addRow(label, annotated_control)
+            return group, body
 
         def _typed_option_control(
             self,
@@ -1118,17 +1157,16 @@ if IDA_AVAILABLE:
                         else _unchecked_state()
                     )
                     control.addItem(item)
-
-                def checked_choices() -> list[str]:
-                    return [
-                        control.item(index).text()
-                        for index in range(control.count())
-                        if control.item(index).checkState() == _checked_state()
-                    ]
-
+                control.setMinimumHeight(choice_list_height(0))
+                control.setMaximumHeight(choice_list_height(len(field.choices)))
                 control.itemChanged.connect(
-                    lambda _item, field=field: self._apply_typed_option(
-                        field, checked_choices()
+                    lambda _item, control=control, field=field: self._apply_typed_option(
+                        field,
+                        [
+                            control.item(index).text()
+                            for index in range(control.count())
+                            if control.item(index).checkState() == _checked_state()
+                        ],
                     )
                 )
                 return control

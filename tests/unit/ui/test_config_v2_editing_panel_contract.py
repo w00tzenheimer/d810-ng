@@ -158,15 +158,72 @@ def test_details_disclosure_is_collapsed_readonly_contract_metadata() -> None:
 
 
 def test_inspector_details_and_typed_options_use_the_compact_form_policy() -> None:
-    init_source = _source("__init__")
     create_source = _source("OnCreate")
 
-    assert "configure_left_aligned_form(self.typed_options_layout)" in init_source
-    assert "self.typed_options_layout.setContentsMargins(0, 0, 0, 0)" in init_source
+    assert "configure_left_aligned_form(section_form)" in _source(
+        "_build_field_section_widget"
+    )
+    assert "section_form.setContentsMargins(0, 0, 0, 0)" in _source(
+        "_build_field_section_widget"
+    )
     assert "configure_left_aligned_form(details_layout)" in create_source
     assert "details_layout.setContentsMargins(0, 0, 0, 0)" in create_source
     assert "inspector_layout.setSpacing(4)" in create_source
     assert "layout.setSpacing(4)" in create_source
+
+
+def test_typed_options_render_generic_metadata_driven_field_sections() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+    render_source = _source("_render_typed_options")
+    section_source = _source("_build_field_section_widget")
+
+    assert "self.options_scroll = QtWidgets.QScrollArea()" in init_source
+    assert "self.options_scroll.setWidgetResizable(True)" in init_source
+    assert "self.field_section_widgets" in init_source
+    assert "self.options_sections_body" in create_source
+    assert "self.options_sections_layout" in init_source
+    assert "inspector.field_sections" in render_source
+    assert "section.section_id" in render_source
+    assert "self._build_field_section_widget(section)" in render_source
+    assert "entry.visible" in section_source
+    assert "entry.is_controller" in section_source
+    assert "entry.editable" in section_source
+    assert "section.label" in section_source
+    assert "section.description" in section_source
+    assert "section.presentation" in render_source
+    assert "QScrollArea" in source
+    for forbidden in (
+        "constant-simplification",
+        "fold-readonly-data",
+        "global_const_types",
+    ):
+        assert forbidden not in source
+
+
+def test_field_section_stretch_and_empty_projection_are_generic() -> None:
+    render_source = _source("_render_typed_options")
+
+    assert "if not section.entries" in render_source
+    assert "self.options_sections_layout.addWidget(group, stretch=stretch)" in (
+        render_source
+    )
+    assert "stretch = 1 if section.presentation.value == 'primary' else 0" in (
+        render_source
+    )
+    assert "self.field_section_widgets[section.section_id] = group" in (
+        render_source
+    )
+
+
+def test_section_renderer_preserves_controller_visibility_and_control_state() -> None:
+    section_source = _source("_build_field_section_widget")
+
+    assert "if not entry.visible" in section_source
+    assert "control.setEnabled(entry.editable)" in section_source
+    assert "entry.is_controller" in section_source
+    assert "_typed_option_control" in section_source
 
 
 def test_screen_transition_checks_stack_membership_before_switching() -> None:
@@ -221,13 +278,12 @@ def test_inspector_rule_catalog_uses_the_typed_projection_and_closed_adapter_wri
 
 
 def test_typed_option_controls_keep_experimental_and_advisory_metadata_visible() -> None:
-    source = _source("_render_typed_options")
+    source = _source("_build_field_section_widget")
 
     assert "Experimental:" in source
     assert "Advisory:" in source
     assert "field.experimental_reason" in source
     assert "field.advisory_reason" in source
-    assert "transform_option_fields" in source
 
 
 def test_checkable_items_combine_flags_through_qt_compatibility() -> None:
@@ -470,6 +526,24 @@ class _BehaviorWidget:
     def setContentsMargins(self, *args: object) -> None:
         del args
 
+    def hide(self) -> None:
+        self._visible = False
+
+    def setParent(self, parent: object) -> None:
+        del parent
+
+    def deleteLater(self) -> None:
+        return None
+
+    def setWordWrap(self, enabled: bool) -> None:
+        del enabled
+
+    def setMinimumHeight(self, height: int) -> None:
+        self.minimum_height = int(height)
+
+    def setMaximumHeight(self, height: int) -> None:
+        self.maximum_height = int(height)
+
     def setSpacing(self, spacing: int) -> None:
         del spacing
 
@@ -483,6 +557,8 @@ class _BehaviorLayout(_BehaviorWidget):
         self.children: list[object] = []
         self.stretches: dict[int, int] = {}
         self.stretch_calls: list[tuple[int, int]] = []
+        if args and hasattr(args[0], "__dict__"):
+            args[0]._layout = self
 
     def addWidget(self, widget: object, **kwargs: object) -> None:
         self.children.append(widget)
@@ -491,6 +567,16 @@ class _BehaviorLayout(_BehaviorWidget):
 
     def addLayout(self, layout: object) -> None:
         self.children.append(layout)
+
+    def addRow(self, *widgets: object) -> None:
+        self.children.append(tuple(widgets))
+
+    def count(self) -> int:
+        return len(self.children)
+
+    def takeAt(self, index: int) -> object:
+        widget = self.children.pop(index)
+        return types.SimpleNamespace(widget=lambda: widget if hasattr(widget, "hide") else None)
 
     def addStretch(self, *args: object) -> None:
         del args
@@ -532,6 +618,19 @@ class _BehaviorStackedWidget(_BehaviorWidget):
 
     def currentWidget(self) -> object | None:
         return self._current
+
+
+class _BehaviorScrollArea(_BehaviorWidget):
+    def setWidgetResizable(self, enabled: bool) -> None:
+        self.widget_resizable = bool(enabled)
+
+    def setWidget(self, widget: object) -> None:
+        self._widget = widget
+
+    def takeWidget(self) -> object | None:
+        widget = getattr(self, "_widget", None)
+        self._widget = None
+        return widget
 
 
 class _BehaviorGroupBox(_BehaviorWidget):
@@ -621,6 +720,7 @@ class _BehaviorListWidget(_BehaviorWidget):
         super().__init__(*args, **kwargs)
         self._items: list[_BehaviorListItem] = []
         self._row = -1
+        self.itemChanged = _BehaviorSignal()
 
     def addItem(self, item: _BehaviorListItem) -> None:
         self._items.append(item)
@@ -815,6 +915,9 @@ def _load_behavior_panel(monkeypatch):
         QTabWidget=_BehaviorTabs,
         QToolButton=_BehaviorButton,
         QStackedWidget=_BehaviorStackedWidget,
+        QScrollArea=_BehaviorScrollArea,
+        QFormLayout=_BehaviorLayout,
+        QLineEdit=_BehaviorWidget,
         QVBoxLayout=_BehaviorLayout,
         QWidget=_BehaviorWidget,
     )
@@ -850,6 +953,55 @@ def _load_behavior_panel(monkeypatch):
         types.SimpleNamespace(name="tigress"),
     )
     return module, module.ConfigV2EditingPanel
+
+
+def test_fake_qt_section_renderer_omits_hidden_subordinates_and_keeps_controller(
+    monkeypatch,
+) -> None:
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    from d810.core.pass_editor_spec import FieldControlKind, FieldEditorSpec
+
+    controller = FieldEditorSpec(
+        field_id="enabled",
+        label="Enabled",
+        path=("enabled",),
+        control=FieldControlKind.BOOLEAN,
+        default=True,
+    )
+    subordinate = FieldEditorSpec(
+        field_id="value",
+        label="Value",
+        path=("value",),
+        control=FieldControlKind.TEXT,
+        default="kept",
+    )
+    section = types.SimpleNamespace(
+        label="Controls",
+        description="Declared controls.",
+        entries=(
+            types.SimpleNamespace(
+                field=controller,
+                value=True,
+                visible=True,
+                editable=True,
+                is_controller=True,
+            ),
+            types.SimpleNamespace(
+                field=subordinate,
+                value="kept",
+                visible=False,
+                editable=False,
+                is_controller=False,
+            ),
+        ),
+    )
+    panel = object.__new__(panel_type)
+    panel._apply_typed_option = lambda field, value: None
+
+    group, body = panel_type._build_field_section_widget(panel, section)
+
+    assert group._text == "Controls"
+    assert len(body._layout.children) == 1
 
 
 class _BehaviorAdapter:

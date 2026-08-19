@@ -14,6 +14,15 @@ import dataclasses
 MIN_TREE_ROWS = 6
 """Rows of pass tree the panel refuses to shrink below before shedding chrome."""
 
+CHOICE_LIST_ROW_HEIGHT = 24
+"""Approximate row height used by dense choice-backed option lists."""
+
+CHOICE_LIST_MIN_HEIGHT = 48
+"""Minimum height that keeps a choice-backed list discoverable."""
+
+CHOICE_LIST_MAX_HEIGHT = 224
+"""Maximum height before a choice-backed list must scroll internally."""
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class PanelDensityPlan:
@@ -22,6 +31,28 @@ class PanelDensityPlan:
     show_filter: bool
     show_details: bool
     details_locked: bool
+
+
+def choice_list_height(
+    visible_row_count: int,
+    *,
+    row_px: int = CHOICE_LIST_ROW_HEIGHT,
+    minimum_px: int = CHOICE_LIST_MIN_HEIGHT,
+    maximum_px: int = CHOICE_LIST_MAX_HEIGHT,
+) -> int:
+    """Return a bounded height for a choice-backed option list.
+
+    The calculation is intentionally independent of screen geometry.  A list
+    with no visible rows still receives a small stable footprint, while longer
+    lists use their own vertical scrollbar after reaching the declared cap.
+    """
+
+    if maximum_px < minimum_px:
+        raise ValueError("maximum_px must not be less than minimum_px")
+    rows = max(0, int(visible_row_count))
+    row_height = max(1, int(row_px))
+    preferred = rows * row_height
+    return min(max(preferred, int(minimum_px)), int(maximum_px))
 
 
 def plan_panel_density(
@@ -81,4 +112,12 @@ def plan_panel_density(
     )
 
 
-__all__ = ["MIN_TREE_ROWS", "PanelDensityPlan", "plan_panel_density"]
+__all__ = [
+    "CHOICE_LIST_MAX_HEIGHT",
+    "CHOICE_LIST_MIN_HEIGHT",
+    "CHOICE_LIST_ROW_HEIGHT",
+    "MIN_TREE_ROWS",
+    "PanelDensityPlan",
+    "choice_list_height",
+    "plan_panel_density",
+]
