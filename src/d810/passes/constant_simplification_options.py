@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import Enum
 from types import MappingProxyType
 from d810.core.execution_scope import ExecutionPipeline
 from d810.core.pass_ids import PassId
 from d810.core.typing import TYPE_CHECKING
 from d810.ir.maturity import IRMaturity, IR_MATURITY_ORDER
+from d810.passes.execution_stages import StageLifecycleDomain
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 
 if TYPE_CHECKING:
@@ -60,13 +60,6 @@ _PROVIDER_BY_IR = MappingProxyType(
 )
 _IR_BY_PROVIDER = {provider: maturity for maturity, provider in _PROVIDER_BY_IR.items()}
 _IR_BY_NAME = {maturity.name: maturity for maturity in IRMaturity}
-
-
-class StageLifecycleDomain(str, Enum):
-    """Lifecycle authority that owns one compiled stage."""
-
-    PRE_HEXRAYS = "pre_hexrays"
-    MICROCODE = "microcode"
 
 
 def _freeze_value(value: object) -> object:
@@ -550,8 +543,10 @@ def compile_constant_simplification_schedule(
                 "its requested maturities have an empty intersection with pass "
                 f"maturity_gates; requested: {requested}; pass maturity_gates: {gates}"
             )
-        runtime_order = pipeline_orders.get(descriptor.pipeline, 0)
-        pipeline_orders[descriptor.pipeline] = runtime_order + 1
+        runtime_order: int | None = None
+        if stage_options.enabled:
+            runtime_order = pipeline_orders.get(descriptor.pipeline, 0)
+            pipeline_orders[descriptor.pipeline] = runtime_order + 1
         compiled.append(
             CompiledConstantStage(
                 pass_id=str(descriptor.pass_id),

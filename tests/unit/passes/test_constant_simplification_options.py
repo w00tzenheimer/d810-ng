@@ -290,3 +290,48 @@ def test_compiled_schedule_has_frozen_stage_tuple_and_preparation_domain_is_sepa
     assert isinstance(schedule.stages, tuple)
     assert all(stage.pipeline is not None for stage in schedule.stages)
     assert all(stage.lifecycle_domain is StageLifecycleDomain.MICROCODE for stage in schedule.stages)
+
+
+def test_disabled_first_instruction_stage_does_not_consume_runtime_order_slot() -> None:
+    schedule = build_constant_simplification_pass(
+        _config(
+            {
+                "stages": {
+                    "fold-readonly-data": {"enabled": False},
+                    "forward-constants": {"enabled": False},
+                }
+            }
+        )
+    ).options
+
+    assert _stage(schedule, "fold-readonly-data").runtime_order is None
+    assert _stage(schedule, "fold-constant-subtree").runtime_order == 0
+    assert _stage(schedule, "forward-constants").runtime_order is None
+
+
+def test_all_disabled_and_mixed_pipeline_orders_are_contiguous() -> None:
+    all_disabled = build_constant_simplification_pass(
+        _config(
+            {
+                "stages": {
+                    "fold-readonly-data": {"enabled": False},
+                    "fold-constant-subtree": {"enabled": False},
+                    "forward-constants": {"enabled": False},
+                }
+            }
+        )
+    ).options
+    assert [stage.runtime_order for stage in all_disabled.stages] == [None, None, None]
+
+    mixed = build_constant_simplification_pass(
+        _config(
+            {
+                "stages": {
+                    "fold-constant-subtree": {"enabled": False},
+                }
+            }
+        )
+    ).options
+    assert _stage(mixed, "fold-readonly-data").runtime_order == 0
+    assert _stage(mixed, "fold-constant-subtree").runtime_order is None
+    assert _stage(mixed, "forward-constants").runtime_order == 0

@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import Enum
 
 from d810.core.execution_scope import ExecutionPipeline
 from d810.ir.maturity import IRMaturity, IR_MATURITY_ORDER
-from d810.passes.constant_simplification_options import StageLifecycleDomain
+
+
+class StageLifecycleDomain(str, Enum):
+    """Lifecycle authority that owns one compiled execution stage."""
+
+    PRE_HEXRAYS = "pre_hexrays"
+    MICROCODE = "microcode"
 
 
 @dataclass(frozen=True, slots=True)
