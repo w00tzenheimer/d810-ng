@@ -118,15 +118,21 @@ def _proof_mba_identity(mba: object) -> int | None:
 
 
 def _proof_operand_has_location(
-    mop: ida_hexrays.mop_t,
+    mop: ida_hexrays.mop_t | MopSnapshot,
     blk: ida_hexrays.mblock_t,
 ) -> bool:
-    """Require IDA to materialize a non-empty use location before proving origin."""
+    """Require a live, materialized mop to have a non-empty use location.
+
+    AST leaves retain ``MopSnapshot`` values, which intentionally do not have
+    a SWIG ``this`` pointer.  Validate the native block/MBA boundary before
+    materializing, then validate the returned live mop before calling IDA's
+    location API.  This keeps fake/stale native objects fail-closed without
+    rejecting legitimate resolver-attested snapshots.
+    """
 
     mba = getattr(blk, "mba", None)
     if (
-        not hasattr(mop, "this")
-        or not hasattr(blk, "this")
+        not hasattr(blk, "this")
         or mba is None
         or not hasattr(mba, "this")
     ):
@@ -137,7 +143,7 @@ def _proof_operand_has_location(
             "_terminal_proof_origin",
             mba=getattr(blk, "mba", None),
         )
-        if tracked is None:
+        if tracked is None or not hasattr(tracked, "this"):
             return False
         locations = ida_hexrays.mlist_t()
         blk.append_use_list(locations, tracked, ida_hexrays.MUST_ACCESS)

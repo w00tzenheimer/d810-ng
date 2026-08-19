@@ -22,6 +22,134 @@ def test_proof_mba_identity_rejects_missing_mba():
     assert def_search._proof_mba_identity(None) is None
 
 
+def test_terminal_origin_materializes_real_snapshot_before_location_check(monkeypatch):
+    """A real snapshot must be materialized before native location validation."""
+
+    from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+    class FakeLocations:
+        def __init__(self):
+            self._empty = True
+
+        def empty(self):
+            return self._empty
+
+    class Mba:
+        this = 0x1234
+
+    class Block:
+        serial = 7
+        start = 0x4000
+        end = 0x4020
+        this = 0x5678
+        mba = Mba()
+
+        def npred(self):
+            return 0
+
+        def append_use_list(self, locations, mop, _access):
+            assert hasattr(mop, "this")
+            assert not isinstance(mop, MopSnapshot)
+            locations._empty = False
+
+    snapshot = MopSnapshot(
+        t=ida_hexrays.mop_r,
+        size=4,
+        reg=1,
+        valnum=0,
+    )
+    assert not hasattr(snapshot, "this")
+
+    live_mop = SimpleNamespace(
+        t=ida_hexrays.mop_r,
+        size=4,
+        r=1,
+        valnum=0,
+        this=0xDEAD,
+    )
+    materialization_calls = []
+
+    def materialize(mop, context, *, mba):
+        materialization_calls.append((mop, context, mba))
+        return live_mop
+
+    # Constructing a native mop_t without an active microcode arena can fault
+    # inside IDA.  Keep this regression focused on the proof gate's ordering:
+    # a real snapshot must reach the materializer before the native location
+    # API sees the returned live mop.
+    monkeypatch.setattr(def_search, "_materialize_mop_for_tracking", materialize)
+    monkeypatch.setattr(def_search.ida_hexrays, "mlist_t", FakeLocations)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_a: None)
+
+    origin = def_search._terminal_proof_origin(
+        snapshot,
+        Block(),
+        SimpleNamespace(this=0x9ABC),
+        max_predecessor_blocks=1,
+        scope=object(),
+    )
+
+    assert origin is not None
+    assert materialization_calls == [(snapshot, "_terminal_proof_origin", Block.mba)]
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        # Complex snapshots without an owned native operand are not safe to
+        # materialize for a proof-location query.
+        lambda MopSnapshot: MopSnapshot(
+            t=ida_hexrays.mop_d,
+            size=4,
+            valnum=0,
+        ),
+        lambda MopSnapshot: MopSnapshot(
+            t=ida_hexrays.mop_l,
+            size=4,
+            lvar_idx=1,
+            lvar_off=0,
+            valnum=0,
+        ),
+    ],
+    ids=["missing-owned-complex-mop", "missing-owned-local-mop"],
+)
+def test_terminal_origin_fails_closed_for_unmaterializable_snapshot(
+    monkeypatch, snapshot
+):
+    """A snapshot that cannot become a live mop must not create proof input."""
+
+    from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+    class Mba:
+        this = 0x1234
+
+    class Block:
+        serial = 7
+        start = 0x4000
+        end = 0x4020
+        this = 0x5678
+        mba = Mba()
+
+        def npred(self):
+            return 0
+
+        def append_use_list(self, *_args):
+            raise AssertionError("unmaterializable snapshot reached native mlist")
+
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_a: None)
+
+    assert (
+        def_search._terminal_proof_origin(
+            snapshot(MopSnapshot),
+            Block(),
+            SimpleNamespace(this=0x9ABC),
+            max_predecessor_blocks=1,
+            scope=object(),
+        )
+        is None
+    )
+
+
 class FakeSnapshot:
     def __init__(self, *, t, size, reg=None, stkoff=None, owned_mop=None):
         self.t = t
