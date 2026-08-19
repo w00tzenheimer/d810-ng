@@ -45,6 +45,16 @@ def _instruction(ast, *, ea: int = 0x401000, destination_size: int = 4):
 class TestNativeMbaExtensionHost:
     binary_name = "libobfuscated.dll"
 
+    def test_maturity_adapter_resolves_global_optimized(self):
+        host = native_mba_host_services()
+
+        assert host.maturities_for_names(["GLOBAL_OPTIMIZED"]) == (
+            ida_hexrays.MMAT_GLBOPT2,
+        )
+
+        with pytest.raises(ValueError, match="IRMaturity names"):
+            host.maturities_for_names(["MMAT_GLBOPT2"])
+
     def test_capture_instruction_preserves_width_terms_and_native_identity(self):
         host = native_mba_host_services()
         source = _node(

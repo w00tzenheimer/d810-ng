@@ -19,8 +19,10 @@ import d810.mba.typed_term as typed_term_module
 from d810.mba.ac_matching import AcMatchStopReason
 from d810.mba.certified_rule_compiler import (
     CompiledMbaRule,
+    compiled_rules_for_families,
     require_admitted_compiled_rules,
 )
+from d810.mba.certified_catalogue import build_certified_catalogue_snapshot
 from d810.mba.canonical_pattern import (
     CanonicalCompiledPattern,
     CanonicalPatternMalformed,
@@ -30,6 +32,7 @@ from d810.mba.canonical_pattern import (
     match_canonical_term_pattern,
 )
 from d810.mba.egraph_contracts import EgraphExtractionReceipt, EgraphSkipReason
+from d810.mba.differential_report import egraph_receipt_to_outcome
 from d810.mba.island_profile import (
     IslandBlocker,
     MbaIslandClass,
@@ -53,6 +56,15 @@ from d810.mba.typed_term import (
     leaf_key_fingerprint,
     term_cost,
     term_fingerprint,
+)
+from d810.mba.performance_timing import (
+    EMPTY_MBA_STAGE_TIMINGS,
+    MbaStageTimer,
+)
+from d810.mba.provider_history import ProviderOutcomeHistory
+from d810.mba.provider_outcome import (
+    MbaProviderOutcome,
+    ProviderOutcomeStatus,
 )
 from d810.mba.certified_catalogue import (
     enroll_structural_rule,
@@ -422,6 +434,8 @@ class NativeMbaHostServices(Protocol):
 
     def persistence(self, namespace: str) -> EgraphPersistenceService: ...
 
+    def maturities_for_names(self, names: object) -> tuple[int, ...]: ...
+
 
 __all__ = [
     "CANONICALIZER_SCHEMA_VERSION",
@@ -433,9 +447,12 @@ __all__ = [
     "CanonicalPatternMalformed",
     "CanonicalPatternUnsupported",
     "CompiledMbaRule",
+    "compiled_rules_for_families",
+    "build_certified_catalogue_snapshot",
     "EgraphPersistenceService",
     "EgraphExtractionReceipt",
     "EgraphSkipReason",
+    "egraph_receipt_to_outcome",
     "IslandBlocker",
     "MbaIslandClass",
     "MbaIslandProfile",
@@ -443,6 +460,11 @@ __all__ = [
     "NativeMbaHostServices",
     "NativeMbaReconstruction",
     "NativeMbaUnsupportedCandidate",
+    "MbaProviderOutcome",
+    "ProviderOutcomeHistory",
+    "ProviderOutcomeStatus",
+    "EMPTY_MBA_STAGE_TIMINGS",
+    "MbaStageTimer",
     "PortableContractReloaded",
     "TypedBvTerm",
     "assert_current_typed_term_type",

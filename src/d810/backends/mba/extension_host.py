@@ -36,6 +36,8 @@ from d810.mba.extension_api import (
 )
 from d810.mba.island_profile import profile_to_dict
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
+from d810.hexrays.ir_maturity import ir_maturity_to_ida
+from d810.ir.maturity import IRMaturity
 
 
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
@@ -329,6 +331,16 @@ class _NativeMbaHostServices:
                 "$ d810.egraph.extension"
             )
         return _JsonPersistenceService(self._persistence_storage, namespace)
+
+    def maturities_for_names(self, names: object) -> tuple[int, ...]:
+        if not isinstance(names, (list, tuple)) or not names:
+            raise ValueError("maturities must be a non-empty sequence")
+        try:
+            return tuple(
+                ir_maturity_to_ida(IRMaturity[str(name)]) for name in names
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("maturities must be IRMaturity names") from exc
 
 
 def native_mba_host_services() -> NativeMbaHostServices:

@@ -47,6 +47,24 @@ def test_public_api_exports_frozen_dtos_and_protocols() -> None:
         candidate.term = candidate.term  # type: ignore[misc]
 
 
+def test_optimizer_runtime_contract_is_exported_through_extension_api() -> None:
+    for name in (
+        "MbaProviderOutcome",
+        "ProviderOutcomeStatus",
+        "ProviderOutcomeHistory",
+        "EMPTY_MBA_STAGE_TIMINGS",
+        "MbaStageTimer",
+        "compiled_rules_for_families",
+        "build_certified_catalogue_snapshot",
+        "egraph_receipt_to_outcome",
+    ):
+        assert hasattr(extension_api, name), name
+
+
+def test_host_protocol_exposes_native_maturity_resolution() -> None:
+    assert "maturities_for_names" in NativeMbaHostServices.__dict__
+
+
 @pytest.mark.parametrize(
     "kwargs",
     (
