@@ -29,7 +29,6 @@ class _Mba:
         self._blocks = blocks
         self.qty = len(blocks)
         self.entry_ea = entry_ea
-        self.this = 7
 
     def get_mblock(self, serial: int) -> _Block:
         return self._blocks[serial]
@@ -42,23 +41,6 @@ def _access(instruction: _Instruction) -> SimpleNamespace:
         element_size=4,
         element_count=8,
         instruction_ea=instruction.ea,
-    )
-
-
-def _proposal(
-    access: object,
-    *,
-    before: str = "before",
-    after: str = "after",
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        identity=(
-            0x401000,
-            int(access.item_head),
-            int(access.item_end),
-            before,
-            after,
-        )
     )
 
 
@@ -145,36 +127,6 @@ def test_calls_traversal_is_deterministic_and_queues_exact_accesses(monkeypatch)
     assert observer.pending_reason == "next preparation round"
 
 
-def test_duplicate_event_is_deduplicated_for_same_function_generation(monkeypatch) -> None:
-    instruction = _Instruction(1)
-    queued: list[object] = []
-    monkeypatch.setattr(
-        observer_module,
-        "discover_dynamic_global_table_access",
-        lambda value: _access(value),
-    )
-    monkeypatch.setattr(
-        observer_module,
-        "annotate_global_table_access",
-        lambda access, *, function_ea, database_identity="": queued.append(access)
-        or SimpleNamespace(
-            changed_count=1,
-            queued_proposals=(_proposal(access),),
-        ),
-    )
-    observer = _observer()
-    mba = _Mba(_Block(instruction))
-
-    observer.observe(mba, 17, generation=1)
-    observer.observe(mba, 17, generation=1)
-
-    # The observer consults the annotation report on each callback; the
-    # durable annotation lane, not an access-shape shadow key, deduplicates
-    # the exact proposal identity.
-    assert len(queued) == 2
-    assert len(observer._seen) == 1
-
-
 def test_queue_failure_abstains_without_restart_or_mutation(monkeypatch) -> None:
     instruction = _Instruction(1)
     monkeypatch.setattr(
@@ -196,14 +148,13 @@ def test_queue_failure_abstains_without_restart_or_mutation(monkeypatch) -> None
     assert observer.restart_requested is False
 
 
-def test_generation_rotation_preserves_durable_pending_and_reason(monkeypatch) -> None:
+def test_durable_pending_sets_pending_reason_without_shadow_state(monkeypatch) -> None:
     instruction = _Instruction(1)
     durable_pending = [
         SimpleNamespace(
             identity=(0x401000, 0x500001, 0x500021, "before", "after"),
         )
     ]
-    queued: list[object] = []
     monkeypatch.setattr(
         observer_module,
         "discover_dynamic_global_table_access",
@@ -212,10 +163,8 @@ def test_generation_rotation_preserves_durable_pending_and_reason(monkeypatch) -
     monkeypatch.setattr(
         observer_module,
         "annotate_global_table_access",
-        lambda access, *, function_ea, database_identity="": queued.append(access)
-        or SimpleNamespace(
-            queued_count=1 if len(queued) == 1 else 0,
-            queued_proposals=(_proposal(access),),
+        lambda access, *, function_ea, database_identity="": SimpleNamespace(
+            queued_count=0
         ),
     )
     observer = GlobalConstObserver(
@@ -226,41 +175,12 @@ def test_generation_rotation_preserves_durable_pending_and_reason(monkeypatch) -
     )
 
     observer.observe(_Mba(_Block(instruction)), 17, generation=1)
-    observer.observe(_Mba(_Block(instruction)), 17, generation=2)
 
-    assert len(queued) == 2
     assert observer.pending_reason == "next preparation round"
     assert observer.pending_identities
 
 
-def test_acknowledged_proposal_is_rediscovered_in_new_generation(monkeypatch) -> None:
-    instruction = _Instruction(1)
-    queued: list[object] = []
-    monkeypatch.setattr(
-        observer_module,
-        "discover_dynamic_global_table_access",
-        lambda value: _access(value),
-    )
-    monkeypatch.setattr(
-        observer_module,
-        "annotate_global_table_access",
-        lambda access, *, function_ea, database_identity="": queued.append(access)
-        or SimpleNamespace(
-            queued_count=1 if len(queued) in {1, 3} else 0,
-            queued_proposals=(_proposal(access),),
-        ),
-    )
-    observer = _observer()
-    mba = _Mba(_Block(instruction))
-
-    observer.observe(mba, 17, generation=4)
-    observer.observe(mba, 17, generation=4)
-    observer.observe(mba, 17, generation=5)
-
-    assert len(queued) == 3
-
-
-def test_generation_is_required_and_mba_storage_identity_is_not_used(monkeypatch) -> None:
+def test_lifecycle_generation_is_required(monkeypatch) -> None:
     instruction = _Instruction(1)
     monkeypatch.setattr(
         observer_module,
@@ -273,103 +193,25 @@ def test_generation_is_required_and_mba_storage_identity_is_not_used(monkeypatch
         observer.observe(_Mba(_Block(instruction)), 17, generation=None)
 
 
-def test_observer_snapshot_restores_policy_and_generation_dedupe(monkeypatch) -> None:
-    instruction = _Instruction(1)
-    monkeypatch.setattr(
-        observer_module,
-        "discover_dynamic_global_table_access",
-        lambda value: _access(value),
-    )
-    monkeypatch.setattr(
-        observer_module,
-        "annotate_global_table_access",
-        lambda access, *, function_ea, database_identity="": SimpleNamespace(
-            queued_count=1,
-            queued_proposals=(_proposal(access),),
-        ),
-    )
+def test_observer_snapshot_restores_policy_and_pending_reason() -> None:
     observer = _observer()
-    observer.observe(_Mba(_Block(instruction)), 17, generation=3)
     observer.pending_reason = "next preparation round"
     snapshot = observer.snapshot_state()
 
     observer.configure(ConstantPreparationOptions(enabled=False))
-    observer._seen.clear()
-    observer._current_generation.clear()
     observer.pending_reason = None
     observer.restore_state(snapshot)
 
     assert observer.preparation_options.enabled is True
     assert observer.pending_reason == "next preparation round"
-    assert observer._seen == set(snapshot.seen)
-    assert observer._current_generation == {("idb-a", 0x401000): 3}
 
 
-def test_changed_canonical_proposal_at_same_access_shape_is_rediscovered(monkeypatch) -> None:
-    instruction = _Instruction(1)
-    queued: list[object] = []
-    proposals = iter(
-        (
-            SimpleNamespace(
-                identity=(
-                    0x401000,
-                    0x500000,
-                    0x500020,
-                    "before-a",
-                    "after-a",
-                )
-            ),
-            SimpleNamespace(
-                identity=(
-                    0x401000,
-                    0x500000,
-                    0x500020,
-                    "before-b",
-                    "after-b",
-                )
-            ),
-        )
-    )
-    monkeypatch.setattr(
-        observer_module,
-        "discover_dynamic_global_table_access",
-        lambda value: _access(value),
-    )
-    monkeypatch.setattr(
-        observer_module,
-        "annotate_global_table_access",
-        lambda access, *, function_ea, database_identity="": queued.append(access)
-        or SimpleNamespace(queued_count=1, queued_proposals=(next(proposals),)),
-    )
+def test_observer_does_not_retain_shadow_dedupe_or_generation_state() -> None:
     observer = _observer()
-    mba = _Mba(_Block(instruction))
 
-    observer.observe(mba, 17, generation=1)
-    observer.observe(mba, 17, generation=1)
+    snapshot = observer.snapshot_state()
 
-    assert len(queued) == 2
-
-
-def test_missing_canonical_proposal_does_not_authorize_shape_deduplication(
-    monkeypatch,
-) -> None:
-    instruction = _Instruction(1)
-    queued: list[object] = []
-    monkeypatch.setattr(
-        observer_module,
-        "discover_dynamic_global_table_access",
-        lambda value: _access(value),
-    )
-    monkeypatch.setattr(
-        observer_module,
-        "annotate_global_table_access",
-        lambda access, *, function_ea, database_identity="": queued.append(access)
-        or SimpleNamespace(queued_count=1, queued_proposals=()),
-    )
-    observer = _observer()
-    mba = _Mba(_Block(instruction))
-
-    observer.observe(mba, 17, generation=1)
-    observer.observe(mba, 17, generation=1)
-
-    assert len(queued) == 2
+    assert not hasattr(observer, "_seen")
+    assert not hasattr(observer, "_current_generation")
+    assert not hasattr(snapshot, "seen")
+    assert not hasattr(snapshot, "current_generations")

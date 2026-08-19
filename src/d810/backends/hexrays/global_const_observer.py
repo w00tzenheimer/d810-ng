@@ -62,11 +62,10 @@ def pending_global_const_proposals(
 
 @dataclass(frozen=True, slots=True)
 class GlobalConstProposalIdentity:
-    """Canonical proposal identity in one database/function generation."""
+    """Exact durable proposal identity in one database."""
 
     database_identity: str
     function_ea: int
-    generation: int | None
     proposal_identity: tuple[object, ...]
 
     @property
@@ -91,7 +90,6 @@ class GlobalConstProposalIdentity:
         proposal: object,
         *,
         database_identity: str,
-        generation: int | None,
     ) -> "GlobalConstProposalIdentity":
         raw_identity = getattr(proposal, "identity", None)
         if not isinstance(raw_identity, (tuple, list)) or len(raw_identity) != 5:
@@ -110,7 +108,6 @@ class GlobalConstProposalIdentity:
         return cls(
             database_identity=str(database_identity),
             function_ea=int(identity[0]),
-            generation=generation,
             proposal_identity=identity,
         )
 
@@ -125,11 +122,9 @@ class _DisabledPreparationOptions:
 
 @dataclass(frozen=True, slots=True)
 class GlobalConstObserverRuntimeState:
-    """Rollback snapshot for observer policy and callback dedupe state."""
+    """Rollback snapshot for observer policy and pending status."""
 
     preparation_options: object
-    seen: frozenset[GlobalConstProposalIdentity]
-    current_generations: tuple[tuple[str, int, int], ...]
     pending_reason: str | None
 
 
@@ -162,8 +157,6 @@ class GlobalConstObserver:
                 database_identity=self.database_identity,
             )
         )
-        self._seen: set[GlobalConstProposalIdentity] = set()
-        self._current_generation: dict[tuple[str, int], int] = {}
         self.pending_reason: str | None = None
 
     @property
@@ -188,7 +181,6 @@ class GlobalConstObserver:
                     GlobalConstProposalIdentity.from_proposal(
                         proposal,
                         database_identity=self.database_identity,
-                        generation=None,
                     )
                 )
             except (AttributeError, TypeError, ValueError, IndexError):
@@ -207,24 +199,10 @@ class GlobalConstObserver:
         )
 
     def snapshot_runtime_state(self) -> GlobalConstObserverRuntimeState:
-        """Capture live options and per-generation suppression for rollback."""
+        """Capture live observer policy and pending status for rollback."""
 
         return GlobalConstObserverRuntimeState(
             preparation_options=self.preparation_options,
-            seen=frozenset(self._seen),
-            current_generations=tuple(
-                sorted(
-                    (
-                        database_identity,
-                        function_ea,
-                        generation,
-                    )
-                    for (
-                        database_identity,
-                        function_ea,
-                    ), generation in self._current_generation.items()
-                )
-            ),
             pending_reason=self.pending_reason,
         )
 
@@ -234,11 +212,6 @@ class GlobalConstObserver:
         if not isinstance(state, GlobalConstObserverRuntimeState):
             raise TypeError("state must be GlobalConstObserverRuntimeState")
         self.preparation_options = self._validate_options(state.preparation_options)
-        self._seen = set(state.seen)
-        self._current_generation = {
-            (database_identity, function_ea): generation
-            for database_identity, function_ea, generation in state.current_generations
-        }
         self.pending_reason = state.pending_reason
 
     # Keep the snapshot protocol discoverable to manager-owned rollback code.
@@ -320,23 +293,6 @@ class GlobalConstObserver:
                 yield instruction
                 instruction = getattr(instruction, "next", None)
 
-    def _rotate_generation(self, function_ea: int, generation: int) -> None:
-        scope = (self.database_identity, function_ea)
-        previous = self._current_generation.get(scope)
-        if previous == generation:
-            return
-        self._current_generation[scope] = generation
-        if previous is not None:
-            self._seen = {
-                identity
-                for identity in self._seen
-                if not (
-                    identity.database_identity == self.database_identity
-                    and identity.function_ea == function_ea
-                    and identity.generation == previous
-                )
-            }
-
     @staticmethod
     def _is_new_queue(report: object) -> bool:
         queued_count = getattr(report, "queued_count", None)
@@ -350,21 +306,6 @@ class GlobalConstObserver:
             return int(changed_count) > 0
         except (TypeError, ValueError):
             return False
-
-    @staticmethod
-    def _proposal_candidates(report: object) -> tuple[object, ...]:
-        """Read canonical proposal objects emitted by the annotation report."""
-
-        candidates: list[object] = []
-        for attribute in ("proposal_candidates", "queued_proposals"):
-            values = getattr(report, attribute, ())
-            if values is None:
-                continue
-            try:
-                candidates.extend(tuple(values))
-            except TypeError:
-                continue
-        return tuple(candidates)
 
     def observe(
         self,
@@ -388,7 +329,6 @@ class GlobalConstObserver:
             return None
 
         function_ea = self._function_ea_for(mba)
-        self._rotate_generation(function_ea, generation)
         for instruction in self._instructions(mba):
             try:
                 access = self._discover(instruction)
@@ -404,29 +344,14 @@ class GlobalConstObserver:
             try:
                 report = self._queue(access, function_ea=function_ea)
             except Exception:
-                # Queueing is a best-effort observation.  Do not mark a failed
-                # proposal as seen, and never let a type backend failure alter
-                # the live microcode callback.
+                # Queueing is a best-effort observation.  A type backend
+                # failure must not alter the live microcode callback.
                 logger.debug(
                     "bounded global-table proposal queue failed for func=0x%X",
                     function_ea,
                     exc_info=True,
                 )
                 continue
-            for proposal in self._proposal_candidates(report):
-                try:
-                    self._seen.add(
-                        GlobalConstProposalIdentity.from_proposal(
-                            proposal,
-                            database_identity=self.database_identity,
-                            generation=generation,
-                        )
-                    )
-                except (AttributeError, TypeError, ValueError, IndexError):
-                    logger.debug(
-                        "global-const report omitted a canonical proposal identity",
-                        exc_info=True,
-                    )
             if self._is_new_queue(report):
                 self.pending_reason = PENDING_PREPARATION_REASON
         if self._durable_pending_exists():

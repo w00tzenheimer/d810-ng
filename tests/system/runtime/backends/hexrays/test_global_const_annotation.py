@@ -168,6 +168,86 @@ class TestGlobalConstAnnotation:
         assert calls == [(mba, 17, 0x401009)]
 
     @pytest.mark.ida_required
+    def test_manager_observer_pending_provider_is_database_scoped(
+        self,
+        libobfuscated_setup,
+        d810_state,
+    ) -> None:
+        access = _lookup_table_access()
+        item_ea = access.item_head
+        original = ida_typeinf.tinfo_t()
+        had_original = bool(
+            ida_nalt.get_tinfo(original, item_ea) and not original.empty()
+        )
+        if had_original:
+            working = original.copy()
+            working.clr_const()
+            assert ida_typeinf.apply_tinfo(
+                item_ea,
+                working,
+                ida_typeinf.TINFO_DEFINITE,
+            )
+        else:
+            ida_nalt.del_tinfo(item_ea)
+
+        proposals = Netnode("$ d810.global_const_proposals.v1")
+        try:
+            _clear_proposals(proposals, item_ea)
+            with d810_state() as state:
+                _enable_global_const_persistence(state)
+                state.start_d810()
+                database_identity = (
+                    state.manager.pre_hex_preparation.database_identity
+                )
+                foreign = annotate_global_table_access(
+                    access,
+                    function_ea=0x401000,
+                    database_identity="foreign-idb",
+                    proposal_store=proposals,
+                )
+                assert foreign.queued_count == 1
+
+                observer = (
+                    state.manager._ensure_post_d810_runtime().global_const_observer
+                )
+                empty_mba = SimpleNamespace(entry_ea=0x401000, qty=0)
+                observer.observe(
+                    empty_mba,
+                    ida_hexrays.MMAT_CALLS,
+                    generation=1,
+                )
+                assert observer.pending_identities == ()
+                assert observer.pending_reason is None
+
+                local = annotate_global_table_access(
+                    access,
+                    function_ea=0x402000,
+                    database_identity=database_identity,
+                    proposal_store=proposals,
+                )
+                assert local.queued_count == 1
+                observer.observe(
+                    empty_mba,
+                    ida_hexrays.MMAT_CALLS,
+                    generation=2,
+                )
+                assert tuple(
+                    identity.database_identity
+                    for identity in observer.pending_identities
+                ) == (database_identity,)
+                assert observer.pending_reason == "next preparation round"
+        finally:
+            _clear_proposals(proposals, item_ea)
+            if had_original:
+                ida_typeinf.apply_tinfo(
+                    item_ea,
+                    original,
+                    ida_typeinf.TINFO_DEFINITE,
+                )
+            else:
+                ida_nalt.del_tinfo(item_ea)
+
+    @pytest.mark.ida_required
     def test_runtime_index_still_discovers_complete_lookup_table(
         self, libobfuscated_setup
     ) -> None:

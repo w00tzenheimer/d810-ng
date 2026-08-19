@@ -2109,9 +2109,9 @@ class D810Manager:
 
             # The pre-Hex preparation journal and proposal netnode are scoped
             # by the durable IDB identity, not the project/configuration key.
-            # Reuse that same identity for observer deduplication so a
-            # project switch cannot make one database's observations suppress
-            # another database's proposals.
+            # Reuse that same identity for the observer's pending lookup so a
+            # project switch cannot make one database's proposals appear
+            # pending in another database.
             preparation = getattr(self, "pre_hex_preparation", None)
             database_identity = getattr(
                 preparation,
@@ -2142,7 +2142,9 @@ class D810Manager:
                 global_const_observer=GlobalConstObserver(
                     preparation_options=self._constant_preparation_options,
                     database_identity=database_identity,
-                    pending_proposals=pending_global_const_proposals,
+                    pending_proposals=lambda: pending_global_const_proposals(
+                        database_identity=database_identity,
+                    ),
                 ),
                 mba_generation_provider=mba_generation_provider,
             )
