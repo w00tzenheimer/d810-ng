@@ -289,6 +289,18 @@ def test_context_capture_maps_unknown_maturity_sentinel_to_safe_zero() -> None:
     assert context.epoch.maturity == 0
 
 
+def test_context_capture_null_block_uses_zero_mba_identity_and_no_capabilities() -> None:
+    context = InstructionCommitContext.from_live(
+        FakeInstruction(),
+        None,
+        maturity=-1,
+    )
+
+    assert context.epoch.mba_identity == 0
+    assert context.epoch.maturity == 0
+    assert context.capabilities == NativeCallbackCapabilities(False, False, False, False)
+
+
 def test_invalid_operand_size_is_rejected_without_swap() -> None:
     instruction = FakeInstruction(fingerprint=1)
     replacement = FakeInstruction(fingerprint=2, operand_size_ok=False)

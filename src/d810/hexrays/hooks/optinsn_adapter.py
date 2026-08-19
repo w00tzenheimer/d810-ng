@@ -38,7 +38,16 @@ from d810.hexrays.hooks.callback_mutation_diagnostics import (
 from d810.hexrays.ir.minsn_utils import build_z3_equivalence_proof
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
-from d810.hexrays.mutation.cfg_verify import safe_verify
+from d810.hexrays.mutation.cfg_verify import safe_verify as _safe_verify
+from d810.hexrays.mutation.instruction_commit import (
+    HexRaysInstructionCommitter,
+    InstructionCommitContext,
+    InstructionRewriteCandidate,
+    InstructionRewriteReceipt,
+    NativeCallbackCapabilities,
+    RewriteCost,
+    RewriteMode,
+)
 from d810.hexrays.utils.hexrays_formatters import (
     count_minsn_nodes,
     dump_microcode_for_debug,
@@ -51,6 +60,7 @@ main_logger = getLogger("d810")
 optimizer_logger = getLogger("d810.optimizer")
 z3_file_logger = getLogger("d810.z3_test")
 _RUN_LATER_DOMAIN_OPTIMIZER_RULE = "optimizer_rule"
+_OPTI_NO_LDXOPT = int(getattr(ida_hexrays, "OPTI_NO_LDXOPT", 0x0008))
 
 # ---------------------------------------------------------------------------
 # hash_minsn: Cython fast path with pure-Python fallback
@@ -324,6 +334,197 @@ class InstructionOptimizerRuntimeState:
     active_optimizers: tuple[object, ...]
     analyzer: object
     children: tuple[_InstructionChildRuntimeState, ...]
+def _callback_mba(block: object | None) -> object | None:
+    """Return a callback block's MBA without dereferencing null SDK blocks."""
+    if block is None:
+        return None
+    try:
+        return getattr(block, "mba", None)
+    except Exception:
+        return None
+
+
+def _coerce_rewrite_mode(value: object, default: RewriteMode) -> RewriteMode:
+    if isinstance(value, RewriteMode):
+        return value
+    if isinstance(value, str):
+        try:
+            return RewriteMode(value.lower())
+        except ValueError:
+            return default
+    return default
+
+
+def _coerce_rewrite_cost(value: object, *, fallback_nodes: int) -> RewriteCost:
+    if isinstance(value, RewriteCost):
+        return value
+    if isinstance(value, dict):
+        fields = {}
+        for name in (
+            "noncanonical_ops",
+            "opaque_ops",
+            "depth",
+            "node_count",
+            "target_risk",
+        ):
+            raw = value.get(name, 0)
+            try:
+                fields[name] = max(0, int(raw))
+            except (TypeError, ValueError):
+                fields[name] = 0
+        return RewriteCost(**fields)
+    try:
+        return RewriteCost(node_count=max(0, int(value)))
+    except (TypeError, ValueError):
+        return RewriteCost(node_count=max(0, int(fallback_nodes)))
+
+
+class LegacyInstructionRuleAdapter:
+    """Translate detached legacy optimizer output into a commit candidate.
+
+    Existing instruction optimizers intentionally keep their old
+    ``get_optimized_instruction`` contract.  This short-lived boundary owns
+    the compatibility metadata until those rules can emit typed candidates.
+    """
+
+    def __init__(self, manager: "InstructionOptimizerManager") -> None:
+        self.manager = manager
+
+    @staticmethod
+    def _metadata(source: object, producer: str) -> dict[str, object]:
+        provider = getattr(source, "execution_metadata", None)
+        if not callable(provider):
+            return {}
+        try:
+            value = provider()
+        except Exception:
+            optimizer_logger.debug(
+                "legacy optimizer metadata unavailable for %s",
+                producer,
+                exc_info=True,
+            )
+            return {}
+        return dict(value) if isinstance(value, dict) else {}
+
+    def candidate(
+        self,
+        context: InstructionCommitContext,
+        replacement: object,
+        optimizer: object,
+    ) -> InstructionRewriteCandidate:
+        manager = self.manager
+        pending_rule = getattr(optimizer, "_pending_replacement_rule", None)
+        producer_rule_name = str(
+            getattr(optimizer, "last_matched_rule_name", None)
+            or getattr(pending_rule, "name", None)
+            or getattr(optimizer, "name", "instruction_optimizer")
+        )
+        metadata = self._metadata(
+            pending_rule if pending_rule is not None else optimizer,
+            producer_rule_name,
+        )
+        if not metadata and pending_rule is not None:
+            metadata = self._metadata(optimizer, producer_rule_name)
+
+        pass_id = str(metadata.get("pass_id") or "instruction_optimizer")
+        stage_id = str(metadata.get("stage_id") or "instruction_optimizer")
+        service = getattr(manager, "_execution_scope_service", None)
+        identity_for = getattr(service, "identity_for_implementation", None)
+        if callable(identity_for) and pending_rule is not None:
+            try:
+                identity = identity_for(
+                    pending_rule,
+                    pipeline=ExecutionPipeline.INSTRUCTION,
+                )
+            except Exception:
+                identity = None
+            if identity is not None:
+                pass_id = str(getattr(identity, "pass_id", pass_id) or pass_id)
+                stage_id = str(getattr(identity, "stage_id", stage_id) or stage_id)
+
+        raw_mode = next(
+            (metadata[key] for key in ("rewrite_mode", "mode", "rewrite_kind") if key in metadata),
+            getattr(pending_rule, "rewrite_mode", None),
+        )
+        mode = _coerce_rewrite_mode(raw_mode, RewriteMode.SIMPLIFY)
+        try:
+            before_nodes = int(count_minsn_nodes(context.instruction))
+        except Exception:
+            before_nodes = 0
+        try:
+            after_nodes = int(count_minsn_nodes(replacement))
+        except Exception:
+            after_nodes = 0
+        before_cost = _coerce_rewrite_cost(
+            metadata.get("cost_before", metadata.get("input_cost")),
+            fallback_nodes=before_nodes,
+        )
+        after_cost = _coerce_rewrite_cost(
+            metadata.get("cost_after", metadata.get("extracted_cost")),
+            fallback_nodes=after_nodes,
+        )
+        rank_before = metadata.get("semantic_rank_before", getattr(pending_rule, "semantic_rank_before", 0))
+        rank_after = metadata.get("semantic_rank_after", getattr(pending_rule, "semantic_rank_after", 0))
+        try:
+            rank_before = max(0, int(rank_before))
+        except (TypeError, ValueError):
+            rank_before = 0
+        try:
+            rank_after = max(0, int(rank_after))
+        except (TypeError, ValueError):
+            rank_after = 0
+
+        may_touch = bool(metadata.get(
+            "may_touch_neighboring_instructions",
+            getattr(pending_rule, "may_touch_neighboring_instructions", False),
+        ))
+        may_mark = bool(metadata.get(
+            "may_mark_lists_dirty", getattr(pending_rule, "may_mark_lists_dirty", False)
+        ))
+        may_verify = bool(metadata.get(
+            "may_verify_mba", getattr(pending_rule, "may_verify_mba", False)
+        ))
+        proof = metadata.get("proof", metadata.get("proof_result"))
+        if proof is None and getattr(manager, "generate_z3_code", False):
+            try:
+                proof = build_z3_equivalence_proof(replacement, context.instruction)
+                if proof is not None:
+                    z3_file_logger.info(proof)
+            except KeyError:
+                pass
+        proof_required = bool(metadata.get(
+            "proof_required",
+            metadata.get("require_proof", getattr(pending_rule, "proof_required", False)),
+        ))
+        func_ea = context.epoch.function_ea
+        maturity = context.epoch.maturity
+        history_key = _rewrite_history_key(
+            context.block,
+            context.instruction,
+            func_ea=func_ea,
+            maturity=maturity,
+        )
+        return InstructionRewriteCandidate(
+            replacement=replacement,
+            before_fingerprint=hash_minsn(context.instruction, func_ea),
+            mode=mode,
+            cost_before=before_cost,
+            cost_after=after_cost,
+            pass_id=pass_id,
+            stage_id=stage_id,
+            rule_id=producer_rule_name,
+            semantic_rank_before=rank_before,
+            semantic_rank_after=rank_after,
+            proof_required=proof_required,
+            proof=proof,
+            may_touch_neighboring_instructions=may_touch,
+            may_mark_lists_dirty=may_mark,
+            may_verify_mba=may_verify,
+            optimize_solo=bool(metadata.get("optimize_solo", False)),
+            producer_rule_name=producer_rule_name,
+            history_key=history_key,
+            epoch_before=context.epoch,
+        )
 
 
 class InstructionOptimizerManager(ida_hexrays.optinsn_t):
@@ -381,6 +582,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._cycle_quarantined_rule_names: dict[tuple[int, int, int], set[str]] = (
             defaultdict(set)
         )
+        self._instruction_committer: HexRaysInstructionCommitter | None = None
+        self._legacy_rule_adapter = LegacyInstructionRuleAdapter(self)
+        self._active_instruction_commit_context: InstructionCommitContext | None = None
+        self._active_instruction_optflags = 0
+        self._last_instruction_context: InstructionCommitContext | None = None
+        self._last_instruction_receipt: InstructionRewriteReceipt | None = None
         # A cycle proven at one maturity remains useful later in the same
         # decompilation session when Hex-Rays presents the exact same input at
         # the same native site.  The optimizer generation prevents a rebuilt
@@ -1281,7 +1488,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         block: object,
     ) -> tuple[LiveNopSite, ...] | None:
         """Capture GLBOPT2 NOP sites only when diagnostics are installed."""
-        mba = getattr(block, "mba", None)
+        mba = _callback_mba(block)
         if self._fact_consumer_callback is None or int(
             getattr(mba, "maturity", -1)
         ) < int(ida_hexrays.MMAT_GLBOPT2):
@@ -1307,7 +1514,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         if before is None or self._fact_consumer_callback is None:
             return
         try:
-            mba = getattr(block, "mba", None)
+            mba = _callback_mba(block)
             optimizer_name = str(
                 getattr(
                     self._last_optimizer_tried,
@@ -1337,6 +1544,133 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 "failed to persist instruction callback NOP delta",
                 exc_info=True,
             )
+
+    def _build_instruction_commit_context(
+        self,
+        blk: object | None,
+        ins: object,
+        optflags: int,
+    ) -> InstructionCommitContext:
+        """Capture callback context once, including the SDK optimization flags."""
+        if isinstance(optflags, bool) or not isinstance(optflags, int):
+            raise TypeError("optflags must be an integer")
+        mba = _callback_mba(blk)
+        has_block = blk is not None and mba is not None
+        try:
+            function_ea = int(getattr(mba, "entry_ea", 0) or 0) if has_block else 0
+        except (TypeError, ValueError):
+            function_ea = 0
+        try:
+            maturity = (
+                int(getattr(mba, "maturity", self.current_maturity) or 0)
+                if has_block
+                else int(getattr(self, "current_maturity", -1) or -1)
+            )
+        except (TypeError, ValueError):
+            maturity = -1
+        capabilities = NativeCallbackCapabilities(
+            block_context_available=bool(has_block),
+            may_touch_neighboring_instructions=bool(
+                has_block and not (int(optflags) & _OPTI_NO_LDXOPT)
+            ),
+            may_mark_lists_dirty=bool(has_block),
+            may_verify_mba=bool(has_block),
+        )
+        context = InstructionCommitContext.from_live(
+            ins,
+            blk,
+            function_ea=function_ea,
+            maturity=maturity,
+            capabilities=capabilities,
+        )
+        # ``InstructionCommitContext`` intentionally contains only the stable
+        # Task 2 contract. Keep the ABI value alongside it for adapter tests
+        # and for the nested visitor, without retaining SDK arguments in the
+        # native candidate or journal payload.
+        self._active_instruction_optflags = int(optflags)
+        self._last_instruction_context = context
+        return context
+
+    def _instruction_commit_context_for(
+        self,
+        blk: object | None,
+        ins: object,
+    ) -> InstructionCommitContext:
+        active = getattr(self, "_active_instruction_commit_context", None)
+        if active is not None and active.block is blk and active.instruction is ins:
+            return active
+        return self._build_instruction_commit_context(
+            blk,
+            ins,
+            int(getattr(self, "_active_instruction_optflags", 0)),
+        )
+
+    def _record_cycle_quarantine(self, *args: object) -> None:
+        """Port committer cycle notifications into the existing site quarantine."""
+        if len(args) != 2:
+            return
+        key, producer = args
+        if not isinstance(key, tuple) or not producer:
+            return
+        try:
+            if len(key) >= 4 and key[2] == "object":
+                site_key = (int(key[0]), int(key[1]), int(key[3]))
+            else:
+                site_key = (int(key[0]), int(key[1]), int(key[2]))
+        except (TypeError, ValueError, IndexError):
+            return
+        quarantined = getattr(self, "_cycle_quarantined_rule_names", None)
+        if quarantined is None:
+            quarantined = defaultdict(set)
+            self._cycle_quarantined_rule_names = quarantined
+        quarantined.setdefault(site_key, set()).add(str(producer))
+
+    def _get_instruction_committer(self) -> HexRaysInstructionCommitter:
+        committer = getattr(self, "_instruction_committer", None)
+        if committer is None:
+            committer = HexRaysInstructionCommitter(
+                hash_minsn=hash_minsn,
+                count_minsn_nodes=count_minsn_nodes,
+                check_ins_mop_size_are_ok=check_ins_mop_size_are_ok,
+                build_z3_equivalence_proof=build_z3_equivalence_proof,
+                safe_verify=_safe_verify,
+                rewrite_history=getattr(self, "_rewrite_seen", None),
+                producer_cycle_quarantine=self._record_cycle_quarantine,
+            )
+            self._instruction_committer = committer
+        return committer
+
+    def _commit_legacy_candidate(
+        self,
+        context: InstructionCommitContext,
+        candidate: InstructionRewriteCandidate,
+        optimizer: object,
+    ) -> InstructionRewriteReceipt:
+        receipt = self._get_instruction_committer().commit(context, candidate)
+        self._last_instruction_receipt = receipt
+        if receipt.committed:
+            record_accepted = getattr(optimizer, "record_mutation_accepted", None)
+            if callable(record_accepted):
+                record_accepted()
+            stats = getattr(self, "stats", None)
+            if stats is not None:
+                stats.record_optimizer_match(getattr(optimizer, "name", ""))
+        else:
+            record_rejected = getattr(optimizer, "record_mutation_rejected", None)
+            if callable(record_rejected):
+                record_rejected(receipt.reason)
+            stats = getattr(self, "stats", None)
+            if receipt.reason == "expression-bloat" and stats is not None:
+                stats.record_expression_bloat_rejected(
+                    getattr(optimizer, "name", ""),
+                    hex(int(getattr(context.instruction, "ea", 0) or 0)),
+                )
+            elif receipt.reason == "rewrite-cycle" and stats is not None:
+                stats.record_cycle_detected(
+                    getattr(optimizer, "name", ""),
+                    hex(int(getattr(context.instruction, "ea", 0) or 0)),
+                )
+        return receipt
 
     def _bind_validated_fact_view_for_callback(
         self,
@@ -1369,20 +1703,62 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             raise
         return bound
 
-    def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
+    def func(self, *args: object) -> int | bool:
+        if len(args) == 2:
+            blk, ins = args
+            optflags = 0
+        elif len(args) == 3:
+            blk, ins, optflags = args
+        else:
+            raise TypeError(
+                "InstructionOptimizerManager.func() expects two or three arguments: "
+                "(blk, ins) or (blk, ins, optflags)"
+            )
+        if isinstance(optflags, bool) or not isinstance(optflags, int):
+            raise TypeError("optflags must be an integer")
         with native_mba_callback_scope():
-            return self._func_with_native_mba_lease(blk, ins)
+            return self._func_with_native_mba_lease(blk, ins, optflags)
 
     def _func_with_native_mba_lease(
         self,
-        blk: ida_hexrays.mblock_t,
-        ins: ida_hexrays.minsn_t,
-    ) -> bool:
+        blk: object | None,
+        ins: object,
+        optflags: int,
+    ) -> int | bool:
         self._clear_pending_provider_state()
+        build_context = getattr(self, "_build_instruction_commit_context", None)
+        if callable(build_context):
+            context = build_context(blk, ins, optflags)
+        else:
+            mba = _callback_mba(blk)
+            has_block = mba is not None
+            context = InstructionCommitContext.from_live(
+                ins,
+                blk,
+                maturity=getattr(self, "current_maturity", -1),
+                capabilities=NativeCallbackCapabilities(
+                    block_context_available=has_block,
+                    may_touch_neighboring_instructions=bool(
+                        has_block and not (int(optflags) & _OPTI_NO_LDXOPT)
+                    ),
+                    may_mark_lists_dirty=has_block,
+                    may_verify_mba=has_block,
+                ),
+            )
+        previous_context = getattr(self, "_active_instruction_commit_context", None)
+        previous_optflags = int(getattr(self, "_active_instruction_optflags", 0))
+        self._last_instruction_receipt = None
         lifecycle = getattr(self, "_decompilation_lifecycle", None)
-        mba = getattr(blk, "mba", None)
-        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        journal_maturity = int(getattr(mba, "maturity", -1))
+        mba = _callback_mba(blk)
+        function_ea = context.epoch.function_ea
+        try:
+            journal_maturity = int(
+                getattr(mba, "maturity", context.epoch.maturity)
+                if mba is not None
+                else context.epoch.maturity
+            )
+        except (TypeError, ValueError):
+            journal_maturity = context.epoch.maturity
         observe_quarantine = (
             None
             if lifecycle is None
@@ -1402,6 +1778,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             # cost whole functions their remaining peephole/Z3/fold work for
             # a rejected stage they never depended on.
             return False
+        self._active_instruction_commit_context = context
+        self._active_instruction_optflags = int(optflags)
         # ``optinsn_t`` is a direct MBA mutation seam.  Record its observable
         # callback outcome under the manager-owned session, but never let a
         # journal failure alter the Hex-Rays callback contract.
@@ -1447,8 +1825,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     self,
                     blk,
                 )
+                if blk is not None
+                else []
             )
-            if self.log_info_on_input(blk, ins):
+            if blk is not None and self.log_info_on_input(blk, ins):
                 # An early-maturity gateway may have structurally changed the MBA. Do not
                 # touch this callback's instruction pointer again; returning true
                 # asks Hex-Rays to revisit optimization with fresh pointers.
@@ -1456,8 +1836,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 return callback_result
             try:
                 optimization_performed = self.optimize(blk, ins)
+                receipt = getattr(self, "_last_instruction_receipt", None)
 
-                if not optimization_performed:
+                if not optimization_performed and receipt is None:
                     # ``minsn_t.for_all_insns`` does not populate the visitor's
                     # ``blk`` member (only the ``mba``/``mblock_t`` overloads do), so
                     # nested sub-instructions would otherwise be optimized with no
@@ -1476,23 +1857,24 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     )
                     visitor._contextual_anchor_ins = ins
                     try:
-                        optimization_performed = ins.for_all_insns(visitor)
+                        for_all_insns = getattr(ins, "for_all_insns", None)
+                        optimization_performed = (
+                            for_all_insns(visitor)
+                            if callable(for_all_insns)
+                            else False
+                        )
                     finally:
                         if had_contextual_anchor:
                             visitor._contextual_anchor_ins = previous_contextual_anchor
                         else:
                             del visitor._contextual_anchor_ins
+                    receipt = getattr(self, "_last_instruction_receipt", None)
 
-                if optimization_performed:
-                    ins.optimize_solo()
-
-                    if blk is not None:
-                        blk.mark_lists_dirty()
-                        safe_verify(
-                            blk.mba, "rewriting", logger_func=optimizer_logger.error
-                        )
-
-                callback_result = bool(optimization_performed)
+                callback_result = (
+                    int(receipt.applied_count)
+                    if receipt is not None
+                    else optimization_performed
+                )
                 return callback_result
             except RuntimeError as error:
                 callback_exception_name = type(error).__name__
@@ -1535,11 +1917,21 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                         "maturity": journal_maturity,
                         "instruction_ea": journal_instruction_ea,
                     }
+                    receipt = getattr(self, "_last_instruction_receipt", None)
+                    if receipt is not None:
+                        detail.update(receipt.primitive_fields())
                     if callback_exception_name is not None:
                         journal.advance(
                             journal_attempt,
                             status=ExecutionAttemptStatus.FAILED,
                             reason_code=callback_exception_name,
+                            details=detail,
+                        )
+                    elif receipt is not None and not receipt.committed:
+                        journal.advance(
+                            journal_attempt,
+                            status=ExecutionAttemptStatus.ABSTAINED,
+                            reason_code=receipt.reason,
                             details=detail,
                         )
                     elif callback_result:
@@ -1591,6 +1983,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                         "maturity": journal_maturity,
                         "instruction_ea": journal_instruction_ea,
                     }
+                    receipt = getattr(self, "_last_instruction_receipt", None)
+                    if receipt is not None:
+                        detail.update(receipt.primitive_fields())
                     callback_stage = (
                         "optinsn_callback:"
                         f"maturity={journal_maturity}:"
@@ -1609,6 +2004,15 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                                     details=detail,
                                 ),
                             ),
+                        )
+                    elif receipt is not None and not receipt.committed:
+                        journal.summarize_callback_abstention(
+                            journal_session.session_id,
+                            parent_attempt_id=journal_session.preanalysis_attempt_id,
+                            callback_kind="optinsn",
+                            stage_id="instruction_optimizer",
+                            maturity=str(journal_maturity),
+                            reason_code=receipt.reason,
                         )
                     elif callback_result:
                         effect = ExecutionEffectRef(
@@ -1659,6 +2063,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                         "callback outcome",
                         exc_info=True,
                     )
+            self._active_instruction_commit_context = previous_context
+            self._active_instruction_optflags = previous_optflags
 
     # statistics are managed centrally via the stats object
 
@@ -2144,9 +2550,25 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             if callable(setter):
                 setter(admitted)
 
+    def _allowed_rule_names_for_callback(
+        self,
+        optimizer: object,
+        allowed_rule_names: frozenset[str] | None,
+        blk: object | None,
+    ) -> frozenset[str] | None:
+        """Remove block-required legacy rules before a null-block callback."""
+        if blk is not None or allowed_rule_names is None:
+            return allowed_rule_names
+        block_required = frozenset(
+            self._rule_name(rule)
+            for rule in getattr(optimizer, "rules", ()) or ()
+            if bool(getattr(rule, "requires_block_context", False))
+        )
+        return allowed_rule_names.difference(block_required)
+
     def optimize(
         self,
-        blk: ida_hexrays.mblock_t,
+        blk: ida_hexrays.mblock_t | None,
         ins: ida_hexrays.minsn_t,
         *,
         contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
@@ -2171,9 +2593,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             if scheduled_rule_names_override is None
             else scheduled_rule_names_override
         )
+        mba = _callback_mba(blk)
         try:
-            func_ea = int(getattr(getattr(blk, "mba", None), "entry_ea", 0) or 0)
-        except Exception:
+            func_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        except (TypeError, ValueError):
             func_ea = 0
         try:
             maturity = int(
@@ -2184,7 +2607,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 )
             )
         except (TypeError, ValueError):
-            maturity = int(self.current_maturity or -1)
+            maturity = int(getattr(self, "current_maturity", -1) or -1)
         site_key = (func_ea, maturity, int(getattr(ins, "ea", 0) or 0))
         maturity_quarantined_rule_names = frozenset(
             getattr(self, "_cycle_quarantined_rule_names", {}).get(site_key, ())
@@ -2200,6 +2623,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             if optimizers_override is None
             else optimizers_override
         )
+        context = self._instruction_commit_context_for(blk, ins)
         for ins_optimizer in selected_optimizers:
             self._last_optimizer_tried = ins_optimizer
             receipt_scope_key = self._cycle_receipt_scope_key(
@@ -2226,6 +2650,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             if callable(set_quarantine):
                 set_quarantine(quarantined_rule_names)
             self._set_residual_admission(ins_optimizer, residual_admitted)
+            optimizer_allowed_rule_names = self._allowed_rule_names_for_callback(
+                ins_optimizer,
+                allowed_rule_names,
+                blk,
+            )
             get_optimized_instruction = ins_optimizer.get_optimized_instruction
             try:
                 parameters = inspect.signature(get_optimized_instruction).parameters
@@ -2237,7 +2666,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             )
             optimizer_kwargs = {
                 "contextual_anchor_ins": contextual_anchor_ins,
-                "allowed_rule_names": allowed_rule_names,
+                "allowed_rule_names": optimizer_allowed_rule_names,
                 "scheduled_rule_names": scheduled_rule_names,
             }
             if supports_context:
@@ -2245,166 +2674,22 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     self._observation_context_for_rule
                 )
             new_ins = get_optimized_instruction(blk, ins, **optimizer_kwargs)
+            if new_ins is None:
+                continue
 
-            if new_ins is not None:
-                if not check_ins_mop_size_are_ok(new_ins):
-                    record_rejected = getattr(
-                        ins_optimizer, "record_mutation_rejected", None
-                    )
-                    if record_rejected is not None:
-                        record_rejected("invalid_operand_size")
-                    if check_ins_mop_size_are_ok(ins):
-                        main_logger.error(
-                            "Invalid optimized instruction (%s) for maturity %s:\n\toptimized: %s\n\toriginal: %s",
-                            ins_optimizer.name,
-                            maturity_to_string(maturity),
-                            format_minsn_t(new_ins),
-                            format_minsn_t(ins),
-                        )
-                    else:
-                        main_logger.error(
-                            "Invalid original instruction (%s) for maturity %s:\n\toptimized: %s\n\toriginal: %s",
-                            ins_optimizer.name,
-                            maturity_to_string(maturity),
-                            format_minsn_t(new_ins),
-                            format_minsn_t(ins),
-                        )
-                else:
-                    # --- expression size guard ---
-                    # Reject replacements that significantly increase expression size.
-                    # This is a defense-in-depth measure against rules that cause
-                    # expression bloat (e.g., CstSimplificationRule4's 4.24x bloat).
-                    # Check BEFORE the cycle detection hash to avoid polluting the
-                    # seen-hash set with bloated replacements.
-                    original_nodes = count_minsn_nodes(ins)
-                    new_nodes = count_minsn_nodes(new_ins)
-                    max_allowed_nodes = original_nodes * 2
+            rule_adapter = getattr(self, "_legacy_rule_adapter", None)
+            if rule_adapter is None:
+                rule_adapter = LegacyInstructionRuleAdapter(self)
+                self._legacy_rule_adapter = rule_adapter
+            candidate = rule_adapter.candidate(context, new_ins, ins_optimizer)
+            receipt = self._commit_legacy_candidate(context, candidate, ins_optimizer)
+            if receipt.committed:
+                return True
+            # One live callback has exactly one proposal decision.  Do not let
+            # a rejected writer fall through to another live writer.
+            return False
 
-                    if new_nodes > max_allowed_nodes and original_nodes > 0:
-                        record_rejected = getattr(
-                            ins_optimizer, "record_mutation_rejected", None
-                        )
-                        if record_rejected is not None:
-                            record_rejected("expression_bloat")
-                        optimizer_logger.warning(
-                            "Expression bloat detected at %s by %s: "
-                            "%d nodes -> %d nodes (%.2fx, max allowed 2x) -- "
-                            "rejecting replacement",
-                            hex(ins.ea),
-                            ins_optimizer.name,
-                            original_nodes,
-                            new_nodes,
-                            new_nodes / original_nodes,
-                        )
-                        if self.stats is not None:
-                            self.stats.record_expression_bloat_rejected(
-                                ins_optimizer.name,
-                                hex(ins.ea),
-                            )
-                        return False
-                    # --- end expression size guard ---
-
-                    # --- cycle detection guard ---
-                    pre_hash = hash_minsn(ins, func_ea)
-                    ins.swap(new_ins)
-                    post_hash = hash_minsn(ins, func_ea)
-                    ins_key = int(getattr(ins, "ea", 0) or 0)
-
-                    if post_hash == pre_hash:
-                        ins.swap(new_ins)
-                        record_rejected = getattr(
-                            ins_optimizer, "record_mutation_rejected", None
-                        )
-                        if record_rejected is not None:
-                            record_rejected("rewrite_noop")
-                        optimizer_logger.debug(
-                            "Rejecting no-op rewrite for instruction at %s by %s",
-                            hex(ins_key),
-                            ins_optimizer.name,
-                        )
-                        return False
-
-                    history_key = _rewrite_history_key(
-                        blk,
-                        ins,
-                        func_ea=func_ea,
-                        maturity=maturity,
-                    )
-                    seen = self._rewrite_seen[history_key]
-                    if post_hash in seen:
-                        # Cycle detected: this instruction was already
-                        # rewritten to this exact form. Undo the swap and
-                        # refuse the rewrite to break the cycle.
-                        # Refuse the rewrite and quarantine only its producer.
-                        ins.swap(new_ins)
-                        producer_rule_name = getattr(
-                            ins_optimizer,
-                            "last_matched_rule_name",
-                            None,
-                        )
-                        if producer_rule_name:
-                            quarantined_by_site = getattr(
-                                self,
-                                "_cycle_quarantined_rule_names",
-                                None,
-                            )
-                            if quarantined_by_site is None:
-                                quarantined_by_site = defaultdict(set)
-                                self._cycle_quarantined_rule_names = quarantined_by_site
-                            quarantined_by_site[site_key].add(str(producer_rule_name))
-                            cycle_receipts = getattr(self, "_cycle_receipts", None)
-                            if cycle_receipts is None:
-                                cycle_receipts = {}
-                                self._cycle_receipts = cycle_receipts
-                            receipts_by_input = cycle_receipts.setdefault(
-                                receipt_scope_key,
-                                {},
-                            )
-                            receipts_by_input.setdefault(pre_hash, set()).add(
-                                str(producer_rule_name)
-                            )
-                        record_rejected = getattr(
-                            ins_optimizer, "record_mutation_rejected", None
-                        )
-                        if record_rejected is not None:
-                            record_rejected("rewrite_cycle")
-                        optimizer_logger.warning(
-                            "Cycle detected for instruction at %s by %s%s -- "
-                            "quarantining producer for this maturity and "
-                            "receipting this exact input for the session",
-                            hex(ins_key),
-                            ins_optimizer.name,
-                            (f"/{producer_rule_name}" if producer_rule_name else ""),
-                        )
-                        if self.stats is not None:
-                            self.stats.record_cycle_detected(
-                                ins_optimizer.name,
-                                hex(ins_key),
-                            )
-                        return False
-
-                    seen.add(post_hash)
-                    # --- end cycle detection guard ---
-
-                    record_accepted = getattr(
-                        ins_optimizer, "record_mutation_accepted", None
-                    )
-                    if record_accepted is not None:
-                        record_accepted()
-
-                    if self.stats is not None:
-                        self.stats.record_optimizer_match(ins_optimizer.name)
-
-                    if self.generate_z3_code:
-                        try:
-                            z3_script = build_z3_equivalence_proof(new_ins, ins)
-                            if z3_script is not None:
-                                z3_file_logger.info(z3_script)
-                        except KeyError:
-                            pass
-                    return True
-
-        if analyze_on_abstain:
+        if analyze_on_abstain and blk is not None:
             self.analyzer.analyze(blk, ins)
         return False
 
