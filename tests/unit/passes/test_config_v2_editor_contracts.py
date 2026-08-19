@@ -369,6 +369,15 @@ def test_operational_config_v2_public_passes_have_complete_editor_contracts() ->
     assert registry.validate_editor_contracts() == ()
 
 
+def test_operational_config_v2_catalog_is_built_through_recipe_service() -> None:
+    catalog = registered_pass_catalog()
+
+    assert catalog
+    assert {entry.pass_id for entry in catalog} == set(
+        operational_config_v2_pass_registry().public_pass_ids()
+    )
+
+
 def test_mba_egraph_replay_options_are_flat_typed_and_editor_visible() -> None:
     entry = next(
         item for item in registered_pass_catalog() if item.pass_id == "mba-egraph"
