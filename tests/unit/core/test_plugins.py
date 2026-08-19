@@ -893,6 +893,45 @@ class TestPassImplementations(unittest.TestCase):
         )
         self.assertEqual(reg.implementation_for("mba-solve"), "CobraSolveRule")
 
+    def test_typed_and_mapping_manifests_reject_malformed_implementations(self):
+        malformed = (
+            ("non-string pass id", {1: "Rule"}),
+            ("empty pass id", {"": "Rule"}),
+            ("non-string rule name", {"mba-egraph": object()}),
+            ("empty rule name", {"mba-egraph": ""}),
+        )
+        for label, implements in malformed:
+            for kind in ("typed", "mapping"):
+                with self.subTest(label=label, kind=kind):
+                    if kind == "typed":
+                        manifest = BackendManifest(
+                            name="cobra",
+                            api_version=PLUGIN_API_VERSION,
+                            provides=Recorder(result=object()),
+                            rules=("acme.rules.egraph",),
+                            implements=implements,
+                        )
+                    else:
+                        manifest = {
+                            "name": "cobra",
+                            "api_version": PLUGIN_API_VERSION,
+                            "provides": Recorder(result=object()),
+                            "rules": ("acme.rules.egraph",),
+                            "implements": implements,
+                        }
+                    reg = registry(
+                        [
+                            BackendSpec(
+                                name="cobra",
+                                origin="test",
+                                load_manifest=lambda manifest=manifest: manifest,
+                            )
+                        ]
+                    )
+
+                    with self.assertRaises(PassImplementationMisdeclared):
+                        reg.implementation_candidates_for("mba-egraph")
+
     def test_resolution_does_not_import_the_backend(self):
         """The whole point of manifest indirection: no heavy half, no IDA."""
         load = Recorder(result=object())

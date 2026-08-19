@@ -43,7 +43,7 @@ def _patch_egraph_extension(monkeypatch, rule_name: str = "EgglogOptimizer") -> 
     class _Registry:
         def require_unique_implementation(self, pass_id, *, install_hint):
             assert str(pass_id) == "mba-egraph"
-            assert install_hint == "pip install d810-egglog"
+            assert install_hint == "d810-egglog"
             return candidate
 
         def activate_implementation(self, selected):

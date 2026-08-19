@@ -12,7 +12,10 @@ from d810.core.pass_editor_spec import (
     FieldEditorSpec,
     PassEditorSpec,
 )
-from d810.core.plugins import PassImplementationCandidate
+from d810.core.plugins import (
+    PassImplementationCandidate,
+    PassImplementationMisdeclared,
+)
 from d810.core.typing import Mapping
 from d810.mba.egraph_contracts import MbaEgraphOptions as _MbaEgraphOptions
 from d810.ir.maturity import IRMaturity
@@ -89,7 +92,13 @@ def mba_egraph_implementation() -> PassImplementationCandidate | None:
     """
     from d810.backends import registry
 
-    candidates = registry().implementation_candidates_for(MBA_EGRAPH_PASS_ID)
+    try:
+        candidates = registry().implementation_candidates_for(MBA_EGRAPH_PASS_ID)
+    except PassImplementationMisdeclared:
+        # Registration is declaration-only: a malformed optional extension
+        # must not prevent the public pass/editor from starting.  Selected
+        # projects use require_unique_implementation() and still fail loudly.
+        return None
     if len(candidates) != 1:
         return None
     return candidates[0]

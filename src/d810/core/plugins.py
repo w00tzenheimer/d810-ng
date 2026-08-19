@@ -390,7 +390,8 @@ def manifest_of(raw: Any) -> BackendManifest:
     """Coerce a duck-typed manifest into a :class:`BackendManifest`."""
     if isinstance(raw, BackendManifest):
         rules = _validate_rules(raw.rules)
-        if rules == raw.rules:
+        implements = _coerce_implements(raw)
+        if rules == raw.rules and implements == raw.implements:
             return raw
         return BackendManifest(
             name=raw.name,
@@ -398,7 +399,7 @@ def manifest_of(raw: Any) -> BackendManifest:
             provides=raw.provides,
             capabilities=raw.capabilities,
             rules=rules,
-            implements=raw.implements,
+            implements=implements,
         )
 
     getter = (
@@ -530,9 +531,14 @@ def _coerce_implements(raw: Any) -> Mapping[str, str]:
             f"got {type(declared).__name__}: {declared!r}"
         )
     for pass_id, rule_name in declared.items():
-        if not isinstance(pass_id, str) or not isinstance(rule_name, str):
+        if (
+            not isinstance(pass_id, str)
+            or not isinstance(rule_name, str)
+            or not pass_id
+            or not rule_name
+        ):
             raise ManifestError(
-                f"implements entries must be str -> str, "
+                f"implements entries must be non-empty str -> str, "
                 f"got {pass_id!r} -> {rule_name!r}"
             )
     return types.MappingProxyType(dict(declared))

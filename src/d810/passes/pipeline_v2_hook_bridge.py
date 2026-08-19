@@ -360,7 +360,7 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
             backend_registry = registry()
             candidate = backend_registry.require_unique_implementation(
                 MBA_EGRAPH_PASS_ID,
-                install_hint="pip install d810-egglog",
+                install_hint="d810-egglog",
             )
             backend_registry.activate_implementation(candidate)
             instruction_rules.append(

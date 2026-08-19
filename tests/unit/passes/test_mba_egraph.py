@@ -10,6 +10,10 @@ from d810.core.config import ProjectConfiguration
 from d810.core.pass_editor_spec import FieldControlKind
 from d810.core.pass_ids import PassId
 from d810.core.plugins import (
+    PLUGIN_API_VERSION,
+    BackendManifest,
+    BackendRegistry,
+    BackendSpec,
     PassImplementationAmbiguous,
     PassImplementationCandidate,
     PassImplementationMissing,
@@ -24,6 +28,7 @@ from d810.passes.mba_egraph import (
     parse_mba_egraph_options,
     register_mba_egraph_pass,
 )
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 from d810.passes.registry import PassRegistry
@@ -466,11 +471,13 @@ class TestMbaEgraphRegistration(unittest.TestCase):
             "d810.backends.registry",
             return_value=_FakeImplementationRegistry(),
         ):
-            with self.assertRaisesRegex(
-                PassImplementationMissing,
-                "install d810-egglog",
-            ):
+            with self.assertRaises(PassImplementationMissing) as ctx:
                 pipeline_v2_hook_activation(project)
+
+        self.assertEqual(
+            str(ctx.exception),
+            "pass 'mba-egraph' has no implementation; install d810-egglog",
+        )
 
     def test_ambiguous_selected_extensions_fail_before_rule_config(self):
         project = ProjectConfiguration(
@@ -518,3 +525,27 @@ class TestMbaEgraphRegistration(unittest.TestCase):
                 pipeline_v2_hook_activation(project)
 
         self.assertEqual(activation_calls, [candidate])
+
+    def test_malformed_unselected_extension_keeps_public_registry_startable(self):
+        manifest = BackendManifest(
+            name="egglog",
+            api_version=PLUGIN_API_VERSION,
+            provides=object(),
+            implements={"mba-egraph": "EgglogOptimizer"},
+        )
+        backend_registry = BackendRegistry(
+            source=lambda: (
+                BackendSpec(
+                    name="egglog",
+                    origin="malformed-test-extension",
+                    load_manifest=lambda: manifest,
+                ),
+            )
+        )
+
+        with patch("d810.backends.registry", return_value=backend_registry):
+            registry = operational_config_v2_pass_registry()
+
+        self.assertIn(MBA_EGRAPH_PASS_ID, registry.public_pass_ids())
+        self.assertIsNotNone(registry.editor_spec_for(MBA_EGRAPH_PASS_ID))
+        self.assertEqual(registry.stages_for(MBA_EGRAPH_PASS_ID), ())
