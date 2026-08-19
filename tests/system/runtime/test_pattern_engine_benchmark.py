@@ -382,6 +382,59 @@ class TestCythonPythonParity:
         assert def_search.get_recursive_resolver_backend() == "cython"
 
     @pytest.mark.ida_required
+    def test_recursive_def_resolver_budget_cutoff_matches_python(
+        self, monkeypatch
+    ):
+        """Both resolver backends consume before rebuilding replacement nodes."""
+        from types import SimpleNamespace
+
+        from d810.backends.ast.z3_proof_policy import (
+            Z3ExpressionNodeBudget,
+            Z3NodeLimitExceeded,
+            Z3ProofPolicy,
+        )
+        from d810.evaluator.hexrays_microcode import def_search
+        from d810.hexrays.expr.ast import AstLeaf as RuntimeAstLeaf
+        from d810.hexrays.expr.ast import AstNode as RuntimeAstNode
+
+        replacement = RuntimeAstLeaf("resolved")
+
+        def _resolve(_mop, _blk, _ins):
+            return replacement
+
+        monkeypatch.setattr(def_search, "resolve_mop_to_ast", _resolve)
+        block = SimpleNamespace(serial=1)
+        instruction = SimpleNamespace(this=1)
+
+        def _run(resolver):
+            leaf = RuntimeAstLeaf("register")
+            leaf.mop = SimpleNamespace(
+                t=ida_hexrays.mop_r,
+                size=4,
+                r=1,
+                valnum=0,
+            )
+            root = RuntimeAstNode(ida_hexrays.m_add, leaf, None)
+            budget = Z3ExpressionNodeBudget(
+                Z3ProofPolicy(max_expression_nodes=1, proof_timeout_ms=100)
+            )
+            budget.consume()
+            with pytest.raises(Z3NodeLimitExceeded):
+                resolver(
+                    root,
+                    block,
+                    instruction,
+                    cache={},
+                    node_budget=budget,
+                )
+            return budget.observed_nodes
+
+        python_observed = _run(def_search._py_slow_recursively_resolve_ast)
+        compiled_observed = _run(def_search.recursively_resolve_ast)
+
+        assert python_observed == compiled_observed == 1
+
+    @pytest.mark.ida_required
     def test_recursive_def_resolver_matches_python_on_live_microcode(
         self,
         libobfuscated_setup,

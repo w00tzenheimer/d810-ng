@@ -85,10 +85,13 @@ class Z3ExpressionNodeBudget:
         self._limit = limit
         self._observed_nodes = 0
         # The AST builder consumes occurrences before it constructs them.  The
-        # visitor later sees those same objects, so retain per-object charges
-        # to avoid charging an already-accounted occurrence twice while still
-        # charging any replacement node produced by contextual resolution.
-        self._charged_occurrences: dict[int, int] = {}
+        # visitor later sees those same objects, so retain the objects
+        # themselves until this query ends.  A strong reference is important:
+        # an integer ``id()`` can be reused after an object dies, which would
+        # let an unrelated replacement occurrence consume a stale charge.
+        # Repeated references preserve occurrence multiplicity without relying
+        # on object equality or hashing.
+        self._charged_occurrences: list[object] = []
 
     @property
     def limit(self) -> int:
@@ -117,8 +120,8 @@ class Z3ExpressionNodeBudget:
         self._observed_nodes += 1
 
     @staticmethod
-    def _occurrence_key(occurrence: object) -> int:
-        """Return a stable identity for an AST occurrence or proxy."""
+    def _unwrap_occurrence(occurrence: object) -> object:
+        """Unwrap AST proxies while preserving object identity semantics."""
 
         target = occurrence
         # AstProxy deliberately keeps its target private while forwarding the
@@ -129,25 +132,21 @@ class Z3ExpressionNodeBudget:
             if next_target is target:
                 break
             target = next_target
-        return id(target)
+        return target
 
     def mark_charged(self, occurrence: object) -> None:
         """Record an occurrence already consumed at the builder seam."""
 
-        key = self._occurrence_key(occurrence)
-        self._charged_occurrences[key] = self._charged_occurrences.get(key, 0) + 1
+        self._charged_occurrences.append(self._unwrap_occurrence(occurrence))
 
     def consume_ast(self, occurrence: object) -> None:
         """Consume an AST occurrence unless its builder charge is recorded."""
 
-        key = self._occurrence_key(occurrence)
-        charged = self._charged_occurrences.get(key, 0)
-        if charged:
-            if charged == 1:
-                del self._charged_occurrences[key]
-            else:
-                self._charged_occurrences[key] = charged - 1
-            return
+        target = self._unwrap_occurrence(occurrence)
+        for index, charged in enumerate(self._charged_occurrences):
+            if charged is target:
+                del self._charged_occurrences[index]
+                return
         self.consume()
 
 

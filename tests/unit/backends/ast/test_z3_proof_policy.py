@@ -126,3 +126,46 @@ def test_budget_aborts_before_constructing_the_oversized_occurrence() -> None:
         _expand_with_budget(expression, budget)
 
     assert budget.observed_nodes == 2
+
+
+def test_budget_charged_occurrences_use_lifetime_safe_identity() -> None:
+    from d810.backends.ast.z3_proof_policy import (
+        Z3ExpressionNodeBudget,
+        Z3ProofPolicy,
+    )
+
+    class _IdentityOnly:
+        def __hash__(self) -> int:
+            return 7
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, _IdentityOnly)
+
+    old_occurrence = _IdentityOnly()
+    budget = Z3ExpressionNodeBudget(Z3ProofPolicy(max_expression_nodes=2))
+
+    budget.consume()
+    budget.mark_charged(old_occurrence)
+    old_token = id(old_occurrence)
+    del old_occurrence
+
+    # The pre-fix integer-token implementation immediately reuses the freed
+    # object's address.  The fixed implementation retains the old object
+    # strongly, so any distinct later object is valid for this assertion.
+    charged_store = getattr(budget, "_charged_occurrences")
+    later_occurrence = None
+    for _ in range(10000):
+        candidate = _IdentityOnly()
+        if not isinstance(charged_store, dict) or id(candidate) == old_token:
+            later_occurrence = candidate
+            break
+    assert later_occurrence is not None
+    budget.consume_ast(later_occurrence)
+
+    assert budget.observed_nodes == 2
+    # The original strong identity token remains independently consumable.
+    for occurrence in getattr(budget, "_charged_occurrences"):
+        if occurrence is not later_occurrence:
+            budget.consume_ast(occurrence)
+            break
+    assert budget.observed_nodes == 2

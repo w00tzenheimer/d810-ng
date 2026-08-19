@@ -46,14 +46,18 @@ from d810.hexrays.utils.hexrays_helpers import (
 logger = getLogger(__name__)
 
 
-class _NodeBudget(Protocol):
-    """Structural protocol for the optional bounded AST-expansion budget."""
+class AstNodeBudget(Protocol):
+    """Backend-neutral protocol for bounded AST occurrence accounting."""
 
     def consume(self) -> None:
         ...
 
     def mark_charged(self, occurrence: object) -> None:
         ...
+
+
+# Keep the private spelling for existing backend-local annotations.
+_NodeBudget = AstNodeBudget
 
 _VALID_MOP_SIZES = VALID_MOP_SIZES
 _MAX_MAKE_NUMBER_SIZE = MAX_MAKE_NUMBER_SIZE
@@ -117,6 +121,7 @@ def _charge_cached_ast_occurrence(
     occurrence: AstBase,
     *,
     root_already_consumed: bool = False,
+    extra_occurrences: dict[int, int] | None = None,
 ) -> None:
     """Charge one logical occurrence of a cached AST subtree.
 
@@ -132,10 +137,25 @@ def _charge_cached_ast_occurrence(
         node_budget.consume()
     _mark_node_budget_charged(node_budget, occurrence)
 
+    # Some source mops are represented by a single AST object even though
+    # their recursive expansion consumed additional logical occurrences (for
+    # example, an m_ldc wrapper plus its numeric source).  Keep that metadata
+    # with the builder context and replay it on cache hits instead of encoding
+    # special cases in the cache path.
+    if extra_occurrences is not None:
+        ast_index = getattr(occurrence, "ast_index", None)
+        extra_count = extra_occurrences.get(ast_index, 0)
+        for _ in range(extra_count):
+            node_budget.consume()
+
     for child_name in ("left", "right", "dst"):
         child = getattr(occurrence, child_name, None)
         if child is not None:
-            _charge_cached_ast_occurrence(node_budget, child)
+            _charge_cached_ast_occurrence(
+                node_budget,
+                child,
+                extra_occurrences=extra_occurrences,
+            )
 
 
 def register_native_perf_provider() -> None:
@@ -162,9 +182,26 @@ class AstBuilderContext:
         # The list of unique AST nodes. The index in this list is the ast_index.
         self.unique_asts: list[AstBase] = []
 
+        # Number of logical source occurrences represented by each AST object
+        # but not materialized as an AST child.  The builder uses this only for
+        # cache-hit accounting; ordinary AST traversal remains unchanged.
+        self.extra_occurrences: dict[int, int] = {}
+
         # The fast lookup dictionary.
         # Maps a mop's unique key to its index in the unique_asts list.
         self.mop_key_to_index: dict[tuple[int, str], int] = {}
+
+    def record_extra_occurrences(self, ast: AstBase, count: int) -> None:
+        """Record source occurrences represented by no AST child node."""
+
+        if count <= 0:
+            return
+        ast_index = getattr(ast, "ast_index", None)
+        if ast_index is None:
+            return
+        self.extra_occurrences[ast_index] = (
+            self.extra_occurrences.get(ast_index, 0) + count
+        )
 
 
 def _mop_ast_cache_key(mop: object) -> tuple[object, tuple[int, ...]]:
@@ -339,6 +376,7 @@ def mop_to_ast_internal(
             node_budget,
             existing,
             root_already_consumed=True,
+            extra_occurrences=context.extra_occurrences,
         )
         return existing
     if _NATIVE_PERF_ENABLED:
@@ -522,6 +560,7 @@ def mop_to_ast_internal(
             const_leaf.ast_index = new_index
             context.unique_asts.append(const_leaf)
             context.mop_key_to_index[key] = new_index
+            context.record_extra_occurrences(const_leaf, 1)
             _mark_node_budget_charged(node_budget, const_leaf)
             return const_leaf
 

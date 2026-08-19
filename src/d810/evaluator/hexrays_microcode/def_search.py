@@ -24,7 +24,7 @@ from d810.core.cymode import CythonMode
 from d810.hexrays.expr.ast import AstLeaf, AstNode, get_mop_key
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
-from d810.hexrays.ir.mop_utils import mop_to_ast
+from d810.hexrays.ir.mop_utils import AstNodeBudget, mop_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t, format_mop_t
 from d810.hexrays.utils.hexrays_helpers import equal_mops_ignore_size
 
@@ -632,6 +632,7 @@ def _py_slow_recursively_resolve_ast(
     depth: int = 0,
     max_depth: int = 10,
     cache: dict | None = None,
+    node_budget: AstNodeBudget | None = None,
 ) -> AstNode | AstLeaf | None:
     """Recursively resolve register/stack leaves in an AST to their defining expressions.
 
@@ -652,6 +653,8 @@ def _py_slow_recursively_resolve_ast(
         depth: Current recursion depth
         max_depth: Maximum recursion depth to prevent infinite loops
         cache: Optional dictionary for caching resolution results
+        node_budget: Optional backend-neutral occurrence budget for replacement
+            AST construction
 
     Returns:
         AST with register/stack leaves replaced by their defining expressions
@@ -660,9 +663,10 @@ def _py_slow_recursively_resolve_ast(
         cache = {}
 
     # Crash-safety: per-call node budget (independent of structural max_depth).
-    # The budget is threaded through the cache dict under a private key so the
-    # public signature stays unchanged. It bounds total leaf-resolution attempts
-    # so a degenerate / cyclic def chain cannot exhaust the stack (llr-pydd).
+    # The resolver cap is threaded through the cache dict under a private key;
+    # it remains independent from the optional proof-expansion budget. It
+    # bounds total leaf-resolution attempts so a degenerate / cyclic def chain
+    # cannot exhaust the stack (llr-pydd).
     budget = cache.get("__resolve_budget__")
     if budget is None:
         budget = [_RESOLVE_NODE_BUDGET]
@@ -712,7 +716,13 @@ def _py_slow_recursively_resolve_ast(
 
                     # Recursively resolve the new AST
                     res = _py_slow_recursively_resolve_ast(
-                        resolved, blk, new_ins, depth + 1, max_depth, cache
+                        resolved,
+                        blk,
+                        new_ins,
+                        depth + 1,
+                        max_depth,
+                        cache,
+                        node_budget,
                     )
                     cache[cache_key] = res
                     return res
@@ -724,14 +734,14 @@ def _py_slow_recursively_resolve_ast(
 
     new_left = (
         _py_slow_recursively_resolve_ast(
-            ast_node.left, blk, ins, depth, max_depth, cache
+            ast_node.left, blk, ins, depth, max_depth, cache, node_budget
         )
         if ast_node.left
         else None
     )
     new_right = (
         _py_slow_recursively_resolve_ast(
-            ast_node.right, blk, ins, depth, max_depth, cache
+            ast_node.right, blk, ins, depth, max_depth, cache, node_budget
         )
         if ast_node.right
         else None
@@ -740,7 +750,11 @@ def _py_slow_recursively_resolve_ast(
     # If children changed, create new AST node
     if new_left is not ast_node.left or new_right is not ast_node.right:
         # Create a new AstNode with the same opcode but resolved children
+        if node_budget is not None:
+            node_budget.consume()
         new_ast = AstNode(ast_node.opcode, new_left, new_right)
+        if node_budget is not None:
+            node_budget.mark_charged(new_ast)
         new_ast.mop = ast_node.mop  # Preserve original mop info
         # Preserve destination metadata so downstream replacement can emit
         # a valid instruction destination instead of a transient value mop.
@@ -779,6 +793,7 @@ def recursively_resolve_ast(
     depth: int = 0,
     max_depth: int = 10,
     cache: dict | None = None,
+    node_budget: AstNodeBudget | None = None,
 ) -> AstNode | AstLeaf | None:
     """Resolve AST definitions through the selected production backend."""
 
@@ -793,6 +808,7 @@ def recursively_resolve_ast(
             resolve_mop_to_ast,
             _microcode_instruction_identity,
             _RESOLVE_NODE_BUDGET,
+            node_budget,
         )
     return _py_slow_recursively_resolve_ast(
         ast,
@@ -801,6 +817,7 @@ def recursively_resolve_ast(
         depth=depth,
         max_depth=max_depth,
         cache=cache,
+        node_budget=node_budget,
     )
 
 

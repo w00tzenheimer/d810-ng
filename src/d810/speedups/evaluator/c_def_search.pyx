@@ -23,6 +23,7 @@ cdef object _resolve(
     object resolve_mop_to_ast,
     object instruction_identity,
     list budget,
+    object node_budget,
 ):
     cdef object mop
     cdef object nested
@@ -76,6 +77,7 @@ cdef object _resolve(
                 resolve_mop_to_ast,
                 instruction_identity,
                 budget,
+                node_budget,
             )
             cache[cache_key] = result
             return result
@@ -93,6 +95,7 @@ cdef object _resolve(
             resolve_mop_to_ast,
             instruction_identity,
             budget,
+            node_budget,
         )
         if ast.left is not None
         else None
@@ -108,13 +111,18 @@ cdef object _resolve(
             resolve_mop_to_ast,
             instruction_identity,
             budget,
+            node_budget,
         )
         if ast.right is not None
         else None
     )
 
     if new_left is not ast.left or new_right is not ast.right:
+        if node_budget is not None:
+            node_budget.consume()
         new_ast = AstNode(ast.opcode, new_left, new_right)
+        if node_budget is not None:
+            node_budget.mark_charged(new_ast)
         new_ast.mop = ast.mop
         new_ast.dst_mop = ast.dst_mop
         new_ast.dest_size = ast.dest_size
@@ -133,7 +141,8 @@ def recursively_resolve_ast(
     object cache=None,
     object resolve_mop_to_ast=None,
     object instruction_identity=None,
-    int node_budget=4096,
+    int resolver_node_budget=4096,
+    object node_budget=None,
 ):
     """Compiled equivalent of the bounded Python recursive resolver."""
 
@@ -142,7 +151,7 @@ def recursively_resolve_ast(
         cache = {}
     budget = cache.get("__resolve_budget__")
     if budget is None:
-        budget = [node_budget]
+        budget = [resolver_node_budget]
         cache["__resolve_budget__"] = budget
     if resolve_mop_to_ast is None:
         from d810.evaluator.hexrays_microcode.def_search import resolve_mop_to_ast
@@ -158,4 +167,5 @@ def recursively_resolve_ast(
         resolve_mop_to_ast,
         instruction_identity,
         budget,
+        node_budget,
     )

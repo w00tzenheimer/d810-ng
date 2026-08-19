@@ -1060,7 +1060,12 @@ class Z3MopProver:
                         )
 
         if ast is not None and blk is not None and ins is not None:
-            resolved_ast = _recursively_resolve_ast(ast, blk, ins)
+            resolved_ast = _recursively_resolve_ast(
+                ast,
+                blk,
+                ins,
+                node_budget=budget,
+            )
             if (
                 self._policy is not None
                 and resolved_ast is not None
