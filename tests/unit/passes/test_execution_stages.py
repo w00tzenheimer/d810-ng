@@ -10,6 +10,8 @@ from d810.passes.execution_stages import (
     ExecutionStageDescriptor,
     canonical_transform_id,
 )
+from d810.ir.maturity import IRMaturity
+from d810.passes.constant_simplification_options import StageLifecycleDomain
 from d810.passes.registry import PassRegistry, PassRegistryError
 
 
@@ -40,6 +42,31 @@ def test_constant_simplification_owns_three_stable_stages() -> None:
         ExecutionPipeline.INSTRUCTION,
         ExecutionPipeline.INSTRUCTION,
         ExecutionPipeline.FLOW,
+    )
+    assert tuple(stage.lifecycle_domain for stage in stages) == (
+        StageLifecycleDomain.MICROCODE,
+        StageLifecycleDomain.MICROCODE,
+        StageLifecycleDomain.MICROCODE,
+    )
+    assert stages[0].supported_maturities == (
+        IRMaturity.CANONICAL,
+        IRMaturity.LOCAL_OPTIMIZED,
+        IRMaturity.CALL_MODELED,
+        IRMaturity.GLOBAL_ANALYZED,
+        IRMaturity.STRUCTURED,
+    )
+    assert stages[1].supported_maturities == (
+        IRMaturity.LOCAL_OPTIMIZED,
+        IRMaturity.CALL_MODELED,
+        IRMaturity.GLOBAL_ANALYZED,
+        IRMaturity.GLOBAL_OPTIMIZED,
+        IRMaturity.STRUCTURED,
+    )
+    assert stages[2].supported_maturities == (
+        IRMaturity.CALL_MODELED,
+        IRMaturity.GLOBAL_ANALYZED,
+        IRMaturity.GLOBAL_OPTIMIZED,
+        IRMaturity.STRUCTURED,
     )
 
 

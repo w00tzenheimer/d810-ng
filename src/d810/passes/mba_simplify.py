@@ -17,6 +17,7 @@ from d810.passes.pass_pipeline import (
 )
 from d810.passes.registry import PassRegistry
 from d810.passes.mba_transform_options import (
+    MBA_TRANSFORM_OPTION_FIELDS,
     MbaSimplifyOptions,
     mba_transform_stages,
     parse_mba_simplify_options,
@@ -43,6 +44,17 @@ class MbaSimplifyCapability(Protocol):
     def run_mba_simplify(self, request: MbaSimplifyRequest) -> PassResult: ...
 
 
+def materialize_mba_transform_options(
+    transform_id: str,
+    options: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Return one selected transform's explicit values plus its own defaults."""
+    materialized = dict(options or {})
+    for field in MBA_TRANSFORM_OPTION_FIELDS.get(transform_id, ()):
+        materialized.setdefault(field.path[0], field.default)
+    return materialized
+
+
 @dataclass(frozen=True)
 class MbaSimplifyPass(PipelinePass):
     """Run selected MBA transforms through an explicit backend capability."""
@@ -62,13 +74,17 @@ class MbaSimplifyPass(PipelinePass):
             return PassResult()
         capability = context.capabilities.require(MbaSimplifyCapability)
         implementation_options = {
-            implementation_name: self.transform_options[transform_id]
+            implementation_name: materialize_mba_transform_options(
+                transform_id,
+                self.transform_options.get(transform_id),
+            )
             for transform_id, implementation_name in zip(
                 self.transform_ids,
                 self.implementation_names,
                 strict=True,
             )
             if transform_id in self.transform_options
+            or MBA_TRANSFORM_OPTION_FIELDS.get(transform_id)
         }
         return capability.run_mba_simplify(
             MbaSimplifyRequest(
@@ -135,6 +151,7 @@ __all__ = [
     "MbaSimplifyPass",
     "MbaSimplifyRequest",
     "build_mba_simplify_pass",
+    "materialize_mba_transform_options",
     "mba_simplify_pass_registry",
     "register_mba_simplify_pass",
 ]

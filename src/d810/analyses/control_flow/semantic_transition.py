@@ -310,6 +310,7 @@ def bind_native_bound_transition_routes(
     dispatcher_map: StateDispatcherMap | None = None,
     state_var_stkoff: int | None = None,
     state_var_reg: int | None = None,
+    supported_state_identity: tuple[int | None, int | None] | None = None,
 ) -> tuple[NativeBoundTransitionRoute, ...]:
     """Select fail-closed native-bound route candidates from resolutions.
 
@@ -358,6 +359,21 @@ def bind_native_bound_transition_routes(
         None if state_var_stkoff is None else int(state_var_stkoff),
         None if state_var_reg is None else int(state_var_reg),
     )
+    supported_identity: tuple[int | None, int | None] | None = None
+    if supported_state_identity is not None:
+        try:
+            supported_identity = (
+                None
+                if supported_state_identity[0] is None
+                else int(supported_state_identity[0]),
+                None
+                if supported_state_identity[1] is None
+                else int(supported_state_identity[1]),
+            )
+        except (IndexError, OverflowError, TypeError, ValueError):
+            return ()
+        if supported_identity == (None, None):
+            return ()
     # Bind every observation by native EA before selecting a route.  A
     # A predecessor fact's source/target serials are snapshot-local provenance;
     # native-EA bindings are current authority.  A concrete current router
@@ -437,23 +453,30 @@ def bind_native_bound_transition_routes(
             invalid_source_eas.add(source_ea)
             continue
 
-        if not typed_fact:
+        resolution_identity = (
+            getattr(resolution, "state_var_stkoff", None),
+            getattr(resolution, "state_var_reg", None),
+        )
+        try:
             resolution_identity = (
-                getattr(resolution, "state_var_stkoff", None),
-                getattr(resolution, "state_var_reg", None),
+                None
+                if resolution_identity[0] is None
+                else int(resolution_identity[0]),
+                None
+                if resolution_identity[1] is None
+                else int(resolution_identity[1]),
             )
-            try:
-                resolution_identity = (
-                    None
-                    if resolution_identity[0] is None
-                    else int(resolution_identity[0]),
-                    None
-                    if resolution_identity[1] is None
-                    else int(resolution_identity[1]),
-                )
-            except (OverflowError, TypeError, ValueError):
-                invalid_source_eas.add(source_ea)
+        except (OverflowError, TypeError, ValueError):
+            invalid_source_eas.add(source_ea)
+            continue
+        if typed_fact and supported_identity is not None:
+            # Retained predecessor observations may preserve several carrier
+            # families at the same native instruction EA.  The active
+            # transition analysis is the only authority allowed to select one
+            # family; a valid sibling from another family is neutral.
+            if resolution_identity != supported_identity:
                 continue
+        elif not typed_fact:
             if expected_identity == (None, None) or (
                 resolution_identity != expected_identity
             ):

@@ -7,6 +7,10 @@ import pytest
 from d810.core.execution_scope import ExecutionPipeline
 from d810.ir.maturity import IRMaturity
 from d810.manager.effective_pipeline_schedule import build_effective_maturity_schedule
+from d810.passes.constant_simplification import constant_simplification_stage_descriptors
+from d810.passes.constant_simplification_options import (
+    compile_constant_simplification_schedule,
+)
 from d810.passes.execution_stages import ExecutionStageDescriptor
 from d810.passes.pass_pipeline import (
     FactRequirement,
@@ -122,6 +126,7 @@ def test_private_rule_maturities_override_unbounded_public_contract() -> None:
             4: "MMAT_CALLS",
             5: "MMAT_GLBOPT1",
         }[value],
+        allow_legacy_constant_fallback=True,
     )
 
     assert schedule.stage("constant-simplification").maturity_source == "private-rule"
@@ -146,3 +151,180 @@ def test_configured_mba_solver_runs_at_global_optimized_only() -> None:
 
     assert schedule.at("MMAT_GLBOPT2").contains("mba-solve")
     assert not schedule.at("MMAT_GLBOPT1").contains("mba-solve")
+
+
+def test_constant_bundle_projection_uses_compiled_schedule_over_live_rules() -> None:
+    config = _config(
+        "constant-simplification",
+        options={
+            "stages": {
+                "fold-readonly-data": {
+                    "maturities": ["CANONICAL"],
+                },
+                "fold-constant-subtree": {"enabled": False},
+                "forward-constants": {
+                    "maturities": ["CALL_MODELED"],
+                },
+            },
+        },
+    )
+    compiled = compile_constant_simplification_schedule(
+        config,
+        constant_simplification_stage_descriptors(),
+    )
+    descriptors = constant_simplification_stage_descriptors()
+    registry = _Registry((config,), {config.pass_id: descriptors})
+    schedule = build_effective_maturity_schedule(
+        (config,),
+        registry=registry,
+        implementations={
+            ExecutionPipeline.INSTRUCTION: (
+                SimpleNamespace(
+                    name="FoldReadonlyDataRule",
+                    maturities=("MMAT_GLBOPT2",),
+                ),
+                SimpleNamespace(
+                    name="ConstantSubtreeFoldRule",
+                    maturities=("MMAT_GLBOPT3",),
+                ),
+            ),
+            ExecutionPipeline.FLOW: (
+                SimpleNamespace(
+                    name="ForwardConstantPropagationRule",
+                    maturities=("MMAT_GLBOPT3",),
+                ),
+            ),
+        },
+        constant_simplification_schedule=compiled,
+    )
+
+    readonly = schedule.stage("fold-readonly-data")
+    subtree = schedule.stage("fold-constant-subtree")
+    forward = schedule.stage("forward-constants")
+    assert readonly.provider_maturities == ("MMAT_PREOPTIMIZED",)
+    assert readonly.schedule_source == "compiled stage contract"
+    assert subtree.enabled is False
+    assert subtree.provider_maturities == ()
+    assert subtree.inactive_reason == "disabled by configuration"
+    assert forward.provider_maturities == ("MMAT_CALLS",)
+
+
+def test_constant_preparation_projection_preserves_all_status_buckets() -> None:
+    config = _config(
+        "constant-simplification",
+        options={"preparation": {"global_const_types": {"enabled": True}}},
+    )
+    compiled = compile_constant_simplification_schedule(
+        config,
+        constant_simplification_stage_descriptors(),
+    )
+    status = SimpleNamespace(
+        pending_count=2,
+        applied_count=3,
+        conflicting_count=4,
+        restored_count=5,
+        unknown_count=1,
+        unknown=(
+            SimpleNamespace(
+                provider="transaction_type_deltas",
+                error_type="RuntimeError",
+                message="provider unavailable",
+            ),
+        ),
+        pending_reason="next preparation round",
+    )
+
+    schedule = build_effective_maturity_schedule(
+        (config,),
+        registry=_Registry(
+            (config,),
+            {config.pass_id: constant_simplification_stage_descriptors()},
+        ),
+        implementations={
+            ExecutionPipeline.INSTRUCTION: (),
+            ExecutionPipeline.FLOW: (),
+        },
+        constant_simplification_schedule=compiled,
+        preparation_status=status,
+    )
+
+    preparation = schedule.stage("global-const-types")
+    assert preparation.preparation_pending_count == 2
+    assert preparation.preparation_applied_count == 3
+    assert preparation.preparation_conflicting_count == 4
+    assert preparation.preparation_restored_count == 5
+    assert preparation.preparation_unknown_count == 1
+    assert preparation.preparation_provider_failures == (
+        "transaction_type_deltas: RuntimeError: provider unavailable",
+    )
+    assert preparation.preparation_state == (
+        "pending, applied, conflicting, restored, unknown"
+    )
+    assert preparation.preparation_reason == "next preparation round"
+
+
+def test_compiled_constant_stage_orders_are_independent_per_pipeline() -> None:
+    config = _config("constant-simplification")
+    compiled = compile_constant_simplification_schedule(
+        config,
+        constant_simplification_stage_descriptors(),
+    )
+    schedule = build_effective_maturity_schedule(
+        (config,),
+        registry=_Registry(
+            (config,),
+            {config.pass_id: constant_simplification_stage_descriptors()},
+        ),
+        implementations={
+            ExecutionPipeline.INSTRUCTION: (),
+            ExecutionPipeline.FLOW: (),
+        },
+        constant_simplification_schedule=compiled,
+    )
+
+    readonly = schedule.stage("fold-readonly-data")
+    subtree = schedule.stage("fold-constant-subtree")
+    forward = schedule.stage("forward-constants")
+    assert (readonly.pipeline, readonly.runtime_order) == ("instruction", 0)
+    assert (subtree.pipeline, subtree.runtime_order) == ("instruction", 1)
+    assert (forward.pipeline, forward.runtime_order) == ("flow", 0)
+    at_calls = schedule.at("MMAT_CALLS")
+    groups = dict(at_calls.pipeline_stages)
+    assert tuple(
+        (stage.pipeline, stage.runtime_order) for stage in groups["instruction"]
+    ) == (("instruction", 0), ("instruction", 1))
+    assert tuple(
+        (stage.pipeline, stage.runtime_order) for stage in groups["flow"]
+    ) == (("flow", 0),)
+
+
+def test_missing_compiled_constant_schedule_fails_closed_without_live_maturities() -> None:
+    config = _config("constant-simplification")
+    descriptors = constant_simplification_stage_descriptors()
+    schedule = build_effective_maturity_schedule(
+        (config,),
+        registry=_Registry((config,), {config.pass_id: descriptors}),
+        implementations={
+            ExecutionPipeline.INSTRUCTION: (
+                SimpleNamespace(
+                    name="FoldReadonlyDataRule",
+                    maturities=("MMAT_GLBOPT2",),
+                ),
+            ),
+            ExecutionPipeline.FLOW: (
+                SimpleNamespace(
+                    name="ForwardConstantPropagationRule",
+                    maturities=("MMAT_GLBOPT3",),
+                ),
+            ),
+        },
+        constant_simplification_schedule=None,
+    )
+
+    readonly = schedule.stage("fold-readonly-data")
+    preparation = schedule.stage("global-const-types")
+    assert readonly.provider_maturities == ()
+    assert readonly.schedule_source == "compiled stage contract unavailable"
+    assert readonly.inactive_reason == "compiled schedule unavailable"
+    assert preparation.schedule_source == "compiled stage contract unavailable"
+    assert preparation.inactive_reason == "compiled schedule unavailable"

@@ -296,6 +296,9 @@ class ProjectContext:
     _original_ins_rules: typing.List = dataclasses.field(default_factory=list)
     _original_blk_rules: typing.List = dataclasses.field(default_factory=list)
     _original_function_priors: typing.Any = None
+    _original_suppressed_rule_names: frozenset[str] = dataclasses.field(
+        default_factory=frozenset
+    )
     _removed_rules: typing.Set[str] = dataclasses.field(default_factory=set)
     _added_rules: typing.List = dataclasses.field(default_factory=list)
 
@@ -306,6 +309,14 @@ class ProjectContext:
         self._original_function_priors = (
             self.state.manager.snapshot_function_analysis_priors()
         )
+        suppressed = getattr(
+            self.state.manager,
+            "_explicitly_suppressed_rule_names",
+            frozenset(),
+        )
+        if not isinstance(suppressed, (set, frozenset)):
+            suppressed = frozenset()
+        self._original_suppressed_rule_names = frozenset(suppressed)
 
     @staticmethod
     def _rule_name(rule: str | type | typing.Any) -> str:
@@ -331,6 +342,12 @@ class ProjectContext:
         name = self._rule_name(rule)
 
         self._removed_rules.add(name)
+        self.state.manager._explicitly_suppressed_rule_names = frozenset(
+            {
+                *self.state.manager._explicitly_suppressed_rule_names,
+                name,
+            }
+        )
 
         # Remove from current instruction rules
         self.state.current_ins_rules = [
@@ -359,6 +376,12 @@ class ProjectContext:
             ValueError: If the rule is not found in known rules.
         """
         name = self._rule_name(rule)
+
+        self.state.manager._explicitly_suppressed_rule_names = frozenset(
+            candidate
+            for candidate in self.state.manager._explicitly_suppressed_rule_names
+            if candidate != name
+        )
 
         # Try to find in known instruction rules
         for known_rule in self.state.known_ins_rules:
@@ -403,6 +426,9 @@ class ProjectContext:
         self.state.current_blk_rules = self._original_blk_rules
         self.state.manager.restore_function_analysis_priors(
             self._original_function_priors
+        )
+        self.state.manager._explicitly_suppressed_rule_names = (
+            self._original_suppressed_rule_names
         )
         if self._removed_rules:
             logger.info("Restored %d removed rules", len(self._removed_rules))

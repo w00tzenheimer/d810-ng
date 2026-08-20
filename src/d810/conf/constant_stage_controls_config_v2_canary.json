@@ -1,0 +1,85 @@
+{
+  "description": "Config-v2 canary for the constant-simplification stage-control MASM fixture.",
+  "ins_rules": [],
+  "blk_rules": [],
+  "additional_configuration": {
+    "pipeline_v2_mode": "config-v2",
+    "config_v2_canary": {
+      "source_config": "default_instruction_only.json",
+      "runtime_source": "pipeline_v2"
+    },
+    "pipeline_v2": [
+      {
+        "pass_id": "constant-simplification",
+        "maturity_gates": [],
+        "options": {
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "aggressive_no_direct_writes",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": true,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "pass_id": "mba-simplify",
+        "maturity_gates": [],
+        "options": {
+          "transforms": [
+            "z-3-setz-generic",
+            "z-3-setnz-generic",
+            "z-3-lnot-generic"
+          ],
+          "transform_options": {
+            "z-3-setz-generic": {
+              "max_expression_nodes": 256,
+              "proof_timeout_ms": 50
+            },
+            "z-3-setnz-generic": {
+              "max_expression_nodes": 256,
+              "proof_timeout_ms": 50
+            },
+            "z-3-lnot-generic": {
+              "max_expression_nodes": 256,
+              "proof_timeout_ms": 50
+            }
+          }
+        }
+      }
+    ]
+  }
+}

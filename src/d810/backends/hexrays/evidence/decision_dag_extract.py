@@ -483,6 +483,24 @@ def extract_decision_dag(
     )
     nodes: dict[int, RouteComparison] = {}
     aliases: dict[int, int] = {}
+    entry_aliases: dict[int, int] = {}
+    current = int(dispatcher_entry_serial)
+    seen_entry_aliases: set[int] = set()
+    while current != int(root) and current not in seen_entry_aliases:
+        seen_entry_aliases.add(current)
+        try:
+            entry_block = mba.get_mblock(current)
+        except Exception:
+            entry_block = None
+        if entry_block is None:
+            break
+        alias_target = _pure_internal_goto_alias(entry_block)
+        if alias_target is None:
+            break
+        entry_aliases[current] = int(alias_target)
+        current = int(alias_target)
+    if current == int(root):
+        aliases.update(entry_aliases)
     visited: set[int] = set()
     stack = [root]
     while stack:

@@ -116,25 +116,26 @@ def _editor_fields():
 
 def test_rva_guard_is_exposed_in_the_pass_editor():
     """Without this the option works from JSON but the UI cannot show it."""
-    assert "rva_guard" in _editor_fields()
+    assert "stages.fold-readonly-data.rva_guard" in _editor_fields()
 
 
 def test_rva_guard_editor_field_is_a_boolean_bound_to_the_option():
-    field = _editor_fields()["rva_guard"]
-    assert field.path == ("rva_guard",)
+    field = _editor_fields()["stages.fold-readonly-data.rva_guard"]
+    assert field.path == ("stages", "fold-readonly-data", "rva_guard")
     assert field.control.name == "BOOLEAN"
     assert field.label
     assert field.description
 
 
 def test_every_parsed_option_has_an_editor_field():
-    """Guards the class of bug this test file was extended for: an option added
-    to parsing but never surfaced in the editor."""
-    from d810.passes.constant_simplification import ConstantSimplificationOptions
-    import dataclasses
-
-    parsed = {f.name for f in dataclasses.fields(ConstantSimplificationOptions)}
-    assert parsed <= set(_editor_fields())
+    """Every legacy projection remains represented by its canonical editor path."""
+    fields = _editor_fields()
+    assert {
+        "stages.fold-readonly-data.memory_policy",
+        "stages.fold-readonly-data.rva_guard",
+        "stages.fold-readonly-data.allow_executable_readonly",
+        "preparation.global_const_types.enabled",
+    } <= set(fields)
 
 
 def test_config_template_seeds_rva_guard_with_its_real_default():
@@ -148,24 +149,24 @@ def test_config_template_seeds_rva_guard_with_its_real_default():
     registry = register_constant_simplification_pass(PassRegistry())
     template = registry.config_template_for(CONSTANT_SIMPLIFICATION_PASS_ID)
 
-    assert template.options["rva_guard"] is True
+    assert template.options["stages"]["fold-readonly-data"]["rva_guard"] is True
     assert (
-        template.options["rva_guard"]
+        template.options["stages"]["fold-readonly-data"]["rva_guard"]
         is build_constant_simplification_pass(_config()).options.rva_guard
     )
 
 
-def test_global_const_persistence_is_exposed_as_an_off_by_default_checkbox() -> None:
+def test_global_const_preparation_is_exposed_as_an_off_by_default_checkbox() -> None:
     from d810.passes.constant_simplification import (
         register_constant_simplification_pass,
     )
     from d810.passes.registry import PassRegistry
 
     registry = register_constant_simplification_pass(PassRegistry())
-    field = _editor_fields()["persist_global_const_annotations"]
+    field = _editor_fields()["preparation.global_const_types.enabled"]
     template = registry.config_template_for(CONSTANT_SIMPLIFICATION_PASS_ID)
 
-    assert field.path == ("persist_global_const_annotations",)
+    assert field.path == ("preparation", "global_const_types", "enabled")
     assert field.control.name == "BOOLEAN"
-    assert field.label == "Persist proven global constants in IDB"
-    assert template.options["persist_global_const_annotations"] is False
+    assert field.label == "Enable reversible global const types"
+    assert template.options["preparation"]["global_const_types"]["enabled"] is False

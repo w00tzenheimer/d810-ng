@@ -12,6 +12,9 @@ EXTERN sub_7FF85702AFE0:PROC
 
 CONST SEGMENT
 Src db 0
+; Standalone backing storage for the materialized pointer below. The source
+; image target is outside this fixture's exported data closure.
+off_7FF85711D058 db 0
 off_7FF8571A2640 dq off_7FF85711D058
 dword_7FF8571CF8E0 dd 0D17CED32h
 byte_7FF8571CF8E4 db 0FDh

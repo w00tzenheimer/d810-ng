@@ -2,12 +2,14 @@ import ida_hexrays
 
 from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode
 from d810.backends.ast.z3 import Z3MopProver
+from d810.backends.ast.z3_proof_policy import Z3ProofStatus
 from d810.optimizers.microcode.instructions.z3.handler import Z3Rule
 from d810.hexrays.ir.number_operand import safe_make_number
 
 
 class Z3setzRuleGeneric(Z3Rule):
     DESCRIPTION = "Check with Z3 if a m_setz check is always True or False"
+    PROOF_TRANSFORM_ID = "z-3-setz-generic"
 
     @property
     def PATTERN(self) -> AstNode:
@@ -26,10 +28,20 @@ class Z3setzRuleGeneric(Z3Rule):
         x0_mop = candidate["x_0"].mop
         x1_mop = candidate["x_1"].mop
 
-        if Z3MopProver().are_equal(x0_mop, x1_mop):
+        equal_result = Z3MopProver(policy=self.z3_proof_policy).prove_equal(
+            x0_mop, x1_mop
+        )
+        if self.observe_z3_proof("prove_equal", equal_result) and (
+            equal_result.status is Z3ProofStatus.PROVED
+        ):
             candidate.add_constant_leaf("val_res", 1, res_size)
             return True
-        if Z3MopProver().are_unequal(x0_mop, x1_mop):
+        unequal_result = Z3MopProver(policy=self.z3_proof_policy).prove_unequal(
+            x0_mop, x1_mop
+        )
+        if self.observe_z3_proof("prove_unequal", unequal_result) and (
+            unequal_result.status is Z3ProofStatus.PROVED
+        ):
             candidate.add_constant_leaf("val_res", 0, res_size)
             return True
 
@@ -42,15 +54,25 @@ class Z3setzRuleGeneric(Z3Rule):
         ):
             # setz(expr, 0) - check if expr is always 0 or always nonzero
             # Pass block/instruction context for backward tracking of register definitions
-            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_zero(
-                x0_mop
+            zero_result = Z3MopProver(
+                blk=self._current_blk,
+                ins=self.definition_search_ins,
+                policy=self.z3_proof_policy,
+            ).prove_always_zero(x0_mop)
+            if self.observe_z3_proof("prove_always_zero", zero_result) and (
+                zero_result.status is Z3ProofStatus.PROVED
             ):
                 # expr is always 0, so setz(0, 0) = 1
                 candidate.add_constant_leaf("val_res", 1, res_size)
                 return True
-            if Z3MopProver(
-                blk=self._current_blk, ins=self._current_ins
-            ).is_always_nonzero(x0_mop):
+            nonzero_result = Z3MopProver(
+                blk=self._current_blk,
+                ins=self.definition_search_ins,
+                policy=self.z3_proof_policy,
+            ).prove_always_nonzero(x0_mop)
+            if self.observe_z3_proof("prove_always_nonzero", nonzero_result) and (
+                nonzero_result.status is Z3ProofStatus.PROVED
+            ):
                 # expr is always nonzero, so setz(nonzero, 0) = 0
                 candidate.add_constant_leaf("val_res", 0, res_size)
                 return True
@@ -60,6 +82,7 @@ class Z3setzRuleGeneric(Z3Rule):
 
 class Z3setnzRuleGeneric(Z3Rule):
     DESCRIPTION = "Check with Z3 if a m_setnz check is always True or False"
+    PROOF_TRANSFORM_ID = "z-3-setnz-generic"
 
     @property
     def PATTERN(self) -> AstNode:
@@ -78,10 +101,20 @@ class Z3setnzRuleGeneric(Z3Rule):
         x0_mop = candidate["x_0"].mop
         x1_mop = candidate["x_1"].mop
 
-        if Z3MopProver().are_equal(x0_mop, x1_mop):
+        equal_result = Z3MopProver(policy=self.z3_proof_policy).prove_equal(
+            x0_mop, x1_mop
+        )
+        if self.observe_z3_proof("prove_equal", equal_result) and (
+            equal_result.status is Z3ProofStatus.PROVED
+        ):
             candidate.add_constant_leaf("val_res", 0, res_size)
             return True
-        if Z3MopProver().are_unequal(x0_mop, x1_mop):
+        unequal_result = Z3MopProver(policy=self.z3_proof_policy).prove_unequal(
+            x0_mop, x1_mop
+        )
+        if self.observe_z3_proof("prove_unequal", unequal_result) and (
+            unequal_result.status is Z3ProofStatus.PROVED
+        ):
             candidate.add_constant_leaf("val_res", 1, res_size)
             return True
 
@@ -94,15 +127,25 @@ class Z3setnzRuleGeneric(Z3Rule):
         ):
             # setnz(expr, 0) - check if expr is always 0 or always nonzero
             # Pass block/instruction context for backward tracking of register definitions
-            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_zero(
-                x0_mop
+            zero_result = Z3MopProver(
+                blk=self._current_blk,
+                ins=self.definition_search_ins,
+                policy=self.z3_proof_policy,
+            ).prove_always_zero(x0_mop)
+            if self.observe_z3_proof("prove_always_zero", zero_result) and (
+                zero_result.status is Z3ProofStatus.PROVED
             ):
                 # expr is always 0, so setnz(0, 0) = 0
                 candidate.add_constant_leaf("val_res", 0, res_size)
                 return True
-            if Z3MopProver(
-                blk=self._current_blk, ins=self._current_ins
-            ).is_always_nonzero(x0_mop):
+            nonzero_result = Z3MopProver(
+                blk=self._current_blk,
+                ins=self.definition_search_ins,
+                policy=self.z3_proof_policy,
+            ).prove_always_nonzero(x0_mop)
+            if self.observe_z3_proof("prove_always_nonzero", nonzero_result) and (
+                nonzero_result.status is Z3ProofStatus.PROVED
+            ):
                 # expr is always nonzero, so setnz(nonzero, 0) = 1
                 candidate.add_constant_leaf("val_res", 1, res_size)
                 return True
@@ -112,6 +155,7 @@ class Z3setnzRuleGeneric(Z3Rule):
 
 class Z3lnotRuleGeneric(Z3Rule):
     DESCRIPTION = "Check with Z3 if a m_lnot check is always True or False"
+    PROOF_TRANSFORM_ID = "z-3-lnot-generic"
 
     @property
     def PATTERN(self) -> AstNode:
@@ -125,14 +169,28 @@ class Z3lnotRuleGeneric(Z3Rule):
     def check_candidate(self, candidate):
         # lnot result is a boolean (0 or 1), get size from destination operand
         res_size = candidate.dst_mop.size if candidate.dst_mop else 1
-        # For comparing x_0 against 0, use the operand's size
-        operand_size = candidate["x_0"].size or 1
-        val_0_mop = ida_hexrays.mop_t()
-        safe_make_number(val_0_mop, 0, operand_size)
-        if Z3MopProver().are_equal(candidate["x_0"].mop, val_0_mop):
+        prover = Z3MopProver(
+            blk=self._current_blk,
+            ins=self.definition_search_ins,
+            policy=self.z3_proof_policy,
+        )
+        # Resolve the operand through the current CFG context. Pair proving
+        # treats a reaching register definition as an unconstrained variable;
+        # the single-operand queries expand that definition before asking Z3.
+        zero_result = prover.prove_always_zero(
+            candidate["x_0"].mop
+        )
+        if self.observe_z3_proof("prove_always_zero", zero_result) and (
+            zero_result.status is Z3ProofStatus.PROVED
+        ):
             candidate.add_constant_leaf("val_res", 1, res_size)
             return True
-        if Z3MopProver().are_unequal(candidate["x_0"].mop, val_0_mop):
+        nonzero_result = prover.prove_always_nonzero(
+            candidate["x_0"].mop
+        )
+        if self.observe_z3_proof("prove_always_nonzero", nonzero_result) and (
+            nonzero_result.status is Z3ProofStatus.PROVED
+        ):
             candidate.add_constant_leaf("val_res", 0, res_size)
             return True
         return False

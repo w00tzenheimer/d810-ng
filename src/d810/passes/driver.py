@@ -1128,6 +1128,20 @@ def _run_pass_spec(
                 mutation_status=mutation_status,
                 mutation_receipt=_backend_mutation_receipt(backend),
             )
+            _observe_native_cfg_mutation(
+                state=native_cfg_observer_state,
+                spec=spec,
+                maturity=ctx.maturity,
+                pre_graph=ctx.graph,
+                post_graph=new_graph,
+                plan=fragment_plan,
+                mutation_status=mutation_status,
+                mutation_effects=mutation_effects,
+                edge_state_contracts=result.native_cfg_edge_contracts,
+                journal=journal,
+                session_id=session_id,
+                parent_attempt_id=(None if attempt is None else attempt.attempt_id),
+            )
             if mutation_status is not ExecutionAttemptStatus.COMPLETED:
                 terminal_status = mutation_status
                 terminal_reason = mutation_reason

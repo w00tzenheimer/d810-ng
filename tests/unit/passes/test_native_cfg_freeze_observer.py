@@ -18,9 +18,28 @@ from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.ir.edge_state_contract import EdgeStateContract
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.ir.maturity import IRMaturity
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.passes.driver import run_pipeline
-from d810.passes.pass_pipeline import PassResult, PassSpec, default, no_caps
+from d810.passes.pass_pipeline import (
+    BackendRoute,
+    PassResult,
+    PassSpec,
+    default,
+    no_caps,
+)
 from d810.transforms.cfg_transaction import LogicalBlockRef
+from d810.transforms.fragment_plan import (
+    FragmentBlock,
+    FragmentBlockMaterialization,
+    FragmentBlockRole,
+    FragmentEdge,
+    FragmentOperation,
+    FragmentPlan,
+    FragmentPublicationPurpose,
+    FragmentWorkItemScope,
+)
 from d810.transforms.native_cfg_normalization import (
     NativeCfgPassMutationObservation,
     ObservedEdgeStateContract,
@@ -112,6 +131,79 @@ def _plan() -> PatchPlan:
     )
 
 
+def _fragment_plan() -> FragmentPlan:
+    native_key = NativePreanalysisKey(
+        input_identity="stage-c-fragment",
+        processor="metapc",
+        bitness=64,
+        function_rva=0x1000,
+        function_fingerprint="stage-c-fragment",
+        profile_fingerprint="stage-c-fragment-profile",
+        sdk_fingerprint="stage-c-fragment-sdk",
+    )
+
+    def identity(ea: int) -> StableBlockIdentity:
+        return StableBlockIdentity.from_intervals(
+            (NativeEaInterval(ea, ea + 1),),
+            native_key=native_key,
+            exact_instruction_eas=(ea,),
+        )
+
+    original = identity(0x1000)
+    target = identity(0x1020)
+    return FragmentPlan(
+        plan_id="stage-c-fragment-plan",
+        atomic_group_id="stage-c-fragment@0x1000",
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        native_key=native_key,
+        blocks=(
+            FragmentBlock(
+                block_id="original",
+                role=FragmentBlockRole.ORIGINAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x1000,
+                stable_identity=original,
+            ),
+            FragmentBlock(
+                block_id="replacement",
+                role=FragmentBlockRole.REPLACEMENT,
+                materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+                semantic_anchor_ea=0x1000,
+                stable_identity=original,
+                replaces_block_id="original",
+            ),
+            FragmentBlock(
+                block_id="target",
+                role=FragmentBlockRole.EXTERNAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x1020,
+                stable_identity=target,
+            ),
+        ),
+        roots=("replacement",),
+        owned_originals=("original",),
+        prohibited_dispatcher_blocks=(),
+        operations=(
+            FragmentOperation(
+                operation_id="stage-c-fragment-edge",
+                source_block_id="replacement",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="target",
+                    ),
+                ),
+            ),
+        ),
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="stage-c-fragment:complete",
+            selected_obligation_ids=("stage-c-fragment-edge",),
+            remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
+        ),
+    )
+
+
 def _edge_contract() -> ObservedEdgeStateContract:
     return ObservedEdgeStateContract(
         source_block=0,
@@ -138,6 +230,15 @@ class _NoContractPass:
     def run(self, ctx) -> PassResult:
         del ctx
         return PassResult(rewrite_plan=_plan())
+
+
+class _FragmentPass:
+    def run(self, ctx) -> PassResult:
+        del ctx
+        return PassResult(
+            fragment_plan=_fragment_plan(),
+            native_cfg_edge_contracts=(_edge_contract(),),
+        )
 
 
 class _NeverDetect:
@@ -232,6 +333,27 @@ def test_config_v2_opt_in_observes_completed_mutation_and_freezes_once() -> None
             "scheduled_pass_ids": ("stage-c-pass",),
         }
     ]
+
+
+def test_config_v2_opt_in_observes_completed_fragment_mutation() -> None:
+    observer = _Observer()
+    spec = PassSpec(
+        "stage-c-fragment-pass",
+        _FragmentPass,
+        no_caps,
+        default,
+        options={"native_cfg_persistence": True},
+        backend_route=BackendRoute.FRAGMENT_PUBLICATION,
+    )
+
+    assert _run(spec, observer) == _FINAL
+
+    assert len(observer.observations) == 1
+    observation = observer.observations[0]
+    assert observation.pre_graph == _BASELINE
+    assert observation.post_graph == _FINAL
+    assert observation.plan_fingerprint == "stage-c-fragment-plan"
+    assert observation.receipt_ref.ref_id == "receipt-17"
 
 
 @pytest.mark.parametrize(

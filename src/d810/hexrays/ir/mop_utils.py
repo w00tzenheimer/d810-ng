@@ -12,6 +12,7 @@ import functools
 import ida_hexrays
 
 from d810.core import MOP_TO_AST_CACHE, getLogger
+from d810.core.typing import Protocol
 from d810.core.native_perf import register_provider as _register_native_perf_provider
 from d810.hexrays.expr.ast import (
     AstBase,
@@ -43,6 +44,20 @@ from d810.hexrays.utils.hexrays_helpers import (
 )
 
 logger = getLogger(__name__)
+
+
+class AstNodeBudget(Protocol):
+    """Backend-neutral protocol for bounded AST occurrence accounting."""
+
+    def consume(self) -> None:
+        ...
+
+    def mark_charged(self, occurrence: object) -> None:
+        ...
+
+
+# Keep the private spelling for existing backend-local annotations.
+_NodeBudget = AstNodeBudget
 
 _VALID_MOP_SIZES = VALID_MOP_SIZES
 _MAX_MAKE_NUMBER_SIZE = MAX_MAKE_NUMBER_SIZE
@@ -89,6 +104,60 @@ def _native_perf_ast_constructed() -> None:
         _NATIVE_PERF_COUNTERS["ast_constructions"] += 1
 
 
+def _mark_node_budget_charged(
+    node_budget: _NodeBudget | None, occurrence: AstBase
+) -> None:
+    """Tell a compatible budget that *occurrence* was charged by the builder."""
+
+    if node_budget is None:
+        return
+    marker = getattr(node_budget, "mark_charged", None)
+    if marker is not None:
+        marker(occurrence)
+
+
+def _charge_cached_ast_occurrence(
+    node_budget: _NodeBudget | None,
+    occurrence: AstBase,
+    *,
+    root_already_consumed: bool = False,
+    extra_occurrences: dict[int, int] | None = None,
+) -> None:
+    """Charge one logical occurrence of a cached AST subtree.
+
+    A local builder-cache hit reuses the existing AST objects, but it still
+    represents a complete recursive occurrence in the source mop tree. Walk
+    only that reused subtree to charge each child occurrence and record the
+    corresponding identities for the later visitor; no AST nodes are rebuilt.
+    """
+
+    if node_budget is None:
+        return
+    if not root_already_consumed:
+        node_budget.consume()
+    _mark_node_budget_charged(node_budget, occurrence)
+
+    # Some source mops are represented by a single AST object even though
+    # their recursive expansion consumed additional logical occurrences (for
+    # example, an m_ldc wrapper plus its numeric source).  Keep that metadata
+    # with the builder context and replay it on cache hits instead of encoding
+    # special cases in the cache path.
+    if extra_occurrences is not None:
+        ast_index = getattr(occurrence, "ast_index", None)
+        extra_count = extra_occurrences.get(ast_index, 0)
+        for _ in range(extra_count):
+            node_budget.consume()
+
+    for child_name in ("left", "right", "dst"):
+        child = getattr(occurrence, child_name, None)
+        if child is not None:
+            _charge_cached_ast_occurrence(
+                node_budget,
+                child,
+                extra_occurrences=extra_occurrences,
+            )
+
+
 def register_native_perf_provider() -> None:
     """Select the Python-boundary AST builder provider."""
     _register_native_perf_provider(
@@ -113,9 +182,26 @@ class AstBuilderContext:
         # The list of unique AST nodes. The index in this list is the ast_index.
         self.unique_asts: list[AstBase] = []
 
+        # Number of logical source occurrences represented by each AST object
+        # but not materialized as an AST child.  The builder uses this only for
+        # cache-hit accounting; ordinary AST traversal remains unchanged.
+        self.extra_occurrences: dict[int, int] = {}
+
         # The fast lookup dictionary.
         # Maps a mop's unique key to its index in the unique_asts list.
         self.mop_key_to_index: dict[tuple[int, str], int] = {}
+
+    def record_extra_occurrences(self, ast: AstBase, count: int) -> None:
+        """Record source occurrences represented by no AST child node."""
+
+        if count <= 0:
+            return
+        ast_index = getattr(ast, "ast_index", None)
+        if ast_index is None:
+            return
+        self.extra_occurrences[ast_index] = (
+            self.extra_occurrences.get(ast_index, 0) + count
+        )
 
 
 def _mop_ast_cache_key(mop: object) -> tuple[object, tuple[int, ...]]:
@@ -231,9 +317,18 @@ def extract_base_and_offset(
 
 
 def mop_to_ast_internal(
-    mop: ida_hexrays.mop_t, context: AstBuilderContext, root: bool = False
+    mop: ida_hexrays.mop_t,
+    context: AstBuilderContext,
+    root: bool = False,
+    node_budget: _NodeBudget | None = None,
 ) -> AstBase | None:
     """Recursively convert a mop_t operand tree into an AST."""
+    # Charge the occurrence before cache lookup, recursive descent, or AST
+    # construction.  This is deliberately before deduplication: a repeated
+    # operand occurrence is real work for a bounded proof even when the AST
+    # builder can reuse a previously built template node.
+    if node_budget is not None:
+        node_budget.consume()
     if _NATIVE_PERF_ENABLED:
         _NATIVE_PERF_COUNTERS["builder_calls"] += 1
     # Only log at root
@@ -276,7 +371,14 @@ def mop_to_ast_internal(
         if _NATIVE_PERF_ENABLED:
             _NATIVE_PERF_COUNTERS["local_cache_hits"] += 1
         existing_index = context.mop_key_to_index[key]
-        return context.unique_asts[existing_index]
+        existing = context.unique_asts[existing_index]
+        _charge_cached_ast_occurrence(
+            node_budget,
+            existing,
+            root_already_consumed=True,
+            extra_occurrences=context.extra_occurrences,
+        )
+        return existing
     if _NATIVE_PERF_ENABLED:
         _NATIVE_PERF_COUNTERS["local_cache_misses"] += 1
 
@@ -327,8 +429,12 @@ def mop_to_ast_internal(
                 rot_mop = call_ins.d
 
             if val_mop is not None and rot_mop is not None:
-                left_ast = mop_to_ast_internal(val_mop, context)
-                right_ast = mop_to_ast_internal(rot_mop, context)
+                left_ast = mop_to_ast_internal(
+                    val_mop, context, node_budget=node_budget
+                )
+                right_ast = mop_to_ast_internal(
+                    rot_mop, context, node_budget=node_budget
+                )
 
                 if left_ast is not None and right_ast is not None:
                     tree = AstNode(ida_hexrays.m_call, left_ast, right_ast)
@@ -357,6 +463,7 @@ def mop_to_ast_internal(
                     tree.ast_index = new_index
                     context.unique_asts.append(tree)
                     context.mop_key_to_index[key] = new_index
+                    _mark_node_budget_charged(node_budget, tree)
                     return tree
 
     # Helper calls that evaluate to constants are now canonicalised by
@@ -368,10 +475,12 @@ def mop_to_ast_internal(
 
         # Gather children ASTs based on operand count
         left_ast = (
-            mop_to_ast_internal(mop.d.l, context) if mop.d.l is not None else None
+            mop_to_ast_internal(mop.d.l, context, node_budget=node_budget)
+            if mop.d.l is not None
+            else None
         )
         right_ast = (
-            mop_to_ast_internal(mop.d.r, context)
+            mop_to_ast_internal(mop.d.r, context, node_budget=node_budget)
             if (nb_ops >= 2 and mop.d.r is not None)
             else None
         )
@@ -387,7 +496,11 @@ def mop_to_ast_internal(
         else:
             # Only use dst_ast if destination present (ternary ops like m_stx etc.)
             dst_ast = (
-                mop_to_ast_internal(mop.d.d, context) if mop.d.d is not None else None
+                mop_to_ast_internal(
+                    mop.d.d, context, node_budget=node_budget
+                )
+                if mop.d.d is not None
+                else None
             )
             tree = AstNode(mop.d.opcode, left_ast, right_ast, dst_ast)
             _native_perf_ast_constructed()
@@ -416,6 +529,7 @@ def mop_to_ast_internal(
             tree.ast_index = new_index
             context.unique_asts.append(tree)
             context.mop_key_to_index[key] = new_index
+            _mark_node_budget_charged(node_budget, tree)
             return tree
 
     # Special handling for mop_d that wraps an m_ldc as a constant leaf
@@ -431,6 +545,8 @@ def mop_to_ast_internal(
         if ldc_src is not None and ldc_src.t == ida_hexrays.mop_n:
             const_val = int(ldc_src.nnn.value)
             const_size = ldc_src.size
+            if node_budget is not None:
+                node_budget.consume()
 
             const_leaf = AstConstant(hex(const_val), const_val, const_size)
             _native_perf_ast_constructed()
@@ -444,6 +560,8 @@ def mop_to_ast_internal(
             const_leaf.ast_index = new_index
             context.unique_asts.append(const_leaf)
             context.mop_key_to_index[key] = new_index
+            context.record_extra_occurrences(const_leaf, 1)
+            _mark_node_budget_charged(node_budget, const_leaf)
             return const_leaf
 
     # Fallback for any unhandled mop: treat as a leaf.
@@ -522,6 +640,7 @@ def mop_to_ast_internal(
         tree.ast_index = new_index
         context.unique_asts.append(tree)
         context.mop_key_to_index[key] = new_index
+        _mark_node_budget_charged(node_budget, tree)
         return tree
 
     # If we reach here, we failed to build an AST. Log the full mop tree.
@@ -530,12 +649,31 @@ def mop_to_ast_internal(
     return None
 
 
-def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
+def mop_to_ast(
+    mop: ida_hexrays.mop_t, *, node_budget: _NodeBudget | None = None
+) -> AstProxy | None:
     """Convert a mop_t to an AST node, with caching to avoid re-computation.
 
     Returns a deep copy of the cached AST to prevent side-effects from
     mutations by the caller.
     """
+
+    # A bounded proof must account for the real recursive builder, not a
+    # post-construction AST counter or a parallel approximation.  Bypass the
+    # global template cache for this path so every occurrence reaches
+    # ``mop_to_ast_internal`` and consumes its budget before descent or
+    # construction.  The bounded path is intentionally isolated from the
+    # ordinary cache because a cached template would skip that recursion.
+    if node_budget is not None:
+        builder_context = AstBuilderContext()
+        mop_ast = mop_to_ast_internal(
+            mop, builder_context, root=True, node_budget=node_budget
+        )
+        if not mop_ast:
+            return None
+        mop_ast.compute_sub_ast()
+        mop_ast.freeze()
+        return AstProxy(mop_ast)
 
     # 1. Create a stable, hashable key from the mop_t object.
     cache_key = _mop_ast_cache_key(mop)

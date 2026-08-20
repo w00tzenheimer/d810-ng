@@ -210,6 +210,8 @@ class ConcreteEvaluator(EvaluatorProtocol):
             ida_hexrays.m_shl,
             ida_hexrays.m_shr,
             ida_hexrays.m_sar,
+            ida_hexrays.m_cfshl,
+            ida_hexrays.m_cfshr,
             ida_hexrays.m_cfadd,
             ida_hexrays.m_ofadd,
             ida_hexrays.m_seto,

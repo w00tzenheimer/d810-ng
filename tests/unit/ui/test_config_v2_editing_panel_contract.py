@@ -233,7 +233,9 @@ def test_typed_option_controls_keep_experimental_and_advisory_metadata_visible()
 def test_checkable_items_combine_flags_through_qt_compatibility() -> None:
     source = PANEL.read_text(encoding="utf-8")
 
-    assert source.count("qt_flag_or(item.flags(), _checkable_flag())") == 1
+    # The routing-family list and typed string-list controls both need the
+    # Qt-version-safe flag combiner.
+    assert source.count("qt_flag_or(item.flags(), _checkable_flag())") == 2
     assert (
         "qt_flag_or(family_item.flags(), _checkable_flag())" in source
     )

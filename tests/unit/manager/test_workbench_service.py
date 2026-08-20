@@ -32,6 +32,7 @@ from d810.manager.workbench_models import (
     WorkbenchCommandRequest,
 )
 from d810.manager import workbench_service as service_module
+from d810.passes.constant_simplification import constant_simplification_stage_descriptors
 from d810.passes.pass_pipeline import (
     FactRequirement,
     PassContract,
@@ -108,6 +109,16 @@ class _Registry:
                 implementation_name=implementation,
             ),
         )
+
+
+class _ConstantRegistry(_Registry):
+    def __init__(self) -> None:
+        super().__init__((_spec("constant-simplification"),))
+
+    def stages_for(self, pass_id: str) -> tuple[object, ...]:
+        if pass_id == "constant-simplification":
+            return constant_simplification_stage_descriptors()
+        return super().stages_for(pass_id)
 
 
 class _Facts:
@@ -327,6 +338,44 @@ def test_collect_projects_runtime_identity_order_and_not_run_without_facts(
     assert json.loads(snapshot.pipeline[0].contract_json)["pass"] == "first"
     assert snapshot.freshness is SnapshotFreshness.CURRENT
     assert snapshot.engine_started is True
+
+
+def test_config_v2_workbench_service_fails_closed_when_constant_schedule_is_missing(
+    tmp_path: Path,
+) -> None:
+    project_snapshot, runtime_project = _project_context(tmp_path)
+    project_snapshot = dataclasses.replace(
+        project_snapshot,
+        effective_pass_ids=("constant-simplification",),
+        constant_simplification_schedule=None,
+    )
+    runtime_project = dataclasses.replace(
+        runtime_project,
+        additional_configuration={
+            "pipeline_v2": [{"pass_id": "constant-simplification"}]
+        },
+    )
+    manager = _manager(tmp_path)
+    manager.instruction_optimizer_rules = (
+        SimpleNamespace(
+            name="FoldReadonlyDataRule",
+            maturities=("MMAT_GLBOPT2",),
+        ),
+    )
+    service = service_module.WorkbenchService(
+        manager,
+        registry=_ConstantRegistry(),
+    )
+
+    schedule = service._effective_schedule(
+        runtime_project,
+        project_snapshot=project_snapshot,
+    )
+
+    readonly = schedule.stage("fold-readonly-data")
+    assert readonly.provider_maturities == ()
+    assert readonly.schedule_source == "compiled stage contract unavailable"
+    assert readonly.inactive_reason == "compiled schedule unavailable"
 
 
 def test_collect_preserves_effective_recipe_scope_and_projection_error(

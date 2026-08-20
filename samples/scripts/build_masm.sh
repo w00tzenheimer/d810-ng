@@ -16,6 +16,120 @@
 #   CC / ML64 / LINKER  toolchain overrides
 set -euo pipefail
 
+verify_required_exports() {
+    local export_dump="$1"
+    shift
+    local export_names
+    local symbol
+    local missing=0
+
+    export_names="$(awk '
+        /^Export Table:$/ { in_exports = 1; next }
+        in_exports && /^[[:alpha:]][^:]*Table:$/ { in_exports = 0 }
+        in_exports && $1 ~ /^[0-9]+$/ && $2 ~ /^0x[0-9A-Fa-f]+$/ { print $3 }
+    ' "$export_dump")"
+    for symbol in "$@"; do
+        if printf '%s\n' "$export_names" | grep -Fxq -- "$symbol"; then
+            echo "  ok: $symbol"
+        else
+            echo "error: MISSING required MASM export: $symbol" >&2
+            missing=1
+        fi
+    done
+    return "$missing"
+}
+
+explicit_d810_exports() {
+    sed -nE 's/^[[:space:]]*;[[:space:]]*D810_EXPORT[[:space:]]+([A-Za-z0-9_]+)[[:space:]]*$/\1/p' "$1"
+}
+
+callsite_marker_exports() {
+    sed -nE 's/^[[:space:]]*PUBLIC[[:space:]]+(d810_callsite_[A-Za-z0-9_]+)[[:space:]]*$/\1/p' "$1"
+}
+
+validate_binary_name() {
+    case "$1" in
+        ""|.*|*[!A-Za-z0-9_.-]*)
+            echo "error: invalid output binary name: $1" >&2
+            return 2
+            ;;
+    esac
+}
+
+remove_link_artifacts() {
+    local artifact
+
+    for artifact in "$@"; do
+        case "$artifact" in
+            ""|/|.|..)
+                echo "error: refusing unsafe link artifact path: $artifact" >&2
+                return 2
+                ;;
+        esac
+    done
+    rm -f -- "$@"
+}
+
+report_link_failure() {
+    local link_status="$1"
+    local linklog="$2"
+
+    echo "error: link failed with status $link_status:" >&2
+    [ ! -f "$linklog" ] || cat "$linklog" >&2
+}
+
+discard_failed_link() {
+    local link_status="$1"
+    local linklog="$2"
+    shift 2
+
+    report_link_failure "$link_status" "$linklog"
+    remove_link_artifacts "$@"
+}
+
+# Narrow test seam for the post-link contract.  The normal build writes the
+# real llvm-objdump output and derives required names with the same directive
+# parser below.
+if [ "${1:-}" = "--verify-source-exports" ]; then
+    [ "$#" -eq 4 ] || {
+        echo "usage: $0 --verify-source-exports <objdump-output> <basename> <asm-source>" >&2
+        exit 2
+    }
+    export_dump="$2"
+    basename="$3"
+    asm_source="$4"
+    required=("$basename")
+    for symbol in $(explicit_d810_exports "$asm_source"); do
+        required+=("$symbol")
+    done
+    for symbol in $(callsite_marker_exports "$asm_source"); do
+        required+=("$symbol")
+    done
+    verify_required_exports "$export_dump" "${required[@]}"
+    exit $?
+fi
+
+# Narrow behavioral seam for the fail-closed link contract.  It uses the same
+# validation, cleanup, and failure reporter as the real build without faking a
+# compiler, assembler, or linker.
+if [ "${1:-}" = "--test-failed-link-contract" ]; then
+    [ "$#" -eq 5 ] || {
+        echo "usage: $0 --test-failed-link-contract <output-dir> <stem> <export-dump> <link-log>" >&2
+        exit 2
+    }
+    output_dir="$2"
+    output_stem="$3"
+    export_dump="$4"
+    linklog="$5"
+    [ -d "$output_dir" ] || { echo "error: missing output directory: $output_dir" >&2; exit 2; }
+    validate_binary_name "$output_stem"
+    discard_failed_link 1 "$linklog" \
+        "$output_dir/$output_stem.dll" \
+        "$output_dir/$output_stem.pdb" \
+        "$export_dump"
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLES_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$SAMPLES_DIR"
@@ -41,6 +155,7 @@ case "$SELECTOR" in
         exit 2
         ;;
 esac
+validate_binary_name "$BINARY_NAME"
 LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || true)"
 LLVM_BIN="${LLVM_PREFIX:+$LLVM_PREFIX/bin}"
 
@@ -97,6 +212,7 @@ echo "C objects: compiled=$compiled skipped=$skipped"
 
 # --- assemble the MASM functions -------------------------------------------
 export_flags=()
+required_exports=()
 callsite_markers=()
 for f in $MASM_FUNCS; do
     # src/masm/<f>.asm must be compilable MASM from the in-IDA "Export disassembly
@@ -108,12 +224,22 @@ for f in $MASM_FUNCS; do
         || { echo "error: assembling $f.asm failed:" >&2; cat "$BUILD_DIR/$f.asm.log" >&2; exit 1; }
     objs+=("$obj")
     export_flags+=("/EXPORT:$f")
+    required_exports+=("$f")
+    # A source may contain additional fixture anchors.  They must opt in with
+    # an explicit ``; D810_EXPORT <symbol>`` directive; exporting every PUBLIC
+    # symbol would leak unrelated data/labels from large MASM exports.
+    public_names="$(explicit_d810_exports "$src")"
+    for public_name in $public_names; do
+        export_flags+=("/EXPORT:$public_name")
+        required_exports+=("$public_name")
+    done
     # Explicit call-site markers are source-to-native oracle anchors.  Export
     # only the opt-in PUBLIC labels rather than guessing from imported call
     # targets, which may be linked as generic unresolved slots in the fixture.
-    marker_names="$(sed -nE 's/^[[:space:]]*PUBLIC[[:space:]]+(d810_callsite_[A-Za-z0-9_]+)[[:space:]]*$/\1/p' "$src")"
+    marker_names="$(callsite_marker_exports "$src")"
     for marker in $marker_names; do
         export_flags+=("/EXPORT:$marker")
+        required_exports+=("$marker")
         callsite_markers+=("$marker")
         echo "  exported callsite marker $marker"
     done
@@ -126,20 +252,26 @@ done
 out="bins/$BINARY_NAME.dll"
 pdb="bins/$BINARY_NAME.pdb"
 linklog="$BUILD_DIR/link.log"
+export_dump="$BUILD_DIR/export_table.txt"
+remove_link_artifacts "$out" "$pdb" "$export_dump"
+link_status=0
 "$LINKER" /DLL /NOENTRY /DEBUG /FORCE:UNRESOLVED "${export_flags[@]}" \
     "/OUT:$out" "/PDB:$pdb" "/PDBALTPATH:$BINARY_NAME.pdb" \
-    /PDBSOURCEPATH:/src/d810/samples "${objs[@]}" 2>"$linklog" || true
+    /PDBSOURCEPATH:/src/d810/samples "${objs[@]}" 2>"$linklog" || link_status=$?
+if [ "$link_status" -ne 0 ]; then
+    discard_failed_link "$link_status" "$linklog" "$out" "$pdb" "$export_dump"
+    exit "$link_status"
+fi
 undef=$(grep -c "undefined symbol" "$linklog" 2>/dev/null || echo 0)
 [ -s "$out" ] || { echo "error: link failed:" >&2; cat "$linklog" >&2; exit 1; }
 [ -s "$pdb" ] || { echo "error: linker did not produce $pdb" >&2; exit 1; }
 echo "linked $out and $pdb  (${undef} unresolved externs tolerated; log: $linklog)"
 file "$out" 2>/dev/null || true
-echo "exported MASM funcs:"
-for f in $MASM_FUNCS; do
-    "$OBJDUMP" -p "$out" 2>/dev/null | grep -A500 "Export Table" | grep -qw "$f" \
-        && echo "  ok: $f" \
-        || { echo "error: MISSING export: $f" >&2; exit 1; }
-done
+"$OBJDUMP" -p "$out" >"$export_dump" 2>/dev/null \
+    || { echo "error: failed to inspect exports in $out" >&2; exit 1; }
+echo "required MASM exports:"
+verify_required_exports "$export_dump" "${required_exports[@]}"
+
 expected_markers=()
 if [ "$SELECTOR" = "unflattening_effect_safety" ]; then
     expected_markers=(
@@ -158,9 +290,4 @@ for expected in "${expected_markers[@]}"; do
             exit 1
             ;;
     esac
-done
-for marker in "${callsite_markers[@]}"; do
-    "$OBJDUMP" -p "$out" 2>/dev/null | grep -A500 "Export Table" | grep -qw "$marker" \
-        || { echo "error: MISSING callsite marker export: $marker" >&2; exit 1; }
-    echo "  ok: $marker"
 done

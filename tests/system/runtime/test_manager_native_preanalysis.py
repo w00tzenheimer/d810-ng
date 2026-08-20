@@ -127,7 +127,7 @@ class TestPreparationStartupIntegration:
             assert receipt.run_receipts == ()
             snapshot = state.get_workbench_snapshot(0x401000, "schedule_target")
             fold_readonly = snapshot.effective_schedule.stage("fold-readonly-data")
-            assert fold_readonly.maturity_source == "private-rule"
+            assert fold_readonly.maturity_source == "compiled stage contract"
             assert "MMAT_PREOPTIMIZED" in fold_readonly.provider_maturities
 
 

@@ -15,6 +15,7 @@ from d810.core.observability_models import (
 )
 from d810.core.semantic_route_oracle import RouteOracleComparison
 from d810.core.typing import Any
+from d810.core.z3_proof import Z3ProofAbstentionReason, Z3ProofStatus
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +95,71 @@ class LifecycleEventObserved:
     summary: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
     timestamp: float = 0.0
+
+
+@dataclass(frozen=True)
+class Z3PredicateProofObserved:
+    """One bounded generic-predicate proof attempt.
+
+    The predicate rules publish this portable receipt through the normal
+    observability bus. The diagnostic sink stores it as a lifecycle event,
+    keeping routine resource abstentions queryable without making logging part
+    of the optimizer's matching contract.
+    """
+
+    func_ea: int
+    transform_id: str
+    operation: str
+    max_expression_nodes: int
+    proof_timeout_ms: int
+    observed_expression_nodes: int | None
+    elapsed_ms: float
+    status: Z3ProofStatus
+    reason: Z3ProofAbstentionReason | None
+    session_id: str = ""
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        for field_name in ("transform_id", "operation"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be non-empty")
+        if type(self.status) is not Z3ProofStatus:
+            raise TypeError("status must be a Z3ProofStatus")
+        if self.status is Z3ProofStatus.ABSTAINED:
+            if self.reason is None:
+                raise ValueError("abstained proof receipt requires a reason")
+            if type(self.reason) is not Z3ProofAbstentionReason:
+                raise TypeError("reason must be a Z3ProofAbstentionReason")
+        elif self.reason is not None:
+            raise ValueError("conclusive proof receipt reason must be omitted")
+        if self.session_id and not isinstance(self.session_id, str):
+            raise ValueError("session_id must be text when set")
+        if isinstance(self.max_expression_nodes, bool) or int(
+            self.max_expression_nodes
+        ) < 1:
+            raise ValueError("max_expression_nodes must be positive")
+        if isinstance(self.proof_timeout_ms, bool) or int(self.proof_timeout_ms) < 1:
+            raise ValueError("proof_timeout_ms must be positive")
+        if self.observed_expression_nodes is not None and (
+            isinstance(self.observed_expression_nodes, bool)
+            or int(self.observed_expression_nodes) < 0
+        ):
+            raise ValueError("observed_expression_nodes must be non-negative")
+        if float(self.elapsed_ms) < 0:
+            raise ValueError("elapsed_ms must be non-negative")
+        object.__setattr__(self, "func_ea", int(self.func_ea))
+        object.__setattr__(self, "max_expression_nodes", int(self.max_expression_nodes))
+        object.__setattr__(self, "proof_timeout_ms", int(self.proof_timeout_ms))
+        if self.observed_expression_nodes is not None:
+            object.__setattr__(
+                self,
+                "observed_expression_nodes",
+                int(self.observed_expression_nodes),
+            )
+        object.__setattr__(self, "elapsed_ms", float(self.elapsed_ms))
 
 
 @dataclass(frozen=True)
@@ -1183,6 +1249,7 @@ __all__ = [
     "CaptureMbaSnapshotRequested",
     "DiagnosticSessionObserved",
     "InputIdentityResolutionObserved",
+    "Z3PredicateProofObserved",
     "FrontendNormalizationPlanIntentObserved",
     "PassContractEvidencePublished",
     "FragmentRootPublicationGroupObserved",

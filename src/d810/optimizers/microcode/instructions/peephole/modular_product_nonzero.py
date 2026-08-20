@@ -202,6 +202,23 @@ def evaluate_modular_product_nonzero(match: ModularProductNonzeroMatch, input_va
     return all(factor != 0 for factor in factors) and sum(_ctz(factor) for factor in factors) < match.trailing_zero_budget
 
 
+def certifies_modular_product_nonzero(
+    predicate: Predicate,
+    match: ModularProductNonzeroMatch,
+) -> bool:
+    """Certify the exact modular-product receipt without an optional solver.
+
+    For nonzero 32-bit factors, a product is nonzero modulo ``2**32`` iff
+    the sum of their 2-adic valuations is below 32.  Recovery folds the
+    constant factors into ``constant_trailing_zeroes`` and derives the
+    remaining budget.  Re-deriving the immutable receipt from the original
+    predicate therefore proves that the lifted budget is the same predicate;
+    it also fails closed if any receipt field was altered.
+    """
+
+    return recover_modular_product_nonzero(predicate) == match
+
+
 def z3_proves_modular_product_nonzero(
     predicate: Predicate,
     match: ModularProductNonzeroMatch,
@@ -271,6 +288,7 @@ def z3_proves_modular_product_nonzero(
 
 __all__ = [
     "ModularProductNonzeroMatch",
+    "certifies_modular_product_nonzero",
     "evaluate_modular_product_nonzero",
     "recover_modular_product_nonzero",
     "z3_proves_modular_product_nonzero",

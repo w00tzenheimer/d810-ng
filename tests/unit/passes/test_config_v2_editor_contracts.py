@@ -318,3 +318,67 @@ def test_shipped_passes_project_their_declared_primary_editor_surface() -> None:
     assert by_pass_id["constant-simplification"].editor_spec.kind is PassEditorKind.FIELDS
     assert by_pass_id["mba-simplify"].editor_spec.kind is PassEditorKind.TRANSFORM_CATALOG
     assert by_pass_id["jump-fixer"].editor_spec.kind is PassEditorKind.RULE_CATALOG
+
+
+def test_constant_simplification_editor_registers_the_canonical_nested_controls() -> None:
+    entry = next(
+        item
+        for item in registered_pass_catalog()
+        if item.pass_id == "constant-simplification"
+    )
+    fields = {field.path: field for field in entry.editor_spec.fields}
+
+    assert set(fields) == {
+        ("preparation", "global_const_types", "enabled"),
+        ("preparation", "global_const_types", "discover_bounded_tables"),
+        ("stages", "fold-readonly-data", "enabled"),
+        ("stages", "fold-readonly-data", "maturities"),
+        ("stages", "fold-readonly-data", "memory_policy"),
+        ("stages", "fold-readonly-data", "rva_guard"),
+        ("stages", "fold-readonly-data", "allow_executable_readonly"),
+        ("stages", "fold-constant-subtree", "enabled"),
+        ("stages", "fold-constant-subtree", "maturities"),
+        ("stages", "forward-constants", "enabled"),
+        ("stages", "forward-constants", "maturities"),
+    }
+    assert fields[("preparation", "global_const_types", "enabled")].default is False
+    assert (
+        fields[("preparation", "global_const_types", "discover_bounded_tables")].default
+        is True
+    )
+    assert fields[("stages", "fold-readonly-data", "enabled")].default is True
+    assert fields[("stages", "fold-readonly-data", "memory_policy")].default == "strict"
+    assert fields[("stages", "fold-readonly-data", "rva_guard")].default is True
+    assert (
+        fields[("stages", "fold-readonly-data", "allow_executable_readonly")].default
+        is False
+    )
+    assert fields[("stages", "fold-constant-subtree", "enabled")].default is True
+    assert fields[("stages", "forward-constants", "enabled")].default is True
+    assert (
+        "dynamic discoveries apply on the next natural preparation round"
+        in fields[("preparation", "global_const_types", "discover_bounded_tables")].description
+    )
+    assert fields[("stages", "fold-readonly-data", "maturities")].choices == (
+        "CANONICAL",
+        "LOCAL_OPTIMIZED",
+        "CALL_MODELED",
+        "GLOBAL_ANALYZED",
+        "STRUCTURED",
+    )
+    assert fields[("stages", "fold-constant-subtree", "maturities")].choices == (
+        "LOCAL_OPTIMIZED",
+        "CALL_MODELED",
+        "GLOBAL_ANALYZED",
+        "GLOBAL_OPTIMIZED",
+        "STRUCTURED",
+    )
+    assert fields[("stages", "forward-constants", "maturities")].choices == (
+        "CALL_MODELED",
+        "GLOBAL_ANALYZED",
+        "GLOBAL_OPTIMIZED",
+        "STRUCTURED",
+    )
+    danger = fields[("stages", "fold-readonly-data", "allow_executable_readonly")]
+    assert danger.advisory is AdvisoryTone.DANGER
+    assert "executable" in danger.advisory_reason.casefold()

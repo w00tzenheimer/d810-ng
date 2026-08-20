@@ -4,6 +4,7 @@ import pytest
 
 from d810.passes.mba_simplify import build_mba_simplify_pass, mba_simplify_pass_registry
 from d810.passes.mba_transform_options import (
+    MBA_TRANSFORM_OPTION_FIELDS,
     MbaSimplifyOptions,
     parse_mba_simplify_options,
 )
@@ -18,6 +19,14 @@ def _config(
     if transform_options is not None:
         options["transform_options"] = transform_options
     return PipelineConfig(pass_id="mba-simplify", options=options)
+
+
+def test_transform_option_field_mapping_has_stable_generic_z3_order() -> None:
+    assert tuple(MBA_TRANSFORM_OPTION_FIELDS)[:3] == (
+        "z-3-setz-generic",
+        "z-3-setnz-generic",
+        "z-3-lnot-generic",
+    )
 
 
 def test_typed_mba_options_preserve_order_and_resolve_private_bindings() -> None:
@@ -99,3 +108,83 @@ def test_typed_mba_options_reject_unknown_duplicate_or_private_names(
 ) -> None:
     with pytest.raises(PipelineConfigError, match=message):
         parse_mba_simplify_options(config, mba_simplify_pass_registry())
+
+
+@pytest.mark.parametrize(
+    "transform_id",
+    ("z-3-setz-generic", "z-3-setnz-generic", "z-3-lnot-generic"),
+)
+def test_generic_z3_transform_options_accept_explicit_bounded_policy(
+    transform_id: str,
+) -> None:
+    parsed = parse_mba_simplify_options(
+        _config(
+            [transform_id],
+            {
+                transform_id: {
+                    "max_expression_nodes": 1024,
+                    "proof_timeout_ms": 250,
+                }
+            },
+        ),
+        mba_simplify_pass_registry(),
+    )
+
+    assert parsed.transform_options == {
+        transform_id: {
+            "max_expression_nodes": 1024,
+            "proof_timeout_ms": 250,
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("transform_id", "field", "value"),
+    (
+        ("z-3-setz-generic", "max_expression_nodes", 0),
+        ("z-3-setnz-generic", "max_expression_nodes", 4097),
+        ("z-3-lnot-generic", "proof_timeout_ms", 0),
+        ("z-3-setz-generic", "proof_timeout_ms", 5001),
+        ("z-3-setnz-generic", "max_expression_nodes", True),
+        ("z-3-lnot-generic", "proof_timeout_ms", "50"),
+    ),
+)
+def test_generic_z3_transform_options_reject_invalid_policy_values(
+    transform_id: str,
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(PipelineConfigError, match=transform_id):
+        parse_mba_simplify_options(
+            _config([transform_id], {transform_id: {field: value}}),
+            mba_simplify_pass_registry(),
+        )
+
+
+@pytest.mark.parametrize(
+    "transform_id",
+    ("z-3-setz-generic", "z-3-setnz-generic", "z-3-lnot-generic"),
+)
+def test_generic_z3_transform_options_reject_unknown_keys(transform_id: str) -> None:
+    with pytest.raises(PipelineConfigError, match="editor-visible"):
+        parse_mba_simplify_options(
+            _config([transform_id], {transform_id: {"unknown": 1}}),
+            mba_simplify_pass_registry(),
+        )
+
+
+def test_generic_z3_transform_options_are_omittable_per_transform() -> None:
+    parsed = parse_mba_simplify_options(
+        _config(
+            ["z-3-setz-generic", "z-3-setnz-generic", "z-3-lnot-generic"],
+            {"z-3-setz-generic": {"max_expression_nodes": 7}},
+        ),
+        mba_simplify_pass_registry(),
+    )
+
+    # Parsing preserves only explicit values. The live bridge supplies defaults
+    # separately to each selected rule, so one transform cannot inherit another's
+    # partial policy.
+    assert parsed.transform_options == {
+        "z-3-setz-generic": {"max_expression_nodes": 7}
+    }

@@ -26,7 +26,7 @@ def test_matrix_rows_show_actual_maturity_and_configured_position() -> None:
                 ordinal=4,
                 ir_maturity="ir.call.modeled",
                 provider_maturity="MMAT_CALLS",
-                stages=(stage,),
+                pipeline_stages=(("flow", (stage,)),),
             ),
         ),
         stages=(stage,),
@@ -35,8 +35,11 @@ def test_matrix_rows_show_actual_maturity_and_configured_position() -> None:
     rows = project_pipeline_schedule_rows(schedule)
 
     assert rows[0].maturity == "MMAT_CALLS"
-    assert rows[0].stage_labels == ("recover_dispatcher (configured 1)",)
-    assert "runtime callback order 4" in rows[0].detail
+    assert rows[0].pipeline_groups == (
+        ("flow", ("recover_dispatcher (configured 1)",)),
+    )
+    assert "flow pipeline:" in rows[0].detail
+    assert "runtime order 4" in rows[0].detail
 
 
 def test_unknown_rule_defined_coverage_is_not_filled_into_every_maturity() -> None:

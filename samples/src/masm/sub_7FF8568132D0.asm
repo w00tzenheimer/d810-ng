@@ -16395,19 +16395,6 @@ db 99h
 db 42h
 db 8Bh
 db 24h
-; These are relocatable jump-table deltas.  The original IDB export encoded
-; deltas relative to the source image's absolute table addresses; retaining
-; those constants in this standalone PE would jump outside the fixture after
-; the linker moves CONST.  Keep the same computed-dispatch topology, but make
-; each entry relative to the local table base.
-jpt_7FF856815E62 dd loc_7FF856815E64 - jpt_7FF856815E62
-dd loc_7FF85682A5AD - jpt_7FF856815E62
-dd loc_7FF856829799 - jpt_7FF856815E62
-dd loc_7FF8568297C6 - jpt_7FF856815E62
-jpt_7FF85681D630 dd loc_7FF85681D632 - jpt_7FF85681D630
-dd loc_7FF856829722 - jpt_7FF85681D630
-dd loc_7FF856829083 - jpt_7FF85681D630
-dd loc_7FF8568290C1 - jpt_7FF85681D630
 dword_7FF8571CC650 dd 13913EEh
 dword_7FF8571CC654 dd 5AA39D0h
 dword_7FF8571CC658 dd 0D2D797A2h
@@ -16658,6 +16645,16 @@ d810_callsite_sub_7FF8568132D0_srw_lock dq d810_callsite_sub_7FF8568132D0_srw_lo
 CONST ENDS
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
+; Relative jump-table deltas must share a segment with their code targets for
+; ml64 to resolve them. They remain outside the exported function extent.
+jpt_7FF856815E62 dd loc_7FF856815E64 - jpt_7FF856815E62
+dd loc_7FF85682A5AD - jpt_7FF856815E62
+dd loc_7FF856829799 - jpt_7FF856815E62
+dd loc_7FF8568297C6 - jpt_7FF856815E62
+jpt_7FF85681D630 dd loc_7FF85681D632 - jpt_7FF85681D630
+dd loc_7FF856829722 - jpt_7FF85681D630
+dd loc_7FF856829083 - jpt_7FF85681D630
+dd loc_7FF8568290C1 - jpt_7FF85681D630
 PUBLIC sub_7FF8568132D0
 sub_7FF8568132D0:
     push r15

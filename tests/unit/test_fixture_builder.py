@@ -5,6 +5,7 @@ IDA-bound extract/resolve worker is covered by
 ``tests/system/e2e/test_fixture_idb_worker.py``.
 """
 
+import re
 from pathlib import Path
 
 from d810.testing.fixture_builder import CallSiteFold, detect_indirect_call_folds
@@ -173,6 +174,200 @@ def test_build_fixture_dll_invokes_build_masm_sh(tmp_path):
     assert out == tmp_path / "samples/bins/tmpfx.dll"
     assert "build_masm.sh" in " ".join(str(c) for c in calls["cmd"])
     assert calls["env"].get("BINARY_NAME") == "tmpfx"
+
+
+def test_masm_builder_verifies_scoped_d810_exports_behaviorally(tmp_path):
+    """The real post-link verifier accepts present exports and rejects missing ones."""
+
+    script = REPO / "samples/scripts/build_masm.sh"
+    asm_source = tmp_path / "fixture.asm"
+    asm_source.write_text(
+        "PUBLIC fixture_basename\n"
+        "PUBLIC unrelated_public_symbol\n"
+        "; D810_EXPORT explicit_fixture_anchor\n"
+    )
+    export_dump = tmp_path / "exports.txt"
+    export_dump.write_text(
+        "Import Table:\n"
+        "  missing_explicit_anchor\n"
+        "Export Table:\n"
+        "  1 0x1000 fixture_basename\n"
+        "  2 0x1010 explicit_fixture_anchor\n"
+        "Debug Table:\n"
+        "  missing_explicit_anchor\n"
+    )
+
+    present = _sp.run(
+        [
+            "bash",
+            str(script),
+            "--verify-source-exports",
+            str(export_dump),
+            "fixture_basename",
+            str(asm_source),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert present.returncode == 0, present.stderr
+
+    missing_dump = tmp_path / "missing-exports.txt"
+    missing_dump.write_text(
+        "Export Table:\n"
+        "  1 0x1000 fixture_basename\n"
+        "Debug Table:\n"
+        "  explicit_fixture_anchor\n"
+        "  unrelated_public_symbol\n"
+    )
+    missing = _sp.run(
+        [
+            "bash",
+            str(script),
+            "--verify-source-exports",
+            str(missing_dump),
+            "fixture_basename",
+            str(asm_source),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert missing.returncode != 0
+    assert "MISSING required MASM export: explicit_fixture_anchor" in missing.stderr
+    assert "unrelated_public_symbol" not in missing.stderr
+
+
+def test_masm_builder_rejects_required_symbol_present_only_in_import_table(tmp_path):
+    script = REPO / "samples/scripts/build_masm.sh"
+    asm_source = tmp_path / "fixture.asm"
+    asm_source.write_text("; D810_EXPORT explicit_fixture_anchor\n")
+    import_only_dump = tmp_path / "import-only.txt"
+    import_only_dump.write_text(
+        "Import Table:\n"
+        "  7 0x2000 explicit_fixture_anchor\n"
+        "Export Table:\n"
+        "  1 0x1000 fixture_basename\n"
+        "Debug Table:\n"
+    )
+
+    rejected = _sp.run(
+        [
+            "bash",
+            str(script),
+            "--verify-source-exports",
+            str(import_only_dump),
+            "fixture_basename",
+            str(asm_source),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert rejected.returncode != 0
+    assert "MISSING required MASM export: explicit_fixture_anchor" in rejected.stderr
+
+
+def test_masm_builder_failed_link_cannot_reuse_stale_outputs(tmp_path):
+    """A failed link must remove stale DLL, PDB, and export evidence first."""
+
+    script = REPO / "samples/scripts/build_masm.sh"
+    output_dir = tmp_path / "bins"
+    output_dir.mkdir()
+    dll = output_dir / "stale_fixture.dll"
+    pdb = output_dir / "stale_fixture.pdb"
+    export_dump = output_dir / "stale_fixture.exports.txt"
+    linklog = tmp_path / "link.log"
+    for artifact in (dll, pdb, export_dump):
+        artifact.write_bytes(b"stale artifact")
+    linklog.write_text("lld-link: fatal test failure\n")
+
+    failed = _sp.run(
+        [
+            "bash",
+            str(script),
+            "--test-failed-link-contract",
+            str(output_dir),
+            "stale_fixture",
+            str(export_dump),
+            str(linklog),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert failed.returncode != 0
+    assert "link failed" in failed.stderr
+    assert not dll.exists()
+    assert not pdb.exists()
+    assert not export_dump.exists()
+
+
+def test_masm_builder_exports_only_explicit_d810_directives():
+    """Additional MASM exports are opt-in, never every PUBLIC symbol."""
+
+    script = (REPO / "samples/scripts/build_masm.sh").read_text()
+    assert "D810_EXPORT" in script
+    assert 'public_names="$(explicit_d810_exports "$src")"' in script
+    assert 'export_flags+=("/EXPORT:$public_name")' in script
+    assert 'export_flags+=("/EXPORT:$marker")' in script
+    assert "PUBLIC[[:space:]]+([A-Za-z0-9_]+)" not in script
+
+
+def test_windows_builder_preserves_explicit_masm_export_contract() -> None:
+    """The authoritative reversepc build must expose MASM oracle anchors."""
+
+    makefile = (REPO / "samples/Makefile").read_text()
+    exporter = (REPO / "samples/scripts/generate_auto_exports.ps1").read_text()
+
+    assert '$(AUTO_EXPORTS_RSP): $(OBJS) $(MASM_ASM)' in makefile
+    assert '-MasmSources "$(MASM_ASM)"' in makefile
+    assert "D810_EXPORT" in exporter
+    assert "d810_callsite_" in exporter
+    assert "$MasmSources" in exporter
+    assert "throw \"MASM source" in exporter
+
+
+def test_windows_builder_uses_native_masm_relative_jump_table() -> None:
+    """The authoritative ml64 build needs no post-link table repair."""
+
+    makefile = (REPO / "samples/Makefile").read_text()
+    fixture = (
+        REPO / "samples/src/masm/sub_7FF856533A20.asm"
+    ).read_text()
+
+    assert "patch_relative_jump_table" not in makefile
+    assert "; D810_EXPORT d810_relative_jpt_sub_7FF856533A20" in fixture
+    assert "d810_relative_jpt_sub_7FF856533A20:" in fixture
+    assert "jpt_7FF856535804:" in fixture
+    assert "dd loc_7FF856535806 - jpt_7FF856535804" in fixture
+    table_targets = re.findall(
+        r"^\s*dd\s+(loc_[0-9A-F]+)\s+-\s+jpt_7FF856535804$",
+        fixture,
+        re.MULTILINE,
+    )
+    assert len(table_targets) == 45
+    table_start = fixture.index("jpt_7FF856535804:")
+    assert fixture.index("OPTION NOSCOPED") < table_start
+    assert not re.search(r"^PUBLIC loc_[0-9A-F]+$", fixture, re.MULTILINE)
+    assert "jmp near ptr loc_7FF856533AF0" in fixture
+    assert "imagerel" not in fixture
+    assert "LABEL DWORD" not in fixture
+    assert "::" not in fixture
+
+
+def test_layered_masm_fixture_keeps_runtime_globals_writable() -> None:
+    """Readonly placement lets Hex-Rays erase the captured outer dispatcher."""
+
+    fixture = (
+        REPO / "samples/src/masm/sub_7FF856533A20.asm"
+    ).read_text()
+
+    data_start = fixture.index("_DATA SEGMENT")
+    data_end = fixture.index("_DATA ENDS")
+    table_start = fixture.index("_TEXT SEGMENT", data_end)
+    first_seed = fixture.index("dword_7FF85722E310 dd 33FFA28Fh")
+    jump_table = fixture.index("jpt_7FF856535804:")
+
+    assert data_start < first_seed < data_end < table_start < jump_table
 
 
 def test_verify_sets_test_binary_env(tmp_path):

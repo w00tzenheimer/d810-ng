@@ -9,11 +9,11 @@ generated ``pipeline_v2`` payload as the source of truth.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.core.config import RuleConfiguration
 from d810.core.execution_scope import ExecutionPipeline
-from d810.core.maturity_labels import POST_STATE_MACHINE_FCP_MATURITIES
+from d810.ir.maturity import IRMaturity
 from d810.passes.cleanup_family_adapter import (
     SIMPLE_FLATTENING_CLEANUP_PASS_ID,
     build_cleanup_family_adapter_pass,
@@ -23,8 +23,15 @@ from d810.passes.constant_simplification import (
     build_constant_simplification_pass,
     constant_simplification_hook_rules,
 )
+from d810.passes.constant_simplification_options import (
+    CompiledConstantSimplificationSchedule,
+)
 from d810.passes.hook_transform_passes import build_hook_transform_pass
-from d810.passes.mba_simplify import MBA_SIMPLIFY_PASS_ID, build_mba_simplify_pass
+from d810.passes.mba_simplify import (
+    MBA_SIMPLIFY_PASS_ID,
+    build_mba_simplify_pass,
+    materialize_mba_transform_options,
+)
 from d810.passes.mba_transform_options import mba_transform_stages
 from d810.passes.mba_solve import (
     MBA_SOLVE_PASS_ID,
@@ -67,6 +74,7 @@ class PipelineV2HookActivation:
     block_rules: tuple[RuleConfiguration, ...] = ()
     native_state_machine_pass_ids: tuple[str, ...] = ()
     global_const_persistence_enabled: bool = False
+    constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = None
 
 
 def requires_native_preanalysis_handlers(
@@ -138,6 +146,7 @@ def _mba_simplify_rules_from(
     stages_by_id = {stage.stage_id: stage for stage in mba_transform_stages()}
     instruction_rules: list[RuleConfiguration] = []
     block_rules: list[RuleConfiguration] = []
+
     for transform_id, implementation_name in zip(
         adapter.transform_ids,
         adapter.implementation_names,
@@ -149,7 +158,10 @@ def _mba_simplify_rules_from(
                 _rule_config(
                     implementation_name,
                     {
-                        **adapter.transform_options.get(transform_id, {}),
+                        **materialize_mba_transform_options(
+                            transform_id,
+                            adapter.transform_options.get(transform_id, {}),
+                        ),
                         "generate_commutative_permutations": (
                             adapter.generate_commutative_permutations
                         ),
@@ -160,7 +172,10 @@ def _mba_simplify_rules_from(
             block_rules.append(
                 _rule_config(
                     implementation_name,
-                    adapter.transform_options.get(transform_id, {}),
+                    materialize_mba_transform_options(
+                        transform_id,
+                        adapter.transform_options.get(transform_id, {}),
+                    ),
                 )
             )
         else:
@@ -285,6 +300,39 @@ def _validate_constant_simplification_ownership(
             )
 
 
+def _constrain_state_machine_constant_schedule(
+    schedule: CompiledConstantSimplificationSchedule,
+) -> CompiledConstantSimplificationSchedule:
+    """Apply the state-machine FCP safety window to the compiled schedule.
+
+    The legacy bridge scheduled forward propagation only at MMAT_GLBOPT2 when
+    the native state-machine spine was active.  That restriction is a profile
+    safety policy, not a private live-rule override: it must be reflected in
+    the immutable schedule consumed by both runtime and Workbench.
+    """
+
+    forward = schedule.stage("forward-constants")
+    if not forward.enabled:
+        return schedule
+    allowed = (IRMaturity.GLOBAL_OPTIMIZED,)
+    effective = tuple(
+        maturity for maturity in forward.effective_maturities if maturity in allowed
+    )
+    if not effective:
+        raise PipelineConfigError(
+            "state-machine constant-simplification requires forward-constants "
+            "to include GLOBAL_OPTIMIZED, or the stage must be disabled"
+        )
+    constrained = replace(forward, effective_maturities=effective)
+    return replace(
+        schedule,
+        stages=tuple(
+            constrained if stage.stage_id == forward.stage_id else stage
+            for stage in schedule.stages
+        ),
+    )
+
+
 def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
     """Derive live Hex-Rays hook activation from explicit config-v2 projects.
 
@@ -306,6 +354,7 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
     instruction_rules: list[RuleConfiguration] = []
     block_rules: list[RuleConfiguration] = []
     global_const_persistence_enabled = False
+    constant_simplification_schedule = None
     native_present = any(
         config.pass_id in STATE_MACHINE_NATIVE_PASS_IDS for config in configs
     )
@@ -315,16 +364,22 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
     for config in configs:
         pass_id = config.pass_id
         if pass_id == CONSTANT_SIMPLIFICATION_PASS_ID:
+            constant_simplification_schedule = build_constant_simplification_pass(
+                config
+            ).options
+            if native_present:
+                constant_simplification_schedule = (
+                    _constrain_state_machine_constant_schedule(
+                        constant_simplification_schedule
+                    )
+                )
             global_const_persistence_enabled = bool(
-                build_constant_simplification_pass(
-                    config
-                ).options.persist_global_const_annotations
+                constant_simplification_schedule.preparation.enabled
             )
             bundle = constant_simplification_hook_rules(
                 config,
                 forward_constant_options=(
                     {
-                        "maturities": list(POST_STATE_MACHINE_FCP_MATURITIES),
                         # The accelerated path still identifies stack cells by
                         # SSA valnum.  State-machine recovery creates the
                         # post-recovery cross-block storage identity this pass
@@ -334,6 +389,7 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
                     if native_present
                     else None
                 ),
+                schedule=constant_simplification_schedule,
             )
             instruction_rules.extend(bundle.instruction_rules)
             block_rules.extend(bundle.block_rules)
@@ -390,6 +446,7 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
             block_rules,
             field_name="pipeline_v2 block rules",
         ),
+        constant_simplification_schedule=constant_simplification_schedule,
         native_state_machine_pass_ids=(
             STATE_MACHINE_NATIVE_PASS_IDS if native_present else ()
         ),

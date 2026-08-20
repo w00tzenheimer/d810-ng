@@ -301,6 +301,22 @@ class EffectiveScheduleStage:
     requirements: tuple[str, ...]
     provider_maturities: tuple[str, ...]
     maturity_source: str
+    enabled: bool = True
+    supported_maturities: tuple[str, ...] = ()
+    requested_maturities: tuple[str, ...] = ()
+    pass_maturity_gates: tuple[str, ...] = ()
+    effective_maturities: tuple[str, ...] = ()
+    lifecycle_domain: str = "microcode"
+    schedule_source: str = "live rule"
+    inactive_reason: str | None = None
+    preparation_state: str | None = None
+    preparation_reason: str | None = None
+    preparation_pending_count: int = 0
+    preparation_applied_count: int = 0
+    preparation_conflicting_count: int = 0
+    preparation_restored_count: int = 0
+    preparation_unknown_count: int = 0
+    preparation_provider_failures: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -308,10 +324,14 @@ class EffectiveMaturityScheduleRow:
     ordinal: int
     ir_maturity: str
     provider_maturity: str
-    stages: tuple[EffectiveScheduleStage, ...]
+    pipeline_stages: tuple[tuple[str, tuple[EffectiveScheduleStage, ...]], ...] = ()
 
     def contains(self, stage_id: str) -> bool:
-        return any(stage.stage_id == stage_id for stage in self.stages)
+        return any(
+            stage.stage_id == stage_id
+            for _pipeline, stages in self.pipeline_stages
+            for stage in stages
+        )
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -323,7 +343,7 @@ class EffectiveMaturitySchedule:
         for row in self.rows:
             if row.provider_maturity == provider_maturity:
                 return row
-        return EffectiveMaturityScheduleRow(-1, "unknown", provider_maturity, ())
+        return EffectiveMaturityScheduleRow(-1, "unknown", provider_maturity)
 
     def stage(self, stage_id: str) -> EffectiveScheduleStage:
         for stage in self.stages:

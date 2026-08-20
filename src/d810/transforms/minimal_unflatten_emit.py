@@ -64,6 +64,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     CandidateScopedPrefixAuthority,
     HandlerTransition,
     StateWriteTransition,
+    TransitionProof,
     _source_local_constant_register_write,
     _is_goto_insn,
     _is_nop_insn,
@@ -452,6 +453,72 @@ def _return_redirect_target(
     ):
         return int(target_handler)
     return default_target
+
+
+def _native_terminal_alias_entry(
+    flow_graph,
+    target_handler: int | None,
+    aliases: Mapping[int, int],
+) -> int | None:
+    """Return the unique current native GOTO entry for a logical STOP route.
+
+    Decision-DAG routing deliberately follows pure GOTO aliases through the
+    canonical Hex-Rays STOP block.  That is the right semantic leaf, but the
+    STOP has no native address and therefore cannot anchor Stage C's native CFG
+    contract.  For an explicitly opted-in native-persistence run, retain the
+    first exact alias on that same route.  Every alias edge is replayed against
+    the current reciprocal CFG and must remain a control-only GOTO.
+    """
+
+    if target_handler is None:
+        return None
+    target = int(target_handler)
+    if not _is_stop_block(flow_graph.get_block(target)):
+        return target
+    current_aliases = {int(source): int(destination) for source, destination in aliases.items()}
+    if not current_aliases:
+        return target
+
+    alias_destinations = frozenset(current_aliases.values())
+    roots = []
+    for source in sorted(current_aliases):
+        if source in alias_destinations:
+            continue
+        current = source
+        seen: set[int] = set()
+        while current in current_aliases and current not in seen:
+            seen.add(current)
+            destination = int(current_aliases[current])
+            block = flow_graph.get_block(current)
+            destination_block = flow_graph.get_block(destination)
+            if block is None or destination_block is None:
+                break
+            native_ea = int(block.native_start_ea or block.start_ea)
+            semantic = tuple(
+                instruction
+                for instruction in block.insn_snapshots
+                if instruction.kind is not InsnKind.NOP
+            )
+            exact_goto = bool(
+                (not semantic and block.tail_kind is InsnKind.GOTO)
+                or (
+                    len(semantic) == 1
+                    and semantic[0].kind is InsnKind.GOTO
+                    and not semantic[0].is_call
+                )
+            )
+            if (
+                not 0 < native_ea < 0xFFFFFFFFFFFFFFFF
+                or tuple(int(item) for item in block.succs) != (destination,)
+                or current not in tuple(int(item) for item in destination_block.preds)
+                or not exact_goto
+            ):
+                break
+            current = destination
+        else:
+            if current == target:
+                roots.append(source)
+    return roots[0] if len(roots) == 1 else target
 
 
 def _exact_native_terminal_redirect_target(
@@ -3276,6 +3343,101 @@ def build_native_bound_state_entry_bridges(
     )
 
 
+def _seed_native_bound_backedge_transitions(
+    flow_graph,
+    transitions: tuple[StateWriteTransition, ...],
+    routes: tuple[NativeBoundTransitionRoute, ...],
+    *,
+    dispatcher_entry_serial: int,
+    dispatcher_region_serials: frozenset[int],
+) -> tuple[StateWriteTransition, ...]:
+    """Add exact current native routes that own a direct non-entry backedge.
+
+    Native routes have already been rebound by instruction EA and reconciled
+    with the current dispatcher.  This final structural replay admits only a
+    source whose sole reciprocal edge enters the current router.  Entry-prefix
+    sources remain owned by the source-keyed entry-bridge path below.
+    """
+    if not routes:
+        return transitions
+    routers = frozenset(
+        {
+            int(dispatcher_entry_serial),
+            *(int(serial) for serial in dispatcher_region_serials),
+        }
+    )
+    entry_sources = set(
+        _dispatcher_entry_preds(flow_graph, int(dispatcher_entry_serial))
+    )
+    existing_sources = {
+        int(serial)
+        for transition in transitions
+        for serial in (transition.write_block, transition.via_block)
+        if serial is not None
+    }
+    grouped: dict[int, list[NativeBoundTransitionRoute]] = {}
+    for route in routes:
+        grouped.setdefault(int(route.source_block_serial), []).append(route)
+
+    seeded = list(transitions)
+    for source, source_routes in grouped.items():
+        if source in existing_sources or source in entry_sources or source in routers:
+            continue
+        route_pairs = {
+            (
+                int(route.state_constant) & 0xFFFFFFFF,
+                int(route.target_handler_serial),
+            )
+            for route in source_routes
+        }
+        if len(route_pairs) != 1:
+            continue
+        state, target = next(iter(route_pairs))
+        source_block = flow_graph.get_block(source)
+        target_block = flow_graph.get_block(target)
+        if (
+            source_block is None
+            or target_block is None
+            or target in routers
+            or source_block.nsucc != 1
+        ):
+            continue
+        old_target = int(source_block.succs[0])
+        router_block = flow_graph.get_block(old_target)
+        if (
+            old_target not in routers
+            or router_block is None
+            or source not in {int(pred) for pred in router_block.preds}
+        ):
+            continue
+        route = min(
+            source_routes,
+            key=lambda candidate: (
+                str(candidate.fact_id),
+                int(candidate.source_instruction_ea),
+            ),
+        )
+        seeded.append(
+            StateWriteTransition(
+                write_block=source,
+                next_state=state,
+                target_handler=target,
+                is_return=False,
+                branch_arm=None,
+                proof=TransitionProof(
+                    "native_bound_transition_route",
+                    "native_bound_route",
+                    True,
+                    reason=(
+                        f"fact_id={route.fact_id};"
+                        f"native_ea=0x{int(route.source_instruction_ea):X}"
+                    ),
+                ),
+            )
+        )
+    return tuple(seeded)
+
+
 def build_materialized_state_route_redirects(
     flow_graph,
     routes: tuple[MaterializedStateRoute, ...],
@@ -3563,6 +3725,8 @@ def build_state_write_redirects(
     protected_edges: frozenset[tuple[int, int]] = frozenset(),
     dynamic_entry_bridge_edges: frozenset[tuple[int, int]] = frozenset(),
     suppress_legacy_endpoint_bridges: bool = False,
+    prefer_native_terminal_aliases: bool = False,
+    decision_dag_aliases: Mapping[int, int] | None = None,
 ) -> list[object]:
     """Build the redirect modifications that linearize the interval-set graph.
 
@@ -3759,6 +3923,12 @@ def build_state_write_redirects(
                     transition.target_handler,
                     default_target=default_target,
                 )
+                if prefer_native_terminal_aliases:
+                    new = _native_terminal_alias_entry(
+                        flow_graph,
+                        new,
+                        {} if decision_dag_aliases is None else decision_dag_aliases,
+                    )
             else:
                 new = transition.target_handler
                 if new is None and transition.next_state is not None:
@@ -8980,6 +9150,7 @@ def emit_minimal_unflatten(
         Callable[[StableBlockIdentity], int | None] | None
     ) = None,
     native_key: NativePreanalysisKey | None = None,
+    native_cfg_persistence: bool = False,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 
@@ -9285,6 +9456,35 @@ def emit_minimal_unflatten(
             state_var_stkoff=state_var_stkoff,
             state_var_reg=state_var_reg,
         )
+        if logger.info_on:
+            logger.info(
+                "unflat candidate-prefix observation: status=%s root=blk%d@0x%X "
+                "nodes=%d prefix=%s",
+                prefix_observation.status.value,
+                int(condition_chain_dag.root),
+                int(
+                    getattr(
+                        flow_graph.get_block(int(condition_chain_dag.root)),
+                        "native_start_ea",
+                        0,
+                    )
+                    or getattr(
+                        flow_graph.get_block(int(condition_chain_dag.root)),
+                        "start_ea",
+                        0,
+                    )
+                ),
+                len(condition_chain_dag.nodes),
+                (
+                    "none"
+                    if prefix_observation.authority is None
+                    else "blk%d@0x%X"
+                    % (
+                        int(prefix_observation.authority.prefix_serial),
+                        int(prefix_observation.authority.prefix_ea),
+                    )
+                ),
+            )
         if prefix_observation.status is CandidatePrefixStatus.INVALID:
             return compile_with_dispatcher_coverage(())
         candidate_prefix_authority = prefix_observation.authority
@@ -9336,10 +9536,20 @@ def emit_minimal_unflatten(
         state_var_reg=state_var_reg,
         dispatcher_region_serials=recovery_dispatcher_region_serials,
         candidate_prefix_authority=candidate_prefix_authority,
+        include_entry_unreachable_back_edges=materialized_computed_goto_profile,
     )
     transitions = enrich_native_bound_transition_routes(
         transitions,
         tuple(native_bound_transition_routes),
+        dispatcher_region_serials=frozenset(
+            int(serial) for serial in dispatcher_region_serials
+        ),
+    )
+    transitions = _seed_native_bound_backedge_transitions(
+        flow_graph,
+        transitions,
+        tuple(native_bound_transition_routes),
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
         dispatcher_region_serials=frozenset(
             int(serial) for serial in dispatcher_region_serials
         ),
@@ -10032,6 +10242,10 @@ def emit_minimal_unflatten(
         ),
         dynamic_entry_bridge_edges=dynamic_entry_bridge_edges,
         suppress_legacy_endpoint_bridges=(candidate_prefix_authority is not None),
+        prefer_native_terminal_aliases=native_cfg_persistence,
+        decision_dag_aliases=(
+            {} if condition_chain_dag is None else condition_chain_dag.aliases
+        ),
     )
     staged_mods = _stage_effect_safe_intermediate_redirect_groups(
         flow_graph,

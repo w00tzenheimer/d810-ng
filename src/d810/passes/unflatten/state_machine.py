@@ -30,6 +30,7 @@ from d810.passes.state_machine_options import StateMachineCffOptions
 from d810.analyses.control_flow.dispatcher_recovery import (
     DispatcherRecovery,
     min_state_constant_from_config,
+    recover_entry_dominated_initial_state,
     recover_dispatcher,
 )
 from d810.analyses.control_flow.dispatcher_resolution import (
@@ -45,6 +46,7 @@ from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.branch_witness_provider import (
     build_static_equality_chain_witness_map,
 )
+from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.analyses.control_flow.dispatcher_discovery_facts import (
     PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE,
     collect_state_dispatcher_discovery_fact_observations,
@@ -57,6 +59,7 @@ from d810.analyses.control_flow.predecessor_dispatcher_target import (
     project_condition_chain_interval_route_observations,
     project_predecessor_dispatcher_target_observations,
     resolve_current_snapshot_dispatcher_route,
+    select_supported_transition_identity,
 )
 from d810.analyses.control_flow.router_resolver import (
     RouterResolutionContext,
@@ -118,8 +121,9 @@ from d810.ir.block_identity import (
     refine_stable_block_identity_for_graph_block,
     stable_block_identity_from_snapshot,
 )
-from d810.ir.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph, OperandKind
 from d810.ir.maturity import MaturityEnvelope
+from d810.ir.semantics import PredicateKind
 from d810.capabilities.branch_witness import BranchWitnessCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
@@ -230,6 +234,34 @@ def native_cfg_edge_contracts_for_plan(
             )
         )
     return tuple(contracts)
+
+
+def _lower_fallback_to_direct_graph(
+    *,
+    graph,
+    facts,
+    transition_result,
+    dispatch_map,
+    dispatcher_entry_serial: int | None,
+    state_var_stkoff: int | None,
+    regions,
+    use_def_safety,
+    live_function,
+) -> PatchPlan:
+    """Run the legacy fallback only with its recovered stack-state authority."""
+    if state_var_stkoff is None:
+        return PatchPlan()
+    return lower_to_direct_graph(
+        graph,
+        facts,
+        transition_result=transition_result,
+        dispatch_map=dispatch_map,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        state_var_stkoff=state_var_stkoff,
+        regions=regions,
+        use_def_safety=use_def_safety,
+        live_function=live_function,
+    )
 
 
 def _current_graph_identity_authority(
@@ -378,6 +410,8 @@ def bind_native_bound_transition_routes_for_current_mba(
     state_var_reg: int | None,
     dispatcher_entry_serial: int | None = None,
     range_evidence: object | None = None,
+    supported_state_identity: tuple[int | None, int | None] | None = None,
+    initial_state: int | None = None,
 ):
     """Bind recovered routes to the current MBA without serial fallbacks."""
     if current_block_identity_index is None:
@@ -392,6 +426,34 @@ def bind_native_bound_transition_routes_for_current_mba(
         route_lookup = getattr(dispatcher, "route", None)
     if not callable(rebind_native_ea):
         return ()
+
+    resolutions = tuple(resolutions or ())
+    if supported_state_identity is None and initial_state is not None:
+        try:
+            normalized_initial_state = int(initial_state) & 0xFFFFFFFF
+        except (OverflowError, TypeError, ValueError):
+            normalized_initial_state = None
+        initial_identities: set[tuple[int | None, int | None]] = set()
+        if normalized_initial_state is not None:
+            for row in resolutions:
+                if not hasattr(row, "target_block_serial"):
+                    continue
+                try:
+                    row_state = int(getattr(row, "state_const")) & 0xFFFFFFFF
+                    identity = (
+                        None
+                        if getattr(row, "state_var_stkoff", None) is None
+                        else int(getattr(row, "state_var_stkoff")),
+                        None
+                        if getattr(row, "state_var_reg", None) is None
+                        else int(getattr(row, "state_var_reg")),
+                    )
+                except (AttributeError, OverflowError, TypeError, ValueError):
+                    continue
+                if row_state == normalized_initial_state and identity != (None, None):
+                    initial_identities.add(identity)
+        if len(initial_identities) == 1:
+            supported_state_identity = next(iter(initial_identities))
 
     def route_target_for_state(state: int):
         """Read the selected current router without serial fallbacks."""
@@ -459,7 +521,7 @@ def bind_native_bound_transition_routes_for_current_mba(
     current_blocks = getattr(graph, "blocks", {})
     current_block_serials = tuple(int(serial) for serial in current_blocks)
     return bind_native_bound_transition_routes(
-        tuple(resolutions or ()),
+        resolutions,
         block_serial_for_instruction_ea=block_serial_for_instruction_ea,
         current_block_serials=current_block_serials,
         dispatcher_block_serials=dispatcher_region,
@@ -468,6 +530,7 @@ def bind_native_bound_transition_routes_for_current_mba(
         ),
         state_var_stkoff=state_var_stkoff,
         state_var_reg=state_var_reg,
+        supported_state_identity=supported_state_identity,
     )
 
 
@@ -530,6 +593,263 @@ def _adopt_range_evidence_stack_identity(
         state_var_reg=None,
         dispatch_map=updated_map,
     )
+
+
+def _adopt_exact_state_write_anchor_identity(
+    recovery: DispatcherRecovery,
+    facts: object,
+) -> DispatcherRecovery:
+    """Recover a folded-away selector identity from active exact write anchors.
+
+    Hex-Rays can constant-fold every dispatcher comparison before GLBOPT1,
+    leaving exact state-to-handler rows but no storage operand on the comparison
+    nodes.  Active ``StateWriteAnchorFact`` rows retain the exact destination
+    identity.  Adopt it only when one storage family uniquely has the strongest
+    coverage of the recovered dispatcher constants; a single-state family also
+    needs two distinct native write anchors.
+    """
+
+    if recovery.state_var_stkoff is not None or recovery.state_var_reg is not None:
+        return recovery
+    dispatch_map = recovery.dispatch_map
+    if dispatch_map is None:
+        return recovery
+    route_states = {
+        int(row.state_const) & 0xFFFFFFFFFFFFFFFF
+        for row in tuple(getattr(dispatch_map, "rows", ()) or ())
+        if getattr(row, "state_const", None) is not None
+    }
+    if not route_states:
+        return recovery
+
+    matched_states: dict[tuple[str, int], set[int]] = {}
+    matched_anchors: dict[tuple[str, int], set[tuple[int, int, int]]] = {}
+    for observation in tuple(getattr(facts, "active_observations", ()) or ()):
+        if getattr(observation, "kind", None) != "StateWriteAnchorFact":
+            continue
+        payload = dict(getattr(observation, "payload", {}) or {})
+        try:
+            state = int(payload["state_const_u64"]) & 0xFFFFFFFFFFFFFFFF
+            block_serial = int(payload["block_serial"])
+            instruction_ea = int(payload["instruction_ea"])
+            dest_size = int(payload["dest_size"])
+        except (KeyError, OverflowError, TypeError, ValueError):
+            continue
+        if state not in route_states or dest_size not in {4, 8}:
+            continue
+        stkoff = payload.get("state_var_stkoff")
+        reg = payload.get("state_var_reg")
+        try:
+            if stkoff is not None and reg is None:
+                identity = ("stack", int(stkoff))
+            elif reg is not None and stkoff is None:
+                identity = ("register", int(reg))
+            else:
+                continue
+        except (OverflowError, TypeError, ValueError):
+            continue
+        matched_states.setdefault(identity, set()).add(state)
+        matched_anchors.setdefault(identity, set()).add(
+            (block_serial, instruction_ea, state)
+        )
+
+    eligible = tuple(
+        identity
+        for identity, states in matched_states.items()
+        if len(states) >= 2 or len(matched_anchors.get(identity, ())) >= 2
+    )
+    if not eligible:
+        return recovery
+    scores = {
+        identity: (
+            len(matched_states[identity]),
+            len(matched_anchors[identity]),
+        )
+        for identity in eligible
+    }
+    best_score = max(scores.values())
+    winners = tuple(identity for identity in eligible if scores[identity] == best_score)
+    if len(winners) != 1:
+        return recovery
+    kind, value = winners[0]
+    state_var_stkoff = value if kind == "stack" else None
+    state_var_reg = value if kind == "register" else None
+    updated_map = replace(
+        dispatch_map,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+    )
+    return replace(
+        recovery,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        dispatch_map=updated_map,
+    )
+
+
+def _exact_u32_state_write_anchor_states(
+    facts: object,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> frozenset[int]:
+    """Return exact U32 constants written to one recovered selector identity."""
+
+    if (state_var_stkoff is None) == (state_var_reg is None):
+        return frozenset()
+    states: set[int] = set()
+    for observation in tuple(getattr(facts, "active_observations", ()) or ()):
+        if getattr(observation, "kind", None) != "StateWriteAnchorFact":
+            continue
+        payload = dict(getattr(observation, "payload", {}) or {})
+        try:
+            if int(payload["dest_size"]) != 4:
+                continue
+            payload_stkoff = payload.get("state_var_stkoff")
+            payload_reg = payload.get("state_var_reg")
+            if state_var_stkoff is not None:
+                if payload_reg is not None or int(payload_stkoff) != state_var_stkoff:
+                    continue
+            elif payload_stkoff is not None or int(payload_reg) != state_var_reg:
+                continue
+            state = int(payload["state_const_u64"])
+        except (KeyError, OverflowError, TypeError, ValueError):
+            continue
+        if 0 <= state <= 0xFFFFFFFF:
+            states.add(state)
+    return frozenset(states)
+
+
+def _recover_folded_constant_equality_dag(
+    graph: FlowGraph,
+    *,
+    root_serial: int,
+    initial_state: int,
+    anchored_states: frozenset[int],
+) -> DecisionDag | None:
+    """Recover a pure equality DAG whose selector was folded to a constant.
+
+    Hex-Rays may replace the selector operand in every equality comparison with
+    the known entry state.  The comparison constants, branch topology, and
+    exact selector-write anchors still describe the original dispatcher.  This
+    reconstruction is deliberately narrow: an observed comparison must be one
+    pure U32 EQ/NE branch with reciprocal edges, and every non-initial constant
+    must be independently present in the current exact write anchors.
+    """
+
+    try:
+        root_serial = int(root_serial)
+        initial_state = int(initial_state)
+        states = frozenset(int(state) for state in anchored_states)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not 0 <= initial_state <= 0xFFFFFFFF:
+        return None
+    if initial_state not in states or len(states) < 2:
+        return None
+
+    nodes: dict[int, RouteComparison] = {}
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def visit(serial: int, *, require_comparison: bool = False) -> bool:
+        serial = int(serial)
+        if serial in visiting:
+            return False
+        if serial in visited:
+            return True
+        block = graph.get_block(serial)
+        if block is None:
+            return False
+        snapshots = tuple(block.insn_snapshots)
+        tail = snapshots[-1] if snapshots else None
+        mentions_folded_selector = bool(
+            tail is not None
+            and tail.is_conditional_jump
+            and any(
+                operand is not None
+                and operand.kind is OperandKind.NUMBER
+                and operand.size == 4
+                and operand.value == initial_state
+                for operand in (tail.l, tail.r)
+            )
+        )
+        if not mentions_folded_selector:
+            return not require_comparison
+        if len(snapshots) != 1 or len(block.succs) != 2:
+            return False
+        if tail.branch_predicate not in {PredicateKind.EQ, PredicateKind.NE}:
+            return False
+        left, right = tail.l, tail.r
+        if (
+            left is None
+            or right is None
+            or left.kind is not OperandKind.NUMBER
+            or right.kind is not OperandKind.NUMBER
+            or left.size != 4
+            or right.size != 4
+            or left.value is None
+            or right.value is None
+        ):
+            return False
+        left_value = int(left.value)
+        right_value = int(right.value)
+        if not (
+            0 <= left_value <= 0xFFFFFFFF and 0 <= right_value <= 0xFFFFFFFF
+        ):
+            return False
+        if left_value == initial_state and right_value != initial_state:
+            comparison_const = right_value
+        elif right_value == initial_state and left_value != initial_state:
+            comparison_const = left_value
+        elif left_value == initial_state and right_value == initial_state:
+            comparison_const = initial_state
+        else:
+            return False
+        if comparison_const not in states:
+            return False
+
+        block_targets = tuple(
+            int(operand.block_ref)
+            for operand in (tail.l, tail.r, tail.d)
+            if operand is not None
+            and operand.kind is OperandKind.BLOCK
+            and operand.block_ref is not None
+        )
+        if len(block_targets) != 1:
+            return False
+        true_target = block_targets[0]
+        successors = tuple(int(target) for target in block.succs)
+        if true_target not in successors or len(set(successors)) != 2:
+            return False
+        false_target = next(target for target in successors if target != true_target)
+        for target in successors:
+            successor = graph.get_block(target)
+            if successor is None or serial not in tuple(successor.preds):
+                return False
+
+        visiting.add(serial)
+        nodes[serial] = RouteComparison(
+            serial=serial,
+            op="jz" if tail.branch_predicate is PredicateKind.EQ else "jnz",
+            const=comparison_const,
+            true_target=true_target,
+            false_target=false_target,
+        )
+        if not visit(true_target) or not visit(false_target):
+            return False
+        visiting.remove(serial)
+        visited.add(serial)
+        return True
+
+    if not visit(root_serial, require_comparison=True) or len(nodes) < 2:
+        return None
+    dag = DecisionDag(width=32, nodes=nodes, root=root_serial)
+    for state in states:
+        target = dag.route(state)
+        if target in nodes or graph.get_block(target) is None:
+            return None
+    return dag
 
 
 def _publish_observation_evidence(ctx: FunctionPipelineContext, observations) -> None:
@@ -2493,6 +2813,11 @@ class LowerStateMachine(PipelinePass):
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
         recovery = _analysis(context, "recover_dispatcher")
+        if isinstance(recovery, DispatcherRecovery):
+            recovery = _adopt_exact_state_write_anchor_identity(
+                recovery,
+                context.facts,
+            )
         transition_result = _analysis(context, "transition_result")
         dispatcher_entry = getattr(recovery, "dispatcher_block_serial", None)
         materialized_computed_goto_profile = bool(
@@ -2570,6 +2895,41 @@ class LowerStateMachine(PipelinePass):
             # provenance where range evidence is None (ticket llr-16jl).
             initial_state = _resolve_initial_state(range_evidence, recovery)
             dmap = getattr(recovery, "dispatch_map", None)
+            if initial_state is None and dmap is not None:
+                initial_state = recover_entry_dominated_initial_state(
+                    context.graph,
+                    dmap,
+                )
+            anchored_u32_states = _exact_u32_state_write_anchor_states(
+                context.facts,
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+            )
+            current_decision_dag = (
+                getattr(range_evidence, "decision_dag", None)
+                if range_evidence is not None
+                else None
+            )
+            folded_constant_equality_dag = None
+            if (
+                len(getattr(current_decision_dag, "nodes", {}) or {}) < 2
+                and initial_state is not None
+            ):
+                folded_constant_equality_dag = (
+                    _recover_folded_constant_equality_dag(
+                        context.graph,
+                        root_serial=int(dispatcher_entry),
+                        initial_state=int(initial_state),
+                        anchored_states=anchored_u32_states,
+                    )
+                )
+                if folded_constant_equality_dag is not None and logger.info_on:
+                    logger.info(
+                        "unflat folded equality DAG: root=%d nodes=%d states=%s",
+                        int(folded_constant_equality_dag.root),
+                        len(folded_constant_equality_dag.nodes),
+                        tuple(f"0x{state:08X}" for state in sorted(anchored_u32_states)),
+                    )
             # Indirect-table-only emit gates (ticket llr-m9r4): the terminal-tail recovery
             # and the shared-EXIT redirect veto are load-bearing for the Tigress
             # table/indirect shape but regress equality-chain / switch-table goldens
@@ -2706,11 +3066,27 @@ class LowerStateMachine(PipelinePass):
                 len(authoritative_handler_serials),
                 state_var_reg,
             )
+            # Preserve an empty current DAG for switch-table/materialized
+            # profiles.  It is still authoritative topology (root + table
+            # handlers), even though it has no comparison nodes.  Prefer the
+            # reconstructed equality DAG only when one was actually proven.
             condition_chain_dag = (
-                range_evidence.decision_dag if range_evidence is not None else None
+                folded_constant_equality_dag
+                if folded_constant_equality_dag is not None
+                else current_decision_dag
+            )
+            folded_handler_serials = (
+                frozenset(
+                    int(condition_chain_dag.route(state))
+                    for state in anchored_u32_states
+                )
+                if folded_constant_equality_dag is not None
+                and condition_chain_dag is folded_constant_equality_dag
+                else frozenset()
             )
             condition_chain_handlers = (
                 frozenset(int(serial) for serial in dmap.state_to_handler().values())
+                | folded_handler_serials
                 if dmap is not None and condition_chain_dag is not None
                 else frozenset()
             )
@@ -2771,7 +3147,7 @@ class LowerStateMachine(PipelinePass):
                         )
                     },
                 )
-            decision_dag = getattr(range_evidence, "decision_dag", None)
+            decision_dag = condition_chain_dag
             has_current_range_topology = bool(
                 getattr(range_evidence, "condition_chain_blocks", ())
                 or getattr(decision_dag, "nodes", None)
@@ -2816,6 +3192,11 @@ class LowerStateMachine(PipelinePass):
                     state_var_reg=state_var_reg,
                     dispatcher_entry_serial=dispatcher_entry,
                     range_evidence=range_evidence,
+                    supported_state_identity=select_supported_transition_identity(
+                        _analysis(context, "recover_state_transitions", ()),
+                        dispatcher_topology_serials=dispatcher_region_serials,
+                    ),
+                    initial_state=initial_state,
                 )
             )
             plan = emit_minimal_unflatten(
@@ -2900,6 +3281,7 @@ class LowerStateMachine(PipelinePass):
                     if current_block_identity_index is None
                     else current_block_identity_index.native_key
                 ),
+                native_cfg_persistence=self.native_cfg_persistence,
             )
             plan_metadata = plan.metadata_dict()
             corridor_observations = (
@@ -2931,9 +3313,9 @@ class LowerStateMachine(PipelinePass):
 
         # Fallback (no interval dispatcher recovered): the committed shallow
         # redirect-only path.
-        plan = lower_to_direct_graph(
-            context.graph,
-            context.facts,
+        plan = _lower_fallback_to_direct_graph(
+            graph=context.graph,
+            facts=context.facts,
             transition_result=transition_result,
             dispatch_map=getattr(recovery, "dispatch_map", None),
             dispatcher_entry_serial=dispatcher_entry,

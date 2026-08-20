@@ -37,7 +37,9 @@ from d810.core.observability_events import (
     MutationReceiptObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
+    Z3PredicateProofObserved,
 )
+from d810.core.z3_proof import Z3ProofAbstentionReason, Z3ProofStatus
 import d810.core.observability_events as observability_events
 from d810.core.observability_models import (
     BlockSnapshot,
@@ -177,6 +179,49 @@ def test_input_identity_resolution_is_durable_in_the_session_timeline(fake_conn)
         "mismatch_field": None,
         "provenance": "recovered_from_d810_attestation",
         "status": "recovered_local_only",
+    }
+
+
+def test_z3_predicate_proof_receipt_is_queryable_in_the_lifecycle_timeline(
+    fake_conn,
+):
+    emit(
+        Z3PredicateProofObserved(
+            session_id="z3-session",
+            func_ea=0x401000,
+            transform_id="z-3-setz-generic",
+            operation="prove_equal",
+            max_expression_nodes=7,
+            proof_timeout_ms=13,
+            observed_expression_nodes=8,
+            elapsed_ms=2.5,
+            status=Z3ProofStatus.ABSTAINED,
+            reason=Z3ProofAbstentionReason.NODE_LIMIT,
+            timestamp=4.0,
+        )
+    )
+
+    row = fake_conn.execute(
+        "SELECT event_kind,provider,phase,correlation_id,payload_json "
+        "FROM lifecycle_events WHERE session_id='z3-session'"
+    ).fetchone()
+
+    assert row is not None
+    assert row[:4] == (
+        "z3_predicate_proof",
+        "d810.mba:z-3-setz-generic",
+        "proof",
+        "z-3-setz-generic:prove_equal",
+    )
+    assert json.loads(row[4]) == {
+        "elapsed_ms": 2.5,
+        "max_expression_nodes": 7,
+        "observed_expression_nodes": 8,
+        "operation": "prove_equal",
+        "proof_timeout_ms": 13,
+        "reason": "node_limit",
+        "status": "abstained",
+        "transform_id": "z-3-setz-generic",
     }
 
 

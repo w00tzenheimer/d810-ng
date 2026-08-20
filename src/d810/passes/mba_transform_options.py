@@ -9,6 +9,7 @@ from types import MappingProxyType
 from d810.core.pass_ids import PassId
 from d810.core.pass_editor_spec import FieldControlKind, FieldEditorSpec
 from d810.core.typing import Mapping
+from d810.core.z3_proof import get_z3_proof_policy_authority
 from d810.mba.rules import VerifiableRule
 from d810.passes.execution_stages import (
     ExecutionPipeline,
@@ -77,7 +78,45 @@ _PRIVATE_BINDING_OVERRIDES = {
 # Runtime-owned schema for the small number of MBA transforms that accept
 # parameters. The pass catalog renders these fixed controls; raw JSON cannot
 # introduce another transform option.
-MBA_TRANSFORM_OPTION_FIELDS: Mapping[str, tuple[FieldEditorSpec, ...]] = {
+_Z3_GENERIC_TRANSFORM_IDS_ORDERED = (
+    "z-3-setz-generic",
+    "z-3-setnz-generic",
+    "z-3-lnot-generic",
+)
+_Z3_GENERIC_TRANSFORM_IDS = frozenset(_Z3_GENERIC_TRANSFORM_IDS_ORDERED)
+
+
+def _z3_generic_option_fields() -> tuple[FieldEditorSpec, ...]:
+    authority = get_z3_proof_policy_authority()
+    node_bounds = authority.max_expression_nodes
+    timeout_bounds = authority.proof_timeout_ms
+    return (
+        FieldEditorSpec(
+            field_id="max_expression_nodes",
+            label="Maximum expression nodes",
+            path=("max_expression_nodes",),
+            control=FieldControlKind.INTEGER,
+            description="Maximum expanded AST node occurrences for one proof.",
+            minimum=node_bounds.minimum,
+            maximum=node_bounds.maximum,
+            default=node_bounds.default,
+        ),
+        FieldEditorSpec(
+            field_id="proof_timeout_ms",
+            label="Proof timeout (ms)",
+            path=("proof_timeout_ms",),
+            control=FieldControlKind.INTEGER,
+            description="Maximum solver time for one proof in milliseconds.",
+            minimum=timeout_bounds.minimum,
+            maximum=timeout_bounds.maximum,
+            default=timeout_bounds.default,
+        ),
+    )
+
+
+_STATIC_MBA_TRANSFORM_OPTION_FIELDS: Mapping[
+    str, tuple[FieldEditorSpec, ...]
+] = {
     "z-3-constant-optimization": (
         FieldEditorSpec(
             field_id="min_nb_opcode",
@@ -143,6 +182,27 @@ MBA_TRANSFORM_OPTION_FIELDS: Mapping[str, tuple[FieldEditorSpec, ...]] = {
         ),
     ),
 }
+
+
+class _MbaTransformOptionFields(ABCMapping[str, tuple[FieldEditorSpec, ...]]):
+    """Resolve generic Z3 fields from the portable authority on each lookup."""
+
+    def __getitem__(self, transform_id: str) -> tuple[FieldEditorSpec, ...]:
+        if transform_id in _Z3_GENERIC_TRANSFORM_IDS:
+            return _z3_generic_option_fields()
+        return _STATIC_MBA_TRANSFORM_OPTION_FIELDS[transform_id]
+
+    def __iter__(self):
+        yield from _Z3_GENERIC_TRANSFORM_IDS_ORDERED
+        yield from _STATIC_MBA_TRANSFORM_OPTION_FIELDS
+
+    def __len__(self) -> int:
+        return len(_Z3_GENERIC_TRANSFORM_IDS) + len(_STATIC_MBA_TRANSFORM_OPTION_FIELDS)
+
+
+MBA_TRANSFORM_OPTION_FIELDS: Mapping[str, tuple[FieldEditorSpec, ...]] = (
+    _MbaTransformOptionFields()
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,14 +338,28 @@ def parse_mba_simplify_options(
                 f"mba-simplify transform options for {transform_id!r} must be a mapping"
             )
         declared_fields = MBA_TRANSFORM_OPTION_FIELDS.get(transform_id, ())
-        allowed_names = {field.path[0] for field in declared_fields}
-        unknown_names = tuple(sorted(set(options).difference(allowed_names)))
+        fields_by_name = {field.path[0]: field for field in declared_fields}
+        unknown_names = tuple(
+            sorted(
+                (name for name in options if name not in fields_by_name),
+                key=str,
+            )
+        )
         if unknown_names:
             raise PipelineConfigError(
                 "mba-simplify transform options for "
                 f"{transform_id!r} have option(s) that are not editor-visible: "
                 f"{list(unknown_names)}"
             )
+        for field_name, value in options.items():
+            field = fields_by_name[field_name]
+            try:
+                field.validate_value(value)
+            except ValueError as exc:
+                raise PipelineConfigError(
+                    "mba-simplify transform options for "
+                    f"{transform_id!r} field {field_name!r} is invalid: {exc}"
+                ) from exc
         transform_options[transform_id] = dict(options)
     return MbaSimplifyOptions(
         tuple(transform_ids),

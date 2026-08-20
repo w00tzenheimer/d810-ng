@@ -284,6 +284,7 @@ def _persist_task13_native_capture(
                 DeobfuscationCase(
                     function=_manifest_function(case.case_id),
                     description="Task 13 native provider capture",
+                    project="",
                     must_change=False,
                 ),
                 d810_state=selected_state,
@@ -697,27 +698,43 @@ class TestCompilerShapeCatalogueNative:
         observed_snapshots = []
         observed_ledgers = []
 
-        @contextlib.contextmanager
-        def recording_state():
-            with d810_state() as state:
-                yield state
-                observed_snapshots.append(state.current_certified_catalogue_snapshot)
-                observed_ledgers.append(state.current_shadow_matcher_parity_ledger)
-
-        for function, rule_name in _CATALOGUE_CASES:
-            reaches_provider = _catalogue_reaches_provider(function)
-            run_deobfuscation_test(
-                DeobfuscationCase(
-                    function=function,
-                    description="native structural parity evidence",
-                    project="mba_compiler_shape_catalogue.json",
-                    must_change=reaches_provider,
-                    required_rules=[rule_name] if reaches_provider else [],
-                    forbidden_rules=[] if reaches_provider else [rule_name],
-                ),
-                d810_state=recording_state,
-                pseudocode_to_string=pseudocode_to_string,
+        # This is one certificate over one matcher/runtime configuration, not
+        # ten independent before/after deobfuscation tests.  Keep one live D810
+        # state and perform one D810-enabled decompilation per function.  The
+        # parameterized test above owns native before/after text parity; this
+        # receipt requires or forbids the exact rule for every corpus member.
+        with d810_state() as shared_state:
+            shared_state.load_project(
+                shared_state.project_manager.index(
+                    "mba_compiler_shape_catalogue.json"
+                )
             )
+
+            @contextlib.contextmanager
+            def recording_state():
+                shared_state.stats.reset()
+                yield shared_state
+                observed_snapshots.append(
+                    shared_state.current_certified_catalogue_snapshot
+                )
+                observed_ledgers.append(
+                    shared_state.current_shadow_matcher_parity_ledger
+                )
+
+            for function, rule_name in _CATALOGUE_CASES:
+                reaches_provider = _catalogue_reaches_provider(function)
+                run_deobfuscation_test(
+                    DeobfuscationCase(
+                        function=function,
+                        description="native structural parity evidence",
+                        project="",
+                        must_change=False,
+                        required_rules=[rule_name] if reaches_provider else [],
+                        forbidden_rules=[] if reaches_provider else [rule_name],
+                    ),
+                    d810_state=recording_state,
+                    pseudocode_to_string=pseudocode_to_string,
+                )
 
         snapshots = tuple(snapshot for snapshot in observed_snapshots if snapshot)
         ledgers = tuple(ledger for ledger in observed_ledgers if ledger)

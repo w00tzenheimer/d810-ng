@@ -681,9 +681,11 @@ class _MockOptimizer:
         blk,
         ins,
         *,
+        contextual_anchor_ins=None,
         allowed_rule_names=None,
         scheduled_rule_names=None,
     ):
+        del contextual_anchor_ins
         self.calls += 1
         return None
 

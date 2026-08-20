@@ -50,6 +50,7 @@ from d810.passes.unflatten.state_machine import (
     _adopt_range_evidence_stack_identity,
     _effective_state_identity,
     _publish_observation_evidence,
+    _recover_folded_constant_equality_dag,
 )
 from d810.passes.state_machine_spine import LOWER_ANALYSES
 from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
@@ -233,6 +234,96 @@ def _ne(const, target):
         kind=InsnKind.EQUALITY_JUMP,
         branch_predicate=PredicateKind.NE,
         is_conditional_jump=True,
+    )
+
+
+def _folded_eq(left_value, right_value, target, *, predicate=PredicateKind.EQ):
+    left = MopSnapshot(kind=OperandKind.NUMBER, value=left_value, size=4)
+    right = MopSnapshot(kind=OperandKind.NUMBER, value=right_value, size=4)
+    dest = MopSnapshot(kind=OperandKind.BLOCK, block_ref=target)
+    return InsnSnapshot(
+        opcode=1,
+        ea=0x1000,
+        operands=(left, right, dest),
+        l=left,
+        r=right,
+        d=dest,
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=predicate,
+        is_conditional_jump=True,
+    )
+
+
+def test_folded_constant_equality_dag_recovers_exact_approov_routes():
+    initial = 0xF6A1F
+    graph = FlowGraph(
+        blocks={
+            3: _blk(3, (4, 15), (), _folded_eq(initial, 0xF6A25, 15)),
+            4: _blk(
+                4,
+                (5, 8),
+                (3,),
+                _folded_eq(initial, 0xF6A1E, 8, predicate=PredicateKind.NE),
+            ),
+            5: _blk(5, (), (4,)),
+            8: _blk(
+                8,
+                (9, 12),
+                (4,),
+                _folded_eq(initial, initial, 12, predicate=PredicateKind.NE),
+            ),
+            9: _blk(9, (), (8,)),
+            12: _blk(12, (), (8,)),
+            15: _blk(15, (), (3,)),
+        },
+        entry_serial=3,
+        func_ea=0x1800019A0,
+    )
+
+    dag = _recover_folded_constant_equality_dag(
+        graph,
+        root_serial=3,
+        initial_state=initial,
+        anchored_states=frozenset({0xF6A1E, initial, 0xF6A20, 0xF6A25}),
+    )
+
+    assert dag is not None
+    assert dag.route(0xF6A1E) == 5
+    assert dag.route(initial) == 9
+    assert dag.route(0xF6A20) == 12
+    assert dag.route(0xF6A25) == 15
+
+
+@pytest.mark.parametrize("mutation", ["nonreciprocal", "unknown_constant", "effectful"])
+def test_folded_constant_equality_dag_rejects_malformed_observed_chain(mutation):
+    initial = 0xF6A1F
+    tail = _folded_eq(initial, 0xF6A1E, 5, predicate=PredicateKind.NE)
+    root = _blk(3, (4, 5), (), tail)
+    handler = _blk(4, (), (3,))
+    target = _blk(5, (), (() if mutation == "nonreciprocal" else (3,)))
+    if mutation == "unknown_constant":
+        root = _blk(
+            3,
+            (4, 5),
+            (),
+            _folded_eq(initial, 0xDEADBEEF, 5, predicate=PredicateKind.NE),
+        )
+    elif mutation == "effectful":
+        root = replace(root, insn_snapshots=(InsnSnapshot(9, 0x9999, ()), tail))
+    graph = FlowGraph(
+        blocks={3: root, 4: handler, 5: target},
+        entry_serial=3,
+        func_ea=0x1800019A0,
+    )
+
+    assert (
+        _recover_folded_constant_equality_dag(
+            graph,
+            root_serial=3,
+            initial_state=initial,
+            anchored_states=frozenset({0xF6A1E, initial}),
+        )
+        is None
     )
 
 
@@ -708,6 +799,151 @@ def test_lower_state_machine_requires_recovered_transition_analysis():
     assert PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS in LOWER_ANALYSES.required
 
 
+def test_fallback_lowering_requires_recovered_stack_state_identity(monkeypatch):
+    calls = []
+
+    def capture(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(steps=("redirect",))
+
+    monkeypatch.setattr(state_machine_module, "lower_to_direct_graph", capture)
+    common = dict(
+        graph=SimpleNamespace(),
+        facts=SimpleNamespace(),
+        transition_result=SimpleNamespace(),
+        dispatch_map=SimpleNamespace(),
+        dispatcher_entry_serial=5,
+        regions=None,
+        use_def_safety=None,
+        live_function=None,
+    )
+
+    missing = state_machine_module._lower_fallback_to_direct_graph(
+        **common,
+        state_var_stkoff=None,
+    )
+
+    assert missing.steps == ()
+    assert calls == []
+
+    present = state_machine_module._lower_fallback_to_direct_graph(
+        **common,
+        state_var_stkoff=32,
+    )
+
+    assert present.steps == ("redirect",)
+    assert len(calls) == 1
+    assert calls[0][1]["state_var_stkoff"] == 32
+
+
+def test_exact_state_write_anchors_restore_folded_dispatcher_identity():
+    rows = tuple(
+        StateDispatcherRow(
+            state_const=state,
+            target_block=index + 10,
+            dispatcher_block=3,
+            compare_block=3,
+            branch_kind="eq",
+            router_kind=RouterKind.CONDITION_CHAIN,
+        )
+        for index, state in enumerate((0xF6A1E, 0xF6A1F, 0xF6A20))
+    )
+    recovery = DispatcherRecovery(
+        dispatcher_block_serial=3,
+        dispatch_map=StateDispatcherMap(
+            rows=rows,
+            dispatcher_entry_block=3,
+            dispatcher_blocks=frozenset({3}),
+            state_var_stkoff=None,
+            state_var_lvar_idx=None,
+            router_kind=RouterKind.CONDITION_CHAIN,
+        ),
+    )
+
+    def anchor(index: int, state: int, stkoff: int) -> FactObservation:
+        return FactObservation(
+            fact_id=f"anchor-{index}-{state:x}-{stkoff:x}",
+            kind="StateWriteAnchorFact",
+            semantic_key=f"anchor-{index}-{state:x}-{stkoff:x}",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            confidence=0.9,
+            payload={
+                "block_serial": index + 4,
+                "instruction_ea": 0x1800019DC + index,
+                "state_const_u64": state,
+                "state_var_stkoff": stkoff,
+                "state_var_reg": None,
+                "dest_size": 4,
+            },
+        )
+
+    restored = state_machine_module._adopt_exact_state_write_anchor_identity(
+        recovery,
+        SimpleNamespace(
+            active_observations=tuple(
+                anchor(index, state, 12)
+                for index, state in enumerate((0xF6A1E, 0xF6A1F, 0xF6A20))
+            )
+        ),
+    )
+
+    assert restored.state_var_stkoff == 12
+    assert restored.state_var_reg is None
+    assert restored.dispatch_map.state_var_stkoff == 12
+
+
+def test_exact_state_write_anchor_identity_rejects_tied_storage_families():
+    state = 0x8348BA7AD21C9415
+    recovery = DispatcherRecovery(
+        dispatcher_block_serial=2,
+        dispatch_map=StateDispatcherMap(
+            rows=(
+                StateDispatcherRow(
+                    state_const=state,
+                    target_block=4,
+                    dispatcher_block=2,
+                    compare_block=2,
+                    branch_kind="eq",
+                    router_kind=RouterKind.CONDITION_CHAIN,
+                ),
+            ),
+            dispatcher_entry_block=2,
+            dispatcher_blocks=frozenset({2}),
+            state_var_stkoff=None,
+            state_var_lvar_idx=None,
+            router_kind=RouterKind.CONDITION_CHAIN,
+        ),
+    )
+
+    observations = tuple(
+        FactObservation(
+            fact_id=f"anchor-{index}",
+            kind="StateWriteAnchorFact",
+            semantic_key=f"anchor-{index}",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            confidence=0.9,
+            payload={
+                "block_serial": index + 1,
+                "instruction_ea": 0x18001AA54 + index,
+                "state_const_u64": state,
+                "state_var_stkoff": stkoff,
+                "state_var_reg": None,
+                "dest_size": 8,
+            },
+        )
+        for index, stkoff in enumerate((32, 40))
+    )
+
+    unchanged = state_machine_module._adopt_exact_state_write_anchor_identity(
+        recovery,
+        SimpleNamespace(active_observations=observations),
+    )
+
+    assert unchanged is recovery
+
+
 def test_native_bound_adapter_uses_current_native_ea_rebind_only():
     calls = []
 
@@ -797,6 +1033,49 @@ def test_native_bound_adapter_accepts_carrier_drift_with_typed_predecessor_route
     assert routes[0].source_block_serial == 42
     assert routes[0].state_constant == 0x16AA65E9
     assert routes[0].target_handler_serial == 7
+
+
+def test_native_bound_adapter_uses_unique_initial_state_carrier_family():
+    source_ea = 0x7FF855576BA0
+    target_ea = 0x7FF855576BB1
+
+    class _Index:
+        def rebind_native_ea(self, ea):
+            serial = {source_ea: 42, target_ea: 7}[int(ea)]
+            return SimpleNamespace(block=SimpleNamespace(serial=serial))
+
+    def fact(*, fact_id: str, state: int, reg: int):
+        return PredecessorDispatcherTargetFact(
+            fact_id=fact_id,
+            predecessor_block_serial=15,
+            dispatcher_entry_serial=2,
+            state_const=state,
+            target_block_serial=99,
+            resolver_kind="interval_dispatcher_row",
+            row_kind="interval_range",
+            source_instruction_ea=source_ea,
+            target_native_ea=target_ea,
+            state_var_stkoff=52,
+            state_var_reg=reg,
+        )
+
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (
+            fact(fact_id="shadow", state=1, reg=0),
+            fact(fact_id="dispatcher", state=0x16AA65E9, reg=8),
+        ),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={7: object(), 42: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda _state: 7),
+        dispatcher_region_serials=frozenset({2}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+        initial_state=0x16AA65E9,
+    )
+
+    assert [(route.fact_id, route.state_constant) for route in routes] == [
+        ("dispatcher", 0x16AA65E9)
+    ]
 
 
 def test_native_bound_pipeline_keeps_entry_and_later_routes_with_carrier_drift():

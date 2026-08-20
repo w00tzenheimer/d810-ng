@@ -55,7 +55,7 @@ def _graph(spec):
         s: SimpleNamespace(nsucc=nsucc, succs=succs)
         for s, (nsucc, succs) in spec.items()
     }
-    return SimpleNamespace(blocks=blocks)
+    return SimpleNamespace(blocks=blocks, metadata={})
 
 
 def test_spine_redirects_one_goto_per_transition_edge():
@@ -253,6 +253,45 @@ def test_null_or_empty_inputs_yield_empty_plan():
             dispatcher_entry_serial=5,
         ).steps
         == ()
+    )
+
+
+def test_shared_lowering_preserves_legacy_missing_identity_behavior(monkeypatch):
+    """The production fallback caller, not this shared transform, owns identity gating."""
+
+    dag = SimpleNamespace(
+        edges=(_edge(SemanticEdgeKind.TRANSITION, 10, 20),),
+    )
+    graph = _graph({10: (1, (5,))})
+    monkeypatch.setattr(
+        smu,
+        "build_live_linearized_state_dag_from_graph",
+        lambda **_kwargs: dag,
+    )
+    monkeypatch.setattr(
+        smu,
+        "compile_patch_plan",
+        lambda modifications, *_args, **_kwargs: SimpleNamespace(
+            steps=tuple(modifications)
+        ),
+    )
+
+    plan = lower_to_direct_graph(
+        graph,
+        None,
+        transition_result=TransitionResult(
+            transitions=[StateTransition(from_state=0, to_state=1, from_block=10)]
+        ),
+        dispatch_map=_Map(),
+        dispatcher_entry_serial=5,
+        state_var_stkoff=None,
+    )
+
+    assert len(plan.steps) == 1
+    assert (plan.steps[0].from_serial, plan.steps[0].old_target, plan.steps[0].new_target) == (
+        10,
+        5,
+        20,
     )
     # missing dispatch_map -> empty
     assert (

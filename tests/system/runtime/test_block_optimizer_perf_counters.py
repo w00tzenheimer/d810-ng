@@ -332,6 +332,30 @@ def test_block_optimizer_threads_its_lifecycle_attempt_into_pass_pipeline(
         journal.close()
 
 
+def test_pass_pipeline_rebuilds_flow_context_at_maturity_boundary() -> None:
+    """The maturity callback invalidates the old context before the pipeline runs."""
+
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    pipeline = _RecordingPassPipeline()
+    lifecycle = _MutationGatewayLifecycle(object(), object())
+    manager.configure(
+        decompilation_lifecycle=lifecycle,
+        pass_pipeline=pipeline,
+    )
+    block = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2)
+    block.mba.get_mblock = lambda serial: block if serial == 0 else None
+
+    manager._flow_context = None
+    manager._flow_context_key = None
+    manager._run_pass_pipeline_once(block.mba, phase_label="MMAT_GLBOPT2")
+
+    assert len(pipeline.calls) == 1
+    assert pipeline.calls[0][1]["mutation_gateway"] is lifecycle.gateway
+
+
 def test_block_optimizer_records_rule_and_mba_mutation_attempts(tmp_path) -> None:
     journal = ExecutionJournalStore(
         tmp_path / "execution.sqlite", callback_detail="full"

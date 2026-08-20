@@ -114,7 +114,12 @@ $RealSh = $null
 $GitShCandidates = @(
     Get-ChildItem -Path "$Env:HOMEDRIVE$Env:HOMEPATH\scoop\apps\git\*" -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -ne "current" } |
-        ForEach-Object { Join-Path $_.FullName "usr\bin\sh.exe" } |
+        ForEach-Object {
+            @(
+                Join-Path $_.FullName "usr\bin\sh.exe"
+                Join-Path $_.FullName "bin\sh.exe"
+            )
+        } |
         Where-Object { Test-Path $_ }
 )
 if ($GitShCandidates.Count -gt 0) {

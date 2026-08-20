@@ -13,14 +13,20 @@ from d810.capabilities.idb_preparation import (
     PreparationTransactionId,
     PreparationTransactionRecord,
     PreparationTypeDelta,
+    SerializedTypeSnapshot,
 )
 from d810.core.execution_journal import DecompilationSessionId, ExecutionAttemptId
 from d810.core.typing import Callable, Protocol
+from d810.passes.constant_simplification_options import ConstantPreparationOptions
 
 __all__ = [
     "PreHexPreparationController",
     "PreparationBatchReceipt",
     "PreparationMode",
+    "PreparationControllerRuntimeState",
+    "PreparationProposalIdentity",
+    "PreparationProviderFailure",
+    "PreparationStatusSnapshot",
 ]
 
 
@@ -65,6 +71,93 @@ class PreparationBatchReceipt:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PreparationProposalIdentity:
+    """Exact durable identity for one reversible type proposal.
+
+    The proposal netnode carries an item range while the preparation journal
+    currently persists the item head and the lossless before/after images.  A
+    journal projection therefore uses ``item_end=None``; it still retains the
+    complete canonical identity that is available from the journal rather than
+    collapsing proposals to a function/item display string.
+    """
+
+    database_identity: str
+    function_ea: int
+    item_head: int
+    item_end: int | None
+    before: SerializedTypeSnapshot
+    after: SerializedTypeSnapshot
+
+    @property
+    def item_range(self) -> tuple[int, int | None]:
+        return self.item_head, self.item_end
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationProviderFailure:
+    """An unavailable durable provider surfaced by the status projection."""
+
+    provider: str
+    error_type: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationControllerRuntimeState:
+    """Rollback snapshot for the live controller policy lane."""
+
+    preparation_options: ConstantPreparationOptions
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationStatusSnapshot:
+    """Portable proposal/transaction state for the preparation lane."""
+
+    pending: tuple[PreparationProposalIdentity, ...] = ()
+    applied: tuple[PreparationProposalIdentity, ...] = ()
+    conflicting: tuple[PreparationProposalIdentity, ...] = ()
+    restored: tuple[PreparationProposalIdentity, ...] = ()
+    unknown: tuple[PreparationProviderFailure, ...] = ()
+    pending_reason: str | None = None
+
+    @property
+    def pending_count(self) -> int:
+        return len(self.pending)
+
+    @property
+    def applied_count(self) -> int:
+        return len(self.applied)
+
+    @property
+    def conflicting_count(self) -> int:
+        return len(self.conflicting)
+
+    @property
+    def restored_count(self) -> int:
+        return len(self.restored)
+
+    @property
+    def pending_identities(self) -> tuple[PreparationProposalIdentity, ...]:
+        return self.pending
+
+    @property
+    def applied_identities(self) -> tuple[PreparationProposalIdentity, ...]:
+        return self.applied
+
+    @property
+    def conflicting_identities(self) -> tuple[PreparationProposalIdentity, ...]:
+        return self.conflicting
+
+    @property
+    def restored_identities(self) -> tuple[PreparationProposalIdentity, ...]:
+        return self.restored
+
+    @property
+    def unknown_count(self) -> int:
+        return len(self.unknown)
+
+
 PreparedRecordProvider = Callable[[str], tuple[PreparationTransactionRecord, ...]]
 TransactionTypeDeltaProvider = Callable[
     [PreparationTransactionId], tuple[PreparationTypeDelta, ...]
@@ -89,6 +182,7 @@ class PreHexPreparationController:
         pending_type_proposals: PendingTypeProposalProvider,
         acknowledge_type_proposals: ProposalAcknowledgement,
         type_step_descriptor: PreparationScriptDescriptor,
+        preparation_options: ConstantPreparationOptions | None = None,
     ) -> None:
         if not isinstance(database_identity, str) or not database_identity.strip():
             raise ValueError("database_identity must be non-empty")
@@ -101,6 +195,15 @@ class PreHexPreparationController:
         self._pending_type_proposals = pending_type_proposals
         self._acknowledge_type_proposals = acknowledge_type_proposals
         self._type_step_descriptor = type_step_descriptor
+        self._preparation_options = (
+            preparation_options
+            if preparation_options is not None
+            else ConstantPreparationOptions()
+        )
+        if not isinstance(self._preparation_options, ConstantPreparationOptions):
+            raise TypeError(
+                "preparation_options must be ConstantPreparationOptions"
+            )
 
     @property
     def database_identity(self) -> str:
@@ -109,6 +212,199 @@ class PreHexPreparationController:
     @property
     def scripts(self) -> tuple[PreparationScriptDescriptor, ...]:
         return self._scripts
+
+    @property
+    def preparation_options(self) -> ConstantPreparationOptions:
+        return self._preparation_options
+
+    def configure_preparation_options(
+        self,
+        preparation_options: ConstantPreparationOptions,
+    ) -> None:
+        """Update policy only at a manager-owned runtime boundary."""
+
+        if not isinstance(preparation_options, ConstantPreparationOptions):
+            raise TypeError(
+                "preparation_options must be ConstantPreparationOptions"
+            )
+        self._preparation_options = preparation_options
+
+    def snapshot_runtime_state(self) -> PreparationControllerRuntimeState:
+        """Capture the live policy for transactional project rollback."""
+
+        return PreparationControllerRuntimeState(self._preparation_options)
+
+    def restore_runtime_state(
+        self,
+        state: PreparationControllerRuntimeState,
+    ) -> None:
+        """Restore a previously captured live policy snapshot."""
+
+        if not isinstance(state, PreparationControllerRuntimeState):
+            raise TypeError("state must be PreparationControllerRuntimeState")
+        self.configure_preparation_options(state.preparation_options)
+
+    # Keep the protocol discoverable to manager-owned rollback code.
+    snapshot_state = snapshot_runtime_state
+    restore_state = restore_runtime_state
+
+    def _proposal_identity(
+        self,
+        proposal: PendingTypeProposal,
+    ) -> PreparationProposalIdentity | None:
+        try:
+            function_ea = int(proposal.function_ea)
+            type_delta = proposal.type_delta
+            item_head = int(type_delta.item_ea)
+            before = type_delta.before
+            after = type_delta.after
+        except (AttributeError, TypeError, ValueError):
+            return None
+        item_end = getattr(proposal, "item_end", None)
+        if item_end is not None:
+            try:
+                item_end = int(item_end)
+            except (TypeError, ValueError):
+                item_end = None
+        return PreparationProposalIdentity(
+            database_identity=self._database_identity,
+            function_ea=function_ea,
+            item_head=item_head,
+            item_end=item_end,
+            before=before,
+            after=after,
+        )
+
+    @staticmethod
+    def _identity_sort_key(identity: PreparationProposalIdentity) -> tuple[object, ...]:
+        def snapshot_key(snapshot: SerializedTypeSnapshot) -> tuple[object, ...]:
+            return (
+                snapshot.present,
+                snapshot.type_bytes or b"",
+                snapshot.field_bytes or b"",
+                snapshot.field_comment_bytes or b"",
+            )
+
+        return (
+            identity.database_identity,
+            identity.function_ea,
+            identity.item_head,
+            -1 if identity.item_end is None else identity.item_end,
+            snapshot_key(identity.before),
+            snapshot_key(identity.after),
+        )
+
+    @classmethod
+    def _provider_failure(
+        cls,
+        provider: str,
+        error: BaseException,
+    ) -> PreparationProviderFailure:
+        return PreparationProviderFailure(
+            provider=provider,
+            error_type=type(error).__name__,
+            message=str(error),
+        )
+
+    def status_snapshot(self) -> PreparationStatusSnapshot:
+        """Return durable proposal/transaction truth without mutating state."""
+
+        unknown: list[PreparationProviderFailure] = []
+        try:
+            proposals = tuple(self._pending_type_proposals())
+        except Exception as error:
+            unknown.append(self._provider_failure("pending_type_proposals", error))
+            proposals = ()
+        pending = {
+            identity
+            for proposal in proposals
+            if (identity := self._proposal_identity(proposal)) is not None
+        }
+        applied: set[PreparationProposalIdentity] = set()
+        conflicting: set[PreparationProposalIdentity] = set()
+        restored: set[PreparationProposalIdentity] = set()
+        try:
+            records = self._prepared_records(self._database_identity)
+        except Exception as error:
+            unknown.append(self._provider_failure("prepared_records", error))
+            records = ()
+        for record in records:
+            try:
+                type_deltas = self._transaction_type_deltas(record.transaction_id)
+            except Exception as error:
+                unknown.append(
+                    self._provider_failure(
+                        f"transaction_type_deltas:{record.transaction_id.value}",
+                        error,
+                    )
+                )
+                continue
+            if not type_deltas:
+                continue
+            identities = {
+                PreparationProposalIdentity(
+                    database_identity=record.database_identity,
+                    function_ea=int(record.anchor_function_ea),
+                    item_head=int(delta.item_ea),
+                    item_end=None,
+                    before=delta.before,
+                    after=delta.after,
+                )
+                for delta in type_deltas
+            }
+            if record.state is PreparationState.RESTORED:
+                restored.update(identities)
+                continue
+            if record.state is PreparationState.IDB_PREPARED:
+                try:
+                    matches = bool(
+                        self._gateway.transaction_matches_after_image(
+                            record.transaction_id
+                        )
+                    )
+                except Exception as error:
+                    unknown.append(
+                        self._provider_failure(
+                            f"transaction_matches_after_image:{record.transaction_id.value}",
+                            error,
+                        )
+                    )
+                    # An unavailable live provider is not evidence of a
+                    # conflicting after-image.  Keep this identity fail-closed
+                    # in ``unknown`` rather than inventing a destructive
+                    # conflict classification.
+                    continue
+                (applied if matches else conflicting).update(identities)
+                continue
+            if record.state in {
+                PreparationState.PREPARED,
+                PreparationState.SCRIPT_RUNNING,
+                PreparationState.CAPTURE_PENDING,
+                PreparationState.CAPTURED,
+                PreparationState.ANALYSIS_PENDING,
+                PreparationState.ROLLING_BACK,
+            }:
+                pending.update(identities)
+                continue
+            if record.state in {
+                PreparationState.RESTORING,
+                PreparationState.RESTORE_FAILED,
+                PreparationState.RECOVERY_REQUIRED,
+                PreparationState.FAILED,
+                PreparationState.REJECTED,
+            }:
+                conflicting.update(identities)
+        return PreparationStatusSnapshot(
+            pending=tuple(sorted(pending, key=self._identity_sort_key)),
+            applied=tuple(sorted(applied, key=self._identity_sort_key)),
+            conflicting=tuple(sorted(conflicting, key=self._identity_sort_key)),
+            restored=tuple(sorted(restored, key=self._identity_sort_key)),
+            unknown=tuple(unknown),
+            pending_reason=("next preparation round" if pending else None),
+        )
+
+    # Short alias for manager/UI ports that call the value a status snapshot.
+    preparation_status = status_snapshot
 
     @staticmethod
     def _record_matches_script(
@@ -188,10 +484,11 @@ class PreHexPreparationController:
 
         # Whole-item constness is answerable from IDA function items, data
         # references, segment permissions, write xrefs, and live types.  Run
-        # that discovery before Hex-Rays so its exact proposals can be applied
-        # in this preparation round.  Microcode-only bounded-table proposals
-        # remain queued by the rule and are consumed by the next natural round.
-        self._discover_type_proposals(function_ea)
+        # that discovery before Hex-Rays only when the independent preparation
+        # stage is enabled.  Microcode-only bounded-table proposals remain
+        # queued by the observation subscriber for the next natural round.
+        if self._preparation_options.enabled:
+            self._discover_type_proposals(function_ea)
 
         records = self._prepared_records(self._database_identity)
         run_receipts: list[PreparationRunReceipt] = []
@@ -199,10 +496,14 @@ class PreHexPreparationController:
         session_id = DecompilationSessionId.new()
         sequence = 0
 
-        proposals = tuple(
-            proposal
-            for proposal in self._pending_type_proposals()
-            if int(proposal.function_ea) == function_ea
+        proposals = (
+            tuple(
+                proposal
+                for proposal in self._pending_type_proposals()
+                if int(proposal.function_ea) == function_ea
+            )
+            if self._preparation_options.enabled
+            else ()
         )
         if proposals:
             type_deltas = tuple(

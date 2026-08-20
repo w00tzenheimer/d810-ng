@@ -22,7 +22,7 @@ _RECEIPT_IDENTITY = re.compile(
 
 @pytest.mark.usefixtures("configure_hexrays")
 class TestNativeBoundTransitionRoutes:
-    """Prove both native-bound routes survive real Hex-Rays lowering."""
+    """Prove all native-bound routes survive real Hex-Rays lowering."""
 
     binary_name = os.environ.get("D810_TEST_BINARY", "libobfuscated_fixturetest.dll")
 
@@ -56,11 +56,11 @@ class TestNativeBoundTransitionRoutes:
         # The driver invokes this logger only after the backend reports a
         # committed graph and the route operation key is correlated exactly
         # once; the unit receipt tests cover those inventory gates.
-        assert len(receipt_messages) == 2, (
-            "expected exactly two native-bound receipt calls, got: "
+        assert len(receipt_messages) == 3, (
+            "expected exactly three native-bound receipt calls, got: "
             f"{receipt_messages}"
         )
-        assert len(set(receipt_messages)) == 2, (
+        assert len(set(receipt_messages)) == 3, (
             "duplicate native-bound receipt call: "
             f"{receipt_messages}"
         )
@@ -76,6 +76,7 @@ class TestNativeBoundTransitionRoutes:
             )
 
         assert identities == {
-            (0x16AA65E9, "condition_chain_interval_route"),
+            (0x16AA65E9, "interval_dispatcher_row"),
+            (0x1939CB36, "interval_dispatcher_row"),
             (0x079323F9, "state_dispatcher_map_exact_row"),
         }

@@ -1,3 +1,4 @@
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from d810.core.typing import Any
 
@@ -30,6 +31,10 @@ DEFAULT_INSTRUCTION_MATURITIES = [
     ida_hexrays.MMAT_LVARS,
 ]
 DEFAULT_FLOW_MATURITIES = [ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1]
+
+
+class MaturityContractError(ValueError):
+    """A live rule disagrees with its portable maturity contract."""
 
 
 class OptimizationRule:
@@ -85,6 +90,14 @@ class OptimizationRule:
             ]
 
     @property
+    def default_maturities(self) -> tuple[int, ...]:
+        """Return the implementation's declared defaults, before overrides."""
+
+        if self._default_maturities is not None:
+            return self._default_maturities
+        return tuple(self.maturities)
+
+    @property
     def name(self):
         if self.NAME is not None:
             return self.NAME
@@ -95,3 +108,82 @@ class OptimizationRule:
         if self.DESCRIPTION is not None:
             return self.DESCRIPTION
         return "No description available"
+
+
+def _format_maturity_values(values: Collection[object]) -> str:
+    return "[" + ", ".join(repr(value) for value in sorted(values, key=repr)) + "]"
+
+
+def validate_rule_maturity_contract(
+    rule: object,
+    *,
+    pass_id: str,
+    stage_id: str,
+    expected_supported: Collection[int],
+    expected_effective: Collection[int],
+) -> None:
+    """Assert that a configured live rule matches a compiled stage contract.
+
+    The expected values are supplied by the portable compiler.  This helper
+    never derives them from the live rule; it only compares the live default
+    and configured values against that authority.
+    """
+
+    implementation_name = str(
+        getattr(rule, "name", rule.__class__.__name__)
+    )
+    expected_supported_set = set(expected_supported)
+    expected_effective_set = set(expected_effective)
+    default_values = getattr(rule, "default_maturities", None)
+    if default_values is None:
+        default_values = getattr(rule, "_default_maturities", None)
+    if default_values is None:
+        default_values = getattr(rule, "maturities", ())
+    default_set = set(default_values)
+    if default_set != expected_supported_set:
+        raise MaturityContractError(
+            f"{pass_id} stage {stage_id} implementation {implementation_name} "
+            "default maturity support drift: expected "
+            f"{_format_maturity_values(expected_supported_set)}, got "
+            f"{_format_maturity_values(default_set)}"
+        )
+
+    configured_set = set(getattr(rule, "maturities", ()))
+    if configured_set != expected_effective_set:
+        raise MaturityContractError(
+            f"{pass_id} stage {stage_id} implementation {implementation_name} "
+            "reported an effective maturity set different from the compiled "
+            f"schedule: expected {_format_maturity_values(expected_effective_set)}, "
+            f"got {_format_maturity_values(configured_set)}"
+        )
+
+
+def configure_rule_with_maturity_contract(
+    rule: object,
+    config: Mapping[str, object],
+    *,
+    pass_id: str,
+    stage_id: str,
+    expected_supported: Collection[int],
+    expected_effective: Collection[int],
+) -> None:
+    """Configure one live rule and fail closed if it rejects its schedule."""
+
+    implementation_name = str(
+        getattr(rule, "name", rule.__class__.__name__)
+    )
+    try:
+        rule.configure(config)
+    except Exception as exc:  # noqa: BLE001 - contract boundary must be precise
+        raise MaturityContractError(
+            f"{pass_id} stage {stage_id} implementation {implementation_name} "
+            "cannot accept the compiled maturity set "
+            f"{_format_maturity_values(expected_effective)}: {exc}"
+        ) from exc
+    validate_rule_maturity_contract(
+        rule,
+        pass_id=pass_id,
+        stage_id=stage_id,
+        expected_supported=expected_supported,
+        expected_effective=expected_effective,
+    )

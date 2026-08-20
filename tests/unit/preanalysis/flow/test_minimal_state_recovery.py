@@ -33,6 +33,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     recover_state_write_transitions_via_partitioned_fixpoint,
     resolve_materialized_indirect_transfer_targets,
     resolve_materialized_handler_exit_states,
+    transition_uses_terminal_stack_alias_guard,
     transitions_use_terminal_stack_alias_guard,
 )
 from d810.analyses.control_flow.semantic_transition import (
@@ -1779,6 +1780,46 @@ def test_partitioned_fixpoint_skips_entry_unreachable_dispatcher_predecessors(
     assert seeded_requests == []
 
 
+def test_partitioned_fixpoint_can_include_table_proven_unreachable_predecessors(
+    _seam,
+) -> None:
+    """Indirect tables carry reachability that is absent from the microcode CFG."""
+    fg = FlowGraph(
+        blocks={
+            0: _blk(0, (10,), (), ()),
+            2: _blk(2, (20,), (10, 12), ()),
+            10: _blk(
+                10,
+                (2,),
+                (0,),
+                (_mov(0x1010, _num(0x20), _stk(_STATE_OFF)),),
+            ),
+            12: _blk(
+                12,
+                (2,),
+                (13,),
+                (_mov(0x1020, _num(0x30), _stk(_STATE_OFF)),),
+            ),
+            13: _blk(13, (12,), (), ()),
+            20: _stop(20, (2,)),
+            30: _stop(30, (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    recovered = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        _dispatcher({0x20: 20, 0x30: 30}, exit_block=99),
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+        include_entry_unreachable_back_edges=True,
+    )
+
+    assert [edge.write_block for edge in recovered] == [10, 12]
+    assert [edge.target_handler for edge in recovered] == [20, 30]
+
+
 def test_partitioned_fixpoint_keeps_reachable_unresolved_dispatcher_predecessors(
     _seam, monkeypatch
 ) -> None:
@@ -2006,6 +2047,56 @@ def test_partitioned_fixpoint_splits_predecessor_sensitive_stack_alias_store(
         == "predecessor_state_store_through_stack_address_alias_terminal_guard"
     )
     assert transitions_use_terminal_stack_alias_guard(edges) is True
+
+    # The guarded alias block is semantic control that owns source7's edge;
+    # it is not an internal dispatcher entry merely because its branch also
+    # mentions the state cell.  Reconciliation must preserve that typed proof
+    # and route its concrete state from the real dispatcher root.
+    terminal = fg.get_block(20)
+    assert terminal is not None
+    routed_graph = FlowGraph(
+        {
+            **fg.blocks,
+            20: replace(terminal, preds=(2, 8)),
+        },
+        fg.entry_serial,
+        fg.func_ea,
+    )
+    route_dag = DecisionDag(
+        32,
+        {
+            2: RouteComparison(2, "jz", terminal_state, 20, 4),
+            8: RouteComparison(8, "jnz", terminal_state, 2, 20),
+        },
+        root=2,
+    )
+    sibling = StateWriteTransition(
+        7,
+        0xD21C9415,
+        4,
+        False,
+        None,
+        via_block=8,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "multi_entry_global_fold",
+            True,
+            route_source_kinds=("interval",),
+        ),
+    )
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (sibling, edge),
+        routed_graph,
+        _dispatcher({0xD21C9415: 4, terminal_state: 20}, exit_block=4),
+        (),
+        condition_chain_dag=route_dag,
+        condition_chain_handlers=frozenset({4, 20}),
+        state_var_stkoff=_STATE_OFF,
+    )
+    assert resolved.target_handler == 20
+    assert resolved.proof is not None
+    assert resolved.proof.trusted is True
+    assert transition_uses_terminal_stack_alias_guard(resolved) is True
 
 
 def test_shared_suffix_folds_per_handler(_seam) -> None:
@@ -3955,6 +4046,87 @@ def _coarse_transition(source: int, state: int, target: int) -> StateWriteTransi
     )
 
 
+def test_degenerate_empty_decision_dag_does_not_veto_table_route_authority() -> None:
+    """A table dispatcher is not a comparison DAG with a one-node self route."""
+    graph = FlowGraph(
+        {
+            1: _blk(1, (2,), (), (), ea=0x180001670),
+            2: _blk(2, (2,), (1, 2), (), ea=0x180001688),
+            20: _blk(20, (), (), (), ea=0x180001700),
+        },
+        entry_serial=1,
+        func_ea=0x180001670,
+    )
+    transition = StateWriteTransition(
+        1,
+        0,
+        20,
+        False,
+        None,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "global_fold",
+            True,
+            route_source_kinds=("switch_table",),
+        ),
+    )
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({0: 20}, exit_block=99),
+        (),
+        condition_chain_dag=DecisionDag(32, {}, root=2),
+        condition_chain_handlers=frozenset({20}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert resolved == (transition,)
+
+
+def test_decision_dag_reconciliation_preserves_exact_terminal_without_state() -> None:
+    graph = FlowGraph(
+        {
+            2: _blk(2, (20, 30), (), (), ea=0x180001A90),
+            5: _blk(5, (99,), (), (), ea=0x180001AB9),
+            20: _blk(20, (), (2,), (), ea=0x180001B20),
+            30: _blk(30, (), (2,), (), ea=0x180001B30),
+            99: _stop(99, (5,)),
+        },
+        entry_serial=2,
+        func_ea=0x180001A80,
+    )
+    dag = DecisionDag(
+        32,
+        {2: RouteComparison(2, "jz", 0xF6A1E, 20, 30)},
+        root=2,
+    )
+    transition = StateWriteTransition(
+        5,
+        None,
+        None,
+        True,
+        None,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "terminal",
+            True,
+        ),
+    )
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({20, 30}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert resolved == (transition,)
+
+
 def test_nonreturn_coarse_target_is_reconciled_to_exact_state_route() -> None:
     graph, dag = _typed_state_route_reconciliation_fixture()
     transition = _coarse_transition(16, 0x079323F9, 13)
@@ -4194,6 +4366,130 @@ def test_missing_transition_state_is_recovered_from_exact_source_carrier(
     assert resolved.proof.route_source_kinds == ("decision_dag", "source_carrier")
 
 
+def test_missing_transition_state_is_recovered_from_exact_stack_carrier() -> None:
+    """A pure local stack alias is an exact carrier, not the state cell itself."""
+
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    carrier = _stk(_STATE_OFF + 0x100)
+    feeder = graph.get_block(3)
+    source = graph.get_block(15)
+    assert feeder is not None and source is not None
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            3: replace(
+                feeder,
+                insn_snapshots=(
+                    _mov(0x1300, carrier, _stk(_STATE_OFF)),
+                ),
+            ),
+            15: replace(
+                source,
+                insn_snapshots=(
+                    _mov(0x1F00, _num(0x6CF816C1), carrier),
+                    source.insn_snapshots[1],
+                ),
+            ),
+        },
+        graph.entry_serial,
+        graph.func_ea,
+    )
+
+    (resolved,) = _resolve_carrier_transition(
+        graph,
+        dag,
+        _unresolved_carrier_transition(15),
+    )
+
+    assert resolved.next_state == 0x6CF816C1
+    assert resolved.target_handler == 10
+    assert resolved.proof is not None
+    assert resolved.proof.route_source_kinds == ("decision_dag", "source_carrier")
+
+
+def test_stack_carrier_enters_reciprocal_decision_dag_alias() -> None:
+    """OLLVM carriers may enter a pure alias before the comparison root."""
+
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    carrier = _stk(_STATE_OFF + 0x100)
+    feeder = graph.get_block(3)
+    source = graph.get_block(15)
+    root = graph.get_block(4)
+    assert feeder is not None and source is not None and root is not None
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            3: replace(
+                feeder,
+                succs=(17,),
+                insn_snapshots=(
+                    _mov(0x1300, carrier, _stk(_STATE_OFF)),
+                ),
+            ),
+            4: replace(root, preds=(17,)),
+            15: replace(
+                source,
+                insn_snapshots=(
+                    _mov(0x1F00, _num(0x6CF816C1), carrier),
+                    source.insn_snapshots[1],
+                ),
+            ),
+            17: _blk(17, (4,), (3,), (), ea=0x180011840),
+        },
+        graph.entry_serial,
+        graph.func_ea,
+    )
+    dag = DecisionDag(32, dag.nodes, root=dag.root, aliases={17: 4})
+
+    (resolved,) = _resolve_carrier_transition(
+        graph,
+        dag,
+        _unresolved_carrier_transition(15),
+    )
+
+    assert resolved.next_state == 0x6CF816C1
+    assert resolved.target_handler == 10
+    assert resolved.via_block == 3
+    assert resolved.proof is not None
+    assert resolved.proof.route_source_kinds == ("decision_dag", "source_carrier")
+
+
+def test_state_cell_cannot_alias_itself_as_a_source_carrier() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    feeder = graph.get_block(3)
+    source = graph.get_block(15)
+    assert feeder is not None and source is not None
+    graph = FlowGraph(
+        {
+            **graph.blocks,
+            3: replace(
+                feeder,
+                insn_snapshots=(
+                    _mov(0x1300, _stk(_STATE_OFF), _stk(_STATE_OFF)),
+                ),
+            ),
+            15: replace(
+                source,
+                insn_snapshots=(
+                    _mov(0x1F00, _num(0x6CF816C1), _stk(_STATE_OFF)),
+                    source.insn_snapshots[1],
+                ),
+            ),
+        },
+        graph.entry_serial,
+        graph.func_ea,
+    )
+
+    assert (
+        _resolve_carrier_transition(
+            graph,
+            dag,
+            _unresolved_carrier_transition(15),
+        )
+        == ()
+    )
+
+
 def _unresolved_carrier_transition(source: int = 15) -> StateWriteTransition:
     return StateWriteTransition(
         source,
@@ -4354,6 +4650,39 @@ def test_source_carrier_allows_effect_before_final_overwrite() -> None:
     assert resolved.target_handler == 10
 
 
+def test_source_carrier_uses_final_exact_overwrite_after_earlier_definitions() -> None:
+    """Earlier carrier values are dead once the outgoing value is exact."""
+
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    source = graph.get_block(15)
+    assert source is not None
+    graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            15: replace(
+                source,
+                insn_snapshots=(
+                    _mov(0x1EFE, _num(0xDEADBEEF), _reg(8)),
+                    *source.insn_snapshots,
+                ),
+            ),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+    (resolved,) = _resolve_carrier_transition(
+        graph,
+        dag,
+        _unresolved_carrier_transition(15),
+    )
+
+    assert resolved.next_state == 0x6CF816C1
+    assert resolved.target_handler == 10
+    assert resolved.proof is not None
+    assert resolved.proof.route_source_kinds == ("decision_dag", "source_carrier")
+
+
 def test_direct_state_write_through_goto_bridge_is_not_a_carrier_candidate() -> None:
     graph, dag = _typed_state_route_reconciliation_fixture()
     source = graph.get_block(16)
@@ -4394,6 +4723,104 @@ def test_direct_state_write_through_goto_bridge_is_not_a_carrier_candidate() -> 
     )
 
     assert resolved.target_handler == 15
+
+
+def test_state_writing_feeder_without_source_carrier_uses_recovered_route() -> None:
+    """A state-writing feeder alone is not an exact source-carrier corridor."""
+
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    source = graph.get_block(16)
+    feeder = graph.get_block(3)
+    assert source is not None and feeder is not None
+    goto_feeder = InsnSnapshot(
+        opcode=55,
+        ea=0x2000,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+        kind=InsnKind.GOTO,
+    )
+    graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            16: replace(source, insn_snapshots=(goto_feeder,)),
+            3: replace(
+                feeder,
+                insn_snapshots=(
+                    _mov(0x1300, _num(0x079323F9), _stk(_STATE_OFF)),
+                ),
+            ),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+    transition = _coarse_transition(16, 0x079323F9, 13)
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert resolved.target_handler == 15
+    assert resolved.proof is not None
+    assert resolved.proof.kind == "decision_dag_reconciled"
+
+
+def test_trusted_route_with_nonexact_transform_feeder_rejects_atomically() -> None:
+    """A trusted route hint cannot replace exact transform authority."""
+
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    source = graph.get_block(16)
+    feeder = graph.get_block(3)
+    assert source is not None and feeder is not None
+    graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            16: replace(
+                source,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=55,
+                        ea=0x2000,
+                        operands=(),
+                        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+                        kind=InsnKind.GOTO,
+                    ),
+                ),
+            ),
+            3: replace(
+                feeder,
+                insn_snapshots=(
+                    _xor(0x1300, _reg(8), _reg(24), _stk(_STATE_OFF)),
+                ),
+            ),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+    transition = replace(
+        _coarse_transition(16, 0x079323F9, 15),
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "predecessor_partitioned",
+            True,
+            route_source_kinds=("interval",),
+        ),
+    )
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    ) == ()
 
 
 @pytest.mark.parametrize(
@@ -5371,6 +5798,367 @@ def test_captured_nested_u32_state_transform_reconciles_from_existing_evaluator(
     assert "state_transform_feeder" in resolved[0].proof.route_source_kinds
 
 
+def test_state_transform_replays_pure_source_prefix_before_feeder(_seam) -> None:
+    """A source-local pure prefix and feeder suffix form one exact program."""
+
+    source_ea = 0x18001E4D1
+    feeder_ea = 0x18002A97B
+    source_program = (
+        InsnSnapshot(
+            opcode=0x41,
+            ea=source_ea,
+            operands=(),
+            kind=InsnKind.CALL,
+            call_kind=CallKind.DIRECT,
+        ),
+        _mov(source_ea + 4, _num(0x1FB8DFB0), _reg(8)),
+        _mov(source_ea + 8, _num(0x9D801B98), _reg(16)),
+        _mov(source_ea + 0xC, _num(0x9BE72683), _reg(24)),
+        _mov(source_ea + 0x10, _num(0x38E1B931), _reg(72)),
+        _xor(source_ea + 0x14, _reg(8), _reg(72), _reg(80)),
+        _add(source_ea + 0x18, _reg(16), _reg(80), _reg(88)),
+        _goto(source_ea + 0x1C, 446),
+    )
+    feeder_program = (
+        _sub(feeder_ea + 9, _reg(88), _reg(24), _stk(_STATE_OFF)),
+        _goto(feeder_ea + 0x10, 4),
+    )
+    graph, dag, transition, dispatcher = _captured_nested_state_transform_fixture(
+        source_insns=source_program,
+        feeder_insns=feeder_program,
+    )
+
+    receipt = minimal_state_recovery.prove_exact_u32_state_transform_feeder(
+        graph,
+        285,
+        446,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({4, *dag.nodes}),
+        expected_state=0x28F25B96,
+    )
+    resolved = _resolve_arithmetic_state_feeder(
+        graph,
+        dag,
+        transition,
+        dispatcher,
+    )
+
+    assert receipt is not None
+    assert tuple(instruction.operation for instruction in receipt.program) == (
+        ValueOpKind.XOR,
+        ValueOpKind.ADD,
+        ValueOpKind.SUB,
+    )
+    assert len(resolved) == 1
+    assert resolved[0].target_handler == 118
+    assert resolved[0].proof is not None
+    assert "state_transform_feeder" in resolved[0].proof.route_source_kinds
+
+
+@pytest.mark.parametrize(
+    "variant",
+    ("effect", "selected-alias", "duplicate-result", "source-budget"),
+)
+def test_state_transform_source_prefix_remains_exact_and_bounded(
+    _seam,
+    variant: str,
+) -> None:
+    source_ea = 0x18001E4D1
+    feeder_ea = 0x18002A97B
+    prefix = [
+        _mov(source_ea, _num(0x1FB8DFB0), _reg(8)),
+        _mov(source_ea + 4, _num(0x9D801B98), _reg(16)),
+        _mov(source_ea + 8, _num(0x9BE72683), _reg(24)),
+        _mov(source_ea + 0xC, _num(0x38E1B931), _reg(72)),
+        _xor(source_ea + 0x10, _reg(8), _reg(72), _reg(80)),
+        _add(source_ea + 0x14, _reg(16), _reg(80), _reg(88)),
+    ]
+    feeder_left = _reg(88)
+    if variant == "effect":
+        prefix.append(_store(source_ea + 0x18, _num(1), _global(0x18004C000)))
+    elif variant == "selected-alias":
+        prefix.append(
+            _mov(
+                source_ea + 0x18,
+                replace(_num(1), size=8),
+                replace(_reg(8), size=8),
+            )
+        )
+    elif variant == "duplicate-result":
+        prefix.insert(5, _mov(source_ea + 0x13, _num(1), _reg(80)))
+    elif variant == "source-budget":
+        last = _reg(88)
+        for index in range(13):
+            output = _reg(96 + index * 8)
+            prefix.append(_xor(source_ea + 0x18 + index, last, _reg(8), output))
+            last = output
+        feeder_left = last
+    prefix.append(_goto(source_ea + 0x40, 446))
+    feeder_program = (
+        _sub(feeder_ea + 9, feeder_left, _reg(24), _stk(_STATE_OFF)),
+        _goto(feeder_ea + 0x10, 4),
+    )
+    graph, dag, _, _ = _captured_nested_state_transform_fixture(
+        source_insns=tuple(prefix),
+        feeder_insns=feeder_program,
+    )
+
+    assert minimal_state_recovery.prove_exact_u32_state_transform_feeder(
+        graph,
+        285,
+        446,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({4, *dag.nodes}),
+        expected_state=0x28F25B96,
+    ) is None
+
+
+def test_xdu_widened_u32_state_transform_reuses_low_register_result(_seam) -> None:
+    """C06's XDU shell widens a proven U32 expression before the state move."""
+
+    source_serial = 45
+    feeder_serial = 123
+    state_feeder_serial = 3
+    state = 0x764595C6
+    source_ea = 0x18004F85F
+    feeder_ea = 0x180050F3E
+    xdu = InsnSnapshot(
+        opcode=2,
+        ea=feeder_ea,
+        operands=(),
+        kind=InsnKind.XDU,
+        l=_nested_value(
+            ValueOpKind.XOR,
+            _reg(8),
+            _nested_value(ValueOpKind.SUB, _reg(16), _reg(24)),
+        ),
+        d=replace(_reg(16), size=8),
+    )
+    graph = FlowGraph(
+        {
+            source_serial: _blk(
+                source_serial,
+                (feeder_serial,),
+                (),
+                (
+                    _mov(source_ea, _num(0x7E174EE2), _reg(8)),
+                    _mov(source_ea + 4, _num(0xF1E462F4), _reg(24)),
+                    _mov(source_ea + 8, _num(0xFA373E18), _reg(16)),
+                    _goto(source_ea + 12, feeder_serial),
+                ),
+                ea=source_ea,
+            ),
+            feeder_serial: _blk(
+                feeder_serial,
+                (state_feeder_serial,),
+                (source_serial,),
+                (xdu, _goto(feeder_ea + 2, state_feeder_serial)),
+                ea=feeder_ea,
+            ),
+            state_feeder_serial: _blk(
+                state_feeder_serial,
+                (4,),
+                (feeder_serial,),
+                (_mov(0x18004F2D8, _reg(16), _stk(_STATE_OFF)),),
+                ea=0x18004F2D8,
+            ),
+            4: _blk(
+                4,
+                (100, 101),
+                (state_feeder_serial,),
+                (_jz_stack_const(0x18004F2E4, _STATE_OFF, state, 100),),
+                ea=0x18004F2DC,
+            ),
+            100: _blk(100, (), (4,), (), ea=0x180051200),
+            101: _blk(101, (), (4,), (), ea=0x180051300),
+        },
+        source_serial,
+        0x18004F180,
+    )
+
+    receipt = state_carrier.prove_exact_u32_state_transform_feeder(
+        graph,
+        source_serial,
+        feeder_serial,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({4}),
+        expected_state=state,
+    )
+
+    assert receipt is not None
+    assert receipt.state == state
+    assert tuple(instruction.operation for instruction in receipt.program) == (
+        ValueOpKind.SUB,
+        ValueOpKind.XOR,
+        ValueOpKind.ZEXT,
+        ValueOpKind.MOVE,
+    )
+
+    inline_blocks = dict(graph.blocks)
+    inline_blocks.pop(state_feeder_serial)
+    inline_blocks[feeder_serial] = replace(
+        inline_blocks[feeder_serial],
+        succs=(4,),
+        insn_snapshots=(
+            xdu,
+            _mov(feeder_ea + 1, _reg(16), _stk(_STATE_OFF)),
+            _goto(feeder_ea + 2, 4),
+        ),
+    )
+    inline_blocks[4] = replace(inline_blocks[4], preds=(feeder_serial,))
+    inline_graph = FlowGraph(inline_blocks, source_serial, graph.func_ea)
+
+    inline_receipt = state_carrier.prove_exact_u32_state_transform_feeder(
+        inline_graph,
+        source_serial,
+        feeder_serial,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({4}),
+        expected_state=state,
+    )
+
+    assert inline_receipt is not None
+    assert inline_receipt.state == state
+    assert tuple(instruction.operation for instruction in inline_receipt.program) == (
+        ValueOpKind.SUB,
+        ValueOpKind.XOR,
+        ValueOpKind.ZEXT,
+        ValueOpKind.MOVE,
+    )
+
+
+def test_state_transform_reads_low_u32_from_exact_wide_register_definition(
+    _seam,
+) -> None:
+    """C06 may render an exact RDX constant while the feeder reads EDX."""
+
+    source_ea = 0x18005287F
+    feeder_ea = 0x180053E66
+    wide_value = 0x12345678E26A5418
+    right = 0x9753BFD5
+    state = (wide_value ^ right) & 0xFFFFFFFF
+    graph, dag, _, _ = _captured_nested_state_transform_fixture(
+        source_insns=(
+            _mov(
+                source_ea,
+                replace(_num(wide_value), size=8),
+                replace(_reg(16), size=8),
+            ),
+            _mov(source_ea + 8, _num(right), _reg(24)),
+            _goto(source_ea + 12, 446),
+        ),
+        feeder_insns=(
+            _xor(feeder_ea, _reg(16), _reg(24), _stk(_STATE_OFF)),
+            _goto(feeder_ea + 4, 4),
+        ),
+        state=state,
+    )
+
+    receipt = state_carrier.prove_exact_u32_state_transform_feeder(
+        graph,
+        285,
+        446,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({4, *dag.nodes}),
+        expected_state=state,
+    )
+
+    assert receipt is not None
+    assert receipt.state == state
+    assert dict(receipt.source_bindings)[Varnode(Space.REGISTER, 16, 4)] == (
+        wide_value & 0xFFFFFFFF
+    )
+
+
+def test_state_transform_reuses_external_register_before_overwriting_it(_seam) -> None:
+    """C06 reads source-owned EDX, then writes the final expression to EDX."""
+
+    source_serial = 45
+    feeder_serial = 123
+    state_feeder_serial = 3
+    state = 0x764595C6
+    source_ea = 0x180052ACF
+    feeder_ea = 0x1800541AE
+    graph = FlowGraph(
+        {
+            source_serial: _blk(
+                source_serial,
+                (feeder_serial,),
+                (),
+                (
+                    _mov(source_ea, _num(0x3EDE27C9), _stk(_STATE_OFF)),
+                    _mov(source_ea + 0x23, _num(0x7E174EE2), _reg(8)),
+                    _mov(source_ea + 0x3F, _num(0xF1E462F4), _reg(24)),
+                    _mov(
+                        source_ea + 0x43,
+                        replace(_num(0x9289DCA5), size=8),
+                        replace(_reg(16), size=8),
+                    ),
+                    _mov(source_ea + 0x45, _num(0xFA373E18), _reg(16)),
+                    _goto(source_ea + 0x4A, feeder_serial),
+                ),
+                ea=source_ea,
+            ),
+            feeder_serial: _blk(
+                feeder_serial,
+                (state_feeder_serial,),
+                (source_serial,),
+                (
+                    _xor(
+                        feeder_ea,
+                        _reg(8),
+                        _nested_sub(_reg(16), _reg(24)),
+                        _reg(16),
+                    ),
+                    _goto(feeder_ea + 2, state_feeder_serial),
+                ),
+                ea=feeder_ea,
+            ),
+            state_feeder_serial: _blk(
+                state_feeder_serial,
+                (4,),
+                (feeder_serial,),
+                (_mov(0x1800526C8, _reg(16), _stk(_STATE_OFF)),),
+                ea=0x1800526C8,
+            ),
+            4: _blk(
+                4,
+                (100, 101),
+                (state_feeder_serial,),
+                (_jz_stack_const(0x1800526D4, _STATE_OFF, state, 100),),
+                ea=0x1800526CC,
+            ),
+            100: _blk(100, (), (4,), (), ea=0x180055200),
+            101: _blk(101, (), (4,), (), ea=0x180055300),
+        },
+        source_serial,
+        0x180052500,
+    )
+
+    receipt = state_carrier.prove_exact_u32_state_transform_feeder(
+        graph,
+        source_serial,
+        feeder_serial,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({4}),
+        expected_state=state,
+    )
+
+    assert receipt is not None
+    assert receipt.state == state
+    assert tuple(instruction.operation for instruction in receipt.program) == (
+        ValueOpKind.SUB,
+        ValueOpKind.XOR,
+        ValueOpKind.MOVE,
+    )
+
+
 def test_nested_state_transform_isolates_temp_and_register_namespaces(
     _seam,
 ) -> None:
@@ -5736,6 +6524,174 @@ def test_direct_internal_route_forest_accepts_different_identity_semantic_leaf(
 
     assert len(resolved) == 1
     assert resolved[0].target_handler == 68
+    assert resolved[0].proof is not None
+    assert "internal_decision_dag_entry" in resolved[0].proof.route_source_kinds
+
+
+def test_direct_internal_route_forest_accepts_pure_xdu_prefix_before_comparison(
+    _seam,
+) -> None:
+    """Live blk24 shape: pure XDU work precedes the state comparison tail."""
+
+    graph, dag, transition, dispatcher = _captured_direct_internal_dag_entry_fixture()
+    state = int(transition.next_state)
+    internal_serial = int(transition.via_block)
+    prefixed_serial = 69
+    physical_target = 68
+    root_target = 390
+    stop = 500
+    prefix = InsnSnapshot(
+        opcode=2,
+        ea=0x1800163B0,
+        operands=(),
+        kind=InsnKind.XDU,
+        l=_nested_value(ValueOpKind.ADD, _stk(_STATE_OFF), _num(0x4008534B)),
+        d=replace(_reg(8), size=8),
+    )
+    blocks = dict(graph.blocks)
+    blocks[internal_serial] = _blk(
+        internal_serial,
+        (prefixed_serial, root_target),
+        blocks[internal_serial].preds,
+        (
+            _jz_stack_const(
+                0x1800163A0,
+                _STATE_OFF,
+                state,
+                prefixed_serial,
+            ),
+        ),
+        ea=0x18001639B,
+    )
+    blocks[prefixed_serial] = _blk(
+        prefixed_serial,
+        (physical_target, stop),
+        (internal_serial,),
+        (
+            prefix,
+            _jz_stack_const(
+                0x1800163BC,
+                _STATE_OFF,
+                state,
+                physical_target,
+            ),
+        ),
+        ea=0x1800163B0,
+    )
+    blocks[physical_target] = replace(
+        blocks[physical_target],
+        preds=(prefixed_serial,),
+    )
+    blocks[root_target] = replace(
+        blocks[root_target],
+        preds=(5, internal_serial),
+    )
+    blocks[stop] = replace(
+        blocks[stop],
+        preds=(*blocks[stop].preds, prefixed_serial),
+        start_ea=0xFFFFFFFFFFFFFFFF,
+    )
+    graph = replace(graph, blocks=blocks)
+    dag = DecisionDag(
+        32,
+        {
+            **dag.nodes,
+            internal_serial: RouteComparison(
+                internal_serial,
+                "jz",
+                state,
+                prefixed_serial,
+                root_target,
+            ),
+            prefixed_serial: RouteComparison(
+                prefixed_serial,
+                "jz",
+                state,
+                physical_target,
+                stop,
+            ),
+        },
+        root=dag.root,
+        aliases=dag.aliases,
+    )
+
+    resolved = _resolve_arithmetic_state_feeder(
+        graph,
+        dag,
+        transition,
+        dispatcher,
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].target_handler == physical_target
+    assert resolved[0].proof is not None
+    assert "internal_decision_dag_entry" in resolved[0].proof.route_source_kinds
+
+
+def test_direct_internal_route_forest_preserves_reciprocal_alias_to_handler(
+    _seam,
+) -> None:
+    """A current pure GOTO alias is part of the physical route authority."""
+
+    graph, dag, transition, dispatcher = _captured_direct_internal_dag_entry_fixture()
+    state = int(transition.next_state)
+    internal_serial = int(transition.via_block)
+    alias_serial = 69
+    physical_target = 68
+    root_target = 390
+    blocks = dict(graph.blocks)
+    blocks[internal_serial] = _blk(
+        internal_serial,
+        (alias_serial, root_target),
+        blocks[internal_serial].preds,
+        (
+            _jz_stack_const(
+                0x1800163A0,
+                _STATE_OFF,
+                state,
+                alias_serial,
+            ),
+        ),
+        ea=0x18001639B,
+    )
+    blocks[alias_serial] = _blk(
+        alias_serial,
+        (physical_target,),
+        (internal_serial,),
+        (_goto(0x1800163B0, physical_target),),
+        ea=0x1800163B0,
+    )
+    blocks[physical_target] = replace(blocks[physical_target], preds=(alias_serial,))
+    blocks[root_target] = replace(
+        blocks[root_target],
+        preds=(5, internal_serial),
+    )
+    graph = replace(graph, blocks=blocks)
+    dag = DecisionDag(
+        32,
+        {
+            **dag.nodes,
+            internal_serial: RouteComparison(
+                internal_serial,
+                "jz",
+                state,
+                alias_serial,
+                root_target,
+            ),
+        },
+        root=dag.root,
+        aliases={alias_serial: physical_target},
+    )
+
+    resolved = _resolve_arithmetic_state_feeder(
+        graph,
+        dag,
+        transition,
+        dispatcher,
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].target_handler == physical_target
     assert resolved[0].proof is not None
     assert "internal_decision_dag_entry" in resolved[0].proof.route_source_kinds
 
@@ -6225,7 +7181,7 @@ def test_captured_nested_u32_state_transform_rejects_non_exact_programs(
             source,
             insn_snapshots=(
                 *source.insn_snapshots[:-1],
-                _mov(source.start_ea + 0x28, _num(0x1FB8DFB0), _reg(8)),
+                _mov(source.start_ea + 0x28, _num(0x1FB8DFB1), _reg(8)),
                 source.insn_snapshots[-1],
             ),
         )
@@ -6475,6 +7431,31 @@ def test_trusted_arithmetic_state_feeder_reconciles_without_const_carrier_proof(
     assert resolved[0].target_handler == 100
     assert resolved[0].proof is not None and resolved[0].proof.trusted
     assert "state_transform_feeder" in resolved[0].proof.route_source_kinds
+
+
+def test_exact_transform_accepts_trusted_partial_predecessor_partition() -> None:
+    graph, dag, transition, dispatcher = _arithmetic_state_feeder_fixture()
+    transition = replace(
+        transition,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "partial_predecessor_partitioned",
+            True,
+            route_source_kinds=("interval",),
+        ),
+    )
+
+    (resolved,) = _resolve_arithmetic_state_feeder(
+        graph,
+        dag,
+        transition,
+        dispatcher,
+    )
+
+    assert resolved.next_state == transition.next_state
+    assert resolved.target_handler == transition.target_handler
+    assert resolved.proof is not None
+    assert "state_transform_feeder" in resolved.proof.route_source_kinds
 
 
 @pytest.mark.parametrize(
@@ -7667,6 +8648,21 @@ def _candidate_prefix_partitioned_dispatcher() -> object:
         },
         exit_block=200,
     )
+
+
+def test_empty_switch_table_dag_is_not_candidate_prefix_authority(_seam) -> None:
+    """A switch-table root is not an OLLVM comparison-prefix candidate."""
+
+    graph, dag = _candidate_prefix_partitioned_feeder_fixture()
+    observation = minimal_state_recovery.observe_candidate_scoped_prefix_authority(
+        graph,
+        DecisionDag(dag.width, {}, root=dag.root),
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert observation.status is minimal_state_recovery.CandidatePrefixStatus.NOT_APPLICABLE
+    assert observation.authority is None
 
 
 def _candidate_prefix_partitioned_transitions() -> tuple[StateWriteTransition, ...]:

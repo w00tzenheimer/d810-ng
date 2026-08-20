@@ -11,11 +11,10 @@ from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.peephole.modular_product_nonzero import (
     ModularProductNonzeroMatch,
+    certifies_modular_product_nonzero,
     recover_modular_product_nonzero,
-    z3_proves_modular_product_nonzero,
 )
 from d810.optimizers.microcode.instructions.peephole.predicate_root_recovery import (
-    Binary,
     Constant,
     Predicate,
 )
@@ -25,8 +24,12 @@ from d810.optimizers.microcode.instructions.peephole.predicate_root_recovery_nat
 )
 
 
-_UINT32 = ida_typeinf.tinfo_t()
-_UINT32.create_simple_type(ida_typeinf.BTF_UINT32)
+def _uint32_type() -> ida_typeinf.tinfo_t:
+    """Create type information owned by the currently open IDB lifetime."""
+
+    result = ida_typeinf.tinfo_t()
+    result.create_simple_type(ida_typeinf.BTF_UINT32)
+    return result
 
 
 def _width(mop: ida_hexrays.mop_t | None) -> int:
@@ -76,12 +79,15 @@ def make_ctz_helper_call(
     if block is None or _width(value) != 32 or _width(output) != 32:
         return None
     try:
+        uint32_type = _uint32_type()
         argument = ida_hexrays.mcallarg_t()
         argument.copy_mop(dup_mop(value))
-        argument.type = _UINT32
+        argument.type = uint32_type
         arguments = ida_hexrays.mcallargs_t()
         arguments.push_back(argument)
-        return block.mba.create_helper_call(ea, "__ctz", _UINT32, arguments, dup_mop(output))
+        return block.mba.create_helper_call(
+            ea, "__ctz", uint32_type, arguments, dup_mop(output)
+        )
     except Exception:
         return None
 
@@ -192,7 +198,7 @@ class ModularProductNonzeroBlockRule(FlowOptimizationRule):
             if (
                 match is None
                 or not _effect_free_variable(match.variable)
-                or not z3_proves_modular_product_nonzero(predicate, match)
+                or not certifies_modular_product_nonzero(predicate, match)
             ):
                 instruction = next_instruction
                 continue

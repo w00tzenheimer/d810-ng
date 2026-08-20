@@ -98,6 +98,7 @@ from d810.transforms.plan import (
     PatchLowerConditionalStateTransition,
     PatchPlan,
     PatchRedirectGoto,
+    PatchScalarizeLocalAliasAccess,
 )
 from tests.native_preanalysis import make_native_key
 
@@ -2169,6 +2170,167 @@ def test_backend_poisons_when_observed_graph_strands_reachable_call() -> None:
     backend = HexRaysMutationBackend(
         mutation_gateway=gateway,
         translator=_StrandingTranslator(pre_cfg),
+    )
+
+    with pytest.raises(CfgGenerationPoisoned):
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+    assert gateway.generation_poisoned
+    assert backend.last_patch_execution is None
+
+
+def _local_alias_store_cfg(*, extra_call: bool = False) -> FlowGraph:
+    cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
+    store = InsnSnapshot(
+        opcode=58,
+        ea=0x1101,
+        native_ea=0x1101,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+        d=MopSnapshot(kind=OperandKind.LVAR, size=8),
+        kind=InsnKind.STORE,
+        display_text="stx #1.4, ds.2, %var_398.8",
+    )
+    instructions = (store,)
+    if extra_call:
+        instructions += (
+            InsnSnapshot(
+                opcode=57,
+                ea=0x1102,
+                native_ea=0x1102,
+                operands=(),
+                kind=InsnKind.CALL,
+                is_call=True,
+            ),
+        )
+    return replace(
+        cfg,
+        blocks={
+            **cfg.blocks,
+            1: replace(
+                cfg.blocks[1],
+                start_ea=0x1001,
+                native_start_ea=0x1001,
+                insn_snapshots=instructions,
+            ),
+        },
+    )
+
+
+def _local_alias_scalarization_plan() -> PatchPlan:
+    ref = _native_ref(1)
+    return PatchPlan(
+        source_maturity=MaturityEnvelope(
+            ir=None,
+            provider="hexrays",
+            provider_id=0,
+        ),
+        source_generation=0,
+        steps=(
+            PatchScalarizeLocalAliasAccess(
+                block_serial=ref,
+                host_ea=0x1101,
+                host_opcode=58,
+                alias_token="%var_398",
+                base_token="%var_398",
+                value_size=4,
+            ),
+        ),
+        source_coordinates=((ref, 1),),
+    )
+
+
+def _observed_scalarized_cfg(
+    source: FlowGraph,
+    *,
+    reachable: bool = True,
+    host_call: bool = False,
+) -> FlowGraph:
+    block = source.blocks[1]
+    scalar_move = (
+        InsnSnapshot(
+            opcode=57,
+            ea=0x1101,
+            native_ea=0x1101,
+            operands=(),
+            kind=InsnKind.CALL,
+            is_call=True,
+        )
+        if host_call
+        else InsnSnapshot(
+            opcode=4,
+            ea=0x1101,
+            native_ea=0x1101,
+            operands=(),
+            l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+            d=MopSnapshot(kind=OperandKind.LVAR, size=4),
+            kind=InsnKind.MOV,
+            display_text="mov #1.4, %var_398.4",
+        )
+    )
+    observed = replace(
+        source,
+        blocks={
+            **source.blocks,
+            1: replace(block, insn_snapshots=(scalar_move,)),
+        },
+    )
+    if reachable:
+        return observed
+    return _make_cfg([(0, 2), (1, 2)], stop_serials=(2,))
+
+
+def test_backend_accepts_exact_reachable_local_alias_store_scalarization() -> None:
+    """A typed scalarization may replace only its exact local-alias STORE."""
+
+    pre_cfg = _local_alias_store_cfg()
+    observed_cfg = _observed_scalarized_cfg(pre_cfg)
+    plan = _local_alias_scalarization_plan()
+
+    class _ScalarizingTranslator(_FakeTranslator):
+        def lift(self, _live_source: object) -> FlowGraph:
+            self.lift_count += 1
+            return observed_cfg if self.lower_calls else pre_cfg
+
+    gateway = _ordinary_gateway(pre_cfg, plan)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=gateway,
+        translator=_ScalarizingTranslator(pre_cfg),
+    )
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+    assert result is observed_cfg
+    assert not gateway.generation_poisoned
+    assert backend.last_patch_execution is not None
+
+
+@pytest.mark.parametrize(
+    "failure_kind",
+    ("unmatched_call", "unreachable_block", "host_call"),
+)
+def test_backend_does_not_widen_local_alias_effect_scalarization(
+    failure_kind: str,
+) -> None:
+    """Calls and control-flow loss remain outside scalarization authority."""
+
+    pre_cfg = _local_alias_store_cfg(extra_call=failure_kind == "unmatched_call")
+    observed_cfg = _observed_scalarized_cfg(
+        pre_cfg,
+        reachable=failure_kind != "unreachable_block",
+        host_call=failure_kind == "host_call",
+    )
+    plan = _local_alias_scalarization_plan()
+
+    class _ScalarizingTranslator(_FakeTranslator):
+        def lift(self, _live_source: object) -> FlowGraph:
+            self.lift_count += 1
+            return observed_cfg if self.lower_calls else pre_cfg
+
+    gateway = _ordinary_gateway(pre_cfg, plan)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=gateway,
+        translator=_ScalarizingTranslator(pre_cfg),
     )
 
     with pytest.raises(CfgGenerationPoisoned):

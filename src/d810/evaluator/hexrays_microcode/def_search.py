@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 
 import ida_hexrays
 
@@ -24,7 +25,7 @@ from d810.core.cymode import CythonMode
 from d810.hexrays.expr.ast import AstLeaf, AstNode, get_mop_key
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
-from d810.hexrays.ir.mop_utils import mop_to_ast
+from d810.hexrays.ir.mop_utils import AstNodeBudget, mop_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t, format_mop_t
 from d810.hexrays.utils.hexrays_helpers import equal_mops_ignore_size
 
@@ -46,6 +47,195 @@ _RESOLVE_NODE_BUDGET = 4096
 # Hard upper bound on single-predecessor chain walks (defensive; the loop itself
 # already caps at _MAX_PRED_DEPTH, this guards against a malformed CFG cycle).
 _MAX_PRED_DEPTH = 8
+
+
+@dataclass(frozen=True, slots=True)
+class _ProofLocalInputOrigin:
+    """Transient identity for one uniquely proven block-entry input.
+
+    ``scope`` is an object owned by one recursive-resolution cache.  Keeping it
+    in the value prevents unrelated proofs from aliasing merely because IDA
+    reused block serials or physical registers.  The remaining fields make the
+    identity explicit within that proof: MBA, terminal block, storage, width,
+    and any usable native value number.
+    """
+
+    scope: object
+    mba_identity: int
+    entry_block: tuple[int, int, int]
+    storage: tuple[str, int]
+    width: int
+    valnum: int
+
+
+def _proof_storage_identity(mop: object) -> tuple[str, int] | None:
+    """Return a size-independent scalar storage identity for a register/stack mop."""
+
+    try:
+        mop_type = int(mop.t)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if mop_type == ida_hexrays.mop_r:
+        try:
+            return ("r", int(mop.r))
+        except (AttributeError, TypeError, ValueError):
+            return None
+    if mop_type == ida_hexrays.mop_S:
+        try:
+            return ("S", int(mop.s.off))
+        except (AttributeError, TypeError, ValueError):
+            return None
+    return None
+
+
+def _proof_block_identity(blk: object) -> tuple[int, int, int] | None:
+    """Return a local terminal-block identity with native EA anchors when present."""
+
+    try:
+        serial = int(blk.serial)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    try:
+        start = int(getattr(blk, "start", -1))
+    except (TypeError, ValueError):
+        start = -1
+    try:
+        end = int(getattr(blk, "end", -1))
+    except (TypeError, ValueError):
+        end = -1
+    return serial, start, end
+
+
+def _proof_mba_identity(mba: object) -> int | None:
+    """Normalize SWIG MBA wrappers to their native pointer when available."""
+
+    if mba is None:
+        return None
+    try:
+        return int(mba.this)
+    except (AttributeError, TypeError, ValueError):
+        return id(mba)
+
+
+def _proof_operand_has_location(
+    mop: ida_hexrays.mop_t | MopSnapshot,
+    blk: ida_hexrays.mblock_t,
+) -> bool:
+    """Require a live, materialized mop to have a non-empty use location.
+
+    AST leaves retain ``MopSnapshot`` values, which intentionally do not have
+    a SWIG ``this`` pointer.  Validate the native block/MBA boundary before
+    materializing, then validate the returned live mop before calling IDA's
+    location API.  This keeps fake/stale native objects fail-closed without
+    rejecting legitimate resolver-attested snapshots.
+    """
+
+    mba = getattr(blk, "mba", None)
+    if (
+        not hasattr(blk, "this")
+        or mba is None
+        or not hasattr(mba, "this")
+    ):
+        return False
+    try:
+        tracked = _materialize_mop_for_tracking(
+            mop,
+            "_terminal_proof_origin",
+            mba=getattr(blk, "mba", None),
+        )
+        if tracked is None or not hasattr(tracked, "this"):
+            return False
+        locations = ida_hexrays.mlist_t()
+        blk.append_use_list(locations, tracked, ida_hexrays.MUST_ACCESS)
+        return not locations.empty()
+    except Exception:
+        return False
+
+
+def _terminal_proof_origin(
+    mop: ida_hexrays.mop_t,
+    blk: ida_hexrays.mblock_t,
+    ins: ida_hexrays.minsn_t,
+    *,
+    max_predecessor_blocks: int,
+    scope: object,
+) -> _ProofLocalInputOrigin | None:
+    """Prove that *mop* is an unresolved unique block-entry input.
+
+    This intentionally repeats only the bounded, single-predecessor search. A
+    resolver ``None`` can also mean an unsupported operand, an ambiguous join,
+    a tracker failure, or a depth cutoff; none of those cases may become a
+    symbolic-variable alias. A token is emitted only after every inspected
+    block has no reaching definition and the terminal block has zero
+    predecessors.
+    """
+
+    storage = _proof_storage_identity(mop)
+    if storage is None:
+        return None
+    try:
+        width = int(mop.size)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if width <= 0:
+        return None
+
+    current = blk
+    before = ins
+    visited: set[int] = set()
+    for depth in range(max_predecessor_blocks + 1):
+        block_identity = _proof_block_identity(current)
+        if block_identity is None:
+            return None
+        try:
+            serial = int(current.serial)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if serial in visited:
+            return None
+        visited.add(serial)
+        try:
+            has_location = _proof_operand_has_location(mop, current)
+        except Exception:
+            return None
+        if not has_location:
+            return None
+
+        try:
+            definition = find_def_in_block(mop, current, before)
+        except Exception:
+            return None
+        if definition is not None:
+            return None
+        try:
+            predecessor_count = int(current.npred())
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if predecessor_count == 0:
+            mba_identity = _proof_mba_identity(getattr(current, "mba", None))
+            if mba_identity is None:
+                return None
+            try:
+                valnum = int(getattr(mop, "valnum", 0))
+            except (TypeError, ValueError):
+                valnum = 0
+            origin = _ProofLocalInputOrigin(
+                scope=scope,
+                mba_identity=mba_identity,
+                entry_block=block_identity,
+                storage=storage,
+                width=width,
+                valnum=max(0, valnum),
+            )
+            return origin
+        if predecessor_count != 1 or depth >= max_predecessor_blocks:
+            return None
+        try:
+            current = current.mba.get_mblock(current.pred(0))
+        except Exception:
+            return None
+        before = None
+    return None
 
 
 def _valid_predecessor_search_budget(
@@ -151,6 +341,82 @@ def _materialize_mop_for_tracking(
     return materialized
 
 
+def _minsn_to_ast_with_budget(
+    instruction: ida_hexrays.minsn_t,
+    node_budget: AstNodeBudget | None,
+) -> AstNode | AstLeaf | None:
+    """Build a definition AST while preserving the legacy unbounded call path."""
+
+    # A move definition represents the value of its source operand.  The
+    # general minsn builder annotates a leaf with ``dst_mop`` for mutation
+    # bookkeeping; that is correct for rewrite patterns but incorrect while
+    # recursively following def-use edges: it replaces the source snapshot
+    # with the destination and makes the resolver chase the wrong register.
+    if instruction.opcode == ida_hexrays.m_mov and instruction.l is not None:
+        ast = _mop_to_ast_with_budget(instruction.l, node_budget)
+        if ast is not None:
+            ast.ea = instruction.ea
+            ast.ins = instruction
+        return ast
+
+    if node_budget is None:
+        return minsn_to_ast(instruction)
+    return minsn_to_ast(instruction, node_budget=node_budget)
+
+
+def _mop_to_ast_with_budget(
+    mop: ida_hexrays.mop_t,
+    node_budget: AstNodeBudget | None,
+) -> AstNode | AstLeaf | None:
+    """Build a stored-value AST with the caller's optional occurrence budget."""
+
+    if node_budget is None:
+        return mop_to_ast(mop)
+    return mop_to_ast(mop, node_budget=node_budget)
+
+
+def _ast_width_bytes(ast: AstNode | AstLeaf | None) -> int | None:
+    """Return an AST value width in bytes when its provenance is explicit.
+
+    ``dest_size`` is the width of the value produced by an AST instruction,
+    whereas a leaf's ``mop.size`` is the width at its use site.  Do not infer
+    a missing width from a surrounding expression: partial-register
+    definitions are precisely where that inference becomes unsound.
+    """
+
+    if ast is None:
+        return None
+
+    for candidate in (
+        getattr(ast, "dest_size", None),
+        getattr(getattr(ast, "mop", None), "size", None),
+    ):
+        if type(candidate) is int and candidate > 0:
+            return candidate
+    return None
+
+
+def _truncate_ast_to_use_width(
+    ast: AstNode | AstLeaf,
+    use_width: int,
+    node_budget: AstNodeBudget | None,
+) -> AstNode:
+    """Create a native low-part AST preserving a narrower use-site width."""
+
+    if node_budget is not None:
+        node_budget.consume()
+
+    truncated = AstNode(ida_hexrays.m_low, ast, None)
+    truncated.dest_size = use_width
+    truncated.ea = getattr(ast, "ea", None)
+    truncated.func_name = getattr(ast, "func_name", "")
+    truncated.ins = getattr(ast, "ins", None)
+
+    if node_budget is not None:
+        node_budget.mark_charged(truncated)
+    return truncated
+
+
 # ---------------------------------------------------------------------------
 # mlist helpers
 # ---------------------------------------------------------------------------
@@ -218,6 +484,8 @@ def resolve_memory_load_via_store(
     ldx_ins: ida_hexrays.minsn_t,
     blk: ida_hexrays.mblock_t,
     ins: ida_hexrays.minsn_t,
+    *,
+    node_budget: AstNodeBudget | None = None,
 ) -> AstNode | AstLeaf | None:
     """Resolve a memory load (m_ldx) to its defining store (m_stx).
 
@@ -253,26 +521,31 @@ def resolve_memory_load_via_store(
             if store_addr is not None and load_addr is not None:
                 # Simple equality check - compare address operands
                 try:
-                    if equal_mops_ignore_size(load_addr, store_addr):
-                        # Found matching store - return AST of stored value
-                        # The stored value is in ldx_ins.l for stx
-                        stored_value = cur_ins.l
-                        if stored_value is not None:
-                            ast = mop_to_ast(stored_value)
-                            if ast is not None:
-                                ast.ea = cur_ins.ea
-                                ast.ins = cur_ins
-                            if logger.debug_on:
-                                logger.debug(
-                                    "resolve_memory_load_via_store: Resolved ldx to stx: %s -> %s",
-                                    format_minsn_t(ldx_ins),
-                                    format_minsn_t(cur_ins),
-                                )
-                            return ast
+                    addresses_match = equal_mops_ignore_size(load_addr, store_addr)
                 except Exception as e:
                     logger.debug(
                         "resolve_memory_load_via_store: Error comparing mops: %s", e
                     )
+                    addresses_match = False
+                if addresses_match:
+                    # Found matching store - return AST of stored value.  Keep
+                    # AST construction outside the comparison guard so a
+                    # caller's node-budget cutoff is never swallowed as a
+                    # recoverable address-comparison failure.
+                    # The stored value is in ldx_ins.l for stx.
+                    stored_value = cur_ins.l
+                    if stored_value is not None:
+                        ast = _mop_to_ast_with_budget(stored_value, node_budget)
+                        if ast is not None:
+                            ast.ea = cur_ins.ea
+                            ast.ins = cur_ins
+                        if logger.debug_on:
+                            logger.debug(
+                                "resolve_memory_load_via_store: Resolved ldx to stx: %s -> %s",
+                                format_minsn_t(ldx_ins),
+                                format_minsn_t(cur_ins),
+                            )
+                        return ast
 
         cur_ins = cur_ins.prev
 
@@ -332,6 +605,7 @@ def resolve_mop_via_predecessors(
     *,
     max_predecessor_blocks: int = 1,
     max_paths: int = 1,
+    node_budget: AstNodeBudget | None = None,
 ) -> AstNode | AstLeaf | None:
     """Resolve *mop* to an AST by following single-predecessor chains.
 
@@ -370,7 +644,7 @@ def resolve_mop_via_predecessors(
     # Fast path: try the current block first.
     def_ins = find_def_in_block(mop, blk, ins)
     if def_ins is not None:
-        ast = minsn_to_ast(def_ins)
+        ast = _minsn_to_ast_with_budget(def_ins, node_budget)
         if ast is not None:
             ast.ea = def_ins.ea
             ast.ins = def_ins
@@ -426,7 +700,7 @@ def resolve_mop_via_predecessors(
         # Search from the tail of the predecessor (no before_ins restriction).
         def_ins = find_def_in_block(mop, pred_blk, None)
         if def_ins is not None:
-            ast = minsn_to_ast(def_ins)
+            ast = _minsn_to_ast_with_budget(def_ins, node_budget)
             if ast is not None:
                 ast.ea = def_ins.ea
                 ast.ins = def_ins
@@ -455,6 +729,7 @@ def resolve_mop_to_ast(
     *,
     max_predecessor_blocks: int = 1,
     max_paths: int = 1,
+    node_budget: AstNodeBudget | None = None,
 ) -> AstNode | AstLeaf | None:
     """Use MopTracker to find the instruction that defines mop, return its AST.
 
@@ -518,10 +793,16 @@ def resolve_mop_to_ast(
                         ins,
                         max_predecessor_blocks=max_predecessor_blocks,
                         max_paths=max_paths,
+                        node_budget=node_budget,
                     )
             # If we can't resolve via destination, try the address operand
             # to find a matching store (m_stx) instruction
-            return resolve_memory_load_via_store(nested, blk, ins)
+            return resolve_memory_load_via_store(
+                nested,
+                blk,
+                ins,
+                node_budget=node_budget,
+            )
         # For other mop_d types, no resolution possible
         return None
 
@@ -539,6 +820,7 @@ def resolve_mop_to_ast(
             ins,
             max_predecessor_blocks=max_predecessor_blocks,
             max_paths=max_paths,
+            node_budget=node_budget,
         )
         if result is not None:
             return result
@@ -588,7 +870,7 @@ def resolve_mop_to_ast(
                 # For registers, check if it's the same register
                 if mop.t == ida_hexrays.mop_r and def_ins.d.r == mop.r:
                     # Build AST from the instruction's source operands
-                    ast = minsn_to_ast(def_ins)
+                    ast = _minsn_to_ast_with_budget(def_ins, node_budget)
                     if ast is not None:
                         ast.ea = def_ins.ea
                         ast.ins = def_ins
@@ -604,7 +886,7 @@ def resolve_mop_to_ast(
                 elif mop.t == ida_hexrays.mop_S:
                     try:
                         if def_ins.d.s.off == mop.s.off:
-                            ast = minsn_to_ast(def_ins)
+                            ast = _minsn_to_ast_with_budget(def_ins, node_budget)
                             if ast is not None:
                                 ast.ea = def_ins.ea
                                 ast.ins = def_ins
@@ -632,6 +914,7 @@ def _py_slow_recursively_resolve_ast(
     depth: int = 0,
     max_depth: int = 10,
     cache: dict | None = None,
+    node_budget: AstNodeBudget | None = None,
 ) -> AstNode | AstLeaf | None:
     """Recursively resolve register/stack leaves in an AST to their defining expressions.
 
@@ -652,6 +935,8 @@ def _py_slow_recursively_resolve_ast(
         depth: Current recursion depth
         max_depth: Maximum recursion depth to prevent infinite loops
         cache: Optional dictionary for caching resolution results
+        node_budget: Optional backend-neutral occurrence budget for replacement
+            AST construction
 
     Returns:
         AST with register/stack leaves replaced by their defining expressions
@@ -660,9 +945,10 @@ def _py_slow_recursively_resolve_ast(
         cache = {}
 
     # Crash-safety: per-call node budget (independent of structural max_depth).
-    # The budget is threaded through the cache dict under a private key so the
-    # public signature stays unchanged. It bounds total leaf-resolution attempts
-    # so a degenerate / cyclic def chain cannot exhaust the stack (llr-pydd).
+    # The resolver cap is threaded through the cache dict under a private key;
+    # it remains independent from the optional proof-expansion budget. It
+    # bounds total leaf-resolution attempts so a degenerate / cyclic def chain
+    # cannot exhaust the stack (llr-pydd).
     budget = cache.get("__resolve_budget__")
     if budget is None:
         budget = [_RESOLVE_NODE_BUDGET]
@@ -693,8 +979,10 @@ def _py_slow_recursively_resolve_ast(
 
             if is_resolvable and ins is not None:
                 mop_key = get_mop_key(ast_leaf.mop)
+                use_width = _ast_width_bytes(ast_leaf)
                 cache_key = (
                     mop_key,
+                    use_width,
                     _microcode_instruction_identity(blk, ins),
                 )
                 if cache_key in cache:
@@ -702,8 +990,25 @@ def _py_slow_recursively_resolve_ast(
 
                 # Charge the budget once per attempted leaf resolution.
                 budget[0] -= 1
-                resolved = resolve_mop_to_ast(ast_leaf.mop, blk, ins)
+                resolved = resolve_mop_to_ast(
+                    ast_leaf.mop,
+                    blk,
+                    ins,
+                    node_budget=node_budget,
+                )
                 if resolved is not None and resolved is not ast:
+                    resolved_width = _ast_width_bytes(resolved)
+                    # A missing width is not permission to guess.  In
+                    # particular, a narrow partial-register definition must
+                    # never be widened into a full-register use.
+                    if (
+                        use_width is None
+                        or resolved_width is None
+                        or resolved_width < use_width
+                    ):
+                        cache[cache_key] = ast
+                        return ast
+
                     # Update search context for children: search from the defining instruction
                     # This correctly handles register redefinitions within the same block.
                     new_ins = ins
@@ -712,10 +1017,31 @@ def _py_slow_recursively_resolve_ast(
 
                     # Recursively resolve the new AST
                     res = _py_slow_recursively_resolve_ast(
-                        resolved, blk, new_ins, depth + 1, max_depth, cache
+                        resolved,
+                        blk,
+                        new_ins,
+                        depth + 1,
+                        max_depth,
+                        cache,
+                        node_budget,
                     )
+                    if resolved_width > use_width:
+                        res = _truncate_ast_to_use_width(res, use_width, node_budget)
                     cache[cache_key] = res
                     return res
+                origin_scope = cache.get("__resolve_origin_scope__")
+                if origin_scope is None:
+                    origin_scope = object()
+                    cache["__resolve_origin_scope__"] = origin_scope
+                origin = _terminal_proof_origin(
+                    ast_leaf.mop,
+                    blk,
+                    ins,
+                    max_predecessor_blocks=1,
+                    scope=origin_scope,
+                )
+                if origin is not None:
+                    ast_leaf.proof_origin = origin
                 cache[cache_key] = ast
         return ast
 
@@ -724,14 +1050,14 @@ def _py_slow_recursively_resolve_ast(
 
     new_left = (
         _py_slow_recursively_resolve_ast(
-            ast_node.left, blk, ins, depth, max_depth, cache
+            ast_node.left, blk, ins, depth, max_depth, cache, node_budget
         )
         if ast_node.left
         else None
     )
     new_right = (
         _py_slow_recursively_resolve_ast(
-            ast_node.right, blk, ins, depth, max_depth, cache
+            ast_node.right, blk, ins, depth, max_depth, cache, node_budget
         )
         if ast_node.right
         else None
@@ -740,7 +1066,11 @@ def _py_slow_recursively_resolve_ast(
     # If children changed, create new AST node
     if new_left is not ast_node.left or new_right is not ast_node.right:
         # Create a new AstNode with the same opcode but resolved children
+        if node_budget is not None:
+            node_budget.consume()
         new_ast = AstNode(ast_node.opcode, new_left, new_right)
+        if node_budget is not None:
+            node_budget.mark_charged(new_ast)
         new_ast.mop = ast_node.mop  # Preserve original mop info
         # Preserve destination metadata so downstream replacement can emit
         # a valid instruction destination instead of a transient value mop.
@@ -779,6 +1109,7 @@ def recursively_resolve_ast(
     depth: int = 0,
     max_depth: int = 10,
     cache: dict | None = None,
+    node_budget: AstNodeBudget | None = None,
 ) -> AstNode | AstLeaf | None:
     """Resolve AST definitions through the selected production backend."""
 
@@ -793,6 +1124,7 @@ def recursively_resolve_ast(
             resolve_mop_to_ast,
             _microcode_instruction_identity,
             _RESOLVE_NODE_BUDGET,
+            node_budget,
         )
     return _py_slow_recursively_resolve_ast(
         ast,
@@ -801,6 +1133,7 @@ def recursively_resolve_ast(
         depth=depth,
         max_depth=max_depth,
         cache=cache,
+        node_budget=node_budget,
     )
 
 

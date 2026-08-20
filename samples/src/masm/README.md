@@ -5,11 +5,11 @@ Real obfuscated functions extracted from user binaries (e.g. `dac.dll`, issue
 machine code, and so those regressions live in the tracked corpus (CI catches
 them without the un-committed source binary).
 
-Each `src/masm/<name>.asm` is auto-discovered by the Makefile: assembled with
-`ml64` (Windows) / `llvm-ml64` (local validation), linked into the DLL,
-**exported** (`link.exe /EXPORT:<name>`), and its matching `src/c/<name>.c` (if
-any) is dropped. MASM is Windows-x64 / MSVC-COFF only — the `.dylib`/`.so`
-builds ignore this directory, so these functions exist **only in the PE `.dll`**.
+Each `src/masm/<name>.asm` is auto-discovered by the authoritative Windows
+Makefile path: assembled with Microsoft `ml64`, linked into the DLL, **exported**
+(`link.exe /EXPORT:<name>`), and its matching `src/c/<name>.c` (if any) is
+dropped. MASM is Windows-x64 / MSVC-COFF only — the `.dylib`/`.so` builds ignore
+this directory, so these functions exist **only in the PE `.dll`**.
 DSL cases for them set `skip_if_function_absent=True` so they SKIP (not fail) on
 non-Windows builds.
 
@@ -34,7 +34,7 @@ python tools/d810cli.py fixture add --idb <dac.dll.i64> --func <ea|name> \
 ```
 
 `add` runs extract → retarget (LEAF/IMPORT targets only — deeper obfuscated
-`sub_*` stay `MEMORY[...]`) → local build (`scripts/build_masm.sh`, NO reversepc)
+`sub_*` stay `MEMORY[...]`) → local compatibility build (`scripts/build_masm.sh`)
 → verify, then STOPS at a human gate: it emits a MINIMAL `DeobfuscationCase`
 (`must_change` + `skip_if_function_absent` only — YOU write the semantic
 assertions from the shown before/after dump) and never auto-commits binaries.
@@ -61,8 +61,10 @@ open("samples/src/masm/sub_1815C8C30.asm", "w").write(
 
 `const_data=True` puts materialized data in a read-only `CONST` segment (.rdata).
 External `call sub_*` targets become `EXTERN … :PROC` and stay unresolved at link
-(tolerated via `/FORCE:UNRESOLVED`). Validate locally: `llvm-ml64 /nologo /c
-/Fo/tmp/x.obj <name>.asm`.
+(tolerated via `/FORCE:UNRESOLVED`). The release gate is the `reversepc.local`
+Microsoft-`ml64` build from `../../README.md`. `llvm-ml64` may be used as a fast
+compatibility check for an individual source, but the complete corpus is not
+required to stay within its smaller directive set.
 
 ### 2. The export ordinal is automatic
 

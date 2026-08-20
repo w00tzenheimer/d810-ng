@@ -614,6 +614,7 @@ cdef class AstNode(AstBase):
 
 cdef class AstLeaf(AstBase):
     cdef public object name
+    cdef public object proof_origin
     cdef public object z3_var
     cdef public object z3_var_name
     cdef public bint _is_frozen
@@ -624,6 +625,7 @@ cdef class AstLeaf(AstBase):
         self.ast_index: None
 
         self.mop = None
+        self.proof_origin = None
         self.z3_var = None
         self.z3_var_name = NOT_GIVEN
 
@@ -668,6 +670,7 @@ cdef class AstLeaf(AstBase):
         # Manually copy attribute
         new_leaf.ast_index = self.ast_index
         new_leaf.mop = self.mop
+        new_leaf.proof_origin = self.proof_origin
         new_leaf.dest_size = self.dest_size
         new_leaf.ea = self.ea
 
@@ -765,11 +768,13 @@ cdef class AstLeaf(AstBase):
             source_leaf = other2.leafs_by_name[self.name]
 
         if source_leaf is None:
+            self.proof_origin = None
             return False
 
         # Copy mop if available
         if source_leaf.mop is not None:
             self.mop = source_leaf.mop
+            self.proof_origin = getattr(source_leaf, 'proof_origin', None)
             return True
 
         # For computed constants (e.g., c_res from constraints), copy the value
@@ -778,9 +783,11 @@ cdef class AstLeaf(AstBase):
         if source_value is None:
             source_value = getattr(source_leaf, 'expected_value', None)
         if source_value is not None:
+            self.proof_origin = None
             self.value = source_value
             return True
 
+        self.proof_origin = None
         return False
 
     def check_pattern_and_copy_mops(self, ast, read_only: bool = False):
@@ -795,6 +802,7 @@ cdef class AstLeaf(AstBase):
     def reset_mops(self):
         self.z3_var = None
         self.z3_var_name = NOT_GIVEN
+        self.proof_origin = None
         self.mop = None
 
     def _copy_mops_from_ast(self, other, read_only: bool = False):
@@ -813,6 +821,7 @@ cdef class AstLeaf(AstBase):
             )
         if not read_only:
             self.mop = other.mop
+            self.proof_origin = getattr(other, "proof_origin", None)
         return True
 
     @staticmethod
@@ -895,20 +904,41 @@ cdef class AstConstant(AstLeaf):
         return True
 
     def _copy_mops_from_ast(self, other, read_only: bool = False):
-        if other.mop is not None:
+        other_mop = other.mop
+        if other_mop is not None:
             is_const = (
-                isinstance(other.mop, MopSnapshot)
-                and other.mop.is_constant
+                isinstance(other_mop, MopSnapshot)
+                and other_mop.is_constant
                 or (
-                    not isinstance(other.mop, MopSnapshot)
-                    and other.mop.t == ida_hexrays.mop_n
+                    not isinstance(other_mop, MopSnapshot)
+                    and other_mop.t == ida_hexrays.mop_n
                 )
             )
             if not is_const:
                 if logger.debug_on:
                     logger.debug(
                         "AstConstant._copy_mops_from_ast: other.mop is not a constant: %r",
-                        other.mop,
+                        other_mop,
+                    )
+                return False
+            other_value = (
+                other_mop.value
+                if isinstance(other_mop, MopSnapshot)
+                else other_mop.nnn.value
+            )
+            other_size = other_mop.size
+        else:
+            # Constraint-backed and otherwise computed constants deliberately
+            # have no native mop.  They are still valid constant candidates
+            # when their value is explicit; an unbound placeholder must fail
+            # closed instead of falling through to ``other.mop.nnn``.
+            other_value = getattr(other, "expected_value", None)
+            other_size = getattr(other, "expected_size", None)
+            if other_value is None:
+                if logger.debug_on:
+                    logger.debug(
+                        "AstConstant._copy_mops_from_ast: other %r has neither a constant mop nor a computed value",
+                        other,
                     )
                 return False
 
@@ -916,27 +946,25 @@ cdef class AstConstant(AstLeaf):
             logger.debug(
                 "AstConstant._copy_mops_from_ast: other %r's mop %s is a constant",
                 other,
-                format_mop_t(other.mop)
-                if not isinstance(other.mop, MopSnapshot)
-                else f"MopSnapshot({other.mop.value})",
+                (
+                    format_mop_t(other_mop)
+                    if other_mop is not None
+                    and not isinstance(other_mop, MopSnapshot)
+                    else (
+                        f"MopSnapshot({other_mop.value})"
+                        if isinstance(other_mop, MopSnapshot)
+                        else f"computed({other_value})"
+                    )
+                ),
             )
         if not read_only:
-            self.mop = other.mop
+            self.mop = other_mop
         if self.expected_value is None:
             if not read_only:
-                if isinstance(other.mop, MopSnapshot):
-                    self.expected_value = other.mop.value
-                    self.expected_size = other.mop.size
-                else:
-                    self.expected_value = other.mop.nnn.value
-                    self.expected_size = other.mop.size
+                self.expected_value = other_value
+                self.expected_size = other_size
             else:
                 return True
-        other_value = (
-            other.mop.value
-            if isinstance(other.mop, MopSnapshot)
-            else other.mop.nnn.value
-        )
         return self.expected_value == other_value
 
     def get_depth_signature(self, int depth):

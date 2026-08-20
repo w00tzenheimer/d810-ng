@@ -124,7 +124,7 @@ def _is_exact_const_carrier_definition(
         and instruction.control is None
         and instruction.result == carrier
         and int(carrier.size) == 4
-        and carrier.space in {Space.REGISTER, Space.TEMP}
+        and carrier.space in {Space.REGISTER, Space.STACK, Space.TEMP}
         and len(instruction.inputs) == 1
         and instruction.inputs[0].space is Space.CONST
         and int(instruction.inputs[0].size) == 4
@@ -186,7 +186,7 @@ def observes_u32_carrier_feeder_candidate(
         and instruction.inputs[0].space is Space.CONST
         and int(instruction.inputs[0].size) == 4
         and instruction.result is not None
-        and instruction.result.space in {Space.REGISTER, Space.TEMP}
+        and instruction.result.space in {Space.REGISTER, Space.STACK, Space.TEMP}
         and int(instruction.result.size) == 4
     )
     if not carriers:
@@ -256,6 +256,7 @@ _STATE_TRANSFORM_VALUE_OPS = frozenset(
     {ValueOpKind.XOR, ValueOpKind.ADD, ValueOpKind.SUB}
 )
 _MAX_STATE_TRANSFORM_VALUE_INSTRUCTIONS = 3
+_MAX_SOURCE_STATE_TRANSFORM_VALUE_INSTRUCTIONS = 12
 
 
 def _is_exact_u32_value_instruction(instruction: Instruction) -> bool:
@@ -275,6 +276,60 @@ def _is_exact_u32_value_instruction(instruction: Instruction) -> bool:
     )
 
 
+def _is_exact_u32_zext_shell(
+    instruction: Instruction,
+    source: Varnode | None,
+) -> bool:
+    """Recognize Hex-Rays' exact ``xdu U32 -> register64`` result shell."""
+
+    return bool(
+        source is not None
+        and instruction.operation is ValueOpKind.ZEXT
+        and instruction.control is None
+        and instruction.memory is None
+        and not instruction.effects
+        and instruction.inputs == (source,)
+        and int(source.size) == 4
+        and instruction.result is not None
+        and instruction.result.space is Space.REGISTER
+        and int(instruction.result.size) == 8
+    )
+
+
+def _is_pure_const_assignment(instruction: Instruction) -> bool:
+    result = instruction.result
+    return bool(
+        instruction.operation is ValueOpKind.MOVE
+        and instruction.control is None
+        and instruction.memory is None
+        and not instruction.effects
+        and result is not None
+        and result.space in {Space.REGISTER, Space.TEMP}
+        and int(result.size) in {1, 2, 4, 8}
+        and len(instruction.inputs) == 1
+        and instruction.inputs[0].space is Space.CONST
+        and int(instruction.inputs[0].size) == int(result.size)
+    )
+
+
+def _same_register_or_temp_storage(left: Varnode, right: Varnode) -> bool:
+    return bool(
+        left.space is right.space
+        and left.space in {Space.REGISTER, Space.TEMP}
+        and int(left.offset) == int(right.offset)
+    )
+
+
+def _is_low_u32_register_alias(wide: Varnode, narrow: Varnode) -> bool:
+    return bool(
+        wide.space is Space.REGISTER
+        and narrow.space is Space.REGISTER
+        and int(wide.offset) == int(narrow.offset)
+        and int(wide.size) == 8
+        and int(narrow.size) == 4
+    )
+
+
 def prove_exact_u32_state_transform_feeder(
     flow_graph: FlowGraph,
     source_serial: int,
@@ -288,11 +343,13 @@ def prove_exact_u32_state_transform_feeder(
     """Prove ``CONST32 definitions -> bounded pure expression -> state32``.
 
     The expression is a canonical U32 XOR/ADD/SUB program of at most three
-    value instructions.  Every external input has one exact constant
-    definition in the direct source block; canonical evaluation is delegated
-    to the shared portable forward evaluator.  Operand order is preserved.
-    Both graph edges are reciprocal sole edges, and neither the selected source
-    suffix nor the feeder may contain an unproved instruction or effect.
+    value instructions, optionally followed by the exact U32-to-register64
+    shell emitted for Hex-Rays ``m_xdu``.  Every external input has one exact
+    constant definition in the direct source block; canonical evaluation is
+    delegated to the shared portable forward evaluator.  Operand order is
+    preserved.  Both graph edges are reciprocal sole edges, and neither the
+    selected source suffix nor the feeder may contain an unproved instruction
+    or effect.
     """
 
     source_serial = int(source_serial)
@@ -341,7 +398,6 @@ def prove_exact_u32_state_transform_feeder(
         not in tuple(int(pred) for pred in comparison.preds)
     ):
         return None
-
     expected_identities = expected_u32_state_identities(
         state_var_stkoff=state_var_stkoff,
         state_var_reg=state_var_reg,
@@ -356,17 +412,43 @@ def prove_exact_u32_state_transform_feeder(
         if isinstance(insn.operation, ValueOpKind) and insn.control is None
     )
     controls = tuple(insn for insn in feeder_instructions if insn.control is not None)
-    if not 1 <= len(values) <= _MAX_STATE_TRANSFORM_VALUE_INSTRUCTIONS:
-        return None
     if len(controls) > 1 or len(values) + len(controls) != len(feeder_instructions):
-        return None
-    if any(not _is_exact_u32_value_instruction(insn) for insn in values):
         return None
     if controls and feeder_instructions[-1] is not controls[0]:
         return None
-    transform = values[-1]
-    state_move: Instruction | None = None
+    inline_state_move = (
+        values[-1]
+        if values
+        and values[-1].operation is ValueOpKind.MOVE
+        and values[-1].result is not None
+        and storage_identity_from_varnode(values[-1].result) in expected_identities
+        else None
+    )
+    if inline_state_move is not None:
+        values = values[:-1]
+    width_shell = (
+        values[-1]
+        if values and values[-1].operation is ValueOpKind.ZEXT
+        else None
+    )
+    arithmetic_values = values[:-1] if width_shell is not None else values
+    if not 1 <= len(arithmetic_values) <= _MAX_STATE_TRANSFORM_VALUE_INSTRUCTIONS:
+        return None
+    if any(
+        not _is_exact_u32_value_instruction(instruction)
+        for instruction in arithmetic_values
+    ):
+        return None
+    transform = arithmetic_values[-1]
+    if width_shell is not None and not _is_exact_u32_zext_shell(
+        width_shell,
+        transform.result,
+    ):
+        return None
+    state_move: Instruction | None = inline_state_move
     if state_feeder is not None:
+        if state_move is not None:
+            return None
         state_feeder_instructions = InstructionProjection.from_block(state_feeder)
         state_value_instructions = tuple(
             instruction
@@ -391,18 +473,29 @@ def prove_exact_u32_state_transform_feeder(
         ):
             return None
         state_move = state_value_instructions[0]
+    if state_move is not None:
         if (
             state_move.operation is not ValueOpKind.MOVE
             or state_move.effects
             or state_move.memory is not None
             or len(state_move.inputs) != 1
-            or state_move.inputs[0] != transform.result
             or state_move.result is None
             or int(state_move.result.size) != 4
         ):
             return None
+        state_input = state_move.inputs[0]
+        if width_shell is None:
+            if state_input != transform.result:
+                return None
+        elif width_shell.result is None or not _is_low_u32_register_alias(
+            width_shell.result,
+            state_input,
+        ):
+            return None
         state_identity = storage_identity_from_varnode(state_move.result)
     else:
+        if width_shell is not None:
+            return None
         state_identity = (
             None
             if transform.result is None
@@ -421,79 +514,148 @@ def prove_exact_u32_state_transform_feeder(
     }:
         return None
     left, right = transform.inputs
-    if controls and not _pure_goto_to(controls[0], comparison_entry):
+    if controls and not _pure_goto_to(controls[0], feeder_successors[0]):
         return None
 
-    producer_indexes: dict[Varnode, int] = {}
+    feeder_producer_indexes: dict[Varnode, int] = {}
     for index, instruction in enumerate(values):
         result = instruction.result
-        if result is None or result in producer_indexes:
+        if result is None or result in feeder_producer_indexes:
             return None
         if (
             instruction is not transform
             and storage_identity_from_varnode(result) in expected_identities
         ):
             return None
-        producer_indexes[result] = index
-    if any(
-        producer_indexes.get(operand, -1) > index
-        for index, instruction in enumerate(values)
-        for operand in instruction.inputs
-        if operand in producer_indexes
-    ):
-        return None
-    if any(
-        sum(result in later.inputs for later in values[index + 1 :]) != 1
-        for index, result in enumerate(
-            instruction.result for instruction in values[:-1]
-        )
-    ):
-        return None
-
+        feeder_producer_indexes[result] = index
     external_operands = frozenset(
         operand
         for index, instruction in enumerate(values)
         for operand in instruction.inputs
-        if producer_indexes.get(operand, index) >= index
+        if feeder_producer_indexes.get(operand, index) >= index
     )
     if not external_operands:
         return None
     source_instructions = InstructionProjection.from_block(source)
-    selected: dict[Varnode, int] = {}
-    for operand in external_operands:
-        indexes = tuple(
-            index
-            for index, instruction in enumerate(source_instructions)
-            if _exact_const_definition(instruction, operand)
-        )
-        if len(indexes) != 1:
-            return None
-        selected[operand] = indexes[0]
-    selected_indexes = frozenset(selected.values())
-    if len(selected_indexes) != len(external_operands):
+    source_result_indexes: dict[Varnode, list[int]] = {}
+    for index, instruction in enumerate(source_instructions):
+        if instruction.control is None and instruction.result is not None:
+            source_result_indexes.setdefault(instruction.result, []).append(index)
+
+    selected_constants: dict[Varnode, int] = {}
+    selected_arithmetic: set[int] = set()
+    visiting: set[Varnode] = set()
+
+    def select_source_definition(operand: Varnode) -> bool:
+        if operand in selected_constants:
+            return True
+        indexes = tuple(source_result_indexes.get(operand, ()))
+        if operand.space is Space.REGISTER and int(operand.size) == 4:
+            indexes += tuple(
+                index
+                for result, result_indexes in source_result_indexes.items()
+                if _is_low_u32_register_alias(result, operand)
+                for index in result_indexes
+            )
+        indexes = tuple(sorted(set(indexes)))
+        if not indexes or operand in visiting:
+            return False
+        index = indexes[-1]
+        instruction = source_instructions[index]
+        if _exact_const_definition(instruction, operand) or (
+            instruction.result is not None
+            and _is_low_u32_register_alias(instruction.result, operand)
+            and _is_pure_const_assignment(instruction)
+        ):
+            selected_constants[operand] = index
+            return True
+        if (
+            not _is_exact_u32_value_instruction(instruction)
+            or storage_identity_from_varnode(operand) in expected_identities
+        ):
+            return False
+        visiting.add(operand)
+        selected_arithmetic.add(index)
+        valid = all(select_source_definition(value) for value in instruction.inputs)
+        visiting.remove(operand)
+        if not valid:
+            selected_arithmetic.discard(index)
+        return valid
+
+    if not all(select_source_definition(operand) for operand in external_operands):
+        return None
+    if len(selected_arithmetic) > _MAX_SOURCE_STATE_TRANSFORM_VALUE_INSTRUCTIONS:
+        return None
+    selected_indexes = frozenset(
+        (*selected_constants.values(), *selected_arithmetic)
+    )
+    if not selected_indexes:
         return None
     first_definition = min(selected_indexes)
+    protected_definition_indexes = dict(selected_constants)
+    protected_definition_indexes.update(
+        {
+            source_instructions[index].result: index
+            for index in selected_arithmetic
+            if source_instructions[index].result is not None
+        }
+    )
     for index, instruction in enumerate(source_instructions[first_definition:]):
         absolute_index = first_definition + index
         if absolute_index in selected_indexes:
             continue
-        if not _pure_goto_to(instruction, feeder_serial):
+        if _pure_goto_to(instruction, feeder_serial):
+            continue
+        result = instruction.result
+        clobbers_selected_input = bool(
+            result is not None
+            and any(
+                _same_register_or_temp_storage(result, operand)
+                and absolute_index > definition_index
+                for operand, definition_index in protected_definition_indexes.items()
+            )
+        )
+        if not _is_pure_const_assignment(instruction) or clobbers_selected_input:
             return None
     control_indexes = tuple(
         index
         for index, instruction in enumerate(source_instructions)
-        if instruction.control is not None
+        if index >= first_definition and instruction.control is not None
     )
     if len(control_indexes) > 1 or (
         control_indexes and control_indexes[0] < max(selected_indexes)
     ):
         return None
 
+    source_arithmetic = tuple(
+        source_instructions[index] for index in sorted(selected_arithmetic)
+    )
+    combined_values = source_arithmetic + values
+    combined_producers: dict[Varnode, int] = {}
+    for index, instruction in enumerate(combined_values):
+        result = instruction.result
+        if result is None or result in combined_producers:
+            return None
+        combined_producers[result] = index
+    if any(
+        sum(result in later.inputs for later in combined_values[index + 1 :]) != 1
+        for index, result in enumerate(
+            instruction.result for instruction in combined_values[:-1]
+        )
+    ):
+        return None
+
     ordered_definitions = tuple(
         (operand, source_instructions[index])
-        for operand, index in sorted(selected.items(), key=lambda item: item[1])
+        for operand, index in sorted(
+            selected_constants.items(), key=lambda item: item[1]
+        )
     )
-    evaluation_program = values + (() if state_move is None else (state_move,))
+    evaluation_program = (
+        source_arithmetic
+        + values
+        + (() if state_move is None else (state_move,))
+    )
     proof_sequence, _ = isolate_temporaries_for_forward_evaluation(
         tuple(instruction for _, instruction in ordered_definitions)
         + evaluation_program,
@@ -603,9 +765,10 @@ def prove_exact_u32_carrier_state_write(
     """Prove one exact ``CONST32 -> carrier -> state32`` graph corridor.
 
     Both CFG edges are exact sole-successor edges.  The source's final carrier
-    definition must be the only definition of that carrier after the last
-    effect/unknown barrier, and its suffix may contain only the matching pure
-    GOTO.  The feeder starts with exactly the carrier-to-state MOVE and may then
+    definition must be an exact constant overwrite, and its suffix may contain
+    only the matching pure GOTO.  Earlier carrier values are irrelevant because
+    the exact overwrite dominates the outgoing edge.  The feeder starts with
+    exactly the carrier-to-state MOVE and may then
     contain a bounded pure non-state MOVE suffix plus an optional matching GOTO.
     Such a suffix is not bypass authority: the returned receipt requires the
     emitter to clone the feeder for this predecessor.  Every ambiguity fails
@@ -673,7 +836,13 @@ def prove_exact_u32_carrier_state_write(
     ):
         return None
     carrier = feeder_move.inputs[0]
-    if carrier.space not in {Space.REGISTER, Space.TEMP} or int(carrier.size) != 4:
+    carrier_identity = storage_identity_from_varnode(carrier)
+    if (
+        carrier.space not in {Space.REGISTER, Space.STACK, Space.TEMP}
+        or int(carrier.size) != 4
+        or carrier_identity is None
+        or carrier_identity in expected_identities
+    ):
         return None
     if control_instructions and not _pure_goto_to(
         control_instructions[0], comparison_entry
@@ -726,25 +895,6 @@ def prove_exact_u32_carrier_state_write(
     ):
         return None
 
-    last_barrier = -1
-    for index, instruction in enumerate(source_instructions[:candidate_index]):
-        if (
-            instruction.effects
-            or instruction.memory is not None
-            or instruction.operation is ValueOpKind.VENDOR
-            or (
-                instruction.control is not None
-                and not _pure_goto_to(instruction, feeder_serial)
-            )
-        ):
-            last_barrier = index
-    definitions_after_barrier = tuple(
-        instruction
-        for instruction in source_instructions[last_barrier + 1 : candidate_index + 1]
-        if instruction.result == carrier
-    )
-    if len(definitions_after_barrier) != 1:
-        return None
     candidate = source_instructions[candidate_index]
     if not _is_exact_const_carrier_definition(candidate, carrier):
         return None

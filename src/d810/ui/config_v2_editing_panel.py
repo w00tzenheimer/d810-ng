@@ -1102,6 +1102,36 @@ if IDA_AVAILABLE:
                     )
                 )
                 return control
+            if field.control is FieldControlKind.STRING_LIST and field.choices:
+                control = QtWidgets.QListWidget()
+                current_values = value if isinstance(value, (list, tuple)) else ()
+                current = {
+                    item for item in current_values if isinstance(item, str)
+                }
+                for choice in field.choices:
+                    item = QtWidgets.QListWidgetItem(choice)
+                    item.setFlags(qt_flag_or(item.flags(), _checkable_flag()))
+                    item.setData(_user_role(), choice)
+                    item.setCheckState(
+                        _checked_state()
+                        if choice in current
+                        else _unchecked_state()
+                    )
+                    control.addItem(item)
+
+                def checked_choices() -> list[str]:
+                    return [
+                        control.item(index).text()
+                        for index in range(control.count())
+                        if control.item(index).checkState() == _checked_state()
+                    ]
+
+                control.itemChanged.connect(
+                    lambda _item, field=field: self._apply_typed_option(
+                        field, checked_choices()
+                    )
+                )
+                return control
             control = QtWidgets.QLineEdit()
             if field.control is FieldControlKind.STRING_LIST:
                 initial = (

@@ -369,6 +369,49 @@ def test_native_bound_route_rejects_valid_sibling_when_target_observation_is_mal
     ) == ()
 
 
+def test_native_bound_route_filters_shadow_identity_at_same_native_source() -> None:
+    """One supported carrier family must not conflict with a retained shadow."""
+    binder = semantic_transition.bind_native_bound_transition_routes
+    source_ea = 0x7FF855576BA0
+    target_ea = 0x7FF855576BB1
+
+    def fact(*, fact_id: str, state: int, state_reg: int):
+        return SimpleNamespace(
+            fact_id=fact_id,
+            predecessor_block_serial=15,
+            dispatcher_entry_serial=2,
+            state_const=state,
+            target_block_serial=99,
+            target_native_ea=target_ea,
+            resolver_kind="interval_dispatcher_row",
+            row_kind="interval_range",
+            source_instruction_ea=source_ea,
+            state_var_stkoff=52,
+            state_var_reg=state_reg,
+        )
+
+    routes = binder(
+        (
+            fact(fact_id="shadow", state=1, state_reg=0),
+            fact(fact_id="dispatcher", state=0x16AA65E9, state_reg=8),
+        ),
+        block_serial_for_instruction_ea=lambda ea: {
+            source_ea: 42,
+            target_ea: 7,
+        }.get(ea),
+        current_block_serials=frozenset({7, 42}),
+        dispatcher_block_serials=frozenset({2}),
+        route_target_for_state=lambda _state: 7,
+        state_var_stkoff=52,
+        state_var_reg=None,
+        supported_state_identity=(52, 8),
+    )
+
+    assert [(route.fact_id, route.state_constant) for route in routes] == [
+        ("dispatcher", 0x16AA65E9)
+    ]
+
+
 @pytest.mark.parametrize("fact_id", ("", "   ", None))
 def test_native_bound_route_abstains_for_blank_or_invalid_fact_id(fact_id) -> None:
     binder = getattr(semantic_transition, "bind_native_bound_transition_routes", None)

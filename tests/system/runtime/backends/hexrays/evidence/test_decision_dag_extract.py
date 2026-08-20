@@ -142,6 +142,30 @@ def test_extract_routes_through_pure_internal_goto_alias():
     assert exact[0].path == (1, 2, 3)
 
 
+def test_extract_retains_pure_dispatcher_entry_alias_chain():
+    """A feeder may enter the pure prefix above the comparison root."""
+
+    blocks = {
+        2: _goto(4),
+        4: _goto(6),
+        6: _cmp(ida_hexrays.m_jz, 0x5F3E61FD, 110, 100),
+        100: _leaf(),
+        110: _leaf(),
+    }
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=2,
+        state_var_stkoff=STK,
+    )
+
+    assert dag.root == 6
+    assert set(dag.nodes) == {6}
+    assert dag.aliases == {2: 4, 4: 6}
+    assert dag.route_from(2, 0x5F3E61FD) == 110
+    assert dag.route_from(2, 0xDEADBEEF) == 100
+
+
 def test_extract_internal_alias_uses_stable_native_instruction_identity():
     """Distinct SWIG wrappers for one native GOTO must not look like two ops."""
 

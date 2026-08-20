@@ -362,6 +362,7 @@ class TestNativeMbaCorpusCapture:
                         description="manifest native provider capture",
                         # Keep the preloaded project's live provider objects;
                         # see the stale-adapter contract above.
+                        project="",
                         must_change=False,
                     ),
                     d810_state=selected_state,
@@ -607,6 +608,9 @@ class TestNativeMbaCorpusCapture:
         native_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
             description="native provider history capture",
+            # The surrounding selected-state context already owns the exact
+            # catalogue project and the history-bearing rule instances.
+            project="",
             must_change=True,
         )
         with d810_state() as state:
@@ -699,6 +703,7 @@ class TestNativeMbaCorpusCapture:
         native_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
             description="capture a real post-snapshot catalogue outcome",
+            project="",
             must_change=True,
         )
 
@@ -785,11 +790,13 @@ class TestNativeMbaCorpusCapture:
         first_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
             description="seed a real catalogue history outcome",
+            project="",
             must_change=True,
         )
         second_case = DeobfuscationCase(
             function="mba_shape_chain_01",
             description="produce a distinct real native profile",
+            project="",
             must_change=False,
         )
 

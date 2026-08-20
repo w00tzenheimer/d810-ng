@@ -64,11 +64,16 @@ from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.hexrays.ir_maturity import HexRaysMaturity, maturity_to_name
+from d810.hexrays.utils.hexrays_formatters import string_to_maturity
 from d810.hexrays.lifecycle import HEXRAYS_MICROCODE_PROVIDER
 from d810.optimizers import load_optimizer_registries
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
+)
+from d810.optimizers.microcode.handler import (
+    MaturityContractError,
+    validate_rule_maturity_contract,
 )
 from d810.passes.function_prior_config import (
     function_prior_keys,
@@ -77,6 +82,15 @@ from d810.passes.function_prior_config import (
 from d810.passes.function_priors import FunctionAnalysisPriors
 from d810.passes.inferences import unflattening_inference
 from d810.passes.execution_stages import ExecutionPipeline
+from d810.passes.constant_simplification import (
+    CONSTANT_SIMPLIFICATION_PASS_ID,
+    constant_simplification_provider_maturities,
+)
+from d810.passes.constant_simplification_options import (
+    CompiledConstantSimplificationSchedule,
+    ConstantPreparationOptions,
+)
+from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline_factory import (
@@ -621,6 +635,25 @@ def _maturity_name(maturity: int) -> str:
         return f"MMAT_{maturity}"
 
 
+class OptimizerRuntimeStateRestoreError(RuntimeError):
+    """Raised when a started optimizer cannot be restored after activation."""
+
+
+class OptimizerRuntimeStateCaptureError(RuntimeError):
+    """Raised when a live adapter does not expose the snapshot protocol."""
+
+
+class ManagerCleanupError(RuntimeError):
+    """One labelled failure from the full manager cleanup path."""
+
+    def __init__(self, label: str, error: BaseException):
+        self.label = label
+        self.original_error = error
+        super().__init__(
+            f"{label}: {type(error).__name__}: {error}"
+        )
+
+
 @dataclasses.dataclass
 class D810Manager:
     log_dir: pathlib.Path
@@ -671,6 +704,7 @@ class D810Manager:
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
     hx_decompiler_hook: HexraysDecompilationHook = dataclasses.field(init=False)
     _started: bool = dataclasses.field(default=False, init=False)
+    _runtime_invalidated: bool = dataclasses.field(default=False, init=False)
     _telemetry_lifecycle_stack: list[tuple[str, object, str, int, int]] = (
         dataclasses.field(
             default_factory=list,
@@ -728,6 +762,19 @@ class D810Manager:
     )
     _global_const_persistence_enabled: bool = dataclasses.field(
         default=False, init=False, repr=False
+    )
+    _constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    _explicitly_suppressed_rule_names: frozenset[str] = dataclasses.field(
+        default_factory=frozenset,
+        init=False,
+        repr=False,
+    )
+    _constant_preparation_options: ConstantPreparationOptions = dataclasses.field(
+        default_factory=ConstantPreparationOptions,
+        init=False,
+        repr=False,
     )
     _idb_preparation_journal: typing.Any = dataclasses.field(
         default=None, init=False, repr=False
@@ -793,6 +840,75 @@ class D810Manager:
     @property
     def started(self):
         return self._started
+
+    @property
+    def runtime_invalidated(self) -> bool:
+        """Whether a failed live activation forced this manager safe-invalid."""
+
+        return self._runtime_invalidated
+
+    def capture_started_optimizer_runtime_state(self) -> dict[str, object]:
+        """Capture both live optimizer adapters before a project switch.
+
+        The adapters own their explicit, allowlisted snapshots.  Keeping this
+        boundary strict prevents activation rollback from inspecting arbitrary
+        IDA/SWIG object attributes.
+        """
+
+        if not self.started:
+            return {}
+        snapshots: dict[str, object] = {}
+        for name in ("instruction_optimizer", "block_optimizer"):
+            adapter = getattr(self, name, None)
+            if adapter is None:
+                continue
+            capture = getattr(adapter, "capture_runtime_state", None)
+            restore = getattr(adapter, "restore_runtime_state", None)
+            if not callable(capture) or not callable(restore):
+                raise OptimizerRuntimeStateCaptureError(
+                    f"{name} adapter does not implement the runtime snapshot protocol"
+                )
+            snapshots[name] = {"adapter": adapter, "state": capture()}
+        return snapshots
+
+    def restore_started_optimizer_runtime_state(
+        self,
+        snapshots: dict[str, object],
+    ) -> None:
+        """Restore both live optimizer adapters, aggregating every failure."""
+
+        errors: list[tuple[str, BaseException]] = []
+        for name, raw_snapshot in snapshots.items():
+            snapshot = raw_snapshot  # type: ignore[assignment]
+            adapter = snapshot["adapter"]  # type: ignore[index]
+            try:
+                restore = getattr(adapter, "restore_runtime_state", None)
+                if not callable(restore):
+                    raise TypeError(
+                        f"{name} adapter lost the runtime snapshot protocol"
+                    )
+                restore(snapshot["state"])  # type: ignore[index]
+            except BaseException as exc:
+                errors.append((name, exc))
+        if errors:
+            details = "; ".join(
+                f"{name}: {type(error).__name__}: {error}"
+                for name, error in errors
+            )
+            raise OptimizerRuntimeStateRestoreError(
+                f"optimizer runtime restoration failed: {details}"
+            ) from errors[0][1]
+
+    def invalidate_runtime_after_activation_rollback(self) -> tuple[BaseException, ...]:
+        """Stop and explicitly invalidate hooks after lossless restore fails."""
+
+        self._runtime_invalidated = True
+        errors: list[BaseException] = []
+        try:
+            errors.extend(self.stop(full_cleanup=True))
+        except BaseException as exc:
+            errors.append(exc)
+        return tuple(errors)
 
     @property
     def profiler(self):
@@ -987,6 +1103,16 @@ class D810Manager:
                 mode=selected_mode,
             )
         return controller.prepare(int(function_ea), selected_mode)
+
+    def preparation_status(self):
+        """Return the portable pre-Hex preparation status snapshot."""
+
+        controller = getattr(self, "pre_hex_preparation", None)
+        if controller is None:
+            from d810.manager.pre_hexrays_preparation import PreparationStatusSnapshot
+
+            return PreparationStatusSnapshot()
+        return controller.status_snapshot()
 
     def restore_idb_preparation(self, transaction_id):
         """Restore one preparation transaction through the destructive gateway."""
@@ -1981,11 +2107,51 @@ class D810Manager:
 
     def _ensure_post_d810_runtime(self) -> HexRaysPostD810Runtime:
         if self._post_d810_runtime is None:
+            from d810.backends.hexrays.global_const_annotation import (
+                pending_global_const_proposals,
+            )
+            from d810.backends.hexrays.global_const_observer import GlobalConstObserver
+
+            # The pre-Hex preparation journal and proposal netnode are scoped
+            # by the durable IDB identity, not the project/configuration key.
+            # Reuse that same identity for the observer's pending lookup so a
+            # project switch cannot make one database's proposals appear
+            # pending in another database.
+            preparation = getattr(self, "pre_hex_preparation", None)
+            database_identity = getattr(
+                preparation,
+                "database_identity",
+                self._database_identity,
+            )
+            lifecycle = getattr(self, "decompilation_lifecycle", None)
+            current_mba_generation = getattr(
+                lifecycle,
+                "current_mba_generation",
+                None,
+            )
+            if callable(current_mba_generation):
+
+                def mba_generation_provider(
+                    function_ea: int,
+                    _provider=current_mba_generation,
+                ) -> int:
+                    return int(_provider(function_ea=int(function_ea)))
+
+            else:
+                mba_generation_provider = None
             self._post_d810_runtime = HexRaysPostD810Runtime(
                 preanalysis_runtime=self._preanalysis_runtime,
                 block_optimizer=self.block_optimizer,
                 maturity_name_provider=_maturity_name,
                 handoff_detector=detect_post_d810_handoff_violations,
+                global_const_observer=GlobalConstObserver(
+                    preparation_options=self._constant_preparation_options,
+                    database_identity=database_identity,
+                    pending_proposals=lambda: pending_global_const_proposals(
+                        database_identity=database_identity,
+                    ),
+                ),
+                mba_generation_provider=mba_generation_provider,
             )
         return self._post_d810_runtime
 
@@ -2046,6 +2212,7 @@ class D810Manager:
     def start(self):
         if self._started:
             self.stop()
+        self._runtime_invalidated = False
         logger.debug("Starting manager...")
         load_optimizer_registries()
         # Ensure side-effect registrants are loaded before manager construction.
@@ -2361,23 +2528,39 @@ class D810Manager:
             enabled=True,
             portable=True,
         )
-        persistence_enabled = self._global_const_persistence_enabled
+        preparation_options = self._constant_preparation_options
+
+        def _discover_type_proposals(function_ea: int):
+            return annotate_function_global_consts(
+                function_ea,
+                database_identity=database_identity,
+            )
+
+        def _pending_type_proposals():
+            return pending_global_const_proposals(
+                database_identity=database_identity,
+            )
+
+        def _acknowledge_type_proposals(proposals):
+            return acknowledge_global_const_proposals(
+                proposals,
+                database_identity=database_identity,
+            )
+
         self.pre_hex_preparation = PreHexPreparationController(
             database_identity=database_identity,
             scripts=tuple(self._preparation_scripts),
             gateway=gateway,
-            prepared_records=journal.prepared,
+            prepared_records=journal.transactions,
             transaction_type_deltas=journal.type_deltas,
-            discover_type_proposals=(
-                annotate_function_global_consts
-                if persistence_enabled
-                else lambda function_ea: None
-            ),
-            pending_type_proposals=(
-                pending_global_const_proposals if persistence_enabled else lambda: ()
-            ),
-            acknowledge_type_proposals=acknowledge_global_const_proposals,
+            # Keep the real IDA whole-item discovery callback installed for the
+            # lifetime of the controller.  Its current policy gates invocation
+            # so a project can enable preparation without reinstalling hooks.
+            discover_type_proposals=_discover_type_proposals,
+            pending_type_proposals=_pending_type_proposals,
+            acknowledge_type_proposals=_acknowledge_type_proposals,
             type_step_descriptor=type_step,
+            preparation_options=preparation_options,
         )
 
     def reconfigure_execution_callback_detail(self, callback_detail: str) -> None:
@@ -2843,8 +3026,17 @@ class D810Manager:
         }
         expanded: list[ExpandedExecutionStage] = []
         state_fallback_used = False
+        constant_schedule = self._constant_simplification_schedule
         for config in configs:
             for descriptor in registry.stages_for(config.pass_id):
+                constant_stage = None
+                if (
+                    constant_schedule is not None
+                    and str(config.pass_id) == str(CONSTANT_SIMPLIFICATION_PASS_ID)
+                ):
+                    constant_stage = constant_schedule.stage(str(descriptor.stage_id))
+                    if not constant_stage.enabled:
+                        continue
                 candidates = implementations[descriptor.pipeline]
                 implementation = next(
                     (
@@ -2855,6 +3047,12 @@ class D810Manager:
                     ),
                     None,
                 )
+                if (
+                    implementation is None
+                    and descriptor.implementation_name.lower()
+                    in self._explicitly_suppressed_rule_names
+                ):
+                    continue
                 if (
                     implementation is None
                     and not state_fallback_used
@@ -2870,11 +3068,55 @@ class D810Manager:
                         None,
                     )
                     state_fallback_used = implementation is not None
-                maturities = frozenset(
-                    int(value)
-                    for value in getattr(implementation, "maturities", ())
-                    if value is not None
-                )
+                if (
+                    constant_stage is not None
+                    and implementation is None
+                    and (self.instruction_optimizer_rules or self.block_optimizer_rules)
+                ):
+                    raise PipelineConfigError(
+                        f"{CONSTANT_SIMPLIFICATION_PASS_ID} stage "
+                        f"{constant_stage.stage_id} implementation "
+                        f"{constant_stage.implementation_name} is not registered"
+                    )
+                if constant_stage is not None:
+                    supported_names = constant_simplification_provider_maturities(
+                        constant_stage.supported_maturities
+                    )
+                    effective_names = constant_simplification_provider_maturities(
+                        constant_stage.effective_maturities
+                    )
+                    supported = tuple(string_to_maturity(name) for name in supported_names)
+                    effective = tuple(string_to_maturity(name) for name in effective_names)
+                    if any(value is None for value in (*supported, *effective)):
+                        raise PipelineConfigError(
+                            f"{CONSTANT_SIMPLIFICATION_PASS_ID} stage "
+                            f"{constant_stage.stage_id} has an unknown provider "
+                            "maturity spelling"
+                        )
+                    if implementation is not None:
+                        try:
+                            validate_rule_maturity_contract(
+                                implementation,
+                                pass_id=CONSTANT_SIMPLIFICATION_PASS_ID,
+                                stage_id=constant_stage.stage_id,
+                                expected_supported=tuple(
+                                    value for value in supported if value is not None
+                                ),
+                                expected_effective=tuple(
+                                    value for value in effective if value is not None
+                                ),
+                            )
+                        except MaturityContractError as exc:
+                            raise PipelineConfigError(str(exc)) from exc
+                    maturities = frozenset(
+                        int(value) for value in effective if value is not None
+                    )
+                else:
+                    maturities = frozenset(
+                        int(value)
+                        for value in getattr(implementation, "maturities", ())
+                        if value is not None
+                    )
                 expanded.append(
                     ExpandedExecutionStage(
                         descriptor=descriptor,
@@ -2941,7 +3183,10 @@ class D810Manager:
         try:
             callback(*args)
             return True
-        except BaseException:
+        except BaseException as exc:
+            cleanup_errors = getattr(self, "_cleanup_errors", None)
+            if isinstance(cleanup_errors, list):
+                cleanup_errors.append((label, exc))
             try:
                 logger.exception("Decompilation lifecycle cleanup failed: %s", label)
             except BaseException:
@@ -3789,6 +4034,10 @@ class D810Manager:
         )
         self.event_emitter.on(
             DecompilationEvent.POST_D810_CAPTURE,
+            self._ensure_post_d810_runtime().observe_global_const_types,
+        )
+        self.event_emitter.on(
+            DecompilationEvent.POST_D810_CAPTURE,
             self._ensure_post_d810_runtime().attach_rendered_program,
         )
         self.event_emitter.on(
@@ -3876,26 +4125,182 @@ class D810Manager:
     def configure_instruction_optimizer(self, rules, **kwargs):
         self.instruction_optimizer_rules = list(rules)
         self.instruction_optimizer_config = kwargs
+        if self.started:
+            self._replace_started_instruction_rules(self.instruction_optimizer_rules)
 
     def configure_preparation_scripts(
         self,
         scripts,
         *,
         global_const_persistence_enabled: bool = False,
+        constant_preparation_options: ConstantPreparationOptions | None = None,
     ) -> None:
         self._preparation_scripts = tuple(scripts)
-        self._global_const_persistence_enabled = bool(global_const_persistence_enabled)
+        if constant_preparation_options is None:
+            constant_preparation_options = (
+                self._constant_simplification_schedule.preparation
+                if self._constant_simplification_schedule is not None
+                else ConstantPreparationOptions(
+                    enabled=bool(global_const_persistence_enabled)
+                )
+            )
+        if not isinstance(constant_preparation_options, ConstantPreparationOptions):
+            raise TypeError(
+                "constant_preparation_options must be ConstantPreparationOptions"
+            )
+        self._constant_preparation_options = constant_preparation_options
+        self._global_const_persistence_enabled = bool(
+            constant_preparation_options.enabled
+        )
+        controller = getattr(self, "pre_hex_preparation", None)
+        if controller is not None:
+            controller.configure_preparation_options(constant_preparation_options)
+        runtime = getattr(self, "_post_d810_runtime", None)
+        observer = getattr(runtime, "global_const_observer", None)
+        if observer is not None:
+            observer.configure(constant_preparation_options)
+
+    def configure_constant_simplification_schedule(
+        self,
+        schedule: CompiledConstantSimplificationSchedule | None,
+    ) -> None:
+        """Install the immutable constant-stage schedule for live scoping."""
+
+        self._constant_simplification_schedule = schedule
+        preparation_options = (
+            schedule.preparation
+            if schedule is not None
+            else ConstantPreparationOptions()
+        )
+        self._constant_preparation_options = preparation_options
+        self._global_const_persistence_enabled = bool(preparation_options.enabled)
+        controller = getattr(self, "pre_hex_preparation", None)
+        if controller is not None:
+            controller.configure_preparation_options(preparation_options)
+        runtime = getattr(self, "_post_d810_runtime", None)
+        observer = getattr(runtime, "global_const_observer", None)
+        if observer is not None:
+            observer.configure(preparation_options)
 
     def configure_block_optimizer(self, rules, **kwargs):
         self.block_optimizer_rules = list(rules)
         self.block_optimizer_config = kwargs
+        if self.started:
+            self._replace_started_block_rules(self.block_optimizer_rules)
+
+    def _replace_started_instruction_rules(self, rules) -> None:
+        """Replace the rules owned by the already-installed instruction hook.
+
+        ``D810State`` keeps the portable project selection and the manager's
+        live hook collections in separate layers.  A project switch must update
+        both layers; otherwise the execution scope can name a newly enabled
+        implementation that the hook never registered.  Older adapter objects
+        do not expose a public replacement method, so the compatibility path
+        clears their registration stores before adding the candidate set.
+        """
+
+        optimizer = getattr(self, "instruction_optimizer", None)
+        if optimizer is None:
+            return
+        replace_rules = getattr(optimizer, "replace_rules", None)
+        if callable(replace_rules):
+            replace_rules(rules)
+            optimizer._active_optimizers = []
+            optimizer._active_instruction_rule_names_by_maturity.clear()
+            optimizer._execution_scope_func_ea = -1
+            invalidate_cache = getattr(
+                optimizer, "_invalidate_residual_admission_cache", None
+            )
+            if callable(invalidate_cache):
+                invalidate_cache()
+            for child in (
+                list(getattr(optimizer, "instruction_optimizers", ()) or ())
+                + [getattr(optimizer, "analyzer", None)]
+            ):
+                invalidate = getattr(child, "invalidate", None)
+                if callable(invalidate):
+                    invalidate()
+            return
+
+        children = list(getattr(optimizer, "instruction_optimizers", ()))
+        analyzer = getattr(optimizer, "analyzer", None)
+        if analyzer is not None:
+            children.append(analyzer)
+        for child in children:
+            collection = getattr(child, "rules", None)
+            if collection is not None:
+                clear = getattr(collection, "clear", None)
+                if callable(clear):
+                    clear()
+                elif hasattr(collection, "_rules"):
+                    collection._rules.clear()
+            if hasattr(child, "pattern_storage"):
+                child.pattern_storage = type(child.pattern_storage)(depth=1)
+            if hasattr(child, "_indexed_storage"):
+                child._indexed_storage = type(child._indexed_storage)()
+            structural_rules = getattr(child, "_structural_rules_by_root_opcode", None)
+            if structural_rules is not None:
+                structural_rules.clear()
+            allowed_opcodes = getattr(child, "_allowed_root_opcodes", None)
+            if allowed_opcodes is not None:
+                allowed_opcodes.clear()
+            if hasattr(child, "_has_patternless_rule"):
+                child._has_patternless_rule = False
+            if hasattr(child, "_compiled_view"):
+                child._compiled_view = None
+            if hasattr(child, "_generation"):
+                child._generation += 1
+        optimizer._active_optimizers = []
+        optimizer._active_instruction_rule_names_by_maturity.clear()
+        optimizer._execution_scope_func_ea = -1
+        invalidate_cache = getattr(optimizer, "_invalidate_residual_admission_cache", None)
+        if callable(invalidate_cache):
+            invalidate_cache()
+        add_rule = getattr(optimizer, "add_rule", None)
+        if callable(add_rule):
+            for rule in rules:
+                add_rule(rule)
+
+    def _replace_started_block_rules(self, rules) -> None:
+        """Replace the rules owned by the already-installed block hook."""
+
+        optimizer = getattr(self, "block_optimizer", None)
+        if optimizer is None:
+            return
+        replace_rules = getattr(optimizer, "replace_rules", None)
+        if callable(replace_rules):
+            replace_rules(rules)
+            invalidate_context = getattr(optimizer, "_invalidate_flow_context", None)
+            if callable(invalidate_context):
+                invalidate_context("project rule collection replaced")
+            reset_pipeline = getattr(optimizer, "reset_pipeline_tracker", None)
+            if callable(reset_pipeline):
+                reset_pipeline()
+            return
+        optimizer.cfg_rules = list(rules)
+        configure_scheduler = getattr(optimizer, "_configure_rule_scheduler", None)
+        configure_project = getattr(optimizer, "_configure_rule_project_config", None)
+        for rule in optimizer.cfg_rules:
+            if callable(configure_scheduler):
+                configure_scheduler(rule)
+            if callable(configure_project):
+                configure_project(rule)
+        invalidate_context = getattr(optimizer, "_invalidate_flow_context", None)
+        if callable(invalidate_context):
+            invalidate_context("project rule collection replaced")
+        reset_pipeline = getattr(optimizer, "reset_pipeline_tracker", None)
+        if callable(reset_pipeline):
+            reset_pipeline()
 
     def configure_ctree_optimizer(self, rules, **kwargs):
         self.ctree_optimizer_rules = list(rules)
         self.ctree_optimizer_config = kwargs
 
-    def stop(self):
-        if not self._started:
+    def stop(self, *, full_cleanup: bool = False):
+        cleanup_errors: list[tuple[str, BaseException]] = []
+        if full_cleanup:
+            self._cleanup_errors = cleanup_errors
+        if not self._started and not full_cleanup:
             telemetry_active = self._discard_telemetry_lifecycle()
             if telemetry_active:
                 self._safe_lifecycle_step(
@@ -3930,7 +4335,7 @@ class D810Manager:
                 self._idb_preparation_journal = None
             self._idb_preparation_gateway = None
             self.pre_hex_preparation = None
-            return
+            return None
         self._started = False
         telemetry_active = self._discard_telemetry_lifecycle()
         self._safe_lifecycle_step("profiling.stop", self.stop_profiling)
@@ -3957,28 +4362,37 @@ class D810Manager:
             "frontend.uninstall",
             _uninstall_frontend_normalization,
         )
-        self._safe_lifecycle_step(
-            "instruction.remove",
-            self.instruction_optimizer.remove,
+        instruction_remove = getattr(
+            getattr(self, "instruction_optimizer", None), "remove", None
         )
-        self._safe_lifecycle_step("block.remove", self.block_optimizer.remove)
-        self._safe_lifecycle_step("hooks.unhook", self.hx_decompiler_hook.unhook)
-        if self._analysis_runtime is not None:
+        if callable(instruction_remove):
+            self._safe_lifecycle_step("instruction.remove", instruction_remove)
+        block_remove = getattr(getattr(self, "block_optimizer", None), "remove", None)
+        if callable(block_remove):
+            self._safe_lifecycle_step("block.remove", block_remove)
+        hook_unhook = getattr(getattr(self, "hx_decompiler_hook", None), "unhook", None)
+        if callable(hook_unhook):
+            self._safe_lifecycle_step("hooks.unhook", hook_unhook)
+        analysis_runtime = getattr(self, "_analysis_runtime", None)
+        flush_active_session = getattr(analysis_runtime, "flush_active_session", None)
+        if callable(flush_active_session):
             self._safe_lifecycle_step(
                 "analysis.flush_active_session",
-                self._analysis_runtime.flush_active_session,
+                flush_active_session,
             )
         self._safe_lifecycle_step("writers.shutdown", shutdown_all_writers)
         execution_scope_service = getattr(self, "execution_scope_service", None)
         detach = getattr(execution_scope_service, "detach", None)
         if callable(detach):
             self._safe_lifecycle_step("execution_scope.detach", detach)
-        self._safe_lifecycle_step("event_emitter.clear", self.event_emitter.clear)
+        event_clear = getattr(getattr(self, "event_emitter", None), "clear", None)
+        if callable(event_clear):
+            self._safe_lifecycle_step("event_emitter.clear", event_clear)
         self._safe_lifecycle_step(
             "executor.clear",
             _clear_indirect_materialization_executor,
         )
-        native_patch_journal = self._native_patch_journal
+        native_patch_journal = getattr(self, "_native_patch_journal", None)
         if native_patch_journal is not None:
             self._safe_lifecycle_step(
                 "native.patch.close",
@@ -3996,23 +4410,32 @@ class D810Manager:
             self._idb_preparation_journal = None
         self._idb_preparation_gateway = None
         self.pre_hex_preparation = None
-        native_patch_execution_journal = self._native_patch_execution_journal
+        native_patch_execution_journal = getattr(
+            self, "_native_patch_execution_journal", None
+        )
         if native_patch_execution_journal is not None:
             self._safe_lifecycle_step(
                 "native.execution.close",
                 native_patch_execution_journal.close,
             )
             self._native_patch_execution_journal = None
-        self._safe_lifecycle_step(
-            "function_storage.close",
-            self.function_storage_runtime.close,
-        )
-        analysis_bundle = self._analysis_bundle
+        function_storage = getattr(self, "function_storage_runtime", None)
+        function_storage_close = getattr(function_storage, "close", None)
+        if callable(function_storage_close):
+            self._safe_lifecycle_step("function_storage.close", function_storage_close)
+        analysis_bundle = getattr(self, "_analysis_bundle", None)
         if analysis_bundle is not None:
             self._safe_lifecycle_step("analysis.bundle.close", analysis_bundle.close)
             self._analysis_bundle = None
         self._preanalysis_runtime = None
         self._analysis_runtime = None
+        lifecycle = getattr(self, "decompilation_lifecycle", None)
+        finish_hexrays_session = getattr(lifecycle, "finish_hexrays_session", None)
+        if callable(finish_hexrays_session):
+            self._safe_lifecycle_step(
+                "decompilation.lifecycle.finish",
+                finish_hexrays_session,
+            )
         self.decompilation_lifecycle = None
         self._post_d810_runtime = None
         self._recon_phase = None
@@ -4021,6 +4444,15 @@ class D810Manager:
         self._flowgraph_ready_subscriber = None
         self._stage_c_topology_consumer = None
         self._database_identity = ""
+        if full_cleanup:
+            self._cleanup_errors = cleanup_errors
+            errors = tuple(
+                ManagerCleanupError(label, error)
+                for label, error in cleanup_errors
+            )
+            del self._cleanup_errors
+            return errors
+        return None
 
 
 @contextlib.contextmanager

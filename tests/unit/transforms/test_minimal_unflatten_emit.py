@@ -588,6 +588,111 @@ def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
     assert (0, 2, 10) in gotos
 
 
+def test_native_cfg_persistence_keeps_exact_terminal_alias_anchor() -> None:
+    """A logical STOP route must retain its current native GOTO anchor."""
+
+    terminal_goto = InsnSnapshot(
+        opcode=0x37,
+        ea=0x1800021FB,
+        native_ea=0x1800021FB,
+        operands=(),
+        kind=InsnKind.GOTO,
+    )
+    graph = FlowGraph(
+        blocks={
+            2: _b(2, (8,), (8,)),
+            5: BlockSnapshot(
+                serial=5,
+                block_type=0,
+                succs=(9,),
+                preds=(),
+                flags=0,
+                start_ea=0x1800021FB,
+                native_start_ea=0x1800021FB,
+                insn_snapshots=(terminal_goto,),
+            ),
+            8: _b(8, (2,), (2,), (_mov_state(0x180002231, 0x3C8960A9),)),
+            9: BlockSnapshot(
+                serial=9,
+                block_type=1,
+                succs=(),
+                preds=(5,),
+                flags=0,
+                start_ea=0xFFFFFFFFFFFFFFFF,
+                native_start_ea=None,
+                insn_snapshots=(),
+            ),
+        },
+        entry_serial=2,
+        func_ea=0x1800021D0,
+    )
+    dispatcher = _disp({}, exit_block=9)
+    transition = StateWriteTransition(
+        write_block=8,
+        next_state=0x3C8960A9,
+        target_handler=9,
+        is_return=True,
+        branch_arm=None,
+        proof=TransitionProof(
+            "decision_dag_state_route_reconciliation",
+            "decision_dag_reconciled",
+            True,
+        ),
+    )
+
+    legacy = build_state_write_redirects(
+        graph,
+        dispatcher,
+        (transition,),
+        dispatcher_entry_serial=2,
+        pre_header_serial=None,
+        initial_state=None,
+    )
+    assert [
+        (item.from_serial, item.old_target, item.new_target)
+        for item in legacy
+        if isinstance(item, RedirectGoto)
+    ] == [(8, 2, 9)]
+
+    modifications = build_state_write_redirects(
+        graph,
+        dispatcher,
+        (transition,),
+        dispatcher_entry_serial=2,
+        pre_header_serial=None,
+        initial_state=None,
+        prefer_native_terminal_aliases=True,
+        decision_dag_aliases={5: 9},
+    )
+
+    assert [
+        (item.from_serial, item.old_target, item.new_target)
+        for item in modifications
+        if isinstance(item, RedirectGoto)
+    ] == [(8, 2, 5)]
+
+    one_sided = FlowGraph(
+        {**graph.blocks, 9: replace(graph.get_block(9), preds=())},
+        graph.entry_serial,
+        graph.func_ea,
+    )
+    malformed = build_state_write_redirects(
+        one_sided,
+        dispatcher,
+        (transition,),
+        dispatcher_entry_serial=2,
+        pre_header_serial=None,
+        initial_state=None,
+        prefer_native_terminal_aliases=True,
+        decision_dag_aliases={5: 9},
+    )
+    assert [
+        (item.from_serial, item.old_target, item.new_target)
+        for item in malformed
+        if isinstance(item, RedirectGoto)
+    ] == [(8, 2, 9)]
+
+
 def _native_bound_route(*, source: int, state: int, target: int, fact_id: str = "fact"):
     return NativeBoundTransitionRoute(
         fact_id=fact_id,
@@ -930,6 +1035,70 @@ def test_native_bound_route_recovers_initial_state_and_entry_bridge(monkeypatch)
         if isinstance(mod, RedirectGoto)
     }
     assert (0, 2, 20) in gotos
+
+
+def test_native_bound_routes_seed_missing_current_backedge_transition(
+    monkeypatch,
+) -> None:
+    """Current native bindings can seed a direct router backedge when recovery is empty."""
+    entry_state = 0x16AA65E9
+    backedge_state = 0x079323F9
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 20), (1, 11)),
+            10: _b(10, (11,), (2,)),
+            11: _b(11, (2,), (10,)),
+            20: _b(20, (), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _disp({entry_state: 10, backedge_state: 20}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (),
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=entry_state,
+        native_bound_transition_routes=(
+            _native_bound_route(
+                source=1,
+                state=entry_state,
+                target=10,
+                fact_id="entry",
+            ),
+            _native_bound_route(
+                source=11,
+                state=backedge_state,
+                target=20,
+                fact_id="backedge",
+            ),
+        ),
+        condition_chain_handlers=frozenset({10, 20}),
+        authoritative_handler_serials=frozenset({10, 20}),
+        dispatcher_region_serials=frozenset({2}),
+    )
+
+    gotos = {
+        (mod.from_serial, mod.old_target, mod.new_target)
+        for mod in graph_modifications(plan)
+        if isinstance(mod, RedirectGoto)
+    }
+    assert gotos >= {(1, 2, 10), (11, 2, 20)}
+    assert {
+        receipt["fact_id"]
+        for receipt in plan.metadata_dict()[
+            NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA
+        ]
+    } == {"entry", "backedge"}
 
 
 def test_native_bound_route_receipt_is_absent_after_use_def_veto(

@@ -558,9 +558,11 @@ class PatternOptimizer(InstructionOptimizer):
         blk: ida_hexrays.mblock_t,
         ins: ida_hexrays.minsn_t,
         *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
+        del contextual_anchor_ins
         self._pending_replacement_rule = None
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
@@ -640,6 +642,21 @@ class PatternOptimizer(InstructionOptimizer):
             return None
         if ins.opcode not in self._tracker_resolution_opcodes:
             return None
+        # The tracker fallback is deliberately unavailable before LOCOPT. This
+        # is a lifecycle boundary for trustworthy native operand/version
+        # provenance, not an assertion about when Hex-Rays can build UD/DU
+        # chains. At PREOPT a physical register leaf can denote a value that
+        # the root instruction has already overwritten; replaying that leaf in
+        # a replacement is unsound even when the algebraic pattern itself is
+        # valid.
+        maturity = getattr(getattr(blk, "mba", None), "maturity", None)
+        if maturity is None:
+            maturity = getattr(self, "cur_maturity", None)
+        try:
+            if maturity is None or int(maturity) <= int(ida_hexrays.MMAT_PREOPTIMIZED):
+                return None
+        except (TypeError, ValueError):
+            return None
         try:
             # Reuse the tracker-aware AST resolver already used by Z3 helpers.
             from d810.evaluator.hexrays_microcode.def_search import (
@@ -653,14 +670,24 @@ class PatternOptimizer(InstructionOptimizer):
             )
         except Exception:
             return None
+        trace_tracker_resolution = bool(
+            getattr(self, "_trace_tracker_resolution", False)
+        )
         if resolved is None or resolved is ast:
-            if self._trace_tracker_resolution:
+            if trace_tracker_resolution:
                 optimizer_logger.info(
                     "[PatternOptimizer] tracker unresolved for %s",
                     format_minsn_t(ins),
                 )
             return None
-        if self._trace_tracker_resolution:
+        if not self._has_usable_tracker_provenance(ins, resolved):
+            if trace_tracker_resolution:
+                optimizer_logger.info(
+                    "[PatternOptimizer] tracker provenance unavailable for %s; refusing fallback",
+                    format_minsn_t(ins),
+                )
+            return None
+        if trace_tracker_resolution:
             optimizer_logger.info(
                 "[PatternOptimizer] tracker resolved %s -> %s",
                 format_minsn_t(ins),
@@ -673,6 +700,105 @@ class PatternOptimizer(InstructionOptimizer):
                 resolved,
             )
         return resolved
+
+    @staticmethod
+    def _storage_version(mop: object) -> tuple[tuple[str, int], int] | None:
+        """Extract a versioned register/stack identity from a native or snapshot mop.
+
+        ``recursively_resolve_ast`` normally leaves ``MopSnapshot`` instances
+        on AST leaves, while the root instruction still carries a live
+        ``mop_t``. Keep this duck-typed so both representations are accepted
+        without materializing a borrowed mop. Missing value numbers are
+        intentionally not treated as equivalent: they are unknown provenance.
+        """
+
+        try:
+            mop_type = int(getattr(mop, "t"))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        try:
+            value_number = int(getattr(mop, "valnum"))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if value_number <= 0:
+            return None
+
+        if mop_type == ida_hexrays.mop_r:
+            register = getattr(mop, "r", None)
+            if register is None:
+                register = getattr(mop, "reg", None)
+            try:
+                return ("r", int(register)), value_number
+            except (TypeError, ValueError):
+                return None
+
+        if mop_type == ida_hexrays.mop_S:
+            stack_offset = getattr(mop, "stkoff", None)
+            if stack_offset is None:
+                stack = getattr(mop, "s", None)
+                stack_offset = getattr(stack, "off", None)
+            try:
+                return ("S", int(stack_offset)), value_number
+            except (TypeError, ValueError):
+                return None
+
+        return None
+
+    @classmethod
+    def _has_usable_tracker_provenance(
+        cls,
+        ins: ida_hexrays.minsn_t,
+        resolved: AstBase,
+    ) -> bool:
+        """Prove that a tracker AST can replay without borrowed-mop aliasing.
+
+        Every non-constant register/stack leaf must carry a positive native
+        value number. The rewritten instruction destination must carry one as
+        well, and a leaf that aliases that destination must be an explicitly
+        older version. This distinguishes a safe LOCOPT+ versioned replacement
+        from the PREOPT corruption where a borrowed register is read after it
+        has been overwritten.
+        """
+
+        destination = cls._storage_version(getattr(ins, "d", None))
+        if destination is None:
+            return False
+        destination_storage, destination_version = destination
+
+        try:
+            leaves = resolved.get_leaf_list()
+        except Exception:
+            return False
+        for leaf in leaves:
+            mop = getattr(leaf, "mop", None)
+            if mop is None:
+                # Computed constants are allowed to have no native mop. Any
+                # other unbound leaf would make a tracker replacement guess.
+                try:
+                    if leaf.is_constant():
+                        continue
+                except Exception:
+                    pass
+                return False
+            try:
+                mop_type = int(getattr(mop, "t"))
+            except (AttributeError, TypeError, ValueError):
+                return False
+            if mop_type == ida_hexrays.mop_n:
+                continue
+            if mop_type not in (ida_hexrays.mop_r, ida_hexrays.mop_S):
+                continue
+
+            source = cls._storage_version(mop)
+            if source is None:
+                return False
+            source_storage, source_version = source
+            if (
+                source_storage == destination_storage
+                and source_version >= destination_version
+            ):
+                return False
+        return True
 
     def _get_candidates(self, ast: AstBase) -> list[RulePatternInfo]:
         structural: list[RulePatternInfo] = []

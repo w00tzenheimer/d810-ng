@@ -532,6 +532,27 @@ def test_typed_field_actions_normalize_values_without_mutating_other_options():
     }
 
 
+def test_constant_stage_canonical_options_are_read_by_typed_editor_field():
+    field = FieldEditorSpec(
+        field_id="stages.fold-readonly-data.memory_policy",
+        label="Memory policy",
+        path=("stages", "fold-readonly-data", "memory_policy"),
+        control=FieldControlKind.ENUM,
+        choices=("strict", "aggressive_no_direct_writes"),
+        default="strict",
+    )
+    assert logic.typed_field_option_value(
+        {
+            "stages": {
+                "fold-readonly-data": {
+                    "memory_policy": "aggressive_no_direct_writes",
+                }
+            },
+        },
+        field,
+    ) == "aggressive_no_direct_writes"
+
+
 def test_typed_field_actions_reject_out_of_contract_values() -> None:
     field = FieldEditorSpec(
         field_id="max_leaves",
@@ -544,6 +565,35 @@ def test_typed_field_actions_reject_out_of_contract_values() -> None:
 
     with pytest.raises(ValueError, match="Maximum leaves"):
         logic.apply_typed_field_option({}, field, 17)
+
+
+def test_choice_backed_string_lists_normalize_in_declared_choice_order() -> None:
+    field = FieldEditorSpec(
+        field_id="maturities",
+        label="Maturities",
+        path=("stages", "fold-readonly-data", "maturities"),
+        control=FieldControlKind.STRING_LIST,
+        choices=("CANONICAL", "LOCAL_OPTIMIZED", "CALL_MODELED"),
+    )
+
+    assert logic.apply_typed_field_option(
+        {}, field, ["CALL_MODELED", "CANONICAL"]
+    ) == {
+        "stages": {"fold-readonly-data": {"maturities": ["CANONICAL", "CALL_MODELED"]}}
+    }
+
+
+def test_choice_backed_string_lists_reject_unknown_values() -> None:
+    field = FieldEditorSpec(
+        field_id="maturities",
+        label="Maturities",
+        path=("maturities",),
+        control=FieldControlKind.STRING_LIST,
+        choices=("CANONICAL", "LOCAL_OPTIMIZED"),
+    )
+
+    with pytest.raises(ValueError, match="declared choices"):
+        logic.apply_typed_field_option({}, field, ["CANONICAL", "STRUCTURED"])
 
 
 def test_editor_routing_raw_document_and_footer_are_lossless_and_current():

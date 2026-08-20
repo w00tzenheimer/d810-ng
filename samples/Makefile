@@ -335,11 +335,12 @@ bins:
 
 # Build target - MSVC/clang-cl vs GCC/Clang
 ifeq ($(USING_CLANG_CL),1)
-$(AUTO_EXPORTS_RSP): $(OBJS) | bins
+$(AUTO_EXPORTS_RSP): $(OBJS) $(MASM_ASM) | bins
 	@echo "Generating auto-export list ($@)"
 	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate_auto_exports.ps1 \
 		-OutFile "$@" \
-		-Objects "$(OBJS)"
+		-Objects "$(OBJS)" \
+		-MasmSources "$(MASM_ASM)"
 
 $(TARGET_LIB): $(OBJS) $(MASM_OBJS) $(AUTO_EXPORTS_RSP)
 	@echo "Linking $(TARGET_LIB)"
@@ -349,7 +350,8 @@ $(TARGET_LIB): $(OBJS) $(MASM_OBJS) $(AUTO_EXPORTS_RSP)
 	$(CC) /nologo $(CFLAGS) /c /Fo:$@ $<
 
 # Assemble hand-written MASM functions (MSVC-COFF). ml64 and llvm-ml64 share
-# this CLI; the resulting .obj links cleanly with link.exe (clang-cl path).
+# this CLI, but the complete fixture corpus is validated with Microsoft ml64;
+# individual sources may use directives that llvm-ml64 does not implement.
 # A raw IDA "Produce assembly file" listing is auto-converted to compilable MASM.
 # Committed src/masm/*.asm must be COMPILABLE MASM produced by the in-IDA
 # "Export disassembly -> MASM" action (materialized data). Notes:

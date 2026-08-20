@@ -13,29 +13,32 @@ from d810.core.pass_editor_spec import (
     FieldEditorSpec,
     PassEditorSpec,
 )
+from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PipelineConfig,
-    PipelineConfigError,
     PipelinePass,
     PassResult,
 )
 from d810.passes.registry import PassRegistry
-from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
+from d810.passes.execution_stages import (
+    ExecutionPipeline,
+    ExecutionStageDescriptor,
+)
+from d810.passes.constant_simplification_options import (
+    AGGRESSIVE_MEMORY_POLICY as COMPILED_AGGRESSIVE_MEMORY_POLICY,
+    CompiledConstantSimplificationSchedule,
+    CompiledConstantStage,
+    STRICT_MEMORY_POLICY as COMPILED_STRICT_MEMORY_POLICY,
+    StageLifecycleDomain,
+    _PROVIDER_BY_IR,
+    compile_constant_simplification_schedule,
+)
 
 #: Back-reference to the shared vocabulary; see :mod:`d810.core.pass_ids`.
 CONSTANT_SIMPLIFICATION_PASS_ID = PassId.CONSTANT_SIMPLIFICATION
-STRICT_MEMORY_POLICY = "strict"
-AGGRESSIVE_MEMORY_POLICY = "aggressive_no_direct_writes"
-_MEMORY_POLICIES = frozenset({STRICT_MEMORY_POLICY, AGGRESSIVE_MEMORY_POLICY})
-_OPTION_NAMES = frozenset(
-    {
-        "memory_policy",
-        "allow_executable_readonly",
-        "rva_guard",
-        "persist_global_const_annotations",
-    }
-)
+STRICT_MEMORY_POLICY = COMPILED_STRICT_MEMORY_POLICY
+AGGRESSIVE_MEMORY_POLICY = COMPILED_AGGRESSIVE_MEMORY_POLICY
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,53 +67,69 @@ class ConstantSimplificationHookRules:
 class ConstantSimplificationPass(PipelinePass):
     """Portable descriptor; the live hook bridge executes its private stages."""
 
-    options: ConstantSimplificationOptions
+    options: CompiledConstantSimplificationSchedule
     name: str = CONSTANT_SIMPLIFICATION_PASS_ID
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
         return PassResult()
 
 
-def _parse_options(config: PipelineConfig) -> ConstantSimplificationOptions:
-    if config.pass_id != CONSTANT_SIMPLIFICATION_PASS_ID:
-        raise PipelineConfigError(
-            f"expected {CONSTANT_SIMPLIFICATION_PASS_ID!r}, got {config.pass_id!r}"
-        )
-    unknown = tuple(sorted(set(config.options) - _OPTION_NAMES))
-    if unknown:
-        raise PipelineConfigError(
-            f"constant-simplification has unknown options: {list(unknown)}"
-        )
-    memory_policy = config.options.get("memory_policy", STRICT_MEMORY_POLICY)
-    if not isinstance(memory_policy, str) or memory_policy not in _MEMORY_POLICIES:
-        raise PipelineConfigError(
-            "constant-simplification options.memory_policy must be one of: "
-            f"{', '.join(sorted(_MEMORY_POLICIES))}"
-        )
-    dangerous = config.options.get("allow_executable_readonly", False)
-    if not isinstance(dangerous, bool):
-        raise PipelineConfigError(
-            "constant-simplification options.allow_executable_readonly must be boolean"
-        )
-    rva_guard = config.options.get("rva_guard", True)
-    if not isinstance(rva_guard, bool):
-        raise PipelineConfigError(
-            "constant-simplification options.rva_guard must be boolean"
-        )
-    persist_global_const_annotations = config.options.get(
-        "persist_global_const_annotations", False
+def _parse_options(config: PipelineConfig) -> CompiledConstantSimplificationSchedule:
+    return compile_constant_simplification_schedule(
+        config,
+        constant_simplification_stage_descriptors(),
     )
-    if not isinstance(persist_global_const_annotations, bool):
-        raise PipelineConfigError(
-            "constant-simplification options.persist_global_const_annotations "
-            "must be boolean"
-        )
-    return ConstantSimplificationOptions(
-        memory_policy=memory_policy,
-        allow_executable_readonly=dangerous,
-        persist_global_const_annotations=persist_global_const_annotations,
-        rva_guard=rva_guard,
-    )
+
+
+def constant_simplification_stage_descriptors() -> tuple[ExecutionStageDescriptor, ...]:
+    """Return the portable registration authority for the three live stages."""
+
+    return _CONSTANT_STAGE_DESCRIPTORS
+
+
+_CONSTANT_STAGE_DESCRIPTORS = (
+    ExecutionStageDescriptor(
+        CONSTANT_SIMPLIFICATION_PASS_ID,
+        "fold-readonly-data",
+        ExecutionPipeline.INSTRUCTION,
+        "FoldReadonlyDataRule",
+        lifecycle_domain=StageLifecycleDomain.MICROCODE,
+        supported_maturities=(
+            IRMaturity.CANONICAL,
+            IRMaturity.LOCAL_OPTIMIZED,
+            IRMaturity.CALL_MODELED,
+            IRMaturity.GLOBAL_ANALYZED,
+            IRMaturity.STRUCTURED,
+        ),
+    ),
+    ExecutionStageDescriptor(
+        CONSTANT_SIMPLIFICATION_PASS_ID,
+        "fold-constant-subtree",
+        ExecutionPipeline.INSTRUCTION,
+        "ConstantSubtreeFoldRule",
+        lifecycle_domain=StageLifecycleDomain.MICROCODE,
+        supported_maturities=(
+            IRMaturity.LOCAL_OPTIMIZED,
+            IRMaturity.CALL_MODELED,
+            IRMaturity.GLOBAL_ANALYZED,
+            IRMaturity.GLOBAL_OPTIMIZED,
+            IRMaturity.STRUCTURED,
+        ),
+    ),
+    ExecutionStageDescriptor(
+        CONSTANT_SIMPLIFICATION_PASS_ID,
+        "forward-constants",
+        ExecutionPipeline.FLOW,
+        "ForwardConstantPropagationRule",
+        lifecycle_domain=StageLifecycleDomain.MICROCODE,
+        supported_maturities=(
+            IRMaturity.CALL_MODELED,
+            IRMaturity.GLOBAL_ANALYZED,
+            IRMaturity.GLOBAL_OPTIMIZED,
+            IRMaturity.STRUCTURED,
+        ),
+    ),
+)
 
 
 def build_constant_simplification_pass(
@@ -128,36 +147,100 @@ def _rule(name: str, options: dict[str, object] | None = None) -> RuleConfigurat
     )
 
 
+def constant_simplification_provider_maturities(
+    maturities: tuple[IRMaturity, ...],
+) -> tuple[str, ...]:
+    """Map compiled portable maturities to the private Hex-Rays vocabulary.
+
+    The compiled schedule remains the authority.  This is only the one-way
+    spelling conversion required at the private rule boundary.
+    """
+
+    try:
+        return tuple(_PROVIDER_BY_IR[maturity] for maturity in maturities)
+    except KeyError as exc:
+        raise ValueError(
+            f"constant-simplification has no provider maturity for {exc.args[0]!r}"
+        ) from exc
+
+
+def _constant_stage_rule_config(
+    stage: CompiledConstantStage,
+    *,
+    forward_constant_options: dict[str, object] | None,
+) -> RuleConfiguration:
+    config: dict[str, object] = {
+        "maturities": list(
+            constant_simplification_provider_maturities(stage.effective_maturities)
+        )
+    }
+    if stage.stage_id == "fold-readonly-data":
+        # ``memory_policy`` is retained as public-schedule provenance at this
+        # boundary.  The private backend consumes only the explicit
+        # ``fold_writable_constants`` spelling below; it must not reinterpret
+        # the public policy field independently.
+        config.update(stage.options)
+        if stage.options["memory_policy"] == AGGRESSIVE_MEMORY_POLICY:
+            # This is the private spelling; the public schedule deliberately
+            # retains its policy vocabulary.
+            config["fold_writable_constants"] = True
+    elif stage.stage_id == "forward-constants" and forward_constant_options:
+        # The state-machine path may add execution-only options, but it may
+        # not replace the compiled maturity set.
+        config.update(
+            {
+                key: value
+                for key, value in forward_constant_options.items()
+                if key != "maturities"
+            }
+        )
+    return _rule(stage.implementation_name or "", config)
+
+
 def constant_simplification_hook_rules(
     config: PipelineConfig,
     *,
     forward_constant_options: dict[str, object] | None = None,
+    schedule: CompiledConstantSimplificationSchedule | None = None,
 ) -> ConstantSimplificationHookRules:
     """Expand the logical pass into its ordered live Hex-Rays stages."""
-    options = _parse_options(config)
-    memory_options: dict[str, object] = {
-        # Private bundle-owned behavior. Direct/legacy activation of the
-        # implementation rule does not persist IDB type metadata.
-        "persist_global_const_annotations": options.persist_global_const_annotations,
-        "rva_guard": options.rva_guard,
-    }
-    if options.memory_policy == AGGRESSIVE_MEMORY_POLICY:
-        memory_options["fold_writable_constants"] = True
-    if options.allow_executable_readonly:
-        memory_options["allow_executable_readonly"] = True
+    compiled = schedule if schedule is not None else _parse_options(config)
+    instruction_rules: list[RuleConfiguration] = []
+    block_rules: list[RuleConfiguration] = []
+    for stage in compiled.stages:
+        if not stage.enabled:
+            continue
+        rule = _constant_stage_rule_config(
+            stage,
+            forward_constant_options=forward_constant_options,
+        )
+        if stage.pipeline is ExecutionPipeline.INSTRUCTION:
+            instruction_rules.append(rule)
+        elif stage.pipeline is ExecutionPipeline.FLOW:
+            block_rules.append(rule)
+        else:
+            raise ValueError(
+                f"constant-simplification stage {stage.stage_id} has unsupported "
+                f"pipeline {stage.pipeline!r}"
+            )
     return ConstantSimplificationHookRules(
-        instruction_rules=(
-            _rule("FoldReadonlyDataRule", memory_options),
-            _rule("ConstantSubtreeFoldRule"),
-        ),
-        block_rules=(
-            _rule("ForwardConstantPropagationRule", forward_constant_options),
-        ),
+        instruction_rules=tuple(instruction_rules),
+        block_rules=tuple(block_rules),
     )
 
 
 def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistry:
     """Register the one public constant-simplification operation."""
+    readonly_descriptor = _CONSTANT_STAGE_DESCRIPTORS[0]
+    subtree_descriptor = _CONSTANT_STAGE_DESCRIPTORS[1]
+    forward_descriptor = _CONSTANT_STAGE_DESCRIPTORS[2]
+
+    def maturity_choices(descriptor: ExecutionStageDescriptor) -> tuple[str, ...]:
+        return tuple(maturity.name for maturity in descriptor.supported_maturities)
+
+    readonly_maturities = list(maturity_choices(readonly_descriptor))
+    subtree_maturities = list(maturity_choices(subtree_descriptor))
+    forward_maturities = list(maturity_choices(forward_descriptor))
     registry.register_configured(
         CONSTANT_SIMPLIFICATION_PASS_ID,
         build_constant_simplification_pass,
@@ -165,47 +248,86 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
             pass_id=CONSTANT_SIMPLIFICATION_PASS_ID,
             workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
             options={
-                "memory_policy": STRICT_MEMORY_POLICY,
-                "rva_guard": True,
-                "allow_executable_readonly": False,
-                "persist_global_const_annotations": False,
+                "preparation": {
+                    "global_const_types": {
+                        "enabled": False,
+                        "discover_bounded_tables": True,
+                    }
+                },
+                "stages": {
+                    "fold-readonly-data": {
+                        "enabled": True,
+                        "maturities": readonly_maturities,
+                        "memory_policy": STRICT_MEMORY_POLICY,
+                        "rva_guard": True,
+                        "allow_executable_readonly": False,
+                    },
+                    "fold-constant-subtree": {
+                        "enabled": True,
+                        "maturities": subtree_maturities,
+                    },
+                    "forward-constants": {
+                        "enabled": True,
+                        "maturities": forward_maturities,
+                    },
+                },
             },
         ),
-        stages=(
-            ExecutionStageDescriptor(
-                CONSTANT_SIMPLIFICATION_PASS_ID,
-                "fold-readonly-data",
-                ExecutionPipeline.INSTRUCTION,
-                "FoldReadonlyDataRule",
-            ),
-            ExecutionStageDescriptor(
-                CONSTANT_SIMPLIFICATION_PASS_ID,
-                "fold-constant-subtree",
-                ExecutionPipeline.INSTRUCTION,
-                "ConstantSubtreeFoldRule",
-            ),
-            ExecutionStageDescriptor(
-                CONSTANT_SIMPLIFICATION_PASS_ID,
-                "forward-constants",
-                ExecutionPipeline.FLOW,
-                "ForwardConstantPropagationRule",
-            ),
-        ),
+        stages=constant_simplification_stage_descriptors(),
         editor_spec=PassEditorSpec.fields_editor(
             (
                 FieldEditorSpec(
-                    field_id="memory_policy",
+                    field_id="preparation.global_const_types.enabled",
+                    label="Enable reversible global const types",
+                    path=("preparation", "global_const_types", "enabled"),
+                    control=FieldControlKind.BOOLEAN,
+                    description=(
+                        "Apply exact reversible const type metadata before Hex-Rays."
+                    ),
+                    default=False,
+                ),
+                FieldEditorSpec(
+                    field_id="preparation.global_const_types.discover_bounded_tables",
+                    label="Discover bounded tables from microcode",
+                    path=(
+                        "preparation",
+                        "global_const_types",
+                        "discover_bounded_tables",
+                    ),
+                    control=FieldControlKind.BOOLEAN,
+                    description=(
+                        "dynamic discoveries apply on the next natural preparation round."
+                    ),
+                    default=True,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.fold-readonly-data.enabled",
+                    label="Enable read-only data folding",
+                    path=("stages", "fold-readonly-data", "enabled"),
+                    control=FieldControlKind.BOOLEAN,
+                    default=True,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.fold-readonly-data.maturities",
+                    label="Read-only data maturities",
+                    path=("stages", "fold-readonly-data", "maturities"),
+                    control=FieldControlKind.STRING_LIST,
+                    choices=maturity_choices(readonly_descriptor),
+                    default=readonly_maturities,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.fold-readonly-data.memory_policy",
                     label="Memory policy",
-                    path=("memory_policy",),
+                    path=("stages", "fold-readonly-data", "memory_policy"),
                     control=FieldControlKind.ENUM,
                     description="Controls which read-only memory values may be materialized.",
                     choices=(STRICT_MEMORY_POLICY, AGGRESSIVE_MEMORY_POLICY),
                     default=STRICT_MEMORY_POLICY,
                 ),
                 FieldEditorSpec(
-                    field_id="rva_guard",
+                    field_id="stages.fold-readonly-data.rva_guard",
                     label="RVA guard",
-                    path=("rva_guard",),
+                    path=("stages", "fold-readonly-data", "rva_guard"),
                     control=FieldControlKind.BOOLEAN,
                     description=(
                         "Veto folds whose value is used as an address. On, the "
@@ -216,21 +338,13 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                     default=True,
                 ),
                 FieldEditorSpec(
-                    field_id="persist_global_const_annotations",
-                    label="Persist proven global constants in IDB",
-                    path=("persist_global_const_annotations",),
-                    control=FieldControlKind.BOOLEAN,
-                    description=(
-                        "Apply proven global const types through D810's reversible "
-                        "IDB preparation journal. Restore them from the "
-                        "Deobfuscation Workbench."
-                    ),
-                    default=False,
-                ),
-                FieldEditorSpec(
-                    field_id="allow_executable_readonly",
+                    field_id="stages.fold-readonly-data.allow_executable_readonly",
                     label="Allow executable read-only memory",
-                    path=("allow_executable_readonly",),
+                    path=(
+                        "stages",
+                        "fold-readonly-data",
+                        "allow_executable_readonly",
+                    ),
                     control=FieldControlKind.BOOLEAN,
                     description="Very dangerous override for executable read-only memory.",
                     default=False,
@@ -240,6 +354,36 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                         "Enable only when you have independently established that the "
                         "selected memory is safe to materialize."
                     ),
+                ),
+                FieldEditorSpec(
+                    field_id="stages.fold-constant-subtree.enabled",
+                    label="Enable constant subtree folding",
+                    path=("stages", "fold-constant-subtree", "enabled"),
+                    control=FieldControlKind.BOOLEAN,
+                    default=True,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.fold-constant-subtree.maturities",
+                    label="Constant subtree maturities",
+                    path=("stages", "fold-constant-subtree", "maturities"),
+                    control=FieldControlKind.STRING_LIST,
+                    choices=maturity_choices(subtree_descriptor),
+                    default=subtree_maturities,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.forward-constants.enabled",
+                    label="Enable forward constants",
+                    path=("stages", "forward-constants", "enabled"),
+                    control=FieldControlKind.BOOLEAN,
+                    default=True,
+                ),
+                FieldEditorSpec(
+                    field_id="stages.forward-constants.maturities",
+                    label="Forward constants maturities",
+                    path=("stages", "forward-constants", "maturities"),
+                    control=FieldControlKind.STRING_LIST,
+                    choices=maturity_choices(forward_descriptor),
+                    default=forward_maturities,
                 ),
             )
         ),
@@ -256,5 +400,7 @@ __all__ = [
     "STRICT_MEMORY_POLICY",
     "build_constant_simplification_pass",
     "constant_simplification_hook_rules",
+    "constant_simplification_provider_maturities",
+    "constant_simplification_stage_descriptors",
     "register_constant_simplification_pass",
 ]

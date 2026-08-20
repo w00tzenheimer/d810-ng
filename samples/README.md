@@ -176,15 +176,18 @@ resolves references to relocatable symbols, and **materializes the referenced
 data** (real constant values) — so the rebuilt binary preserves genuine code +
 data, not unresolved externs.
 
-MASM is Windows-x64 / **MSVC-COFF** only, so it activates on the MSVC ABI:
+MASM is Windows-x64 / **MSVC-COFF** only. The authoritative fixture toolchain is
+Microsoft `ml64` + `link.exe` on `reversepc.local`:
 
 ```bash
-# mac / linux: clang (MSVC target) + llvm-ml64 + lld-link  (needs Homebrew llvm)
-make masm                       # links every src/masm/*.asm
-
-# Windows: clang-cl + ml64 + link.exe (auto-integrated into the normal build)
+# Windows: clang-cl + Microsoft ml64 + link.exe
 .\scripts\build_windows.ps1
 ```
+
+`make masm` remains a developer convenience for individual fixtures accepted by
+`llvm-ml64`, but it is not the release oracle for `libobfuscated.dll`. Some
+captured fixtures intentionally use Microsoft-MASM directives such as `OPTION
+NOSCOPED`; regenerate the committed PE/PDB with the Windows workflow above.
 
 On mac/linux/MinGW *default* builds the `src/masm/` dir is ignored and the C bodies
 build as usual. The external `call` targets remain unresolved (tolerated, like

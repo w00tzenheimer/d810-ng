@@ -65,9 +65,11 @@ _EXACT_MASM_CODE_EXTENTS = {
     # targets undefined. Hex-Rays then renders those in-function targets as
     # JUMPOUTs. Recreate the exact dense instruction stream in the disposable
     # test IDB so the fixture preserves the source IDB's code-head oracle.
-    "sub_7FF856533A20": 0x43FF,
+    # Fresh ml64/VS 2022 rebuild from the committed source: 0x4402 bytes.  The
+    # first dispatcher transfer requires the five-byte near form once the
+    # relative table is emitted immediately before the procedure.
+    "sub_7FF856533A20": 0x4402,
 }
-
 
 def _materialize_exact_masm_code_extent(function: str) -> None:
     size = _EXACT_MASM_CODE_EXTENTS.get(function)

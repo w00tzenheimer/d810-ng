@@ -42,8 +42,15 @@ class Z3ConstantOptimization(Z3Rule):
 
     @typing.override
     def check_and_replace(
-        self, blk: ida_hexrays.mblock_t, instruction: ida_hexrays.minsn_t
+        self,
+        blk: ida_hexrays.mblock_t,
+        instruction: ida_hexrays.minsn_t,
+        *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
     ) -> ida_hexrays.minsn_t | None:
+        # This pattern-less rule does not perform def-use lookup, but it must
+        # accept the same nested-owner context contract as every Z3Rule.
+        del contextual_anchor_ins
         tmp = minsn_to_ast(instruction)
         if tmp is None:
             return None

@@ -67,6 +67,23 @@ class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
     def check_and_replace(self, blk, ins):
         """Return a replacement instruction if the rule matches, otherwise None."""
 
+    def check_and_replace_with_context(
+        self,
+        blk,
+        ins,
+        *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
+    ):
+        """Run the rule with an optional owner instruction for nested context.
+
+        Most instruction rules only inspect the candidate instruction itself, so
+        they retain the legacy ``check_and_replace`` call.  Context-sensitive
+        rules may override this hook to distinguish the nested candidate being
+        rewritten from the top-level instruction that owns its def-use context.
+        """
+        del contextual_anchor_ins
+        return self.check_and_replace(blk, ins)
+
 
 class GenericPatternRule(InstructionOptimizationRule):
     PATTERNS: list[AstNode] | None = None
@@ -258,9 +275,12 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         blk: ida_hexrays.mblock_t,
         ins: ida_hexrays.minsn_t,
         *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
+        if contextual_anchor_ins is None:
+            contextual_anchor_ins = ins
         self.last_matched_rule_name = None
         # uee-b7ze causality test: when ``D810_FENCE_INSN_OPT_AT_GLBOPT1``
         # is set, suppress every instruction-level optimizer (Z3 const
@@ -326,7 +346,19 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                 continue
             try:
                 try:
-                    new_ins = rule.check_and_replace(blk, ins)
+                    check_with_context = getattr(
+                        rule,
+                        "check_and_replace_with_context",
+                        None,
+                    )
+                    if callable(check_with_context):
+                        new_ins = check_with_context(
+                            blk,
+                            ins,
+                            contextual_anchor_ins=contextual_anchor_ins,
+                        )
+                    else:
+                        new_ins = rule.check_and_replace(blk, ins)
                 finally:
                     if self._run_later_callback is not None:
                         self._run_later_callback(rule, self.cur_maturity)

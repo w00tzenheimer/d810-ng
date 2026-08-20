@@ -29,6 +29,54 @@ def test_binary_fold_uses_operand_width_for_flag_results() -> None:
     )
 
 
+def test_binary_fold_carry_shift_uses_source_width_and_byte_result() -> None:
+    """cfshl/cfshr model the bit shifted out of a non-byte source value."""
+
+    assert (
+        bits.fold_binary_opcode(
+            "cfshl",
+            0x8000000000000000,
+            1,
+            left_bytes=8,
+            right_bytes=1,
+            result_bytes=1,
+        )
+        == 1
+    )
+    assert (
+        bits.fold_binary_opcode(
+            "cfshr",
+            0x20,
+            6,
+            left_bytes=1,
+            right_bytes=1,
+            result_bytes=1,
+        )
+        == 1
+    )
+
+
+def test_binary_fold_carry_shift_rejects_invalid_result_and_zero_count() -> None:
+    """Malformed carry-shifts must remain unevaluable rather than guess."""
+
+    assert (
+        bits.fold_binary_opcode(
+            "cfshl", 1, 5, left_bytes=1, right_bytes=1, result_bytes=4
+        )
+        is None
+    )
+    assert (
+        bits.fold_binary_opcode(
+            "cfshl", 1, 0, left_bytes=1, right_bytes=1, result_bytes=1
+        )
+        is None
+    )
+    assert (
+        bits.fold_binary_opcode(
+            "cfshl", 1, 9, left_bytes=1, right_bytes=1, result_bytes=1
+        )
+        is None
+    )
 @pytest.mark.parametrize(
     ("opcode", "left", "right", "expected"),
     [

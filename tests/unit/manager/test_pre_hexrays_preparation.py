@@ -19,6 +19,7 @@ from d810.manager.pre_hexrays_preparation import (
     PreHexPreparationController,
     PreparationMode,
 )
+from d810.passes.constant_simplification_options import ConstantPreparationOptions
 
 pytestmark = pytest.mark.pure_python
 
@@ -90,6 +91,7 @@ def _controller(
     transaction_types=None,
     acknowledged=None,
     discover_type_proposals=None,
+    preparation_options=None,
 ) -> PreHexPreparationController:
     type_script = _script("d810-global-const-types")
     return PreHexPreparationController(
@@ -102,6 +104,11 @@ def _controller(
         pending_type_proposals=lambda: tuple(proposals),
         acknowledge_type_proposals=(acknowledged or (lambda values: None)),
         type_step_descriptor=type_script,
+        preparation_options=(
+            preparation_options
+            if preparation_options is not None
+            else ConstantPreparationOptions(enabled=True)
+        ),
     )
 
 
@@ -225,6 +232,240 @@ def test_static_type_discovery_runs_before_pending_proposals_are_consumed() -> N
     assert discoveries == [0x401000]
     assert len(gateway.requests) == 1
     assert gateway.requests[0][1] == (proposal.type_delta,)
+
+
+def test_whole_item_const_preparation_runs_without_readonly_folding() -> None:
+    gateway = _Gateway()
+    discoveries: list[int] = []
+    controller = _controller(
+        gateway=gateway,
+        preparation_options=ConstantPreparationOptions(enabled=True),
+        discover_type_proposals=discoveries.append,
+    )
+
+    receipt = controller.prepare(0x401000, PreparationMode.AUTOMATIC)
+
+    assert receipt.ok
+    assert discoveries == [0x401000]
+
+
+def test_readonly_folding_does_not_enable_const_preparation() -> None:
+    gateway = _Gateway()
+    discoveries: list[int] = []
+    controller = _controller(
+        gateway=gateway,
+        preparation_options=ConstantPreparationOptions(enabled=False),
+        discover_type_proposals=discoveries.append,
+    )
+
+    receipt = controller.prepare(0x401000, PreparationMode.AUTOMATIC)
+
+    assert receipt.ok
+    assert discoveries == []
+    assert gateway.requests == []
+
+
+def test_disabled_preparation_can_be_enabled_without_reinstalling_discovery() -> None:
+    gateway = _Gateway()
+    discoveries: list[int] = []
+    controller = _controller(
+        gateway=gateway,
+        preparation_options=ConstantPreparationOptions(enabled=False),
+        discover_type_proposals=discoveries.append,
+    )
+
+    assert controller.prepare(0x401000, PreparationMode.AUTOMATIC).ok
+    controller.configure_preparation_options(ConstantPreparationOptions(enabled=True))
+    assert controller.prepare(0x401000, PreparationMode.AUTOMATIC).ok
+
+    assert discoveries == [0x401000]
+
+
+def test_preparation_status_uses_proposal_identities_and_pending_reason() -> None:
+    before = SerializedTypeSnapshot.absent()
+    after = SerializedTypeSnapshot.from_parts(b"const", b"fields", b"comments")
+    type_delta = PreparationTypeDelta(0x500000, before, after)
+    proposal = type(
+        "Proposal",
+        (),
+        {
+            "function_ea": 0x401000,
+            "type_delta": type_delta,
+        },
+    )()
+    type_script = _script("d810-global-const-types")
+    applied = _record(type_script, function_ea=0x401000)
+    conflicting = _record(type_script, function_ea=0x402000)
+    restored = _record(type_script, function_ea=0x403000)
+    restored = replace(restored, state=PreparationState.RESTORED)
+    gateway = _Gateway()
+    gateway.matches[conflicting.transaction_id.value] = False
+    type_by_transaction = {
+        applied.transaction_id: (type_delta,),
+        conflicting.transaction_id: (replace(type_delta, item_ea=0x500010),),
+        restored.transaction_id: (replace(type_delta, item_ea=0x500020),),
+    }
+    controller = _controller(
+        gateway=gateway,
+        proposals=(proposal,),
+        prepared=(applied, conflicting, restored),
+        transaction_types=lambda transaction_id: type_by_transaction[transaction_id],
+    )
+
+    status = controller.status_snapshot()
+
+    assert status.pending[0].database_identity == "idb-a"
+    assert status.pending[0].function_ea == 0x401000
+    assert status.pending[0].item_head == 0x500000
+    assert status.pending_reason == "next preparation round"
+    assert status.applied[0].function_ea == 0x401000
+    assert status.conflicting[0].function_ea == 0x402000
+    assert status.restored[0].function_ea == 0x403000
+    assert status.pending_count == status.applied_count == 1
+
+
+@pytest.mark.parametrize(
+    ("state", "bucket"),
+    (
+        (PreparationState.PREPARED, "pending"),
+        (PreparationState.SCRIPT_RUNNING, "pending"),
+        (PreparationState.CAPTURE_PENDING, "pending"),
+        (PreparationState.CAPTURED, "pending"),
+        (PreparationState.ANALYSIS_PENDING, "pending"),
+        (PreparationState.ROLLING_BACK, "pending"),
+        (PreparationState.IDB_PREPARED, "applied"),
+        (PreparationState.RESTORED, "restored"),
+        (PreparationState.RESTORING, "conflicting"),
+        (PreparationState.RESTORE_FAILED, "conflicting"),
+        (PreparationState.RECOVERY_REQUIRED, "conflicting"),
+        (PreparationState.REJECTED, "conflicting"),
+        (PreparationState.FAILED, "conflicting"),
+    ),
+)
+def test_preparation_status_classifies_every_transaction_state(
+    state: PreparationState,
+    bucket: str,
+) -> None:
+    type_script = _script("d810-global-const-types")
+    record = replace(_record(type_script), state=state)
+    before = SerializedTypeSnapshot.absent()
+    after = SerializedTypeSnapshot.from_parts(b"const", b"fields", b"comments")
+    delta = PreparationTypeDelta(0x500000, before, after)
+    gateway = _Gateway()
+    controller = _controller(
+        gateway=gateway,
+        prepared=(record,),
+        transaction_types=lambda transaction_id: (delta,),
+    )
+
+    status = controller.status_snapshot()
+
+    assert len(getattr(status, bucket)) == 1
+    for other in ("pending", "applied", "conflicting", "restored"):
+        if other != bucket:
+            assert getattr(status, other) == ()
+
+
+def test_preparation_status_surfaces_provider_failures_as_unknown() -> None:
+    gateway = _Gateway()
+
+    def fail_pending():
+        raise RuntimeError("proposal store unavailable")
+
+    def fail_records(_database_identity):
+        raise RuntimeError("journal unavailable")
+
+    controller = PreHexPreparationController(
+        database_identity="idb-a",
+        scripts=(),
+        gateway=gateway,
+        prepared_records=fail_records,
+        transaction_type_deltas=lambda _transaction_id: (),
+        discover_type_proposals=lambda _function_ea: None,
+        pending_type_proposals=fail_pending,
+        acknowledge_type_proposals=lambda _values: None,
+        type_step_descriptor=_script("d810-global-const-types"),
+        preparation_options=ConstantPreparationOptions(enabled=True),
+    )
+
+    status = controller.status_snapshot()
+
+    assert status.pending == ()
+    assert status.applied == ()
+    assert status.conflicting == ()
+    assert len(status.unknown) == 2
+    assert {failure.provider for failure in status.unknown} == {
+        "pending_type_proposals",
+        "prepared_records",
+    }
+
+
+def test_preparation_status_does_not_classify_provider_error_as_conflicting() -> None:
+    script = _script("d810-global-const-types")
+    record = _record(script)
+    before = SerializedTypeSnapshot.absent()
+    after = SerializedTypeSnapshot.from_parts(b"const", b"fields", b"comments")
+    delta = PreparationTypeDelta(0x500000, before, after)
+    gateway = _Gateway()
+
+    def fail_match(_transaction_id: PreparationTransactionId) -> bool:
+        raise RuntimeError("live type provider unavailable")
+
+    gateway.transaction_matches_after_image = fail_match  # type: ignore[method-assign]
+    controller = _controller(
+        gateway=gateway,
+        prepared=(record,),
+        transaction_types=lambda _transaction_id: (delta,),
+    )
+
+    status = controller.status_snapshot()
+
+    assert status.applied == ()
+    assert status.conflicting == ()
+    assert len(status.unknown) == 1
+    assert status.unknown[0].provider == (
+        f"transaction_matches_after_image:{record.transaction_id.value}"
+    )
+
+
+def test_distinct_serialized_proposals_do_not_collide_in_status() -> None:
+    before_a = SerializedTypeSnapshot.absent()
+    after_a = SerializedTypeSnapshot.from_parts(b"const-a", b"fields", b"comments")
+    before_b = SerializedTypeSnapshot.absent()
+    after_b = SerializedTypeSnapshot.from_parts(b"const-b", b"fields", b"comments")
+    proposals = (
+        type(
+            "Proposal",
+            (),
+            {
+                "function_ea": 0x401000,
+                "item_head": 0x500000,
+                "item_end": 0x500010,
+                "before": before_a,
+                "after": after_a,
+                "type_delta": PreparationTypeDelta(0x500000, before_a, after_a),
+            },
+        )(),
+        type(
+            "Proposal",
+            (),
+            {
+                "function_ea": 0x401000,
+                "item_head": 0x500000,
+                "item_end": 0x500020,
+                "before": before_b,
+                "after": after_b,
+                "type_delta": PreparationTypeDelta(0x500000, before_b, after_b),
+            },
+        )(),
+    )
+    controller = _controller(gateway=_Gateway(), proposals=proposals)
+
+    status = controller.status_snapshot()
+
+    assert len(status.pending) == 2
+    assert status.pending[0] != status.pending[1]
+    assert {identity.item_end for identity in status.pending} == {0x500010, 0x500020}
 
 
 def test_generated_retry_does_not_reenter_controller() -> None:

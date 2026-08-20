@@ -65,6 +65,30 @@ class TestProjectContext:
 
         assert len(mock_state.current_blk_rules) == 0
 
+    def test_remove_rule_scopes_compiler_suppression_until_restore(self):
+        """An explicit context removal must suppress only that configured stage."""
+        mock_state = MagicMock()
+        mock_rule = MagicMock()
+        mock_rule.name = "ForwardConstantPropagationRule"
+        mock_state.current_ins_rules = []
+        mock_state.current_blk_rules = [mock_rule]
+        mock_state.manager._explicitly_suppressed_rule_names = frozenset(
+            {"baseline-rule"}
+        )
+
+        ctx = ProjectContext(state=mock_state, project_index=0)
+        ctx.remove_rule("ForwardConstantPropagationRule")
+
+        assert mock_state.manager._explicitly_suppressed_rule_names == frozenset(
+            {"baseline-rule", "forwardconstantpropagationrule"}
+        )
+
+        ctx.restore()
+
+        assert mock_state.manager._explicitly_suppressed_rule_names == frozenset(
+            {"baseline-rule"}
+        )
+
     def test_add_rule_instruction(self):
         """Test adding an instruction rule."""
         mock_state = MagicMock()

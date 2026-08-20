@@ -72,6 +72,10 @@ def test_routed_config_v2_snapshot_reports_distinct_source_and_runtime() -> None
         "mba-simplify",
         "jump-fixer",
     )
+    assert snapshot.constant_simplification_schedule is (
+        activation.constant_simplification_schedule
+    )
+    assert snapshot.constant_simplification_schedule is not None
 
 
 def test_direct_canary_snapshot_is_config_v2_without_routing() -> None:

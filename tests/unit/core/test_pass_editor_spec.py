@@ -149,6 +149,39 @@ def test_summary_spec_has_no_fields_or_transforms() -> None:
     assert summary.transforms == ()
 
 
+def test_fields_editor_renders_nested_defaults_and_validates_choice_lists() -> None:
+    spec = _editor_module()
+    maturity = spec.FieldEditorSpec(
+        field_id="stage.maturities",
+        label="Stage maturities",
+        path=("stages", "stage", "maturities"),
+        control=spec.FieldControlKind.STRING_LIST,
+        choices=("CANONICAL", "GLOBAL_ANALYZED", "STRUCTURED"),
+        default=["CANONICAL", "STRUCTURED"],
+    )
+    policy = spec.FieldEditorSpec(
+        field_id="stage.policy",
+        label="Stage policy",
+        path=("stages", "stage", "policy"),
+        control=spec.FieldControlKind.ENUM,
+        choices=("strict", "aggressive"),
+        default="strict",
+    )
+    editor = spec.PassEditorSpec.fields_editor((maturity, policy))
+
+    assert editor.default_options() == {
+        "stages": {
+            "stage": {
+                "maturities": ["CANONICAL", "STRUCTURED"],
+                "policy": "strict",
+            }
+        }
+    }
+    maturity.validate_value(["STRUCTURED", "CANONICAL"])
+    with pytest.raises(ValueError, match="outside its declared choices"):
+        maturity.validate_value(["LIFTED"])
+
+
 def test_experimental_field_requires_operator_facing_reason() -> None:
     spec = _editor_module()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 from collections import defaultdict
 
@@ -163,6 +164,60 @@ PeepholeOptimizer: typing.TypeAlias = typing.Any
 Z3Optimizer: typing.TypeAlias = typing.Any
 
 
+@dataclasses.dataclass(frozen=True)
+class _InstructionChildRuntimeState:
+    """Allowlisted mutable state for one production instruction optimizer."""
+
+    optimizer: object
+    rules_store: object
+    rules: tuple[object, ...]
+    pattern_storage_present: bool
+    pattern_storage: object
+    indexed_storage_present: bool
+    indexed_storage: object
+    allowed_root_opcodes_store: object
+    allowed_root_opcodes: frozenset[int] | None
+    structural_rules_store: object
+    structural_rules: tuple[tuple[int, tuple[object, ...]], ...] | None
+    has_patternless_rule: bool | None
+    compiled_view: object
+    generation: int | None
+
+
+@dataclasses.dataclass(frozen=True)
+class InstructionOptimizerRuntimeState:
+    """Lossless activation snapshot for the instruction optimizer adapter.
+
+    The fields are deliberately explicit.  Rule objects, pattern indexes, and
+    other Hex-Rays-facing values retain identity; only the Python containers
+    whose contents activation mutates are copied.
+    """
+
+    execution_scope_service: object
+    execution_scope_project_name: str
+    execution_scope_idb_key: str
+    execution_scope_func_ea: int
+    current_maturity: object
+    current_blk_serial: object
+    generate_z3_code: object
+    dump_intermediate_microcode: object
+    decompilation_lifecycle: object
+    fact_consumer_callback: object
+    run_later_scheduler: object
+    active_rule_names_store: object
+    active_rule_names_by_maturity: dict[int, frozenset[str]]
+    residual_admission_cache_key: object
+    residual_admission_cache_value: bool
+    scheduled_stage_identities: frozenset[object]
+    scheduled_implementation_names: frozenset[str]
+    instruction_optimizers_store: object
+    instruction_optimizers: tuple[object, ...]
+    active_optimizers_store: object
+    active_optimizers: tuple[object, ...]
+    analyzer: object
+    children: tuple[_InstructionChildRuntimeState, ...]
+
+
 class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     def __init__(
         self,
@@ -303,6 +358,233 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             ins_optimizer.add_rule(rule)
         self.analyzer.add_rule(rule)
         self._invalidate_residual_admission_cache()
+
+    @staticmethod
+    def _capture_child_runtime_state(
+        optimizer: object,
+    ) -> _InstructionChildRuntimeState:
+        """Capture the known mutable stores of one child optimizer."""
+
+        rules_store = getattr(optimizer, "rules", None)
+        rules_by_object = getattr(rules_store, "_rules", None)
+        if not isinstance(rules_by_object, dict):
+            raise TypeError(
+                "instruction optimizer child does not expose the production "
+                "ordered rule store"
+            )
+
+        pattern_storage_present = hasattr(optimizer, "pattern_storage")
+        indexed_storage_present = hasattr(optimizer, "_indexed_storage")
+        allowed_root_opcodes_store = getattr(
+            optimizer, "_allowed_root_opcodes", None
+        )
+        if allowed_root_opcodes_store is not None and not isinstance(
+            allowed_root_opcodes_store, set
+        ):
+            raise TypeError(
+                "instruction optimizer root-opcode store has an unsupported type"
+            )
+        structural_rules_store = getattr(
+            optimizer, "_structural_rules_by_root_opcode", None
+        )
+        if structural_rules_store is not None and not isinstance(
+            structural_rules_store, dict
+        ):
+            raise TypeError(
+                "instruction optimizer structural-rule store has an unsupported type"
+            )
+        structural_rules = None
+        if structural_rules_store is not None:
+            structural_rules = tuple(
+                (int(opcode), tuple(rules))
+                for opcode, rules in structural_rules_store.items()
+            )
+        has_patternless_rule = getattr(
+            optimizer, "_has_patternless_rule", None
+        )
+        if has_patternless_rule is not None and not isinstance(
+            has_patternless_rule, bool
+        ):
+            raise TypeError(
+                "instruction optimizer patternless-rule marker has an unsupported type"
+            )
+        generation = getattr(optimizer, "_generation", None)
+        if generation is not None and not isinstance(generation, int):
+            raise TypeError(
+                "instruction optimizer generation has an unsupported type"
+            )
+        return _InstructionChildRuntimeState(
+            optimizer=optimizer,
+            rules_store=rules_store,
+            rules=tuple(rules_by_object),
+            pattern_storage_present=pattern_storage_present,
+            pattern_storage=getattr(optimizer, "pattern_storage", None),
+            indexed_storage_present=indexed_storage_present,
+            indexed_storage=getattr(optimizer, "_indexed_storage", None),
+            allowed_root_opcodes_store=allowed_root_opcodes_store,
+            allowed_root_opcodes=(
+                None
+                if allowed_root_opcodes_store is None
+                else frozenset(allowed_root_opcodes_store)
+            ),
+            structural_rules_store=structural_rules_store,
+            structural_rules=structural_rules,
+            has_patternless_rule=has_patternless_rule,
+            compiled_view=getattr(optimizer, "_compiled_view", None),
+            generation=generation,
+        )
+
+    def capture_runtime_state(self) -> InstructionOptimizerRuntimeState:
+        """Capture the adapter state that live activation can mutate."""
+
+        active_rule_names_store = getattr(
+            self, "_active_instruction_rule_names_by_maturity", None
+        )
+        if not isinstance(active_rule_names_store, dict):
+            raise TypeError("instruction adapter active-rule cache is not a dict")
+        instruction_optimizers_store = getattr(self, "instruction_optimizers", None)
+        active_optimizers_store = getattr(self, "_active_optimizers", None)
+        if not isinstance(instruction_optimizers_store, list):
+            raise TypeError("instruction adapter optimizer worklist is not a list")
+        if not isinstance(active_optimizers_store, list):
+            raise TypeError("instruction adapter active worklist is not a list")
+
+        children: list[_InstructionChildRuntimeState] = []
+        seen: set[int] = set()
+        for optimizer in (*instruction_optimizers_store, self.analyzer):
+            if id(optimizer) in seen:
+                continue
+            seen.add(id(optimizer))
+            children.append(self._capture_child_runtime_state(optimizer))
+        return InstructionOptimizerRuntimeState(
+            execution_scope_service=self._execution_scope_service,
+            execution_scope_project_name=self._execution_scope_project_name,
+            execution_scope_idb_key=self._execution_scope_idb_key,
+            execution_scope_func_ea=self._execution_scope_func_ea,
+            current_maturity=self.current_maturity,
+            current_blk_serial=self.current_blk_serial,
+            generate_z3_code=self.generate_z3_code,
+            dump_intermediate_microcode=self.dump_intermediate_microcode,
+            decompilation_lifecycle=self._decompilation_lifecycle,
+            fact_consumer_callback=self._fact_consumer_callback,
+            run_later_scheduler=self._run_later_scheduler,
+            active_rule_names_store=active_rule_names_store,
+            active_rule_names_by_maturity={
+                int(maturity): frozenset(rule_names)
+                for maturity, rule_names in active_rule_names_store.items()
+            },
+            residual_admission_cache_key=self._residual_admission_cache_key,
+            residual_admission_cache_value=bool(
+                self._residual_admission_cache_value
+            ),
+            scheduled_stage_identities=frozenset(
+                self._scheduled_stage_identities
+            ),
+            scheduled_implementation_names=frozenset(
+                self._scheduled_implementation_names
+            ),
+            instruction_optimizers_store=instruction_optimizers_store,
+            instruction_optimizers=tuple(instruction_optimizers_store),
+            active_optimizers_store=active_optimizers_store,
+            active_optimizers=tuple(active_optimizers_store),
+            analyzer=self.analyzer,
+            children=tuple(children),
+        )
+
+    @staticmethod
+    def _restore_child_runtime_state(
+        snapshot: _InstructionChildRuntimeState,
+    ) -> None:
+        """Restore one child without inspecting or deleting unknown fields."""
+
+        optimizer = snapshot.optimizer
+        rules_store = snapshot.rules_store
+        rules_by_object = getattr(rules_store, "_rules", None)
+        if not isinstance(rules_by_object, dict):
+            raise TypeError("instruction child rule store cannot be restored")
+        if getattr(optimizer, "rules", None) is not rules_store:
+            optimizer.rules = rules_store
+        rules_by_object.clear()
+        rules_by_object.update({rule: None for rule in snapshot.rules})
+
+        if snapshot.pattern_storage_present != hasattr(optimizer, "pattern_storage"):
+            raise RuntimeError("instruction child pattern storage shape changed")
+        if snapshot.pattern_storage_present:
+            optimizer.pattern_storage = snapshot.pattern_storage
+        if snapshot.indexed_storage_present != hasattr(optimizer, "_indexed_storage"):
+            raise RuntimeError("instruction child indexed storage shape changed")
+        if snapshot.indexed_storage_present:
+            optimizer._indexed_storage = snapshot.indexed_storage
+
+        if snapshot.allowed_root_opcodes_store is not None:
+            optimizer._allowed_root_opcodes = snapshot.allowed_root_opcodes_store
+            current = snapshot.allowed_root_opcodes_store
+            current.clear()
+            current.update(snapshot.allowed_root_opcodes or ())
+        if snapshot.structural_rules_store is not None:
+            optimizer._structural_rules_by_root_opcode = snapshot.structural_rules_store
+            current_structural = snapshot.structural_rules_store
+            current_structural.clear()
+            current_structural.update(
+                {
+                    opcode: list(rules)
+                    for opcode, rules in (snapshot.structural_rules or ())
+                }
+            )
+        if snapshot.has_patternless_rule is not None:
+            optimizer._has_patternless_rule = snapshot.has_patternless_rule
+        if hasattr(optimizer, "_compiled_view"):
+            optimizer._compiled_view = snapshot.compiled_view
+        if snapshot.generation is not None:
+            optimizer._generation = snapshot.generation
+
+    def restore_runtime_state(
+        self,
+        snapshot: InstructionOptimizerRuntimeState,
+    ) -> None:
+        """Restore a state captured by :meth:`capture_runtime_state`."""
+
+        if not isinstance(snapshot, InstructionOptimizerRuntimeState):
+            raise TypeError("unsupported instruction adapter runtime snapshot")
+        if not isinstance(snapshot.instruction_optimizers_store, list):
+            raise TypeError("instruction adapter optimizer store cannot be restored")
+        if not isinstance(snapshot.active_optimizers_store, list):
+            raise TypeError("instruction adapter active store cannot be restored")
+        if not isinstance(snapshot.active_rule_names_store, dict):
+            raise TypeError("instruction adapter active-rule store cannot be restored")
+
+        self.instruction_optimizers = snapshot.instruction_optimizers_store
+        self.instruction_optimizers[:] = snapshot.instruction_optimizers
+        self._active_optimizers = snapshot.active_optimizers_store
+        self._active_optimizers[:] = snapshot.active_optimizers
+        self.analyzer = snapshot.analyzer
+        self._execution_scope_service = snapshot.execution_scope_service
+        self._execution_scope_project_name = snapshot.execution_scope_project_name
+        self._execution_scope_idb_key = snapshot.execution_scope_idb_key
+        self._execution_scope_func_ea = snapshot.execution_scope_func_ea
+        self.current_maturity = snapshot.current_maturity
+        self.current_blk_serial = snapshot.current_blk_serial
+        self.generate_z3_code = snapshot.generate_z3_code
+        self.dump_intermediate_microcode = snapshot.dump_intermediate_microcode
+        self._decompilation_lifecycle = snapshot.decompilation_lifecycle
+        self._fact_consumer_callback = snapshot.fact_consumer_callback
+        self._run_later_scheduler = snapshot.run_later_scheduler
+        self._active_instruction_rule_names_by_maturity = (
+            snapshot.active_rule_names_store
+        )
+        snapshot.active_rule_names_store.clear()
+        snapshot.active_rule_names_store.update(
+            {
+                maturity: frozenset(rule_names)
+                for maturity, rule_names in snapshot.active_rule_names_by_maturity.items()
+            }
+        )
+        self._residual_admission_cache_key = snapshot.residual_admission_cache_key
+        self._residual_admission_cache_value = snapshot.residual_admission_cache_value
+        self._scheduled_stage_identities = snapshot.scheduled_stage_identities
+        self._scheduled_implementation_names = snapshot.scheduled_implementation_names
+        for child in snapshot.children:
+            self._restore_child_runtime_state(child)
 
     def _invalidate_residual_admission_cache(self) -> None:
         """Discard the maturity-local fast-tier admission decision."""
@@ -589,7 +871,23 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     # def-use scans (e.g. wide constant reconstruction for the
                     # magic-modulo rule) need the owning block, so set it explicitly.
                     self.instruction_visitor.blk = blk
-                    optimization_performed = ins.for_all_insns(self.instruction_visitor)
+                    # The minsn traversal callback also does not reliably expose
+                    # the top-level instruction as ``topins``.  Bind it explicitly
+                    # for this traversal so contextual def-use resolution remains
+                    # anchored to the owner rather than to each nested candidate.
+                    visitor = self.instruction_visitor
+                    had_contextual_anchor = hasattr(visitor, "_contextual_anchor_ins")
+                    previous_contextual_anchor = getattr(
+                        visitor, "_contextual_anchor_ins", None
+                    )
+                    visitor._contextual_anchor_ins = ins
+                    try:
+                        optimization_performed = ins.for_all_insns(visitor)
+                    finally:
+                        if had_contextual_anchor:
+                            visitor._contextual_anchor_ins = previous_contextual_anchor
+                        else:
+                            del visitor._contextual_anchor_ins
 
                 if optimization_performed:
                     ins.optimize_solo()
@@ -1210,9 +1508,17 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             if callable(setter):
                 setter(admitted)
 
-    def optimize(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
+    def optimize(
+        self,
+        blk: ida_hexrays.mblock_t,
+        ins: ida_hexrays.minsn_t,
+        *,
+        contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
+    ) -> bool:
         if d810_optimization_is_suppressed():
             return False
+        if contextual_anchor_ins is None:
+            contextual_anchor_ins = ins
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
         allowed_rule_names = self._resolve_active_instruction_rule_names(blk)
         scheduled_rule_names = self._scheduled_implementation_names
@@ -1247,6 +1553,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             new_ins = ins_optimizer.get_optimized_instruction(
                 blk,
                 ins,
+                contextual_anchor_ins=contextual_anchor_ins,
                 allowed_rule_names=allowed_rule_names,
                 scheduled_rule_names=scheduled_rule_names,
             )
@@ -1408,4 +1715,14 @@ class InstructionVisitorManager(ida_hexrays.minsn_visitor_t):
         self.instruction_optimizer = optimizer
 
     def visit_minsn(self) -> bool:
-        return self.instruction_optimizer.optimize(self.blk, self.curins)
+        candidate_ins = self.curins
+        owner_ins = getattr(self, "_contextual_anchor_ins", None)
+        if owner_ins is None:
+            owner_ins = getattr(self, "topins", None)
+        if owner_ins is None:
+            owner_ins = candidate_ins
+        return self.instruction_optimizer.optimize(
+            self.blk,
+            candidate_ins,
+            contextual_anchor_ins=owner_ins,
+        )

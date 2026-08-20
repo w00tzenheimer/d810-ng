@@ -71,3 +71,24 @@ def test_unbound_pattern_constant_is_still_rejected():
     placeholder = p_ast.AstConstant("c_1")
 
     assert placeholder.update_leafs_mop(_EmptyCandidate()) is False
+
+
+def test_computed_constant_without_mop_matches_by_expected_value():
+    pattern = p_ast.AstConstant("pattern", expected_value=0x42, expected_size=4)
+    candidate = p_ast.AstConstant("candidate", expected_value=0x42, expected_size=4)
+
+    assert pattern._copy_mops_from_ast(candidate) is True
+
+
+def test_computed_constant_without_mop_rejects_different_value():
+    pattern = p_ast.AstConstant("pattern", expected_value=0x42, expected_size=4)
+    candidate = p_ast.AstConstant("candidate", expected_value=0x43, expected_size=4)
+
+    assert pattern._copy_mops_from_ast(candidate) is False
+
+
+def test_constant_without_mop_or_value_fails_closed():
+    pattern = p_ast.AstConstant("pattern", expected_value=0x42, expected_size=4)
+    candidate = p_ast.AstConstant("candidate")
+
+    assert pattern._copy_mops_from_ast(candidate) is False

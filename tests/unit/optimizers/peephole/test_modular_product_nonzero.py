@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+from dataclasses import replace
 
 import pytest
 
@@ -83,3 +84,34 @@ def test_z3_proves_the_ctz_budget_for_the_entire_32_bit_domain() -> None:
 
     assert match is not None
     assert module.z3_proves_modular_product_nonzero(predicate, match)
+
+
+def test_structural_certificate_rederives_the_exact_ctz_budget() -> None:
+    _, _, _, _, Variable, module = _api()
+    predicate = _product_predicate(Variable("input", 32))
+    match = module.recover_modular_product_nonzero(predicate)
+
+    assert match is not None
+    assert module.certifies_modular_product_nonzero(predicate, match)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("mask", 0x30),
+        ("constant_value", 1),
+        ("constant_trailing_zeroes", 4),
+        ("trailing_zero_budget", 28),
+        ("factors", ()),
+    ),
+)
+def test_structural_certificate_rejects_mutated_receipts(field, value) -> None:
+    _, _, _, _, Variable, module = _api()
+    predicate = _product_predicate(Variable("input", 32))
+    match = module.recover_modular_product_nonzero(predicate)
+
+    assert match is not None
+    assert not module.certifies_modular_product_nonzero(
+        predicate,
+        replace(match, **{field: value}),
+    )
