@@ -827,3 +827,14 @@ def test_resolve_exit_via_condition_chain_default_snapshot_keeps_empty_handler_a
         )
         == 20
     )
+
+
+def test_condition_chain_evaluator_routes_signed_32_bit_predicates() -> None:
+    """Signed dispatcher branches compare the bit-pattern as an int32."""
+    assert sma.eval_condition_chain_condition(PredicateKind.SLE, 0x16AA65E9, 0x1888937D)
+    assert sma.eval_condition_chain_condition(PredicateKind.SLE, 0xFFFFFFFF, 0)
+    assert not sma.eval_condition_chain_condition(
+        PredicateKind.SLE, 0x1939CB36, 0x1888937D
+    )
+    assert sma.eval_condition_chain_condition(PredicateKind.SGT, 0x1939CB36, 0x1888937D)
+    assert not sma.eval_condition_chain_condition(PredicateKind.SGT, 0xFFFFFFFF, 0)

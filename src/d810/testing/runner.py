@@ -231,16 +231,34 @@ def run_deobfuscation_test(
         # ==========================================
         state.start_d810()
         recipe_activation = contextlib.nullcontext()
-        if effective_case.state_cff_min_state_constant is not None:
+        if (
+            effective_case.state_cff_min_state_constant is not None
+            or effective_case.disabled_pass_ids
+        ):
             draft = state.create_active_workbench_recipe_draft(func_ea)
-            current_options = state.get_workbench_recipe_state_cff_options(draft)
-            draft = state.replace_workbench_recipe_state_cff_options(
-                draft,
-                dataclasses.replace(
-                    current_options,
-                    min_state_constant=effective_case.state_cff_min_state_constant,
-                ),
-            )
+            if effective_case.state_cff_min_state_constant is not None:
+                current_options = state.get_workbench_recipe_state_cff_options(draft)
+                draft = state.replace_workbench_recipe_state_cff_options(
+                    draft,
+                    dataclasses.replace(
+                        current_options,
+                        min_state_constant=effective_case.state_cff_min_state_constant,
+                    ),
+                )
+            for pass_id in effective_case.disabled_pass_ids:
+                matching_items = tuple(
+                    item for item in draft.passes if item.pass_id == pass_id
+                )
+                if not matching_items:
+                    raise AssertionError(
+                        f"case requested unknown or inactive pass {pass_id!r}"
+                    )
+                for item in matching_items:
+                    draft = state.set_workbench_recipe_pass_enabled(
+                        draft,
+                        item.item_id,
+                        False,
+                    )
             recipe_activation = state.activate_workbench_recipe(draft)
         with recipe_activation:
             if prepare_runtime_state is not None:

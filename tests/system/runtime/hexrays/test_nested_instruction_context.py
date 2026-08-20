@@ -149,6 +149,7 @@ def test_lnot_contextual_prover_uses_definition_anchor(monkeypatch) -> None:
     rule._definition_search_ins = definition_anchor
 
     x0 = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+
     class _Candidate:
         dst_mop = SimpleNamespace(size=1)
 
@@ -204,15 +205,21 @@ def test_z3_constant_override_accepts_nested_owner_context(monkeypatch) -> None:
 
     monkeypatch.setattr(cst, "minsn_to_ast", lambda _instruction: None)
     rule = cst.Z3ConstantOptimization()
+    block = object()
+    candidate = object()
+    owner = object()
 
     assert (
         rule.check_and_replace_with_context(
-            object(),
-            object(),
-            contextual_anchor_ins=object(),
+            block,
+            candidate,
+            contextual_anchor_ins=owner,
         )
         is None
     )
+    assert rule._current_blk is None
+    assert rule._current_ins is None
+    assert rule._definition_search_ins is None
 
 
 class TestNativeNestedInstructionTraversal:

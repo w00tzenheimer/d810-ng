@@ -1360,8 +1360,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             and getattr(prelim, "dispatcher_block_serial", None) is not None
         )
         if identity is not None:
-            if getattr(backend, "last_patch_failure", None) is not None:
-                return
+            patch_failure = getattr(backend, "last_patch_failure", None)
             execution = getattr(backend, "last_patch_execution", None)
             patch_count = int(getattr(execution, "applied_count", 0) or 0)
             fragment_count = int(
@@ -1374,6 +1373,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     identity,
                 )
                 return
+            # A fail-closed preflight rejection is still a no-progress result
+            # for this exact candidate and topology epoch. Retrying it up to
+            # the coarse 64-round budget cannot make the proof succeed; any
+            # real graph change gets a new fingerprint and reopens recovery.
             self._dispatcher_progress.record_no_progress(
                 func_ea,
                 maturity,
@@ -1393,6 +1396,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 graph_fingerprint,
                 excluded_next,
             )
+            if patch_failure is not None:
+                logger.debug(
+                    "UNFLAT_CANDIDATE_REJECTED func=0x%x maturity=%s "
+                    "identity=%s graph=%s failure=%r",
+                    int(func_ea),
+                    maturity.name,
+                    identity,
+                    graph_fingerprint,
+                    patch_failure,
+                )
             return
 
         # A selected/recovered dispatcher without the new provenance remains
@@ -1409,8 +1422,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 graph_fingerprint,
             )
             logger.info(
-                "UNFLAT_GRAPH_EXHAUSTED func=0x%x maturity=%s graph=%s "
-                "excluded=%s",
+                "UNFLAT_GRAPH_EXHAUSTED func=0x%x maturity=%s graph=%s excluded=%s",
                 int(func_ea),
                 maturity.name,
                 graph_fingerprint,
@@ -2048,17 +2060,14 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             graph_fingerprint,
         ):
             return 0
-        excluded_dispatcher_identities = (
-            self._dispatcher_progress.excluded_identities(
-                func_ea,
-                portable_maturity,
-                graph_fingerprint,
-            )
+        excluded_dispatcher_identities = self._dispatcher_progress.excluded_identities(
+            func_ea,
+            portable_maturity,
+            graph_fingerprint,
         )
         if excluded_dispatcher_identities:
             logger.debug(
-                "UNFLAT_CANDIDATE_FALLBACK func=0x%x maturity=%s graph=%s "
-                "excluded=%s",
+                "UNFLAT_CANDIDATE_FALLBACK func=0x%x maturity=%s graph=%s excluded=%s",
                 func_ea,
                 maturity_to_string(int(mba.maturity)),
                 graph_fingerprint,

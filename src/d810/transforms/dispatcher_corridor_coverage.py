@@ -70,6 +70,7 @@ from d810.transforms.edit_simulator import graph_modifications_to_simulated_edit
 from d810.transforms.plan import (
     PatchLowerConditionalStateTransition,
     PatchPlan,
+    PatchRedirectBranch,
     PatchRedirectGoto,
 )
 
@@ -393,9 +394,7 @@ class ComparisonCorridorRetirementProof:
             "covered_corridors": [
                 corridor.to_payload() for corridor in self.covered_corridors
             ],
-            "retired_corridor": [
-                item.to_payload() for item in self.retired_corridor
-            ],
+            "retired_corridor": [item.to_payload() for item in self.retired_corridor],
             "semantic_handlers": [
                 anchor.to_payload() for anchor in self.semantic_handlers
             ],
@@ -728,6 +727,13 @@ def _upstream_corridor_paths(
         reclassified as a merge.
         """
         nonlocal complete
+        if int(predecessor) == int(dispatcher_serial):
+            # The dispatcher is the corridor boundary, not another shared
+            # merge to expand.  Following its predecessors re-enters the same
+            # state-machine feeders and falsely turns a finite dispatcher
+            # cycle into incomplete enumeration.
+            append((int(predecessor), *suffix))
+            return
         incoming_to_predecessor = predecessors.get(int(predecessor), ())
         if len(incoming_to_predecessor) > 1 and successors.get(
             int(predecessor), ()
@@ -1080,6 +1086,22 @@ def _stable_block_start_ea(block: object) -> int | None:
     return None
 
 
+def _native_instruction_eas(block: object) -> frozenset[int]:
+    """Return valid native instruction origins carried by one block."""
+    origins: set[int] = set()
+    for instruction in tuple(getattr(block, "insn_snapshots", ()) or ()):
+        value = getattr(instruction, "native_ea", None)
+        if value is None:
+            value = getattr(instruction, "ea", None)
+        try:
+            origin = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= origin < 0xFFFFFFFFFFFFFFFF:
+            origins.add(origin)
+    return frozenset(origins)
+
+
 def _addressless_block_signature(block: object) -> tuple[object, ...]:
     """Return a conservative identity for a native-addressless sentinel.
 
@@ -1118,10 +1140,12 @@ def canonicalize_observed_dispatcher_graph(
     Conditional state lowering must create a physically adjacent fall-through
     helper.  That helper shifts later snapshot-local serials, so raw observed
     adjacency is not comparable with pre-snapshot coverage metadata.  Original
-    blocks are matched by their native block-start anchors; helper chains are
-    admitted only when they are reachable from a typed conditional lowering and
-    terminate at one of its declared arms.  Every other identity or topology
-    drift fails closed.
+    blocks are matched by their native block-start anchors.  When Hex-Rays
+    merely resegments a block, a unique and mutually unambiguous overlap in
+    native instruction origins may recover that identity.  Helper chains are
+    admitted only when they are reachable from a typed conditional lowering
+    and terminate at one of its declared arms.  Every other identity or
+    topology drift fails closed.
     """
     if not isinstance(pre_graph, FlowGraph) or not isinstance(
         observed_graph, FlowGraph
@@ -1129,11 +1153,17 @@ def canonicalize_observed_dispatcher_graph(
         raise TypeError("dispatcher observation canonicalization requires FlowGraphs")
 
     lowerings: list[PatchLowerConditionalStateTransition] = []
+    branch_redirects: list[PatchRedirectBranch] = []
     for step in getattr(plan, "steps", ()) or ():
         match step:
             case PatchLowerConditionalStateTransition() as lowering:
                 lowerings.append(lowering)
-    if not lowerings:
+            case PatchRedirectBranch() as redirect:
+                branch_redirects.append(redirect)
+    if not lowerings and not any(
+        redirect.fallthrough_helper_block_id is not None
+        for redirect in branch_redirects
+    ):
         return observed_graph
 
     def drift(reason: str) -> ValueError:
@@ -1189,8 +1219,10 @@ def canonicalize_observed_dispatcher_graph(
         if not unmatched_pre:
             continue
         if len(unmatched_pre) != len(unmatched_observed):
-            missing = unmatched_pre[0] if unmatched_pre else pre_serials[0]
-            raise drift(f"pre block {missing}@0x{anchor:x} is missing")
+            # A mutation can move the first instruction and therefore change a
+            # live block's start anchor without changing its native identity.
+            # Defer this block to the instruction-origin reconciliation below.
+            continue
         if len(unmatched_pre) > 1:
             raise drift(
                 f"pre block-start EA 0x{anchor:x} has ambiguous residual serials"
@@ -1198,6 +1230,62 @@ def canonicalize_observed_dispatcher_graph(
         if unmatched_pre:
             observed_for_pre[unmatched_pre[0]] = unmatched_observed[0]
             claimed_observed.add(unmatched_observed[0])
+
+    # Block-boundary resegmentation is accepted only when instruction origins
+    # establish a one-to-one relation in both directions.  This cannot turn a
+    # missing or split block into a guessed identity: empty, competing, and
+    # many-to-one overlaps all remain fatal.
+    unresolved_pre = tuple(
+        serial
+        for serials in pre_by_anchor.values()
+        for serial in serials
+        if serial not in observed_for_pre
+    )
+    unclaimed_observed = tuple(
+        int(serial)
+        for serial in observed_graph.blocks
+        if int(serial) not in claimed_observed
+    )
+    overlap_candidates: dict[int, tuple[int, ...]] = {}
+    reverse_candidates: dict[int, list[int]] = {}
+    for pre_serial in unresolved_pre:
+        pre_origins = _native_instruction_eas(pre_graph.blocks[pre_serial])
+        candidates = tuple(
+            observed_serial
+            for observed_serial in unclaimed_observed
+            if pre_origins
+            & _native_instruction_eas(observed_graph.blocks[observed_serial])
+        )
+        overlap_candidates[pre_serial] = candidates
+        for observed_serial in candidates:
+            reverse_candidates.setdefault(observed_serial, []).append(pre_serial)
+
+    for pre_serial in unresolved_pre:
+        candidates = overlap_candidates[pre_serial]
+        if len(candidates) != 1 or len(reverse_candidates[candidates[0]]) != 1:
+            anchor = _stable_block_start_ea(pre_graph.blocks[pre_serial])
+            overlap_detail = tuple(
+                (
+                    observed_serial,
+                    tuple(
+                        sorted(
+                            _native_instruction_eas(pre_graph.blocks[pre_serial])
+                            & _native_instruction_eas(
+                                observed_graph.blocks[observed_serial]
+                            )
+                        )
+                    ),
+                )
+                for observed_serial in candidates
+            )
+            anchor_text = "addressless" if anchor is None else f"0x{anchor:x}"
+            raise drift(
+                f"pre block {pre_serial}@{anchor_text} is missing or ambiguous; "
+                f"instruction_overlap={overlap_detail}"
+            )
+        observed_serial = candidates[0]
+        observed_for_pre[pre_serial] = observed_serial
+        claimed_observed.add(observed_serial)
 
     addressless_observed_set = set(addressless_observed)
     for pre_serial in addressless_pre:
@@ -1300,6 +1388,31 @@ def canonicalize_observed_dispatcher_graph(
         if existing is not None and existing[1:] != arms:
             raise drift(f"conditional source {source} has conflicting lowerings")
         lower_by_source[source] = (lowering, *arms)
+
+    redirects_by_source: dict[
+        int, dict[int, tuple[PatchRedirectBranch, int]]
+    ] = {}
+    for redirect in branch_redirects:
+        source = pre_serial_for_ref(redirect.from_serial, "redirect source")
+        old_target = pre_serial_for_ref(redirect.old_target, "redirect old target")
+        new_target = pre_serial_for_ref(redirect.new_target, "redirect new target")
+        source_block = pre_graph.blocks[source]
+        if source in lower_by_source:
+            raise drift(
+                f"conditional source {source} mixes lowering and branch redirect"
+            )
+        if (
+            source_block.kind is not BlockKind.TWO_WAY
+            or source_block.tail_kind
+            not in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+            or old_target not in source_block.succs
+        ):
+            raise drift(f"branch redirect source {source} lacks its old arm")
+        source_redirects = redirects_by_source.setdefault(source, {})
+        existing = source_redirects.get(old_target)
+        if existing is not None and existing[1] != new_target:
+            raise drift(f"branch redirect source {source} has conflicting arms")
+        source_redirects[old_target] = (redirect, new_target)
 
     def true_is_taken(lowering: PatchLowerConditionalStateTransition) -> bool:
         marker = getattr(lowering.condition_operand, "true_is_taken", True)
@@ -1686,6 +1799,53 @@ def canonicalize_observed_dispatcher_graph(
                         f"conditional source {pre_serial} observed arms differ from plan"
                     )
             canonical_successors[pre_serial] = (false_target, true_target)
+        elif pre_serial in redirects_by_source:
+            pre_block = pre_graph.blocks[pre_serial]
+            pre_insns = tuple(getattr(pre_block, "insn_snapshots", ()) or ())
+            observed_insns = tuple(
+                getattr(observed_block, "insn_snapshots", ()) or ()
+            )
+            if (
+                observed_block.kind is not BlockKind.TWO_WAY
+                or observed_block.tail_kind
+                not in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+                or len(pre_insns) == 0
+                or len(observed_insns) == 0
+                or predicate_signature(pre_insns[-1])
+                != predicate_signature(observed_insns[-1])
+                or len(observed_block.succs) != len(pre_block.succs)
+            ):
+                raise drift(
+                    f"branch redirect source {pre_serial} predicate identity mismatch"
+                )
+            canonical_targets: list[int] = []
+            redirects = redirects_by_source[pre_serial]
+            for arm_index, old_target in enumerate(pre_block.succs):
+                redirect_entry = redirects.get(int(old_target))
+                expected_target = (
+                    int(old_target)
+                    if redirect_entry is None
+                    else int(redirect_entry[1])
+                )
+                observed_target = int(observed_block.succs[arm_index])
+                if (
+                    redirect_entry is not None
+                    and redirect_entry[0].fallthrough_helper_block_id is not None
+                ):
+                    validate_helper(
+                        source=pre_serial,
+                        observed_source=observed_serial,
+                        helper=observed_target,
+                        expected_target=expected_target,
+                        role="fallthrough",
+                    )
+                elif pre_for_observed.get(observed_target) != expected_target:
+                    raise drift(
+                        f"branch redirect source {pre_serial} observed arms differ "
+                        "from plan"
+                    )
+                canonical_targets.append(expected_target)
+            canonical_successors[pre_serial] = tuple(canonical_targets)
         else:
             translated: list[int] = []
             for target in observed_block.succs:
@@ -1784,12 +1944,10 @@ def _retired_dispatcher_infrastructure(
             flow_graph.get_block(int(state_merge.serial))
         ):
             roles_by_serial.setdefault(int(state_merge.serial), "state_merge")
-    corridor_safe, corridor_serials = (
-        _covered_control_only_comparison_corridor_region(
-            flow_graph,
-            coverage,
-            dispatcher_entry_serial=int(dispatcher_entry_serial),
-        )
+    corridor_safe, corridor_serials = _covered_control_only_comparison_corridor_region(
+        flow_graph,
+        coverage,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
     )
     if corridor_safe:
         for serial in corridor_serials & set(lost_blocks):
@@ -1819,7 +1977,10 @@ def _covered_control_only_comparison_corridor_region(
     complete extension rather than allowing a sibling forest to be retired.
     """
     dispatcher_serial = int(dispatcher_entry_serial)
-    if coverage.dispatcher is None or int(coverage.dispatcher.serial) != dispatcher_serial:
+    if (
+        coverage.dispatcher is None
+        or int(coverage.dispatcher.serial) != dispatcher_serial
+    ):
         return False, frozenset()
     candidates: set[int] = set()
     saw_comparison_corridor = False
@@ -1910,7 +2071,10 @@ def _is_effect_free_dispatcher_router(block: object) -> bool:
         # predicate or target operand.  In particular, an ``mop_a`` address,
         # global, call-shaped nested sub-instruction, or unresolved operand is
         # not made pure merely because the enclosing instruction is a branch.
-        if getattr(insn, "is_call", False) or getattr(insn, "call_kind", None) is not None:
+        if (
+            getattr(insn, "is_call", False)
+            or getattr(insn, "call_kind", None) is not None
+        ):
             return False
         if not all(
             _is_effect_free_dispatcher_router_operand(operand)
@@ -4681,12 +4845,10 @@ def _comparison_corridor_retirement_allowance(
         or raw_proof.get("residual_corridor_count") != 0
     ):
         return None
-    corridor_safe, corridor_serials = (
-        _covered_control_only_comparison_corridor_region(
-            pre_graph,
-            coverage,
-            dispatcher_entry_serial=int(dispatcher.serial),
-        )
+    corridor_safe, corridor_serials = _covered_control_only_comparison_corridor_region(
+        pre_graph,
+        coverage,
+        dispatcher_entry_serial=int(dispatcher.serial),
     )
     if not corridor_safe or not corridor_serials:
         return None

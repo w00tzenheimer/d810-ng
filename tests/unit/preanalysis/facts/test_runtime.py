@@ -297,10 +297,10 @@ def test_capture_summary_log_uses_maturity_name(monkeypatch) -> None:
     configure_settings(fact_lifecycle=True)
     messages: list[str] = []
 
-    def _record_info(message, *args, **_kwargs) -> None:
+    def _record_debug(message, *args, **_kwargs) -> None:
         messages.append(message % args)
 
-    monkeypatch.setattr(facts_runtime_module.logger, "info", _record_info)
+    monkeypatch.setattr(facts_runtime_module.logger, "debug", _record_debug)
 
     runtime = PreanalysisFactRuntime()
     runtime.capture(

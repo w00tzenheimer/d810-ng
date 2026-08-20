@@ -1,5 +1,3 @@
-from d810.core import typing
-
 import ida_hexrays
 
 from d810.core import typing
@@ -48,9 +46,22 @@ class Z3ConstantOptimization(Z3Rule):
         *,
         contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
     ) -> ida_hexrays.minsn_t | None:
-        # This pattern-less rule does not perform def-use lookup, but it must
-        # accept the same nested-owner context contract as every Z3Rule.
-        del contextual_anchor_ins
+        """Evaluate a patternless candidate under the shared Z3 owner context."""
+        self._current_blk = blk
+        self._current_ins = instruction
+        self._definition_search_ins = (
+            instruction if contextual_anchor_ins is None else contextual_anchor_ins
+        )
+        try:
+            return self._check_constant_candidate(instruction)
+        finally:
+            self._current_blk = None
+            self._current_ins = None
+            self._definition_search_ins = None
+
+    def _check_constant_candidate(
+        self, instruction: ida_hexrays.minsn_t
+    ) -> ida_hexrays.minsn_t | None:
         tmp = minsn_to_ast(instruction)
         if tmp is None:
             return None

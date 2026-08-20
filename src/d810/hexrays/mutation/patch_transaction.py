@@ -31,6 +31,7 @@ from d810.transforms.edit_simulator import project_patch_plan
 from d810.transforms.plan import (
     PatchLowerConditionalStateTransition,
     PatchPlan,
+    PatchRedirectBranch,
     PatchScalarizeLocalAliasAccess,
 )
 from d810.hexrays.mutation.patch_binding import BoundPatchPlan, bind_patch_plan
@@ -317,6 +318,18 @@ def _transaction_reachability_removal_validation(
         reason="transaction_reachability_contract",
         proof=proof,
     )
+
+
+def _requires_observed_identity_canonicalization(plan: PatchPlan) -> bool:
+    """Whether applying *plan* can insert a helper that shifts live serials."""
+    for step in plan.steps:
+        match step:
+            case PatchLowerConditionalStateTransition():
+                return True
+            case PatchRedirectBranch(fallthrough_helper_block_id=helper):
+                if helper is not None:
+                    return True
+    return False
 
 
 def _conditional_lowering_projection_failure(
@@ -909,13 +922,7 @@ class _PatchTransactionLifecycle:
             projection.graph,
             plan_metadata,
         )
-        has_conditional_lowering = False
-        for step in self.plan.steps:
-            match step:
-                case PatchLowerConditionalStateTransition():
-                    has_conditional_lowering = True
-                    break
-        if has_conditional_lowering:
+        if _requires_observed_identity_canonicalization(self.plan):
             from d810.transforms.dispatcher_corridor_coverage import (
                 DispatcherCorridorCoverageValidation,
                 canonicalize_observed_dispatcher_graph,

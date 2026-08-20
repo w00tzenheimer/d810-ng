@@ -65,6 +65,7 @@ from d810.transforms.minimal_unflatten_emit import (
     build_output_store_retargets,
     build_conditional_arm_redirects,
     build_folded_loop_guard_transitions,
+    build_shared_merge_conditional_redirects,
     build_state_write_redirects,
     lower_conditional_transition_candidates,
 )
@@ -381,6 +382,66 @@ def test_conditional_arm_redirects_emit_both_arms(_seam) -> None:
     assert (12, 50) in edges
     # entry bridge intact: prologue -> route(initial 0x10) = blk10
     assert (1, 10) in edges
+
+
+def test_shared_merge_repair_suppresses_every_rewritten_source() -> None:
+    """The replacement diamond must not compete with stale back-edge redirects."""
+    fg = FlowGraph(
+        blocks={
+            2: _b(2, (10, 40, 50), (12,)),
+            10: _b(10, (11, 12), (2,), (_conditional_jump(0x1010, 12),)),
+            11: _b(11, (12,), (10,), (_mov_reg_const(0x1110, 1, 0xAA),)),
+            12: _b(12, (2,), (10, 11), (_mov_reg_state(0x1210, 1),)),
+            40: _b(40, (), (2,)),
+            50: _b(50, (), (2,)),
+            99: _stop(99, ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10, 0xAA: 40, 0xBB: 50}, exit_block=99)
+    transitions = (
+        HandlerTransition(
+            handler=10,
+            states=(0x10,),
+            arms=(
+                TransitionArm(
+                    next_state=0xBB,
+                    target_handler=50,
+                    is_return=False,
+                    branch_block=10,
+                    write_block=12,
+                    exit_block=12,
+                    ordered_path=(10, 12),
+                ),
+                TransitionArm(
+                    next_state=0xAA,
+                    target_handler=40,
+                    is_return=False,
+                    branch_block=10,
+                    write_block=12,
+                    exit_block=12,
+                    ordered_path=(10, 11, 12),
+                ),
+            ),
+        ),
+    )
+
+    redirects, suppressed = build_shared_merge_conditional_redirects(
+        fg,
+        disp,
+        transitions,
+        dispatcher_entry_serial=2,
+    )
+
+    assert {
+        (type(mod).__name__, mod.from_serial, mod.old_target, mod.new_target)
+        for mod in redirects
+    } == {
+        ("RedirectBranch", 10, 12, 50),
+        ("RedirectGoto", 11, 12, 40),
+    }
+    assert suppressed == {10, 11, 12}
 
 
 def test_arm_redirects_preserve_reachability(_seam) -> None:

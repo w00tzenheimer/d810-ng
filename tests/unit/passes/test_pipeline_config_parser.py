@@ -452,7 +452,7 @@ def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
         ),
         (
             "default_unflattening_tigress_engine_transition_facts",
-            4,
+            3,
             ["ForwardConstantPropagationRule", "StateMachineCffUnflattener"],
         ),
         (

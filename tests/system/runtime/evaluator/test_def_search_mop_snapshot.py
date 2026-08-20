@@ -255,6 +255,40 @@ def test_resolve_mop_to_ast_forwards_explicit_cross_block_tracker_budget(monkeyp
     assert RecordingTracker.received_budget == (2, 3)
 
 
+def test_resolve_mop_to_ast_rejects_tracker_fallback_before_locopt(monkeypatch):
+    calls = []
+
+    class UnexpectedTracker:
+        @staticmethod
+        def reset():
+            calls.append("reset")
+
+        def __init__(self, *_args, **_kwargs):
+            calls.append("init")
+
+        def search_backward(self, *_args, **_kwargs):
+            calls.append("search")
+            return []
+
+    monkeypatch.setitem(
+        def_search.sys.modules,
+        "d810.evaluator.hexrays_microcode.tracker",
+        SimpleNamespace(MopTracker=UnexpectedTracker),
+    )
+    monkeypatch.setattr(def_search, "_USE_NATIVE_DEF_SEARCH", False)
+
+    result = def_search.resolve_mop_to_ast(
+        SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=0),
+        blk=SimpleNamespace(
+            mba=SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)
+        ),
+        ins=SimpleNamespace(ea=0x1000),
+    )
+
+    assert result is None
+    assert calls == []
+
+
 def test_resolve_mop_to_ast_forwards_native_def_search_budget(monkeypatch):
     received_budgets = []
 
@@ -314,8 +348,7 @@ def test_native_predecessor_walk_honors_predecessor_budget(monkeypatch):
             return self._predecessor
 
     blocks = {
-        serial: Block(serial, serial + 1 if serial < 2 else None)
-        for serial in range(3)
+        serial: Block(serial, serial + 1 if serial < 2 else None) for serial in range(3)
     }
 
     class Mba:
@@ -1002,9 +1035,7 @@ def test_recursive_resolver_fails_closed_when_definition_width_unknown(
     "resolver_name",
     ["_py_slow_recursively_resolve_ast", "recursively_resolve_ast"],
 )
-def test_recursive_resolver_charges_synthetic_truncation(
-    monkeypatch, resolver_name
-):
+def test_recursive_resolver_charges_synthetic_truncation(monkeypatch, resolver_name):
     """The inserted low-part node participates in the caller's node budget."""
 
     replacement = _resolver_width_test_definition(8)

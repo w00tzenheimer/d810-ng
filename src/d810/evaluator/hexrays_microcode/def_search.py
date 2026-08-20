@@ -131,11 +131,7 @@ def _proof_operand_has_location(
     """
 
     mba = getattr(blk, "mba", None)
-    if (
-        not hasattr(blk, "this")
-        or mba is None
-        or not hasattr(mba, "this")
-    ):
+    if not hasattr(blk, "this") or mba is None or not hasattr(mba, "this"):
         return False
     try:
         tracked = _materialize_mop_for_tracking(
@@ -250,6 +246,7 @@ def _valid_predecessor_search_budget(
         and type(max_paths) is int
         and 1 <= max_paths <= 32
     )
+
 
 _SNAPSHOT_TYPES_REQUIRING_OWNED_MOP = {
     ida_hexrays.mop_d,
@@ -825,7 +822,26 @@ def resolve_mop_to_ast(
         if result is not None:
             return result
 
-    # FALLBACK: MopTracker for multi-predecessor cases or early maturity.
+    # PREOPT has no stable global chain lifecycle.  The native resolver above
+    # is deliberately safe there because it accepts only a current-block
+    # definition or one exact single-predecessor path.  MopTracker's bounded
+    # ``max_path=1`` fallback is different: on a multi-predecessor dispatcher
+    # it can return the first explored history without proving that history is
+    # unique.  Feeding that path-local definition to a universal Z3 query can
+    # collapse a live branch.  Wait until LOCOPT before admitting the legacy
+    # fallback; direct and exact native PREOPT proofs remain available.
+    try:
+        maturity = int(blk.mba.maturity)
+    except (AttributeError, TypeError, ValueError):
+        maturity = None
+    if maturity is not None and maturity < int(ida_hexrays.MMAT_LOCOPT):
+        logger.debug(
+            "resolve_mop_to_ast: tracker fallback unavailable before LOCOPT for %s",
+            format_mop_t(mop),
+        )
+        return None
+
+    # FALLBACK: MopTracker for post-LOCOPT cases the native lookup cannot answer.
     # Keep this lookup dynamic so hexrays does not hard-import evaluator layer.
     tracker_module = sys.modules.get("d810.evaluator.hexrays_microcode.tracker")
     if tracker_module is None:

@@ -387,6 +387,7 @@ class _ReceiptLifecycleAuthority:
         self.evidence_generation = 1
         self.native_mutation_quarantined = False
         self.events: list[tuple[str, object]] = []
+        self.logical_batch_receipts: dict[tuple[object, ...], object] = {}
 
     def record_fragment_plan_ready(self, plan: FragmentPlan) -> None:
         del plan
@@ -426,6 +427,12 @@ class _ReceiptLifecycleAuthority:
 
     def committed_semantic_ownership(self):
         return ()
+
+    def committed_logical_batch_receipt(self, logical_batch_key):
+        return self.logical_batch_receipts.get(logical_batch_key)
+
+    def record_logical_batch_commit(self, logical_batch_key, receipt) -> None:
+        self.logical_batch_receipts[logical_batch_key] = receipt
 
 
 def _gateway(

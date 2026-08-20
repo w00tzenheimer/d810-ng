@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 
 import ida_entry
@@ -48,7 +49,24 @@ class TestHodurEgglogWithoutFcp:
             with state.for_project(
                 "hodur_flag2_s1a_config_v2_canary_constant_simplification.json"
             ) as context:
-                context.remove_rule("ForwardConstantPropagationRule")
+                project = copy.deepcopy(state.current_runtime_project)
+                assert project is not None
+                constant_pass = next(
+                    entry
+                    for entry in project.additional_configuration["pipeline_v2"]
+                    if entry["pass_id"] == "constant-simplification"
+                )
+                constant_pass["options"]["stages"]["forward-constants"][
+                    "enabled"
+                ] = False
+                if state.manager.started:
+                    state.stop_d810()
+                state._activate_runtime_project(
+                    project_index=state.current_project_index,
+                    source_project=state.current_project,
+                    runtime_project=project,
+                    default_selection=state.last_config_v2_default_selection,
+                )
                 context.add_rule(EgglogOptimizer)
                 egglog = next(
                     rule

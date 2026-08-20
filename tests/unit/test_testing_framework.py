@@ -24,6 +24,7 @@ class TestDeobfuscationCase:
         assert case.must_change is True
         assert case.check_stats is True
         assert case.state_cff_min_state_constant is None
+        assert case.disabled_pass_ids == ()
 
     def test_accepts_function_state_cff_threshold(self):
         case = DeobfuscationCase(
@@ -32,6 +33,17 @@ class TestDeobfuscationCase:
         )
 
         assert case.state_cff_min_state_constant == 0x1000
+
+    def test_accepts_typed_per_case_pass_exclusions(self):
+        case = DeobfuscationCase(
+            function="call_preservation_fixture",
+            disabled_pass_ids=("mba-solve", "constant-simplification"),
+        )
+
+        assert case.disabled_pass_ids == (
+            "mba-solve",
+            "constant-simplification",
+        )
 
     def test_expected_code_dedent(self):
         """Test that expected_code is automatically dedented."""

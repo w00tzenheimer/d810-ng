@@ -10,6 +10,8 @@ d81-c733: an OLLVM conditional dispatcher that d810 folded to
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from d810.testing.semantic_equivalence import (
@@ -134,3 +136,28 @@ def test_oracle_signals_unavailable_when_no_compiler():
         assert "no C compiler" in detail
     else:
         pytest.skip("compiler present; unavailable path exercised only without one")
+
+
+def test_oracle_rejects_nonterminating_candidate(monkeypatch: pytest.MonkeyPatch):
+    calls = 0
+
+    def _run(args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", _run)
+
+    ok, detail = check_semantic_equivalence(
+        _CORRECT_AFTER,
+        "high_fan_in_pattern",
+        _REFERENCE_SOURCE,
+        compiler="/fake/cc",
+        run_timeout_seconds=0.01,
+    )
+
+    assert ok is False
+    assert "timed out" in detail
+    assert "0.01" in detail

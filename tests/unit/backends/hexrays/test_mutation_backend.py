@@ -31,6 +31,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
 from d810.hexrays.mutation.patch_transaction import (
     HexRaysPatchTransactionParticipant,
     PatchTransactionPreflightRejected,
+    _requires_observed_identity_canonicalization,
 )
 from d810.hexrays.mutation.semantic_ownership import (
     PatchPlanSemanticOwnershipOverlap,
@@ -97,6 +98,7 @@ from d810.transforms.plan import (
     PatchConvertToGoto,
     PatchLowerConditionalStateTransition,
     PatchPlan,
+    PatchRedirectBranch,
     PatchRedirectGoto,
     PatchScalarizeLocalAliasAccess,
 )
@@ -1372,6 +1374,28 @@ def test_observed_lowering_transaction_uses_canonical_identity_boundary(monkeypa
 
     assert backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks)) is observed
     assert calls == [(cfg, observed, plan)]
+
+
+def test_generic_fallthrough_helper_requires_observed_identity_canonicalization() -> None:
+    """Ordinary branch helpers shift serials just like typed lowerings do."""
+    plan = PatchPlan(
+        source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
+        source_generation=0,
+        snapshot_id="generic-helper-observation",
+        steps=(
+            PatchRedirectBranch(
+                from_serial=_native_ref(1),
+                old_target=_native_ref(2),
+                new_target=_native_ref(3),
+                fallthrough_helper_block_id=_ref(4),
+            ),
+        ),
+        source_coordinates=tuple(
+            (_native_ref(serial), serial) for serial in (1, 2, 3)
+        ),
+    )
+
+    assert _requires_observed_identity_canonicalization(plan)
 
 
 def test_observed_lowering_identity_drift_still_poisoned() -> None:

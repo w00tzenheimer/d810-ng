@@ -52,6 +52,10 @@ _CONDITION_CHAIN_BRANCH_PREDICATES = frozenset(
         PredicateKind.UGT,
         PredicateKind.ULT,
         PredicateKind.UGE,
+        PredicateKind.SLE,
+        PredicateKind.SGT,
+        PredicateKind.SLT,
+        PredicateKind.SGE,
     }
 )
 _LEGACY_BLT_STOP = 1
@@ -1159,6 +1163,10 @@ def init_condition_chain_cmp_opcodes() -> frozenset:
 def eval_condition_chain_condition(predicate: object, state: int, cmp_val: int) -> bool:
     """Evaluate a condition-chain comparison: does the condition cause a jump?"""
 
+    def signed32(value: int) -> int:
+        value = int(value) & 0xFFFFFFFF
+        return value - 0x100000000 if value & 0x80000000 else value
+
     if _kind_matches(predicate, PredicateKind.NE):
         return state != cmp_val
     if _kind_matches(predicate, PredicateKind.EQ):
@@ -1171,6 +1179,14 @@ def eval_condition_chain_condition(predicate: object, state: int, cmp_val: int) 
         return state < cmp_val
     if _kind_matches(predicate, PredicateKind.UGE):
         return state >= cmp_val
+    if _kind_matches(predicate, PredicateKind.SLE):
+        return signed32(state) <= signed32(cmp_val)
+    if _kind_matches(predicate, PredicateKind.SGT):
+        return signed32(state) > signed32(cmp_val)
+    if _kind_matches(predicate, PredicateKind.SLT):
+        return signed32(state) < signed32(cmp_val)
+    if _kind_matches(predicate, PredicateKind.SGE):
+        return signed32(state) >= signed32(cmp_val)
     return False
 
 

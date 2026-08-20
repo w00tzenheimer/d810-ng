@@ -159,9 +159,7 @@ def _path_local_entry_fixture(
             flags=0,
             start_ea=serial,
             insn_snapshots=insns,
-            native_start_ea=(
-                _DISPATCHER_ENTRY_EA if serial == 3 else None
-            ),
+            native_start_ea=(_DISPATCHER_ENTRY_EA if serial == 3 else None),
         )
 
     state_write = InsnSnapshot(
@@ -445,7 +443,9 @@ def test_collects_transition_target_facts_with_transition_provenance() -> None:
     assert fact.state_var_stkoff == 0x28
 
 
-def test_resolution_native_ea_is_preserved_and_interval_handler_beats_dispatcher_exact_row() -> None:
+def test_resolution_native_ea_is_preserved_and_interval_handler_beats_dispatcher_exact_row() -> (
+    None
+):
     state = 0x16AA65E9
     dispatch_map = StateDispatcherMap(
         rows=(
@@ -502,9 +502,7 @@ def test_resolution_native_ea_is_preserved_and_interval_handler_beats_dispatcher
         transition_resolutions=(support, resolution),
         state_var_stkoff=52,
     )
-    fact = next(
-        fact for fact in facts if fact.source_instruction_ea == 0x7FF855576BA0
-    )
+    fact = next(fact for fact in facts if fact.source_instruction_ea == 0x7FF855576BA0)
 
     assert fact.target_block_serial == 7
     assert fact.resolver_kind == "interval_dispatcher_row"
@@ -920,7 +918,9 @@ def _path_local_identity_resolutions():
     return support, candidate
 
 
-def test_native_entry_snapshot_fallback_accepts_exact_current_entry_path_proof() -> None:
+def test_native_entry_snapshot_fallback_accepts_exact_current_entry_path_proof() -> (
+    None
+):
     graph, dispatch_map, range_evidence = _path_local_entry_fixture()
     support, candidate = _path_local_identity_resolutions()
 
@@ -943,9 +943,11 @@ def test_native_entry_snapshot_fallback_accepts_exact_current_entry_path_proof()
     assert entry_facts[0].state_var_reg is None
 
 
-def test_native_entry_snapshot_fallback_selects_handler_map_when_replay_is_incomplete() -> None:
+def test_native_entry_snapshot_fallback_selects_handler_map_when_replay_is_incomplete() -> (
+    None
+):
     graph, dispatch_map, range_evidence = _path_local_entry_fixture(
-        root_predicate=PredicateKind.SLE
+        root_predicate=PredicateKind.TRUTHY
     )
     range_evidence = replace(
         range_evidence,
@@ -981,7 +983,7 @@ def test_native_entry_snapshot_fallback_selects_handler_map_when_replay_is_incom
 
 def test_incomplete_replay_does_not_bypass_current_entry_path_proof() -> None:
     graph, dispatch_map, range_evidence = _path_local_entry_fixture(
-        root_predicate=PredicateKind.SLE,
+        root_predicate=PredicateKind.TRUTHY,
         source_succs=(3, 30),
     )
     range_evidence = replace(
@@ -1014,7 +1016,7 @@ def test_incomplete_replay_does_not_bypass_current_entry_path_proof() -> None:
 
 def test_incomplete_replay_rejects_ambiguous_handler_map_targets() -> None:
     graph, dispatch_map, range_evidence = _path_local_entry_fixture(
-        root_predicate=PredicateKind.SLE
+        root_predicate=PredicateKind.TRUTHY
     )
     range_evidence = replace(
         range_evidence,
@@ -1050,7 +1052,7 @@ def test_incomplete_replay_rejects_ambiguous_handler_map_targets() -> None:
 
 def test_incomplete_replay_rejects_handler_without_current_native_identity() -> None:
     graph, dispatch_map, range_evidence = _path_local_entry_fixture(
-        root_predicate=PredicateKind.SLE
+        root_predicate=PredicateKind.TRUTHY
     )
     range_evidence = replace(
         range_evidence,
@@ -1152,9 +1154,10 @@ def test_interval_event_projection_rejects_conflicting_native_targets() -> None:
         },
     )
 
-    assert project_condition_chain_interval_route_observations(
-        (observation, conflicting)
-    ) == ()
+    assert (
+        project_condition_chain_interval_route_observations((observation, conflicting))
+        == ()
+    )
 
 
 def test_interval_event_projection_rejects_overlapping_ranges() -> None:
@@ -1191,7 +1194,7 @@ def test_interval_event_projection_rejects_overlapping_ranges() -> None:
 
 def _current_coarse_dispatcher_fixture():
     graph, _producer_range, observations = _retained_interval_route_observation(
-        root_predicate=PredicateKind.SLE
+        root_predicate=PredicateKind.TRUTHY
     )
     graph = replace(
         graph,
@@ -1307,7 +1310,7 @@ def test_collector_uses_coherent_current_dag_topology_for_retained_target() -> N
 
 def test_collector_keeps_coarse_interval_leaf_out_of_current_dag_topology() -> None:
     graph, dispatch_map, range_evidence = _path_local_entry_fixture(
-        root_predicate=PredicateKind.SLE
+        root_predicate=PredicateKind.TRUTHY
     )
     graph = replace(
         graph,
@@ -1397,15 +1400,15 @@ def test_incomplete_replay_rejects_retained_target_that_is_current_topology() ->
             flow_graph=graph,
             allow_handler_map_fallback_after_incomplete_route=True,
             retained_interval_routes=retained,
-            current_dispatcher_region_serials=frozenset(
-                {3, 4, 6, 8, 9, 11}
-            ),
+            current_dispatcher_region_serials=frozenset({3, 4, 6, 8, 9, 11}),
         )
         is None
     )
 
 
-def test_native_bound_binder_accepts_retained_route_resolver_and_rejects_router_conflict() -> None:
+def test_native_bound_binder_accepts_retained_route_resolver_and_rejects_router_conflict() -> (
+    None
+):
     graph, dispatch_map, range_evidence, observations = (
         _current_coarse_dispatcher_fixture()
     )
@@ -1504,7 +1507,7 @@ def test_interval_event_rejects_missing_or_ambiguous_target_native_identity() ->
                     InsnSnapshot(opcode=0, ea=1, operands=(), native_ea=0x180030009),
                     InsnSnapshot(opcode=0, ea=2, operands=(), native_ea=0x18003000A),
                 ),
-            )
+            ),
         },
     )
     assert (
@@ -1594,9 +1597,7 @@ def test_predecessor_target_identity_does_not_guess_ambiguous_instruction_eas() 
 def test_predecessor_observation_projects_with_target_native_identity() -> None:
     observation, fact = _path_local_entry_observation()
 
-    projected = project_predecessor_dispatcher_target_observations(
-        (observation,)
-    )
+    projected = project_predecessor_dispatcher_target_observations((observation,))
 
     assert projected == (fact,)
 
@@ -1637,9 +1638,10 @@ def test_predecessor_observation_projection_rejects_conflicting_duplicates() -> 
         payload={**observation.payload, "target_native_ea": 0x180020001},
     )
 
-    assert project_predecessor_dispatcher_target_observations(
-        (observation, conflicting)
-    ) == ()
+    assert (
+        project_predecessor_dispatcher_target_observations((observation, conflicting))
+        == ()
+    )
 
 
 def test_native_entry_snapshot_fallback_accepts_wide_low32_source_write() -> None:
@@ -1687,10 +1689,10 @@ def test_native_entry_snapshot_fallback_rejects_ambiguous_native_ea() -> None:
     ] == []
 
 
-def test_native_entry_snapshot_fallback_rejects_source_register_state_mismatch() -> None:
-    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
-        source_register=7
-    )
+def test_native_entry_snapshot_fallback_rejects_source_register_state_mismatch() -> (
+    None
+):
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(source_register=7)
     support, candidate = _path_local_identity_resolutions()
 
     facts = collect_predecessor_dispatcher_target_facts(
@@ -1827,7 +1829,9 @@ def test_wide_alias_resolution_cannot_resurrect_through_transition_result() -> N
     # dedicated source-instruction field; no unanchored route may be emitted.
 
 
-def test_transition_result_uses_provenance_ea_when_source_instruction_is_absent() -> None:
+def test_transition_result_uses_provenance_ea_when_source_instruction_is_absent() -> (
+    None
+):
     dispatch_map, range_evidence = _native_identity_dispatcher_fixture()
     transition_result = TransitionResult(
         transitions=[

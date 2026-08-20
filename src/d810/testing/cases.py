@@ -81,6 +81,10 @@ class DeobfuscationCase:
         function: Name of the function to test (without leading underscore).
         project: D810 project configuration file to use.
         description: Optional description of what this test verifies.
+        disabled_pass_ids: Exact registered pass IDs to disable only for this
+            function's in-memory test recipe. This keeps a semantic oracle from
+            exercising an unrelated or intentionally out-of-scope pass without
+            editing the shipped project configuration.
 
         obfuscated_contains: Patterns that MUST be present in obfuscated code.
         obfuscated_regexes: Regex patterns that MUST match obfuscated code.
@@ -124,6 +128,10 @@ class DeobfuscationCase:
     # applies this through an in-memory function recipe and preserves the
     # active recipe's family and recovery strategy.
     state_cff_min_state_constant: Optional[int] = None
+
+    # Optional exact pass exclusions applied through an ephemeral, per-function
+    # Workbench recipe. Tuple form makes the override typed and immutable.
+    disabled_pass_ids: tuple[str, ...] = ()
 
     # Optional description
     description: str = ""

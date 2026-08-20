@@ -1705,6 +1705,37 @@ def test_repeated_identical_noop_dispatcher_round_becomes_exact_exclusion() -> N
     assert _EA not in rule._unflat_done_eas
 
 
+def test_repeated_identical_rejected_dispatcher_round_becomes_exact_exclusion() -> None:
+    """A stable fail-closed preflight cannot justify 64 identical retries."""
+    rule = _fresh_rule()
+    identity = _outer_dispatcher_identity()
+    prelim = SimpleNamespace(
+        dispatcher_block_serial=7,
+        candidate_identity=identity,
+    )
+    backend = SimpleNamespace(
+        last_patch_execution=None,
+        last_patch_failure=SimpleNamespace(reason="projected reachability rejected"),
+        committed_fragment_operation_count=0,
+    )
+
+    for _ in range(2):
+        rule._finalize_dispatcher_round(
+            func_ea=_EA,
+            maturity=_IR_MAT,
+            graph_fingerprint="graph-rejected",
+            prelim=prelim,
+            excluded_identities=frozenset(),
+            family=SimpleNamespace(name="hodur"),
+            backend=backend,
+        )
+
+    assert rule._dispatcher_progress.excluded_identities(
+        _EA, _IR_MAT, "graph-rejected"
+    ) == frozenset({identity})
+    assert _EA not in rule._unflat_done_eas
+
+
 def test_all_excluded_candidates_exhaust_only_the_exact_graph() -> None:
     rule = _fresh_rule()
     identity = _outer_dispatcher_identity()
@@ -1724,12 +1755,8 @@ def test_all_excluded_candidates_exhaust_only_the_exact_graph() -> None:
         backend=backend,
     )
 
-    assert rule._dispatcher_progress.is_exhausted(
-        _EA, _IR_MAT, "graph-residual"
-    )
-    assert not rule._dispatcher_progress.is_exhausted(
-        _EA, _IR_MAT, "graph-changed"
-    )
+    assert rule._dispatcher_progress.is_exhausted(_EA, _IR_MAT, "graph-residual")
+    assert not rule._dispatcher_progress.is_exhausted(_EA, _IR_MAT, "graph-changed")
     assert _EA not in rule._unflat_done_eas
 
 

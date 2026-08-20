@@ -273,6 +273,7 @@ class TestNativeMbaCorpusCapture:
                 run_deobfuscation_test(
                     DeobfuscationCase(
                         function="mba_shape_chain_01",
+                        project="",
                         description="native no-candidate coverage",
                         # The selected-state context already owns this exact
                         # project and its capture-scoped adapters.  Supplying
@@ -359,6 +360,7 @@ class TestNativeMbaCorpusCapture:
                 run_deobfuscation_test(
                     DeobfuscationCase(
                         function=_manifest_function(case.case_id),
+                        project="",
                         description="manifest native provider capture",
                         # Keep the preloaded project's live provider objects;
                         # see the stale-adapter contract above.
@@ -607,6 +609,7 @@ class TestNativeMbaCorpusCapture:
         monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
         native_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
+            project="",
             description="native provider history capture",
             # The surrounding selected-state context already owns the exact
             # catalogue project and the history-bearing rule instances.
@@ -702,6 +705,7 @@ class TestNativeMbaCorpusCapture:
         monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
         native_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
+            project="",
             description="capture a real post-snapshot catalogue outcome",
             project="",
             must_change=True,
@@ -789,12 +793,14 @@ class TestNativeMbaCorpusCapture:
         monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
         first_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
+            project="",
             description="seed a real catalogue history outcome",
             project="",
             must_change=True,
         )
         second_case = DeobfuscationCase(
             function="mba_shape_chain_01",
+            project="",
             description="produce a distinct real native profile",
             project="",
             must_change=False,

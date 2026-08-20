@@ -78,7 +78,7 @@ for MODE in 1 0; do
     tests/system/runtime/backends/test_egglog_mba_performance.py \
     -q -m profile -s | tee -a "$LOG"
 
-  rg '^EGGLOG_(MBA_NATIVE|MBA_REAL_CORPUS|MBA_CORPUS_PERFORMANCE)_RECEIPT=' "$LOG" \
+  grep -E '^EGGLOG_(MBA_NATIVE|MBA_REAL_CORPUS|MBA_CORPUS_PERFORMANCE)_RECEIPT=' "$LOG" \
     | sed 's/^[^=]*=//' > "$RECEIPTS"
   [ -s "$RECEIPTS" ] || {
     echo "ERROR: no Egglog performance receipts were emitted for $LABEL" >&2

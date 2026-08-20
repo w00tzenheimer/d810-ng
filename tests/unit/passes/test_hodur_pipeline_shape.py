@@ -105,7 +105,13 @@ def test_each_spec_carries_native_state_machine_contract():
     )
     assert contracts["plan_semantic_regions"].safety == PassSafety()
     assert contracts["lower_state_machine"].requires.analyses == frozenset(
-        {"plan_semantic_regions", "recover_dispatcher", "transition_result"}
+        {
+            "plan_semantic_regions",
+            "predecessor_dispatcher_target_facts",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "transition_result",
+        }
     )
     assert contracts["lower_state_machine"].requires.facts.required == frozenset(
         {"recovered.region", "recovered.state_transition", "role.dispatcher"}

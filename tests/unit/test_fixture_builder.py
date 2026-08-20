@@ -318,21 +318,19 @@ def test_windows_builder_preserves_explicit_masm_export_contract() -> None:
     makefile = (REPO / "samples/Makefile").read_text()
     exporter = (REPO / "samples/scripts/generate_auto_exports.ps1").read_text()
 
-    assert '$(AUTO_EXPORTS_RSP): $(OBJS) $(MASM_ASM)' in makefile
+    assert "$(AUTO_EXPORTS_RSP): $(OBJS) $(MASM_ASM)" in makefile
     assert '-MasmSources "$(MASM_ASM)"' in makefile
     assert "D810_EXPORT" in exporter
     assert "d810_callsite_" in exporter
     assert "$MasmSources" in exporter
-    assert "throw \"MASM source" in exporter
+    assert 'throw "MASM source' in exporter
 
 
 def test_windows_builder_uses_native_masm_relative_jump_table() -> None:
     """The authoritative ml64 build needs no post-link table repair."""
 
     makefile = (REPO / "samples/Makefile").read_text()
-    fixture = (
-        REPO / "samples/src/masm/sub_7FF856533A20.asm"
-    ).read_text()
+    fixture = (REPO / "samples/src/masm/sub_7FF856533A20.asm").read_text()
 
     assert "patch_relative_jump_table" not in makefile
     assert "; D810_EXPORT d810_relative_jpt_sub_7FF856533A20" in fixture
@@ -357,9 +355,7 @@ def test_windows_builder_uses_native_masm_relative_jump_table() -> None:
 def test_layered_masm_fixture_keeps_runtime_globals_writable() -> None:
     """Readonly placement lets Hex-Rays erase the captured outer dispatcher."""
 
-    fixture = (
-        REPO / "samples/src/masm/sub_7FF856533A20.asm"
-    ).read_text()
+    fixture = (REPO / "samples/src/masm/sub_7FF856533A20.asm").read_text()
 
     data_start = fixture.index("_DATA SEGMENT")
     data_end = fixture.index("_DATA ENDS")

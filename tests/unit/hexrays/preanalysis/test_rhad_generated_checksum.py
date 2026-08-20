@@ -45,6 +45,24 @@ from tests.native_preanalysis import make_native_key
 
 
 _REPO = Path(__file__).resolve().parents[4]
+_GENERATED_INVENTORY_ROOT = _REPO / "docs" / "experiments"
+_GENERATED_INVENTORY_NAMES = frozenset(
+    {
+        "rhad-a560-constant-materialization-reference-inventory.json",
+        "rhad-a560-indirect-jump-coverage-summary.json",
+        "rhad-a560-indirect-jump-reference-inventory.json",
+    }
+)
+
+
+def _load_generated_inventory(name: str) -> object:
+    """Load one optional RHAD inventory or skip only its dependent test."""
+    if name not in _GENERATED_INVENTORY_NAMES:
+        raise ValueError(f"unknown generated RHAD inventory: {name}")
+    path = _GENERATED_INVENTORY_ROOT / name
+    if not path.is_file():
+        pytest.skip(f"generated RHAD inventory is not present: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _native_key():
@@ -5301,14 +5319,7 @@ def test_checksum_producer_compiles_row80_existing_conditional_dependency() -> N
 
 
 def test_row81_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row81 = next(
         operation
         for operation in inventory["operations"]
@@ -5387,14 +5398,7 @@ def test_checksum_producer_compiles_row81_cmov_dependency() -> None:
 
 
 def test_row82_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row82 = next(
         operation
         for operation in inventory["operations"]
@@ -5479,14 +5483,7 @@ def test_checksum_producer_compiles_row82_existing_conditional_dependency() -> N
 
 
 def test_row83_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row83 = next(
         operation
         for operation in inventory["operations"]
@@ -5567,14 +5564,7 @@ def test_checksum_producer_compiles_row83_cmov_dependency() -> None:
 
 
 def test_row84_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row84 = next(
         operation
         for operation in inventory["operations"]
@@ -5657,14 +5647,7 @@ def test_checksum_producer_compiles_row84_existing_conditional_dependency() -> N
 
 
 def test_row85_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row85 = next(
         operation
         for operation in inventory["operations"]
@@ -5743,14 +5726,7 @@ def test_checksum_producer_compiles_row85_cmov_dependency() -> None:
 
 
 def test_row86_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row86 = next(
         operation
         for operation in inventory["operations"]
@@ -5770,14 +5746,7 @@ def test_row86_inventory_corridor_includes_flag_producer() -> None:
 
 
 def test_row88_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row88 = next(
         operation
         for operation in inventory["operations"]
@@ -5797,14 +5766,7 @@ def test_row88_inventory_corridor_includes_flag_producer() -> None:
 
 
 def test_row89_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row89 = next(
         operation
         for operation in inventory["operations"]
@@ -5825,14 +5787,7 @@ def test_row89_inventory_corridor_includes_flag_producer() -> None:
 
 
 def test_row90_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row90 = next(
         operation
         for operation in inventory["operations"]
@@ -6206,14 +6161,7 @@ def test_checksum_producer_compiles_row90_existing_conditional_dependency() -> N
 
 
 def test_row91_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row91 = next(
         operation
         for operation in inventory["operations"]
@@ -6294,14 +6242,7 @@ def test_checksum_producer_compiles_row91_cmov_dependency() -> None:
 
 
 def test_row92_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row92 = next(
         operation
         for operation in inventory["operations"]
@@ -6486,14 +6427,7 @@ def test_checksum_producer_compiles_row93_simple_indirect_dependency() -> None:
 
 
 def test_row94_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row94 = next(
         operation
         for operation in inventory["operations"]
@@ -6730,14 +6664,7 @@ def test_checksum_producer_compiles_row96_setcc_table_dependency() -> None:
 
 
 def test_row97_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row97 = next(
         operation
         for operation in inventory["operations"]
@@ -6758,14 +6685,7 @@ def test_row97_inventory_corridor_includes_flag_producer() -> None:
 
 
 def test_row98_inventory_owns_flag_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row98 = next(
         operation
         for operation in inventory["operations"]
@@ -6825,14 +6745,7 @@ def test_row98_inventory_owns_flag_producer_and_complete_target_closures() -> No
 
 
 def test_row99_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row99 = next(
         operation
         for operation in inventory["operations"]
@@ -6866,14 +6779,7 @@ def test_row99_inventory_corridor_includes_flag_producer() -> None:
 
 
 def test_row100_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row100 = next(
         operation
         for operation in inventory["operations"]
@@ -6894,14 +6800,7 @@ def test_row100_inventory_corridor_includes_flag_producer() -> None:
 
 
 def test_row101_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row101 = next(
         operation
         for operation in inventory["operations"]
@@ -6921,14 +6820,7 @@ def test_row101_inventory_corridor_includes_flag_producer() -> None:
 
 
 def test_row102_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row102 = next(
         operation
         for operation in inventory["operations"]
@@ -9689,14 +9581,7 @@ def test_checksum_producer_compiles_row141_existing_dependency() -> None:
 
 
 def test_row142_inventory_corridor_includes_flag_producer() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row142 = next(
         operation
         for operation in inventory["operations"]
@@ -9721,14 +9606,7 @@ def test_row142_inventory_corridor_includes_flag_producer() -> None:
 
 
 def test_row143_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row143 = next(
         operation
         for operation in inventory["operations"]
@@ -9796,14 +9674,7 @@ def test_row143_inventory_owns_producer_and_complete_target_closures() -> None:
 
 
 def test_row144_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row144 = next(
         operation
         for operation in inventory["operations"]
@@ -9871,14 +9742,7 @@ def test_row144_inventory_owns_producer_and_complete_target_closures() -> None:
 
 
 def test_row145_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row145 = next(
         operation
         for operation in inventory["operations"]
@@ -9942,14 +9806,7 @@ def test_row145_inventory_owns_producer_and_complete_target_closures() -> None:
 
 
 def test_row146_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row146 = next(
         operation
         for operation in inventory["operations"]
@@ -9995,14 +9852,7 @@ def test_row146_inventory_owns_producer_and_complete_target_closures() -> None:
 
 
 def test_row147_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row147 = next(
         operation
         for operation in inventory["operations"]
@@ -10086,14 +9936,7 @@ def test_row147_inventory_owns_producer_and_complete_target_closures() -> None:
 
 
 def test_row148_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row148 = next(
         operation
         for operation in inventory["operations"]
@@ -10167,14 +10010,7 @@ def test_row148_inventory_owns_producer_and_complete_target_closures() -> None:
 
 
 def test_row149_inventory_owns_producer_and_join_anchor() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row149 = next(
         operation
         for operation in inventory["operations"]
@@ -10223,14 +10059,7 @@ def test_row149_inventory_owns_producer_and_join_anchor() -> None:
 
 
 def test_row150_inventory_owns_cmov_producer_and_split_source() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row150 = next(
         operation
         for operation in inventory["operations"]
@@ -10274,14 +10103,7 @@ def test_row150_inventory_owns_cmov_producer_and_split_source() -> None:
 
 
 def test_row151_inventory_owns_producer_and_both_target_fragments() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row151 = next(
         operation
         for operation in inventory["operations"]
@@ -10354,14 +10176,7 @@ def test_row151_inventory_owns_producer_and_both_target_fragments() -> None:
 
 
 def test_row152_inventory_owns_producer_and_both_target_fragments() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row152 = next(
         operation
         for operation in inventory["operations"]
@@ -10434,14 +10249,7 @@ def test_row152_inventory_owns_producer_and_both_target_fragments() -> None:
 
 
 def test_row153_inventory_owns_producer_join_and_both_target_fragments() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row153 = next(
         operation
         for operation in inventory["operations"]
@@ -10515,14 +10323,7 @@ def test_row153_inventory_owns_producer_join_and_both_target_fragments() -> None
 
 
 def test_row154_inventory_owns_cmov_producer_and_row153_source() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row154 = next(
         operation
         for operation in inventory["operations"]
@@ -10568,14 +10369,7 @@ def test_row154_inventory_owns_cmov_producer_and_row153_source() -> None:
 
 
 def test_row155_inventory_owns_producer_and_both_target_fragments() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row155 = next(
         operation
         for operation in inventory["operations"]
@@ -10649,14 +10443,7 @@ def test_row155_inventory_owns_producer_and_both_target_fragments() -> None:
 
 
 def test_row156_inventory_owns_producer_join_and_both_target_fragments() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row156 = next(
         operation
         for operation in inventory["operations"]
@@ -10768,14 +10555,7 @@ def test_checksum_producer_compiles_row142_cmov_dependency() -> None:
 
 
 def test_row157_inventory_owns_cmov_producer_and_complete_targets() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row157 = next(
         operation
         for operation in inventory["operations"]
@@ -10826,14 +10606,7 @@ def test_row157_inventory_owns_cmov_producer_and_complete_targets() -> None:
 
 
 def test_row158_inventory_owns_producer_and_both_target_fragments() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row158 = next(
         operation
         for operation in inventory["operations"]
@@ -10907,14 +10680,7 @@ def test_row158_inventory_owns_producer_and_both_target_fragments() -> None:
 
 
 def test_row159_inventory_owns_producer_join_and_complete_targets() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row159 = next(
         operation
         for operation in inventory["operations"]
@@ -10987,14 +10753,7 @@ def test_row159_inventory_owns_producer_join_and_complete_targets() -> None:
 
 
 def test_row160_inventory_owns_cmov_producer_helper_and_complete_targets() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row160 = next(
         operation
         for operation in inventory["operations"]
@@ -11069,14 +10828,7 @@ def test_row160_inventory_owns_cmov_producer_helper_and_complete_targets() -> No
 
 
 def test_row161_inventory_owns_producer_and_complete_targets() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row161 = next(
         operation
         for operation in inventory["operations"]
@@ -11164,14 +10916,7 @@ def test_row161_inventory_owns_producer_and_complete_targets() -> None:
 
 
 def test_row162_inventory_owns_producer_join_and_exact_target_split() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row162 = next(
         operation
         for operation in inventory["operations"]
@@ -11238,14 +10983,7 @@ def test_row162_inventory_owns_producer_join_and_exact_target_split() -> None:
 
 
 def test_row163_inventory_owns_cmov_producer_and_complete_targets() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row163 = next(
         operation
         for operation in inventory["operations"]
@@ -11290,14 +11028,7 @@ def test_row163_inventory_owns_cmov_producer_and_complete_targets() -> None:
 
 
 def test_row164_inventory_owns_producer_join_and_complete_targets() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row164 = next(
         operation
         for operation in inventory["operations"]
@@ -11391,14 +11122,7 @@ def test_row164_inventory_owns_producer_join_and_complete_targets() -> None:
 
 
 def test_row165_inventory_owns_producer_join_and_complete_targets() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row165 = next(
         operation
         for operation in inventory["operations"]
@@ -11487,14 +11211,7 @@ def test_row165_inventory_owns_producer_join_and_complete_targets() -> None:
 
 
 def test_row166_inventory_owns_direct_transfer_and_complete_target() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row166 = next(
         operation
         for operation in inventory["operations"]
@@ -11548,14 +11265,7 @@ def test_row166_inventory_owns_direct_transfer_and_complete_target() -> None:
 
 
 def test_row167_inventory_references_exact_typed_table_proof() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row167 = next(
         operation
         for operation in inventory["operations"]
@@ -13341,14 +13051,7 @@ def test_checksum_producer_compiles_row167_setcc_table_dependency() -> None:
 
 
 def test_row168_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row168 = next(
         operation
         for operation in inventory["operations"]
@@ -13507,14 +13210,7 @@ def test_checksum_producer_compiles_row168_existing_dependency() -> None:
 
 
 def test_row169_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row169 = next(
         operation
         for operation in inventory["operations"]
@@ -13631,14 +13327,7 @@ def test_checksum_producer_compiles_row169_cmov_dependency() -> None:
 
 
 def test_row170_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row170 = next(
         operation
         for operation in inventory["operations"]
@@ -13827,14 +13516,7 @@ def test_checksum_producer_compiles_row170_existing_dependency() -> None:
 
 
 def test_row171_inventory_owns_producer_join_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row171 = next(
         operation
         for operation in inventory["operations"]
@@ -14071,14 +13753,7 @@ def test_checksum_producer_compiles_row172_simple_indirect_dependency() -> None:
 
 
 def test_row172_inventory_records_complete_direct_route_evidence() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row172 = next(
         operation
         for operation in inventory["operations"]
@@ -14132,14 +13807,7 @@ def test_row172_inventory_records_complete_direct_route_evidence() -> None:
 
 
 def test_row173_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row173 = next(
         operation
         for operation in inventory["operations"]
@@ -14343,14 +14011,7 @@ def test_checksum_producer_compiles_row173_existing_dependency() -> None:
 
 
 def test_row174_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row174 = next(
         operation
         for operation in inventory["operations"]
@@ -14549,14 +14210,7 @@ def test_checksum_producer_compiles_row174_existing_dependency() -> None:
 
 
 def test_checksum_producer_compiles_row175_simple_indirect_dependency() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row175 = next(
         operation
         for operation in inventory["operations"]
@@ -14615,14 +14269,7 @@ def test_checksum_producer_compiles_row175_simple_indirect_dependency() -> None:
 
 
 def test_row176_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row176 = next(
         operation
         for operation in inventory["operations"]
@@ -14700,14 +14347,7 @@ def test_row176_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row177_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row177 = next(
         operation
         for operation in inventory["operations"]
@@ -14783,14 +14423,7 @@ def test_row177_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row178_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row178 = next(
         operation
         for operation in inventory["operations"]
@@ -14844,14 +14477,7 @@ def test_row178_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row179_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row179 = next(
         operation
         for operation in inventory["operations"]
@@ -14935,14 +14561,7 @@ def test_row179_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row180_inventory_has_exact_direct_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row180 = next(
         operation
         for operation in inventory["operations"]
@@ -14997,14 +14616,7 @@ def test_row180_inventory_has_exact_direct_target_closure() -> None:
 
 
 def test_row181_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row181 = next(
         operation
         for operation in inventory["operations"]
@@ -15081,14 +14693,7 @@ def test_row181_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row182_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row182 = next(
         operation
         for operation in inventory["operations"]
@@ -15142,14 +14747,7 @@ def test_row182_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row183_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row183 = next(
         operation
         for operation in inventory["operations"]
@@ -15203,14 +14801,7 @@ def test_row183_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row184_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row184 = next(
         operation
         for operation in inventory["operations"]
@@ -15265,14 +14856,7 @@ def test_row184_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row185_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row185 = next(
         operation
         for operation in inventory["operations"]
@@ -15328,14 +14912,7 @@ def test_row185_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row186_inventory_has_exact_direct_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row186 = next(
         operation
         for operation in inventory["operations"]
@@ -15390,14 +14967,7 @@ def test_row186_inventory_has_exact_direct_target_closure() -> None:
 
 
 def test_row187_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row187 = next(
         operation
         for operation in inventory["operations"]
@@ -15461,14 +15031,7 @@ def test_row187_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row188_inventory_has_exact_direct_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row188 = next(
         operation
         for operation in inventory["operations"]
@@ -15523,14 +15086,7 @@ def test_row188_inventory_has_exact_direct_target_closure() -> None:
 
 
 def test_row189_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row189 = next(
         operation
         for operation in inventory["operations"]
@@ -15586,14 +15142,7 @@ def test_row189_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row190_inventory_has_exact_direct_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row190 = next(
         operation
         for operation in inventory["operations"]
@@ -15647,14 +15196,7 @@ def test_row190_inventory_has_exact_direct_target_closure() -> None:
 
 
 def test_row191_inventory_has_producer_inclusive_exact_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row191 = next(
         operation
         for operation in inventory["operations"]
@@ -15710,14 +15252,7 @@ def test_row191_inventory_has_producer_inclusive_exact_target_closures() -> None
 
 
 def test_row192_inventory_has_exact_direct_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row192 = next(
         operation
         for operation in inventory["operations"]
@@ -15771,14 +15306,7 @@ def test_row192_inventory_has_exact_direct_target_closure() -> None:
 
 
 def test_row193_inventory_has_exact_producer_and_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row193 = next(
         operation
         for operation in inventory["operations"]
@@ -15857,14 +15385,7 @@ def test_row193_inventory_has_exact_producer_and_target_closure() -> None:
 
 
 def test_row194_inventory_has_exact_direct_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row194 = next(
         operation
         for operation in inventory["operations"]
@@ -15918,14 +15439,7 @@ def test_row194_inventory_has_exact_direct_target_closure() -> None:
 
 
 def test_row195_inventory_has_exact_producer_and_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row195 = next(
         operation
         for operation in inventory["operations"]
@@ -16007,14 +15521,7 @@ def test_row195_inventory_has_exact_producer_and_target_closure() -> None:
 
 
 def test_row196_inventory_has_exact_direct_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row196 = next(
         operation
         for operation in inventory["operations"]
@@ -16069,14 +15576,7 @@ def test_row196_inventory_has_exact_direct_target_closure() -> None:
 
 
 def test_row197_inventory_has_exact_producer_and_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row197 = next(
         operation
         for operation in inventory["operations"]
@@ -16137,14 +15637,7 @@ def test_row197_inventory_has_exact_producer_and_target_closure() -> None:
 
 
 def test_row198_inventory_has_exact_cmov_producer_and_reused_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row198 = next(
         operation
         for operation in inventory["operations"]
@@ -16225,14 +15718,7 @@ def test_row198_inventory_has_exact_cmov_producer_and_reused_closures() -> None:
 
 
 def test_row199_inventory_has_exact_producer_and_partitioned_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row199 = next(
         operation
         for operation in inventory["operations"]
@@ -16293,14 +15779,7 @@ def test_row199_inventory_has_exact_producer_and_partitioned_target_closure() ->
 
 
 def test_row200_inventory_has_exact_cmov_producer_and_reused_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row200 = next(
         operation
         for operation in inventory["operations"]
@@ -16381,14 +15860,7 @@ def test_row200_inventory_has_exact_cmov_producer_and_reused_closures() -> None:
 
 
 def test_row201_inventory_has_exact_producer_and_complete_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row201 = next(
         operation
         for operation in inventory["operations"]
@@ -16494,14 +15966,7 @@ def test_row201_inventory_has_exact_producer_and_complete_target_closure() -> No
 
 
 def test_row202_inventory_has_exact_producer_and_reused_target_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row202 = next(
         operation
         for operation in inventory["operations"]
@@ -16583,14 +16048,7 @@ def test_row202_inventory_has_exact_producer_and_reused_target_closures() -> Non
 
 
 def test_row203_inventory_has_exact_producer_and_complete_target_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row203 = next(
         operation
         for operation in inventory["operations"]
@@ -16651,14 +16109,7 @@ def test_row203_inventory_has_exact_producer_and_complete_target_closure() -> No
 
 
 def test_row204_inventory_has_exact_cmov_source_alias_and_reused_closures() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row204 = next(
         operation
         for operation in inventory["operations"]
@@ -16716,9 +16167,7 @@ def test_row204_inventory_has_exact_cmov_source_alias_and_reused_closures() -> N
 
 
 def test_row205_inventory_has_exact_producer_and_complete_target_closure() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row205 = next(row for row in inventory["operations"] if row["reference_order"] == 205)
     assert len(inventory["operations"]) == 228
     assert row205["operation_id"] == "rhad:route@0x40C53F"
@@ -16759,9 +16208,7 @@ def test_row205_inventory_has_exact_producer_and_complete_target_closure() -> No
 
 
 def test_row206_inventory_has_exact_cmov_source_alias_and_reused_closures() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row206 = next(row for row in inventory["operations"] if row["reference_order"] == 206)
     assert len(inventory["operations"]) == 228
     assert row206["operation_id"] == "rhad:route@0x40C576"
@@ -16813,9 +16260,7 @@ def test_row206_inventory_has_exact_cmov_source_alias_and_reused_closures() -> N
 
 
 def test_row207_inventory_owns_producer_and_complete_target_closures() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row207 = next(row for row in inventory["operations"] if row["reference_order"] == 207)
     assert len(inventory["operations"]) == 228
     assert row207["operation_id"] == "rhad:route@0x40C590"
@@ -16888,9 +16333,7 @@ def test_row207_inventory_owns_producer_and_complete_target_closures() -> None:
 
 
 def test_row208_inventory_reuses_exact_direct_source_and_target_closure() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row208 = next(row for row in inventory["operations"] if row["reference_order"] == 208)
     assert len(inventory["operations"]) == 228
     assert row208["operation_id"] == "rhad:route@0x40C5F9"
@@ -16940,9 +16383,7 @@ def test_row208_inventory_reuses_exact_direct_source_and_target_closure() -> Non
 
 
 def test_row209_inventory_owns_producer_and_both_target_corridors() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row209 = next(row for row in inventory["operations"] if row["reference_order"] == 209)
     assert len(inventory["operations"]) == 228
     assert row209["operation_id"] == "rhad:route@0x40C613"
@@ -17014,9 +16455,7 @@ def test_row209_inventory_owns_producer_and_both_target_corridors() -> None:
 
 
 def test_row210_inventory_owns_producer_join_and_c62f_target_corridor() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row210 = next(row for row in inventory["operations"] if row["reference_order"] == 210)
     assert len(inventory["operations"]) == 228
     assert row210["operation_id"] == "rhad:route@0x40C62D"
@@ -17086,9 +16525,7 @@ def test_row210_inventory_owns_producer_join_and_c62f_target_corridor() -> None:
 
 
 def test_row211_inventory_owns_c634_producer_and_reuses_split_source() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row211 = next(row for row in inventory["operations"] if row["reference_order"] == 211)
     assert len(inventory["operations"]) == 228
     assert row211["operation_id"] == "rhad:route@0x40C649"
@@ -17162,9 +16599,7 @@ def test_row211_inventory_owns_c634_producer_and_reuses_split_source() -> None:
 
 
 def test_row212_inventory_owns_c651_producer_and_c665_target_corridor() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row212 = next(row for row in inventory["operations"] if row["reference_order"] == 212)
     assert len(inventory["operations"]) == 228
     assert row212["operation_id"] == "rhad:route@0x40C663"
@@ -17239,9 +16674,7 @@ def test_row212_inventory_owns_c651_producer_and_c665_target_corridor() -> None:
 
 
 def test_row213_inventory_owns_c67f_producer_and_reuses_row212_topology() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row213 = next(row for row in inventory["operations"] if row["reference_order"] == 213)
     assert len(inventory["operations"]) == 228
     assert row213["operation_id"] == "rhad:route@0x40C694"
@@ -17315,9 +16748,7 @@ def test_row213_inventory_owns_c67f_producer_and_reuses_row212_topology() -> Non
 
 
 def test_row214_inventory_reuses_row121_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row214 = next(row for row in inventory["operations"] if row["reference_order"] == 214)
     assert len(inventory["operations"]) == 228
     assert row214["operation_id"] == "rhad:route@0x40C6B3"
@@ -17372,9 +16803,7 @@ def test_row214_inventory_reuses_row121_source_and_a607_closure() -> None:
 
 
 def test_row215_inventory_reuses_row132_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row215 = next(row for row in inventory["operations"] if row["reference_order"] == 215)
     assert len(inventory["operations"]) == 228
     assert row215["operation_id"] == "rhad:route@0x40C6D8"
@@ -17414,9 +16843,7 @@ def test_row215_inventory_reuses_row132_source_and_a607_closure() -> None:
 
 
 def test_row216_inventory_reuses_row137_persistent_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row216 = next(row for row in inventory["operations"] if row["reference_order"] == 216)
     assert len(inventory["operations"]) == 228
     assert row216["operation_id"] == "rhad:route@0x40C703"
@@ -17474,9 +16901,7 @@ def test_row216_inventory_reuses_row137_persistent_source_and_a607_closure() -> 
 
 
 def test_row217_inventory_reuses_row165_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row217 = next(row for row in inventory["operations"] if row["reference_order"] == 217)
     assert len(inventory["operations"]) == 228
     assert row217["operation_id"] == "rhad:route@0x40C72E"
@@ -17502,14 +16927,7 @@ def test_row217_inventory_reuses_row165_source_and_a607_closure() -> None:
 
 
 def test_row218_inventory_reuses_row171_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row218 = next(
         row for row in inventory["operations"] if row["reference_order"] == 218
     )
@@ -17569,14 +16987,7 @@ def test_row218_inventory_reuses_row171_source_and_a607_closure() -> None:
 
 
 def test_row219_inventory_reuses_row174_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row219 = next(
         row for row in inventory["operations"] if row["reference_order"] == 219
     )
@@ -17633,14 +17044,7 @@ def test_row219_inventory_reuses_row174_source_and_a607_closure() -> None:
 
 
 def test_row220_inventory_reuses_row179_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row220 = next(
         row for row in inventory["operations"] if row["reference_order"] == 220
     )
@@ -17698,14 +17102,7 @@ def test_row220_inventory_reuses_row179_source_and_a607_closure() -> None:
 
 
 def test_row221_inventory_reuses_row185_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row221 = next(
         row for row in inventory["operations"] if row["reference_order"] == 221
     )
@@ -17763,14 +17160,7 @@ def test_row221_inventory_reuses_row185_source_and_a607_closure() -> None:
 
 
 def test_row222_inventory_reuses_row187_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row222 = next(
         row for row in inventory["operations"] if row["reference_order"] == 222
     )
@@ -17814,14 +17204,7 @@ def test_row222_inventory_reuses_row187_source_and_a607_closure() -> None:
 
 
 def test_row223_inventory_reuses_row189_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row223 = next(
         row for row in inventory["operations"] if row["reference_order"] == 223
     )
@@ -17862,14 +17245,7 @@ def test_row223_inventory_reuses_row189_source_and_a607_closure() -> None:
 
 
 def test_row224_inventory_reuses_row191_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row224 = next(
         row for row in inventory["operations"] if row["reference_order"] == 224
     )
@@ -17910,14 +17286,7 @@ def test_row224_inventory_reuses_row191_source_and_a607_closure() -> None:
 
 
 def test_row225_inventory_reuses_row193_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row225 = next(
         row for row in inventory["operations"] if row["reference_order"] == 225
     )
@@ -17958,14 +17327,7 @@ def test_row225_inventory_reuses_row193_source_and_a607_closure() -> None:
 
 
 def test_row226_inventory_reuses_row195_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row226 = next(
         row for row in inventory["operations"] if row["reference_order"] == 226
     )
@@ -18009,14 +17371,7 @@ def test_row226_inventory_reuses_row195_source_and_a607_closure() -> None:
 
 
 def test_row227_inventory_reuses_row207_source_and_a607_closure() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     row227 = next(
         row for row in inventory["operations"] if row["reference_order"] == 227
     )
@@ -18060,14 +17415,7 @@ def test_row227_inventory_reuses_row207_source_and_a607_closure() -> None:
 
 
 def test_constant_inventory_is_exact_reference_ordered_and_identity_bound() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-constant-materialization-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-constant-materialization-reference-inventory.json")
     operations = inventory["operations"]
     canonical_operations = json.dumps(
         operations,
@@ -28603,14 +27951,7 @@ def test_row167_proof_artifact_is_required_and_content_addressed(
 
 
 def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
-    inventory = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-reference-inventory.json"
-        ).read_text(encoding="utf-8")
-    )
+    inventory = _load_generated_inventory("rhad-a560-indirect-jump-reference-inventory.json")
     operations = inventory["operations"]
     row_keys = {tuple(sorted(operation)) for operation in operations}
     row16 = next(
@@ -28949,14 +28290,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     assert len(row_keys) == 1
     rows_by_operation_id = {row["operation_id"]: row for row in operations}
     accepted_receipt_operation_ids = set(
-        json.loads(
-            (
-                _REPO
-                / "docs"
-                / "experiments"
-                / "rhad-a560-indirect-jump-coverage-summary.json"
-            ).read_text(encoding="utf-8")
-        )["accepted_receipt_operation_ids"]
+        _load_generated_inventory("rhad-a560-indirect-jump-coverage-summary.json")["accepted_receipt_operation_ids"]
     )
     for operation in batch.operations:
         if operation.operation_id not in accepted_receipt_operation_ids:
@@ -31749,14 +31083,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
 
 
 def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() -> None:
-    summary = json.loads(
-        (
-            _REPO
-            / "docs"
-            / "experiments"
-            / "rhad-a560-indirect-jump-coverage-summary.json"
-        ).read_text(encoding="utf-8")
-    )
+    summary = _load_generated_inventory("rhad-a560-indirect-jump-coverage-summary.json")
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     cmov = next(

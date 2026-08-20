@@ -757,11 +757,10 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         """Merge SCCP-discovered constants into a block's const map.
 
         For each operand used in *blk* that SCCP resolved to a constant,
-        add the constant to *consts* unless simple GEN/KILL already proved a
-        concrete constant.  SCCP is allowed to refine ``TOP`` conflicts because
-        dispatcher recovery often needs the CFG-aware lattice to recover a
-        state carrier after a merge.  Profiles with known pre-recovery carrier
-        hazards disable FCP explicitly instead of weakening this refinement.
+        add the constant to *consts* only when classic GEN/KILL has no fact.
+        A classic ``TOP`` is positive evidence that predecessor paths disagree;
+        replacing it with an SCCP value would erase that conflict and can make
+        a live dispatcher arm appear unreachable.
 
         The merge scans the block's instructions to find ``mop_S`` / ``mop_r``
         operands, builds the ``mop_key`` for each, and checks the SCCP overlay.
@@ -814,8 +813,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         if not name:
             return
         existing = consts.get(name, BOTTOM)
-        if isinstance(existing, Const):
-            return  # Simple dataflow already found a constant — keep it
+        if existing is not BOTTOM:
+            # Preserve both a classic constant and a classic TOP conflict.
+            # SCCP is an overlay, not an authority that may contradict the
+            # path-complete GEN/KILL lattice.
+            return
         consts[name] = Const(sccp_val, op.size)
 
     # meet delegates to the injected MeetStrategy

@@ -146,6 +146,8 @@ def check_semantic_equivalence(
     lo: int = -256,
     hi: int = 256,
     compiler: str | None = None,
+    compile_timeout_seconds: float = 30.0,
+    run_timeout_seconds: float = 5.0,
 ) -> tuple[bool | None, str]:
     """Compile-and-diff the AFTER pseudocode against the reference source function.
 
@@ -168,17 +170,42 @@ def check_semantic_equivalence(
         src = Path(tmp) / "eq.c"
         binary = Path(tmp) / "eq.bin"
         src.write_text(program)
-        compiled = subprocess.run(
-            [cc, "-O0", "-w", "-fwrapv", "-o", str(binary), str(src)],
-            capture_output=True,
-            text=True,
-        )
+        compile_command = [
+            cc,
+            "-O0",
+            "-w",
+            "-fwrapv",
+            "-o",
+            str(binary),
+            str(src),
+        ]
+        try:
+            compiled = subprocess.run(
+                compile_command,
+                capture_output=True,
+                text=True,
+                timeout=compile_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"compile timed out after {compile_timeout_seconds:g}s"
         if compiled.returncode != 0:
             return (
                 False,
                 f"compile failed: {compiled.stderr[-600:]}\n--- program ---\n{program}",
             )
-        run = subprocess.run([str(binary)], capture_output=True, text=True)
+        try:
+            run = subprocess.run(
+                [str(binary)],
+                capture_output=True,
+                text=True,
+                timeout=run_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return (
+                False,
+                "semantic candidate timed out after "
+                f"{run_timeout_seconds:g}s (likely nonterminating)",
+            )
         out = (run.stdout or "").strip()
         ok = "SEMANTIC_OK" in out and run.returncode == 0
         return ok, out

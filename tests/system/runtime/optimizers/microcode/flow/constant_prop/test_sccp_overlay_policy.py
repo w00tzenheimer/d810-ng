@@ -13,6 +13,7 @@ import idaapi
 import pytest
 
 from d810.core import CythonMode
+from d810.ir.lattice import BOTTOM, TOP, Const
 from d810.evaluator.hexrays_microcode.sccp import (
     SccpStatus,
     reset_sccp_session,
@@ -140,6 +141,37 @@ def test_empty_overlay_does_not_merge_or_call_rewrite(monkeypatch):
 
     assert consts == {}
     assert calls == []
+
+
+def test_sccp_overlay_does_not_refine_classic_top_conflict(monkeypatch):
+    """SCCP may fill a missing fact, but must not erase a path conflict."""
+    from d810.optimizers.microcode.flow.constant_prop import forward_const_prop
+
+    op = SimpleNamespace(size=4)
+    monkeypatch.setattr(
+        forward_const_prop,
+        "constant_propagation_var_name",
+        lambda _op: "state",
+    )
+    overlay = {"state-key": 0x13FA9E5}
+
+    conflicted = {"state": TOP}
+    ForwardConstantPropagationRule._try_sccp_merge_op(
+        conflicted,
+        overlay,
+        op,
+        lambda _op: "state-key",
+    )
+    assert conflicted == {"state": TOP}
+
+    missing = {"state": BOTTOM}
+    ForwardConstantPropagationRule._try_sccp_merge_op(
+        missing,
+        overlay,
+        op,
+        lambda _op: "state-key",
+    )
+    assert missing == {"state": Const(0x13FA9E5, 4)}
 
 
 def test_auto_demand_is_read_only_and_conservative():

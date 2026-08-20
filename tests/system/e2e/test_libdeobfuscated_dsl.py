@@ -26,8 +26,6 @@ import idc
 
 from d810.testing.runner import run_deobfuscation_test
 from tests.system.cases.libobfuscated_comprehensive import (
-    UNFLATTENING_CASES,
-    INSTRUCTION_CASES,
     EXCEPTION_PATH_CASES,
     MANUALLY_OBFUSCATED_CASES,
     ABC_F6_CASES,
@@ -97,9 +95,9 @@ def _materialize_exact_masm_code_extent(function: str) -> None:
     while cursor < end:
         decoded_size = int(ida_ua.decode_insn(instruction, cursor))
         assert decoded_size > 0, f"cannot decode {function} at 0x{cursor:X}"
-        assert (
-            cursor + decoded_size <= end
-        ), f"instruction at 0x{cursor:X} crosses {function}'s exact extent"
+        assert cursor + decoded_size <= end, (
+            f"instruction at 0x{cursor:X} crosses {function}'s exact extent"
+        )
         overlapping_heads = {
             int(ida_bytes.get_item_head(ea))
             for ea in range(cursor, cursor + decoded_size)

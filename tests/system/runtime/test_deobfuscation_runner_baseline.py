@@ -30,6 +30,55 @@ class _State:
         self.start_calls += 1
 
 
+def test_runner_disables_named_passes_in_the_function_recipe(monkeypatch) -> None:
+    from d810.testing import runner
+
+    state = _State()
+    draft = SimpleNamespace(
+        passes=(
+            SimpleNamespace(item_id="item-1-mba", pass_id="mba-solve"),
+            SimpleNamespace(item_id="item-2-cfg", pass_id="state-machine-cff"),
+        )
+    )
+    disabled: list[tuple[str, bool]] = []
+    state.create_active_workbench_recipe_draft = lambda _ea: draft
+
+    def set_enabled(candidate, item_id, enabled):
+        assert candidate is draft
+        disabled.append((item_id, enabled))
+        return candidate
+
+    state.set_workbench_recipe_pass_enabled = set_enabled
+
+    @contextlib.contextmanager
+    def activate(candidate):
+        assert candidate is draft
+        yield
+
+    state.activate_workbench_recipe = activate
+    monkeypatch.setattr(runner, "get_binary_suffix", lambda: ".dll")
+    monkeypatch.setattr(runner, "get_func_ea", lambda _name: 0x401000)
+    monkeypatch.setattr(
+        runner.idaapi,
+        "decompile",
+        lambda _ea, *, flags: _Cfunc("after"),
+    )
+
+    run_deobfuscation_test(
+        DeobfuscationCase(
+            function="call-preservation",
+            project="",
+            disabled_pass_ids=("mba-solve",),
+            must_change=False,
+            check_stats=False,
+        ),
+        _state_context(state),
+        lambda pseudocode: str(pseudocode),
+    )
+
+    assert disabled == [("item-1-mba", False)]
+
+
 def _state_context(state: _State):
     @contextlib.contextmanager
     def enter():

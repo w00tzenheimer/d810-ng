@@ -53,9 +53,9 @@ def test_prolog_traces_the_decompilation_requester() -> None:
     source = ast.get_source_segment(text, prolog)
     assert source is not None
     assert "_log_decompile_requester(function_ea)" in source
-    assert source.index("Starting decompilation of function") < source.index(
+    assert source.index("function_ea =") < source.index(
         "_log_decompile_requester(function_ea)"
-    )
+    ) < source.index("_ensure_lifecycle_session(")
 
 
 def test_decompile_requester_trace_is_opt_in_and_cannot_fail_decompilation() -> None:

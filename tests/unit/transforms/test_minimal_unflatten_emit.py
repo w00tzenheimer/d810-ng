@@ -736,7 +736,7 @@ def test_native_bound_route_enriches_unresolved_backedge_transition() -> None:
     assert enriched.via_block is None
 
 
-def test_native_bound_route_never_overwrites_resolved_transition() -> None:
+def test_native_bound_route_never_overwrites_disagreeing_resolved_transition() -> None:
     proof = TransitionProof("existing", "resolved", True)
     transition = StateWriteTransition(10, 0x10, 20, False, 0, proof=proof)
 
@@ -744,6 +744,28 @@ def test_native_bound_route_never_overwrites_resolved_transition() -> None:
         (transition,),
         (_native_bound_route(source=10, state=0x16AA65E9, target=30),),
     ) == (transition,)
+
+
+def test_native_bound_route_corroborates_matching_resolved_transition() -> None:
+    proof = TransitionProof("abstract_fixpoint", "global_fold", True)
+    transition = StateWriteTransition(10, 0x16AA65E9, 20, False, 0, proof=proof)
+    route = _native_bound_route(
+        source=10,
+        state=0x16AA65E9,
+        target=20,
+        fact_id="transition:corroborated",
+    )
+
+    (enriched,) = enrich_native_bound_transition_routes((transition,), (route,))
+
+    assert enriched.next_state == transition.next_state
+    assert enriched.target_handler == transition.target_handler
+    assert enriched.proof is not None
+    assert enriched.proof.oracle_kind == "native_bound_transition_route"
+    assert enriched.proof.kind == "native_bound_route"
+    assert enriched.proof.reason == (
+        "fact_id=transition:corroborated;native_ea=0x7FF855576BAA"
+    )
 
 
 def test_native_bound_route_mismatch_and_conflict_are_inert() -> None:
@@ -1840,6 +1862,57 @@ def test_emitter_routes_materialized_midtree_entry_to_known_handler(_seam) -> No
         if isinstance(mod, RedirectGoto)
     }
     assert (10, 2, 30) in gotos
+
+
+def test_current_snapshot_route_rejects_nested_dispatcher_router(
+    _seam, monkeypatch
+) -> None:
+    """A guard-chain resolver must not classify an inner router as a handler."""
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,), (_mov_state(0x900, 0x10),)),
+            2: _b(2, (10,), (1, 10)),
+            3: _b(3, (30, 40), (20,)),  # nested switch/router, not a handler
+            10: _b(10, (2,), (2,), (_mov_state(0x1000, 0xDEAD),)),
+            20: _eq_block(20, 0xDEAD, 3, 99),
+            30: _b(30, (), (3,)),
+            40: _b(40, (), (3,)),
+            99: _b(99, (), (20,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dag = DecisionDag(
+        32,
+        {20: RouteComparison(20, "jz", 0xDEAD, 3, 99)},
+        root=20,
+    )
+    captured_routes: list[int | None] = []
+
+    def _capture_route(*_args, **kwargs):
+        resolver = kwargs["state_route_resolver"]
+        captured_routes.append(resolver(0xDEAD) if resolver is not None else None)
+        return ()
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        _capture_route,
+    )
+
+    emit_minimal_unflatten(
+        fg,
+        _disp({0x10: 10}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({30, 40}),
+        dispatcher_region_serials=frozenset({2, 20}),
+    )
+
+    assert captured_routes == [None]
 
 
 def test_strict_preheader_prologue_keeps_ring_back_edge_redirectable(_seam) -> None:

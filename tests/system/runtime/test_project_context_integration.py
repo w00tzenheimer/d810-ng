@@ -1,5 +1,6 @@
 """Integration test for ProjectContext rule filtering API."""
 
+import copy
 import os
 import platform
 
@@ -26,12 +27,33 @@ def get_func_ea(name: str) -> int:
     return ea
 
 
+def _disable_forward_constants_stage(state) -> None:
+    """Activate a scoped runtime copy with the typed FCP stage disabled."""
+
+    project = copy.deepcopy(state.current_runtime_project)
+    assert project is not None
+    constant_pass = next(
+        entry
+        for entry in project.additional_configuration["pipeline_v2"]
+        if entry["pass_id"] == "constant-simplification"
+    )
+    constant_pass["options"]["stages"]["forward-constants"]["enabled"] = False
+    if state.manager.started:
+        state.stop_d810()
+    state._activate_runtime_project(
+        project_index=state.current_project_index,
+        source_project=state.current_project,
+        runtime_project=project,
+        default_selection=state.last_config_v2_default_selection,
+    )
+
+
 class TestProjectContextIntegration:
     """Integration tests for ProjectContext rule filtering."""
 
     binary_name = _get_default_binary()
 
-    def test_remove_rule_changes_output(
+    def test_disable_forward_constant_stage_keeps_runtime_valid(
         self,
         ida_database,
         configure_hexrays,
@@ -58,13 +80,14 @@ class TestProjectContextIntegration:
                 )
                 state.stop_d810()
 
-            # Now decompile WITHOUT an active block rule.
+            # Now decompile with the typed stage disabled. Removing its
+            # registered implementation while the stage remains enabled is a
+            # deliberately invalid config-v2 schedule.
             with state.for_project("example_libobfuscated.json") as ctx:
-                ctx.remove_rule("ForwardConstantPropagationRule")
-
-                # Verify the rule was removed
-                blk_rule_names = [r.name for r in ctx.active_blk_rules]
-                assert "ForwardConstantPropagationRule" not in blk_rule_names
+                _disable_forward_constants_stage(state)
+                assert "ForwardConstantPropagationRule" not in {
+                    rule.name for rule in state.current_blk_rules
+                }
 
                 state.start_d810()
                 decompiled_without_rule = idaapi.decompile(
@@ -76,12 +99,15 @@ class TestProjectContextIntegration:
                 )
                 state.stop_d810()
 
-        # The outputs should be different (removing a rule changes behavior)
-        # Note: We're not asserting which one is "better" - just that they differ
+        # Hex-Rays can render this tiny constant identically without the stage.
+        # The contract under test is that the typed stage exclusion produces a
+        # valid runtime rather than an enabled stage with a missing provider.
         print(f"\n--- WITH ForwardConstantPropagationRule ---")
         print(text_with_rule[:500])
         print(f"\n--- WITHOUT ForwardConstantPropagationRule ---")
         print(text_without_rule[:500])
+        assert text_with_rule
+        assert text_without_rule
 
     def test_context_restores_rules(
         self,
