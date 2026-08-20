@@ -335,11 +335,12 @@ bins:
 
 # Build target - MSVC/clang-cl vs GCC/Clang
 ifeq ($(USING_CLANG_CL),1)
-$(AUTO_EXPORTS_RSP): $(OBJS) | bins
+$(AUTO_EXPORTS_RSP): $(OBJS) $(MASM_ASM) | bins
 	@echo "Generating auto-export list ($@)"
 	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate_auto_exports.ps1 \
 		-OutFile "$@" \
-		-Objects "$(OBJS)"
+		-Objects "$(OBJS)" \
+		-MasmSources "$(MASM_ASM)"
 
 $(TARGET_LIB): $(OBJS) $(MASM_OBJS) $(AUTO_EXPORTS_RSP)
 	@echo "Linking $(TARGET_LIB)"

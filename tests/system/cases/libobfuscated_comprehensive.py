@@ -196,11 +196,11 @@ MANUALLY_OBFUSCATED_CASES = [
         # Obfuscated code has MBA patterns with & and - operators
         obfuscated_contains=["&", "-", "2 *"],
         expected_code="""
-            __int64 __fastcall test_xor(__int64 a1, __int64 a2, __int64 a3, __int64 *a4)
+            __int64 __fastcall test_xor(int a1, int a2, int a3, int *a4)
             {
                 *a4 = a2 ^ a1;
                 a4[1] = (a2 - 3) ^ (a3 * a1);
-                return a4[1] + *a4;
+                return (unsigned int)(a4[1] + *a4);
             }
         """,
         acceptable_patterns=[],
@@ -217,7 +217,7 @@ MANUALLY_OBFUSCATED_CASES = [
         project="example_libobfuscated.json",
         obfuscated_contains=["^", "&"],
         expected_code="""
-            __int64 __fastcall test_or(int a1, int a2, int a3, int *a4)
+            __int64 __fastcall test_or(int a1, int a2, int a3, _DWORD *a4)
             {
                 *a4 = a2 | a1;
                 a4[1] = a3 | a2;
@@ -887,9 +887,11 @@ DAC_MASM_CASES = [
         ),
         project="eidolon_v3_const_solve.json",
         obfuscated_contains=["while ( 1 )", "0x6CD333EA", "0x35", "0x16"],
-        deobfuscated_contains=["MEMORY[0x200000000]"],
+        # The regenerated PE uses the normal 0x180000000 image base. Keep
+        # the argument regex strict: it guards the omitted direct-call route.
+        deobfuscated_contains=["MEMORY[0x180000000]"],
         deobfuscated_regexes=[
-            r"MEMORY\[0x200000000\]\(.*a3: 0x35,.*a4: 0x16,.*a5: 0x28",
+            r"MEMORY\[0x180000000\]\(.*a3: 0x35,.*a4: 0x16,.*a5: 0x28",
         ],
         must_change=True,
         skip_if_function_absent=True,
@@ -1012,7 +1014,7 @@ DAC_MASM_CASES = [
             # target-only PE fixture, so Hex-Rays renders the three calls
             # through its common MEMORY thunk.  The argument corridors remain
             # exact and are checked below.
-            "MEMORY[0x200000000]",
+            "MEMORY[0x180000000]",
             "4112",
             "4608",
         ],
@@ -1022,8 +1024,8 @@ DAC_MASM_CASES = [
             "0x79323F9",
         ],
         deobfuscated_regexes=[
-            r"MEMORY\[0x200000000\]\(a1: 0, a2: .*a3: .*a4: 4112\)",
-            r"return MEMORY\[0x200000000\]\(a1: .*a2: 4608,",
+            r"MEMORY\[0x180000000\]\(a1: 0, a2: .*a3: .*a4: 4112\)",
+            r"return MEMORY\[0x180000000\]\(a1: .*a2: 4608,",
         ],
         must_change=True,
         required_rules=[],
@@ -1241,9 +1243,10 @@ RESIZE_BUFFER_CFF_CASES = [
         ],
         deobfuscated_contains=[
             "*v5 = a4;",
-            "return (unsigned int *)(a2 + 0x10);",
+            "return v5;",
         ],
         deobfuscated_regexes=[
+            r"v5\s*=\s*\(_DWORD \*\)\(a2 \+ 0x10\);",
             # The helper auto-name moves when the fixture is rebuilt. IDA 9.4
             # also renders named argument slots; assert the same four ordered
             # values while accepting either presentation.

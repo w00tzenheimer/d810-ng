@@ -3,53 +3,10 @@
 OPTION PROLOGUE:NONE
 OPTION EPILOGUE:NONE
 
-
-CONST SEGMENT
-jpt_7FF856535804 dd loc_7FF856535806 - jpt_7FF856535804
-dd loc_7FF856536157 - jpt_7FF856535804
-dd loc_7FF856535E26 - jpt_7FF856535804
-dd loc_7FF856535E98 - jpt_7FF856535804
-dd loc_7FF856535BC9 - jpt_7FF856535804
-dd loc_7FF856536316 - jpt_7FF856535804
-dd loc_7FF856536898 - jpt_7FF856535804
-dd loc_7FF856536100 - jpt_7FF856535804
-dd loc_7FF856536E10 - jpt_7FF856535804
-dd loc_7FF856535BFB - jpt_7FF856535804
-dd loc_7FF856536BAE - jpt_7FF856535804
-dd loc_7FF856535BA8 - jpt_7FF856535804
-dd loc_7FF856535BED - jpt_7FF856535804
-dd loc_7FF8565364D6 - jpt_7FF856535804
-dd loc_7FF856535AC4 - jpt_7FF856535804
-dd loc_7FF856535E47 - jpt_7FF856535804
-dd loc_7FF856535A3D - jpt_7FF856535804
-dd loc_7FF8565362E7 - jpt_7FF856535804
-dd loc_7FF856536972 - jpt_7FF856535804
-dd loc_7FF856537141 - jpt_7FF856535804
-dd loc_7FF856537CB3 - jpt_7FF856535804
-dd loc_7FF85653646B - jpt_7FF856535804
-dd loc_7FF856536EA3 - jpt_7FF856535804
-dd loc_7FF856537732 - jpt_7FF856535804
-dd loc_7FF856535D0B - jpt_7FF856535804
-dd loc_7FF856535C1C - jpt_7FF856535804
-dd loc_7FF856537A65 - jpt_7FF856535804
-dd loc_7FF856535A1B - jpt_7FF856535804
-dd loc_7FF8565377B0 - jpt_7FF856535804
-dd loc_7FF8565378B5 - jpt_7FF856535804
-dd loc_7FF856536E31 - jpt_7FF856535804
-dd loc_7FF856536269 - jpt_7FF856535804
-dd loc_7FF856536E45 - jpt_7FF856535804
-dd loc_7FF856535B94 - jpt_7FF856535804
-dd loc_7FF856535A2F - jpt_7FF856535804
-dd loc_7FF856535929 - jpt_7FF856535804
-dd loc_7FF856535993 - jpt_7FF856535804
-dd loc_7FF856535908 - jpt_7FF856535804
-dd loc_7FF8565379B7 - jpt_7FF856535804
-dd loc_7FF856536EC4 - jpt_7FF856535804
-dd loc_7FF856535827 - jpt_7FF856535804
-dd loc_7FF856536308 - jpt_7FF856535804
-dd loc_7FF85653723F - jpt_7FF856535804
-dd loc_7FF8565352FE - jpt_7FF856535804
-dd loc_7FF856535A4B - jpt_7FF856535804
+; These values model mutable image globals from the captured function.  Keep
+; them in a writable section: modern ml64/link.exe maps CONST to .rdata, which
+; lets Hex-Rays fold the initial dispatcher seed and erase the fixture.
+_DATA SEGMENT
 dword_7FF8571C7520 dd 8D9EE5B3h
 qword_7FF8571C7528 dq -3D95E0CAC2DAED5Ch
 dword_7FF8571C7530 dd 0C107FF85h
@@ -113,9 +70,62 @@ dword_7FF85722E37C dd 208CF572h
 dword_7FF85722E380 dd 0B9638B1Ah
 dword_7FF85722E384 dd 4C38D4F7h
 xmmword_7FF857262FF0 db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
-CONST ENDS
+_DATA ENDS
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
+; Keep the relative table in the same section as its destinations.  MASM and
+; llvm-ml64 can resolve these assembly-time differences without image-relative
+; relocations or a post-link byte patch.
+; D810_EXPORT d810_relative_jpt_sub_7FF856533A20
+PUBLIC d810_relative_jpt_sub_7FF856533A20
+d810_relative_jpt_sub_7FF856533A20:
+jpt_7FF856535804:
+    dd loc_7FF856535806 - jpt_7FF856535804
+    dd loc_7FF856536157 - jpt_7FF856535804
+    dd loc_7FF856535E26 - jpt_7FF856535804
+    dd loc_7FF856535E98 - jpt_7FF856535804
+    dd loc_7FF856535BC9 - jpt_7FF856535804
+    dd loc_7FF856536316 - jpt_7FF856535804
+    dd loc_7FF856536898 - jpt_7FF856535804
+    dd loc_7FF856536100 - jpt_7FF856535804
+    dd loc_7FF856536E10 - jpt_7FF856535804
+    dd loc_7FF856535BFB - jpt_7FF856535804
+    dd loc_7FF856536BAE - jpt_7FF856535804
+    dd loc_7FF856535BA8 - jpt_7FF856535804
+    dd loc_7FF856535BED - jpt_7FF856535804
+    dd loc_7FF8565364D6 - jpt_7FF856535804
+    dd loc_7FF856535AC4 - jpt_7FF856535804
+    dd loc_7FF856535E47 - jpt_7FF856535804
+    dd loc_7FF856535A3D - jpt_7FF856535804
+    dd loc_7FF8565362E7 - jpt_7FF856535804
+    dd loc_7FF856536972 - jpt_7FF856535804
+    dd loc_7FF856537141 - jpt_7FF856535804
+    dd loc_7FF856537CB3 - jpt_7FF856535804
+    dd loc_7FF85653646B - jpt_7FF856535804
+    dd loc_7FF856536EA3 - jpt_7FF856535804
+    dd loc_7FF856537732 - jpt_7FF856535804
+    dd loc_7FF856535D0B - jpt_7FF856535804
+    dd loc_7FF856535C1C - jpt_7FF856535804
+    dd loc_7FF856537A65 - jpt_7FF856535804
+    dd loc_7FF856535A1B - jpt_7FF856535804
+    dd loc_7FF8565377B0 - jpt_7FF856535804
+    dd loc_7FF8565378B5 - jpt_7FF856535804
+    dd loc_7FF856536E31 - jpt_7FF856535804
+    dd loc_7FF856536269 - jpt_7FF856535804
+    dd loc_7FF856536E45 - jpt_7FF856535804
+    dd loc_7FF856535B94 - jpt_7FF856535804
+    dd loc_7FF856535A2F - jpt_7FF856535804
+    dd loc_7FF856535929 - jpt_7FF856535804
+    dd loc_7FF856535993 - jpt_7FF856535804
+    dd loc_7FF856535908 - jpt_7FF856535804
+    dd loc_7FF8565379B7 - jpt_7FF856535804
+    dd loc_7FF856536EC4 - jpt_7FF856535804
+    dd loc_7FF856535827 - jpt_7FF856535804
+    dd loc_7FF856536308 - jpt_7FF856535804
+    dd loc_7FF85653723F - jpt_7FF856535804
+    dd loc_7FF8565352FE - jpt_7FF856535804
+    dd loc_7FF856535A4B - jpt_7FF856535804
+
 PUBLIC sub_7FF856533A20
 sub_7FF856533A20 PROC FRAME
     push r15
@@ -3844,7 +3854,7 @@ sub_7FF856533A20 PROC FRAME
     add rdx, rdi
     jmp rdx
     loc_7FF856535806:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+18h]
     mov rdx, 5CE520BE3D2D8567h
@@ -3956,13 +3966,13 @@ sub_7FF856533A20 PROC FRAME
     mov dword ptr [rsp+0Ch], ecx
     jmp loc_7FF856533AF0
     loc_7FF856535908:
-    mov rdx, qword ptr [30h]
+    mov rdx, qword ptr [$+37h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+40h]
     mov rdx, 6CB86866F281046Eh
     jmp loc_7FF856537A0D
     loc_7FF856535929:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     nop
     nop
     nop
@@ -4186,7 +4196,7 @@ sub_7FF856533A20 PROC FRAME
     rol rdx, 15h
     jmp loc_7FF856537A10
     loc_7FF856535AC4:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     nop
     nop
     nop
@@ -4371,13 +4381,13 @@ sub_7FF856533A20 PROC FRAME
     add rdx, qword ptr [rsp+10h]
     jmp loc_7FF856537A10
     loc_7FF856535BA8:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+20h]
     mov rdx, 30E377F107E1838Ah
     jmp loc_7FF856537A0D
     loc_7FF856535BC9:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+110h]
     mov rdx, 6F55913DA1B59C50h
@@ -4387,7 +4397,7 @@ sub_7FF856533A20 PROC FRAME
     rol rdx, 2Bh
     jmp loc_7FF856537A10
     loc_7FF856535BFB:
-    mov rdx, qword ptr [30h]
+    mov rdx, qword ptr [$+37h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+40h]
     mov rdx, -659A96220EF759D3h
@@ -4513,7 +4523,7 @@ sub_7FF856533A20 PROC FRAME
     add r9, qword ptr [rsp+10h]
     jmp loc_7FF856537133
     loc_7FF856535D0B:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov rdx, qword ptr [rdx+30h]
     mov r8, rdx
     not r8
@@ -4730,13 +4740,13 @@ sub_7FF856533A20 PROC FRAME
     mov r8, -0D928AD39AE5F1DCh
     jmp loc_7FF856537CA2
     loc_7FF856535E26:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+38h]
     mov rdx, -50E355DCB40B9ECEh
     jmp loc_7FF856537A0D
     loc_7FF856535E47:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     xor rdx, qword ptr [rsp+10h]
     mov r8, -37DA2B2F8AE6DE6Eh
     add r8, qword ptr [qword_7FF8571C75B8]
@@ -4750,7 +4760,7 @@ sub_7FF856533A20 PROC FRAME
     xor rdx, r10
     jmp loc_7FF856537A10
     loc_7FF856535E98:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     nop
     nop
     nop
@@ -5423,13 +5433,13 @@ sub_7FF856533A20 PROC FRAME
     nop
     nop
     nop
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+38h]
     mov rdx, 0F3D2C7B39D4C1C5h
     jmp loc_7FF856537A0D
     loc_7FF8565362E7:
-    mov rdx, qword ptr [30h]
+    mov rdx, qword ptr [$+37h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+40h]
     mov rdx, 115C8D77640A4951h
@@ -5439,7 +5449,7 @@ sub_7FF856533A20 PROC FRAME
     rol rdx, 17h
     jmp loc_7FF856537A10
     loc_7FF856536316:
-    mov r8, qword ptr [60h]
+    mov r8, qword ptr [$+67h]
     mov rdx, r8
     not rdx
     mov r9, qword ptr [rsp+10h]
@@ -6666,7 +6676,7 @@ sub_7FF856533A20 PROC FRAME
     mov dword ptr [rsp+0Ch], r9d
     jmp loc_7FF856533AF0
     loc_7FF856536BAE:
-    mov r9, qword ptr [60h]
+    mov r9, qword ptr [$+67h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [r9+30h]
     mov r9, qword ptr [qword_7FF8571C75A8]
@@ -7007,7 +7017,7 @@ sub_7FF856533A20 PROC FRAME
     mov qword ptr [rsp+18h], rbx
     jmp loc_7FF856537A25
     loc_7FF856536E10:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+18h]
     mov rdx, 20794943D4CF7338h
@@ -7017,7 +7027,7 @@ sub_7FF856533A20 PROC FRAME
     xor rdx, qword ptr [rsp+10h]
     jmp loc_7FF856537A10
     loc_7FF856536E45:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+20h]
     mov rdx, r8
@@ -7040,13 +7050,13 @@ sub_7FF856533A20 PROC FRAME
     add rdx, 2
     jmp loc_7FF856537A10
     loc_7FF856536EA3:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+20h]
     mov rdx, -164E4A4B37D1E5CCh
     jmp loc_7FF856537A0D
     loc_7FF856536EC4:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r10, qword ptr [qword_7FF8571C75C8]
     mov r9, 4840F7E6B09D6710h
     add r9, r10
@@ -7370,7 +7380,7 @@ sub_7FF856533A20 PROC FRAME
     mov qword ptr [rsp+18h], r9
     jmp loc_7FF856537A25
     loc_7FF856537141:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+18h]
     nop
@@ -8370,7 +8380,7 @@ sub_7FF856533A20 PROC FRAME
     rol rdx, 12h
     jmp loc_7FF856537A10
     loc_7FF8565377B0:
-    mov r8, qword ptr [60h]
+    mov r8, qword ptr [$+67h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [r8+110h]
     mov r8, rdx
@@ -8536,7 +8546,7 @@ sub_7FF856533A20 PROC FRAME
     add rdx, r8
     jmp loc_7FF856537A10
     loc_7FF8565378B5:
-    mov r8, qword ptr [60h]
+    mov r8, qword ptr [$+67h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [r8+10h]
     mov r9, qword ptr [qword_7FF8571C7590]
@@ -8665,7 +8675,7 @@ sub_7FF856533A20 PROC FRAME
     add r8, r9
     jmp loc_7FF856537CA2
     loc_7FF8565379B7:
-    mov rdx, qword ptr [60h]
+    mov rdx, qword ptr [$+67h]
     mov r8, qword ptr [rsp+10h]
     xor r8, qword ptr [rdx+38h]
     mov rdx, qword ptr [qword_7FF8571C75B0]
@@ -8699,7 +8709,7 @@ sub_7FF856533A20 PROC FRAME
     mov dword ptr [rsp+6Ch], ecx
     jmp loc_7FF85653575A
     loc_7FF856537A65:
-    mov r8, qword ptr [60h]
+    mov r8, qword ptr [$+67h]
     mov rdx, qword ptr [rsp+10h]
     xor rdx, qword ptr [r8+10h]
     mov r9, qword ptr [qword_7FF8571C75A0]

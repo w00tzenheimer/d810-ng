@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutFile,
     [Parameter(Mandatory = $true)]
-    [string]$Objects
+    [string]$Objects,
+    [string]$MasmSources = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,6 +55,28 @@ foreach ($obj in $ObjectList) {
         }
 
         [void]$exports.Add("/EXPORT:$symbol")
+    }
+}
+
+# MASM sources export only their basename by Makefile convention. Additional
+# fixture entry points and call-site oracle anchors must opt in explicitly,
+# matching samples/scripts/build_masm.sh. Exporting every PUBLIC symbol would
+# leak internal data and labels from large structural fixtures.
+$MasmSourceList = $MasmSources -split '\s+' | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_)
+}
+foreach ($source in $MasmSourceList) {
+    if (-not (Test-Path $source)) {
+        throw "MASM source '$source' was not found while generating exports"
+    }
+    foreach ($line in Get-Content -Path $source) {
+        if ($line -match '^\s*;\s*D810_EXPORT\s+([A-Za-z0-9_]+)\s*$') {
+            [void]$exports.Add("/EXPORT:$($Matches[1])")
+            continue
+        }
+        if ($line -match '^\s*PUBLIC\s+(d810_callsite_[A-Za-z0-9_]+)\s*$') {
+            [void]$exports.Add("/EXPORT:$($Matches[1])")
+        }
     }
 }
 
