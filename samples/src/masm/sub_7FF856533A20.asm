@@ -2,6 +2,7 @@
 ; Function: sub_7FF856533A20  @ 0x7ff856533a20
 OPTION PROLOGUE:NONE
 OPTION EPILOGUE:NONE
+OPTION NOSCOPED
 
 ; These values model mutable image globals from the captured function.  Keep
 ; them in a writable section: modern ml64/link.exe maps CONST to .rdata, which
@@ -73,62 +74,12 @@ xmmword_7FF857262FF0 db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0
 _DATA ENDS
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
-; Keep the relative table in the same section as its destinations.  MASM and
-; llvm-ml64 can resolve these assembly-time differences without image-relative
-; relocations or a post-link byte patch.
+; Keep the relative table in the same section as its destinations.  Microsoft
+; ml64 resolves these assembly-time differences with OPTION NOSCOPED, without
+; image-relative relocations or a post-link byte patch.
 ; D810_EXPORT d810_relative_jpt_sub_7FF856533A20
 PUBLIC d810_relative_jpt_sub_7FF856533A20
 d810_relative_jpt_sub_7FF856533A20:
-
-; MASM scopes labels introduced inside PROC.  Publish the target names before
-; the table expressions are parsed; the definitions remain ordinary labels at
-; their original instruction offsets below.
-PUBLIC loc_7FF856535806
-PUBLIC loc_7FF856536157
-PUBLIC loc_7FF856535E26
-PUBLIC loc_7FF856535E98
-PUBLIC loc_7FF856535BC9
-PUBLIC loc_7FF856536316
-PUBLIC loc_7FF856536898
-PUBLIC loc_7FF856536100
-PUBLIC loc_7FF856536E10
-PUBLIC loc_7FF856535BFB
-PUBLIC loc_7FF856536BAE
-PUBLIC loc_7FF856535BA8
-PUBLIC loc_7FF856535BED
-PUBLIC loc_7FF8565364D6
-PUBLIC loc_7FF856535AC4
-PUBLIC loc_7FF856535E47
-PUBLIC loc_7FF856535A3D
-PUBLIC loc_7FF8565362E7
-PUBLIC loc_7FF856536972
-PUBLIC loc_7FF856537141
-PUBLIC loc_7FF856537CB3
-PUBLIC loc_7FF85653646B
-PUBLIC loc_7FF856536EA3
-PUBLIC loc_7FF856537732
-PUBLIC loc_7FF856535D0B
-PUBLIC loc_7FF856535C1C
-PUBLIC loc_7FF856537A65
-PUBLIC loc_7FF856535A1B
-PUBLIC loc_7FF8565377B0
-PUBLIC loc_7FF8565378B5
-PUBLIC loc_7FF856536E31
-PUBLIC loc_7FF856536269
-PUBLIC loc_7FF856536E45
-PUBLIC loc_7FF856535B94
-PUBLIC loc_7FF856535A2F
-PUBLIC loc_7FF856535929
-PUBLIC loc_7FF856535993
-PUBLIC loc_7FF856535908
-PUBLIC loc_7FF8565379B7
-PUBLIC loc_7FF856536EC4
-PUBLIC loc_7FF856535827
-PUBLIC loc_7FF856536308
-PUBLIC loc_7FF85653723F
-PUBLIC loc_7FF8565352FE
-PUBLIC loc_7FF856535A4B
-
 jpt_7FF856535804:
     dd loc_7FF856535806 - jpt_7FF856535804
     dd loc_7FF856536157 - jpt_7FF856535804

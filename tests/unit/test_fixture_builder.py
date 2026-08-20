@@ -346,9 +346,8 @@ def test_windows_builder_keeps_relative_masm_jump_table_portable() -> None:
     )
     assert len(table_targets) == 45
     table_start = fixture.index("jpt_7FF856535804:")
-    assert all(
-        fixture.index(f"PUBLIC {target}") < table_start for target in table_targets
-    )
+    assert fixture.index("OPTION NOSCOPED") < table_start
+    assert not re.search(r"^PUBLIC loc_[0-9A-F]+$", fixture, re.MULTILINE)
     assert "jmp near ptr loc_7FF856533AF0" in fixture
     assert "imagerel" not in fixture
     assert "LABEL DWORD" not in fixture
