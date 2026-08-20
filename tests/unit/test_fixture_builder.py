@@ -5,6 +5,7 @@ IDA-bound extract/resolve worker is covered by
 ``tests/system/e2e/test_fixture_idb_worker.py``.
 """
 
+import re
 from pathlib import Path
 
 from d810.testing.fixture_builder import CallSiteFold, detect_indirect_call_folds
@@ -338,6 +339,17 @@ def test_windows_builder_keeps_relative_masm_jump_table_portable() -> None:
     assert "d810_relative_jpt_sub_7FF856533A20:" in fixture
     assert "jpt_7FF856535804:" in fixture
     assert "dd loc_7FF856535806 - jpt_7FF856535804" in fixture
+    table_targets = re.findall(
+        r"^\s*dd\s+(loc_[0-9A-F]+)\s+-\s+jpt_7FF856535804$",
+        fixture,
+        re.MULTILINE,
+    )
+    assert len(table_targets) == 45
+    table_start = fixture.index("jpt_7FF856535804:")
+    assert all(
+        fixture.index(f"PUBLIC {target}") < table_start for target in table_targets
+    )
+    assert "jmp near ptr loc_7FF856533AF0" in fixture
     assert "imagerel" not in fixture
     assert "LABEL DWORD" not in fixture
     assert "::" not in fixture
