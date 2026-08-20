@@ -163,7 +163,16 @@ class FiniteZeroSetPredicateBlockRule(FlowOptimizationRule):
 
     def __init__(self) -> None:
         super().__init__()
-        self.maturities = [ida_hexrays.MMAT_GLBOPT2]
+        # A plain function may not receive another optblock callback after
+        # CALLS if Hex-Rays has no later block-level work to request.  The
+        # proven predicate is already in its admissible typed form at CALLS,
+        # so schedule the lift at the first callback maturity and retain the
+        # later passes as a fail-safe for shapes that canonicalize later.
+        self.maturities = [
+            ida_hexrays.MMAT_CALLS,
+            ida_hexrays.MMAT_GLBOPT1,
+            ida_hexrays.MMAT_GLBOPT2,
+        ]
 
     def configure(self, kwargs) -> None:
         config = dict(kwargs or {})

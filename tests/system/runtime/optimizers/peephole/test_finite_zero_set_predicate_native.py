@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,31 @@ from tests.system.runtime.conftest import gen_microcode_at_maturity
 
 class TestFiniteZeroSetPredicateNative:
     binary_name = os.getenv("D810_FINITE_ZERO_SET_TEST_BINARY", "libobfuscated.dll")
+
+    def test_configured_decompile_rewrites_authoritative_fixture(
+        self, libobfuscated_setup, d810_state
+    ):
+        from d810.core.config import ProjectConfiguration
+
+        with d810_state() as state:
+            project_path = (
+                Path(__file__).resolve().parents[5]
+                / "src/d810/conf/eidolon_v3_const_solve.json"
+            )
+            project = ProjectConfiguration.from_file(project_path)
+            index = state.project_manager.index(project.path.name)
+            state.project_manager.update(project.path.name, project)
+            state.load_project(index)
+            state.start_d810()
+            function_ea = idc.get_name_ea_simple("finite_zero_set_predicate32")
+            decompiled = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
+            assert decompiled is not None
+            rendered = "\n".join(
+                idaapi.tag_remove(line.line) for line in decompiled.get_pseudocode()
+            )
+            assert "0x124924AF" in rendered
+            assert "0x924924AF" in rendered
+            assert "0xFFFFFF8F" not in rendered
 
     def test_masm_fixture_mutates_only_after_typed_and_z3_admission(self, libobfuscated_setup):
         from d810.optimizers.microcode.instructions.peephole.predicate_root_recovery_native import (
