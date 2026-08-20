@@ -60,6 +60,11 @@ class TestModularProductNonzeroNative:
                 if rule.name == "ModularProductNonzeroBlockRule"
             ]
             assert len(state.current_blk_rules) == 1
+            # This test deliberately narrows the live rule collections to the
+            # native block rule.  Do the same for the compiled bundle schedule;
+            # otherwise manager scope compilation quite correctly rejects the
+            # enabled constant stages whose implementations were removed here.
+            state.manager.configure_constant_simplification_schedule(None)
             state.start_d810()
             function_ea = idc.get_name_ea_simple("modular_product_nonzero32")
             if function_ea == idaapi.BADADDR:
