@@ -136,3 +136,17 @@ def test_the_contributed_rule_is_registered_exactly_once(
         names = [rule.name for rule in state._build_known_instruction_rules()]
 
     assert names.count(RULE_NAME) == 1
+
+
+def test_real_egglog_rule_reaches_the_catalogue_before_snapshot(d810_state) -> None:
+    """The installed Egglog extension follows the same ordering contract."""
+
+    pytest.importorskip("d810_egglog")
+    with d810_state() as state:
+        names = [
+            rule.name
+            for rule in state._build_known_instruction_rules()
+            if rule.name == "EgglogOptimizer"
+        ]
+
+    assert names == ["EgglogOptimizer"]
