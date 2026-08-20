@@ -8,6 +8,7 @@ They verify feature flags and initialization, which requires IDA imports.
 """
 
 import pytest
+from types import SimpleNamespace
 
 # Skip all tests in this module if IDA is not available
 pytest.importorskip("ida_hexrays", reason="IDA Pro SDK not available")
@@ -19,10 +20,161 @@ from d810.optimizers.microcode.instructions.pattern_matching.handler import (
 from d810.optimizers.microcode.instructions.pattern_matching import (
     handler as pattern_handler,
 )
+from d810.hexrays.expr.ast import AstLeaf, AstNode
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.core.stats import OptimizationStatistics
 from d810.core.settings import reset_settings
 from d810.backends.mba.ida import IDAPatternAdapter
 from d810.mba.provider_outcome import ProviderOutcomeStatus
+
+import ida_hexrays
+
+
+def _register_mop(reg: int, valnum: int = 0, size: int = 4):
+    """Build the small native-mop-shaped object used by provenance tests."""
+
+    return SimpleNamespace(
+        t=ida_hexrays.mop_r,
+        size=size,
+        r=reg,
+        reg=reg,
+        valnum=valnum,
+    )
+
+
+def _register_snapshot(reg: int, valnum: int, size: int = 4):
+    """Build the snapshot representation emitted by the recursive resolver."""
+
+    return MopSnapshot(t=ida_hexrays.mop_r, size=size, reg=reg, valnum=valnum)
+
+
+def _resolved_register_ast(*mops):
+    """Build an AST whose leaves retain the supplied native operand snapshots."""
+
+    leaves = []
+    for index, mop in enumerate(mops):
+        leaf = AstLeaf(f"x{index}")
+        leaf.mop = mop
+        leaves.append(leaf)
+    if len(leaves) == 1:
+        return leaves[0]
+    tree = leaves[0]
+    for leaf in leaves[1:]:
+        tree = AstNode(ida_hexrays.m_add, tree, leaf)
+    return tree
+
+
+def test_tracker_fallback_is_disabled_before_locopt(monkeypatch):
+    """Tracker reconstruction waits for the native provenance lifecycle boundary."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer._use_tracker_resolution_fallback = True
+    optimizer._tracker_resolution_opcodes = {ida_hexrays.m_sub}
+    optimizer._trace_tracker_resolution = False
+    optimizer.cur_maturity = ida_hexrays.MMAT_PREOPTIMIZED
+    blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED))
+    ins = SimpleNamespace(opcode=ida_hexrays.m_sub)
+    raw_ast = object()
+
+    def unexpected_resolution(*_args, **_kwargs):
+        raise AssertionError("tracker resolution must not run before LOCOPT")
+
+    from d810.evaluator.hexrays_microcode import def_search
+
+    monkeypatch.setattr(
+        def_search, "recursively_resolve_ast", unexpected_resolution, raising=False
+    )
+
+    assert optimizer._resolve_ast_with_tracker(blk, ins, raw_ast) is None
+
+
+def test_tracker_fallback_rejects_unversioned_borrowed_register_at_locopt(monkeypatch):
+    """A clobbered raw register cannot safely carry a tracker replacement."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer._use_tracker_resolution_fallback = True
+    optimizer._tracker_resolution_opcodes = {ida_hexrays.m_sub}
+    optimizer._trace_tracker_resolution = False
+    optimizer.cur_maturity = ida_hexrays.MMAT_LOCOPT
+    blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT))
+    destination = _register_mop(1, valnum=0)
+    ins = SimpleNamespace(opcode=ida_hexrays.m_sub, d=destination)
+    raw_ast = object()
+    resolved_ast = _resolved_register_ast(
+        _register_snapshot(1, valnum=0),
+        _register_snapshot(2, valnum=0),
+    )
+
+    from d810.evaluator.hexrays_microcode import def_search
+
+    monkeypatch.setattr(
+        def_search,
+        "recursively_resolve_ast",
+        lambda *_args, **_kwargs: resolved_ast,
+        raising=False,
+    )
+
+    assert optimizer._resolve_ast_with_tracker(blk, ins, raw_ast) is None
+
+
+def test_tracker_fallback_accepts_native_versioned_locopt_provenance(monkeypatch):
+    """LOCOPT tracker matching remains available when native versions prove it."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer._use_tracker_resolution_fallback = True
+    optimizer._tracker_resolution_opcodes = {ida_hexrays.m_sub}
+    optimizer._trace_tracker_resolution = False
+    optimizer.cur_maturity = ida_hexrays.MMAT_LOCOPT
+    blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT))
+    destination = _register_snapshot(1, valnum=2)
+    ins = SimpleNamespace(opcode=ida_hexrays.m_sub, d=destination)
+    raw_ast = object()
+    resolved_ast = _resolved_register_ast(
+        _register_snapshot(1, valnum=1),
+        _register_snapshot(2, valnum=3),
+    )
+
+    from d810.evaluator.hexrays_microcode import def_search
+
+    monkeypatch.setattr(
+        def_search,
+        "recursively_resolve_ast",
+        lambda *_args, **_kwargs: resolved_ast,
+        raising=False,
+    )
+
+    assert optimizer._resolve_ast_with_tracker(blk, ins, raw_ast) is resolved_ast
+
+
+def test_direct_locopt_match_preempts_tracker_provenance_gate(monkeypatch):
+    """The safety gate applies only to tracker fallback, never direct matches."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.rules = [object()]
+    optimizer._allowed_root_opcodes = {ida_hexrays.m_sub}
+    optimizer._use_tracker_resolution_fallback = True
+    optimizer._pending_replacement_rule = None
+    labels = []
+    sentinel = object()
+    raw_ast = object()
+    blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT))
+    ins = SimpleNamespace(opcode=ida_hexrays.m_sub)
+
+    monkeypatch.setattr(pattern_handler, "minsn_to_ast", lambda _ins: raw_ast)
+
+    def direct_match(*_args, **kwargs):
+        labels.append(kwargs["source_label"])
+        return sentinel if kwargs["source_label"] == "direct" else None
+
+    optimizer._try_matches = direct_match
+
+    def unexpected_tracker(*_args, **_kwargs):
+        raise AssertionError("tracker fallback must not run after a direct match")
+
+    optimizer._resolve_ast_with_tracker = unexpected_tracker
+
+    assert optimizer.get_optimized_instruction(blk, ins) is sentinel
+    assert labels == ["direct"]
 
 
 @pytest.fixture(autouse=True)
