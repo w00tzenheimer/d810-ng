@@ -19,7 +19,7 @@ meet/init here silently wipes folded constants at control-flow merges).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.core.typing import Callable, Dict, List, Optional
 from d810.ir.expressions import ValueOpKind
@@ -97,6 +97,67 @@ def resolve_varnode_from_maps(
             f"{hex(result) if result is not None else 'None'}"
         )
     return result
+
+
+def isolate_temporaries_for_forward_evaluation(
+    sequence: tuple[Instruction, ...],
+    *,
+    occupied_register_offsets: frozenset[int],
+    isolate_final_result: bool = False,
+) -> tuple[tuple[Instruction, ...], int | None]:
+    """Move canonical temporaries into a private evaluator namespace.
+
+    The portable evaluator intentionally stores REGISTER and TEMP values in one
+    map.  Projected temporaries therefore need distinct offsets whenever a
+    proof sequence can also mention a register with the same numeric offset.
+    Callers that evaluate a nested expression independently may additionally
+    request a private final TEMP result.
+    """
+
+    occupied = set(int(offset) for offset in occupied_register_offsets)
+    next_offset = -1
+
+    def fresh() -> int:
+        nonlocal next_offset
+        while next_offset in occupied:
+            next_offset -= 1
+        value = next_offset
+        occupied.add(value)
+        next_offset -= 1
+        return value
+
+    replacements: dict[Varnode, Varnode] = {}
+    for instruction in sequence:
+        for value in (*instruction.inputs, instruction.result):
+            if value is None or value.space is not Space.TEMP:
+                continue
+            replacements.setdefault(
+                value,
+                Varnode(Space.TEMP, fresh(), int(value.size)),
+            )
+
+    final_offset: int | None = None
+    final_result: Varnode | None = None
+    if isolate_final_result:
+        if not sequence or sequence[-1].result is None:
+            raise ValueError("projected sequence lacks a final result")
+        final_offset = fresh()
+        final_result = Varnode(
+            Space.TEMP,
+            final_offset,
+            int(sequence[-1].result.size),
+        )
+
+    isolated: list[Instruction] = []
+    for index, instruction in enumerate(sequence):
+        inputs = tuple(replacements.get(value, value) for value in instruction.inputs)
+        result = (
+            final_result
+            if final_result is not None and index == len(sequence) - 1
+            else replacements.get(instruction.result, instruction.result)
+        )
+        isolated.append(replace(instruction, inputs=inputs, result=result))
+    return tuple(isolated), final_offset
 
 
 def _binary_result(

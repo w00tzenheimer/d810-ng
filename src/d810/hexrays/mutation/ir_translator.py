@@ -1570,6 +1570,7 @@ class IDAIRTranslator:
                 )
 
             case PatchEdgeSplitCorridor(
+                clone_block_ids=clone_serials,
                 source_serial=src,
                 via_pred=pred,
                 old_target=old,
@@ -1585,6 +1586,7 @@ class IDAIRTranslator:
                     via_pred=pred,
                     clone_until=clone_until,
                     source_new_target=source_new_target,
+                    clone_expected_serials=clone_serials,
                     rule_priority=priority,
                     description=(
                         f"edge-split corridor pred={pred} src={src} "

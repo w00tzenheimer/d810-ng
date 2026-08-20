@@ -6,9 +6,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from d810.analyses.control_flow.graph_checks import (
+    EffectfulReachabilityResult,
     check_entry_reachability_not_collapsed,
     check_effectful_reachability_preserved,
     check_terminal_reachability_preserved,
+)
+from d810.analyses.control_flow.effect_branch_exclusion import (
+    EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+    exact_state_branch_effect_exclusion_from_metadata,
+    validate_exact_state_branch_effect_exclusion,
 )
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import (
@@ -73,6 +79,110 @@ def _has_dispatcher_removal_proof_metadata(plan_metadata: object) -> bool:
     )
 
     return DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA in plan_metadata
+
+
+def _validated_exact_effect_exclusions(
+    source: FlowGraph,
+    projected: FlowGraph,
+    plan_metadata: object,
+) -> frozenset[int] | None:
+    """Replay every typed semantic effect exclusion against immutable inputs."""
+
+    if not isinstance(plan_metadata, Mapping):
+        return frozenset()
+    raw = plan_metadata.get(EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA)
+    if raw is None:
+        return frozenset()
+    if not isinstance(raw, (tuple, list)):
+        return None
+    parsed = tuple(
+        exact_state_branch_effect_exclusion_from_metadata(payload)
+        for payload in raw
+    )
+    if any(proof is None for proof in parsed):
+        return None
+    proofs = tuple(proof for proof in parsed if proof is not None)
+    effect_serials = tuple(int(proof.discarded_effect_serial) for proof in proofs)
+    if len(effect_serials) != len(set(effect_serials)):
+        return None
+    if any(
+        not validate_exact_state_branch_effect_exclusion(source, projected, proof)
+        for proof in proofs
+    ):
+        return None
+    return frozenset(effect_serials)
+
+
+def _apply_exact_effect_exclusions(
+    result: EffectfulReachabilityResult,
+    allowed_serials: frozenset[int],
+) -> EffectfulReachabilityResult:
+    """Remove only replayed infeasible effect blocks from a strict verdict."""
+
+    uncovered = frozenset(result.lost_block_serials - allowed_serials)
+    if not result.lost_block_serials or uncovered == result.lost_block_serials:
+        return result
+    return EffectfulReachabilityResult(
+        passed=not uncovered,
+        pre_effectful_block_serials=result.pre_effectful_block_serials,
+        post_reachable_effectful_block_serials=frozenset(
+            result.post_reachable_effectful_block_serials
+            | (result.lost_block_serials - uncovered)
+        ),
+        lost_block_serials=uncovered,
+        reason=(
+            ""
+            if not uncovered
+            else "reachable effectful blocks became unreachable"
+        ),
+    )
+
+
+def _transaction_reachability_removal_validation(
+    candidate: object,
+    *,
+    coverage_validation: object | None,
+    terminal_passed: bool,
+    effectful_passed: bool,
+    entry_passed: bool,
+    switch_cycle_hazard: bool,
+) -> object:
+    """Publish ordinary transaction safety as removal-proof authority.
+
+    The narrow retirement classifiers are alternatives for plans whose entry
+    reachability changes.  When the ordinary transaction contract itself
+    proves entry, terminal, effects, and exact corridor coverage, retain that
+    stronger observed fact instead of publishing no applied removal proof.
+    """
+    if bool(getattr(candidate, "passed", False)):
+        return candidate
+    proof = getattr(candidate, "proof", None)
+    if (
+        proof is None
+        or coverage_validation is None
+        or not bool(getattr(coverage_validation, "passed", False))
+        or not terminal_passed
+        or not effectful_passed
+        or not entry_passed
+        or switch_cycle_hazard
+        or not bool(getattr(proof, "coverage_enumeration_complete", False))
+        or int(getattr(proof, "residual_corridor_count", -1)) != 0
+        or not getattr(proof, "authoritative_handlers", ())
+        or set(getattr(proof, "authoritative_handlers", ()))
+        != set(getattr(proof, "post_reachable_handlers", ()))
+        or set(getattr(proof, "pre_reachable_terminals", ()))
+        != set(getattr(proof, "post_reachable_terminals", ()))
+    ):
+        return candidate
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherRemovalPreflightValidation,
+    )
+
+    return DispatcherRemovalPreflightValidation(
+        passed=True,
+        reason="transaction_reachability_contract",
+        proof=proof,
+    )
 
 
 def _conditional_lowering_projection_failure(
@@ -256,6 +366,11 @@ class HexRaysPatchTransactionParticipant:
         init=False,
         repr=False,
     )
+    _validated_effect_exclusion_serials: frozenset[int] = field(
+        default=frozenset(),
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, PatchPlan):
@@ -343,6 +458,17 @@ class HexRaysPatchTransactionParticipant:
         if snapshot is None:
             raise RuntimeError("patch preflight lacks immutable source snapshot")
         self._reject_committed_semantic_overlap()
+        plan_metadata = self.plan.metadata_dict()
+        validated_effect_exclusions = _validated_exact_effect_exclusions(
+            snapshot,
+            projection.graph,
+            plan_metadata,
+        )
+        if validated_effect_exclusions is None:
+            raise PatchTransactionPreflightRejected(
+                "projected effect exclusion rejected: malformed or stale exact proof"
+            )
+        self._validated_effect_exclusion_serials = validated_effect_exclusions
         terminal_reachability = check_terminal_reachability_preserved(
             snapshot,
             post_adj=projection.graph.as_adjacency_dict(),
@@ -350,6 +476,10 @@ class HexRaysPatchTransactionParticipant:
         effectful_reachability = check_effectful_reachability_preserved(
             snapshot,
             post_adj=projection.graph.as_adjacency_dict(),
+        )
+        effectful_reachability = _apply_exact_effect_exclusions(
+            effectful_reachability,
+            validated_effect_exclusions,
         )
         entry_reachability = check_entry_reachability_not_collapsed(
             snapshot,
@@ -359,7 +489,6 @@ class HexRaysPatchTransactionParticipant:
         entry_allowance_reason: str | None = None
         entry_allowance = None
         projected_coverage_validation = None
-        plan_metadata = self.plan.metadata_dict()
         if _has_dispatcher_coverage_metadata(plan_metadata):
             from d810.transforms.dispatcher_corridor_coverage import (
                 has_unreachable_cyclic_switch_dispatcher_residue,
@@ -400,12 +529,24 @@ class HexRaysPatchTransactionParticipant:
                 snapshot,
                 post_graph=projection.graph,
                 plan_metadata=plan_metadata,
+                validated_exact_effect_exclusion_serials=(
+                    validated_effect_exclusions
+                ),
+                patch_plan=self.plan,
             )
             candidate_allowance = validate_terminal_switch_cycle_break_allowance(
                 snapshot,
                 post_graph=projection.graph,
                 patch_plan=self.plan,
                 removal_validation=candidate_allowance,
+            )
+            candidate_allowance = _transaction_reachability_removal_validation(
+                candidate_allowance,
+                coverage_validation=projected_coverage_validation,
+                terminal_passed=terminal_reachability.passed,
+                effectful_passed=effectful_reachability.passed,
+                entry_passed=entry_reachability.passed,
+                switch_cycle_hazard=projected_switch_cycle_hazard,
             )
             if (
                 not entry_reachability.passed
@@ -613,6 +754,22 @@ class _PatchTransactionLifecycle:
             raise RuntimeError("patch validation lacks immutable source authority")
         observed_validation_graph = observed
         plan_metadata = self.plan.metadata_dict()
+        projection = self.participant._projection
+        if projection is None:
+            raise RuntimeError("patch validation lacks immutable projection authority")
+        validated_effect_exclusions = _validated_exact_effect_exclusions(
+            source,
+            projection.graph,
+            plan_metadata,
+        )
+        if (
+            validated_effect_exclusions is None
+            or validated_effect_exclusions
+            != self.participant._validated_effect_exclusion_serials
+        ):
+            raise PatchTransactionPostObservationRejected(
+                "observed effect exclusion rejected: exact proof authority drift"
+            )
         has_conditional_lowering = False
         for step in self.plan.steps:
             match step:
@@ -657,6 +814,10 @@ class _PatchTransactionLifecycle:
         effectful_reachability = check_effectful_reachability_preserved(
             source,
             post_cfg=observed_validation_graph,
+        )
+        effectful_reachability = _apply_exact_effect_exclusions(
+            effectful_reachability,
+            validated_effect_exclusions,
         )
         entry_reachability = check_entry_reachability_not_collapsed(
             source,
@@ -705,12 +866,24 @@ class _PatchTransactionLifecycle:
                 source,
                 post_graph=observed_validation_graph,
                 plan_metadata=plan_metadata,
+                validated_exact_effect_exclusion_serials=(
+                    validated_effect_exclusions
+                ),
+                patch_plan=self.plan,
             )
             candidate_validation = validate_terminal_switch_cycle_break_allowance(
                 source,
                 post_graph=observed_validation_graph,
                 patch_plan=self.plan,
                 removal_validation=candidate_validation,
+            )
+            candidate_validation = _transaction_reachability_removal_validation(
+                candidate_validation,
+                coverage_validation=observed_coverage_validation,
+                terminal_passed=terminal_reachability.passed,
+                effectful_passed=effectful_reachability.passed,
+                entry_passed=entry_reachability.passed,
+                switch_cycle_hazard=observed_switch_cycle_hazard,
             )
             if (
                 not entry_reachability.passed

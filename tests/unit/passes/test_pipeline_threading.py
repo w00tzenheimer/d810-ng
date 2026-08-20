@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
+from d810.analyses.value_flow.observation import FactObservation
+from d810.analyses.value_flow import observation as observation_module
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     SemanticRouteDestination,
@@ -47,6 +49,7 @@ from d810.passes.unflatten.state_machine import (
     RecoverStateTransitions,
     _adopt_range_evidence_stack_identity,
     _effective_state_identity,
+    _publish_observation_evidence,
 )
 from d810.passes.state_machine_spine import LOWER_ANALYSES
 from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
@@ -78,6 +81,83 @@ from tests.typed_patch_authority import block_refs_by_serial
 
 C1 = 0x10000001
 STATE_OFF = 0x3C
+
+
+def test_observation_publication_canonicalizes_each_immutable_payload_once(
+    monkeypatch,
+):
+    """One publication must not repeatedly serialize earlier immutable rows."""
+    observations = tuple(
+        FactObservation(
+            fact_id=f"fact-{index}",
+            kind="StateTransitionAnchorFact",
+            semantic_key=f"state-{index}",
+            maturity="MMAT_GLBOPT1",
+            phase="recover_state_transitions",
+            confidence=1.0,
+            payload={
+                "source_block_serial": index,
+                "successor_block_serial": index + 1,
+            },
+        )
+        for index in range(4)
+    )
+    payload_index_by_identity = {
+        id(observation.payload): index
+        for index, observation in enumerate(observations)
+    }
+    canonicalizations = [0, 0, 0, 0]
+    real_canonical_json = observation_module.canonical_json
+
+    def counted_canonical_json(value):
+        payload_index = payload_index_by_identity.get(id(value))
+        if payload_index is not None:
+            canonicalizations[payload_index] += 1
+        return real_canonical_json(value)
+
+    monkeypatch.setattr(
+        observation_module,
+        "canonical_json",
+        counted_canonical_json,
+    )
+    manager = AnalysisManager(graph="G0")
+
+    _publish_observation_evidence(
+        SimpleNamespace(facts=manager),
+        observations,
+    )
+
+    assert manager.session_observations == observations
+    assert canonicalizations == [1, 1, 1, 1]
+
+
+def test_observation_publication_preserves_per_row_fallback_order():
+    calls = []
+
+    class _FallbackFacts:
+        def put_observation_evidence(self, observation):
+            calls.append(observation)
+
+    observations = (object(), object(), object())
+
+    _publish_observation_evidence(
+        SimpleNamespace(facts=_FallbackFacts()),
+        observations,
+    )
+
+    assert calls == list(observations)
+
+
+def test_observation_publication_propagates_batch_provider_error():
+    class _FailingFacts:
+        def put_observation_evidence_batch(self, _observations):
+            raise RuntimeError("provider failed")
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        _publish_observation_evidence(
+            SimpleNamespace(facts=_FailingFacts()),
+            (object(),),
+        )
 
 
 def test_materialized_resolver_register_replaces_misidentified_stack_alias():
@@ -140,14 +220,14 @@ def test_range_evidence_replaces_spurious_register_selector_with_proven_stack_st
 
 
 def _ne(const, target):
-    l = MopSnapshot(kind=OperandKind.STACK, stkoff=STATE_OFF, size=4)
+    left = MopSnapshot(kind=OperandKind.STACK, stkoff=STATE_OFF, size=4)
     r = MopSnapshot(kind=OperandKind.NUMBER, value=const, size=4)
     d = MopSnapshot(kind=OperandKind.BLOCK, block_ref=target)
     return InsnSnapshot(
         opcode=1,
         ea=0x1000,
-        operands=(l, r, d),
-        l=l,
+        operands=(left, r, d),
+        l=left,
         r=r,
         d=d,
         kind=InsnKind.EQUALITY_JUMP,
@@ -358,7 +438,6 @@ def test_recover_dispatcher_consumes_runtime_candidate_exclusions(monkeypatch):
 
 def test_recover_dispatcher_publishes_branch_target_evidence():
     am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
-    ctx = _ctx(am.graph, am.view())
 
     assert not am.has_evidence("branch_targets")
     assert not am.has_evidence("dispatcher_predicates")

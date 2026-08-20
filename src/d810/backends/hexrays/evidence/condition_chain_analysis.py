@@ -49,6 +49,7 @@ from d810.analyses.control_flow.interval_map import (
     IntervalDispatcher,
 )
 from d810.ir.flowgraph import InsnSnapshot, MopSnapshot, OperandKind
+from d810.ir.instructions import Instruction
 from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
 logger = getLogger(__name__)
@@ -1344,8 +1345,9 @@ def _forward_eval_insn(
     """Evaluate one instruction, updating stk_map/reg_map in-place.
 
     Thin wrapper over the portable core in
-    ``d810.analyses.value_flow.state_write`` (LS6 S5).  Live instructions are
-    captured here so the portable evaluator only receives lifted snapshots.
+    ``d810.analyses.value_flow.state_write`` (LS6 S5).  Canonical portable
+    ``Instruction`` values pass through unchanged; live instructions are
+    captured here so the portable evaluator otherwise receives lifted snapshots.
     Returns the resolved constant if this instruction writes the state variable;
     otherwise returns None and updates the maps.  ``state_var_gaddr`` /
     ``foldable_global_reads`` enable a *global* dispatcher state variable with
@@ -1356,7 +1358,7 @@ def _forward_eval_insn(
     if isinstance(source_snapshot, InsnSnapshot):
         insn = source_snapshot
 
-    if isinstance(insn, InsnSnapshot):
+    if isinstance(insn, (InsnSnapshot, Instruction)):
         return state_write.forward_eval_insn(
             insn,
             stk_map,

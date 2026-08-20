@@ -11,6 +11,11 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
     SemanticFragmentBlockOwner,
 )
+from d810.analyses.control_flow.effect_branch_exclusion import (
+    EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+    build_exact_state_branch_effect_exclusion,
+)
+from d810.ir.expressions import ValueOpKind
 from d810.backends.hexrays.mutation.backend import (
     HexRaysMutationBackend,
     HexRaysPatchPlanRuntime,
@@ -52,6 +57,7 @@ from d810.ir.flowgraph import (
     PredicateKind,
 )
 from d810.ir.maturity import MaturityEnvelope
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.manager.fragment_publication_lifecycle import (
     SessionFragmentPublicationLifecycleAuthority,
 )
@@ -1215,6 +1221,61 @@ def test_observed_lowering_with_helper_serial_shift_does_not_poison() -> None:
     assert translator.lower_calls == [plan]
 
 
+def test_observed_native_call_serial_shift_does_not_poison() -> None:
+    """Post-observation effect checks bind native effects, not old serials."""
+    call = InsnSnapshot(
+        opcode=57,
+        ea=0x1010,
+        native_ea=0x401010,
+        operands=(),
+        kind=InsnKind.CALL,
+    )
+    cfg = _make_cfg([(0, 1), (1, 2), (2, 3)])
+    cfg_blocks = dict(cfg.blocks)
+    cfg_blocks[1] = replace(
+        cfg_blocks[1],
+        start_ea=0x401010,
+        native_start_ea=0x401010,
+        insn_snapshots=(call,),
+    )
+    cfg = replace(cfg, blocks=cfg_blocks)
+    plan = _ordinary_plan(
+        PatchRedirectGoto,
+        serials=(2, 3),
+        from_serial=2,
+        old_target=3,
+        new_target=3,
+    )
+
+    observed_blocks = {
+        10: replace(cfg.blocks[0], serial=10, succs=(11,), preds=()),
+        11: replace(cfg.blocks[1], serial=11, succs=(12,), preds=(10,)),
+        12: replace(cfg.blocks[2], serial=12, succs=(13,), preds=(11,)),
+        13: replace(cfg.blocks[3], serial=13, succs=(), preds=(12,)),
+    }
+    observed = FlowGraph(
+        blocks=observed_blocks,
+        entry_serial=10,
+        func_ea=cfg.func_ea,
+    )
+
+    class _ShiftedObservationTranslator(_FakeTranslator):
+        def lift(self, _live_source: object) -> FlowGraph:
+            self.lift_count += 1
+            return cfg if self.lift_count == 1 else observed
+
+    translator = _ShiftedObservationTranslator(cfg)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(cfg, plan),
+        translator=translator,
+    )
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
+
+    assert result is observed
+    assert translator.lower_calls == [plan]
+
+
 def test_observed_lowering_canonicalizes_helper_topology_onto_pre_snapshot() -> None:
     """Physical helper serials are removed from the semantic observation graph."""
     cfg = _make_cfg(
@@ -2117,6 +2178,184 @@ def test_backend_poisons_when_observed_graph_strands_reachable_call() -> None:
     assert backend.last_patch_execution is None
 
 
+def _exact_state_effect_exclusion_cfg() -> FlowGraph:
+    """Small faithful source -> state compare -> private effect-arm shape."""
+
+    cfg = _make_cfg(
+        [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (2, 4),
+            (3, 5),
+            (4, 5),
+            (6, 2),
+        ],
+        stop_serials=(5, 7),
+    )
+    state = MopSnapshot(
+        kind=OperandKind.STACK,
+        size=4,
+        stkoff=1724,
+        stack_refs=(1724,),
+    )
+    number = MopSnapshot(
+        kind=OperandKind.NUMBER,
+        size=4,
+        value=0x40131868,
+    )
+    blocks = dict(cfg.blocks)
+    blocks[1] = replace(
+        blocks[1],
+        native_start_ea=0x1001,
+        insn_snapshots=(
+            InsnSnapshot(
+                opcode=4,
+                ea=0x1101,
+                native_ea=0x1101,
+                operands=(),
+                l=number,
+                d=state,
+                kind=InsnKind.MOV,
+                value_op_kind=ValueOpKind.MOVE,
+            ),
+            InsnSnapshot(
+                opcode=55,
+                ea=0x1102,
+                native_ea=0x1102,
+                operands=(),
+                l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+                kind=InsnKind.GOTO,
+            ),
+        ),
+    )
+    blocks[2] = replace(
+        blocks[2],
+        native_start_ea=0x1002,
+        insn_snapshots=(
+            InsnSnapshot(
+                opcode=43,
+                ea=0x1201,
+                native_ea=0x1201,
+                operands=(),
+                l=state,
+                r=number,
+                d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+                kind=InsnKind.COND_JUMP,
+                branch_predicate=PredicateKind.NE,
+                is_conditional_jump=True,
+            ),
+        ),
+    )
+    blocks[4] = replace(
+        blocks[4],
+        native_start_ea=0x1004,
+        insn_snapshots=(
+            InsnSnapshot(
+                opcode=57,
+                ea=0x1401,
+                native_ea=0x1401,
+                operands=(),
+                kind=InsnKind.CALL,
+                is_call=True,
+            ),
+        ),
+    )
+    return replace(cfg, blocks=blocks)
+
+
+def test_backend_accepts_only_replayed_exact_infeasible_effect_loss() -> None:
+    """Post-observation may drop only the exact private non-selected effect."""
+
+    pre_cfg = _exact_state_effect_exclusion_cfg()
+    plan = _ordinary_plan(
+        PatchRedirectGoto,
+        serials=(3, 5, 7),
+        from_serial=3,
+        old_target=5,
+        new_target=7,
+    )
+    projected = project_patch_plan(pre_cfg, plan, snapshot_id=plan.snapshot_id).graph
+    proof = build_exact_state_branch_effect_exclusion(
+        pre_cfg,
+        projected,
+        normalized_state=0x40131868,
+        source_serial=1,
+        predicate_serial=2,
+        selected_target_serial=3,
+        discarded_effect_serial=4,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 1724),
+    )
+    assert proof is not None
+    plan = plan.with_metadata(
+        **{
+            EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA: (
+                proof.to_metadata(),
+            )
+        }
+    )
+    observed_cfg = _make_cfg([(0, 1), (1, 3), (3, 7)], stop_serials=(5, 7))
+
+    class _FoldingTranslator(_FakeTranslator):
+        def lift(self, _live_source: object) -> FlowGraph:
+            self.lift_count += 1
+            return observed_cfg if self.lower_calls else pre_cfg
+
+    gateway = _ordinary_gateway(pre_cfg, plan)
+    translator = _FoldingTranslator(pre_cfg)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=gateway,
+        translator=translator,
+    )
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+    assert result is observed_cfg
+    assert translator.lower_calls == [plan]
+    assert not gateway.generation_poisoned
+    assert backend.last_patch_execution is not None
+
+
+def test_backend_rejects_forged_effect_exclusion_before_mutation() -> None:
+    pre_cfg = _exact_state_effect_exclusion_cfg()
+    plan = _ordinary_plan(
+        PatchRedirectGoto,
+        serials=(3, 5, 7),
+        from_serial=3,
+        old_target=5,
+        new_target=7,
+    )
+    projected = project_patch_plan(pre_cfg, plan, snapshot_id=plan.snapshot_id).graph
+    proof = build_exact_state_branch_effect_exclusion(
+        pre_cfg,
+        projected,
+        normalized_state=0x40131868,
+        source_serial=1,
+        predicate_serial=2,
+        selected_target_serial=3,
+        discarded_effect_serial=4,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 1724),
+    )
+    assert proof is not None
+    payload = proof.to_metadata()
+    payload["normalized_state"] = 0x40131869
+    plan = plan.with_metadata(
+        **{EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA: (payload,)}
+    )
+    translator = _FakeTranslator(pre_cfg)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(pre_cfg, plan),
+        translator=translator,
+    )
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+    assert result is pre_cfg
+    assert translator.lower_calls == []
+    assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
+    assert "effect exclusion" in str(backend.last_patch_failure)
+
+
 def test_backend_persists_observed_dispatcher_verdict_after_late_contract_poison(
     monkeypatch,
 ) -> None:
@@ -2771,7 +3010,9 @@ def test_full_dispatcher_retirement_uses_ordinary_contract_when_entry_reachabili
     assert backend.last_patch_failure is None
 
 
-def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proof():
+def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proof(
+    monkeypatch,
+):
     """A rejected narrow proof alone must not disable ordinary safe rewrites."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
@@ -2812,6 +3053,12 @@ def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proo
             return projected.graph if self.lower_calls else cfg
 
     translator = _ProjectedTranslator(cfg)
+    outcomes = []
+    monkeypatch.setattr(
+        observability_preanalysis,
+        "observe_unflatten_dispatcher_corridor_coverage",
+        lambda **kwargs: outcomes.append(kwargs),
+    )
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, plan),
         translator=translator,
@@ -2823,6 +3070,14 @@ def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proo
     assert translator.lower_calls == [plan]
     assert translator.lift_count == 2
     assert backend.last_patch_failure is None
+    proof_payload = next(
+        observation.payload
+        for observation in outcomes[0]["observations"]
+        if observation.kind == "UnflattenDispatcherRemovalPreflightProof"
+    )
+    assert proof_payload["application_status"] == "applied"
+    assert proof_payload["proof_status"] == "accepted"
+    assert proof_payload["reason"] == "transaction_reachability_contract"
 
 
 def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:

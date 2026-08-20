@@ -8,6 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
+from d810.analyses.control_flow.minimal_state_recovery import (
+    CandidatePrefixAlternateCorridorProof,
+)
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
     BlockKind,
@@ -19,9 +22,12 @@ from d810.ir.flowgraph import (
     OperandKind,
     PredicateKind,
 )
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms import dispatcher_corridor_coverage as corridor_module
 from d810.transforms import minimal_unflatten_emit as emit_module
 from d810.transforms.dispatcher_corridor_coverage import (
+    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
     USE_DEF_SEVERANCE_AUDIT_METADATA,
     DispatcherRemovalPreflightProof,
     DispatcherRemovalPreflightValidation,
@@ -35,7 +41,9 @@ from d810.transforms.dispatcher_corridor_coverage import (
     validate_dispatcher_corridor_coverage_metadata,
     validate_dispatcher_removal_preflight_proof,
 )
+from d810.transforms.edit_simulator import project_patch_plan
 from d810.transforms.graph_modification import (
+    EdgeRedirectViaPredSplit,
     LowerConditionalStateTransition,
     PreserveLivePredicateCondition,
     RedirectGoto,
@@ -73,6 +81,238 @@ def _block(
         kind=kind,
         tail_kind=tail_kind,
     )
+
+
+def test_coverage_projects_predecessor_scoped_feeder_clone() -> None:
+    """A pred-split clone cuts only its exact original dispatcher corridor."""
+
+    graph = FlowGraph(
+        blocks={
+            1: _block(1, (10,), (), 0x1000, kind=BlockKind.ONE_WAY),
+            10: _block(10, (20,), (1,), 0x1010, kind=BlockKind.ONE_WAY),
+            20: _block(20, (30,), (10,), 0x1020, kind=BlockKind.ONE_WAY),
+            30: _block(30, (40,), (20,), 0x1030, kind=BlockKind.ONE_WAY),
+            40: _block(40, (), (30,), 0x1040, kind=BlockKind.ZERO_WAY),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    coverage = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(
+            EdgeRedirectViaPredSplit(
+                src_block=20,
+                old_target=30,
+                new_target=40,
+                via_pred=10,
+                clone_until=20,
+            ),
+        ),
+        dispatcher_entry_serial=30,
+    )
+
+    assert tuple(corridor.label for corridor in coverage.covered_corridors) == (
+        "blk1@0x1000 -> blk10@0x1010 -> blk20@0x1020 -> blk30@0x1030",
+    )
+    assert coverage.residual_corridors == ()
+
+
+def test_preflight_proof_accepts_exact_planned_stop_relocation() -> None:
+    """A typed clone plan may move the unique STOP without losing its route."""
+
+    base_graph, _, _, _ = _state_transition_plumbing_fixture()
+    blocks = dict(base_graph.blocks)
+    blocks[0] = replace(blocks[0], succs=(*blocks[0].succs, 30))
+    blocks.update(
+        {
+            30: _block(30, (300,), (0,), 0x1400, kind=BlockKind.ONE_WAY),
+            50: _block(50, (300,), (51,), 0x1500, kind=BlockKind.ONE_WAY),
+            51: _block(51, (50,), (), 0x1510, kind=BlockKind.ONE_WAY),
+            300: _block(300, (), (30, 50), 0x1600, kind=BlockKind.STOP),
+        }
+    )
+    graph = FlowGraph(
+        blocks=blocks,
+        entry_serial=base_graph.entry_serial,
+        func_ea=base_graph.func_ea,
+    )
+    modifications = (
+        RedirectGoto(from_serial=10, old_target=123, new_target=20),
+        RedirectGoto(from_serial=12, old_target=112, new_target=21),
+        EdgeRedirectViaPredSplit(
+            src_block=50,
+            old_target=300,
+            new_target=30,
+            via_pred=51,
+            clone_until=50,
+        ),
+    )
+    plan = compile_patch_plan(modifications, graph)
+    projected = project_patch_plan(graph, plan, snapshot_id=plan.snapshot_id).graph
+    coverage = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=modifications,
+        dispatcher_entry_serial=4,
+    )
+
+    proof = build_dispatcher_removal_preflight_proof(
+        graph,
+        post_graph=projected,
+        coverage=coverage,
+        dispatcher_entry_serial=4,
+        authoritative_handler_serials=frozenset({10, 12, 20, 21}),
+        dispatcher_region_serials=frozenset({4}),
+        producer_safety={
+            "fragment_atomic": True,
+            "non_state_use_def_veto": True,
+            "non_state_use_def_checked": True,
+            "non_state_use_def_severances_zero": True,
+        },
+        state_plumbing_serials=frozenset({3, 112, 123}),
+        patch_plan=plan,
+    )
+
+    assert not proof.passed
+    assert proof.reason == "untyped_lost_block"
+    assert proof.pre_reachable_terminals == proof.post_reachable_terminals
+    assert tuple(anchor.serial for anchor in proof.post_reachable_terminals) == (
+        20,
+        21,
+        300,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        graph,
+        post_graph=projected,
+        plan_metadata={
+            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
+            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
+        },
+        patch_plan=plan,
+    )
+
+    assert validation.passed
+    assert validation.reason == "state_transition_plumbing_retirement"
+
+    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
+        proof.to_metadata(),
+        coverage_metadata=coverage.to_metadata(),
+        maturity="MMAT_GLBOPT1",
+        phase="patch_transaction",
+        application_status="applied",
+        projected_validation=validation,
+        observed_validation=validation,
+        plan_id=plan.plan_id,
+        attempt_id="attempt-stop-relocation",
+    )
+    assert len(observations) == 1
+    assert observations[0].payload["proof_status"] == "accepted"
+
+    relocated_stop_serial = 300 + len(plan.new_blocks)
+    relocated_stop = projected.get_block(relocated_stop_serial)
+    assert relocated_stop is not None
+    drifted = FlowGraph(
+        blocks={
+            **projected.blocks,
+            relocated_stop_serial: replace(
+                relocated_stop,
+                start_ea=relocated_stop.start_ea + 1,
+            ),
+        },
+        entry_serial=projected.entry_serial,
+        func_ea=projected.func_ea,
+    )
+    drifted_validation = validate_dispatcher_removal_preflight_proof(
+        graph,
+        post_graph=drifted,
+        plan_metadata={
+            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
+            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
+        },
+        patch_plan=plan,
+    )
+    assert not drifted_validation.passed
+
+
+def test_coverage_excludes_exact_candidate_prefix_alternate_partition() -> None:
+    """An exact alternate prefix partition is not a residual root corridor."""
+
+    prefix_branch = InsnSnapshot(
+        opcode=0x4A,
+        ea=0x1035,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.STACK, stkoff=0x44, size=4),
+        r=MopSnapshot(kind=OperandKind.NUMBER, value=0x423C3FEB, size=4),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=40, size=0),
+        kind=InsnKind.COND_JUMP,
+        branch_predicate=PredicateKind.SLE,
+        is_conditional_jump=True,
+    )
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, (20,), (), 0x1010, kind=BlockKind.ONE_WAY),
+            20: _block(20, (30,), (10,), 0x1020, kind=BlockKind.ONE_WAY),
+            30: _block(
+                30,
+                (40, 50),
+                (20,),
+                0x1030,
+                kind=BlockKind.TWO_WAY,
+                insns=(prefix_branch,),
+                tail_kind=InsnKind.COND_JUMP,
+            ),
+            40: _block(40, (), (30,), 0x1040, kind=BlockKind.ZERO_WAY),
+            50: _block(50, (), (30,), 0x1050, kind=BlockKind.ZERO_WAY),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    proof = CandidatePrefixAlternateCorridorProof(
+        normalized_state=0x70000000,
+        source_serial=10,
+        source_ea=0x1010,
+        feeder_serial=20,
+        feeder_ea=0x1020,
+        prefix_serial=30,
+        prefix_ea=0x1030,
+        root_serial=40,
+        root_ea=0x1040,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x44),
+    )
+
+    coverage = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(),
+        dispatcher_entry_serial=40,
+        semantic_exclusions=(proof,),
+    )
+
+    assert tuple(corridor.label for corridor in coverage.covered_corridors) == (
+        "blk10@0x1010 -> blk20@0x1020 -> blk30@0x1030 -> blk40@0x1040",
+    )
+    assert coverage.residual_corridors == ()
+
+    validation = validate_dispatcher_corridor_coverage_metadata(
+        graph,
+        post_graph=graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+        },
+    )
+    assert validation.passed
+
+    stale = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(),
+        dispatcher_entry_serial=40,
+        semantic_exclusions=(replace(proof, source_ea=0xDEAD),),
+    )
+    assert stale.covered_corridors == ()
+    assert tuple(corridor.label for corridor in stale.residual_corridors) == (
+        "blk10@0x1010 -> blk20@0x1020 -> blk30@0x1030 -> blk40@0x1040",
+    )
+    assert stale.semantic_exclusions == ()
 
 
 def _conditional_observation_fixture(
@@ -1464,6 +1704,791 @@ def test_state_transition_plumbing_retirement_rejects_near_misses(
     assert validation.proof is not None
     assert validation.proof.reason == "untyped_lost_block"
 
+
+def _partitioned_state_transition_retirement_fixture(
+    *,
+    mismatched_internal_target: bool = False,
+    mismatched_secondary_target: bool = False,
+    effectful_secondary_comparison: bool = False,
+    state_carrier_handler_leaf: bool = False,
+    secondary_foreign_comparison_leaf: bool = False,
+    internal_goto_alias: bool = False,
+    effectful_internal_alias: bool = False,
+    intermediate_post_route: bool = False,
+    mismatched_intermediate_post_route: bool = False,
+    same_nonhandler_endpoint: bool = False,
+    observed_discards_exact_effect: bool = False,
+) -> tuple[FlowGraph, FlowGraph, object, object]:
+    """Exact source partitions entering main and secondary state forests."""
+
+    state = MopSnapshot(kind=OperandKind.STACK, stkoff=40, size=4)
+    eax = MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=4)
+    ecx = MopSnapshot(kind=OperandKind.REGISTER, reg=16, size=4)
+
+    def constant(ea: int, value: int, destination: MopSnapshot) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=0x40,
+            ea=ea,
+            operands=(),
+            l=MopSnapshot(kind=OperandKind.NUMBER, value=value, size=4),
+            r=None,
+            d=destination,
+            kind=InsnKind.UNKNOWN,
+            value_op_kind=ValueOpKind.MOVE,
+        )
+
+    def value(
+        operation: ValueOpKind,
+        ea: int,
+        left: MopSnapshot,
+        right: MopSnapshot | None,
+        destination: MopSnapshot,
+    ) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=0x41,
+            ea=ea,
+            operands=(),
+            l=left,
+            r=right,
+            d=destination,
+            kind=InsnKind.UNKNOWN,
+            value_op_kind=operation,
+        )
+
+    def branch(
+        ea: int,
+        predicate: PredicateKind,
+        constant_value: int,
+        target: int,
+    ) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=0x42,
+            ea=ea,
+            operands=(),
+            l=state,
+            r=MopSnapshot(
+                kind=OperandKind.NUMBER,
+                value=constant_value,
+                size=4,
+            ),
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
+            kind=InsnKind.COND_JUMP,
+            predicate_kind=predicate,
+        )
+
+    def goto(ea: int, target: int) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=0x43,
+            ea=ea,
+            operands=(),
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
+            kind=InsnKind.GOTO,
+        )
+
+    effectful_store = InsnSnapshot(
+        opcode=0x43,
+        ea=0x12FF,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.NUMBER, value=1, size=4),
+        r=None,
+        d=MopSnapshot(kind=OperandKind.GLOBAL, gaddr=0x2000, size=4),
+        kind=InsnKind.UNKNOWN,
+        value_op_kind=ValueOpKind.MOVE,
+    )
+
+    blocks = {
+        0: _block(
+            0,
+            (
+                10,
+                11,
+                12,
+                13,
+                *((14,) if internal_goto_alias else ()),
+                101,
+                103,
+                104,
+                105,
+                *((107,) if secondary_foreign_comparison_leaf else ()),
+                *((90,) if observed_discards_exact_effect else ()),
+            ),
+            (),
+            0x1000,
+            kind=BlockKind.N_WAY,
+        ),
+        10: _block(
+            10,
+            (30,),
+            (0,),
+            0x1010,
+            kind=BlockKind.ONE_WAY,
+            insns=(constant(0x1010, 0x10, eax),),
+            tail_kind=InsnKind.GOTO,
+        ),
+        11: _block(
+            11,
+            (31,),
+            (0,),
+            0x1020,
+            kind=BlockKind.ONE_WAY,
+            insns=(
+                constant(0x1020, 0x18, eax),
+                constant(0x1024, 0x08, ecx),
+            ),
+            tail_kind=InsnKind.GOTO,
+        ),
+        12: _block(
+            12,
+            (32,),
+            (0,),
+            0x1030,
+            kind=BlockKind.ONE_WAY,
+            insns=(
+                constant(0x1030, 0x50, eax),
+                constant(0x1034, 0x20, ecx),
+            ),
+            tail_kind=InsnKind.GOTO,
+        ),
+        13: _block(
+            13,
+            (32,),
+            (0,),
+            0x1040,
+            kind=BlockKind.ONE_WAY,
+            insns=(
+                constant(0x1040, 0x70, eax),
+                constant(0x1044, 0x20, ecx),
+            ),
+            tail_kind=InsnKind.GOTO,
+        ),
+        **(
+            {
+                14: _block(
+                    14,
+                    (33,),
+                    (0,),
+                    0x1050,
+                    kind=BlockKind.ONE_WAY,
+                    insns=(constant(0x1050, 0x20, eax),),
+                    tail_kind=InsnKind.GOTO,
+                ),
+                33: _block(
+                    33,
+                    (50,),
+                    (14,),
+                    0x1130,
+                    kind=BlockKind.ONE_WAY,
+                    insns=(value(ValueOpKind.MOVE, 0x1130, eax, None, state),),
+                    tail_kind=InsnKind.GOTO,
+                ),
+            }
+            if internal_goto_alias
+            else {}
+        ),
+        30: _block(
+            30,
+            (50,),
+            (10,),
+            0x1100,
+            kind=BlockKind.ONE_WAY,
+            insns=(value(ValueOpKind.MOVE, 0x1100, eax, None, state),),
+            tail_kind=InsnKind.GOTO,
+        ),
+        31: _block(
+            31,
+            (51,),
+            (11,),
+            0x1110,
+            kind=BlockKind.ONE_WAY,
+            insns=(value(ValueOpKind.ADD, 0x1110, eax, ecx, state),),
+            tail_kind=InsnKind.GOTO,
+        ),
+        32: _block(
+            32,
+            (70,),
+            (12, 13),
+            0x1120,
+            kind=BlockKind.ONE_WAY,
+            insns=(value(ValueOpKind.SUB, 0x1120, eax, ecx, state),),
+            tail_kind=InsnKind.GOTO,
+        ),
+        50: _block(
+            50,
+            (
+                (51, 80)
+                if same_nonhandler_endpoint
+                else ((60, 100) if internal_goto_alias else (51, 100))
+            ),
+            ((30, 33) if internal_goto_alias else (30,)),
+            0x1200,
+            kind=BlockKind.TWO_WAY,
+            insns=(
+                branch(
+                    0x1200,
+                    PredicateKind.EQ,
+                    0x10,
+                    80 if same_nonhandler_endpoint else 100,
+                ),
+            ),
+            tail_kind=InsnKind.COND_JUMP,
+        ),
+        51: _block(
+            51,
+            (103, 101),
+            ((60, 31) if internal_goto_alias else (50, 31)),
+            0x1210,
+            kind=BlockKind.TWO_WAY,
+            insns=(branch(0x1210, PredicateKind.EQ, 0x20, 101),),
+            tail_kind=InsnKind.COND_JUMP,
+        ),
+        **(
+            {
+                60: _block(
+                    60,
+                    (51,),
+                    (50,),
+                    0x1220,
+                    kind=BlockKind.ONE_WAY,
+                    insns=(
+                        *((effectful_store,) if effectful_internal_alias else ()),
+                        goto(0x1220, 51),
+                    ),
+                    tail_kind=InsnKind.GOTO,
+                )
+            }
+            if internal_goto_alias
+            else {}
+        ),
+        70: _block(
+            70,
+            (71, 72),
+            (32,),
+            0x1300,
+            kind=BlockKind.TWO_WAY,
+            insns=(
+                *((effectful_store,) if effectful_secondary_comparison else ()),
+                branch(
+                    0x1300,
+                    PredicateKind.ULT,
+                    0x40,
+                    71,
+                ),
+            ),
+            tail_kind=InsnKind.COND_JUMP,
+        ),
+        71: _block(
+            71,
+            (103, 102),
+            (70,),
+            0x1310,
+            kind=BlockKind.TWO_WAY,
+            insns=(branch(0x1310, PredicateKind.EQ, 0x30, 102),),
+            tail_kind=InsnKind.COND_JUMP,
+        ),
+        72: _block(
+            72,
+            ((107, 104) if secondary_foreign_comparison_leaf else (105, 104)),
+            (70,),
+            0x1320,
+            kind=BlockKind.TWO_WAY,
+            insns=(branch(0x1320, PredicateKind.EQ, 0x50, 104),),
+            tail_kind=InsnKind.COND_JUMP,
+        ),
+        **(
+            {
+                80: _block(
+                    80,
+                    (
+                        (100, 103)
+                        if mismatched_intermediate_post_route
+                        else (103, 100)
+                    ),
+                    (),
+                    0x1380,
+                    kind=BlockKind.TWO_WAY,
+                    insns=(
+                        (
+                            InsnSnapshot(
+                                opcode=0x42,
+                                ea=0x1380,
+                                operands=(),
+                                l=MopSnapshot(
+                                    kind=OperandKind.STACK,
+                                    stkoff=64,
+                                    size=8,
+                                ),
+                                r=MopSnapshot(
+                                    kind=OperandKind.NUMBER,
+                                    value=0,
+                                    size=8,
+                                ),
+                                d=MopSnapshot(
+                                    kind=OperandKind.BLOCK,
+                                    block_ref=100,
+                                ),
+                                kind=InsnKind.COND_JUMP,
+                                predicate_kind=PredicateKind.EQ,
+                            )
+                            if same_nonhandler_endpoint
+                            else branch(
+                                0x1380,
+                                PredicateKind.EQ,
+                                0x10,
+                                103
+                                if mismatched_intermediate_post_route
+                                else 100,
+                            )
+                        ),
+                    ),
+                    tail_kind=InsnKind.COND_JUMP,
+                )
+            }
+            if intermediate_post_route or same_nonhandler_endpoint
+            else {}
+        ),
+        100: (
+            _block(
+                100,
+                (101,),
+                (50,),
+                0x1400,
+                kind=BlockKind.ONE_WAY,
+                insns=(value(ValueOpKind.MOVE, 0x1400, state, None, eax),),
+                tail_kind=InsnKind.GOTO,
+            )
+            if state_carrier_handler_leaf
+            else _block(100, (), (50,), 0x1400, kind=BlockKind.STOP)
+        ),
+        101: _block(101, (), (51,), 0x1410, kind=BlockKind.STOP),
+        102: _block(102, (), (71,), 0x1420, kind=BlockKind.STOP),
+        103: _block(103, (), (51, 71), 0x1430, kind=BlockKind.STOP),
+        104: _block(104, (), (72,), 0x1440, kind=BlockKind.STOP),
+        105: _block(
+            105,
+            (),
+            ((72, 107) if secondary_foreign_comparison_leaf else (72,)),
+            0x1450,
+            kind=BlockKind.STOP,
+        ),
+        **(
+            {
+                90: _block(
+                    90,
+                    (91,),
+                    (0,),
+                    0x1490,
+                    kind=BlockKind.ONE_WAY,
+                    insns=(
+                        constant(0x1490, 0x10, state),
+                        goto(0x1494, 91),
+                    ),
+                    tail_kind=InsnKind.GOTO,
+                ),
+                91: _block(
+                    91,
+                    (92, 100),
+                    (90,),
+                    0x14A0,
+                    kind=BlockKind.TWO_WAY,
+                    insns=(branch(0x14A0, PredicateKind.EQ, 0x10, 100),),
+                    tail_kind=InsnKind.COND_JUMP,
+                ),
+                92: _block(
+                    92,
+                    (100,),
+                    (91,),
+                    0x14B0,
+                    kind=BlockKind.ONE_WAY,
+                    insns=(
+                        InsnSnapshot(
+                            opcode=0x44,
+                            ea=0x14B0,
+                            operands=(),
+                            kind=InsnKind.CALL,
+                            is_call=True,
+                        ),
+                    ),
+                    tail_kind=InsnKind.GOTO,
+                ),
+            }
+            if observed_discards_exact_effect
+            else {}
+        ),
+        **(
+            {
+                107: _block(
+                    107,
+                    (105, 103),
+                    (0, 72),
+                    0x1470,
+                    kind=BlockKind.TWO_WAY,
+                    insns=(
+                        InsnSnapshot(
+                            opcode=0x42,
+                            ea=0x1470,
+                            operands=(),
+                            l=MopSnapshot(
+                                kind=OperandKind.STACK,
+                                stkoff=64,
+                                size=8,
+                            ),
+                            r=MopSnapshot(
+                                kind=OperandKind.NUMBER,
+                                value=0,
+                                size=8,
+                            ),
+                            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=103),
+                            kind=InsnKind.COND_JUMP,
+                            predicate_kind=PredicateKind.EQ,
+                        ),
+                    ),
+                    tail_kind=InsnKind.COND_JUMP,
+                )
+            }
+            if secondary_foreign_comparison_leaf
+            else {}
+        ),
+    }
+    pre_graph = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
+    pre_graph = _replace_observed_edges(
+        pre_graph,
+        {serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()},
+    )
+    target_11 = 103 if mismatched_internal_target else 101
+    target_13 = 102 if mismatched_secondary_target else 104
+    target_10 = 80 if intermediate_post_route or same_nonhandler_endpoint else 100
+    modifications = [
+        RedirectGoto(from_serial=10, old_target=30, new_target=target_10),
+        RedirectGoto(from_serial=11, old_target=31, new_target=target_11),
+        RedirectGoto(from_serial=12, old_target=32, new_target=102),
+        RedirectGoto(from_serial=13, old_target=32, new_target=target_13),
+    ]
+    if internal_goto_alias:
+        modifications.append(
+            RedirectGoto(from_serial=14, old_target=33, new_target=101)
+        )
+    coverage = analyze_dispatcher_corridor_coverage(
+        pre_graph,
+        modifications=tuple(modifications),
+        dispatcher_entry_serial=50,
+    )
+    post_successors = {
+        serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()
+    }
+    post_successors.update(
+        {10: (target_10,), 11: (target_11,), 12: (102,), 13: (target_13,)}
+    )
+    if internal_goto_alias:
+        post_successors[14] = (101,)
+    producer_post_graph = _replace_observed_edges(pre_graph, post_successors)
+    proof = build_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=producer_post_graph,
+        coverage=coverage,
+        dispatcher_entry_serial=50,
+        authoritative_handler_serials=frozenset(
+            {100, 101, 102, 103, 104, 105}
+        ),
+        dispatcher_region_serials=frozenset({50, 51}),
+        producer_safety=_executed_fragment_safety(),
+        state_plumbing_serials=frozenset({30, 31, 32}),
+    )
+    post_graph = (
+        _replace_observed_edges(
+            producer_post_graph,
+            {
+                serial: ((100,) if serial == 91 else tuple(block.succs))
+                for serial, block in producer_post_graph.blocks.items()
+            },
+        )
+        if observed_discards_exact_effect
+        else producer_post_graph
+    )
+    return pre_graph, post_graph, coverage, proof
+
+
+def test_partitioned_state_transition_retirement_routes_actual_comparison_entries() -> None:
+    pre_graph, post_graph, coverage, proof = (
+        _partitioned_state_transition_retirement_fixture()
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "state_transition_plumbing_retirement"
+    payload = validation.to_payload()["state_transition_plumbing_retirement"]
+    assert {
+        (route["source"]["serial"], route["routed_handler"]["serial"])
+        for route in payload["routes"]
+    } == {(10, 100), (11, 101), (12, 102), (13, 104)}
+    assert {
+        (item["role"], item["anchor"]["serial"])
+        for item in payload["retired_state_plumbing"]
+    } == {
+        ("dispatcher_state_writer", 30),
+        ("dispatcher_state_writer", 31),
+        ("dispatcher_state_writer", 32),
+        ("state_comparison_corridor", 70),
+        ("state_comparison_corridor", 71),
+        ("state_comparison_corridor", 72),
+    }
+    route_paths = {
+        route["source"]["serial"]: tuple(
+            anchor["serial"] for anchor in route["path"]
+        )
+        for route in payload["routes"]
+    }
+    assert route_paths[10] == (30, 50)
+    assert route_paths[11] == (31, 51)
+    assert route_paths[12] == (32, 70, 71)
+    assert route_paths[13] == (32, 70, 72)
+
+
+def test_partitioned_retirement_accepts_only_bound_exact_effect_loss() -> None:
+    pre_graph, observed_graph, coverage, proof = (
+        _partitioned_state_transition_retirement_fixture(
+            observed_discards_exact_effect=True
+        )
+    )
+    metadata = {
+        "dispatcher_corridor_coverage": coverage.to_metadata(),
+        "dispatcher_removal_preflight_proof": proof.to_metadata(),
+    }
+
+    without_bound_exclusion = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=observed_graph,
+        plan_metadata=metadata,
+    )
+    with_bound_exclusion = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=observed_graph,
+        plan_metadata=metadata,
+        validated_exact_effect_exclusion_serials=frozenset({92}),
+    )
+
+    assert not without_bound_exclusion.passed
+    assert with_bound_exclusion.passed
+    assert with_bound_exclusion.reason == "state_transition_plumbing_retirement"
+    assert with_bound_exclusion.proof is not None
+    assert 92 in with_bound_exclusion.proof.lost_blocks
+
+
+def test_partitioned_state_transition_retirement_reuses_current_decision_forest() -> None:
+    """A state-writing handler leaf must not invalidate the comparison DAG."""
+
+    pre_graph, post_graph, coverage, proof = (
+        _partitioned_state_transition_retirement_fixture(
+            state_carrier_handler_leaf=True
+        )
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "state_transition_plumbing_retirement"
+    payload = validation.to_payload()["state_transition_plumbing_retirement"]
+    assert {
+        (route["source"]["serial"], route["routed_handler"]["serial"])
+        for route in payload["routes"]
+    } == {(10, 100), (11, 101), (12, 102), (13, 104)}
+
+
+def test_partitioned_state_transition_retirement_excludes_live_foreign_secondary_forest() -> None:
+    """A live foreign-state forest must not enlarge retired U32 comparisons."""
+
+    pre_graph, post_graph, coverage, proof = (
+        _partitioned_state_transition_retirement_fixture(
+            secondary_foreign_comparison_leaf=True
+        )
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "state_transition_plumbing_retirement"
+    payload = validation.to_payload()["state_transition_plumbing_retirement"]
+    retired = {
+        item["anchor"]["serial"] for item in payload["retired_state_plumbing"]
+    }
+    assert retired == {30, 31, 32, 70, 71, 72}
+    assert 107 not in retired
+
+
+def test_partitioned_state_transition_retirement_routes_post_intermediate_forest() -> None:
+    """A replacement comparison must replay to the same exact handler."""
+
+    pre_graph, post_graph, coverage, proof = (
+        _partitioned_state_transition_retirement_fixture(
+            intermediate_post_route=True
+        )
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "state_transition_plumbing_retirement"
+    payload = validation.to_payload()["state_transition_plumbing_retirement"]
+    source_route = next(
+        route for route in payload["routes"] if route["source"]["serial"] == 10
+    )
+    assert source_route["routed_handler"]["serial"] == 100
+
+
+def test_partitioned_state_transition_retirement_preserves_same_semantic_endpoint() -> None:
+    """An exact bypass may retain the same live non-dispatcher continuation."""
+
+    pre_graph, post_graph, coverage, proof = (
+        _partitioned_state_transition_retirement_fixture(
+            same_nonhandler_endpoint=True
+        )
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "state_transition_plumbing_retirement"
+    payload = validation.to_payload()["state_transition_plumbing_retirement"]
+    source_route = next(
+        route for route in payload["routes"] if route["source"]["serial"] == 10
+    )
+    assert source_route["routed_handler"]["serial"] == 80
+
+
+def test_partitioned_state_transition_retirement_rejects_post_intermediate_drift() -> None:
+    pre_graph, post_graph, coverage, proof = (
+        _partitioned_state_transition_retirement_fixture(
+            intermediate_post_route=True,
+            mismatched_intermediate_post_route=True,
+        )
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+    assert validation.reason == "dispatcher_removal_proof_drift"
+
+
+def test_partitioned_state_transition_retirement_routes_through_goto_alias() -> None:
+    pre_graph, post_graph, coverage, proof = (
+        _partitioned_state_transition_retirement_fixture(internal_goto_alias=True)
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "state_transition_plumbing_retirement"
+    payload = validation.to_payload()["state_transition_plumbing_retirement"]
+    route = next(
+        item for item in payload["routes"] if item["source"]["serial"] == 14
+    )
+    assert tuple(anchor["serial"] for anchor in route["path"]) == (
+        33,
+        50,
+        60,
+        51,
+    )
+
+
+def test_partitioned_state_transition_retirement_rejects_effectful_goto_alias() -> None:
+    pre_graph, post_graph, coverage, proof = (
+        _partitioned_state_transition_retirement_fixture(
+            internal_goto_alias=True,
+            effectful_internal_alias=True,
+        )
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+    assert validation.reason == "dispatcher_removal_proof_drift"
+
+
+@pytest.mark.parametrize(
+    "fixture_overrides",
+    (
+        {"mismatched_internal_target": True},
+        {"mismatched_secondary_target": True},
+        {"effectful_secondary_comparison": True},
+    ),
+)
+def test_partitioned_state_transition_retirement_rejects_inexact_routes(
+    fixture_overrides: dict[str, bool],
+) -> None:
+    pre_graph, post_graph, coverage, proof = (
+        _partitioned_state_transition_retirement_fixture(**fixture_overrides)
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+    assert validation.reason == "dispatcher_removal_proof_drift"
+    assert validation.proof is not None
+    assert validation.proof.reason == "untyped_lost_block"
+
 def test_applied_normalizer_observation_projects_observed_verdict() -> None:
     pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture()
     validation = validate_dispatcher_removal_preflight_proof(
@@ -1493,7 +2518,7 @@ def test_applied_normalizer_observation_projects_observed_verdict() -> None:
     assert payload["producer_reason"] == "authoritative_handler_lost"
 
 
-@pytest.mark.parametrize("application_status", ("applied", "pending", "failed"))
+@pytest.mark.parametrize("application_status", ("pending", "failed"))
 def test_unobserved_normalizer_projection_keeps_producer_verdict(
     application_status: str,
 ) -> None:
@@ -1517,6 +2542,25 @@ def test_unobserved_normalizer_projection_keeps_producer_verdict(
     assert payload["reason"] == "authoritative_handler_lost"
     assert "producer_proof_status" not in payload
     assert "producer_reason" not in payload
+
+
+def test_applied_unobserved_proof_does_not_claim_applied_removal() -> None:
+    _, _, coverage, proof = _interval_state_normalizer_fixture()
+    projected_validation = DispatcherRemovalPreflightValidation(
+        passed=True,
+        reason="projected_only_normalizer_retirement",
+    )
+
+    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
+        proof.to_metadata(),
+        coverage_metadata=coverage.to_metadata(),
+        maturity="MMAT_GLBOPT1",
+        phase="patch_transaction",
+        application_status="applied",
+        projected_validation=projected_validation,
+    )
+
+    assert observations == ()
 
 
 def test_pending_observed_acceptance_keeps_producer_verdict() -> None:

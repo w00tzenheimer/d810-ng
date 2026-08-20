@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+from collections.abc import Callable
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -22,7 +23,9 @@ from d810.ir.insn_projection import (
     operand_kinds,
     operand_stack_offsets,
     operand_storages,
+    project_instruction_sequence,
 )
+from d810.ir.instructions import Instruction
 from d810.ir.results import ConstantFixpointResult
 from d810.ir.storage_identity import (
     StorageIdentity,
@@ -655,6 +658,87 @@ def _eval_insn_view_snapshot(insn: InsnSnapshot) -> InsnSnapshot:
     return insn
 
 
+@dataclass(frozen=True, slots=True)
+class _ProjectedSnapshotProgram:
+    """Canonical program bound to the exact immutable source snapshot."""
+
+    source: InsnSnapshot
+    instructions: tuple[Instruction, ...]
+
+
+class _SnapshotProjectionCache:
+    """Invocation-local snapshot projection reuse.
+
+    Only immutable canonical instruction tuples are reused.  Transfer results
+    and constant maps remain path-local and are recomputed for every visit.
+    """
+
+    __slots__ = ("_entries",)
+
+    def __init__(self) -> None:
+        self._entries: dict[int, _ProjectedSnapshotProgram] = {}
+
+    def instructions_for(self, snapshot: InsnSnapshot) -> tuple[Instruction, ...]:
+        if not isinstance(snapshot, InsnSnapshot):
+            raise TypeError("snapshot projection cache requires InsnSnapshot input")
+
+        key = id(snapshot)
+        entry = self._entries.get(key)
+        if entry is not None:
+            if entry.source is not snapshot:
+                raise RuntimeError("snapshot projection cache identity collision")
+            self._validate(entry)
+            return entry.instructions
+
+        instructions = project_instruction_sequence(snapshot)
+        entry = _ProjectedSnapshotProgram(
+            source=snapshot,
+            instructions=instructions,
+        )
+        self._validate(entry)
+        self._entries[key] = entry
+        return entry.instructions
+
+    @staticmethod
+    def _validate(entry: _ProjectedSnapshotProgram) -> None:
+        if not isinstance(entry.source, InsnSnapshot):
+            raise TypeError("snapshot projection cache has malformed source")
+        if not isinstance(entry.instructions, tuple) or not entry.instructions:
+            raise TypeError("snapshot projection cache has malformed program")
+        if not all(isinstance(insn, Instruction) for insn in entry.instructions):
+            raise TypeError("snapshot projection cache has non-canonical instruction")
+
+
+def _forward_eval_projected_snapshot(
+    snapshot: InsnSnapshot,
+    stk_map: dict[int, int],
+    reg_map: dict[int, int],
+    state_var_stkoff: int,
+    *,
+    projection_cache: _SnapshotProjectionCache,
+    mba: object | None = None,
+    state_var_gaddr: int | None = None,
+    foldable_global_reads: object | None = None,
+) -> int | None:
+    """Evaluate a cached canonical program against the caller's own maps."""
+
+    resolved_state: int | None = None
+    for instruction in projection_cache.instructions_for(snapshot):
+        resolved = _forward_eval_insn(
+            instruction,
+            stk_map,
+            reg_map,
+            state_var_stkoff,
+            mba=mba,
+            state_var_lvar_idx=None,
+            state_var_gaddr=state_var_gaddr,
+            foldable_global_reads=foldable_global_reads,
+        )
+        if resolved is not None:
+            resolved_state = int(resolved)
+    return resolved_state
+
+
 def _classify_truncation_side_effect_snapshot(
     insn: InsnSnapshot,
     *,
@@ -711,6 +795,7 @@ def _transfer_snapshot_constant_block(
     *,
     state_var_gaddr: int | None = None,
     foldable_global_reads: object | None = None,
+    _projection_cache: _SnapshotProjectionCache | None = None,
 ) -> tuple[dict[int, int], dict[int, int]]:
     """Propagate exact stack/register constants through one snapshot block.
 
@@ -724,6 +809,7 @@ def _transfer_snapshot_constant_block(
 
     stk_map = dict(in_stk_map)
     reg_map = dict(in_reg_map)
+    projection_cache = _projection_cache or _SnapshotProjectionCache()
     for insn in block.insn_snapshots:
         eval_insn = _eval_insn_view_snapshot(insn)
         dest_locator = _constant_dest_locator_snapshot(eval_insn)
@@ -731,13 +817,13 @@ def _transfer_snapshot_constant_block(
         if dest_locator is not None:
             kind, ident = dest_locator
             old_dest_value = stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
-        resolved = _forward_eval_insn(
+        resolved = _forward_eval_projected_snapshot(
             eval_insn,
             stk_map,
             reg_map,
             state_var_stkoff,
+            projection_cache=projection_cache,
             mba=None,
-            state_var_lvar_idx=None,
             state_var_gaddr=state_var_gaddr,
             foldable_global_reads=foldable_global_reads,
         )
@@ -877,6 +963,7 @@ def find_state_write_sites_snapshot(
     *,
     initial_stk_map: dict[int, int] | None = None,
     initial_reg_map: dict[int, int] | None = None,
+    _projection_cache: _SnapshotProjectionCache | None = None,
 ) -> tuple[StateWriteSite, ...]:
     """Return all resolved state-variable write sites in one snapshot block.
 
@@ -893,6 +980,7 @@ def find_state_write_sites_snapshot(
     reg_map: dict[int, int] = dict(initial_reg_map or {})
     sites: list[StateWriteSite] = []
     instructions = tuple(block.insn_snapshots)
+    projection_cache = _projection_cache or _SnapshotProjectionCache()
 
     for index, insn in enumerate(instructions):
         eval_insn = _eval_insn_view_snapshot(insn)
@@ -901,13 +989,13 @@ def find_state_write_sites_snapshot(
         if dest_locator is not None:
             kind, ident = dest_locator
             old_dest_value = stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
-        resolved_state = _forward_eval_insn(
+        resolved_state = _forward_eval_projected_snapshot(
             eval_insn,
             stk_map,
             reg_map,
             state_var_stkoff,
+            projection_cache=projection_cache,
             mba=None,
-            state_var_lvar_idx=None,
         )
         if resolved_state is None:
             if dest_locator is None:
@@ -956,6 +1044,7 @@ def find_last_state_write_site_snapshot(
     *,
     initial_stk_map: dict[int, int] | None = None,
     initial_reg_map: dict[int, int] | None = None,
+    _projection_cache: _SnapshotProjectionCache | None = None,
 ) -> StateWriteSite | None:
     """Return the last resolved state write in one snapshot block, if any."""
 
@@ -965,6 +1054,7 @@ def find_last_state_write_site_snapshot(
         state_var_stkoff,
         initial_stk_map=initial_stk_map,
         initial_reg_map=initial_reg_map,
+        _projection_cache=_projection_cache,
     )
     return sites[-1] if sites else None
 
@@ -976,6 +1066,7 @@ def find_last_state_write_site_on_path_snapshot(
     *,
     in_stk_maps: dict[int, dict[int, int]] | None = None,
     in_reg_maps: dict[int, dict[int, int]] | None = None,
+    _projection_cache: _SnapshotProjectionCache | None = None,
 ) -> tuple[int, StateWriteSite] | None:
     """Return the deepest resolved state write while walking one concrete path.
 
@@ -993,6 +1084,7 @@ def find_last_state_write_site_on_path_snapshot(
     stk_map = dict((in_stk_maps or {}).get(entry_serial, {}))
     reg_map = dict((in_reg_maps or {}).get(entry_serial, {}))
     last_site: tuple[int, StateWriteSite] | None = None
+    projection_cache = _projection_cache or _SnapshotProjectionCache()
 
     for block_serial in path:
         block = flow_graph.get_block(block_serial)
@@ -1005,6 +1097,7 @@ def find_last_state_write_site_on_path_snapshot(
             state_var_stkoff,
             initial_stk_map=stk_map,
             initial_reg_map=reg_map,
+            _projection_cache=projection_cache,
         )
         if site is not None:
             last_site = (int(block_serial), site)
@@ -1014,6 +1107,7 @@ def find_last_state_write_site_on_path_snapshot(
             stk_map,
             reg_map,
             state_var_stkoff,
+            _projection_cache=projection_cache,
         )
 
     return last_site
@@ -1623,6 +1717,7 @@ def evaluate_handler_paths(
     state_machine_blocks: "set[int] | None" = None,
     use_snapshot_state_writes: bool = True,
     classify_condition_chain_exits: bool = True,
+    _path_state_work_consumer: Callable[[], None] | None = None,
 ) -> list[HandlerPathResult]:
     """DFS forward eval of a handler, forking state at conditional branches.
 
@@ -1630,9 +1725,15 @@ def evaluate_handler_paths(
     *state_machine_blocks* are provided, exits whose resolved condition-chain target
     lands outside the state machine and can reach a return are emitted as
     **terminal** paths (``final_state=None``) rather than state handoffs.
+
+    ``_path_state_work_consumer`` is a diagnostics-only liveness seam.  When
+    supplied, it is invoked immediately before every DFS queue pop; any
+    exception propagates unchanged.  The default leaves all analysis and
+    planning callers byte-identical.
     """
 
     results: list[HandlerPathResult] = []
+    projection_cache = _SnapshotProjectionCache()
     queue: list[tuple[int, dict, dict, frozenset, list, list]] = [
         (
             entry_serial,
@@ -1652,6 +1753,8 @@ def evaluate_handler_paths(
     mba_qty = _mba_block_count(mba)
 
     while queue:
+        if _path_state_work_consumer is not None:
+            _path_state_work_consumer()
         curr_serial, reg_map, stk_map, path_visited, state_writes, ordered_path = (
             queue.pop()
         )
@@ -1668,13 +1771,23 @@ def evaluate_handler_paths(
         cur_writes = list(state_writes)
         for insn in _iter_block_insns(blk):
             old_val = stk_map.get(state_var_stkoff)
-            _forward_eval_insn(
-                insn,
-                stk_map,
-                reg_map,
-                state_var_stkoff,
-                mba=mba,
-            )
+            if isinstance(insn, InsnSnapshot):
+                _forward_eval_projected_snapshot(
+                    insn,
+                    stk_map,
+                    reg_map,
+                    state_var_stkoff,
+                    projection_cache=projection_cache,
+                    mba=mba,
+                )
+            else:
+                _forward_eval_insn(
+                    insn,
+                    stk_map,
+                    reg_map,
+                    state_var_stkoff,
+                    mba=mba,
+                )
             new_val = stk_map.get(state_var_stkoff)
             if new_val != old_val:
                 cur_writes.append((curr_serial, insn.ea))
@@ -1713,6 +1826,7 @@ def evaluate_handler_paths(
                         flow_graph,
                         ordered_path,
                         state_var_stkoff,
+                        _projection_cache=projection_cache,
                     )
                     if resolved is not None:
                         write_blk, site = resolved

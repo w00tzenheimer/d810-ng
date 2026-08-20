@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.core.typing import Mapping, Optional, Tuple
+from d810.core.typing import Mapping, Tuple
 from d810.analyses.abstract_domains.interval_set import Interval, IntervalSet
 
 __all__ = [
@@ -153,10 +153,31 @@ class DecisionDag:
     serial referenced as a target but absent from *nodes* is a leaf handler.
     """
 
-    def __init__(self, width: int, nodes: Mapping[int, RouteComparison], root: int):
+    def __init__(
+        self,
+        width: int,
+        nodes: Mapping[int, RouteComparison],
+        root: int,
+        *,
+        aliases: Mapping[int, int] | None = None,
+    ):
         self.width = int(width)
         self.nodes: dict[int, RouteComparison] = dict(nodes)
         self.root = int(root)
+        self.aliases: dict[int, int] = {
+            int(source): int(target)
+            for source, target in ({} if aliases is None else aliases).items()
+        }
+        if set(self.aliases) & set(self.nodes):
+            raise ValueError("DecisionDag alias cannot also be a comparison node")
+        for source in self.aliases:
+            seen: set[int] = set()
+            current = int(source)
+            while current in self.aliases:
+                if current in seen:
+                    raise ValueError("DecisionDag aliases must be acyclic")
+                seen.add(current)
+                current = int(self.aliases[current])
 
     def route(self, state: int) -> int:
         """Follow the single feasible branch for a concrete *state* to its leaf."""
@@ -173,8 +194,13 @@ class DecisionDag:
         """
         cur = int(root)
         seen: set[int] = set()
-        while cur in self.nodes and cur not in seen:
+        while cur not in seen:
             seen.add(cur)
+            if cur in self.aliases:
+                cur = int(self.aliases[cur])
+                continue
+            if cur not in self.nodes:
+                break
             node = self.nodes[cur]
             took = _evaluate(node.op, state, node.const, self.width)
             cur = node.true_target if took else node.false_target
@@ -191,7 +217,20 @@ class DecisionDag:
         stack = [(self.root, IntervalSet.universe(self.width), (), frozenset())]
         while stack:
             cur, dom, path, seen = stack.pop()
-            if cur not in self.nodes or cur in seen:
+            if cur in seen:
+                out.append(ResolvedPath(dom, cur, path))
+                continue
+            if cur in self.aliases:
+                stack.append(
+                    (
+                        int(self.aliases[cur]),
+                        dom,
+                        path + (cur,),
+                        seen | {cur},
+                    )
+                )
+                continue
+            if cur not in self.nodes:
                 out.append(ResolvedPath(dom, cur, path))
                 continue
             node = self.nodes[cur]
@@ -224,8 +263,4 @@ class DecisionDag:
 
     def leaves(self) -> "frozenset[int]":
         """All leaf (handler) targets -- referenced as a target but not a node."""
-        targets: set[int] = set()
-        for node in self.nodes.values():
-            targets.add(node.true_target)
-            targets.add(node.false_target)
-        return frozenset(t for t in targets if t not in self.nodes)
+        return frozenset(int(path.target) for path in self.resolve_paths())

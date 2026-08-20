@@ -970,6 +970,7 @@ class _FakeDeferredGraphModifier:
         via_pred: int,
         clone_until: int | None = None,
         source_new_target: int | None = None,
+        clone_expected_serials: tuple[int, ...] | None = None,
         rule_priority: int,
         description: str = "",
     ) -> None:
@@ -982,6 +983,7 @@ class _FakeDeferredGraphModifier:
                 via_pred,
                 clone_until,
                 source_new_target,
+                clone_expected_serials,
                 rule_priority,
                 description,
             )
@@ -1485,6 +1487,12 @@ class TestIDAIntegration:
             pytest.skip("No 1-way edge available for InsertBlock runtime test")
 
         pred_serial, succ_serial = edge
+        source_succ = mba.get_mblock(succ_serial)
+        source_succ_is_stop = (
+            source_succ is not None
+            and succ_serial == int(mba.qty) - 1
+            and source_succ.type == ida_hexrays.BLT_STOP
+        )
         backend = IDAIRTranslator()
         gateway = make_mutation_gateway(mba)
         patch_plan = _compile_for_gateway(
@@ -1519,7 +1527,8 @@ class TestIDAIntegration:
         inserted_blk = mba.get_mblock(inserted_serial)
         assert inserted_blk is not None
         assert inserted_blk.nsucc() == 1
-        assert inserted_blk.succ(0) == succ_serial
+        expected_successor = int(mba.qty) - 1 if source_succ_is_stop else succ_serial
+        assert inserted_blk.succ(0) == expected_successor
 
     def test_fallthrough_redirect_publishes_typed_helper_receipt(
         self,
@@ -1812,7 +1821,20 @@ class TestIDAIntegration:
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "edge_redirect"
-        assert created[0].calls[0][1:8] == (45, 46, 2, 44, 46, None, 550)
+        step = patch_plan.steps[0]
+        expected_clones = tuple(
+            created[0].bound_plan.serial_for(ref) for ref in step.clone_block_ids
+        )
+        assert created[0].calls[0][1:9] == (
+            45,
+            46,
+            2,
+            44,
+            46,
+            None,
+            expected_clones,
+            550,
+        )
 
     def test_compile_insert_requires_exact_source_graph(
         self,

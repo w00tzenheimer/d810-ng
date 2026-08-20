@@ -177,6 +177,30 @@ class AnalysisManager:
         for name in contract_evidence_tokens(observation):
             self.put_evidence(name, observation)
 
+    def put_observation_evidence_batch(
+        self,
+        observations: tuple[object, ...],
+    ) -> None:
+        """Publish one observation batch with invocation-local key reuse.
+
+        Retention keys are deliberately scoped to this synchronous call. A
+        later publication recomputes them from the then-current payloads, so
+        mutable compatibility observations retain their historical behavior.
+        Contract evidence is indexed for every incoming row, including rows
+        whose retention identity duplicates an earlier row in the batch.
+        """
+        seen = {
+            self._observation_retention_key(observation)
+            for observation in self._session_observations
+        }
+        for observation in observations:
+            key = self._observation_retention_key(observation)
+            if key not in seen:
+                self._session_observations.append(observation)
+                seen.add(key)
+            for name in contract_evidence_tokens(observation):
+                self.put_evidence(name, observation)
+
     def get_evidence(self, name: str, default: object = None) -> object:
         """Return evidence named ``name`` from published evidence or live observations."""
         canonical_name = resolve_contract_name(str(name))

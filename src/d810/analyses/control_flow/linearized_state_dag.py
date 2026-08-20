@@ -11,7 +11,7 @@ import re
 from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind
 from d810.core import logging
 from d810.core.typing import Callable, Mapping
-from d810.analyses.control_flow.interval_map import IntervalDispatcher
+from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     build_partition,
     intervals_from_range_map,
@@ -90,6 +90,46 @@ _PRESERVE_EXACT_SIDE_EFFECT_CORRIDORS_ENV = (
 _SIDE_EFFECT_INSN_KINDS = frozenset({InsnKind.STORE, InsnKind.CALL})
 _SIDE_EFFECT_KIND_VALUES = frozenset(kind.value for kind in _SIDE_EFFECT_INSN_KINDS)
 _HYBRID_CORRIDOR_EXPANSION_BUDGET = 50_000
+
+
+class LiveDagDiagnosticWorkBudgetExhausted(BaseException):
+    """Stop a diagnostics-only live-DAG build at a deterministic work boundary."""
+
+    def __init__(self, *, limit: int, consumed: int, phase: str) -> None:
+        super().__init__(
+            "live DAG diagnostic work budget exhausted: "
+            f"limit={limit} consumed={consumed} phase={phase}"
+        )
+        self.limit = int(limit)
+        self.consumed = int(consumed)
+        self.phase = str(phase)
+
+
+@dataclass(slots=True)
+class LiveDagDiagnosticWorkBudget:
+    """Invocation-local semantic-work budget for diagnostic DAG enrichment."""
+
+    limit: int
+    consumed: int = 0
+    phase: str = "not_started"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.limit, bool) or not isinstance(self.limit, int):
+            raise TypeError("live DAG diagnostic work budget must be an integer")
+        if self.limit < 0:
+            raise ValueError("live DAG diagnostic work budget must be non-negative")
+        if self.consumed != 0:
+            raise ValueError("live DAG diagnostic work budget must start fresh")
+
+    def consume(self, phase: str) -> None:
+        self.phase = str(phase)
+        if self.consumed >= self.limit:
+            raise LiveDagDiagnosticWorkBudgetExhausted(
+                limit=self.limit,
+                consumed=self.consumed,
+                phase=self.phase,
+            )
+        self.consumed += 1
 
 
 def _preserve_exact_side_effect_corridors_gate() -> bool:
@@ -4674,14 +4714,10 @@ def _discover_supplemental_states(
     mba: object | None = None,
     state_var_stkoff: int | None = None,
     prefer_local_corridors: bool = False,
+    diagnostics_work_budget: LiveDagDiagnosticWorkBudget | None = None,
 ) -> tuple[set[int], dict[int, set[int]], dict[int, set[tuple[int, int]]]]:
     existing_states = {
         row.state_const & 0xFFFFFFFF
-        for row in report.rows
-        if row.state_const is not None
-    }
-    exact_state_to_handler = {
-        row.state_const: row.handler_serial
         for row in report.rows
         if row.state_const is not None
     }
@@ -4994,6 +5030,10 @@ def _discover_supplemental_states(
                         handoff_paths: tuple[HandlerPathResult, ...] = ()
                         handoff_final_states: set[int] = set()
                         if resolved is not None:
+                            if diagnostics_work_budget is not None:
+                                diagnostics_work_budget.consume(
+                                    "supplemental_transient_handoff"
+                                )
                             handoff_paths = tuple(
                                 evaluate_handler_paths(
                                     flow_graph,
@@ -5010,6 +5050,13 @@ def _discover_supplemental_states(
                                     state_machine_blocks=(
                                         set(condition_chain_block_set)
                                         | handler_entry_blocks
+                                    ),
+                                    _path_state_work_consumer=(
+                                        None
+                                        if diagnostics_work_budget is None
+                                        else lambda: diagnostics_work_budget.consume(
+                                            "supplemental_transient_handoff_path_state"
+                                        )
                                     ),
                                 )
                             )
@@ -5276,6 +5323,7 @@ def build_live_linearized_state_dag_from_graph(
     prefer_local_corridors: bool = False,
     return_frontier_artifact_priors: ReturnFrontierArtifactPriors | None = None,
     corrected_dag_out: list | None = None,
+    diagnostics_work_budget: LiveDagDiagnosticWorkBudget | None = None,
 ) -> LinearizedStateDag:
     "Build a live DAG from graph-backed analysis inputs.\n\n    When *corrected_dag_out* is a list, a second DAG is built after the\n    supplemental loop with dispatcher-validated supplemental anchors and\n    appended to it.  The returned DAG uses the original (possibly stale)\n    supplemental anchors \u2014 callers can use it for phase-1 corridor emission\n    (preserving baseline redirect targets) and switch to the corrected DAG\n    for late phases only.\n\n    This is the shared semantic-graph builder for both preanalysis dumping and\n    strategy planning. When ``mba`` and ``state_var_stkoff`` are available,\n    it enriches the base transition report with path-evaluated conditional and\n    fallback states before materializing the DAG.\n"
 
@@ -5429,6 +5477,8 @@ def build_live_linearized_state_dag_from_graph(
                 else None
             )
             if exact_anchor is not None and exact_anchor != row.handler_serial:
+                if diagnostics_work_budget is not None:
+                    diagnostics_work_budget.consume("base_exact_anchor")
                 exact_paths = tuple(
                     evaluate_handler_paths(
                         flow_graph,
@@ -5441,11 +5491,20 @@ def build_live_linearized_state_dag_from_graph(
                         known_handler_states=real_handler_states,
                         dispatcher_root_serial=_dispatcher_root,
                         state_machine_blocks=_sm_blocks,
+                        _path_state_work_consumer=(
+                            None
+                            if diagnostics_work_budget is None
+                            else lambda: diagnostics_work_budget.consume(
+                                "base_exact_anchor_path_state"
+                            )
+                        ),
                     )
                 )
                 if exact_paths:
                     analysis_anchor = exact_anchor
 
+        if diagnostics_work_budget is not None:
+            diagnostics_work_budget.consume("base_handler_path")
         paths = tuple(
             evaluate_handler_paths(
                 flow_graph,
@@ -5458,6 +5517,13 @@ def build_live_linearized_state_dag_from_graph(
                 known_handler_states=real_handler_states,
                 dispatcher_root_serial=_dispatcher_root,
                 state_machine_blocks=_sm_blocks,
+                _path_state_work_consumer=(
+                    None
+                    if diagnostics_work_budget is None
+                    else lambda: diagnostics_work_budget.consume(
+                        "base_handler_path_state"
+                    )
+                ),
             )
         )
         handler_paths_by_handler[row.handler_serial] = paths
@@ -5613,6 +5679,7 @@ def build_live_linearized_state_dag_from_graph(
             mba=mba,
             state_var_stkoff=state_var_stkoff,
             prefer_local_corridors=prefer_local_corridors,
+            diagnostics_work_budget=diagnostics_work_budget,
         )
         suppressed_target_states.update(
             int(state) & 0xFFFFFFFF for state in discovered_transient_states
@@ -5867,6 +5934,8 @@ def build_live_linearized_state_dag_from_graph(
                     | None
                 ) = None
                 for candidate_anchor in sorted(candidate_anchor_set):
+                    if diagnostics_work_budget is not None:
+                        diagnostics_work_budget.consume("supplemental_candidate")
                     candidate_paths = tuple(
                         evaluate_handler_paths(
                             flow_graph,
@@ -5882,6 +5951,13 @@ def build_live_linearized_state_dag_from_graph(
                             dispatcher_root_serial=_dispatcher_root,
                             state_machine_blocks=(
                                 set(condition_chain_block_set) | handler_entry_blocks
+                            ),
+                            _path_state_work_consumer=(
+                                None
+                                if diagnostics_work_budget is None
+                                else lambda: diagnostics_work_budget.consume(
+                                    "supplemental_candidate_path_state"
+                                )
                             ),
                         )
                     )
@@ -6108,6 +6184,8 @@ def build_live_linearized_state_dag_from_graph(
             if not prefer_local_corridors and len(anchor_candidates) == 1:
                 candidate_anchor = next(iter(anchor_candidates))
                 if candidate_anchor not in condition_chain_block_set:
+                    if diagnostics_work_budget is not None:
+                        diagnostics_work_budget.consume("supplemental_single_anchor")
                     candidate_paths = tuple(
                         evaluate_handler_paths(
                             flow_graph,
@@ -6123,6 +6201,13 @@ def build_live_linearized_state_dag_from_graph(
                             dispatcher_root_serial=_dispatcher_root,
                             state_machine_blocks=(
                                 set(condition_chain_block_set) | handler_entry_blocks
+                            ),
+                            _path_state_work_consumer=(
+                                None
+                                if diagnostics_work_budget is None
+                                else lambda: diagnostics_work_budget.consume(
+                                    "supplemental_single_anchor_path_state"
+                                )
                             ),
                         )
                     )
@@ -6355,6 +6440,8 @@ def build_live_linearized_state_dag_from_graph(
                 next_state = base_row.next_state if base_row is not None else None
                 chain = base_row.chain_preview if base_row is not None else (anchor,)
             else:
+                if diagnostics_work_budget is not None:
+                    diagnostics_work_budget.consume("supplemental_selected_fallback")
                 paths = tuple(
                     evaluate_handler_paths(
                         flow_graph,
@@ -6371,6 +6458,13 @@ def build_live_linearized_state_dag_from_graph(
                         state_machine_blocks=(
                             set(report_with_supplemental.condition_chain_blocks)
                             | handler_entry_blocks
+                        ),
+                        _path_state_work_consumer=(
+                            None
+                            if diagnostics_work_budget is None
+                            else lambda: diagnostics_work_budget.consume(
+                                "supplemental_selected_fallback_path_state"
+                            )
                         ),
                     )
                 )

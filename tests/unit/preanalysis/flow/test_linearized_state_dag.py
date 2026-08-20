@@ -91,6 +91,50 @@ def test_linearized_state_dag_does_not_import_live_hexrays() -> None:
     assert "import ida_hexrays" not in inspect.getsource(linearized_state_dag)
 
 
+def test_live_dag_diagnostic_work_budget_stops_before_attempt_after_limit() -> None:
+    assert hasattr(linearized_state_dag, "LiveDagDiagnosticWorkBudget")
+    budget = linearized_state_dag.LiveDagDiagnosticWorkBudget(limit=2)
+
+    budget.consume("base_handler_path")
+    budget.consume("supplemental_candidate")
+
+    with pytest.raises(
+        linearized_state_dag.LiveDagDiagnosticWorkBudgetExhausted
+    ) as exc_info:
+        budget.consume("supplemental_candidate")
+
+    assert budget.consumed == 2
+    assert exc_info.value.limit == 2
+    assert exc_info.value.consumed == 2
+    assert exc_info.value.phase == "supplemental_candidate"
+    assert not isinstance(exc_info.value, Exception)
+
+
+@pytest.mark.parametrize(("limit", "successful_attempts"), ((0, 0), (1, 1)))
+def test_live_dag_diagnostic_work_budget_zero_and_one_edges(
+    limit: int,
+    successful_attempts: int,
+) -> None:
+    budget = linearized_state_dag.LiveDagDiagnosticWorkBudget(limit=limit)
+
+    for _ in range(successful_attempts):
+        budget.consume("base_handler_path")
+
+    with pytest.raises(
+        linearized_state_dag.LiveDagDiagnosticWorkBudgetExhausted
+    ) as exc_info:
+        budget.consume("base_handler_path")
+
+    assert budget.consumed == limit
+    assert exc_info.value.consumed == limit
+
+
+@pytest.mark.parametrize("limit", (-1, True))
+def test_live_dag_diagnostic_work_budget_rejects_invalid_limit(limit: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        linearized_state_dag.LiveDagDiagnosticWorkBudget(limit=limit)  # type: ignore[arg-type]
+
+
 def test_side_effect_detection_uses_portable_instruction_kind() -> None:
     block = BlockSnapshot(
         serial=1,
@@ -5467,8 +5511,14 @@ def test_alias_states_can_share_handler_anchor_and_inherit_edges() -> None:
     assert alias_outgoing.target_entry_anchor == 3
 
 
+@pytest.mark.parametrize(
+    ("budget_limit", "expected_exhaustion_phase"),
+    ((256, None), (13, "supplemental_candidate_path_state")),
+)
 def test_live_builder_iterates_supplemental_fallback_aliases(
     monkeypatch,
+    budget_limit: int,
+    expected_exhaustion_phase: str | None,
 ) -> None:
     from d810.analyses.control_flow import linearized_state_dag as dag_mod
 
@@ -5758,6 +5808,9 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
         handler_entry_blocks,
         **_kwargs,
     ) -> tuple[HandlerPathResult, ...]:
+        path_state_work_consumer = _kwargs["_path_state_work_consumer"]
+        if path_state_work_consumer is not None:
+            path_state_work_consumer()
         return fake_paths.get((handler_serial, incoming_state), ())
 
     monkeypatch.setattr(
@@ -5776,7 +5829,35 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
         lambda *args, **kwargs: (),
     )
 
+    budget = linearized_state_dag.LiveDagDiagnosticWorkBudget(limit=budget_limit)
+    build_kwargs = {
+        "dispatcher_entry_serial": 0,
+        "state_var_stkoff": 0x3C,
+        "mba": object(),
+        "prefer_local_corridors": True,
+        "diagnostics_work_budget": budget,
+    }
+    if expected_exhaustion_phase is not None:
+        with pytest.raises(
+            linearized_state_dag.LiveDagDiagnosticWorkBudgetExhausted
+        ) as exc_info:
+            build_live_linearized_state_dag_from_graph(
+                flow_graph,
+                transition_result,
+                **build_kwargs,
+            )
+        assert budget.consumed == budget_limit
+        assert exc_info.value.consumed == budget_limit
+        assert exc_info.value.phase == expected_exhaustion_phase
+        return
+
     dag = build_live_linearized_state_dag_from_graph(
+        flow_graph,
+        transition_result,
+        **build_kwargs,
+    )
+    assert 0 < budget.consumed < 256
+    unbudgeted_dag = build_live_linearized_state_dag_from_graph(
         flow_graph,
         transition_result,
         dispatcher_entry_serial=0,
@@ -5784,6 +5865,7 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
         mba=object(),
         prefer_local_corridors=True,
     )
+    assert dag == unbudgeted_dag
 
     present_states = {node.key.state_const for node in dag.nodes}
     assert 0x24E2E77A in present_states

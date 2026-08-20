@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from d810.analyses.control_flow.dispatcher_discovery_facts import (
     collect_state_dispatcher_discovery_fact_observations,
 )
@@ -13,6 +15,7 @@ from d810.analyses.control_flow.predecessor_dispatcher_target import (
     resolve_predecessor_dispatcher_target,
 )
 from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
+from d810.analyses.value_flow.observation import FactObservation
 from d810.capabilities.dispatcher import RouterKind
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.function_pass_manager import FunctionPassManager
@@ -379,6 +382,116 @@ def test_observation_evidence_retains_session_rows_across_graph_invalidation():
 
     assert am.session_observations == (observation,)
     assert am.retained_observations == (observation,)
+
+
+def test_observation_evidence_batch_retains_first_occurrence_and_indexes_all_rows():
+    payload = contract_evidence_payload("branch_targets")
+    first = FactObservation(
+        fact_id="fact-1",
+        kind="StateTransitionAnchorFact",
+        semantic_key="state-1",
+        maturity="MMAT_GLBOPT1",
+        phase="recover_state_transitions",
+        confidence=1.0,
+        payload=payload,
+    )
+    duplicate = FactObservation(
+        fact_id="fact-1",
+        kind="StateTransitionAnchorFact",
+        semantic_key="duplicate-semantic-key-is-not-retention-identity",
+        maturity="MMAT_GLBOPT1",
+        phase="recover_state_transitions",
+        confidence=0.5,
+        payload=payload,
+    )
+    second = FactObservation(
+        fact_id="fact-2",
+        kind="StateTransitionAnchorFact",
+        semantic_key="state-2",
+        maturity="MMAT_GLBOPT1",
+        phase="recover_state_transitions",
+        confidence=1.0,
+        payload=payload,
+    )
+    manager = AnalysisManager(graph="G0")
+
+    manager.put_observation_evidence_batch(
+        (first, duplicate, second, first),
+    )
+
+    assert manager.session_observations == (first, second)
+    assert manager.get_evidence("branch_targets") == (
+        first,
+        duplicate,
+        second,
+        first,
+    )
+
+
+def test_observation_evidence_batch_recomputes_keys_after_payload_mutation(
+    monkeypatch,
+):
+    observation = FactObservation(
+        fact_id="fact-1",
+        kind="StateTransitionAnchorFact",
+        semantic_key="state-1",
+        maturity="MMAT_GLBOPT1",
+        phase="recover_state_transitions",
+        confidence=1.0,
+        payload={"target": 1},
+    )
+    from d810.analyses.value_flow import observation as observation_module
+
+    calls = 0
+    real_canonical_json = observation_module.canonical_json
+
+    def counted_canonical_json(value):
+        nonlocal calls
+        if value is observation.payload:
+            calls += 1
+        return real_canonical_json(value)
+
+    monkeypatch.setattr(
+        observation_module,
+        "canonical_json",
+        counted_canonical_json,
+    )
+    manager = AnalysisManager(graph="G0")
+
+    manager.put_observation_evidence_batch((observation,))
+    assert calls == 1
+    observation.payload["target"] = 2
+    old_payload_row = FactObservation(
+        fact_id="fact-1",
+        kind="StateTransitionAnchorFact",
+        semantic_key="state-1-old-payload",
+        maturity="MMAT_GLBOPT1",
+        phase="recover_state_transitions",
+        confidence=1.0,
+        payload={"target": 1},
+    )
+    manager.put_observation_evidence_batch((old_payload_row,))
+
+    assert calls == 2
+    assert manager.session_observations == (observation, old_payload_row)
+
+
+def test_observation_evidence_batch_propagates_payload_serialization_error():
+    observation = FactObservation(
+        fact_id="fact-1",
+        kind="StateTransitionAnchorFact",
+        semantic_key="state-1",
+        maturity="MMAT_GLBOPT1",
+        phase="recover_state_transitions",
+        confidence=1.0,
+        payload={"not_json": object()},
+    )
+    manager = AnalysisManager(graph="G0")
+
+    with pytest.raises(TypeError):
+        manager.put_observation_evidence_batch((observation,))
+
+    assert manager.session_observations == ()
 
 
 def test_session_observations_are_scoped_to_the_manager_instance():

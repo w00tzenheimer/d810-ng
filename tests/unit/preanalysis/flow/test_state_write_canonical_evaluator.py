@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from d810.analyses.value_flow.state_write import (
     forward_eval_insn,
     forward_eval_instruction,
@@ -9,6 +11,10 @@ from d810.analyses.value_flow.state_write import (
     resolve_mop_from_maps,
     resolve_varnode_from_maps,
 )
+from d810.backends.hexrays.evidence.condition_chain_analysis import (
+    build_condition_chain_walker_provider,
+)
+from d810.backends.hexrays.evidence import condition_chain_analysis
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.instructions import (
@@ -79,6 +85,51 @@ def test_public_forward_eval_accepts_canonical_instruction_without_seams() -> No
 
     assert result == 0xAAFFAAFF
     assert stk[_STATE_STKOFF] == 0xAAFFAAFF
+
+
+def test_registered_backend_provider_accepts_canonical_instruction() -> None:
+    stk: dict[int, int] = {}
+    reg = {1: 0xAA00AA00}
+    instruction = Instruction(
+        ValueOpKind.XOR,
+        inputs=(_reg(1), _const(0x00FF00FF)),
+        result=_stack(_STATE_STKOFF),
+    )
+
+    result = build_condition_chain_walker_provider().forward_eval_insn(
+        instruction,
+        stk,
+        reg,
+        _STATE_STKOFF,
+    )
+
+    assert result == 0xAAFFAAFF
+    assert stk[_STATE_STKOFF] == 0xAAFFAAFF
+
+
+def test_registered_backend_provider_propagates_runtime_error(monkeypatch) -> None:
+    instruction = Instruction(
+        ValueOpKind.MOVE,
+        inputs=(_const(1),),
+        result=_stack(_STATE_STKOFF),
+    )
+
+    def fail_provider(*_args, **_kwargs):
+        raise RuntimeError("portable evaluator failed")
+
+    monkeypatch.setattr(
+        condition_chain_analysis.state_write,
+        "forward_eval_insn",
+        fail_provider,
+    )
+
+    with pytest.raises(RuntimeError, match="portable evaluator failed"):
+        build_condition_chain_walker_provider().forward_eval_insn(
+            instruction,
+            {},
+            {},
+            _STATE_STKOFF,
+        )
 
 
 def test_public_forward_eval_accepts_lifted_instruction_snapshot_without_seams() -> (

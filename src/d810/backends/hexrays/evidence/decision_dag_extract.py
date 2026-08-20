@@ -135,6 +135,16 @@ def _is_block_operand(mop) -> bool:
     )
 
 
+def _callback_object_identity(value) -> tuple[str, int]:
+    """Stable identity for one callback's transient Hex-Rays SWIG wrappers."""
+
+    try:
+        native_pointer = getattr(value, "this")
+        return "native", int(native_pointer)
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return "object", id(value)
+
+
 def _alias_prefix_instruction_is_pure(instruction, comparison_opcodes: set[int]) -> bool:
     """Exact local-value operand contract for traversed alias-prefix code."""
 
@@ -205,17 +215,20 @@ def _entry_state_alias(
             return None, None, None
 
         instructions: list = []
-        seen_instructions: set[int] = set()
+        seen_instructions: set[tuple[str, int]] = set()
         cur = getattr(blk, "head", None)
         while cur is not None:
-            identity = id(cur)
+            identity = _callback_object_identity(cur)
             if identity in seen_instructions:
                 return None, None, None
             seen_instructions.add(identity)
             instructions.append(cur)
             cur = getattr(cur, "next", None)
         tail = getattr(blk, "tail", None)
-        if tail is not None and id(tail) not in seen_instructions:
+        if (
+            tail is not None
+            and _callback_object_identity(tail) not in seen_instructions
+        ):
             instructions.append(tail)
 
         for instruction in instructions:
@@ -269,6 +282,52 @@ def _block_succs(blk) -> tuple:
         return tuple(int(blk.succ(i)) for i in range(int(blk.nsucc())))
     except Exception:
         return ()
+
+
+def _pure_internal_goto_alias(blk) -> Optional[int]:
+    """Return the sole successor for an exact instruction-free GOTO alias."""
+
+    succs = _block_succs(blk)
+    if len(succs) != 1:
+        return None
+    instructions: list = []
+    seen: set[tuple[str, int]] = set()
+    current = getattr(blk, "head", None)
+    while current is not None:
+        identity = _callback_object_identity(current)
+        if identity in seen:
+            return None
+        seen.add(identity)
+        instructions.append(current)
+        current = getattr(current, "next", None)
+    tail = getattr(blk, "tail", None)
+    if tail is not None and _callback_object_identity(tail) not in seen:
+        instructions.append(tail)
+    if len(instructions) != 1:
+        return None
+    instruction = instructions[0]
+    if int(getattr(instruction, "opcode", -1)) != int(ida_hexrays.m_goto):
+        return None
+    if not _alias_prefix_instruction_is_pure(
+        instruction,
+        {int(opcode) for opcode in _op_mnemonic_map()},
+    ):
+        return None
+    operands = tuple(
+        mop
+        for mop in (
+            getattr(instruction, "l", None),
+            getattr(instruction, "r", None),
+            getattr(instruction, "d", None),
+        )
+        if not _is_empty_operand(mop)
+    )
+    if len(operands) != 1:
+        return None
+    target = getattr(operands[0], "b", None)
+    if target is None or int(target) != int(succs[0]):
+        return None
+    return int(succs[0])
 
 
 def _parse_state_comparison(
@@ -423,11 +482,12 @@ def extract_decision_dag(
         state_var_valnum=state_var_valnum,
     )
     nodes: dict[int, RouteComparison] = {}
+    aliases: dict[int, int] = {}
     visited: set[int] = set()
     stack = [root]
     while stack:
         serial = stack.pop()
-        if serial in visited or len(nodes) >= max_nodes:
+        if serial in visited or len(nodes) + len(aliases) >= max_nodes:
             continue
         visited.add(serial)
         try:
@@ -446,6 +506,10 @@ def extract_decision_dag(
             state_var_valnum,
         )
         if parsed is None:
+            alias_target = _pure_internal_goto_alias(blk)
+            if alias_target is not None:
+                aliases[int(serial)] = int(alias_target)
+                stack.append(int(alias_target))
             continue  # leaf / handler -- not a state-var comparison node
         op, const, true_target = parsed
         false_target = next((s for s in _block_succs(blk) if s != true_target), None)
@@ -460,4 +524,4 @@ def extract_decision_dag(
         )
         stack.append(int(true_target))
         stack.append(int(false_target))
-    return DecisionDag(int(width), nodes, root)
+    return DecisionDag(int(width), nodes, root, aliases=aliases)

@@ -2,12 +2,9 @@
 
 from types import SimpleNamespace
 
-import pytest
-
 from d810.transforms.edit_simulator import SimulatedEdit, simulate_edits
 from d810.analyses.control_flow.graph_checks import (
     TerminalCycle,
-    TerminalSinkResult,
     check_entry_reachability_counts_not_collapsed,
     check_entry_reachability_not_collapsed,
     check_effectful_reachability_preserved,
@@ -15,7 +12,6 @@ from d810.analyses.control_flow.graph_checks import (
     detect_terminal_cycles,
     prove_terminal_sink,
     reachable_terminal_blocks,
-    SemanticCheckResult,
     SemanticGate,
     check_edge_split_structural_legality,
 )
@@ -455,6 +451,122 @@ class TestEffectfulReachabilityPreservation:
         result = check_effectful_reachability_preserved(
             cfg,
             post_adj={0: [0], 1: [2], 2: []},
+        )
+
+        assert not result.passed
+        assert result.lost_block_serials == frozenset({1})
+
+    def test_allows_reachable_native_effects_after_block_serial_shift(self):
+        call = InsnSnapshot(
+            opcode=0,
+            ea=0x1010,
+            native_ea=0x401010,
+            operands=(),
+            kind=InsnKind.CALL,
+        )
+        first_store = InsnSnapshot(
+            opcode=0,
+            ea=0x1011,
+            native_ea=0x401011,
+            operands=(),
+            kind=InsnKind.STORE,
+        )
+        second_store = InsnSnapshot(
+            opcode=0,
+            ea=0x1012,
+            native_ea=0x401012,
+            operands=(),
+            kind=InsnKind.STORE,
+        )
+        effects = (call, first_store, second_store)
+        pre_cfg = FlowGraph(
+            blocks={
+                0: _make_block(0, (1,), (), start_ea=0x401000),
+                1: _make_block(
+                    1,
+                    (2,),
+                    (0,),
+                    start_ea=0x401010,
+                    insns=effects,
+                ),
+                2: _make_block(2, (), (1,), start_ea=0x401020),
+            },
+            entry_serial=0,
+            func_ea=0x401000,
+        )
+        post_cfg = FlowGraph(
+            blocks={
+                10: _make_block(10, (11,), (), start_ea=0x401000),
+                11: _make_block(
+                    11,
+                    (12,),
+                    (10,),
+                    start_ea=0x401010,
+                    insns=effects,
+                ),
+                12: _make_block(12, (), (11,), start_ea=0x401020),
+            },
+            entry_serial=10,
+            func_ea=0x401000,
+        )
+
+        result = check_effectful_reachability_preserved(
+            pre_cfg,
+            post_cfg=post_cfg,
+        )
+
+        assert result.passed
+        assert result.pre_effectful_block_serials == frozenset({1})
+        assert result.post_reachable_effectful_block_serials == frozenset({1})
+        assert result.lost_block_serials == frozenset()
+
+    def test_rejects_same_serial_when_native_call_identity_changes(self):
+        pre_call = InsnSnapshot(
+            opcode=0,
+            ea=0x1010,
+            native_ea=0x401010,
+            operands=(),
+            kind=InsnKind.CALL,
+        )
+        post_call = InsnSnapshot(
+            opcode=0,
+            ea=0x2010,
+            native_ea=0x402010,
+            operands=(),
+            kind=InsnKind.CALL,
+        )
+        pre_cfg = FlowGraph(
+            blocks={
+                0: _make_block(0, (1,), (), start_ea=0x401000),
+                1: _make_block(
+                    1,
+                    (),
+                    (0,),
+                    start_ea=0x401010,
+                    insns=(pre_call,),
+                ),
+            },
+            entry_serial=0,
+            func_ea=0x401000,
+        )
+        post_cfg = FlowGraph(
+            blocks={
+                0: _make_block(0, (1,), (), start_ea=0x401000),
+                1: _make_block(
+                    1,
+                    (),
+                    (0,),
+                    start_ea=0x402010,
+                    insns=(post_call,),
+                ),
+            },
+            entry_serial=0,
+            func_ea=0x401000,
+        )
+
+        result = check_effectful_reachability_preserved(
+            pre_cfg,
+            post_cfg=post_cfg,
         )
 
         assert not result.passed

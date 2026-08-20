@@ -28,6 +28,8 @@ from d810.analyses.control_flow.dispatcher_recovery import (
     register_extra_dispatcher_resolver,
 )
 from d810.analyses.control_flow.linearized_state_dag import (
+    LiveDagDiagnosticWorkBudget,
+    LiveDagDiagnosticWorkBudgetExhausted,
     build_live_linearized_state_dag_from_graph,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
@@ -231,6 +233,8 @@ from d810.transforms.minimal_unflatten_emit import (
     TERMINAL_CARRIER_CONVERGENCE_METADATA,
 )
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
+
+_DIAGNOSTIC_LIVE_DAG_WORK_BUDGET = 256
 
 logger = logging.getLogger("d810.unflat", logging.DEBUG)
 
@@ -4274,6 +4278,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 except Exception:  # noqa: BLE001 — fall back to the unflatten transition_result
                     dag_tr = tr
             if dag_tr is not None and getattr(dag_tr, "transitions", None):
+                diagnostics_work_budget = LiveDagDiagnosticWorkBudget(
+                    limit=_DIAGNOSTIC_LIVE_DAG_WORK_BUDGET
+                )
                 dag = build_live_linearized_state_dag_from_graph(
                     flow_graph=source.flow_graph,
                     transition_result=dag_tr,
@@ -4310,6 +4317,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     ),
                     mba=mba,
                     prefer_local_corridors=True,
+                    diagnostics_work_budget=diagnostics_work_budget,
                 )
                 observe_dag(snap, _diag_dag_nodes(dag), _diag_dag_edges(dag))
                 observe_dag_local_facts(snap, dag)
@@ -4363,6 +4371,58 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     ),
                 )
                 observe_modifications(snap, _diag_modifications(plan))
+        except LiveDagDiagnosticWorkBudgetExhausted as exhausted:
+            try:
+                observe_fact_observation(
+                    snap,
+                    func_ea,
+                    (
+                        {
+                            "fact_id": (
+                                f"unflat-diagnostics-incomplete:{func_ea:x}:{maturity}"
+                            ),
+                            "kind": "UnflattenDiagnosticsIncomplete",
+                            "semantic_key": "diagnostics_incomplete",
+                            "maturity": maturity,
+                            "phase": "post_pipeline",
+                            "confidence": 1.0,
+                            "source_block": getattr(
+                                dmap, "dispatcher_entry_block", None
+                            ),
+                            "source_ea": None,
+                            "block_fingerprint": None,
+                            "mop_signature": None,
+                            "payload": {
+                                "reason": "live_dag_work_budget_exhausted",
+                                "budget": exhausted.limit,
+                                "consumed_units": exhausted.consumed,
+                                "phase": exhausted.phase,
+                                "func_ea": func_ea,
+                                "maturity": maturity,
+                                "capture_scope": "reachability_only",
+                                "dag_published": False,
+                                "plan_published": False,
+                                "modifications_published": False,
+                            },
+                            "evidence": (),
+                        },
+                    ),
+                )
+            except Exception:  # noqa: BLE001 -- diagnostics remain best-effort
+                logger.debug(
+                    "unflat: incomplete-diagnostics observation failed",
+                    exc_info=True,
+                )
+            logger.warning(
+                "unflat diagnostics incomplete: func=0x%X maturity=%s "
+                "reason=live_dag_work_budget_exhausted budget=%d "
+                "consumed=%d phase=%s capture_scope=reachability_only",
+                func_ea,
+                maturity,
+                exhausted.limit,
+                exhausted.consumed,
+                exhausted.phase,
+            )
         except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
             logger.debug(
                 "unflat: snapshot-correlated diagnostics failed", exc_info=True

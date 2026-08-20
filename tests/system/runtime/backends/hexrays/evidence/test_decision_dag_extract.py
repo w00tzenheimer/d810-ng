@@ -64,6 +64,17 @@ def _cmp(opcode, const, jump_target, fallthrough):
     return _Blk(tail, [fallthrough, jump_target])
 
 
+def _goto(target):
+    tail = SimpleNamespace(
+        opcode=ida_hexrays.m_goto,
+        l=None,
+        r=None,
+        d=_target(target),
+        next=None,
+    )
+    return _Blk(tail, [target])
+
+
 def _leaf():
     return _Blk(tail=None, succs=[2])
 
@@ -103,6 +114,68 @@ def test_extract_routes_match_microcode():
     sib = dag.sibling_arms()
     assert 56 in sib[57] and 57 in sib[56]
     assert set(dag.nodes) == {2, 3, 4, 36, 49, 53, 55}  # comparisons only
+
+
+def test_extract_routes_through_pure_internal_goto_alias():
+    """Target-A shape: comparison -> pure GOTO -> equality comparison."""
+
+    blocks = {
+        1: _cmp(ida_hexrays.m_jbe, 0x40, 2, 200),
+        2: _goto(3),
+        3: _cmp(ida_hexrays.m_jz, 0x20, 201, 202),
+        200: _leaf(),
+        201: _leaf(),
+        202: _leaf(),
+    }
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=1,
+        state_var_stkoff=STK,
+    )
+
+    assert set(dag.nodes) == {1, 3}
+    assert dag.aliases == {2: 3}
+    assert dag.route(0x20) == 201
+    exact = [cell for cell in dag.resolve_paths() if cell.target == 201]
+    assert len(exact) == 1
+    assert exact[0].path == (1, 2, 3)
+
+
+def test_extract_internal_alias_uses_stable_native_instruction_identity():
+    """Distinct SWIG wrappers for one native GOTO must not look like two ops."""
+
+    def goto_wrapper(native_pointer):
+        return SimpleNamespace(
+            opcode=ida_hexrays.m_goto,
+            l=None,
+            r=None,
+            d=_target(3),
+            next=None,
+            this=native_pointer,
+        )
+
+    blocks = {
+        1: _cmp(ida_hexrays.m_jbe, 0x40, 2, 200),
+        2: _Blk(
+            goto_wrapper(0xA000),
+            [3],
+            head=goto_wrapper(0xA000),
+        ),
+        3: _cmp(ida_hexrays.m_jz, 0x20, 201, 202),
+        200: _leaf(),
+        201: _leaf(),
+        202: _leaf(),
+    }
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=1,
+        state_var_stkoff=STK,
+    )
+
+    assert dag.aliases == {2: 3}
+    assert dag.route(0x20) == 201
 
 
 def test_extract_skips_handler_internal_conditional():

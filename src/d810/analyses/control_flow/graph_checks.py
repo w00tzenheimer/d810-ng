@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 from d810.analyses.control_flow.edit_simulation import SimulatedEdit, simulate_edits
@@ -245,11 +245,59 @@ def check_entry_reachability_counts_not_collapsed(
 
 def _block_has_effectful_instruction(block: object) -> bool:
     """Whether a portable block contains an observable write or call."""
-    return any(
-        getattr(insn, "is_call", False)
-        or getattr(insn, "kind", None) in {InsnKind.CALL, InsnKind.STORE}
-        for insn in (getattr(block, "insn_snapshots", ()) or ())
-    )
+    return bool(_block_effect_identities(block))
+
+
+def _block_effect_identities(block: object) -> tuple[tuple[object, ...], ...]:
+    """Return generation-stable CALL/STORE identities for one block.
+
+    Live helper insertion renumbers later microblocks.  Native instruction EAs
+    remain stable across that renumbering, so post-observation reachability must
+    compare the effects themselves instead of snapshot-local block serials.
+    """
+    identities: list[tuple[object, ...]] = []
+    for ordinal, insn in enumerate(
+        getattr(block, "insn_snapshots", ()) or ()
+    ):
+        if (
+            getattr(insn, "is_call", False)
+            or getattr(insn, "kind", None) is InsnKind.CALL
+        ):
+            effect_kind = "call"
+        elif getattr(insn, "kind", None) is InsnKind.STORE:
+            effect_kind = "store"
+        else:
+            continue
+
+        raw_ea = getattr(insn, "native_ea", None)
+        if raw_ea is None:
+            raw_ea = getattr(insn, "ea", None)
+        try:
+            effect_ea = int(raw_ea)
+        except (TypeError, ValueError):
+            effect_ea = _BADADDR_64
+        if 0 <= effect_ea < _BADADDR_64:
+            identities.append(("native_effect", effect_kind, effect_ea))
+            continue
+
+        raw_start = getattr(block, "native_start_ea", None)
+        try:
+            start_ea = int(raw_start)
+        except (TypeError, ValueError):
+            start_ea = _BADADDR_64
+        if 0 <= start_ea < _BADADDR_64:
+            identities.append(("native_block_effect", effect_kind, start_ea, ordinal))
+            continue
+
+        identities.append(
+            (
+                "snapshot_effect",
+                effect_kind,
+                int(getattr(block, "serial", -1)),
+                ordinal,
+            )
+        )
+    return tuple(identities)
 
 
 def check_effectful_reachability_preserved(
@@ -286,8 +334,32 @@ def check_effectful_reachability_preserved(
         if post_cfg is not None
         else reachable_from_adjacency(post_adj or {}, pre_cfg.entry_serial)
     )
-    retained = frozenset(pre_effectful & post_reachable)
-    lost = frozenset(pre_effectful - post_reachable)
+    if post_cfg is None:
+        retained = frozenset(pre_effectful & post_reachable)
+        lost = frozenset(pre_effectful - post_reachable)
+    else:
+        reachable_effects: Counter[tuple[object, ...]] = Counter(
+            effect_identity
+            for serial in post_reachable
+            for effect_identity in _block_effect_identities(
+                post_cfg.get_block(int(serial))
+            )
+        )
+        retained_serials: set[int] = set()
+        lost_serials: set[int] = set()
+        for serial in sorted(pre_effectful):
+            required = Counter(
+                _block_effect_identities(pre_cfg.get_block(int(serial)))
+            )
+            if all(
+                reachable_effects[key] >= count for key, count in required.items()
+            ):
+                retained_serials.add(int(serial))
+                reachable_effects.subtract(required)
+            else:
+                lost_serials.add(int(serial))
+        retained = frozenset(retained_serials)
+        lost = frozenset(lost_serials)
     if lost:
         return EffectfulReachabilityResult(
             passed=False,

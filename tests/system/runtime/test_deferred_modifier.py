@@ -3686,12 +3686,87 @@ def _patch_suffix_dependencies(monkeypatch, mba):
 
     monkeypatch.setattr(dm, "create_standalone_block", _fake_create_standalone_block)
     monkeypatch.setattr(dm, "change_1way_block_successor", _fake_change_1way)
+    monkeypatch.setattr(dm, "ensure_last_block_is_goto", lambda *_args, **_kwargs: 0)
 
     return state
 
 
 class TestEdgeRedirectViaPredSplitCorridor:
     """Apply-time guards for typed predecessor-scoped corridor splits."""
+
+    def test_corridor_binds_every_planned_clone_creation(self, monkeypatch):
+        """Every plan-owned corridor clone must publish its creation receipt."""
+
+        pred = _make_suffix_block(
+            24, nsucc=1, succ_serial=32, tail_opcode=ida_hexrays.m_goto
+        )
+        src = _make_suffix_block(
+            32, nsucc=1, succ_serial=62, tail_opcode=ida_hexrays.m_goto
+        )
+        target = _make_suffix_block(62, nsucc=1, succ_serial=99)
+        src.predset.push_back(24)
+        mba = _build_suffix_mba({24: pred, 32: src, 62: target})
+        state = _patch_suffix_dependencies(monkeypatch, mba)
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
+        begun: list[tuple[int, ...]] = []
+        bound: list[tuple[int, int]] = []
+        monkeypatch.setattr(
+            modifier,
+            "_begin_patch_block_creation",
+            lambda *serials: begun.append(tuple(serials)),
+        )
+        monkeypatch.setattr(
+            modifier,
+            "_bind_patch_block_creation",
+            lambda expected, actual: bound.append((expected, actual)),
+        )
+
+        assert modifier._apply_edge_redirect_via_pred_split_corridor(
+            blk=src,
+            old_target=62,
+            new_target=62,
+            via_pred=24,
+            clone_until=32,
+            clone_expected_serials=(70,),
+        )
+        assert begun == [(70,)]
+        assert bound == [(70, state["clones_created"][0][1])]
+
+    def test_corridor_stabilizes_terminal_predecessor_before_clone(
+        self, monkeypatch
+    ):
+        """Appending a clone must not retarget an implicit terminal fallthrough."""
+
+        pred = _make_suffix_block(
+            24, nsucc=1, succ_serial=32, tail_opcode=ida_hexrays.m_goto
+        )
+        src = _make_suffix_block(
+            32, nsucc=1, succ_serial=62, tail_opcode=ida_hexrays.m_goto
+        )
+        target = _make_suffix_block(62, nsucc=1, succ_serial=99)
+        src.predset.push_back(24)
+        mba = _build_suffix_mba({24: pred, 32: src, 62: target})
+        _patch_suffix_dependencies(monkeypatch, mba)
+        stabilized: list[tuple[object, bool]] = []
+        monkeypatch.setattr(
+            dm,
+            "ensure_last_block_is_goto",
+            lambda actual_mba, *, verify: stabilized.append((actual_mba, verify)),
+        )
+        modifier = dm.DeferredGraphModifier(
+            mba, mutation_gateway=make_mutation_gateway(mba)
+        )
+
+        assert modifier._apply_edge_redirect_via_pred_split_corridor(
+            blk=src,
+            old_target=62,
+            new_target=62,
+            via_pred=24,
+            clone_until=32,
+        )
+        assert stabilized == [(mba, False)]
 
     def test_one_block_corridor_accepts_prior_source_retarget(self, monkeypatch):
         """A one-block corridor may run after the source was already retargeted.

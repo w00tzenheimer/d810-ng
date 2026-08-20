@@ -3034,6 +3034,161 @@ class TestUnflattenBoundedRerunGate:
         assert rule.project_configs[-1] == {}
 
 
+def test_unflat_diagnostics_budget_is_snapshot_scoped_and_fresh_per_publication(
+    monkeypatch,
+) -> None:
+    main_snapshots: list[object] = []
+    incomplete: list[tuple[object, dict[str, object]]] = []
+    downstream: list[str] = []
+    budgets: list[object] = []
+    build_calls = 0
+
+    def request_snapshot(*, label, **_kwargs):
+        snapshot = object()
+        if label == "unflat_recover_dispatcher":
+            main_snapshots.append(snapshot)
+        return snapshot
+
+    def observe_fact(snapshot, _func_ea, observations):
+        for observation in observations:
+            if observation["semantic_key"] == "diagnostics_incomplete":
+                incomplete.append((snapshot, observation))
+
+    def build_live_dag(**kwargs):
+        nonlocal build_calls
+        build_calls += 1
+        budget = kwargs["diagnostics_work_budget"]
+        budgets.append(budget)
+        attempts = (
+            unflattener._DIAGNOSTIC_LIVE_DAG_WORK_BUDGET + 1
+            if build_calls == 1
+            else 3
+        )
+        for _ in range(attempts):
+            budget.consume("base_handler_path_state")
+        return SimpleNamespace(nodes=(), edges=())
+
+    monkeypatch.setattr(unflattener, "_capture_diagnostics_enabled", lambda: True)
+    monkeypatch.setattr(
+        unflattener, "_preanalysis_diagnostics_enabled", lambda: False
+    )
+    monkeypatch.setattr(unflattener, "request_capture_mba_snapshot", request_snapshot)
+    monkeypatch.setattr(unflattener, "observe_fact_observation", observe_fact)
+    monkeypatch.setattr(
+        unflattener,
+        "observe_reachability",
+        lambda *_args, **_kwargs: downstream.append("reachability"),
+    )
+    monkeypatch.setattr(
+        unflattener, "build_live_linearized_state_dag_from_graph", build_live_dag
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "observe_dag",
+        lambda *_args, **_kwargs: downstream.append("dag"),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "observe_dag_local_facts",
+        lambda *_args, **_kwargs: downstream.append("dag_local_facts"),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "lower_to_direct_graph",
+        lambda *_args, **_kwargs: downstream.append("lower")
+        or SimpleNamespace(modifications=()),
+    )
+    monkeypatch.setattr(
+        unflattener,
+        "observe_modifications",
+        lambda *_args, **_kwargs: downstream.append("modifications"),
+    )
+
+    rule = StateMachineCffUnflattener()
+    monkeypatch.setattr(
+        rule,
+        "_dual_build_read_dag_diff",
+        lambda *_args, **_kwargs: downstream.append("dual_build"),
+    )
+    flow_graph = SimpleNamespace(
+        blocks={
+            1: SimpleNamespace(
+                block_type=1,
+                start_ea=0x401000,
+                end_ea=0x401010,
+                succs=(),
+                preds=(),
+            )
+        }
+    )
+    dmap = SimpleNamespace(
+        dispatcher_entry_block=1,
+        router_kind=SimpleNamespace(name="COMPARISON"),
+        rows=(),
+        state_var_stkoff=None,
+    )
+    rec = SimpleNamespace(
+        dispatch_map=dmap,
+        dispatcher_block_serial=1,
+        state_var_stkoff=None,
+        state_var_reg=None,
+        reachable_block_serials=(1,),
+        condition_chain_block_serials=(),
+    )
+    source = SimpleNamespace(flow_graph=flow_graph, live_source=None)
+    mba = SimpleNamespace(entry_ea=0x401000, maturity=ida_hexrays.MMAT_GLBOPT1)
+    transition_result = SimpleNamespace(transitions=(object(),))
+
+    rule._publish_unflat_diagnostics(
+        mba,
+        source,
+        rec,
+        transition_result,
+        (),
+        object(),
+    )
+
+    assert downstream == ["reachability"]
+    assert len(incomplete) == 1
+    assert incomplete[0][0] is main_snapshots[0]
+    payload = incomplete[0][1]["payload"]
+    assert payload == {
+        "reason": "live_dag_work_budget_exhausted",
+        "budget": 256,
+        "consumed_units": 256,
+        "phase": "base_handler_path_state",
+        "func_ea": 0x401000,
+        "maturity": "MMAT_GLBOPT1",
+        "capture_scope": "reachability_only",
+        "dag_published": False,
+        "plan_published": False,
+        "modifications_published": False,
+    }
+
+    downstream.clear()
+    rule._publish_unflat_diagnostics(
+        mba,
+        source,
+        rec,
+        transition_result,
+        (),
+        object(),
+    )
+
+    assert budgets[0] is not budgets[1]
+    assert budgets[0].consumed == 256
+    assert budgets[1].consumed == 3
+    assert downstream == [
+        "reachability",
+        "dag",
+        "dag_local_facts",
+        "dual_build",
+        "lower",
+        "modifications",
+    ]
+    assert len(incomplete) == 1
+
+
 class TestTigressIndirectMaterializationConfig:
     def test_non_tigress_profile_does_not_register_materialization(
         self, monkeypatch

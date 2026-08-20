@@ -533,6 +533,15 @@ def _adopt_range_evidence_stack_identity(
 
 
 def _publish_observation_evidence(ctx: FunctionPipelineContext, observations) -> None:
+    observations = tuple(observations)
+    put_observation_evidence_batch = getattr(
+        ctx.facts,
+        "put_observation_evidence_batch",
+        None,
+    )
+    if callable(put_observation_evidence_batch):
+        put_observation_evidence_batch(observations)
+        return
     put_observation_evidence = getattr(ctx.facts, "put_observation_evidence", None)
     if not callable(put_observation_evidence):
         return

@@ -18,6 +18,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.graph_checks import reachable_terminal_blocks
+from d810.analyses.control_flow.edit_simulation import simulate_edits
+from d810.analyses.control_flow.state_carrier import (
+    prove_exact_u32_carrier_state_write,
+    prove_exact_u32_state_transform_feeder,
+)
+from d810.analyses.control_flow.minimal_state_recovery import (
+    CandidatePrefixAlternateCorridorProof,
+    build_current_u32_decision_forest,
+    route_current_u32_decision_forest,
+    validate_candidate_prefix_alternate_corridor_proof,
+)
+from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.analyses.control_flow.instruction_semantics import (
     comparison_width,
     evaluate_branch_predicate,
@@ -39,15 +51,22 @@ from d810.ir.insn_projection import (
 )
 from d810.ir.instructions import Instruction
 from d810.ir.semantics import ControlTransferKind
-from d810.ir.storage_identity import StorageIdentity, storage_identity_from_varnode
+from d810.ir.storage_identity import (
+    StorageIdentity,
+    StorageIdentityKind,
+    storage_identity_from_record,
+    storage_identity_from_varnode,
+)
 from d810.ir.varnode import Space, Varnode
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.graph_modification import (
     ConvertToGoto,
+    EdgeRedirectViaPredSplit,
     LowerConditionalStateTransition,
     RedirectBranch,
     RedirectGoto,
 )
+from d810.transforms.edit_simulator import graph_modifications_to_simulated_edits
 from d810.transforms.plan import (
     PatchLowerConditionalStateTransition,
     PatchPlan,
@@ -485,6 +504,7 @@ class DispatcherCorridorCoverage:
     covered_corridors: tuple[DispatcherCorridor, ...]
     residual_corridors: tuple[DispatcherCorridor, ...]
     enumeration_complete: bool
+    semantic_exclusions: tuple[CandidatePrefixAlternateCorridorProof, ...] = ()
 
     @property
     def planned_completion_status(self) -> str:
@@ -521,7 +541,7 @@ class DispatcherCorridorCoverage:
         return False
 
     def to_metadata(self) -> dict[str, object]:
-        return {
+        metadata = {
             "function_ea": int(self.function_ea),
             "dispatcher": (
                 None if self.dispatcher is None else self.dispatcher.to_payload()
@@ -538,6 +558,12 @@ class DispatcherCorridorCoverage:
                 corridor.to_payload() for corridor in self.residual_corridors
             ],
         }
+        if self.semantic_exclusions:
+            metadata["semantic_exclusions"] = [
+                _candidate_prefix_exclusion_payload(proof)
+                for proof in self.semantic_exclusions
+            ]
+        return metadata
 
 
 def _anchor(flow_graph: FlowGraph, serial: int) -> DispatcherBlockAnchor:
@@ -558,6 +584,16 @@ def _rewired_successors(
         for serial, block in flow_graph.blocks.items()
     }
     for modification in modifications:
+        if isinstance(modification, EdgeRedirectViaPredSplit):
+            simulated = simulate_edits(
+                {serial: list(targets) for serial, targets in successors.items()},
+                graph_modifications_to_simulated_edits([modification]),
+            )
+            successors = {
+                int(serial): tuple(int(target) for target in targets)
+                for serial, targets in simulated.adj.items()
+            }
+            continue
         if isinstance(modification, LowerConditionalStateTransition):
             successors[int(modification.source_serial)] = (
                 int(modification.false_target_serial),
@@ -807,11 +843,130 @@ def _corridor_key(corridor: DispatcherCorridor) -> tuple[tuple[int, int], ...]:
     return tuple((int(anchor.serial), int(anchor.ea)) for anchor in corridor.path)
 
 
+def _candidate_prefix_exclusion_payload(
+    proof: CandidatePrefixAlternateCorridorProof,
+) -> dict[str, object]:
+    return {
+        "normalized_state": int(proof.normalized_state) & 0xFFFFFFFF,
+        "source": {
+            "serial": int(proof.source_serial),
+            "ea": int(proof.source_ea),
+        },
+        "feeder": (
+            None
+            if proof.feeder_serial is None or proof.feeder_ea is None
+            else {
+                "serial": int(proof.feeder_serial),
+                "ea": int(proof.feeder_ea),
+            }
+        ),
+        "prefix": {
+            "serial": int(proof.prefix_serial),
+            "ea": int(proof.prefix_ea),
+        },
+        "root": {
+            "serial": int(proof.root_serial),
+            "ea": int(proof.root_ea),
+        },
+        "state_identity": proof.state_identity.to_record(),
+    }
+
+
+def _candidate_prefix_exclusion_from_payload(
+    payload: object,
+) -> CandidatePrefixAlternateCorridorProof | None:
+    if not isinstance(payload, Mapping):
+        return None
+
+    def anchor(name: str) -> tuple[int, int] | None:
+        value = payload.get(name)
+        if not isinstance(value, Mapping):
+            return None
+        try:
+            return int(value["serial"]), int(value["ea"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    source = anchor("source")
+    prefix = anchor("prefix")
+    root = anchor("root")
+    feeder_payload = payload.get("feeder")
+    feeder = None if feeder_payload is None else anchor("feeder")
+    identity_payload = payload.get("state_identity")
+    if (
+        source is None
+        or prefix is None
+        or root is None
+        or (feeder_payload is not None and feeder is None)
+        or not isinstance(identity_payload, Mapping)
+    ):
+        return None
+    try:
+        state = int(payload["normalized_state"])
+        identity = storage_identity_from_record(identity_payload)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if state < 0 or state > 0xFFFFFFFF:
+        return None
+    return CandidatePrefixAlternateCorridorProof(
+        normalized_state=state,
+        source_serial=source[0],
+        source_ea=source[1],
+        feeder_serial=None if feeder is None else feeder[0],
+        feeder_ea=None if feeder is None else feeder[1],
+        prefix_serial=prefix[0],
+        prefix_ea=prefix[1],
+        root_serial=root[0],
+        root_ea=root[1],
+        state_identity=identity,
+    )
+
+
+def _semantic_exclusions_from_coverage_metadata(
+    coverage: Mapping[str, object],
+) -> tuple[CandidatePrefixAlternateCorridorProof, ...] | None:
+    raw_exclusions = coverage.get("semantic_exclusions", ())
+    if not isinstance(raw_exclusions, (tuple, list)):
+        return None
+    parsed = tuple(
+        _candidate_prefix_exclusion_from_payload(payload)
+        for payload in raw_exclusions
+    )
+    if any(proof is None for proof in parsed):
+        return None
+    return tuple(proof for proof in parsed if proof is not None)
+
+
+def _candidate_prefix_exclusion_suffix(
+    proof: CandidatePrefixAlternateCorridorProof,
+) -> tuple[tuple[int, int], ...]:
+    anchors = [(int(proof.source_serial), int(proof.source_ea))]
+    if proof.feeder_serial is not None and proof.feeder_ea is not None:
+        anchors.append((int(proof.feeder_serial), int(proof.feeder_ea)))
+    anchors.extend(
+        (
+            (int(proof.prefix_serial), int(proof.prefix_ea)),
+            (int(proof.root_serial), int(proof.root_ea)),
+        )
+    )
+    return tuple(anchors)
+
+
+def _corridor_matches_semantic_exclusion(
+    corridor: DispatcherCorridor,
+    proof: CandidatePrefixAlternateCorridorProof,
+) -> bool:
+    key = _corridor_key(corridor)
+    suffix = _candidate_prefix_exclusion_suffix(proof)
+    return len(key) >= len(suffix) and key[-len(suffix) :] == suffix
+
+
 def _coverage_from_post_successors(
     flow_graph: FlowGraph,
     *,
     post_successors: Mapping[int, tuple[int, ...]],
     dispatcher_entry_serial: int | None,
+    semantic_exclusions: tuple[CandidatePrefixAlternateCorridorProof, ...] = (),
 ) -> DispatcherCorridorCoverage:
     """Classify original corridors against an already-projected successor map.
 
@@ -832,6 +987,15 @@ def _coverage_from_post_successors(
         )
 
     dispatcher_serial = int(dispatcher_entry_serial)
+    validated_exclusions = tuple(
+        proof
+        for proof in semantic_exclusions
+        if validate_candidate_prefix_alternate_corridor_proof(
+            flow_graph,
+            proof,
+            dispatcher_entry_serial=dispatcher_serial,
+        )
+    )
     normalized_post_successors = {
         int(serial): tuple(int(target) for target in targets)
         for serial, targets in post_successors.items()
@@ -847,6 +1011,14 @@ def _coverage_from_post_successors(
         normalized_post_successors,
         dispatcher_serial,
     )
+    residual_corridors = tuple(
+        corridor
+        for corridor in residual_corridors
+        if not any(
+            _corridor_matches_semantic_exclusion(corridor, proof)
+            for proof in validated_exclusions
+        )
+    )
     residual_keys = {_corridor_key(corridor) for corridor in residual_corridors}
     covered_corridors = tuple(
         corridor
@@ -859,6 +1031,7 @@ def _coverage_from_post_successors(
         covered_corridors=covered_corridors,
         residual_corridors=residual_corridors,
         enumeration_complete=original_complete and post_complete,
+        semantic_exclusions=validated_exclusions,
     )
 
 
@@ -867,6 +1040,7 @@ def analyze_dispatcher_corridor_coverage(
     *,
     modifications: tuple[object, ...] | list[object],
     dispatcher_entry_serial: int | None,
+    semantic_exclusions: tuple[CandidatePrefixAlternateCorridorProof, ...] = (),
 ) -> DispatcherCorridorCoverage:
     """Classify every reachable original dispatcher corridor after planned edits."""
     post_successors = _rewired_successors(flow_graph, modifications)
@@ -874,6 +1048,7 @@ def analyze_dispatcher_corridor_coverage(
         flow_graph,
         post_successors=post_successors,
         dispatcher_entry_serial=dispatcher_entry_serial,
+        semantic_exclusions=semantic_exclusions,
     )
 
 
@@ -1812,6 +1987,66 @@ def _feeder_is_retireable(
     return int(feeder_serial) in {int(serial) for serial in state_plumbing_serials}
 
 
+def _exact_planned_stop_relocation(
+    flow_graph: FlowGraph,
+    *,
+    post_graph: FlowGraph,
+    patch_plan: PatchPlan | None,
+) -> tuple[int, int] | None:
+    """Return the source/projected STOP pair for an exact typed relocation."""
+    if patch_plan is None or not patch_plan.new_blocks:
+        return None
+    source_stop_ref = patch_plan.relocation_map.source_stop
+    source_stop_serial = (
+        None
+        if source_stop_ref is None
+        else dict(patch_plan.source_coordinates).get(source_stop_ref)
+    )
+    if source_stop_serial is None:
+        return None
+    relocated_stop_serial = int(source_stop_serial) + len(patch_plan.new_blocks)
+    source_stop = flow_graph.get_block(int(source_stop_serial))
+    relocated_stop = post_graph.get_block(int(relocated_stop_serial))
+    if (
+        source_stop is None
+        or relocated_stop is None
+        or source_stop.kind is not BlockKind.STOP
+        or relocated_stop.kind is not BlockKind.STOP
+        or source_stop.succs
+        or relocated_stop.succs
+        or int(source_stop.start_ea) != int(relocated_stop.start_ea)
+        or tuple(source_stop.insn_snapshots) != tuple(relocated_stop.insn_snapshots)
+        or source_stop.tail_kind is not relocated_stop.tail_kind
+    ):
+        return None
+    return int(source_stop_serial), int(relocated_stop_serial)
+
+
+def _semantic_lost_blocks(
+    flow_graph: FlowGraph,
+    *,
+    post_graph: FlowGraph,
+    patch_plan: PatchPlan | None,
+) -> frozenset[int]:
+    """Return true lost blocks, excluding an exact typed STOP relocation."""
+    pre_reachable = _reachable_from_entry(
+        flow_graph.as_adjacency_dict(), int(flow_graph.entry_serial)
+    )
+    post_reachable = _reachable_from_entry(
+        post_graph.as_adjacency_dict(), int(post_graph.entry_serial)
+    )
+    lost = frozenset(int(serial) for serial in pre_reachable - post_reachable)
+    relocation = _exact_planned_stop_relocation(
+        flow_graph,
+        post_graph=post_graph,
+        patch_plan=patch_plan,
+    )
+    if relocation is None:
+        return lost
+    source_stop_serial, _ = relocation
+    return frozenset(serial for serial in lost if serial != source_stop_serial)
+
+
 def build_dispatcher_removal_preflight_proof(
     flow_graph: FlowGraph,
     *,
@@ -1822,6 +2057,7 @@ def build_dispatcher_removal_preflight_proof(
     dispatcher_region_serials: frozenset[int],
     producer_safety: Mapping[str, bool],
     state_plumbing_serials: frozenset[int] = frozenset(),
+    patch_plan: PatchPlan | None = None,
 ) -> DispatcherRemovalPreflightProof:
     """Prove the exact exception to raw entry-count preservation.
 
@@ -1840,15 +2076,15 @@ def build_dispatcher_removal_preflight_proof(
         "non_state_use_def_checked": True,
         "non_state_use_def_severances_zero": True,
     }
-    pre_reachable = _reachable_from_entry(
-        flow_graph.as_adjacency_dict(),
-        int(flow_graph.entry_serial),
-    )
     post_reachable = _reachable_from_entry(
         post_graph.as_adjacency_dict(),
         int(post_graph.entry_serial),
     )
-    lost_blocks = frozenset(int(serial) for serial in pre_reachable - post_reachable)
+    lost_blocks = _semantic_lost_blocks(
+        flow_graph,
+        post_graph=post_graph,
+        patch_plan=patch_plan,
+    )
     dispatcher = coverage.dispatcher
     handlers = frozenset(int(serial) for serial in authoritative_handler_serials)
     handler_anchors = _anchors_for_serials(flow_graph, handlers)
@@ -1864,6 +2100,23 @@ def build_dispatcher_removal_preflight_proof(
     )
     pre_terminal_anchors = _anchors_for_serials(flow_graph, pre_terminals)
     post_terminal_anchors = _anchors_for_serials(post_graph, post_terminal_serials)
+    stop_relocation = _exact_planned_stop_relocation(
+        flow_graph,
+        post_graph=post_graph,
+        patch_plan=patch_plan,
+    )
+    if stop_relocation is not None:
+        source_stop_serial, relocated_stop_serial = stop_relocation
+        if (
+            source_stop_serial in pre_terminals
+            and relocated_stop_serial in post_terminal_serials
+        ):
+            post_terminal_anchors = tuple(
+                _anchor(flow_graph, source_stop_serial)
+                if int(anchor.serial) == relocated_stop_serial
+                else anchor
+                for anchor in post_terminal_anchors
+            )
     plumbing = frozenset(int(serial) for serial in state_plumbing_serials)
     plumbing_anchors = _anchors_for_serials(flow_graph, plumbing)
     retired = (
@@ -2336,6 +2589,12 @@ def collect_dispatcher_removal_preflight_proof_observations_from_metadata(
     attempt_id: str | None = None,
 ) -> tuple[FactObservation, ...]:
     """Persist the proof payload without making runtime code read diagnostic DBs."""
+    if application_status == "applied" and observed_validation is None:
+        # A transaction can apply a partial cleanup plan while the producer's
+        # dispatcher-removal proof remains rejected.  Without a post-apply
+        # validation there is no applied removal claim to publish; coverage is
+        # still emitted independently by the companion collector.
+        return ()
     validation_only = not isinstance(metadata, Mapping)
     if validation_only:
         coverage_validation = (
@@ -2576,10 +2835,14 @@ def validate_dispatcher_corridor_coverage_metadata(
         getattr(pre_dispatcher, "start_ea", 0) or 0
     ) != int(dispatcher.ea):
         return rejected("dispatcher_corridor_coverage_dispatcher_anchor_stale")
+    semantic_exclusions = _semantic_exclusions_from_coverage_metadata(raw_coverage)
+    if semantic_exclusions is None:
+        return rejected("dispatcher_corridor_coverage_semantic_exclusions_malformed")
     observed_coverage = _coverage_from_post_successors(
         pre_graph,
         post_successors=post_graph.as_adjacency_dict(),
         dispatcher_entry_serial=int(dispatcher.serial),
+        semantic_exclusions=semantic_exclusions,
     )
     if dict(raw_coverage) != observed_coverage.to_metadata():
         return DispatcherCorridorCoverageValidation(
@@ -3601,6 +3864,7 @@ def _interval_state_normalizer_retirement_allowance(
     raw_proof: Mapping[str, object],
     proof: DispatcherRemovalPreflightProof,
     coverage: DispatcherCorridorCoverage,
+    patch_plan: PatchPlan | None = None,
 ) -> IntervalStateNormalizerRetirementProof | None:
     """Independently prove the exact interval-normalizer retirement shape."""
     dispatcher = proof.dispatcher
@@ -3626,15 +3890,15 @@ def _interval_state_normalizer_retirement_allowance(
     )
     if comparison_entry_serial not in comparison_region:
         return None
-    pre_reachable = _reachable_from_entry(
-        pre_graph.as_adjacency_dict(),
-        int(pre_graph.entry_serial),
-    )
     post_reachable = _reachable_from_entry(
         post_graph.as_adjacency_dict(),
         int(post_graph.entry_serial),
     )
-    lost = frozenset(pre_reachable - post_reachable)
+    lost = _semantic_lost_blocks(
+        pre_graph,
+        post_graph=post_graph,
+        patch_plan=patch_plan,
+    )
     if lost != proof.lost_blocks:
         return None
     raw_lost = _payload_anchor_set(raw_proof.get("lost_blocks"))
@@ -3877,6 +4141,300 @@ def _pure_state_transition_plumbing_role(
     return None
 
 
+def _exact_partitioned_state_transition_plumbing_retirement(
+    pre_graph: FlowGraph,
+    *,
+    post_graph: FlowGraph,
+    proof: DispatcherRemovalPreflightProof,
+    state_identity: StorageIdentity,
+    comparison_region: frozenset[int],
+    main_decision_forest: DecisionDag,
+    lost: frozenset[int],
+    pre_reachable: frozenset[int],
+    post_reachable: frozenset[int],
+    handler_serials: frozenset[int],
+    post_handlers: tuple[DispatcherBlockAnchor, ...],
+) -> StateTransitionPlumbingRetirementProof | None:
+    """Prove exact source partitions that bypass state writers and forests.
+
+    Unlike the legacy structural allowance below, this path admits a state
+    writer whose physical successor is an internal node of the main dispatcher
+    forest or the root of a smaller same-state comparison forest.  Every
+    reachable source partition must be redirected to the handler selected by
+    replaying its exact source-owned U32 state through that actual comparison
+    entry.  The proof reuses the existing carrier/state-transform evaluator and
+    comparison router; it introduces no new symbolic authority.
+    """
+
+    if state_identity.kind is StorageIdentityKind.STACK:
+        state_var_stkoff = int(state_identity.offset)
+        state_var_reg = None
+    elif state_identity.kind is StorageIdentityKind.REGISTER:
+        state_var_stkoff = None
+        state_var_reg = int(state_identity.offset)
+    else:
+        return None
+
+    dispatcher = proof.dispatcher
+    if dispatcher is None:
+        return None
+    untyped = frozenset(int(serial) for serial in lost - comparison_region)
+    if not untyped:
+        return None
+
+    feeder_routes: dict[int, tuple[int, DecisionDag, frozenset[int]]] = {}
+    secondary_regions: set[frozenset[int]] = set()
+    for serial in sorted(untyped):
+        block = pre_graph.get_block(serial)
+        if block is None or getattr(block, "kind", None) is not BlockKind.ONE_WAY:
+            continue
+        successors = tuple(int(target) for target in block.succs)
+        if len(successors) != 1:
+            continue
+        instructions = InstructionProjection.from_block(block)
+        if not any(
+            instruction.control is None
+            and instruction.result is not None
+            and int(instruction.result.size) == 4
+            and storage_identity_from_varnode(instruction.result) == state_identity
+            for instruction in instructions
+        ):
+            continue
+        comparison_entry = successors[0]
+        if comparison_entry in {
+            *main_decision_forest.nodes,
+            *main_decision_forest.aliases,
+        }:
+            route_forest = main_decision_forest
+            secondary_region = frozenset()
+        else:
+            route_forest = build_current_u32_decision_forest(
+                pre_graph,
+                comparison_entry,
+                expected_identities=frozenset({state_identity}),
+            )
+            secondary_region = frozenset(
+                ()
+                if route_forest is None
+                else {*route_forest.nodes, *route_forest.aliases}
+            )
+            if (
+                route_forest is None
+                or comparison_entry not in secondary_region
+                or secondary_region & comparison_region
+                or not secondary_region.issubset(untyped)
+            ):
+                continue
+            secondary_regions.add(secondary_region)
+        feeder_routes[serial] = (
+            comparison_entry,
+            route_forest,
+            secondary_region,
+        )
+
+    feeder_serials = frozenset(feeder_routes)
+    secondary_serials = frozenset().union(*secondary_regions)
+    if not feeder_serials or feeder_serials & secondary_serials:
+        return None
+    if feeder_serials | secondary_serials != untyped:
+        return None
+
+    # A secondary forest may retain stale unreachable predecessor metadata,
+    # but every pre-reachable incoming edge must be one of the exact state
+    # writer partitions proved below.
+    for region in secondary_regions:
+        entering_feeders = frozenset(
+            feeder
+            for feeder, (entry, _forest, _secondary) in feeder_routes.items()
+            if entry in region
+        )
+        for serial in region:
+            block = pre_graph.get_block(serial)
+            if block is None:
+                return None
+            for predecessor in (int(pred) for pred in block.preds):
+                if predecessor in region or predecessor in entering_feeders:
+                    continue
+                if predecessor in pre_reachable:
+                    return None
+
+    routes: list[StateTransitionPlumbingRouteProof] = []
+    routed_untyped: set[int] = set()
+    for feeder_serial in sorted(feeder_routes):
+        feeder = pre_graph.get_block(feeder_serial)
+        if feeder is None:
+            return None
+        comparison_entry, route_forest, _secondary_region = feeder_routes[
+            feeder_serial
+        ]
+        reachable_sources = tuple(
+            sorted(int(pred) for pred in feeder.preds if int(pred) in pre_reachable)
+        )
+        if not reachable_sources:
+            return None
+        for source in reachable_sources:
+            if source not in post_reachable:
+                return None
+            pre_source = pre_graph.get_block(source)
+            post_source = post_graph.get_block(source)
+            if pre_source is None or post_source is None:
+                return None
+            before = set(int(target) for target in pre_source.succs)
+            after = set(int(target) for target in post_source.succs)
+            if feeder_serial not in before or feeder_serial in after:
+                return None
+            added = after - (before - {feeder_serial})
+            if len(added) != 1 or after != (before - {feeder_serial}) | added:
+                return None
+            replacement_target = next(iter(added))
+            if (
+                replacement_target not in post_reachable
+                or replacement_target == source
+            ):
+                return None
+
+            carrier = prove_exact_u32_carrier_state_write(
+                pre_graph,
+                source,
+                feeder_serial,
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+                required_comparison_serials=frozenset({comparison_entry}),
+            )
+            transform = prove_exact_u32_state_transform_feeder(
+                pre_graph,
+                source,
+                feeder_serial,
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+                required_comparison_serials=frozenset({comparison_entry}),
+                expected_state=None,
+            )
+            exact_proofs = tuple(
+                candidate for candidate in (carrier, transform) if candidate is not None
+            )
+            if len(exact_proofs) != 1:
+                return None
+            exact_proof = exact_proofs[0]
+            if (
+                getattr(exact_proof, "state_identity", None) != state_identity
+                or bool(getattr(exact_proof, "requires_feeder_clone", False))
+            ):
+                return None
+            bound_route = route_current_u32_decision_forest(
+                pre_graph,
+                route_forest,
+                int(exact_proof.state),
+                entry_serial=comparison_entry,
+            )
+            route = (
+                None
+                if bound_route is None
+                else _DispatcherConstantRoute(
+                    comparison_path=bound_route[1],
+                    exit_serial=bound_route[0],
+                )
+            )
+            if (
+                route is None
+                or int(route.exit_serial) not in post_reachable
+                or int(route.exit_serial) == source
+            ):
+                return None
+            routed_handler = int(route.exit_serial)
+
+            if replacement_target == routed_handler:
+                post_routed_handler = replacement_target
+            elif routed_handler in handler_serials:
+                post_route_forest = build_current_u32_decision_forest(
+                    post_graph,
+                    replacement_target,
+                    expected_identities=frozenset({state_identity}),
+                )
+                if post_route_forest is None:
+                    return None
+                post_bound_route = route_current_u32_decision_forest(
+                    post_graph,
+                    post_route_forest,
+                    int(exact_proof.state),
+                    entry_serial=replacement_target,
+                )
+                if post_bound_route is None:
+                    return None
+                post_routed_handler = int(post_bound_route[0])
+                post_full_route = (*post_bound_route[1], post_routed_handler)
+                for left, right in zip(
+                    post_full_route,
+                    post_full_route[1:],
+                    strict=False,
+                ):
+                    left_block = post_graph.get_block(left)
+                    right_block = post_graph.get_block(right)
+                    if (
+                        left_block is None
+                        or right_block is None
+                        or right
+                        not in tuple(int(target) for target in left_block.succs)
+                        or left not in tuple(int(pred) for pred in right_block.preds)
+                    ):
+                        return None
+            else:
+                return None
+            if (
+                post_routed_handler != routed_handler
+                or post_routed_handler not in post_reachable
+            ):
+                return None
+            full_route = (*route.comparison_path, int(route.exit_serial))
+            for left, right in zip(full_route, full_route[1:], strict=False):
+                left_block = pre_graph.get_block(left)
+                right_block = pre_graph.get_block(right)
+                if (
+                    left_block is None
+                    or right_block is None
+                    or right not in tuple(int(target) for target in left_block.succs)
+                    or left not in tuple(int(pred) for pred in right_block.preds)
+                ):
+                    return None
+            path_serials = (feeder_serial, *route.comparison_path)
+            routed_untyped.update(
+                serial for serial in path_serials if serial in untyped
+            )
+            routes.append(
+                StateTransitionPlumbingRouteProof(
+                    source=_anchor(pre_graph, source),
+                    path=tuple(
+                        _anchor(pre_graph, serial) for serial in path_serials
+                    ),
+                    state_writer=_anchor(pre_graph, feeder_serial),
+                    routed_handler=_anchor(post_graph, routed_handler),
+                )
+            )
+
+    if not routes or routed_untyped != set(untyped):
+        return None
+    retired = tuple(
+        RetiredDispatcherInfrastructure(
+            role=(
+                "dispatcher_state_writer"
+                if serial in feeder_serials
+                else "state_comparison_corridor"
+            ),
+            anchor=_anchor(pre_graph, serial),
+        )
+        for serial in sorted(untyped)
+    )
+    return StateTransitionPlumbingRetirementProof(
+        dispatcher=dispatcher,
+        state_identity=state_identity,
+        routes=tuple(routes),
+        retired_state_plumbing=retired,
+        semantic_handlers=proof.authoritative_handlers,
+        post_reachable_handlers=post_handlers,
+        lost_blocks=_anchors_for_serials(pre_graph, lost),
+    )
+
+
 def _state_transition_plumbing_retirement_allowance(
     pre_graph: FlowGraph,
     *,
@@ -3884,6 +4442,8 @@ def _state_transition_plumbing_retirement_allowance(
     raw_proof: Mapping[str, object],
     proof: DispatcherRemovalPreflightProof,
     coverage: DispatcherCorridorCoverage,
+    validated_exact_effect_exclusion_serials: frozenset[int] = frozenset(),
+    patch_plan: PatchPlan | None = None,
 ) -> StateTransitionPlumbingRetirementProof | None:
     """Independently prove pure state-expression corridors retired by routes.
 
@@ -3907,12 +4467,23 @@ def _state_transition_plumbing_retirement_allowance(
     )
     if state_identity is None:
         return None
-    comparison_region = _state_dispatcher_comparison_region(
+    comparison_region = _independent_comparison_dispatcher_region(
         pre_graph,
         dispatcher_entry_serial=int(dispatcher.serial),
-        state_identity=state_identity,
     )
     if int(dispatcher.serial) not in comparison_region:
+        return None
+    main_decision_forest = build_current_u32_decision_forest(
+        pre_graph,
+        int(dispatcher.serial),
+        expected_identities=frozenset({state_identity}),
+    )
+    if (
+        main_decision_forest is None
+        or not frozenset(
+            {*main_decision_forest.nodes, *main_decision_forest.aliases}
+        ).issubset(comparison_region)
+    ):
         return None
     pre_reachable = _reachable_from_entry(
         pre_graph.as_adjacency_dict(),
@@ -3922,11 +4493,20 @@ def _state_transition_plumbing_retirement_allowance(
         post_graph.as_adjacency_dict(),
         int(post_graph.entry_serial),
     )
-    lost = frozenset(pre_reachable - post_reachable)
+    lost = _semantic_lost_blocks(
+        pre_graph,
+        post_graph=post_graph,
+        patch_plan=patch_plan,
+    )
     if lost != proof.lost_blocks:
         return None
+    retirement_lost = frozenset(
+        int(serial)
+        for serial in lost
+        if int(serial) not in validated_exact_effect_exclusion_serials
+    )
     raw_lost = _payload_anchor_set(raw_proof.get("lost_blocks"))
-    if raw_lost != frozenset(proof.lost_block_anchors):
+    if raw_lost != frozenset(_anchors_for_serials(pre_graph, retirement_lost)):
         return None
     raw_pre_terminals = _payload_anchor_set(raw_proof.get("pre_reachable_terminals"))
     if raw_pre_terminals != frozenset(proof.pre_reachable_terminals):
@@ -3948,7 +4528,23 @@ def _state_transition_plumbing_retirement_allowance(
     if set(proof.pre_reachable_terminals) != set(proof.post_reachable_terminals):
         return None
 
-    untyped = set(int(serial) for serial in lost - comparison_region)
+    partitioned = _exact_partitioned_state_transition_plumbing_retirement(
+        pre_graph,
+        post_graph=post_graph,
+        proof=proof,
+        state_identity=state_identity,
+        comparison_region=comparison_region,
+        main_decision_forest=main_decision_forest,
+        lost=retirement_lost,
+        pre_reachable=pre_reachable,
+        post_reachable=post_reachable,
+        handler_serials=handler_serials,
+        post_handlers=post_handlers,
+    )
+    if partitioned is not None:
+        return partitioned
+
+    untyped = set(int(serial) for serial in retirement_lost - comparison_region)
     if not untyped:
         return None
     roles: dict[int, str] = {}
@@ -4042,7 +4638,7 @@ def _state_transition_plumbing_retirement_allowance(
         retired_state_plumbing=retired,
         semantic_handlers=proof.authoritative_handlers,
         post_reachable_handlers=post_handlers,
-        lost_blocks=_anchors_for_serials(pre_graph, lost),
+        lost_blocks=_anchors_for_serials(pre_graph, retirement_lost),
     )
 
 
@@ -4053,6 +4649,7 @@ def _comparison_corridor_retirement_allowance(
     raw_proof: Mapping[str, object],
     proof: DispatcherRemovalPreflightProof,
     coverage: DispatcherCorridorCoverage,
+    patch_plan: PatchPlan | None = None,
 ) -> ComparisonCorridorRetirementProof | None:
     """Recompute the control-only corridor exception at transaction preflight."""
     dispatcher = proof.dispatcher
@@ -4063,13 +4660,11 @@ def _comparison_corridor_retirement_allowance(
         or not proof.authoritative_handlers
     ):
         return None
-    pre_reachable = _reachable_from_entry(
-        pre_graph.as_adjacency_dict(), int(pre_graph.entry_serial)
+    lost = _semantic_lost_blocks(
+        pre_graph,
+        post_graph=post_graph,
+        patch_plan=patch_plan,
     )
-    post_reachable = _reachable_from_entry(
-        post_graph.as_adjacency_dict(), int(post_graph.entry_serial)
-    )
-    lost = frozenset(pre_reachable - post_reachable)
     if lost != proof.lost_blocks:
         return None
     raw_lost = _payload_anchor_set(raw_proof.get("lost_blocks"))
@@ -4168,6 +4763,8 @@ def validate_dispatcher_removal_preflight_proof(
     *,
     post_graph: FlowGraph,
     plan_metadata: object,
+    validated_exact_effect_exclusion_serials: frozenset[int] = frozenset(),
+    patch_plan: PatchPlan | None = None,
 ) -> DispatcherRemovalPreflightValidation:
     """Recompute and exact-match the producer proof at transaction preflight.
 
@@ -4217,10 +4814,17 @@ def validate_dispatcher_removal_preflight_proof(
             passed=False,
             reason="dispatcher_removal_proof_dispatcher_anchor_stale",
         )
+    semantic_exclusions = _semantic_exclusions_from_coverage_metadata(raw_coverage)
+    if semantic_exclusions is None:
+        return DispatcherRemovalPreflightValidation(
+            passed=False,
+            reason="dispatcher_removal_proof_semantic_exclusions_malformed",
+        )
     projected_coverage = _coverage_from_post_successors(
         pre_graph,
         post_successors=post_graph.as_adjacency_dict(),
         dispatcher_entry_serial=int(dispatcher.serial),
+        semantic_exclusions=semantic_exclusions,
     )
     if dict(raw_coverage) != projected_coverage.to_metadata():
         return DispatcherRemovalPreflightValidation(
@@ -4337,6 +4941,7 @@ def validate_dispatcher_removal_preflight_proof(
         # rebuild only from independently observable effect-free CFG shape.
         producer_safety={},
         state_plumbing_serials=frozenset(),
+        patch_plan=patch_plan,
     )
     interval_normalizer = _interval_state_normalizer_retirement_allowance(
         pre_graph,
@@ -4344,6 +4949,7 @@ def validate_dispatcher_removal_preflight_proof(
         raw_proof=raw_proof,
         proof=proof,
         coverage=projected_coverage,
+        patch_plan=patch_plan,
     )
     if interval_normalizer is not None:
         return DispatcherRemovalPreflightValidation(
@@ -4358,6 +4964,10 @@ def validate_dispatcher_removal_preflight_proof(
         raw_proof=raw_proof,
         proof=proof,
         coverage=projected_coverage,
+        validated_exact_effect_exclusion_serials=(
+            validated_exact_effect_exclusion_serials
+        ),
+        patch_plan=patch_plan,
     )
     if state_transition_plumbing is not None:
         return DispatcherRemovalPreflightValidation(
@@ -4372,6 +4982,7 @@ def validate_dispatcher_removal_preflight_proof(
         raw_proof=raw_proof,
         proof=proof,
         coverage=projected_coverage,
+        patch_plan=patch_plan,
     )
     if comparison_corridor is not None:
         return DispatcherRemovalPreflightValidation(

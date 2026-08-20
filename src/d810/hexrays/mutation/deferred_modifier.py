@@ -196,7 +196,7 @@ import hashlib
 import re
 import uuid
 
-from d810.core.typing import TYPE_CHECKING, Callable, Iterable
+from d810.core.typing import TYPE_CHECKING, Callable, Collection, Iterable
 import os
 import time
 
@@ -2800,6 +2800,7 @@ class DeferredGraphModifier:
         via_pred: int | None = None,
         clone_until: int | None = None,
         source_new_target: int | None = None,
+        clone_expected_serials: tuple[int, ...] | None = None,
         description: str = "",
         rule_priority: int = 0,
     ) -> None:
@@ -2853,6 +2854,7 @@ class DeferredGraphModifier:
                 via_pred=via_pred,
                 clone_until=clone_until,
                 source_new_target=source_new_target,
+                clone_expected_serials=clone_expected_serials,
             )
         )
         logger.debug(
@@ -11244,6 +11246,7 @@ class DeferredGraphModifier:
                 mod.via_pred,
                 mod.clone_until,
                 mod.source_new_target,
+                mod.clone_expected_serials or (),
             )
 
         elif mod.mod_type == ModificationType.EDGE_SPLIT_TRAMPOLINE:
@@ -17242,6 +17245,7 @@ class DeferredGraphModifier:
         via_pred: int,
         clone_until: int | None,
         source_new_target: int | None = None,
+        clone_expected_serials: tuple[int, ...] = (),
     ) -> bool:
         """Clone ``blk`` and rewire ``via_pred``'s edge from ``blk`` to the clone.
 
@@ -17267,6 +17271,7 @@ class DeferredGraphModifier:
                 via_pred=via_pred,
                 clone_until=clone_until,
                 source_new_target=source_new_target,
+                clone_expected_serials=clone_expected_serials,
             )
 
         mba = self.mba
@@ -17396,6 +17401,7 @@ class DeferredGraphModifier:
         via_pred: int,
         clone_until: int,
         source_new_target: int | None = None,
+        clone_expected_serials: tuple[int, ...] = (),
     ) -> bool:
         """Clone a strict 1-way corridor and redirect one predecessor to it.
 
@@ -17508,9 +17514,26 @@ class DeferredGraphModifier:
                 new_target,
             )
             return False
+        if clone_expected_serials and len(clone_expected_serials) != len(
+            corridor_serials
+        ):
+            logger.warning(
+                "edge_redirect_via_pred_split corridor: expected %d clone serials for %d blocks",
+                len(clone_expected_serials),
+                len(corridor_serials),
+            )
+            return False
 
         cloned_serials: list[int] = []
         try:
+            # ``copy_block(..., qty - 1)`` inserts immediately before BLT_STOP.
+            # If the current penultimate block reaches BLT_STOP by implicit
+            # fallthrough, insertion silently retargets that physical edge to
+            # the clone without adding the reciprocal predecessor.  Stabilize
+            # it as an explicit goto before allocating the first clone.
+            ensure_last_block_is_goto(mba, verify=False)
+            if clone_expected_serials:
+                self._begin_patch_block_creation(*clone_expected_serials)
             for index, template_blk in enumerate(corridor_templates):
                 assert template_blk is not None
                 is_last = index == len(corridor_templates) - 1
@@ -17540,6 +17563,10 @@ class DeferredGraphModifier:
                     is_0_way=False,
                     verify=False,
                 )
+                if clone_expected_serials:
+                    self._bind_patch_block_creation(
+                        clone_expected_serials[index], cloned_blk.serial
+                    )
                 cloned_serials.append(cloned_blk.serial)
 
             for index in range(len(cloned_serials) - 1):

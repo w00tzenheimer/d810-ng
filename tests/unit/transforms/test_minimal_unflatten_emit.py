@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import d810.analyses.control_flow.minimal_state_recovery as minimal_state_recovery_module
 from d810.transforms import minimal_unflatten_emit as minimal_unflatten_emit_module
 
 from d810.capabilities.dispatcher import RouterKind
@@ -75,6 +76,7 @@ from d810.ir.flowgraph import (
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.transforms.graph_modification import (
     ConvertToGoto,
+    EdgeRedirectViaPredSplit,
     LowerConditionalStateTransition,
     NopInstructions,
     PreserveLivePredicateCondition,
@@ -83,6 +85,9 @@ from d810.transforms.graph_modification import (
     SyntheticRegisterNonzeroCondition,
     SyntheticStackValueEqualsCondition,
 )
+from d810.transforms.edit_simulator import project_patch_plan
+from d810.transforms.plan import compile_patch_plan
+from d810.transforms.cfg_transaction import LogicalBlockRef
 from d810.transforms.minimal_unflatten_emit import (
     _applied_conditional_boundary_edge_keys,
     _applied_direct_boundary_edge_keys,
@@ -725,6 +730,58 @@ def test_native_bound_route_receipt_identifies_accepted_current_route(
         "native-bound transition route receipt:" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_intermediate_effect_veto_stops_later_sibling_planning(monkeypatch):
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 20), (0, 10, 20)),
+            10: _b(10, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(
+                10,
+                0x20,
+                20,
+                False,
+                0,
+                proof=TransitionProof("exact", "test", True),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_stage_effect_safe_intermediate_redirect_groups",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_later_planning(*_args, **_kwargs):
+        raise AssertionError("effect veto must stop later sibling planning")
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_handler_transitions",
+        fail_later_planning,
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        disp,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+    )
+
+    assert graph_modifications(plan) == []
 
 
 def test_native_bound_entry_route_receipt_identifies_exact_redirect(monkeypatch):
@@ -3399,6 +3456,299 @@ def test_source_keyed_handler_owner_redirects_one_branch_arm(_seam) -> None:
     mods = build_source_keyed_handler_redirects(fg, (handler,))
 
     assert mods == [RedirectBranch(10, 12, 20)]
+
+
+def test_source_keyed_group_abstains_when_last_default_effect_route_is_lost(
+    _seam,
+) -> None:
+    """Source-keyed shortcuts cannot collectively strand a live default arm."""
+
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (77, 284, 452, 610), ()),
+            77: _b(77, (78,), (0,)),
+            284: _b(284, (78,), (0,)),
+            452: _b(452, (78,), (0,)),
+            78: _b(78, (79, 546), (77, 284, 452)),
+            79: _b(79, (), (78,)),
+            546: _b(546, (547,), (78,), (_call_reg(0x18002CF2E, 7),)),
+            547: _b(547, (), (546,)),
+            600: _b(600, (), ()),
+            601: _b(601, (), ()),
+            610: _b(610, (611,), (0,)),
+            611: _b(611, (), (610,)),
+            612: _b(612, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x180015110,
+    )
+    handler = HandlerTransition(
+        handler=452,
+        states=(0x40131868,),
+        arms=(
+            TransitionArm(
+                0x40131868,
+                79,
+                False,
+                None,
+                452,
+                79,
+                (452, 78, 79),
+                source_keyed_block=452,
+            ),
+        ),
+    )
+    source_keyed = build_source_keyed_handler_redirects(fg, (handler,))
+    assert source_keyed == [RedirectGoto(452, 78, 79)]
+    base = [RedirectGoto(77, 78, 600), RedirectGoto(284, 78, 601)]
+
+    def project(modifications):
+        plan = compile_patch_plan(
+            tuple(modifications),
+            fg,
+            block_refs_by_serial={
+                serial: LogicalBlockRef("source-keyed-effect", f"blk-{serial}", 0)
+                for serial in fg.blocks
+            },
+        )
+        return project_patch_plan(fg, plan, snapshot_id=plan.snapshot_id).graph
+
+    stage_intermediate_groups = getattr(
+        minimal_unflatten_emit_module,
+        "_stage_effect_safe_intermediate_redirect_groups",
+    )
+    assert stage_intermediate_groups(
+        fg,
+        [*base, *source_keyed],
+        dispatcher_entry_serial=5,
+        project_modifications=project,
+    ) is None
+
+    merge_group = getattr(
+        minimal_unflatten_emit_module,
+        "_merge_effect_safe_source_keyed_redirect_group",
+    )
+    safe = RedirectGoto(610, 611, 612)
+    merged, accepted = merge_group(
+        fg,
+        base,
+        [*source_keyed, safe],
+        project_modifications=project,
+    )
+    assert accepted is False
+    assert merged == base
+
+    merged, accepted = merge_group(
+        fg,
+        base,
+        [safe],
+        project_modifications=project,
+    )
+    assert accepted is True
+    assert merged == [*base, safe]
+
+    # Attribute only effects newly lost by this optional group.  An already
+    # unsafe base remains the final fragment-wide preflight gate's concern.
+    already_lost = [*base, *source_keyed]
+    merged, accepted = merge_group(
+        fg,
+        already_lost,
+        [safe],
+        project_modifications=project,
+    )
+    assert accepted is True
+    assert merged == [*already_lost, safe]
+
+    def fail_projection(_modifications):
+        raise RuntimeError("projection failed")
+
+    with pytest.raises(RuntimeError, match="projection failed"):
+        merge_group(
+            fg,
+            base,
+            source_keyed,
+            project_modifications=fail_projection,
+        )
+
+
+def test_intermediate_stage_accounts_for_semantic_retained_route_folding(
+    _seam,
+) -> None:
+    """Earlier corridor cuts cannot rely on a concretely selected retained arm."""
+
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (10, 20, 452), ()),
+            10: _b(10, (77,), (0,)),
+            20: _b(20, (284,), (0,)),
+            77: _b(77, (78,), (10,)),
+            284: _b(284, (78,), (20,)),
+            452: _b(452, (78,), (0,)),
+            78: _b(78, (79, 546), (77, 284, 452)),
+            79: _b(79, (), (78,)),
+            546: _b(546, (), (78,), (_call_reg(0x18002CF2E, 7),)),
+            600: _b(600, (), ()),
+            601: _b(601, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x180015110,
+    )
+    corridor_cuts = [
+        RedirectGoto(10, 77, 600),
+        RedirectGoto(20, 284, 601),
+    ]
+    exact_retained_route = RedirectGoto(452, 78, 79)
+
+    def project(modifications):
+        plan = compile_patch_plan(
+            tuple(modifications),
+            fg,
+            block_refs_by_serial={
+                serial: LogicalBlockRef("semantic-retained-effect", f"blk-{serial}", 0)
+                for serial in fg.blocks
+            },
+        )
+        return project_patch_plan(fg, plan, snapshot_id=plan.snapshot_id).graph
+
+    stage_intermediate_groups = getattr(
+        minimal_unflatten_emit_module,
+        "_stage_effect_safe_intermediate_redirect_groups",
+    )
+
+    # Structurally retaining 452 -> 78 appears to preserve the default arm,
+    # but the exact recovered state selects 79.  Hex-Rays folds that retained
+    # comparison after the earlier corridor cuts, so staging must retain at
+    # least one genuinely unresolved ingress instead of accepting both cuts.
+    staged = stage_intermediate_groups(
+        fg,
+        [*corridor_cuts, exact_retained_route],
+        dispatcher_entry_serial=5,
+        project_modifications=project,
+    )
+    assert staged is not None
+    assert staged.modifications == (corridor_cuts[0],)
+    assert staged.effect_exclusions == ()
+    assert not minimal_unflatten_emit_module.check_effectful_reachability_preserved(
+        fg,
+        post_cfg=project(tuple((*staged.modifications, exact_retained_route))),
+    ).lost_block_serials
+
+
+def test_intermediate_stage_carries_exact_infeasible_effect_proof(_seam) -> None:
+    state = 0x40131868
+    source = replace(
+        _b(
+            452,
+            (78,),
+            (361,),
+            (
+                _mov_state(0x18002A9E6, state),
+                InsnSnapshot(
+                    opcode=55,
+                    ea=0x18002A9EC,
+                    operands=(),
+                    l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=78),
+                    kind=InsnKind.GOTO,
+                ),
+            ),
+        ),
+        start_ea=0x18002A9CE,
+        native_start_ea=0x18002A9CE,
+    )
+    predicate = replace(
+        _b(
+            78,
+            (79, 546),
+            (77, 284, 452),
+            (
+                InsnSnapshot(
+                    opcode=43,
+                    ea=0x180016416,
+                    operands=(),
+                    l=MopSnapshot(
+                        kind=OperandKind.STACK,
+                        size=4,
+                        stkoff=_STATE,
+                        stack_refs=(_STATE,),
+                    ),
+                    r=MopSnapshot(
+                        kind=OperandKind.NUMBER,
+                        size=4,
+                        value=state,
+                    ),
+                    d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=546),
+                    kind=InsnKind.COND_JUMP,
+                    branch_predicate=PredicateKind.NE,
+                    is_conditional_jump=True,
+                ),
+            ),
+        ),
+        start_ea=0x180016411,
+        native_start_ea=0x180016411,
+    )
+    effect = replace(
+        _b(546, (), (78,), (_call_reg(0x18002CF2E, 7),)),
+        start_ea=0x18002CF19,
+        native_start_ea=0x18002CF19,
+    )
+    graph = FlowGraph(
+        blocks={
+            0: _b(0, (361,), ()),
+            361: _b(361, (452,), (0,)),
+            77: _b(77, (78,), ()),
+            284: _b(284, (78,), ()),
+            452: source,
+            78: predicate,
+            79: _b(79, (), (78,)),
+            546: effect,
+        },
+        entry_serial=0,
+        func_ea=0x180015110,
+    )
+    exact_route = RedirectGoto(452, 78, 79)
+    transition = StateWriteTransition(
+        452,
+        state,
+        79,
+        False,
+        None,
+        via_block=78,
+        proof=TransitionProof(
+            "decision_dag_state_route_reconciliation",
+            "decision_dag_reconciled",
+            True,
+            route_source_kinds=("decision_dag", "interval"),
+        ),
+    )
+
+    def project(modifications):
+        plan = compile_patch_plan(
+            tuple(modifications),
+            graph,
+            block_refs_by_serial={
+                serial: LogicalBlockRef("exact-effect", f"blk-{serial}", 0)
+                for serial in graph.blocks
+            },
+        )
+        return project_patch_plan(graph, plan, snapshot_id=plan.snapshot_id).graph
+
+    stage = minimal_unflatten_emit_module._stage_effect_safe_intermediate_redirect_groups(
+        graph,
+        [exact_route],
+        dispatcher_entry_serial=5,
+        project_modifications=project,
+        transitions=(transition,),
+        state_var_stkoff=_STATE,
+    )
+
+    assert stage is not None
+    assert stage.modifications == ()
+    (proof,) = stage.effect_exclusions
+    assert proof.normalized_state == state
+    assert proof.source_serial == 452
+    assert proof.predicate_serial == 78
+    assert proof.selected_target_serial == 79
+    assert proof.discarded_effect_serial == 546
 
 
 def test_source_keyed_route_does_not_override_exact_live_edge(_seam) -> None:
@@ -11109,3 +11459,1304 @@ def _task5_default_dispatcher(target: int = 10) -> _DualRouteDispatcher:
         interval_rows=(IntervalRow(0, 0x100000000, target),),
         default_target=target,
     )
+
+
+def _nested_source_scoped_entry_fixture() -> tuple[FlowGraph, DecisionDag]:
+    state = 0x704FAFF6
+    blocks = {
+        0: _b(0, (2,), ()),
+        2: _b(2, (3,), (0,), (_mov_state(0x1800151C6, state),)),
+        222: _b(222, (3,), (100,)),
+        3: _b(3, (5,), (2, 222), (_mov_state(0x1800151C9, 0),)),
+        5: replace(
+            _eq_block(5, state, 304, 100, preds=(3,)),
+            start_ea=0x1800151E1,
+        ),
+        100: _b(100, (222,), (5,)),
+        304: _b(304, (200,), (5,), (_mov_reg_from_stack(0x18001F0AE, 0, 0x150),)),
+        200: _exit_block(200, (304,)),
+    }
+    return FlowGraph(blocks, 0, 0x180015110), DecisionDag(
+        32,
+        {5: RouteComparison(5, "jz", state, 304, 100)},
+        root=5,
+    )
+
+
+def _nested_source_scoped_entry_transition(
+    *, target: int = 304, trusted: bool = True
+) -> StateWriteTransition:
+    return StateWriteTransition(
+        2,
+        0x704FAFF6,
+        target,
+        False,
+        None,
+        via_block=3,
+        proof=TransitionProof(
+            "decision_dag_state_route_reconciliation",
+            "decision_dag_reconciled",
+            trusted,
+            route_source_kinds=("decision_dag",),
+        ),
+    )
+
+
+def test_nested_source_scoped_entry_route_uses_reconciled_transition(
+    monkeypatch,
+    _seam,
+) -> None:
+    """A shared feeder is bridged only on its exact initial source partition."""
+
+    graph, dag = _nested_source_scoped_entry_fixture()
+    transition = _nested_source_scoped_entry_transition()
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (transition,),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "resolve_materialized_indirect_transfer_targets",
+        lambda rows, *_args, **_kwargs: tuple(rows),
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(0x6FB5D126, 0x709608EC, 304),),
+        default_target=200,
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=5,
+        initial_state=0x704FAFF6,
+        condition_chain_dag=dag,
+        # The current selected-root handler set is partial and omits the exact
+        # semantic leaf reached by this source-scoped DAG route.
+        condition_chain_handlers=frozenset({100}),
+        authoritative_handler_serials=frozenset({100, 304}),
+        dispatcher_region_serials=frozenset({5}),
+        materialized_computed_goto_profile=False,
+    )
+
+    redirects = tuple(
+        modification
+        for modification in graph_modifications(plan)
+        if isinstance(modification, RedirectGoto)
+    )
+    assert RedirectGoto(2, 3, 304) in redirects
+    assert not any(
+        modification.from_serial == 3 and modification.old_target == 5
+        for modification in graph_modifications(plan)
+        if isinstance(modification, (RedirectGoto, RedirectBranch))
+    )
+    assert not any(
+        modification.from_serial == 222
+        for modification in graph_modifications(plan)
+    )
+    (receipt,) = plan.metadata_dict()[CONCRETE_STATE_ROUTE_PROVENANCE_METADATA]
+    assert receipt == {
+        "site": "entry",
+        "normalized_state": 0x704FAFF6,
+        "target_handler": 304,
+        "source_kinds": ("decision_dag", "source_scoped_transition"),
+    }
+
+
+def test_nested_source_scoped_entry_route_conflict_abstains_atomically(
+    monkeypatch,
+    _seam,
+) -> None:
+    graph, dag = _nested_source_scoped_entry_fixture()
+    transition = _nested_source_scoped_entry_transition()
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (transition,),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "resolve_materialized_indirect_transfer_targets",
+        lambda rows, *_args, **_kwargs: tuple(rows),
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(0x6FB5D126, 0x709608EC, 100),),
+        default_target=200,
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=5,
+        initial_state=0x704FAFF6,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100}),
+        authoritative_handler_serials=frozenset({100, 304}),
+        dispatcher_region_serials=frozenset({5}),
+        materialized_computed_goto_profile=False,
+    )
+
+    assert graph_modifications(plan) == []
+
+
+@pytest.mark.parametrize("variant", ("untrusted", "one_sided", "ambiguous"))
+def test_nested_source_scoped_entry_route_fails_closed(variant: str) -> None:
+    graph, _dag = _nested_source_scoped_entry_fixture()
+    transition = _nested_source_scoped_entry_transition(
+        trusted=variant != "untrusted"
+    )
+    transitions = (transition,)
+    if variant == "one_sided":
+        graph = FlowGraph(
+            graph.blocks
+            | {3: replace(graph.blocks[3], preds=(222,))},
+            graph.entry_serial,
+            graph.func_ea,
+        )
+    elif variant == "ambiguous":
+        transitions = (
+            transition,
+            replace(transition, write_block=222),
+        )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(0x6FB5D126, 0x709608EC, 304),),
+        default_target=200,
+    )
+
+    resolution = minimal_unflatten_emit_module._resolve_entry_state_route_resolution(
+        dispatcher,
+        0x704FAFF6,
+        materialized_state_routes=(),
+        condition_chain_handlers=frozenset({100}),
+        dispatcher_entry_serial=5,
+        flow_graph=graph,
+        state_write_transitions=transitions,
+        dispatcher_region_serials=frozenset({5}),
+    )
+
+    assert resolution.route is None
+    assert resolution.source_scoped is False
+
+
+_PREFIX_SELECTED_STATE = 0x1DF15DAB
+_PREFIX_ALTERNATE_STATE = 0x50884FCC
+_PREFIX_COMPARE_STATE = 0x423C3FEB
+_PREFIX_DAG_STATE = 0x0EE1BCAD
+
+
+def _candidate_prefix_compare_block() -> BlockSnapshot:
+    return BlockSnapshot(
+        serial=4,
+        block_type=4,
+        succs=(20, 15),
+        preds=(400, 401, 402),
+        flags=0,
+        start_ea=0x180037940,
+        insn_snapshots=(
+            InsnSnapshot(
+                opcode=0x4A,
+                ea=0x180037970,
+                operands=(),
+                l=MopSnapshot(
+                    t=_T_STK,
+                    size=4,
+                    stkoff=_STATE,
+                    kind=OperandKind.STACK,
+                ),
+                r=MopSnapshot(
+                    t=_T_NUM,
+                    size=4,
+                    value=_PREFIX_COMPARE_STATE,
+                    kind=OperandKind.NUMBER,
+                ),
+                d=MopSnapshot(
+                    t=0,
+                    size=0,
+                    block_ref=15,
+                    kind=OperandKind.BLOCK,
+                ),
+                kind=InsnKind.COND_JUMP,
+                branch_predicate=PredicateKind.SLE,
+                is_conditional_jump=True,
+            ),
+        ),
+    )
+
+
+def _candidate_prefix_emitter_fixture() -> tuple[FlowGraph, DecisionDag]:
+    """Non-materialized equality-chain with one omitted current-snapshot prefix."""
+
+    unknown_state_write = InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=0x180046E00,
+        operands=(),
+        l=MopSnapshot(t=_T_REG, size=4, reg=8, kind=OperandKind.REGISTER),
+        d=MopSnapshot(t=_T_STK, size=4, stkoff=_STATE, kind=OperandKind.STACK),
+        kind=InsnKind.MOV,
+    )
+    graph = FlowGraph(
+        blocks={
+            4: _candidate_prefix_compare_block(),
+            15: _eq_block(
+                15,
+                _PREFIX_DAG_STATE,
+                100,
+                101,
+                preds=(4, 403, 490, 495),
+            ),
+            20: _b(20, (200,), (4,)),
+            100: _b(100, (15,), (15,)),
+            101: _b(101, (15,), (15,)),
+            200: _exit_block(200, (20,)),
+            399: _b(399, (400, 401, 402, 403, 490, 495), ()),
+            400: _b(400, (4,), (399,), (unknown_state_write,)),
+            401: _b(401, (4,), (399,), (_mov_state(0x180046F00, _PREFIX_ALTERNATE_STATE),)),
+            402: _b(402, (4,), (399,), (_mov_state(0x180047000, _PREFIX_SELECTED_STATE),)),
+            403: _b(403, (15,), (399,), (_mov_state(0x180047100, _PREFIX_SELECTED_STATE),)),
+            490: _b(490, (15,), (399,), (_mov_state(0x18004A100, _PREFIX_ALTERNATE_STATE),)),
+            495: _b(495, (15,), (399,), (_mov_state(0x18004A600, _PREFIX_DAG_STATE),)),
+        },
+        entry_serial=399,
+        func_ea=0x180037880,
+    )
+    dag = DecisionDag(
+        32,
+        {
+            15: RouteComparison(
+                15,
+                "jz",
+                _PREFIX_DAG_STATE,
+                100,
+                101,
+            ),
+        },
+        root=15,
+    )
+    return graph, dag
+
+
+def _candidate_prefix_partitioned_emitter_fixture() -> tuple[FlowGraph, DecisionDag]:
+    """Faithful two-hop source -> feeder -> omitted-prefix topology."""
+
+    graph, dag = _candidate_prefix_emitter_fixture()
+    blocks = dict(graph.blocks)
+    blocks.pop(400)
+    blocks[399] = replace(blocks[399], succs=(401, 402, 403, 490, 495))
+    blocks[4] = replace(blocks[4], preds=(330,))
+    blocks[330] = _b(
+        330,
+        (4,),
+        (401, 402),
+        (_mov_state(0x180042930, _PREFIX_SELECTED_STATE),),
+    )
+    blocks[401] = replace(blocks[401], succs=(330,))
+    blocks[402] = replace(blocks[402], succs=(330,))
+    return FlowGraph(blocks, graph.entry_serial, graph.func_ea), dag
+
+
+def _candidate_prefix_transition(
+    source: int,
+    state: int,
+    target: int,
+    *,
+    via: int,
+    route_source_kinds: tuple[str, ...] = ("region_partitioned_fixpoint",),
+    proof_kind: str = "global_fold",
+) -> StateWriteTransition:
+    return StateWriteTransition(
+        source,
+        state,
+        target,
+        False,
+        None,
+        via_block=via,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            proof_kind,
+            True,
+            route_source_kinds=route_source_kinds,
+        ),
+    )
+
+
+def test_emitter_threads_one_candidate_prefix_authority_before_recovery(
+    monkeypatch,
+    _seam,
+) -> None:
+    """The emitter, not late reconciliation, owns prefix classification order."""
+
+    graph, dag = _candidate_prefix_emitter_fixture()
+    observation = minimal_state_recovery_module._observe_candidate_scoped_prefix(
+        graph,
+        dag,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+    authority = observation.authority
+    observer_calls: list[tuple[FlowGraph, DecisionDag]] = []
+    recovery_calls: list[dict[str, object]] = []
+    reconciliation_calls: list[dict[str, object]] = []
+
+    def observe_once(flow_graph, decision_dag, **_kwargs):
+        observer_calls.append((flow_graph, decision_dag))
+        return observation
+
+    def recover_with_scoped_feeders(*_args, **kwargs):
+        recovery_calls.append(dict(kwargs))
+        if kwargs.get("candidate_prefix_authority") is not authority:
+            # Current production reaches this branch: the prefix is admitted as
+            # one unresolved semantic back-edge instead of being router plumbing.
+            return (
+                StateWriteTransition(
+                    4,
+                    None,
+                    None,
+                    True,
+                    None,
+                    proof=TransitionProof(
+                        "region_partitioned_fixpoint",
+                        "unresolved",
+                        False,
+                    ),
+                ),
+            )
+        return (
+            _candidate_prefix_transition(401, _PREFIX_ALTERNATE_STATE, 101, via=4),
+            _candidate_prefix_transition(402, _PREFIX_SELECTED_STATE, 101, via=4),
+            _candidate_prefix_transition(403, _PREFIX_SELECTED_STATE, 101, via=15),
+            _candidate_prefix_transition(490, _PREFIX_ALTERNATE_STATE, 101, via=15),
+            _candidate_prefix_transition(495, _PREFIX_DAG_STATE, 100, via=15),
+        )
+
+    def reconcile_with_same_authority(transitions, *_args, **kwargs):
+        reconciliation_calls.append(
+            {"transitions": tuple(transitions), "kwargs": dict(kwargs)}
+        )
+        if kwargs.get("candidate_prefix_authority") is not authority:
+            return ()
+        by_source = {int(row.write_block): row for row in transitions}
+        selected = replace(
+            by_source[402],
+            proof=replace(
+                by_source[402].proof,
+                route_source_kinds=(
+                    "candidate_scoped_prefix_arm",
+                    "decision_dag",
+                ),
+            ),
+        )
+        direct = tuple(
+            replace(
+                by_source[source],
+                proof=replace(
+                    by_source[source].proof,
+                    route_source_kinds=("decision_dag",),
+                ),
+            )
+            for source in (403, 490, 495)
+        )
+        return (selected, *direct)
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "observe_candidate_scoped_prefix_authority",
+        observe_once,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        recover_with_scoped_feeders,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "resolve_materialized_indirect_transfer_targets",
+        reconcile_with_same_authority,
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        _disp(
+            {
+                _PREFIX_SELECTED_STATE: 101,
+                _PREFIX_ALTERNATE_STATE: 101,
+                _PREFIX_DAG_STATE: 100,
+            },
+            exit_block=200,
+        ),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=15,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        authoritative_handler_serials=frozenset({100, 101}),
+        dispatcher_region_serials=frozenset({15}),
+        recover_multi_entry_back_edges=False,
+        materialized_computed_goto_profile=False,
+    )
+
+    assert observer_calls == [(graph, dag)]
+    assert len(recovery_calls) == 1
+    assert recovery_calls[0]["dispatcher_region_serials"] == frozenset({4})
+    assert recovery_calls[0]["candidate_prefix_authority"] is authority
+    assert len(reconciliation_calls) == 1
+    assert reconciliation_calls[0]["kwargs"]["candidate_prefix_authority"] is authority
+    reconciled = reconciliation_calls[0]["transitions"]
+    assert tuple(int(row.write_block) for row in reconciled) == (401, 402, 403, 490, 495)
+
+    redirects = tuple(
+        modification
+        for modification in graph_modifications(plan)
+        if isinstance(modification, RedirectGoto)
+    )
+    assert RedirectGoto(402, 4, 101) in redirects
+    assert RedirectGoto(403, 15, 101) in redirects
+    assert RedirectGoto(490, 15, 101) in redirects
+    assert RedirectGoto(495, 15, 100) in redirects
+    assert all(modification.from_serial != 401 for modification in redirects)
+    assert tuple(modification.from_serial for modification in redirects) == tuple(
+        sorted(modification.from_serial for modification in redirects)
+    )
+
+
+def test_emitter_excludes_validated_prefix_from_seeded_back_edge_recovery(
+    monkeypatch,
+    _seam,
+) -> None:
+    """A current router prefix must never enter the semantic seeded DFS."""
+
+    graph, dag = _candidate_prefix_emitter_fixture()
+    seeded_targets: list[frozenset[int] | None] = []
+
+    def record_seeded_targets(*_args, **kwargs):
+        seeded_targets.append(kwargs.get("target_back_edges"))
+        return {}
+
+    monkeypatch.setattr(
+        minimal_state_recovery_module,
+        "_resolve_back_edge_states",
+        record_seeded_targets,
+    )
+    # Stop after the real recovery result; this regression owns only the
+    # recovery-classification boundary, not downstream plan construction.
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "resolve_materialized_indirect_transfer_targets",
+        lambda *_args, **_kwargs: (),
+    )
+
+    emit_minimal_unflatten(
+        graph,
+        _disp(
+            {
+                _PREFIX_SELECTED_STATE: 101,
+                _PREFIX_ALTERNATE_STATE: 101,
+                _PREFIX_DAG_STATE: 100,
+            },
+            exit_block=200,
+        ),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=15,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        authoritative_handler_serials=frozenset({100, 101}),
+        dispatcher_region_serials=frozenset({15}),
+        recover_multi_entry_back_edges=False,
+        materialized_computed_goto_profile=False,
+    )
+
+    assert all(
+        targets is None or 4 not in targets
+        for targets in seeded_targets
+    )
+
+
+def test_candidate_prefix_recovery_merges_scoped_and_direct_sources_physically(
+    _seam,
+) -> None:
+    graph, dag = _candidate_prefix_emitter_fixture()
+    blocks = dict(graph.blocks)
+    blocks.pop(400)
+    blocks[399] = replace(blocks[399], succs=(401, 402, 403, 490, 495))
+    blocks[4] = replace(blocks[4], preds=(401, 402))
+    graph = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+    observation = minimal_state_recovery_module.observe_candidate_scoped_prefix_authority(
+        graph,
+        dag,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+
+    recovered = minimal_state_recovery_module.recover_state_write_transitions_via_partitioned_fixpoint(
+        graph,
+        _disp(
+            {
+                _PREFIX_SELECTED_STATE: 101,
+                _PREFIX_ALTERNATE_STATE: 101,
+                _PREFIX_DAG_STATE: 100,
+            },
+            exit_block=200,
+        ),
+        _STATE,
+        dispatcher_entry_serial=15,
+        dispatcher_region_serials=frozenset({4}),
+        candidate_prefix_authority=observation.authority,
+    )
+
+    assert tuple(int(row.write_block) for row in recovered) == (401, 402, 403, 490, 495)
+    assert tuple(int(row.via_block) for row in recovered[:2]) == (4, 4)
+    assert tuple(int(row.via_block or 15) for row in recovered[2:]) == (15, 15, 15)
+
+
+def test_invalid_candidate_prefix_abstains_before_recovery_or_plan(
+    monkeypatch,
+    _seam,
+) -> None:
+    graph, dag = _candidate_prefix_emitter_fixture()
+    malformed_prefix = replace(
+        graph.blocks[4],
+        insn_snapshots=(
+            _call_reg(0x180037978, 8),
+            *graph.blocks[4].insn_snapshots,
+        ),
+    )
+    malformed = FlowGraph(
+        blocks={**graph.blocks, 4: malformed_prefix},
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+    observation = minimal_state_recovery_module._observe_candidate_scoped_prefix(
+        malformed,
+        dag,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert observation.authority is None
+    recovery_calls = 0
+
+    def observe_invalid(*_args, **_kwargs):
+        return observation
+
+    def record_recovery(*_args, **_kwargs):
+        nonlocal recovery_calls
+        recovery_calls += 1
+        return ()
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "observe_candidate_scoped_prefix_authority",
+        observe_invalid,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        record_recovery,
+    )
+
+    plan = emit_minimal_unflatten(
+        malformed,
+        _disp({_PREFIX_SELECTED_STATE: 101}, exit_block=200),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=15,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        authoritative_handler_serials=frozenset({100, 101}),
+        materialized_computed_goto_profile=False,
+    )
+
+    assert recovery_calls == 0
+    assert graph_modifications(plan) == []
+
+
+@pytest.mark.parametrize(
+    ("materialized_profile", "state_var_stkoff", "state_var_reg", "expected_region"),
+    (
+        (False, _STATE, None, frozenset()),
+        (True, None, 20, frozenset({15})),
+    ),
+)
+def test_candidate_prefix_not_applicable_preserves_legacy_recovery_region(
+    monkeypatch,
+    _seam,
+    materialized_profile,
+    state_var_stkoff,
+    state_var_reg,
+    expected_region,
+) -> None:
+    graph, dag = _candidate_prefix_emitter_fixture()
+    root = replace(graph.blocks[15], preds=(403, 490, 495))
+    no_prefix = FlowGraph(
+        blocks={
+            serial: block
+            for serial, block in graph.blocks.items()
+            if serial not in {4, 20, 400, 401, 402}
+        }
+        | {15: root},
+        entry_serial=403,
+        func_ea=graph.func_ea,
+    )
+    observation = minimal_state_recovery_module._observe_candidate_scoped_prefix(
+        no_prefix,
+        dag,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+    )
+    assert observation.authority is None
+    captured_regions: list[frozenset[int]] = []
+
+    def capture_recovery(*_args, **kwargs):
+        captured_regions.append(kwargs["dispatcher_region_serials"])
+        return ()
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        capture_recovery,
+    )
+
+    emit_minimal_unflatten(
+        no_prefix,
+        _disp(
+            {
+                _PREFIX_SELECTED_STATE: 101,
+                _PREFIX_ALTERNATE_STATE: 101,
+                _PREFIX_DAG_STATE: 100,
+            },
+            exit_block=200,
+        ),
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        dispatcher_entry_serial=15,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        authoritative_handler_serials=frozenset({100, 101}),
+        dispatcher_region_serials=frozenset({15}),
+        recover_multi_entry_back_edges=False,
+        materialized_computed_goto_profile=materialized_profile,
+    )
+
+    assert captured_regions == [expected_region]
+
+
+def test_candidate_prefix_provider_conflict_is_fragment_atomic_after_threading(
+    monkeypatch,
+    _seam,
+) -> None:
+    graph, dag = _candidate_prefix_emitter_fixture()
+    observation = minimal_state_recovery_module._observe_candidate_scoped_prefix(
+        graph,
+        dag,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+    authority = observation.authority
+    reconciliation_authorities: list[object] = []
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "observe_candidate_scoped_prefix_authority",
+        lambda *_args, **_kwargs: observation,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            _candidate_prefix_transition(402, _PREFIX_SELECTED_STATE, 100, via=4),
+        ),
+    )
+
+    def reject_conflict(_transitions, *_args, **kwargs):
+        reconciliation_authorities.append(kwargs.get("candidate_prefix_authority"))
+        return ()
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "resolve_materialized_indirect_transfer_targets",
+        reject_conflict,
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        _disp({_PREFIX_SELECTED_STATE: 101}, exit_block=200),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=15,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        authoritative_handler_serials=frozenset({100, 101}),
+        materialized_computed_goto_profile=False,
+    )
+
+    assert reconciliation_authorities == [authority]
+    assert graph_modifications(plan) == []
+
+
+def test_supplied_candidate_prefix_is_revalidated_without_rediscovery(
+    monkeypatch,
+    _seam,
+) -> None:
+    graph, dag = _candidate_prefix_emitter_fixture()
+    observation = minimal_state_recovery_module.observe_candidate_scoped_prefix_authority(
+        graph,
+        dag,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+    monkeypatch.setattr(
+        minimal_state_recovery_module,
+        "_observe_candidate_scoped_prefix",
+        lambda *_args, **_kwargs: pytest.fail("supplied authority was rediscovered"),
+    )
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (
+            _candidate_prefix_transition(
+                402,
+                _PREFIX_SELECTED_STATE,
+                101,
+                via=4,
+            ),
+        ),
+        graph,
+        _disp({_PREFIX_SELECTED_STATE: 101}, exit_block=200),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        state_var_stkoff=_STATE,
+        candidate_prefix_authority=observation.authority,
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].proof is not None
+    assert "candidate_scoped_prefix_arm" in resolved[0].proof.route_source_kinds
+
+
+def test_supplied_candidate_prefix_rejects_current_snapshot_drift(_seam) -> None:
+    graph, dag = _candidate_prefix_emitter_fixture()
+    observation = minimal_state_recovery_module.observe_candidate_scoped_prefix_authority(
+        graph,
+        dag,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+    branch = graph.blocks[4].insn_snapshots[0]
+    drifted = FlowGraph(
+        blocks={
+            **graph.blocks,
+            4: replace(
+                graph.blocks[4],
+                insn_snapshots=(replace(branch, ea=int(branch.ea) + 1),),
+            ),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (
+            _candidate_prefix_transition(
+                402,
+                _PREFIX_SELECTED_STATE,
+                101,
+                via=4,
+            ),
+        ),
+        drifted,
+        _disp({_PREFIX_SELECTED_STATE: 101}, exit_block=200),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        state_var_stkoff=_STATE,
+        candidate_prefix_authority=observation.authority,
+    ) == ()
+
+
+def _partitioned_prefix_reconciled_rows() -> tuple[StateWriteTransition, ...]:
+    selected = _candidate_prefix_transition(
+        402,
+        _PREFIX_SELECTED_STATE,
+        101,
+        via=330,
+        route_source_kinds=(
+            "candidate_scoped_prefix_arm",
+            "decision_dag",
+            "region_partitioned_fixpoint",
+        ),
+    )
+    direct = (
+        _candidate_prefix_transition(
+            403,
+            _PREFIX_SELECTED_STATE,
+            101,
+            via=15,
+            route_source_kinds=("decision_dag", "region_partitioned_fixpoint"),
+        ),
+        _candidate_prefix_transition(
+            490,
+            _PREFIX_ALTERNATE_STATE,
+            101,
+            via=15,
+            route_source_kinds=("decision_dag", "region_partitioned_fixpoint"),
+        ),
+        _candidate_prefix_transition(
+            495,
+            _PREFIX_DAG_STATE,
+            100,
+            via=15,
+            route_source_kinds=("decision_dag", "region_partitioned_fixpoint"),
+        ),
+    )
+    return (selected, *direct)
+
+
+def _emit_partitioned_prefix_with_captured_routes(
+    monkeypatch,
+    *,
+    include_selected_feeder: bool,
+):
+    graph, dag = _candidate_prefix_partitioned_emitter_fixture()
+    observation = minimal_state_recovery_module.observe_candidate_scoped_prefix_authority(
+        graph,
+        dag,
+        state_var_stkoff=_STATE,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+    authority = observation.authority
+    recovered = (
+        _candidate_prefix_transition(
+            401,
+            _PREFIX_ALTERNATE_STATE,
+            101,
+            via=330,
+            proof_kind="predecessor_partitioned",
+        ),
+        _candidate_prefix_transition(
+            402,
+            _PREFIX_SELECTED_STATE,
+            101,
+            via=330,
+            proof_kind="predecessor_partitioned",
+        ),
+        _candidate_prefix_transition(
+            403,
+            _PREFIX_SELECTED_STATE,
+            101,
+            via=15,
+        ),
+        _candidate_prefix_transition(
+            490,
+            _PREFIX_ALTERNATE_STATE,
+            101,
+            via=15,
+        ),
+        _candidate_prefix_transition(
+            495,
+            _PREFIX_DAG_STATE,
+            100,
+            via=15,
+        ),
+    )
+    reconciled = _partitioned_prefix_reconciled_rows()
+    if not include_selected_feeder:
+        reconciled = tuple(row for row in reconciled if int(row.write_block) != 402)
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "observe_candidate_scoped_prefix_authority",
+        lambda *_args, **_kwargs: observation,
+    )
+
+    def recover_once(*_args, **kwargs):
+        assert kwargs["candidate_prefix_authority"] is authority
+        return recovered
+
+    def reconcile_once(_rows, *_args, **kwargs):
+        assert kwargs["candidate_prefix_authority"] is authority
+        return reconciled
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        recover_once,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "resolve_materialized_indirect_transfer_targets",
+        reconcile_once,
+    )
+    # Reproduce the live giant-SCC classification: every root predecessor is
+    # reachable from entry without traversing root, although none is a scalar
+    # entry endpoint.  Candidate-prefix authority must suppress this entire
+    # LEGACY_ENDPOINT class rather than guessing one global state.
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_dispatcher_entry_preds",
+        lambda *_args, **_kwargs: [4, 403, 490, 495],
+    )
+    plan = emit_minimal_unflatten(
+        graph,
+        _disp(
+            {
+                _PREFIX_SELECTED_STATE: 101,
+                _PREFIX_ALTERNATE_STATE: 101,
+                _PREFIX_DAG_STATE: 100,
+            },
+            exit_block=200,
+        ),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=15,
+        initial_state=_PREFIX_SELECTED_STATE,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        authoritative_handler_serials=frozenset({100, 101}),
+        dispatcher_region_serials=frozenset({15}),
+        recover_multi_entry_back_edges=False,
+        materialized_computed_goto_profile=False,
+    )
+    return plan
+
+
+def test_candidate_prefix_plan_suppresses_all_legacy_root_entry_bridges(
+    monkeypatch,
+    _seam,
+) -> None:
+    """Only source-specific rows may cut prefix/root edges under this authority."""
+
+    plan = _emit_partitioned_prefix_with_captured_routes(
+        monkeypatch,
+        include_selected_feeder=True,
+    )
+    redirects = tuple(
+        modification
+        for modification in graph_modifications(plan)
+        if isinstance(modification, RedirectGoto)
+    )
+
+    assert set(redirects) == {
+        RedirectGoto(402, 330, 101),
+        RedirectGoto(403, 15, 101),
+        RedirectGoto(490, 15, 101),
+        RedirectGoto(495, 15, 100),
+    }
+    assert not any(
+        modification.from_serial == 4 and modification.old_target == 15
+        for modification in graph_modifications(plan)
+        if isinstance(modification, (RedirectGoto, RedirectBranch))
+    )
+    assert RedirectGoto(495, 15, 101) not in redirects
+    semantic_exclusions = plan.metadata_dict()[
+        DISPATCHER_CORRIDOR_COVERAGE_METADATA
+    ]["semantic_exclusions"]
+    assert tuple(item["source"]["serial"] for item in semantic_exclusions) == (401,)
+    assert semantic_exclusions[0]["normalized_state"] == _PREFIX_ALTERNATE_STATE
+
+
+def test_candidate_prefix_preserved_feeder_uses_existing_pred_split_clone(
+    _seam,
+) -> None:
+    """A source-specific selected route replays its semantic feeder body."""
+
+    graph, _dag = _candidate_prefix_partitioned_emitter_fixture()
+    transition = StateWriteTransition(
+        402,
+        _PREFIX_SELECTED_STATE,
+        101,
+        False,
+        None,
+        via_block=330,
+        proof=TransitionProof(
+            "decision_dag_state_route_reconciliation",
+            "decision_dag_reconciled",
+            True,
+            route_source_kinds=(
+                "candidate_scoped_prefix_arm",
+                "preserved_feeder_clone",
+            ),
+        ),
+        preserve_via_block=True,
+    )
+
+    modifications = build_state_write_redirects(
+        graph,
+        _disp({_PREFIX_SELECTED_STATE: 101}, exit_block=200),
+        (transition,),
+        dispatcher_entry_serial=15,
+        pre_header_serial=None,
+        initial_state=None,
+        state_var_stkoff=_STATE,
+        suppress_legacy_endpoint_bridges=True,
+    )
+
+    assert modifications == [
+        EdgeRedirectViaPredSplit(
+            src_block=330,
+            old_target=4,
+            new_target=101,
+            via_pred=402,
+            clone_until=330,
+        )
+    ]
+
+
+def test_candidate_prefix_incomplete_feeder_partition_stays_residual(
+    monkeypatch,
+    _seam,
+) -> None:
+    """Missing source authority cannot be hidden by one global prefix bridge."""
+
+    plan = _emit_partitioned_prefix_with_captured_routes(
+        monkeypatch,
+        include_selected_feeder=False,
+    )
+    assert not any(
+        modification.from_serial == 4 and modification.old_target == 15
+        for modification in graph_modifications(plan)
+        if isinstance(modification, (RedirectGoto, RedirectBranch))
+    )
+    metadata = plan.metadata_dict()
+    coverage = metadata[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
+    assert coverage["planned_completion_status"] == (
+        "planned_partial_residual_dispatcher"
+    )
+    assert coverage["residual_corridors"]
+    assert (
+        metadata[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]["proof_status"]
+        == "rejected"
+    )
+
+
+def _candidate_prefix_captured_incomplete_emitter_fixture(
+) -> tuple[FlowGraph, DecisionDag]:
+    """Captured root15 shape with six direct rows and incomplete feeder3."""
+
+    prefix = replace(_candidate_prefix_compare_block(), preds=(3,))
+    root = replace(
+        _eq_block(
+            15,
+            _PREFIX_DAG_STATE,
+            100,
+            101,
+            preds=(4, 405, 492, 497),
+        ),
+        start_ea=0x180015268,
+    )
+    blocks = {
+        4: prefix,
+        15: root,
+        20: _b(20, (200,), (4,)),
+        200: _exit_block(200, (20,)),
+        100: _b(100, (2, 351, 305, 365), (15,)),
+        101: _b(101, (230, 404, 491, 496), (15,)),
+        2: _b(2, (3,), (100,)),
+        230: _b(230, (3,), (101,)),
+        3: _b(3, (4,), (2, 230), (_mov_state(0x1800151C9, 0),)),
+        351: _b(351, (405,), (100,)),
+        404: _b(404, (405,), (101,)),
+        405: _b(405, (15,), (351, 404), (_mov_state(0x18002672A, 0),)),
+        305: _b(305, (492,), (100,)),
+        491: _b(491, (492,), (101,)),
+        492: _b(492, (15,), (305, 491), (_mov_state(0x18002B4D9, 0),)),
+        365: _b(365, (497,), (100,)),
+        496: _b(496, (497,), (101,)),
+        497: _b(497, (15,), (365, 496), (_mov_state(0x18002BC5F, 0),)),
+    }
+    return FlowGraph(blocks, 15, 0x180015110), DecisionDag(
+        32,
+        {
+            15: RouteComparison(
+                15,
+                "jz",
+                _PREFIX_DAG_STATE,
+                100,
+                101,
+            ),
+        },
+        root=15,
+    )
+
+
+def _captured_incomplete_emitter_provider_rows(
+) -> dict[int, tuple[StateWriteTransition, ...]]:
+    def row(
+        source: int,
+        via: int,
+        state: int,
+        target: int | None,
+        *,
+        trusted: bool,
+    ) -> StateWriteTransition:
+        return StateWriteTransition(
+            source,
+            state,
+            target,
+            target is None,
+            None,
+            via_block=via,
+            proof=TransitionProof(
+                "region_partitioned_fixpoint",
+                "predecessor_partitioned",
+                trusted,
+            ),
+        )
+
+    return {
+        405: (
+            row(351, 405, 0x011A0881, 100, trusted=True),
+            row(404, 405, 0x33D9A310, 101, trusted=True),
+        ),
+        492: (
+            row(305, 492, 0x2431DE88, 100, trusted=True),
+            row(491, 492, 0x1B30D140, 101, trusted=True),
+        ),
+        497: (
+            row(365, 497, 0x2E160A90, 100, trusted=True),
+            row(496, 497, 0x0244FF40, 101, trusted=True),
+        ),
+        3: (
+            row(2, 3, 0x704FAFF6, None, trusted=False),
+            row(230, 3, 0x60A0D558, 100, trusted=True),
+        ),
+    }
+
+
+def test_candidate_prefix_concrete_alternate_rows_reach_reconciliation(
+    monkeypatch,
+    _seam,
+) -> None:
+    """Concrete alternate hints are classified before selected redirects emit."""
+
+    graph, dag = _candidate_prefix_captured_incomplete_emitter_fixture()
+    provider_rows = _captured_incomplete_emitter_provider_rows()
+
+    monkeypatch.setattr(
+        minimal_state_recovery_module,
+        "_resolve_next_state_before_seeded",
+        lambda _ctx, pred, _block, _arm: list(provider_rows[int(pred)]),
+    )
+
+    reconcile_inputs = []
+
+    def reconcile_direct(rows, *_args, **_kwargs):
+        reconcile_inputs.append(tuple(int(row.write_block) for row in rows))
+        return tuple(row for row in rows if int(row.write_block) not in {2, 230})
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "resolve_materialized_indirect_transfer_targets",
+        reconcile_direct,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_dispatcher_entry_preds",
+        lambda *_args, **_kwargs: [4, 405, 492, 497],
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        _disp(
+            {
+                0x011A0881: 100,
+                0x33D9A310: 101,
+                0x2431DE88: 100,
+                0x1B30D140: 101,
+                0x2E160A90: 100,
+                0x0244FF40: 101,
+                0x60A0D558: 100,
+            },
+            exit_block=200,
+        ),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=15,
+        initial_state=_PREFIX_SELECTED_STATE,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        authoritative_handler_serials=frozenset({100, 101}),
+        dispatcher_region_serials=frozenset({15}),
+        recover_multi_entry_back_edges=False,
+        materialized_computed_goto_profile=False,
+    )
+
+    redirects = tuple(
+        modification
+        for modification in graph_modifications(plan)
+        if isinstance(modification, RedirectGoto)
+    )
+    assert reconcile_inputs == [
+        (2, 230, 351, 404, 305, 491, 365, 496)
+    ]
+    assert tuple(modification.from_serial for modification in redirects) == (
+        351,
+        404,
+        305,
+        491,
+        365,
+        496,
+    )
+    assert not any(
+        modification.from_serial in {4, 405, 492, 497}
+        and modification.old_target == 15
+        for modification in graph_modifications(plan)
+        if isinstance(modification, (RedirectGoto, RedirectBranch))
+    )
+    metadata = plan.metadata_dict()
+    coverage = metadata[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
+    assert coverage["planned_completion_status"] == (
+        "planned_partial_residual_dispatcher"
+    )
+    assert coverage["residual_corridors"]
+    assert metadata[FULL_UNFLATTENING_CLAIM_METADATA] is False
+
+
+def test_candidate_prefix_not_applicable_keeps_legacy_endpoint_bridge(
+    monkeypatch,
+    _seam,
+) -> None:
+    """The bridge suppression is scoped to a VALID candidate-prefix authority."""
+
+    graph, dag = _candidate_prefix_emitter_fixture()
+    root = replace(graph.blocks[15], preds=(403, 490, 495))
+    no_prefix = FlowGraph(
+        {
+            serial: block
+            for serial, block in graph.blocks.items()
+            if serial not in {4, 20, 400, 401, 402}
+        }
+        | {15: root},
+        entry_serial=403,
+        func_ea=graph.func_ea,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_dispatcher_entry_preds",
+        lambda *_args, **_kwargs: [403],
+    )
+
+    plan = emit_minimal_unflatten(
+        no_prefix,
+        _disp({_PREFIX_SELECTED_STATE: 101}, exit_block=200),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=15,
+        initial_state=_PREFIX_SELECTED_STATE,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        authoritative_handler_serials=frozenset({100, 101}),
+        materialized_computed_goto_profile=False,
+    )
+
+    assert RedirectGoto(403, 15, 101) in graph_modifications(plan)

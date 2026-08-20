@@ -112,3 +112,25 @@ def test_partition_sound_and_complete():
     for i in range(len(cells)):
         for j in range(i + 1, len(cells)):
             assert cells[i].domain.intersect(cells[j].domain).is_empty()
+
+
+def test_decision_dag_routes_through_pure_internal_alias_path():
+    """A one-way glue block between comparisons is routing infrastructure."""
+
+    dag = DecisionDag(
+        8,
+        {
+            1: _node(1, "jbe", 0x40, 2, 200),
+            3: _node(3, "jz", 0x20, 201, 202),
+        },
+        root=1,
+        aliases={2: 3},
+    )
+
+    assert dag.route(0x20) == 201
+    assert dag.route(0x21) == 202
+    exact = [cell for cell in dag.resolve_paths() if cell.target == 201]
+    assert len(exact) == 1
+    assert exact[0].path == (1, 2, 3)
+    assert exact[0].domain.intervals == (Interval(0x20, 0x20),)
+    assert 2 not in dag.leaves()
