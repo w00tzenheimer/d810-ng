@@ -81,6 +81,8 @@ BINARY_FOLD_OPCODES: frozenset[str] = frozenset(
         "shl",
         "shr",
         "sar",
+        "cfshl",
+        "cfshr",
         "cfadd",
         "ofadd",
         "seto",
@@ -245,8 +247,16 @@ def fold_binary_opcode(
 
     # Hex-Rays' binary arithmetic, flag, and comparison opcodes require
     # identically sized value operands.  Shifts are the exception: their
-    # count may be a narrower byte operand.
-    if opcode not in {"shl", "shr", "sar"} and left_bytes != right_bytes:
+    # count may be a narrower byte operand.  The carry-shift forms use the
+    # same source/count width contract as ordinary shifts, but produce a
+    # one-byte flag value.
+    if (
+        opcode not in {"shl", "shr", "sar", "cfshl", "cfshr"}
+        and left_bytes != right_bytes
+    ):
+        return None
+
+    if opcode in {"cfshl", "cfshr"} and result_bytes != 1:
         return None
 
     left &= AND_TABLE[left_bytes]
@@ -294,6 +304,18 @@ def fold_binary_opcode(
         return (left >> right) & result_mask
     if opcode == "sar":
         return (unsigned_to_signed(left, left_bytes) >> right) & result_mask
+    if opcode in {"cfshl", "cfshr"}:
+        # Hex-Rays models these as the carry bit shifted out of the source
+        # value.  The SDK's count-1/count-width expressions are undefined for
+        # zero and counts beyond the source width have no stable carry value,
+        # so fail closed instead of inventing a modulo-width result.
+        bit_count = left_bytes * 8
+        count = right
+        if count < 1 or count > bit_count:
+            return None
+        if opcode == "cfshl":
+            return (left >> (bit_count - count)) & result_mask
+        return (left >> (count - 1)) & result_mask
     if opcode == "cfadd":
         return get_add_cf(left, right, left_bytes)
     if opcode == "ofadd":

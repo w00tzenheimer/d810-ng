@@ -27,6 +27,7 @@ import ida_hexrays
 from d810.core import getLogger
 from d810.errors import AstEvaluationException
 from d810.core.bits import (
+    fold_binary_opcode,
     get_add_cf,
     get_add_of,
     get_parity_flag,
@@ -73,6 +74,8 @@ cdef object _BINARY_OPCODES = frozenset((
     ida_hexrays.m_shl,
     ida_hexrays.m_shr,
     ida_hexrays.m_sar,
+    ida_hexrays.m_cfshl,
+    ida_hexrays.m_cfshr,
     ida_hexrays.m_cfadd,
     ida_hexrays.m_ofadd,
     ida_hexrays.m_seto,
@@ -314,6 +317,25 @@ cdef class CythonConcreteEvaluator:
             left_value_signed = unsigned_to_signed(lv, node.left.dest_size)
             res_signed = left_value_signed >> rv
             return signed_to_unsigned(res_signed, node.dest_size) & res_mask
+        elif (
+            node.opcode == ida_hexrays.m_cfshl
+            or node.opcode == ida_hexrays.m_cfshr
+        ) and node.right is not None:
+            lv = self.evaluate(node.left, dict_index_to_value)
+            rv = self.evaluate(node.right, dict_index_to_value)
+            if lv is None or rv is None:
+                return None
+            opcode_name = (
+                "cfshl" if node.opcode == ida_hexrays.m_cfshl else "cfshr"
+            )
+            return fold_binary_opcode(
+                opcode_name,
+                lv,
+                rv,
+                left_bytes=node.left.dest_size,
+                right_bytes=node.right.dest_size,
+                result_bytes=node.dest_size,
+            )
         elif node.opcode == ida_hexrays.m_cfadd and node.right is not None:
             lv = self.evaluate(node.left, dict_index_to_value)
             rv = self.evaluate(node.right, dict_index_to_value)

@@ -464,6 +464,28 @@ class TestShiftOpcodes:
         assert ev.evaluate(node, {}) == 0x08
 
 
+class TestCarryShiftOpcodes:
+    """Tests for m_cfshl/m_cfshr carry-bit extraction."""
+
+    def test_m_cfshl_extracts_bit_shifted_out(self, ev):
+        node = _Node(
+            _OPC.m_cfshl,
+            _ConstLeaf(0x8000000000000000, 8),
+            _ConstLeaf(1, 1),
+            dest_size=1,
+        )
+        assert ev.evaluate(node, {}) == 1
+
+    def test_m_cfshr_extracts_bit_shifted_out(self, ev):
+        node = _Node(
+            _OPC.m_cfshr,
+            _ConstLeaf(0x20, 1),
+            _ConstLeaf(6, 1),
+            dest_size=1,
+        )
+        assert ev.evaluate(node, {}) == 1
+
+
 # ---------------------------------------------------------------------------
 # Sign-extension / high-extract
 # ---------------------------------------------------------------------------
@@ -848,6 +870,35 @@ class TestConcreteWithRealAst:
     """
 
     binary_name = _default_binary()
+
+    def test_python_and_cython_carry_shift_parity(self):
+        """Both concrete AST backends agree on carry-shift semantics."""
+
+        from d810.evaluator.concrete import ConcreteEvaluator
+        from d810.hexrays.expr.ast import AstConstant, AstNode
+
+        try:
+            from d810.speedups.evaluator.c_concrete import CythonConcreteEvaluator
+        except ImportError:
+            pytest.skip("Cython speedups not built")
+
+        def _node(opcode, value, source_size, count):
+            left = AstConstant("left", value, source_size)
+            left.dest_size = source_size
+            right = AstConstant("count", count, 1)
+            right.dest_size = 1
+            node = AstNode(opcode, left, right)
+            node.dest_size = 1
+            return node
+
+        for opcode, value, count in (
+            (_OPC.m_cfshl, 0x8000000000000000, 1),
+            (_OPC.m_cfshr, 0x20, 6),
+        ):
+            node = _node(opcode, value, 8 if opcode == _OPC.m_cfshl else 1, count)
+            expected = ConcreteEvaluator().evaluate(node, {})
+            actual = CythonConcreteEvaluator().evaluate(node, {})
+            assert actual == expected
 
     def test_cython_evaluator_is_active(self, libobfuscated_setup):
         """_default_evaluator is a CythonConcreteEvaluator when speedups are built."""

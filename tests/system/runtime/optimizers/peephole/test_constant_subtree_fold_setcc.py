@@ -28,3 +28,24 @@ def test_fold_setcc_uses_source_width_not_the_flag_width() -> None:
         left_bits=32,
         right_bits=32,
     ) == 1
+
+
+def test_fold_carry_shift_handles_constant_operands_without_error() -> None:
+    """Carry-shift flags use the source width and return a byte result."""
+
+    assert _fold(
+        ida_hexrays.m_cfshl,
+        0x8000000000000000,
+        1,
+        8,
+        left_bits=64,
+        right_bits=8,
+    ) == 1
+    assert _fold(
+        ida_hexrays.m_cfshr,
+        0x20,
+        6,
+        8,
+        left_bits=8,
+        right_bits=8,
+    ) == 1
