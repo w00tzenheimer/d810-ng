@@ -50,7 +50,7 @@ def test_project_editor_uses_draft_rows_for_private_inspection_catalog() -> None
     assert "self._inspection_catalog = tuple(" in source
     assert "tuple(row.pass_id for row in self._view.pipeline_rows)" in source
     assert "inspection_catalog(self._validation.pass_ids)" not in source
-    assert "for entry in sorted(self._catalog" in source
+    assert "for entry in self._catalog" in source
 
 
 class _Logger:

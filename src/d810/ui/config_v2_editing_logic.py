@@ -25,24 +25,6 @@ from d810.manager.effective_pipeline_schedule import normalize_maturity
 from d810.manager.workbench_recipe_models import PassCatalogEntry
 
 
-_PASS_PURPOSES = {
-    "constant-simplification": "Fold provably constant program values.",
-    "mba-simplify": "Simplify selected mixed-boolean arithmetic transforms.",
-    "recover-dispatcher": "Recover dispatcher structure and state.",
-    "recover-state-transitions": "Recover state-transition edges.",
-    "plan-semantic-regions": "Plan semantic regions for safe lowering.",
-    "lower-state-machine": "Lower a recovered state machine.",
-    "cleanup-residual-dispatcher": "Remove residual dispatcher structure.",
-    "jump-fixer": "Repair direct control-flow jumps after rewrites.",
-    "indirect-call-resolver": "Resolve eligible indirect calls.",
-    "identity-call-resolver": "Resolve identity-preserving indirect calls.",
-    "indirect-branch-resolver": "Resolve eligible indirect branches.",
-    "single-trip-loop-peel": "Peel a verified single-trip loop.",
-    "simple-flattening-cleanup-unflattener": "Remove simple residual flattening structure.",
-    "mba-state-preconditioner": "Prepare state facts for MBA-backed recovery.",
-}
-
-
 def _project_maturity(value: object) -> tuple[str, str | None]:
     """Return one portable operator label plus optional provider provenance."""
 
@@ -1170,7 +1152,7 @@ def project_config_v2_editor_view(
             options,
             selected_transform_ids=(selected_transform_ids or frozenset()),
         )
-        purpose = _PASS_PURPOSES.get(pass_id, "Registered config-v2 pass.")
+        purpose = catalog_entry.purpose
         configured_maturities = options.get("maturities")
         provider_maturities: tuple[str, ...] = ()
         if isinstance(configured_maturities, list) and configured_maturities:

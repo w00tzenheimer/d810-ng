@@ -389,8 +389,15 @@ def test_builder_is_a_compact_ordered_active_pass_editor() -> None:
         assert label in source
     assert "getMultiLineText" in description_source
     assert "set_description" in description_source
-    assert "QLineEdit" in add_source
+    assert "FilterableCatalogDialog" in add_source
+    assert "CatalogColumnSpec" in add_source
+    assert "CatalogRow" in add_source
+    assert "CatalogSelectionMode.MULTI_CHECK" in add_source
+    assert "'Add pass'" in add_source
+    assert "action_verb='Add'" in add_source
     assert "self._catalog" in add_source
+    assert "add_passes" in add_source
+    assert "self._adapter.add_pass(" not in add_source
     assert "manifest_list" not in create_source
     assert "complete_document" not in create_source
     assert "unsupported_document" not in create_source
@@ -965,6 +972,11 @@ def _load_behavior_panel(monkeypatch):
             RawJsonDialog=_BehaviorRawDialog,
             StructuredDetailsView=_BehaviorWidget,
         ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.ui.filterable_catalog_widget",
+        types.SimpleNamespace(FilterableCatalogDialog=_BehaviorDialog),
     )
     module_name = "d810.ui._task6_behavior_panel"
     spec = importlib.util.spec_from_file_location(module_name, PANEL)

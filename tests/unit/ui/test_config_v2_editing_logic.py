@@ -118,6 +118,7 @@ def _catalog() -> tuple[PassCatalogEntry, ...]:
             stage_ids=("simplify-mba",),
             configured=True,
             editor_spec=_transform_catalog_spec(),
+            purpose="Simplify selected mixed-boolean arithmetic transforms.",
         ),
         PassCatalogEntry(
             pass_id="constant-simplification",

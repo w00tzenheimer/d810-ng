@@ -7,6 +7,7 @@ import json
 from collections.abc import Mapping, Sequence
 
 from d810.manager.workbench_recipe_models import (
+    DEFAULT_PASS_PURPOSE,
     FunctionPipelineOverride,
     PassCatalogEntry,
     PipelineRecipeDraft,
@@ -73,6 +74,26 @@ def _display_name(pass_id: str) -> str:
     return " ".join(words).capitalize() or str(pass_id)
 
 
+_PASS_PURPOSES = {
+    "cleanup_residual_dispatcher": "Remove residual dispatcher structure.",
+    "constant-simplification": "Fold provably constant program values.",
+    "identity-call-resolver": "Resolve identity-preserving indirect calls.",
+    "indirect-branch-resolver": "Resolve eligible indirect branches.",
+    "indirect-call-resolver": "Resolve eligible indirect calls.",
+    "jump-fixer": "Repair direct control-flow jumps after rewrites.",
+    "lower_state_machine": "Lower a recovered state machine.",
+    "mba-egraph": "Saturate selected MBA expressions with e-graph rewriting.",
+    "mba-simplify": "Simplify selected mixed-boolean arithmetic transforms.",
+    "mba-solve": "Solve selected MBA expressions with proof-backed equivalence.",
+    "mba-state-preconditioner": "Prepare state facts for MBA-backed recovery.",
+    "plan_semantic_regions": "Plan semantic regions for safe lowering.",
+    "recover_dispatcher": "Recover dispatcher structure and state.",
+    "recover_state_transitions": "Recover state-transition edges.",
+    "simple-flattening-cleanup-unflattener": "Remove simple residual flattening structure.",
+    "single-trip-loop-peel": "Peel a verified single-trip loop.",
+}
+
+
 def _maturity_label(config: PipelineConfig) -> str:
     if config.maturity_gates:
         return ", ".join(sorted(stage.value for stage in config.maturity_gates))
@@ -93,6 +114,16 @@ class RecipeService:
 
     def __init__(self, registry: PassRegistry) -> None:
         self._registry = registry
+
+    def _purpose(self, pass_id: str) -> str:
+        purpose = _PASS_PURPOSES.get(pass_id)
+        if purpose is not None:
+            return purpose
+        if pass_id in self._registry.public_pass_ids():
+            raise RecipeEditError(
+                f"public pass {pass_id!r} is missing a specific catalog purpose"
+            )
+        return DEFAULT_PASS_PURPOSE
 
     def _catalog_entry(self, pass_id: str) -> PassCatalogEntry:
         config = self._registry.config_template_for(pass_id)
@@ -119,6 +150,7 @@ class RecipeService:
             configured=self._registry.is_configured(pass_id),
             editor_spec=editor_spec,
             workflow_stage=config.workflow_stage,
+            purpose=self._purpose(pass_id),
         )
 
     def catalog(self) -> tuple[PassCatalogEntry, ...]:

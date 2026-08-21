@@ -50,6 +50,18 @@ if IDA_AVAILABLE:
     from d810.ui.config_v2_transform_catalog import ConfigV2TransformCatalogWidget
     from d810.ui.config_v2_rule_catalog import ConfigV2RuleCatalogWidget
     from d810.ui.checkable_choice_list import CheckableChoiceListWidget
+    from d810.ui.filterable_catalog_logic import (
+        CatalogColumnSpec,
+        CatalogRow,
+        CatalogSelectionMode,
+    )
+    try:
+        from d810.ui.filterable_catalog_widget import FilterableCatalogDialog
+    except (AttributeError, ImportError):
+        # Narrow fake-Qt loaders used by non-catalog panel tests may expose
+        # widgets without Qt's signal factory.  Defer the failure until the
+        # catalog action is actually invoked in that environment.
+        FilterableCatalogDialog = None  # type: ignore[assignment]
 
     WOPN_NOT_CLOSED_BY_ESC = getattr(
         ida_kernwin,
@@ -1278,55 +1290,46 @@ if IDA_AVAILABLE:
 
         def _add_pass(self, checked: bool = False) -> None:
             del checked
-            dialog = QtWidgets.QDialog(self.parent)
-            dialog.setWindowTitle("Add pass")
-            query = QtWidgets.QLineEdit(dialog)
-            query.setPlaceholderText("Filter public pass catalog")
-            catalog_list = QtWidgets.QListWidget(dialog)
-
-            def populate(filter_text: str) -> None:
-                catalog_list.clear()
-                needle = str(filter_text).strip().casefold()
-                for entry in sorted(self._catalog, key=lambda item: item.pass_id):
-                    label = f"{entry.display_name} ({entry.pass_id})"
-                    if needle and needle not in label.casefold():
-                        continue
-                    item = QtWidgets.QListWidgetItem(label)
-                    item.setData(_user_role(), entry.pass_id)
-                    catalog_list.addItem(item)
-                if catalog_list.count():
-                    catalog_list.setCurrentRow(0)
-
-            populate("")
-            query.textChanged.connect(populate)
-            add_button = QtWidgets.QPushButton("Add")
-            cancel_button = QtWidgets.QPushButton("Cancel")
-            add_button.clicked.connect(dialog.accept)
-            cancel_button.clicked.connect(dialog.reject)
-            controls = QtWidgets.QHBoxLayout()
-            controls.addStretch(1)
-            controls.addWidget(cancel_button)
-            controls.addWidget(add_button)
-            layout = QtWidgets.QVBoxLayout(dialog)
-            layout.addWidget(query)
-            layout.addWidget(catalog_list, stretch=1)
-            layout.addLayout(controls)
+            columns = (
+                CatalogColumnSpec("include", "Include", searchable=False),
+                CatalogColumnSpec("pass", "Pass"),
+                CatalogColumnSpec("id", "ID"),
+                CatalogColumnSpec("purpose", "Purpose"),
+            )
+            rows = tuple(
+                CatalogRow(
+                    entry.pass_id,
+                    (
+                        entry.display_name,
+                        entry.pass_id,
+                        entry.purpose,
+                    ),
+                )
+                for entry in self._catalog
+            )
+            dialog = FilterableCatalogDialog(
+                "Add pass",
+                columns,
+                rows,
+                mode=CatalogSelectionMode.MULTI_CHECK,
+                action_verb="Add",
+                parent=self.parent,
+            )
             try:
                 accepted_code = QtWidgets.QDialog.DialogCode.Accepted
             except AttributeError:
                 accepted_code = QtWidgets.QDialog.Accepted
             if dialog.exec_() != accepted_code:
                 return
-            selected_item = catalog_list.currentItem()
-            if selected_item is None:
+            selected_pass_ids = tuple(dialog.selected_keys())
+            if not selected_pass_ids:
                 return
-            pass_id = selected_item.data(_user_role())
             selected = self._builder_selected_pass_index()
             insertion = None if selected is None else selected + 1
             self._apply_edit(
-                lambda: self._adapter.add_pass(
+                lambda: self._adapter.add_passes(
                     self._draft,
-                    str(pass_id),
+                    selected_pass_ids,
                     index=insertion,
                 )
             )
