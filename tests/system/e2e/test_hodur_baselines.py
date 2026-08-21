@@ -93,6 +93,32 @@ def _count_sub7ffd_work_calls(cfunc: object) -> int:
     return count
 
 
+def _count_named_calls(cfunc: object, function_name: str) -> int:
+    """Count ctree calls whose resolved callee name matches ``function_name``."""
+    count = 0
+
+    class _NamedCallVisitor(ida_hexrays.ctree_visitor_t):
+        def __init__(self) -> None:
+            ida_hexrays.ctree_visitor_t.__init__(self, ida_hexrays.CV_FAST)
+
+        def visit_expr(self, expr: object) -> int:
+            nonlocal count
+            if expr.op != ida_hexrays.cot_call:
+                return 0
+            callee = expr.x
+            while callee.op == ida_hexrays.cot_cast:
+                callee = callee.x
+            if callee.op != ida_hexrays.cot_obj:
+                return 0
+            callee_name = idaapi.get_name(int(callee.obj_ea)) or ""
+            if callee_name.lstrip("_") == function_name:
+                count += 1
+            return 0
+
+    _NamedCallVisitor().apply_to(cfunc.body, None)
+    return count
+
+
 # Baseline expectations: (function_name, project_json, expected_ast_stats)
 # Keys: statements, returns, whiles, gotos, ifs, calls
 # These are IDA-ctree counts (ctree_count_ast_statements),
@@ -107,15 +133,16 @@ HODUR_BASELINES = [
         # like sub_7FFD. Counts from IDA ctree (includes calls to sub_* helpers
         # that libclang would drop). Old libclang baseline was:
         # {statements:39, returns:3, whiles:0, gotos:1, ifs:8} (no calls key).
-        # The locally rebuildable freestanding MSVC-COFF fixture expands
-        # declaration/assignment ctree shape while preserving the exact 32
-        # calls and fully removing the dispatcher loop. Captured with IDA 9.4.
+        # The authoritative CRT-backed mainline artifact has the compact ctree
+        # shape used by the current baseline: six resolve_api phases, all 32
+        # calls, no dispatcher loop, and the one error-path goto. Captured with
+        # IDA 9.4 from the mainline Hodur function.
         {
-            "statements": 116,
+            "statements": 94,
             "returns": 3,
             "whiles": 0,
             "gotos": 1,
-            "ifs": 13,
+            "ifs": 11,
             "calls": 32,
         },
         id="hodur_func",
@@ -243,6 +270,18 @@ class TestHodurBaselines:
         print(f"  Project:  {project_config}")
         print(f"  Expected: {expected_stats}")
         print(f"  Actual:   {actual}")
+
+        if func_name == "hodur_func":
+            assert _count_named_calls(cfunc, "resolve_api") == 6, (
+                "hodur_func API-resolution regression: expected six resolve_api "
+                "phases in AFTER pseudocode"
+            )
+            assert "[+] Execution completed successfully." in code_after
+            assert "[-] Error occurred in flattened flow." in code_after
+            assert actual["calls"] == 32
+            assert actual["whiles"] == 0
+            assert actual["gotos"] == 1
+            assert actual["returns"] == 3
 
         if func_name == "sub_7FFD3338C040":
             assert "return 0;" not in code_after, (
