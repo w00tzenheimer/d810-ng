@@ -742,6 +742,26 @@ def test_full_five_pass_chain_threads_and_completes():
     assert results[4].rewrite_plan.steps == ()  # cleanup_residual_dispatcher
 
 
+def test_lower_state_machine_emits_with_dispatch_map_default_target():
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    _install_current_identity_index(am)
+    ctx = _ctx(am.graph, am.view())
+
+    RecoverDispatcher().run(ctx)
+    recovery = am.get_analysis("recover_dispatcher")
+    recovery = replace(
+        recovery,
+        dispatch_map=replace(recovery.dispatch_map, default_target_block=2),
+    )
+    am.put_analysis("recover_dispatcher", recovery)
+    RecoverStateTransitions().run(ctx)
+    PlanSemanticRegions().run(ctx)
+
+    result = LowerStateMachine().run(ctx)
+
+    assert result.rewrite_plan is not None
+
+
 def test_lower_state_machine_merges_manager_retained_predecessor_observations(
     monkeypatch,
 ):
