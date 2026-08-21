@@ -22,7 +22,6 @@ def prove_native_ast_equivalence(
     replacement: Any,
     *,
     width: int,
-    timeout_ms: int = 50,
     known_constants: Mapping[tuple[object, ...], int] | None = None,
     certificate: str | None = None,
     generic_native_z3_before_certificate: bool = False,
@@ -54,10 +53,8 @@ def prove_native_ast_equivalence(
         type(width) is not int
         or width not in {8, 16, 32, 64}
         or type(timeout_ms) is not int
-        or timeout_ms <= 0
+        or not 0 < timeout_ms <= _MAX_NATIVE_Z3_TIMEOUT_MS
     ):
-        return False
-    if type(timeout_ms) is not int or not 0 < timeout_ms <= _MAX_NATIVE_Z3_TIMEOUT_MS:
         return False
     try:
         destination_size = width // 8
