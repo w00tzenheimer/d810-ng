@@ -531,14 +531,15 @@ fi
 # IDA_INSTALL_DIR. NOTE: do NOT pass --no-build-isolation — the IDA venv has
 # neither setuptools nor Cython, so pip MUST build-isolate to install the
 # build-system.requires (setuptools/wheel/Cython).
+SPEEDUPS_CLEAN_CMD="find src/d810/speedups -type f \\( -name '*.so' -o -name '*.pyd' \\) -delete"
 if [ "$NO_CYTHON" = "1" ]; then
-  SPEEDUPS_BUILD_CMD="echo '[speedups] native build disabled by D810_NO_CYTHON=1'"
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && echo '[speedups] native build disabled by D810_NO_CYTHON=1'"
 elif [ "$CYTHON_PROFILE" = "1" ]; then
   # A profiling artifact is only useful when it actually contains Cython
   # trace events. Unlike the normal optional speedup build, fail closed here.
-  SPEEDUPS_BUILD_CMD="find src/d810/speedups -type f \\( -name '*.so' -o -name '*.pyd' \\) -delete && DEBUG=1 D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && DEBUG=1 D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
 else
-  SPEEDUPS_BUILD_CMD="find src/d810/speedups -type f \\( -name '*.so' -o -name '*.pyd' \\) -delete && D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
+  SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
 fi
 RUNTIME_PROBE="from d810.speedups import bootstrap; bootstrap.ensure_speedups_on_path(); import pytest, unicorn, z3; assert (4, 13) <= z3.get_version() < (4, 15, 5)"
 if _image_has_baked_runtime; then

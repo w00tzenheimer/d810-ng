@@ -555,3 +555,16 @@ def test_native_speedups_build_cleans_extensions_and_fails_closed(
     assert "D810_BUILD_SPEEDUPS=1" in command
     assert "falling back to pure-Python" not in command
     assert "|| echo" not in command
+
+
+def test_python_mode_cleans_extensions_without_building(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(tmp_path, "exec", "--", "true", no_cython="1")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    cleanup = command.index("find src/d810/speedups -type f")
+    disabled = command.index("native build disabled by D810_NO_CYTHON=1")
+    assert cleanup < disabled
+    assert "D810_BUILD_SPEEDUPS=1" not in command
