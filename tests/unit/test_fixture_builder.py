@@ -106,9 +106,16 @@ def test_masm_builder_exports_public_c_text_symbols():
     assert 'export_flags+=("/EXPORT:$symbol")' in build_script
 
 
+def _splice_c_line_continuations(source: str) -> str:
+    """Apply C translation phase 2 for LF and CRLF line continuations."""
+
+    return re.sub(r"\\(?:\r\n|\n)", "", source)
+
+
 def _sanitize_c_preprocessor_source(source: str) -> str:
     """Blank C/C++ comments while preserving literals and line positions."""
 
+    source = _splice_c_line_continuations(source)
     output: list[str] = []
     index = 0
     state = "code"
@@ -148,6 +155,8 @@ def _sanitize_c_preprocessor_source(source: str) -> str:
                 output.append(" ")
             index += 1
             continue
+        if char in {"\r", "\n"}:
+            raise ValueError("unterminated string or character literal")
         output.append(char)
         if char == "\\":
             if index + 1 >= len(source):
@@ -354,6 +363,37 @@ def test_hodur_crt_branch_extractor_preserves_literal_comment_markers() -> None:
     assert _extract_hodur_crt_branches(source) == (
         "freestanding\n",
         "authoritative\n",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "/\\\n* fake target */\n",
+        "// fake target \\\n+#if defined(D810_FREESTANDING_FIXTURE)\n",
+        '"invalid\n#if defined(D810_FREESTANDING_FIXTURE)\n',
+        "'invalid\r\n#if defined(D810_FREESTANDING_FIXTURE)\n",
+    ],
+)
+def test_hodur_crt_branch_extractor_rejects_spliced_or_multiline_fakes(
+    source: str,
+) -> None:
+    with pytest.raises(ValueError):
+        _extract_hodur_crt_branches(source)
+
+
+def test_hodur_crt_branch_extractor_accepts_escaped_newline_literal_and_crlf() -> None:
+    source = (
+        'const char *literal = "escaped\\\nquote";\r\n'
+        "#if defined ( D810_FREESTANDING_FIXTURE )\r\n"
+        "freestanding\r\n"
+        "#else\r\n"
+        "authoritative\r\n"
+        "#endif\r\n"
+    )
+    assert _extract_hodur_crt_branches(source) == (
+        "freestanding\r\n",
+        "authoritative\r\n",
     )
 
 
