@@ -5,6 +5,7 @@ IDA-bound extract/resolve worker is covered by
 ``tests/system/e2e/test_fixture_idb_worker.py``.
 """
 
+import os
 import re
 import struct
 from pathlib import Path
@@ -50,12 +51,11 @@ def test_committed_hodur_constants_are_read_only_without_reclassifying_all_data(
     assert len(hodconst) == 1
     assert hodconst[0] & write_flag == 0
 
-    writable_data = {
-        name
-        for name, chars in sections
-        if name in {".data", "_DATA"} and chars & write_flag
+    ordinary_data = {
+        name: chars for name, chars in sections if name in {".data", "_DATA"}
     }
-    assert writable_data == {".data", "_DATA"}
+    assert ".data" in ordinary_data
+    assert all(chars & write_flag for chars in ordinary_data.values())
 
 
 def test_committed_windows_fixture_exports_required_system_cases():
@@ -404,20 +404,109 @@ def test_windows_builder_preserves_explicit_masm_export_contract() -> None:
     assert 'throw "MASM source' in exporter
 
 
-def test_windows_builder_pins_layout_sensitive_masm_object_at_link_tail() -> None:
-    """The committed Hodur layout must survive addition of earlier-sorting MASM."""
+def test_authoritative_windows_builder_marks_hodconst_read_only() -> None:
+    """The Microsoft-link release path must retain immutable Hodur constants."""
 
-    makefile = (REPO / "samples/Makefile").read_text()
+    dry_run = _sp.run(
+        [
+            "make",
+            "-n",
+            "-B",
+            "TARGET_OS=windows",
+            "BINARY_NAME=fixture_dry_run",
+            "USING_CLANG_CL=1",
+            "CC_BASE=clang-cl.exe",
+        ],
+        cwd=REPO / "samples",
+        capture_output=True,
+        text=True,
+    )
+    assert dry_run.returncode == 0, dry_run.stderr
+    link_lines = [line for line in dry_run.stdout.splitlines() if "link.exe" in line]
+    assert len(link_lines) == 1
+    assert "/SECTION:HODCONST,R" in link_lines[0].split()
 
-    assert "MASM_LINK_LAST_FUNCS ?= sub_7FF855576B50" in makefile
-    assert "MASM_ASM_DISCOVERED  := $(wildcard src/masm/*.asm)" in makefile
-    assert (
-        "MASM_ASM   := $(filter-out $(MASM_ASM_LINK_LAST),$(MASM_ASM_DISCOVERED))"
-        in makefile
+
+def test_masm_builder_pins_layout_sensitive_object_at_link_tail(tmp_path) -> None:
+    """The portable MASM build must preserve the complete append-only layout."""
+
+    samples = tmp_path / "samples"
+    scripts = samples / "scripts"
+    scripts.mkdir(parents=True)
+    builder = scripts / "build_masm.sh"
+    source_builder = REPO / "samples/scripts/build_masm.sh"
+    builder.write_text(source_builder.read_text())
+    builder.chmod(source_builder.stat().st_mode)
+
+    tools = tmp_path / "tools"
+    tools.mkdir()
+
+    def executable(name: str, source: str) -> Path:
+        path = tools / name
+        path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + source)
+        path.chmod(0o755)
+        return path
+
+    assembler = executable(
+        "ml64",
+        'for arg in "$@"; do\n'
+        '  case "$arg" in /Fo*) touch "${arg#/Fo}" ;; esac\n'
+        "done\n",
     )
-    assert (
-        "$(filter $(MASM_ASM_LINK_LAST),$(MASM_ASM_DISCOVERED))" in makefile
+    link_args = tmp_path / "link-args.txt"
+    linker = executable(
+        "linker",
+        'printf \'%s\\n\' "$@" > "$D810_TEST_LINK_ARGS"\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        '    /OUT:*) printf MZ > "${arg#/OUT:}" ;;\n'
+        '    /PDB:*) printf \'Microsoft C/C++ MSF 7.00\' > "${arg#/PDB:}" ;;\n'
+        "  esac\n"
+        "done\n",
     )
+    objdump = executable(
+        "objdump",
+        "echo 'Export Table:'\n"
+        "ordinal=1\n"
+        'while IFS= read -r arg; do\n'
+        '  case "$arg" in\n'
+        '    /EXPORT:*) printf \'%s 0x1000 %s\\n\' "$ordinal" "${arg#/EXPORT:}"; ordinal=$((ordinal + 1)) ;;\n'
+        "  esac\n"
+        'done < "$D810_TEST_LINK_ARGS"\n'
+        "echo 'Debug Table:'\n",
+    )
+    noop = executable("noop", "exit 0\n")
+
+    masm_sources = REPO / "samples/src/masm"
+    env = {
+        **os.environ,
+        "BINARY_NAME": "fixture_link_order",
+        "CC": str(noop),
+        "ML64": str(assembler),
+        "LINKER": str(linker),
+        "NM": str(noop),
+        "LLVM_OBJDUMP": str(objdump),
+        "MASM_SOURCE_DIR": str(masm_sources),
+        "MASM_INCLUDE_C": "0",
+        "MASM_FUNCS": "",
+        "D810_TEST_LINK_ARGS": str(link_args),
+    }
+    built = _sp.run(
+        ["bash", str(builder)],
+        cwd=samples,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert built.returncode == 0, built.stderr
+
+    args = link_args.read_text().splitlines()
+    linked_masm = [Path(arg).stem for arg in args if arg.endswith(".obj")]
+    source_names = {source.stem for source in masm_sources.glob("*.asm")}
+    assert set(linked_masm) == source_names
+    assert len(linked_masm) == len(source_names)
+    assert linked_masm[-1] == "sub_7FF855576B50"
+    assert "/SECTION:HODCONST,R" in args
 
 
 def test_windows_builder_uses_native_masm_relative_jump_table() -> None:

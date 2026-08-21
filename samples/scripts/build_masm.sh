@@ -14,6 +14,7 @@
 #   MASM_SOURCE_DIR directory containing MASM sources (default: src/masm)
 #   MASM_INCLUDE_C compile the shared src/c corpus (default: 1)
 #   MASM_FUNCS   space-separated function base names (auto-discovered by default)
+#   MASM_LINK_LAST_FUNCS functions pinned to the MASM object link tail
 #   BINARY_NAME  output stem (default: libobfuscated)
 #   CC / ML64 / LINKER  toolchain overrides
 set -euo pipefail
@@ -144,6 +145,7 @@ fi
 MASM_FUNCS="${MASM_FUNCS:-}"
 MASM_SOURCE_DIR="${MASM_SOURCE_DIR:-src/masm}"
 MASM_INCLUDE_C="${MASM_INCLUDE_C:-1}"
+MASM_LINK_LAST_FUNCS="${MASM_LINK_LAST_FUNCS:-sub_7FF855576B50}"
 BINARY_NAME="${BINARY_NAME:-}"
 
 case "$SELECTOR" in
@@ -193,6 +195,26 @@ if [ -z "$(echo "$MASM_FUNCS" | tr -d ' ')" ]; then
     echo "error: no $MASM_SOURCE_DIR/*.asm files found (and MASM_FUNCS empty)" >&2
     exit 2
 fi
+
+# Keep layout-sensitive additions append-only, matching the authoritative
+# Windows Makefile.  Preserve discovery/selection order for every other source.
+masm_link_first=()
+masm_link_last=()
+for f in $MASM_FUNCS; do
+    pin_at_tail=0
+    for tail_func in $MASM_LINK_LAST_FUNCS; do
+        if [ "$f" = "$tail_func" ]; then
+            pin_at_tail=1
+            break
+        fi
+    done
+    if [ "$pin_at_tail" -eq 1 ]; then
+        masm_link_last+=("$f")
+    else
+        masm_link_first+=("$f")
+    fi
+done
+MASM_FUNCS="${masm_link_first[*]} ${masm_link_last[*]}"
 
 BUILD_DIR=".build_masm"
 rm -rf "$BUILD_DIR"; mkdir -p "$BUILD_DIR" bins

@@ -237,7 +237,7 @@ ifeq ($(TARGET_OS),windows)
         CFLAGS  := /W3 /Od /Z7 /Iinclude /MDd /DD810_DLL_EXPORT=1
         # These samples are analysis artifacts and may intentionally keep
         # unresolved externals; /NOENTRY avoids requiring DllMain/CRT entry.
-        LDFLAGS := /DLL /DEBUG:FULL /FORCE:UNRESOLVED /NOENTRY
+        LDFLAGS := /DLL /DEBUG:FULL /FORCE:UNRESOLVED /NOENTRY /SECTION:HODCONST,R
     else
         # Cross-compile with Clang → MinGW
         CFLAGS  := $(CFLAGS_BASE) -DD810_DLL_EXPORT=1
