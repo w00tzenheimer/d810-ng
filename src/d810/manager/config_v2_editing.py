@@ -28,6 +28,9 @@ from d810.manager.workbench_recipe_models import PipelineRecipeDraft
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import require_config_v2_project
+from d810.passes.constant_simplification_options import (
+    canonical_constant_simplification_options,
+)
 from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 from d810.passes.registry import PassRegistry, PassRegistryError, UnknownPassIdError
 
@@ -106,6 +109,20 @@ def _pipeline(document: dict[str, object]) -> list[dict[str, object]]:
     return value
 
 
+def _canonicalize_legacy_pipeline_options(document: dict[str, object]) -> None:
+    """Project legacy constant options into the editor-visible schema.
+
+    Legacy flat options are accepted only as an offline read boundary.  Drafts
+    are validated and saved in the current nested schema so editor visibility
+    and registry validation remain strict for every persisted document.
+    """
+    for entry in _pipeline(document):
+        config = PipelineConfig.from_dict(entry)
+        if config.pass_id != "constant-simplification":
+            continue
+        entry["options"] = canonical_constant_simplification_options(config)
+
+
 def _pass_id(entry: Mapping[str, object]) -> str:
     value = entry.get("pass_id")
     if not isinstance(value, str) or not value:
@@ -154,6 +171,7 @@ class ConfigV2EditingService:
             ) from error
         if not isinstance(document, dict):
             raise ConfigV2EditError("project document must be an object")
+        _canonicalize_legacy_pipeline_options(document)
         canonical = _canonical_json(document)
         draft = ConfigV2ProjectDraft(
             draft_id=str(uuid.uuid4()),

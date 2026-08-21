@@ -1,13 +1,6 @@
 {
-  "description": "Config-v2 canary for the constant-simplification stage-control MASM fixture.",
-  "ins_rules": [],
-  "blk_rules": [],
+  "description": "Canonical config-v2 project for the constant-simplification stage-control MASM fixture.",
   "additional_configuration": {
-    "pipeline_v2_mode": "config-v2",
-    "config_v2_canary": {
-      "source_config": "default_instruction_only.json",
-      "runtime_source": "pipeline_v2"
-    },
     "pipeline_v2": [
       {
         "pass_id": "constant-simplification",

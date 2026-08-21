@@ -6,7 +6,9 @@ from pathlib import Path
 
 from d810.core.config import ProjectConfiguration
 from d810.core.plugins import PassImplementationCandidate
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import (
+    compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
+)
 
 
 _CHAIN_IMPLEMENTATIONS = (
@@ -21,7 +23,6 @@ def _project() -> ProjectConfiguration:
     return ProjectConfiguration(
         path=Path("portfolio-fixture.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
                     "pass_id": "mba-simplify",
@@ -68,6 +69,14 @@ def _patch_egraph_extension(monkeypatch) -> None:
     )
 
     class _Registry:
+        def implementation_for(self, pass_id):
+            assert str(pass_id) == "mba-solve"
+            return None
+
+        def implementation_candidates_for(self, pass_id):
+            assert str(pass_id) == "mba-egraph"
+            return (candidate,)
+
         def require_unique_implementation(self, pass_id, *, install_hint):
             assert str(pass_id) == "mba-egraph"
             assert install_hint == "d810-egglog"

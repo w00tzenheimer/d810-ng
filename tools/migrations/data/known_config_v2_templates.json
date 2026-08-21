@@ -574,8 +574,46 @@
           "tags_all": []
         },
         "options": {
-          "memory_policy": "aggressive_no_direct_writes",
-          "allow_executable_readonly": false
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "aggressive_no_direct_writes",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": true,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
         }
       },
       {
@@ -2648,8 +2686,46 @@
           "tags_all": []
         },
         "options": {
-          "memory_policy": "aggressive_no_direct_writes",
-          "allow_executable_readonly": false
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "aggressive_no_direct_writes",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": true,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
         }
       },
       {
@@ -4105,8 +4181,46 @@
           "tags_all": []
         },
         "options": {
-          "memory_policy": "strict",
-          "allow_executable_readonly": false
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "strict",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": true,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
         }
       },
       {
@@ -5507,8 +5621,46 @@
           "tags_all": []
         },
         "options": {
-          "memory_policy": "strict",
-          "allow_executable_readonly": false
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "strict",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": true,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
         }
       },
       {
@@ -6340,8 +6492,46 @@
           "tags_all": []
         },
         "options": {
-          "memory_policy": "aggressive_no_direct_writes",
-          "allow_executable_readonly": false
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "aggressive_no_direct_writes",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": true,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
         }
       },
       {
@@ -7243,8 +7433,46 @@
           "tags_all": []
         },
         "options": {
-          "memory_policy": "strict",
-          "allow_executable_readonly": false
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "strict",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": true,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
         }
       },
       {
@@ -8074,8 +8302,46 @@
           "tags_all": []
         },
         "options": {
-          "memory_policy": "strict",
-          "allow_executable_readonly": false
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "strict",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": true,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
         }
       },
       {
@@ -8562,8 +8828,46 @@
           "tags_all": []
         },
         "options": {
-          "memory_policy": "aggressive_no_direct_writes",
-          "allow_executable_readonly": false
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "aggressive_no_direct_writes",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": false,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
         }
       },
       {
@@ -11014,8 +11318,46 @@
           "tags_all": []
         },
         "options": {
-          "memory_policy": "strict",
-          "allow_executable_readonly": false
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "strict",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": true,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
         }
       }
     ]

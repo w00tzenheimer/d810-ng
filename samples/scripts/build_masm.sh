@@ -11,6 +11,8 @@
 #
 # Env knobs:
 #   selector     optional positional selector: unflattening_effect_safety
+#   MASM_SOURCE_DIR directory containing MASM sources (default: src/masm)
+#   MASM_INCLUDE_C compile the shared src/c corpus (default: 1)
 #   MASM_FUNCS   space-separated function base names (auto-discovered by default)
 #   BINARY_NAME  output stem (default: libobfuscated)
 #   CC / ML64 / LINKER  toolchain overrides
@@ -140,6 +142,8 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 MASM_FUNCS="${MASM_FUNCS:-}"
+MASM_SOURCE_DIR="${MASM_SOURCE_DIR:-src/masm}"
+MASM_INCLUDE_C="${MASM_INCLUDE_C:-1}"
 BINARY_NAME="${BINARY_NAME:-}"
 
 case "$SELECTOR" in
@@ -170,17 +174,23 @@ resolve_tool() {
 CC="$(resolve_tool "${CC:-clang}")"          || { echo "error: clang not found" >&2; exit 1; }
 ML64="$(resolve_tool "${ML64:-llvm-ml64}")"  || { echo "error: llvm-ml64/ml64 not found" >&2; exit 1; }
 LINKER="$(resolve_tool "${LINKER:-lld-link}")" || { echo "error: lld-link not found" >&2; exit 1; }
+NM="$(resolve_tool "${NM:-llvm-nm}")"        || { echo "error: llvm-nm not found" >&2; exit 1; }
 OBJDUMP="$(resolve_tool "${LLVM_OBJDUMP:-llvm-objdump}")" || {
     echo "error: llvm-objdump/objdump not found" >&2
     exit 1
 }
 
-# Default to every src/masm/*.asm (auto-discovery); MASM_FUNCS may override a subset.
+case "$MASM_INCLUDE_C" in
+    0|1) ;;
+    *) echo "error: MASM_INCLUDE_C must be 0 or 1" >&2; exit 2 ;;
+esac
+
+# Default to every source-directory assembly file; MASM_FUNCS may override a subset.
 if [ -z "$MASM_FUNCS" ]; then
-    MASM_FUNCS="$(for a in src/masm/*.asm; do [ -e "$a" ] && basename "$a" .asm; done | tr '\n' ' ')"
+    MASM_FUNCS="$(for a in "$MASM_SOURCE_DIR"/*.asm; do [ -e "$a" ] && basename "$a" .asm; done | tr '\n' ' ')"
 fi
 if [ -z "$(echo "$MASM_FUNCS" | tr -d ' ')" ]; then
-    echo "error: no src/masm/*.asm files found (and MASM_FUNCS empty)" >&2
+    echo "error: no $MASM_SOURCE_DIR/*.asm files found (and MASM_FUNCS empty)" >&2
     exit 2
 fi
 
@@ -196,28 +206,34 @@ declare -A IS_MASM
 for f in $MASM_FUNCS; do IS_MASM["$f"]=1; done
 
 objs=()
+export_flags=()
 compiled=0 skipped=0
-for c in src/c/*.c; do
+if [ "$MASM_INCLUDE_C" = 1 ]; then
+  for c in src/c/*.c; do
     base="$(basename "$c" .c)"
     [ -n "${IS_MASM[$base]:-}" ] && continue
     obj="$BUILD_DIR/$base.obj"
     if "$CC" "${CFLAGS[@]}" "$c" -o "$obj" 2>"$BUILD_DIR/$base.log"; then
-        objs+=("$obj"); compiled=$((compiled + 1))
+        objs+=("$obj")
+        while read -r symbol; do
+            [ -n "$symbol" ] && export_flags+=("/EXPORT:$symbol")
+        done < <("$NM" --defined-only --extern-only "$obj" | awk '$2 == "T" {print $3}')
+        compiled=$((compiled + 1))
     else
         echo "  warn: skipping $base ($(head -1 "$BUILD_DIR/$base.log" | cut -c1-80))" >&2
         skipped=$((skipped + 1))
     fi
-done
+  done
+fi
 echo "C objects: compiled=$compiled skipped=$skipped"
 
 # --- assemble the MASM functions -------------------------------------------
-export_flags=()
 required_exports=()
 callsite_markers=()
 for f in $MASM_FUNCS; do
-    # src/masm/<f>.asm must be compilable MASM from the in-IDA "Export disassembly
+    # The selected source-directory/<f>.asm must be compilable MASM from the in-IDA "Export disassembly
     # -> MASM" action (materialized data + relocatable symbols).
-    src="src/masm/$f.asm"
+    src="$MASM_SOURCE_DIR/$f.asm"
     [ -f "$src" ] || { echo "error: missing $src" >&2; exit 1; }
     obj="$BUILD_DIR/$f.obj"
     "$ML64" /nologo /c /Fo"$obj" "$src" >"$BUILD_DIR/$f.asm.log" 2>&1 \

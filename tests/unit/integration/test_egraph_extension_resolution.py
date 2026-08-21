@@ -11,7 +11,9 @@ from d810.core.plugins import (
     BackendRegistry,
     BackendSpec,
 )
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import (
+    compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
+)
 
 
 def test_declaration_resolution_never_imports_runtime_or_rule_module(
@@ -95,7 +97,6 @@ def test_mba_solve_still_uses_first_compatible_declaration(monkeypatch):
         ProjectConfiguration(
             path=Path("task16-mba-solve.json"),
             additional_configuration={
-                "pipeline_v2_mode": "config-v2",
                 "pipeline_v2": [
                     {
                         "pass_id": "mba-solve",

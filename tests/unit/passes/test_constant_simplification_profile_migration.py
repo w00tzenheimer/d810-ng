@@ -27,23 +27,23 @@ LEGACY_KEYS = {
     "persist_global_const_annotations",
 }
 EXPECTED_MEMORY_POLICIES = {
-    "constant_stage_controls_config_v2_canary.json": AGGRESSIVE_MEMORY_POLICY,
-    "dead_store_elimination_fixture_config_v2_canary.json": AGGRESSIVE_MEMORY_POLICY,
-    "default_instruction_only_config_v2_canary.json": AGGRESSIVE_MEMORY_POLICY,
-    "default_unflattening_ollvm_config_v2_canary.json": AGGRESSIVE_MEMORY_POLICY,
-    "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json": "strict",
+    "constant_stage_controls.json": AGGRESSIVE_MEMORY_POLICY,
+    "dead_store_elimination_fixture.json": AGGRESSIVE_MEMORY_POLICY,
+    "default_instruction_only.json": AGGRESSIVE_MEMORY_POLICY,
+    "default_unflattening_ollvm.json": AGGRESSIVE_MEMORY_POLICY,
+    "default_unflattening_tigress_engine_transition_facts.json": "strict",
     "eidolon_v3_const_solve.json": AGGRESSIVE_MEMORY_POLICY,
     "eidolon_v4_const_simplify_solve.json": AGGRESSIVE_MEMORY_POLICY,
-    "example_hodur_config_v2_canary.json": "strict",
-    "example_libobfuscated_abc_config_v2_canary.json": "strict",
-    "example_libobfuscated_config_v2_canary.json": AGGRESSIVE_MEMORY_POLICY,
-    "example_libobfuscated_no_fixprecedessor_config_v2_canary.json": "strict",
-    "flatfold_config_v2_canary.json": AGGRESSIVE_MEMORY_POLICY,
-    "hodur_flag2_s1a_config_v2_canary_constant_simplification.json": AGGRESSIVE_MEMORY_POLICY,
-    "hodur_flag2_with_fcp_config_v2_canary.json": "strict",
+    "example_hodur.json": "strict",
+    "example_libobfuscated_abc.json": "strict",
+    "example_libobfuscated.json": AGGRESSIVE_MEMORY_POLICY,
+    "example_libobfuscated_no_fixprecedessor.json": "strict",
+    "flatfold.json": AGGRESSIVE_MEMORY_POLICY,
+    "hodur_flag2_s1a_fixture_constant_simplification.json": AGGRESSIVE_MEMORY_POLICY,
+    "hodur_flag2_with_fcp.json": "strict",
 }
 EXPECTED_DISABLED_STAGES = {
-    "flatfold_config_v2_canary.json": frozenset({"forward-constants"}),
+    "flatfold.json": frozenset({"forward-constants"}),
 }
 
 
@@ -99,7 +99,7 @@ def test_all_bundled_constant_profiles_are_canonical_and_compile() -> None:
         expected_rva_guard = path.name not in {
             "eidolon_v3_const_solve.json",
             "eidolon_v4_const_simplify_solve.json",
-            "hodur_flag2_s1a_config_v2_canary_constant_simplification.json",
+            "hodur_flag2_s1a_fixture_constant_simplification.json",
         }
         assert readonly.options["rva_guard"] is expected_rva_guard
         assert all(
@@ -109,7 +109,7 @@ def test_all_bundled_constant_profiles_are_canonical_and_compile() -> None:
 
 
 def test_flatfold_migration_preserves_disabled_forward_constants_stage() -> None:
-    path = CONF_DIR / "flatfold_config_v2_canary.json"
+    path = CONF_DIR / "flatfold.json"
     document = json.loads(path.read_text(encoding="utf-8"))
     project = ProjectConfiguration(
         path=path,

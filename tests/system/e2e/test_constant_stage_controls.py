@@ -22,7 +22,7 @@ from d810.core.typing import Any
 ROOT = Path(__file__).parents[3]
 MASM_SOURCE = ROOT / "samples" / "src" / "masm" / "constant_stage_controls.asm"
 CANARY = (
-    ROOT / "src" / "d810" / "conf" / "constant_stage_controls_config_v2_canary.json"
+    ROOT / "src" / "d810" / "conf" / "constant_stage_controls.json"
 )
 
 FIXTURE_FUNCTIONS = (
@@ -417,7 +417,9 @@ class TestConstantStageControls:
     def test_compiled_schedule_and_callback_order(
         self, copy_of_idb, d810_state, pseudocode_to_string
     ) -> None:
-        from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+        from d810.passes.config_v2_hook_runtime import (
+            compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
+        )
 
         with d810_state() as state:
             project = _load_canary(state)
@@ -681,7 +683,9 @@ class TestConstantStageControls:
     def test_forward_selected_maturity_mutates_with_receipt(
         self, copy_of_idb, d810_state, pseudocode_to_string
     ) -> None:
-        from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+        from d810.passes.config_v2_hook_runtime import (
+            compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
+        )
 
         with d810_state() as state:
             project = _load_canary(state)
@@ -764,7 +768,9 @@ class TestConstantStageControls:
     def test_forward_gated_maturity_keeps_semantics_and_has_no_receipt(
         self, copy_of_idb, d810_state, pseudocode_to_string
     ) -> None:
-        from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+        from d810.passes.config_v2_hook_runtime import (
+            compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
+        )
 
         with d810_state() as state:
             project = _load_canary(state)

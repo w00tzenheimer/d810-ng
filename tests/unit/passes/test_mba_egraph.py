@@ -30,7 +30,9 @@ from d810.passes.mba_egraph import (
 )
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import (
+    compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
+)
 from d810.passes.registry import PassRegistry
 
 
@@ -59,6 +61,10 @@ class _FakeImplementationRegistry:
     def implementation_candidates_for(self, pass_id):
         assert str(pass_id) == str(MBA_EGRAPH_PASS_ID)
         return self.candidates
+
+    def implementation_for(self, pass_id):
+        assert str(pass_id) == "mba-solve"
+        return None
 
     def require_unique_implementation(self, pass_id, *, install_hint):
         candidates = self.implementation_candidates_for(pass_id)
@@ -460,7 +466,6 @@ class TestMbaEgraphRegistration(unittest.TestCase):
         project = ProjectConfiguration(
             path=Path("mba-egraph.missing.runtime-config-v2.json"),
             additional_configuration={
-                "pipeline_v2_mode": "config-v2",
                 "pipeline_v2": [{"pass_id": PassId.MBA_EGRAPH, "options": {}}],
             },
         )
@@ -481,7 +486,6 @@ class TestMbaEgraphRegistration(unittest.TestCase):
         project = ProjectConfiguration(
             path=Path("mba-egraph.ambiguous.runtime-config-v2.json"),
             additional_configuration={
-                "pipeline_v2_mode": "config-v2",
                 "pipeline_v2": [{"pass_id": PassId.MBA_EGRAPH, "options": {}}],
             },
         )
@@ -491,7 +495,7 @@ class TestMbaEgraphRegistration(unittest.TestCase):
             return_value=_FakeImplementationRegistry(candidates),
         ):
             with patch(
-                "d810.passes.pipeline_v2_hook_bridge._rule_config",
+                "d810.passes.config_v2_hook_runtime._rule_config",
                 side_effect=AssertionError("rule config emitted before resolution"),
             ):
                 with self.assertRaises(PassImplementationAmbiguous):
@@ -501,7 +505,6 @@ class TestMbaEgraphRegistration(unittest.TestCase):
         project = ProjectConfiguration(
             path=Path("mba-egraph.strict-activation.runtime-config-v2.json"),
             additional_configuration={
-                "pipeline_v2_mode": "config-v2",
                 "pipeline_v2": [{"pass_id": PassId.MBA_EGRAPH, "options": {}}],
             },
         )

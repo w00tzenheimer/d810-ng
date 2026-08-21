@@ -447,7 +447,10 @@ if [ -n "$DISABLE_FACT_LIFECYCLE" ]; then
   echo "  facts:    D810_FACT_LIFECYCLE=0"
 fi
 case "$CMD" in
-  system) echo "  run:      pytest tests/system -v${EXTRA_PYTEST[*]:+ ${EXTRA_PYTEST[*]}}" ;;
+  system)
+    echo "  run:      fresh pytest batches over tests/system${EXTRA_PYTEST[*]:+ ${EXTRA_PYTEST[*]}}"
+    echo "  batch:    $SYSTEM_BATCH_SIZE tests per interpreter"
+    ;;
   test)   echo "  run:      pytest -v${EXTRA_PYTEST[*]:+ ${EXTRA_PYTEST[*]}}" ;;
   dump)
     echo "  run:      pytest test_dump_function_pseudocode.py"

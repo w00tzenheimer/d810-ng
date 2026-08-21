@@ -138,7 +138,9 @@ def test_authority_reaches_editor_pass_bridge_and_direct_rule_configuration(
     from d810.core.config import ProjectConfiguration
     from d810.core.z3_proof import Z3ProofFieldAuthority, Z3ProofPolicyAuthority
     from d810.passes.mba_transform_catalog import mba_transform_editor_spec
-    from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+    from d810.passes.config_v2_hook_runtime import (
+        compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
+    )
     from d810.optimizers.microcode.instructions.z3.predicates import (
         Z3lnotRuleGeneric,
         Z3setnzRuleGeneric,
@@ -180,7 +182,6 @@ def test_authority_reaches_editor_pass_bridge_and_direct_rule_configuration(
     project = ProjectConfiguration(
         path=Path("z3-authority.runtime-config-v2.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
                     "pass_id": "mba-simplify",

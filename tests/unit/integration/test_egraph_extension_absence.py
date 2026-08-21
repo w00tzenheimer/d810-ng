@@ -23,7 +23,9 @@ from d810.core.plugins import (
     PassImplementationMissing,
     PassImplementationUnavailable,
 )
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import (
+    compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
+)
 
 
 MATRIX_ROWS = (
@@ -66,7 +68,6 @@ def _project(pass_id: str, options: dict[str, object]) -> ProjectConfiguration:
     return ProjectConfiguration(
         path=Path(f"task16-{pass_id}.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [{"pass_id": pass_id, "options": options}],
         },
     )
@@ -215,7 +216,7 @@ def test_core_only_egraph_extension_resolution_matrix(row, tmp_path, monkeypatch
         activation = pipeline_v2_hook_activation(
             _project("constant-simplification", {"memory_policy": "strict"})
         )
-        assert activation.enabled is True
+        assert activation.configured_pass_ids == ("constant-simplification",)
         assert all(
             rule.name != "EgglogOptimizer" for rule in activation.instruction_rules
         )
@@ -272,7 +273,7 @@ def test_core_only_egraph_extension_resolution_matrix(row, tmp_path, monkeypatch
         assert all(
             rule.name != "EgglogOptimizer" for rule in activation.instruction_rules
         )
-        assert manifest_calls == []
+        assert manifest_calls == ["usable-origin", "usable-origin"]
         assert runtime_calls == []
         assert not marker.exists()
         return
@@ -286,6 +287,6 @@ def test_core_only_egraph_extension_resolution_matrix(row, tmp_path, monkeypatch
     assert rule.config == {
         **_EGRAPH_OPTIONS,
     }
-    assert manifest_calls == ["usable-origin", "usable-origin"]
+    assert manifest_calls == ["usable-origin"] * 4
     assert runtime_calls == [row]
     assert marker.read_text(encoding="utf-8") == "imported"

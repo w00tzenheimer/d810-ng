@@ -132,6 +132,17 @@ def test_unlabeled_runtime_keeps_dependency_setup(tmp_path: Path) -> None:
     assert "d810.speedups.install" in command
 
 
+def test_system_mode_uses_fresh_interpreter_batches(tmp_path: Path) -> None:
+    result, calls = _run(tmp_path, "system", "--", "-q")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "tools/scripts/run_system_test_batches.py" in command
+    assert "tests/system" in command
+    assert "--batch-size 20" in command
+    assert "pytest tests/system -v" not in command
+
+
 def test_core_mode_does_not_mount_or_forward_extension_root(
     tmp_path: Path,
 ) -> None:

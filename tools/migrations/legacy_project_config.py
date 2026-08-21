@@ -900,13 +900,51 @@ def _constant_options(rules: Sequence[LegacyRule]) -> dict[str, object]:
     fold_writable = fold.options.get("fold_writable_constants", False)
     if not isinstance(fold_writable, bool):
         raise _error_for_rule(fold, "must be a boolean", field="config.fold_writable_constants")
-    options: dict[str, object] = {
-        "memory_policy": "aggressive_no_direct_writes" if fold_writable else "strict",
-        "allow_executable_readonly": fold.options.get("allow_executable_readonly", False),
+    memory_policy = "aggressive_no_direct_writes" if fold_writable else "strict"
+    rva_guard = fold.options.get("rva_guard", True)
+    allow_executable_readonly = fold.options.get("allow_executable_readonly", False)
+    return {
+        "preparation": {
+            "global_const_types": {
+                "enabled": False,
+                "discover_bounded_tables": True,
+            }
+        },
+        "stages": {
+            "fold-readonly-data": {
+                "enabled": True,
+                "maturities": [
+                    "CANONICAL",
+                    "LOCAL_OPTIMIZED",
+                    "CALL_MODELED",
+                    "GLOBAL_ANALYZED",
+                    "STRUCTURED",
+                ],
+                "memory_policy": memory_policy,
+                "rva_guard": rva_guard,
+                "allow_executable_readonly": allow_executable_readonly,
+            },
+            "fold-constant-subtree": {
+                "enabled": True,
+                "maturities": [
+                    "LOCAL_OPTIMIZED",
+                    "CALL_MODELED",
+                    "GLOBAL_ANALYZED",
+                    "GLOBAL_OPTIMIZED",
+                    "STRUCTURED",
+                ],
+            },
+            "forward-constants": {
+                "enabled": True,
+                "maturities": [
+                    "CALL_MODELED",
+                    "GLOBAL_ANALYZED",
+                    "GLOBAL_OPTIMIZED",
+                    "STRUCTURED",
+                ],
+            },
+        },
     }
-    if "rva_guard" in fold.options:
-        options["rva_guard"] = fold.options["rva_guard"]
-    return options
 
 
 def _state_options(rule: LegacyRule) -> dict[str, object]:

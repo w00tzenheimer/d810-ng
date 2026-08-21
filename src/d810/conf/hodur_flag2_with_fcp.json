@@ -606,8 +606,46 @@
         "granularity": "function",
         "maturity_gates": [],
         "options": {
-          "allow_executable_readonly": false,
-          "memory_policy": "strict"
+          "preparation": {
+            "global_const_types": {
+              "enabled": false,
+              "discover_bounded_tables": true
+            }
+          },
+          "stages": {
+            "fold-readonly-data": {
+              "enabled": true,
+              "maturities": [
+                "CANONICAL",
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "STRUCTURED"
+              ],
+              "memory_policy": "strict",
+              "rva_guard": true,
+              "allow_executable_readonly": false
+            },
+            "fold-constant-subtree": {
+              "enabled": true,
+              "maturities": [
+                "LOCAL_OPTIMIZED",
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            },
+            "forward-constants": {
+              "enabled": true,
+              "maturities": [
+                "CALL_MODELED",
+                "GLOBAL_ANALYZED",
+                "GLOBAL_OPTIMIZED",
+                "STRUCTURED"
+              ]
+            }
+          }
         },
         "pass_id": "constant-simplification",
         "preservation": {

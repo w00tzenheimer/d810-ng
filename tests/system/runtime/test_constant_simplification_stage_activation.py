@@ -26,7 +26,9 @@ from d810.passes.constant_simplification import (
     constant_simplification_provider_maturities,
 )
 from d810.passes.constant_simplification_options import ConstantPreparationOptions
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import (
+    compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
+)
 
 
 _RULE_TYPES = {
@@ -40,7 +42,6 @@ def _project() -> ProjectConfiguration:
     return ProjectConfiguration(
         path=Path("constant-stage-activation.runtime-config-v2.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
                     "pass_id": "constant-simplification",
