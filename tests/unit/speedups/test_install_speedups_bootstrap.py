@@ -2,10 +2,32 @@ from __future__ import annotations
 
 import subprocess
 import importlib.machinery
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from d810.speedups import install
+
+
+def test_solver_only_cli_skips_native_bootstrap(monkeypatch, capsys):
+    expected = install.SolverSupportResult(
+        ok=True,
+        already_present=True,
+        message="solver ready",
+    )
+    monkeypatch.setattr(install, "install_solver_support", lambda: expected)
+    monkeypatch.setattr(
+        install,
+        "bootstrap_speedups",
+        lambda **_kwargs: pytest.fail("native bootstrap must not run"),
+    )
+    monkeypatch.setattr(sys, "argv", ["d810.speedups.install", "--solver-only"])
+
+    install.main()
+
+    assert capsys.readouterr().out.strip() == "solver ready"
 
 
 def test_native_build_opts_in_and_uses_the_invoking_interpreter():

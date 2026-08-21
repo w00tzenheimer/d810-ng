@@ -118,6 +118,7 @@ def test_baked_runtime_validates_dependencies_in_every_mode(
     assert ".[dev,emulation]" in command
     assert ".[dev,emulation,egraph]" not in command
     assert "d810.speedups.install" in command
+    assert "d810.speedups.install --solver-only" in command
     assert "baked runtime dependencies detected" in command
     assert "baked runtime is stale" in command
 
@@ -130,6 +131,7 @@ def test_unlabeled_runtime_keeps_dependency_setup(tmp_path: Path) -> None:
     assert ".[dev,emulation]" in command
     assert ".[dev,emulation,egraph]" not in command
     assert "d810.speedups.install" in command
+    assert "d810.speedups.install --solver-only" in command
 
 
 def test_system_mode_uses_fresh_interpreter_batches(tmp_path: Path) -> None:
@@ -545,7 +547,7 @@ def test_explicit_empty_image_does_not_fall_back_to_dotenv(tmp_path: Path) -> No
 def test_native_speedups_build_cleans_extensions_and_fails_closed(
     tmp_path: Path,
 ) -> None:
-    result, calls = _run(tmp_path, "exec", "--", "true", no_cython="0")
+    result, calls = _run(tmp_path, "test", "--", "-q", no_cython="0")
 
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
@@ -555,12 +557,15 @@ def test_native_speedups_build_cleans_extensions_and_fails_closed(
     assert "D810_BUILD_SPEEDUPS=1" in command
     assert "falling back to pure-Python" not in command
     assert "|| echo" not in command
+    assert command.index("find src/d810/speedups -type f") < command.index(
+        "D810_BUILD_SPEEDUPS=1"
+    ) < command.rindex("pytest")
 
 
 def test_python_mode_cleans_extensions_without_building(
     tmp_path: Path,
 ) -> None:
-    result, calls = _run(tmp_path, "exec", "--", "true", no_cython="1")
+    result, calls = _run(tmp_path, "test", "--", "-q", no_cython="1")
 
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
@@ -568,3 +573,5 @@ def test_python_mode_cleans_extensions_without_building(
     disabled = command.index("native build disabled by D810_NO_CYTHON=1")
     assert cleanup < disabled
     assert "D810_BUILD_SPEEDUPS=1" not in command
+    assert disabled < command.rindex("pytest")
+    assert "d810.speedups.install --solver-only" in command

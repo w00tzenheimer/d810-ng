@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import dataclasses
+import argparse
 import ctypes
+import dataclasses
 import importlib.machinery
 import importlib.util
 import os
@@ -367,6 +368,21 @@ def bootstrap_speedups(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--solver-only",
+        action="store_true",
+        help="install and verify solver support without building native extensions",
+    )
+    args = parser.parse_args()
+    if args.solver_only:
+        result = install_solver_support()
+        stream = sys.stdout if result.ok else sys.stderr
+        print(result.message, file=stream)
+        if not result.ok:
+            raise SystemExit(1)
+        return
+
     result = bootstrap_speedups(source_root=find_source_checkout())
     stream = sys.stdout if result.ok else sys.stderr
     print(result.message, file=stream)
