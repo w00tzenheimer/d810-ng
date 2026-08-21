@@ -106,10 +106,69 @@ def test_masm_builder_exports_public_c_text_symbols():
     assert 'export_flags+=("/EXPORT:$symbol")' in build_script
 
 
+def _sanitize_c_preprocessor_source(source: str) -> str:
+    """Blank C/C++ comments while preserving literals and line positions."""
+
+    output: list[str] = []
+    index = 0
+    state = "code"
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+        if state == "code":
+            if char == "/" and next_char == "*":
+                output.extend((" ", " "))
+                index += 2
+                state = "block_comment"
+                continue
+            if char == "/" and next_char == "/":
+                output.extend((" ", " "))
+                index += 2
+                state = "line_comment"
+                continue
+            if char in {"\"", "'"}:
+                state = char
+            output.append(char)
+            index += 1
+            continue
+        if state == "block_comment":
+            if char == "*" and next_char == "/":
+                output.extend((" ", " "))
+                index += 2
+                state = "code"
+            else:
+                output.append("\n" if char == "\n" else " ")
+                index += 1
+            continue
+        if state == "line_comment":
+            if char == "\n":
+                output.append(char)
+                state = "code"
+            else:
+                output.append(" ")
+            index += 1
+            continue
+        output.append(char)
+        if char == "\\":
+            if index + 1 >= len(source):
+                raise ValueError("unterminated string or character literal")
+            output.append(source[index + 1])
+            index += 2
+            continue
+        if char == state:
+            state = "code"
+        index += 1
+    if state == "block_comment":
+        raise ValueError("unterminated block comment")
+    if state in {"\"", "'"}:
+        raise ValueError("unterminated string or character literal")
+    return "".join(output)
+
+
 def _extract_hodur_crt_branches(source: str) -> tuple[str, str]:
     """Extract the two branches of Hodur's outer CRT preprocessor guard."""
 
-    lines = source.splitlines(keepends=True)
+    lines = _sanitize_c_preprocessor_source(source).splitlines(keepends=True)
     directive_re = re.compile(
         r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$"
     )
@@ -265,6 +324,32 @@ def test_hodur_crt_branch_extractor_accepts_flexible_directive_spacing() -> None
     source = (
         "\t# if\tdefined ( D810_FREESTANDING_FIXTURE )\n"
         "freestanding\n\t# else\nauthoritative\n\t# endif\n"
+    )
+    assert _extract_hodur_crt_branches(source) == (
+        "freestanding\n",
+        "authoritative\n",
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "/* #if defined(D810_FREESTANDING_FIXTURE)\n"
+        "freestanding\n#else\nauthoritative\n#endif */\n",
+        "// #if defined(D810_FREESTANDING_FIXTURE)\n"
+        "// #else\n// #endif\n",
+    ],
+)
+def test_hodur_crt_branch_extractor_ignores_commented_fake_guards(source: str) -> None:
+    with pytest.raises(ValueError):
+        _extract_hodur_crt_branches(source)
+
+
+def test_hodur_crt_branch_extractor_preserves_literal_comment_markers() -> None:
+    source = (
+        'const char *markers = "escaped \\\" /* not a comment */";\n'
+        "#if defined(D810_FREESTANDING_FIXTURE)\n"
+        "freestanding\n#else\nauthoritative\n#endif\n"
     )
     assert _extract_hodur_crt_branches(source) == (
         "freestanding\n",
