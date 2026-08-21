@@ -50,8 +50,9 @@ def _enable_global_const_persistence(state) -> None:
         if project.path.name == "default_instruction_only.json"
     )
     state.load_project(project_index)
-    project = state.current_project
-    assert project is not None
+    source_project = state.current_project
+    assert source_project is not None
+    project = copy.deepcopy(source_project)
     additional = copy.deepcopy(project.additional_configuration)
     constant_pass = next(
         entry
@@ -169,10 +170,19 @@ class TestGlobalConstAnnotation:
             ida_nalt.del_tinfo(item_ea)
 
         proposals = Netnode("$ d810.global_const_proposals.v1")
+        catalogue_project = None
+        catalogue_document = None
         try:
             _clear_proposals(proposals)
             with d810_state() as state:
+                catalogue_project = next(
+                    project
+                    for project in state.project_manager.projects()
+                    if project.path.name == "default_instruction_only.json"
+                )
+                catalogue_document = copy.deepcopy(catalogue_project.to_document())
                 _enable_global_const_persistence(state)
+                assert catalogue_project.to_document() == catalogue_document
                 state.start_d810()
                 database_identity = state.manager.pre_hex_preparation.database_identity
                 foreign = annotate_global_table_access(
@@ -214,6 +224,9 @@ class TestGlobalConstAnnotation:
                 assert observer.pending_reason == "next preparation round"
         finally:
             _clear_proposals(proposals)
+            assert catalogue_project is not None
+            assert catalogue_document is not None
+            assert catalogue_project.to_document() == catalogue_document
             if had_original:
                 ida_typeinf.apply_tinfo(
                     item_ea,
