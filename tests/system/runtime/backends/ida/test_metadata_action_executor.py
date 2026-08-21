@@ -40,7 +40,6 @@ idautils = pytest.importorskip("idautils")
 from d810.backends.ida.native_patch.metadata import (  # noqa: E402
     IdaMetadataActionExecutor,
     UnexecutableMetadataAction,
-    _parse_reversible_data_item_state,
 )
 from d810.transforms.native_patch_plan import NativeMetadataActionKind  # noqa: E402
 
@@ -185,6 +184,48 @@ class TestIdaMetadataActionExecutor:
                 )
                 ok = outgoing.next_from()
         return tuple(sorted(edges))
+
+    @staticmethod
+    def _scoped_item_token(
+        item_state: str,
+        snapshot: str,
+        *,
+        xrefs: list[dict[str, object]] | None = None,
+    ) -> str:
+        payload = json.loads(snapshot.removeprefix("data:v2:"))
+        if xrefs is None:
+            xrefs = payload["xrefs"]
+        return "item-xrefs:v1:" + json.dumps(
+            {
+                "ea": payload["ea"],
+                "head_ea": payload["head_ea"],
+                "item_state": item_state,
+                "size": payload["size"],
+                "xrefs": xrefs,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _scoped_code_after(self, snapshot: str, ea: int, size: int) -> str:
+        payload = json.loads(snapshot.removeprefix("data:v2:"))
+        rows = [*payload["xrefs"], {
+            "is_code": True,
+            "source_ea": ea,
+            "target_ea": ea + size,
+            "user_owned": False,
+            "xref_type": int(ida_xref.fl_F),
+        }]
+        rows.sort(
+            key=lambda row: (
+                row["source_ea"],
+                row["target_ea"],
+                row["xref_type"],
+                row["user_owned"],
+                row["is_code"],
+            )
+        )
+        return self._scoped_item_token("code:4", snapshot, xrefs=rows)
 
     @pytest.mark.parametrize("direction", ("incoming", "outgoing"))
     def test_scalar_data_with_xrefs_is_captured_and_reverts_to_v1(
@@ -427,32 +468,43 @@ class TestIdaMetadataActionExecutor:
         instruction = ida_ua.insn_t()
         code_size = int(ida_ua.decode_insn(instruction, target_ea))
         assert code_size == 4
-        promoted = "code:4"
+        composite_before = self._scoped_item_token(before, before)
+        composite_after = self._scoped_code_after(before, target_ea, code_size)
 
-        assert executor.apply_state(kind, target_ea, promoted)
-        assert executor.read_state(kind, target_ea) == promoted
+        assert executor.apply_state(kind, target_ea, composite_after)
+        assert (
+            executor.read_state(
+                kind, target_ea, scope_state=composite_after
+            )
+            == composite_after
+        )
+        expected_after = set(expected_witness)
+        expected_after.add(
+            (target_ea, target_ea + code_size, int(ida_xref.fl_F), False, True)
+        )
+        assert expected_after == set(self._xref_witness(data_head, data_size))
+        assert executor.apply_state(kind, target_ea, composite_before)
+        assert (
+            executor.read_state(
+                kind, target_ea, scope_state=composite_before
+            )
+            == composite_before
+        )
         assert expected_witness == self._xref_witness(data_head, data_size)
-        assert executor.apply_state(kind, target_ea, before)
         assert executor.read_state(kind, target_ea) == before
 
-    def test_tigress_v2_xref_drift_is_rejected_without_item_mutation(
+    def test_scoped_item_rejects_preexisting_auto_drift_without_mutation(
         self, copy_of_idb
     ) -> None:
-        """A changed witness cannot authorize a data-to-code transition."""
-
         executor = IdaMetadataActionExecutor()
         kind = NativeMetadataActionKind.RECREATE_ITEM
         target_ea = 0x1800173A5
         data_head = int(ida_bytes.get_item_head(target_ea))
-        original = executor.read_state(kind, target_ea)
-        assert original is not None and original.startswith("data:v2:")
-        original_data = _parse_reversible_data_item_state(
-            original, expected_ea=target_ea
-        )
-        assert original_data is not None
-
-        source_ea = _first_function_with_min_size()
         data_size = int(ida_bytes.get_item_size(data_head))
+        original = executor.read_state(kind, target_ea)
+        composite_before = self._scoped_item_token(original, original)
+        composite_after = self._scoped_code_after(original, target_ea, 4)
+        source_ea = _first_function_with_min_size()
         existing = self._xref_witness(data_head, data_size)
         xref_target = next(
             candidate
@@ -462,16 +514,95 @@ class TestIdaMetadataActionExecutor:
         )
         assert ida_xref.add_dref(source_ea, xref_target, ida_xref.dr_R)
         try:
-            drifted = executor.read_state(kind, target_ea)
-            assert drifted is not None and drifted != original
+            drifted = executor.read_state(
+                kind, target_ea, scope_state=composite_before
+            )
             with pytest.raises(UnexecutableMetadataAction):
-                executor._apply_data_to_code(
-                    target_ea, "code:4", original, original_data
+                executor.apply_state(kind, target_ea, composite_after)
+            assert (
+                executor.read_state(
+                    kind, target_ea, scope_state=composite_before
                 )
-            assert executor.read_state(kind, target_ea) == drifted
+                == drifted
+            )
+            assert executor.read_state(kind, target_ea).startswith("data:v2:")
         finally:
             ida_xref.del_dref(source_ea, xref_target)
         assert executor.read_state(kind, target_ea) == original
+
+    def test_scoped_item_rejects_preexisting_user_drift_without_mutation(
+        self, copy_of_idb
+    ) -> None:
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        target_ea = 0x1800173A5
+        data_head = int(ida_bytes.get_item_head(target_ea))
+        data_size = int(ida_bytes.get_item_size(data_head))
+        original = executor.read_state(kind, target_ea)
+        composite_before = self._scoped_item_token(original, original)
+        composite_after = self._scoped_code_after(original, target_ea, 4)
+        source_ea = _first_function_with_min_size()
+        existing = self._xref_witness(data_head, data_size)
+        xref_target = next(
+            candidate
+            for candidate in range(data_head, data_head + data_size)
+            if (source_ea, candidate, int(ida_xref.dr_R), True, False)
+            not in existing
+        )
+        assert ida_xref.add_dref(
+            source_ea,
+            xref_target,
+            int(ida_xref.dr_R) | int(ida_xref.XREF_USER),
+        )
+        try:
+            drifted = executor.read_state(
+                kind, target_ea, scope_state=composite_before
+            )
+            with pytest.raises(UnexecutableMetadataAction):
+                executor.apply_state(kind, target_ea, composite_after)
+            assert (
+                executor.read_state(
+                    kind, target_ea, scope_state=composite_before
+                )
+                == drifted
+            )
+        finally:
+            ida_xref.del_dref(source_ea, xref_target)
+        assert executor.read_state(kind, target_ea) == original
+
+    def test_scoped_item_post_create_failure_restores_without_xref_mutation(
+        self, copy_of_idb, monkeypatch
+    ) -> None:
+        class FailOnceExecutor(IdaMetadataActionExecutor):
+            fail_once = True
+
+            def _post_item_effect(self):
+                if self.fail_once:
+                    self.fail_once = False
+                    raise RuntimeError("injected post-create failure")
+
+        executor = FailOnceExecutor()
+        xref_calls: list[str] = []
+        for name in ("add_cref", "del_cref", "add_dref", "del_dref"):
+            original_call = getattr(ida_xref, name)
+
+            def record_call(*args, _name=name, _original=original_call, **kwargs):
+                xref_calls.append(_name)
+                return _original(*args, **kwargs)
+
+            monkeypatch.setattr(ida_xref, name, record_call)
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        target_ea = 0x1800173A5
+        original = executor.read_state(kind, target_ea)
+        composite_before = self._scoped_item_token(original, original)
+        composite_after = self._scoped_code_after(original, target_ea, 4)
+
+        with pytest.raises(UnexecutableMetadataAction):
+            executor.apply_state(kind, target_ea, composite_after)
+        assert executor.read_state(kind, target_ea) == original
+        assert xref_calls == []
+        assert executor.apply_state(kind, target_ea, composite_after)
+        assert executor.apply_state(kind, target_ea, composite_before)
 
     def test_shared_tigress_data_item_targets_restore_as_one_item(
         self, copy_of_idb

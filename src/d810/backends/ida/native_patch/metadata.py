@@ -90,7 +90,13 @@ class MetadataStateMismatch(RuntimeError):
 class MetadataActionExecutor(Protocol):
     """Read/apply seam for one metadata action kind at one address."""
 
-    def read_state(self, kind: NativeMetadataActionKind, ea: int) -> str:
+    def read_state(
+        self,
+        kind: NativeMetadataActionKind,
+        ea: int,
+        *,
+        scope_state: str | None = None,
+    ) -> str:
         """The current state token at ``ea`` for ``kind``.
 
         Must be the same vocabulary the plan's ``expected_before``/
@@ -114,6 +120,7 @@ _ITEM_CODE = "code"
 _ITEM_DATA = "data"
 _ITEM_DATA_SNAPSHOT_V1_PREFIX = "data:v1:"
 _ITEM_DATA_SNAPSHOT_V2_PREFIX = "data:v2:"
+_ITEM_SCOPED_XREF_V1_PREFIX = "item-xrefs:v1:"
 _ITEM_UNKNOWN = "unknown"
 _SWITCH_NONE = "switch:none"
 _SWITCH_PREFIX = "switch:"
@@ -317,6 +324,157 @@ def reversible_data_item_head(
     return None if payload is None else int(payload["head_ea"])
 
 
+def _scoped_item_token(
+    *,
+    ea: int,
+    head_ea: int,
+    size: int,
+    item_state: str,
+    xrefs: tuple[tuple[int, int, int, bool, bool], ...],
+) -> str:
+    payload = {
+        "ea": int(ea),
+        "head_ea": int(head_ea),
+        "item_state": item_state,
+        "size": int(size),
+        "xrefs": [
+            {
+                "is_code": is_code,
+                "source_ea": source_ea,
+                "target_ea": target_ea,
+                "user_owned": user_owned,
+                "xref_type": xref_type,
+            }
+            for source_ea, target_ea, xref_type, user_owned, is_code in xrefs
+        ],
+    }
+    return _ITEM_SCOPED_XREF_V1_PREFIX + json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _parse_scoped_item_state(
+    token: str, *, expected_ea: int | None = None
+) -> dict[str, object] | None:
+    if not isinstance(token, str) or not token.startswith(
+        _ITEM_SCOPED_XREF_V1_PREFIX
+    ):
+        return None
+    try:
+        payload = json.loads(
+            token.removeprefix(_ITEM_SCOPED_XREF_V1_PREFIX)
+        )
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or set(payload) != {
+        "ea",
+        "head_ea",
+        "item_state",
+        "size",
+        "xrefs",
+    }:
+        return None
+    if not all(
+        _is_int(payload.get(key)) for key in ("ea", "head_ea", "size")
+    ):
+        return None
+    ea = int(payload["ea"])
+    head_ea = int(payload["head_ea"])
+    size = int(payload["size"])
+    if (
+        ea < 0
+        or head_ea < 0
+        or size <= 0
+        or not head_ea <= ea < head_ea + size
+        or (expected_ea is not None and ea != int(expected_ea))
+    ):
+        return None
+    item_state = payload["item_state"]
+    if not isinstance(item_state, str):
+        return None
+    if item_state == _ITEM_UNKNOWN:
+        pass
+    elif item_state.startswith(f"{_ITEM_CODE}:"):
+        code_size = item_state.removeprefix(f"{_ITEM_CODE}:")
+        if not code_size.isdecimal() or int(code_size) <= 0:
+            return None
+        if item_state != f"{_ITEM_CODE}:{int(code_size)}":
+            return None
+    elif item_state.startswith(_ITEM_DATA_SNAPSHOT_V2_PREFIX):
+        data = _parse_reversible_data_item_state(
+            item_state, expected_ea=ea
+        )
+        if data is None or int(data["head_ea"]) != head_ea:
+            return None
+        if int(data["size"]) != size:
+            return None
+    else:
+        return None
+    raw_xrefs = payload["xrefs"]
+    if not isinstance(raw_xrefs, list) or not raw_xrefs:
+        return None
+    parsed: list[tuple[int, int, int, bool, bool]] = []
+    for row in raw_xrefs:
+        if not isinstance(row, dict) or set(row) != {
+            "is_code",
+            "source_ea",
+            "target_ea",
+            "user_owned",
+            "xref_type",
+        }:
+            return None
+        source_ea = row["source_ea"]
+        target_ea = row["target_ea"]
+        xref_type = row["xref_type"]
+        if not all(
+            _is_int(value) for value in (source_ea, target_ea, xref_type)
+        ):
+            return None
+        user_owned = row["user_owned"]
+        is_code = row["is_code"]
+        if not isinstance(user_owned, bool) or not isinstance(is_code, bool):
+            return None
+        row_tuple = (
+            int(source_ea),
+            int(target_ea),
+            int(xref_type),
+            user_owned,
+            is_code,
+        )
+        if any(value < 0 for value in row_tuple[:3]):
+            return None
+        if not (
+            head_ea <= row_tuple[0] < head_ea + size
+            or head_ea <= row_tuple[1] < head_ea + size
+        ):
+            return None
+        parsed.append(row_tuple)
+    if len(set(parsed)) != len(parsed) or parsed != sorted(parsed):
+        return None
+    xrefs = tuple(parsed)
+    if item_state.startswith(_ITEM_DATA_SNAPSHOT_V2_PREFIX):
+        data = _parse_reversible_data_item_state(item_state, expected_ea=ea)
+        assert data is not None
+        if tuple(data["xrefs"]) != xrefs:
+            return None
+    canonical = _scoped_item_token(
+        ea=ea,
+        head_ea=head_ea,
+        size=size,
+        item_state=item_state,
+        xrefs=xrefs,
+    )
+    if token != canonical:
+        return None
+    return {
+        "ea": ea,
+        "head_ea": head_ea,
+        "item_state": item_state,
+        "size": size,
+        "xrefs": xrefs,
+    }
+
+
 class IdaMetadataActionExecutor:
     """:class:`MetadataActionExecutor` over the live IDA database.
 
@@ -334,8 +492,16 @@ class IdaMetadataActionExecutor:
 
     # -- state reading --------------------------------------------------
 
-    def read_state(self, kind: NativeMetadataActionKind, ea: int) -> str:
+    def read_state(
+        self,
+        kind: NativeMetadataActionKind,
+        ea: int,
+        *,
+        scope_state: str | None = None,
+    ) -> str:
         if kind is NativeMetadataActionKind.RECREATE_ITEM:
+            if scope_state is not None:
+                return self._read_scoped_item_state(int(ea), scope_state)
             return self._read_item_state(int(ea))
         if kind is NativeMetadataActionKind.UPDATE_XREF:
             return self._read_cref_state(int(ea))
@@ -346,6 +512,23 @@ class IdaMetadataActionExecutor:
         if kind is NativeMetadataActionKind.FUNCTION_TAIL_CHUNK:
             return self._read_chunk_state(int(ea))
         raise UnexecutableMetadataAction(getattr(kind, "value", str(kind)))
+
+    def _read_scoped_item_state(self, ea: int, scope_state: str) -> str:
+        scope = _parse_scoped_item_state(scope_state, expected_ea=ea)
+        if scope is None:
+            raise UnexecutableMetadataAction(
+                f"malformed scoped item state {scope_state!r}"
+            )
+        xrefs = self._read_data_item_xrefs(
+            int(scope["head_ea"]), int(scope["size"])
+        )
+        return _scoped_item_token(
+            ea=ea,
+            head_ea=int(scope["head_ea"]),
+            size=int(scope["size"]),
+            item_state=self._read_item_state(ea),
+            xrefs=xrefs,
+        )
 
     def _read_item_state(self, ea: int) -> str:
         import ida_bytes
@@ -509,6 +692,51 @@ class IdaMetadataActionExecutor:
                 ok = outgoing.next_from()
         return tuple(sorted(edges))
 
+    @staticmethod
+    def _predict_code_xrefs(
+        ea: int,
+    ) -> tuple[int, tuple[tuple[int, int, int, bool, bool], ...]]:
+        """Decode instruction effects without changing the IDA database."""
+
+        import idaapi
+        import ida_ua
+        import ida_xref
+
+        instruction = ida_ua.insn_t()
+        size = int(ida_ua.decode_insn(instruction, int(ea)))
+        if size <= 0:
+            raise UnexecutableMetadataAction(
+                f"IDA could not decode instruction at {ea:#x}"
+            )
+        feature = int(instruction.get_canon_feature())
+        stop = int(getattr(idaapi, "CF_STOP", 0))
+        call = int(getattr(idaapi, "CF_CALL", 0))
+        jump = int(getattr(idaapi, "CF_JUMP", 0))
+        near = int(getattr(idaapi, "o_near", -1))
+        far = int(getattr(idaapi, "o_far", -1))
+        operand = instruction.ops[0]
+        operand_type = int(getattr(operand, "type", -1))
+        is_transfer = bool(feature & (call | jump))
+        if is_transfer and operand_type not in {near, far}:
+            raise UnexecutableMetadataAction(
+                f"ambiguous decoded transfer at {ea:#x}"
+            )
+        effects: set[tuple[int, int, int, bool, bool]] = set()
+        if not feature & stop:
+            effects.add((int(ea), int(ea) + size, int(ida_xref.fl_F), False, True))
+        if is_transfer:
+            target = int(getattr(operand, "addr", idaapi.BADADDR))
+            if target == int(idaapi.BADADDR):
+                raise UnexecutableMetadataAction(
+                    f"decoded transfer has no target at {ea:#x}"
+                )
+            if feature & call:
+                xref_type = ida_xref.fl_CN if operand_type == near else ida_xref.fl_CF
+            else:
+                xref_type = ida_xref.fl_JN if operand_type == near else ida_xref.fl_JF
+            effects.add((int(ea), target, int(xref_type), False, True))
+        return size, tuple(sorted(effects))
+
     @classmethod
     def _require_data_item_xrefs(
         cls, head_ea: int, size: int, data_state: dict[str, object]
@@ -616,7 +844,12 @@ class IdaMetadataActionExecutor:
         # A no-op is safe for every supported token and is important for the
         # certificate reread path, which must not call an IDA mutator merely
         # to prove that the requested state already holds.
-        if self.read_state(kind, ea) == target_state:
+        scope_state = (
+            target_state
+            if target_state.startswith(_ITEM_SCOPED_XREF_V1_PREFIX)
+            else None
+        )
+        if self.read_state(kind, ea, scope_state=scope_state) == target_state:
             return True
         if kind is NativeMetadataActionKind.RECREATE_ITEM:
             return self._apply_item_state(ea, target_state)
@@ -680,10 +913,26 @@ class IdaMetadataActionExecutor:
             "function-tail adoption has no positive live-IDB reversibility oracle"
         )
 
-    def _apply_item_state(self, ea: int, target_state: str) -> bool:
+    def _apply_item_state(
+        self,
+        ea: int,
+        target_state: str,
+        *,
+        _scoped: bool = False,
+        _validate_witness: bool = True,
+    ) -> bool:
         import ida_bytes
         import ida_ua
 
+        if target_state.startswith(_ITEM_SCOPED_XREF_V1_PREFIX):
+            target_scope = _parse_scoped_item_state(
+                target_state, expected_ea=ea
+            )
+            if target_scope is None:
+                raise UnexecutableMetadataAction(
+                    f"malformed scoped item state {target_state!r}"
+                )
+            return self._apply_scoped_item_state(ea, target_state, target_scope)
         target_data = _parse_reversible_data_item_state(
             target_state, expected_ea=ea
         )
@@ -694,7 +943,17 @@ class IdaMetadataActionExecutor:
                 raise UnexecutableMetadataAction(
                     f"malformed reversible data item state {target_state!r}"
                 )
-            return self._apply_data_snapshot(ea, target_state, target_data)
+            if int(target_data.get("version", 1)) == 2 and not _scoped:
+                raise UnexecutableMetadataAction(
+                    "xref-witnessed data transition requires a scoped "
+                    "item-xrefs token"
+                )
+            return self._apply_data_snapshot(
+                ea,
+                target_state,
+                target_data,
+                validate_witness=_validate_witness,
+            )
 
         kind_name, _, _size_text = target_state.partition(":")
         current = self._read_item_state(ea)
@@ -725,8 +984,17 @@ class IdaMetadataActionExecutor:
                 current, expected_ea=ea
             )
             if current_data is not None:
+                if int(current_data.get("version", 1)) == 2 and not _scoped:
+                    raise UnexecutableMetadataAction(
+                        "xref-witnessed data transition requires a scoped "
+                        "item-xrefs token"
+                    )
                 return self._apply_data_to_code(
-                    ea, target_state, current, current_data
+                    ea,
+                    target_state,
+                    current,
+                    current_data,
+                    validate_witness=_validate_witness,
                 )
             if current != _ITEM_UNKNOWN:
                 raise UnexecutableMetadataAction(
@@ -740,19 +1008,124 @@ class IdaMetadataActionExecutor:
             raise UnexecutableMetadataAction(f"item state {target_state!r}")
         return self._read_item_state(ea) == target_state
 
+    def _post_item_effect(self) -> None:
+        """Testing seam immediately after the real item mutation."""
+
+    def _apply_scoped_item_state(
+        self,
+        ea: int,
+        target_state: str,
+        target_scope: dict[str, object],
+    ) -> bool:
+        head_ea = int(target_scope["head_ea"])
+        size = int(target_scope["size"])
+        target_inner = str(target_scope["item_state"])
+        target_xrefs = tuple(target_scope["xrefs"])
+        current_inner = self._read_item_state(ea)
+        entry_xrefs = self._read_data_item_xrefs(head_ea, size)
+        current_state = _scoped_item_token(
+            ea=ea,
+            head_ea=head_ea,
+            size=size,
+            item_state=current_inner,
+            xrefs=entry_xrefs,
+        )
+        if current_state == target_state:
+            return True
+        if target_inner.startswith(_ITEM_CODE + ":"):
+            if current_inner != _ITEM_UNKNOWN and not current_inner.startswith(
+                _ITEM_DATA_SNAPSHOT_V2_PREFIX
+            ):
+                raise UnexecutableMetadataAction(
+                    f"cannot recreate code over item state {current_inner!r}"
+                )
+            code_size, derived = self._predict_code_xrefs(ea)
+            if target_inner != f"{_ITEM_CODE}:{code_size}":
+                raise UnexecutableMetadataAction(
+                    f"decoded item at {ea:#x} does not match {target_inner!r}"
+                )
+            expected_xrefs = tuple(sorted(set(entry_xrefs) | set(derived)))
+        elif target_inner == _ITEM_UNKNOWN or target_inner.startswith(
+            _ITEM_DATA_SNAPSHOT_V2_PREFIX
+        ):
+            if not current_inner.startswith(_ITEM_CODE + ":"):
+                raise UnexecutableMetadataAction(
+                    f"cannot recreate {target_inner!r} over {current_inner!r}"
+                )
+            _code_size, derived = self._predict_code_xrefs(ea)
+            expected_xrefs = tuple(sorted(set(entry_xrefs) - set(derived)))
+        else:
+            raise UnexecutableMetadataAction(
+                f"unsupported scoped item transition {target_state!r}"
+            )
+        if target_xrefs != expected_xrefs:
+            raise UnexecutableMetadataAction(
+                f"scoped item witness does not match decoded effect at {ea:#x}"
+            )
+        try:
+            self._apply_item_state(
+                ea, target_inner, _scoped=True, _validate_witness=False
+            )
+            self._post_item_effect()
+            if self._read_data_item_xrefs(head_ea, size) != target_xrefs:
+                raise UnexecutableMetadataAction(
+                    f"scoped item transition at {ea:#x} produced an "
+                    "unexpected xref effect"
+                )
+            if self.read_state(
+                NativeMetadataActionKind.RECREATE_ITEM,
+                ea,
+                scope_state=target_state,
+            ) != target_state:
+                raise UnexecutableMetadataAction(
+                    f"scoped item transition at {ea:#x} did not reproduce "
+                    "the target state"
+                )
+            return True
+        except Exception as error:
+            try:
+                if self._read_item_state(ea) != current_inner:
+                    self._apply_item_state(
+                        ea,
+                        current_inner,
+                        _scoped=True,
+                        _validate_witness=False,
+                    )
+                if self.read_state(
+                    NativeMetadataActionKind.RECREATE_ITEM,
+                    ea,
+                    scope_state=current_state,
+                ) != current_state:
+                    raise UnexecutableMetadataAction(
+                        "scoped item rollback did not restore its before-state"
+                    )
+            except Exception as restore_error:
+                raise UnexecutableMetadataAction(
+                    f"scoped item transition at {ea:#x} failed and rollback "
+                    "failed"
+                ) from restore_error
+            if isinstance(error, UnexecutableMetadataAction):
+                raise
+            raise UnexecutableMetadataAction(
+                f"scoped item transition at {ea:#x} failed"
+            ) from error
+
     def _apply_data_to_code(
         self,
         ea: int,
         target_state: str,
         before_state: str,
         before_data: dict[str, object],
+        *,
+        validate_witness: bool = True,
     ) -> bool:
         import ida_bytes
         import ida_ua
 
         data_head = int(before_data["head_ea"])
         data_size = int(before_data["size"])
-        self._require_data_item_xrefs(data_head, data_size, before_data)
+        if validate_witness:
+            self._require_data_item_xrefs(data_head, data_size, before_data)
         try:
             ida_bytes.del_items(
                 data_head, ida_bytes.DELIT_SIMPLE, max(1, data_size)
@@ -764,11 +1137,17 @@ class IdaMetadataActionExecutor:
                     f"IDA decoded item at {ea:#x} as {observed!r}, "
                     f"not {target_state!r}"
                 )
-            self._require_data_item_xrefs(data_head, data_size, before_data)
+            if validate_witness:
+                self._require_data_item_xrefs(data_head, data_size, before_data)
             return True
         except Exception as error:
             try:
-                self._restore_data_snapshot(ea, before_state, before_data)
+                self._restore_data_snapshot(
+                    ea,
+                    before_state,
+                    before_data,
+                    validate_witness=validate_witness,
+                )
             except Exception as restore_error:
                 raise UnexecutableMetadataAction(
                     f"item transition at {ea:#x} failed and rollback failed"
@@ -784,6 +1163,8 @@ class IdaMetadataActionExecutor:
         ea: int,
         target_state: str,
         target_data: dict[str, object],
+        *,
+        validate_witness: bool = True,
     ) -> bool:
         import ida_bytes
 
@@ -810,15 +1191,24 @@ class IdaMetadataActionExecutor:
             raise UnexecutableMetadataAction(
                 f"data snapshot bytes no longer match at {ea:#x}"
             )
-        self._require_data_item_xrefs(target_head, target_size, target_data)
+        if validate_witness:
+            self._require_data_item_xrefs(target_head, target_size, target_data)
         try:
             ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, max(1, code_size))
-            self._restore_data_snapshot(ea, target_state, target_data)
+            self._restore_data_snapshot(
+                ea,
+                target_state,
+                target_data,
+                validate_witness=validate_witness,
+            )
             return True
         except Exception as error:
             try:
                 self._restore_code_item(ea, current, code_size)
-                self._require_data_item_xrefs(target_head, target_size, target_data)
+                if validate_witness:
+                    self._require_data_item_xrefs(
+                        target_head, target_size, target_data
+                    )
             except Exception as restore_error:
                 raise UnexecutableMetadataAction(
                     f"item transition at {ea:#x} failed and rollback failed"
@@ -831,7 +1221,11 @@ class IdaMetadataActionExecutor:
 
     def _restore_data_snapshot(
         self,
-        ea: int, target_state: str, target_data: dict[str, object]
+        ea: int,
+        target_state: str,
+        target_data: dict[str, object],
+        *,
+        validate_witness: bool = True,
     ) -> None:
         import ida_bytes
         import idaapi
@@ -846,9 +1240,10 @@ class IdaMetadataActionExecutor:
             raise UnexecutableMetadataAction(
                 f"data snapshot offset is inconsistent at {ea:#x}"
             )
-        self._require_data_item_xrefs(
-            data_head, int(target_data["size"]), target_data
-        )
+        if validate_witness:
+            self._require_data_item_xrefs(
+                data_head, int(target_data["size"]), target_data
+            )
         if not ida_bytes.create_data(
             data_head,
             int(target_data["flags"]),
@@ -867,9 +1262,10 @@ class IdaMetadataActionExecutor:
             raise UnexecutableMetadataAction(
                 f"data recreation at {ea:#x} did not reproduce the recorded state"
             )
-        self._require_data_item_xrefs(
-            data_head, int(target_data["size"]), target_data
-        )
+        if validate_witness:
+            self._require_data_item_xrefs(
+                data_head, int(target_data["size"]), target_data
+            )
 
     def _restore_code_item(self, ea: int, target_state: str, code_size: int) -> None:
         import ida_ua

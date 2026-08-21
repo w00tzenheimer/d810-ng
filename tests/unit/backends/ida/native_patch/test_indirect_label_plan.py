@@ -10,6 +10,7 @@ from d810.backends.ida.native_patch.indirect_label_plan import (
     _missing_cref_targets,
 )
 from d810.backends.ida.native_patch.metadata import (
+    _parse_scoped_item_state,
     is_reversible_data_item_state,
     reversible_data_item_head,
 )
@@ -148,6 +149,81 @@ def test_reversible_data_snapshot_v2_rejects_malformed_or_generic_tokens(
     token: str,
 ) -> None:
     assert not is_reversible_data_item_state(token)
+
+
+def _scoped_item(*, item_state: str = "code:4") -> str:
+    payload = json.loads(_data_snapshot_v2().removeprefix("data:v2:"))
+    return "item-xrefs:v1:" + json.dumps(
+        {
+            "ea": payload["ea"],
+            "head_ea": payload["head_ea"],
+            "item_state": item_state,
+            "size": payload["size"],
+            "xrefs": payload["xrefs"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+@pytest.mark.parametrize(
+    "item_state",
+    ("unknown", "code:4", _data_snapshot_v2()),
+)
+def test_scoped_item_xref_token_is_canonical_and_scope_bound(item_state: str) -> None:
+    token = _scoped_item(item_state=item_state)
+    parsed = _parse_scoped_item_state(token, expected_ea=0x1000)
+
+    assert parsed is not None
+    assert parsed["head_ea"] == 0x1000
+    assert parsed["size"] == 6
+    assert parsed["item_state"] == item_state
+    assert _parse_scoped_item_state(token, expected_ea=0x1001) is None
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload.pop("ea"),
+        lambda payload: payload.update(extra=True),
+        lambda payload: payload.update(ea=True),
+        lambda payload: payload.update(head_ea=-1),
+        lambda payload: payload.update(size=0),
+        lambda payload: payload["xrefs"].clear(),
+        lambda payload: payload["xrefs"][0].pop("is_code"),
+        lambda payload: payload["xrefs"][0].pop("source_ea"),
+        lambda payload: payload["xrefs"][0].pop("target_ea"),
+        lambda payload: payload["xrefs"][0].pop("xref_type"),
+        lambda payload: payload["xrefs"][0].pop("user_owned"),
+        lambda payload: payload["xrefs"][0].update(source_ea=True),
+        lambda payload: payload["xrefs"][0].update(target_ea=-1),
+        lambda payload: payload["xrefs"][0].update(xref_type=-1),
+        lambda payload: payload["xrefs"][0].update(user_owned=1),
+        lambda payload: payload["xrefs"].reverse(),
+        lambda payload: payload["xrefs"].append(dict(payload["xrefs"][0])),
+        lambda payload: payload.update(item_state="data:v2:{}"),
+    ),
+)
+def test_scoped_item_xref_token_rejects_noncanonical_payloads(mutate) -> None:
+    payload = json.loads(_scoped_item().removeprefix("item-xrefs:v1:"))
+    mutate(payload)
+    token = "item-xrefs:v1:" + json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    )
+
+    assert _parse_scoped_item_state(token) is None
+
+
+def test_scoped_item_xref_token_rejects_noncanonical_json_and_inner_scope_drift() -> None:
+    payload = json.loads(_scoped_item().removeprefix("item-xrefs:v1:"))
+    assert _parse_scoped_item_state(
+        "item-xrefs:v1:" + json.dumps(payload, indent=2)
+    ) is None
+    payload["item_state"] = _data_snapshot_v2(ea=0x1002)
+    drifted = "item-xrefs:v1:" + json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    )
+    assert _parse_scoped_item_state(drifted) is None
 
 
 def test_shared_data_item_groups_later_targets_as_unknown() -> None:
