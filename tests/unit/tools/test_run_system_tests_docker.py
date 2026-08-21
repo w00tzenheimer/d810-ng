@@ -540,3 +540,18 @@ def test_explicit_empty_image_does_not_fall_back_to_dotenv(tmp_path: Path) -> No
     assert calls == []
     assert "source=process environment" in result.stdout
     assert "D810_DOCKER_IMAGE is set but empty" in result.stderr
+
+
+def test_native_speedups_build_cleans_extensions_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(tmp_path, "exec", "--", "true", no_cython="0")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "find src/d810/speedups -type f" in command
+    assert "-name '*.so'" in command
+    assert "-name '*.pyd'" in command
+    assert "D810_BUILD_SPEEDUPS=1" in command
+    assert "falling back to pure-Python" not in command
+    assert "|| echo" not in command

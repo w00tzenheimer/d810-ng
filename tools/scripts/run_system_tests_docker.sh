@@ -522,24 +522,23 @@ fi
 # prove that pytest, Unicorn, and the isolated Z3 runtime all import before the
 # install step is omitted. A stale runtime is refreshed and then probed again;
 # an unusable solver must fail setup rather than surface as a collection error.
-# BEST-EFFORT Cython compilation remains independent and runs when explicitly
-# enabled. The default D810_NO_CYTHON=1 must skip this build: an
-# OOM kill of the build container cannot be caught by the shell's fallback.
-# (instead of silently falling back to pure-Python). The build needs a C++
+# Native Cython compilation runs when explicitly enabled and fails closed. The
+# default D810_NO_CYTHON=1 skips this build. Remove ignored extension artifacts
+# first so a failed rebuild cannot silently import a stale native module. The
+# build needs a C++
 # toolchain + the IDA SDK; setup.py auto-downloads the SDK from GitHub when
 # IDA_SDK is unset and links against the live IDA runtime (libida.so) via
 # IDA_INSTALL_DIR. NOTE: do NOT pass --no-build-isolation — the IDA venv has
 # neither setuptools nor Cython, so pip MUST build-isolate to install the
-# build-system.requires (setuptools/wheel/Cython). If the build fails, the suite
-# still runs on the pure-Python fallback — the '|| echo' below keeps exit 0.
+# build-system.requires (setuptools/wheel/Cython).
 if [ "$NO_CYTHON" = "1" ]; then
   SPEEDUPS_BUILD_CMD="echo '[speedups] native build disabled by D810_NO_CYTHON=1'"
 elif [ "$CYTHON_PROFILE" = "1" ]; then
   # A profiling artifact is only useful when it actually contains Cython
   # trace events. Unlike the normal optional speedup build, fail closed here.
-  SPEEDUPS_BUILD_CMD="DEBUG=1 D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
+  SPEEDUPS_BUILD_CMD="find src/d810/speedups -type f \\( -name '*.so' -o -name '*.pyd' \\) -delete && DEBUG=1 D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
 else
-  SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q || echo '[speedups] build failed, falling back to pure-Python'"
+  SPEEDUPS_BUILD_CMD="find src/d810/speedups -type f \\( -name '*.so' -o -name '*.pyd' \\) -delete && D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
 fi
 RUNTIME_PROBE="from d810.speedups import bootstrap; bootstrap.ensure_speedups_on_path(); import pytest, unicorn, z3; assert (4, 13) <= z3.get_version() < (4, 15, 5)"
 if _image_has_baked_runtime; then

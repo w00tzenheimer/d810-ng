@@ -256,7 +256,9 @@ def fold_binary_opcode(
     ):
         return None
 
-    if opcode in {"cfshl", "cfshr"} and result_bytes != 1:
+    if opcode in {"cfshl", "cfshr"} and (
+        right_bytes != 1 or result_bytes != 1
+    ):
         return None
 
     left &= AND_TABLE[left_bytes]
@@ -314,8 +316,8 @@ def fold_binary_opcode(
         if count < 1 or count > bit_count:
             return None
         if opcode == "cfshl":
-            return (left >> (bit_count - count)) & result_mask
-        return (left >> (count - 1)) & result_mask
+            return (left >> (bit_count - count)) & 1
+        return (left >> (count - 1)) & 1
     if opcode == "cfadd":
         return get_add_cf(left, right, left_bytes)
     if opcode == "ofadd":

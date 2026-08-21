@@ -891,14 +891,25 @@ class TestConcreteWithRealAst:
             node.dest_size = 1
             return node
 
-        for opcode, value, count in (
-            (_OPC.m_cfshl, 0x8000000000000000, 1),
-            (_OPC.m_cfshr, 0x20, 6),
-        ):
-            node = _node(opcode, value, 8 if opcode == _OPC.m_cfshl else 1, count)
-            expected = ConcreteEvaluator().evaluate(node, {})
-            actual = CythonConcreteEvaluator().evaluate(node, {})
-            assert actual == expected
+        cases = (
+            (_OPC.m_cfshl, 0x8000000000000000, 8, 1, 1),
+            (_OPC.m_cfshl, 0x03, 1, 8, 1),
+            (_OPC.m_cfshr, 0xE0, 1, 6, 1),
+            (_OPC.m_cfshl, 0x02, 1, 8, 0),
+            (_OPC.m_cfshr, 0x1F, 1, 6, 0),
+            (_OPC.m_cfshl, 0x80, 1, 1, 1),
+            (_OPC.m_cfshl, 0x01, 1, 8, 1),
+            (_OPC.m_cfshr, 0x01, 1, 1, 1),
+            (_OPC.m_cfshr, 0x80, 1, 8, 1),
+            (_OPC.m_cfshl, 1, 1, 0, None),
+            (_OPC.m_cfshr, 1, 1, 0, None),
+            (_OPC.m_cfshl, 1, 1, 9, None),
+            (_OPC.m_cfshr, 1, 1, 9, None),
+        )
+        for opcode, value, source_size, count, expected in cases:
+            node = _node(opcode, value, source_size, count)
+            assert ConcreteEvaluator().evaluate(node, {}) == expected
+            assert CythonConcreteEvaluator().evaluate(node, {}) == expected
 
     def test_cython_evaluator_is_active(self, libobfuscated_setup):
         """_default_evaluator is a CythonConcreteEvaluator when speedups are built."""

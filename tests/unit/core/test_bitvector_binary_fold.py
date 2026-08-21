@@ -27,6 +27,17 @@ def test_binary_fold_uses_operand_width_for_flag_results() -> None:
         )
         == 1
     )
+    assert (
+        bits.fold_binary_opcode(
+            "cfshr",
+            0x20,
+            6,
+            left_bytes=1,
+            right_bytes=1,
+            result_bytes=1,
+        )
+        == 1
+    )
 
 
 def test_binary_fold_carry_shift_uses_source_width_and_byte_result() -> None:
@@ -43,16 +54,45 @@ def test_binary_fold_carry_shift_uses_source_width_and_byte_result() -> None:
         )
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    ("opcode", "value", "count", "expected"),
+    [
+        ("cfshl", 0x03, 8, 1),
+        ("cfshr", 0xE0, 6, 1),
+        ("cfshl", 0x02, 8, 0),
+        ("cfshr", 0x1F, 6, 0),
+    ],
+)
+def test_binary_fold_carry_shift_returns_the_selected_bit(
+    opcode: str, value: int, count: int, expected: int
+) -> None:
     assert (
         bits.fold_binary_opcode(
-            "cfshr",
-            0x20,
-            6,
-            left_bytes=1,
-            right_bytes=1,
-            result_bytes=1,
+            opcode, value, count, left_bytes=1, right_bytes=1, result_bytes=1
         )
-        == 1
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("opcode", "value", "count", "expected"),
+    [
+        ("cfshl", 0x80, 1, 1),
+        ("cfshl", 0x01, 8, 1),
+        ("cfshr", 0x01, 1, 1),
+        ("cfshr", 0x80, 8, 1),
+    ],
+)
+def test_binary_fold_carry_shift_accepts_inclusive_count_boundaries(
+    opcode: str, value: int, count: int, expected: int
+) -> None:
+    assert (
+        bits.fold_binary_opcode(
+            opcode, value, count, left_bytes=1, right_bytes=1, result_bytes=1
+        )
+        == expected
     )
 
 
@@ -71,9 +111,33 @@ def test_binary_fold_carry_shift_rejects_invalid_result_and_zero_count() -> None
         )
         is None
     )
+    for opcode in ("cfshl", "cfshr"):
+        assert (
+            bits.fold_binary_opcode(
+                opcode, 1, 0, left_bytes=1, right_bytes=1, result_bytes=1
+            )
+            is None
+        )
+        assert (
+            bits.fold_binary_opcode(
+                opcode, 1, 9, left_bytes=1, right_bytes=1, result_bytes=1
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize("right_bytes,result_bytes", [(2, 1), (1, 2), (2, 2)])
+def test_binary_fold_carry_shift_requires_byte_count_and_result(
+    right_bytes: int, result_bytes: int
+) -> None:
     assert (
         bits.fold_binary_opcode(
-            "cfshl", 1, 9, left_bytes=1, right_bytes=1, result_bytes=1
+            "cfshl",
+            1,
+            1,
+            left_bytes=1,
+            right_bytes=right_bytes,
+            result_bytes=result_bytes,
         )
         is None
     )
