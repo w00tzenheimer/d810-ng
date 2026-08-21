@@ -170,6 +170,59 @@ def test_capture_rejects_missing_or_conflicting_actual_profile_evidence() -> Non
         )
 
 
+def test_capture_retains_unprofiled_ineligible_refusal_for_selected_profile() -> None:
+    """A provider refusal without a profile remains telemetry, not evidence."""
+
+    profile = _profile()
+    provider = _Provider(
+        _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED, profile),
+        MbaProviderOutcome(
+            provider=MbaProviderKind.EGRAPH,
+            status=ProviderOutcomeStatus.INELIGIBLE,
+            fingerprint=profile.fingerprint,
+            refusal_reason="over_budget",
+        ),
+    )
+
+    case = capture_native_provider_case(
+        case_id="telemetry-refusal",
+        stratum="catalogue",
+        profile=profile,
+        rules=(provider,),
+        expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGRAPH),
+    )
+
+    assert [(outcome.provider, outcome.status) for outcome in case.outcomes] == [
+        (MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED),
+        (MbaProviderKind.EGRAPH, ProviderOutcomeStatus.INELIGIBLE),
+    ]
+
+
+@pytest.mark.parametrize("malformed_profile", ("malformed", None, ["malformed"]))
+def test_capture_rejects_present_but_malformed_ineligible_profile_metadata(
+    malformed_profile,
+) -> None:
+    """An explicit malformed profile must not use the telemetry exemption."""
+
+    profile = _profile()
+    outcome = MbaProviderOutcome(
+        provider=MbaProviderKind.EGRAPH,
+        status=ProviderOutcomeStatus.INELIGIBLE,
+        fingerprint=profile.fingerprint,
+        refusal_reason="over_budget",
+        metadata={"native_profile": malformed_profile},
+    )
+
+    with pytest.raises(ValueError, match="native_profile"):
+        capture_native_provider_case(
+            case_id="malformed-telemetry-refusal",
+            stratum="catalogue",
+            profile=profile,
+            rules=(_Provider(outcome),),
+            expected_providers=(MbaProviderKind.EGRAPH,),
+        )
+
+
 def test_capture_snapshot_excludes_prior_decompilation_history() -> None:
     profile = _profile()
     provider = _Provider(
