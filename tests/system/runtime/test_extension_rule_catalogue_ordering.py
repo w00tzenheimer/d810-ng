@@ -24,6 +24,7 @@ IDA-dependent (``D810State`` pulls in the live manager) -> system/runtime.
 
 from __future__ import annotations
 
+import builtins
 import sys
 import textwrap
 
@@ -136,6 +137,29 @@ def test_the_contributed_rule_is_registered_exactly_once(
         names = [rule.name for rule in state._build_known_instruction_rules()]
 
     assert names.count(RULE_NAME) == 1
+
+
+def test_catalogue_build_does_not_import_deleted_in_tree_egglog_modules(
+    d810_state, monkeypatch
+) -> None:
+    """Egglog rules enter only through the installed-extension boundary."""
+    blocked = {
+        "d810.backends.mba.egglog_add_rule_compiler",
+        "d810.backends.mba.egglog_backend",
+        "d810.optimizers.microcode.instructions.egraph",
+    }
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name in blocked or any(
+            name.startswith(prefix + ".") for prefix in blocked
+        ):
+            raise AssertionError(f"deleted in-tree Egglog import: {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    with d810_state() as state:
+        state._build_known_instruction_rules()
 
 
 def test_real_egglog_rule_reaches_the_catalogue_before_snapshot(d810_state) -> None:
