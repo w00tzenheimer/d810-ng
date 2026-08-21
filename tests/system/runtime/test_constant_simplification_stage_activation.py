@@ -88,7 +88,7 @@ def _project_with_constant_stages(*, enabled: bool) -> ProjectConfiguration:
 
 def _live_rule_names(state) -> set[str]:
     names = {rule.name for rule in state.manager.instruction_optimizer.rules}
-    names.update(rule.name for rule in state.manager.block_optimizer.cfg_rules)
+    names.update(rule.name for rule in state.manager.block_optimizer.rules)
     return names
 
 
@@ -96,14 +96,9 @@ def _prepare_started_manager(state) -> None:
     class RecordingOptimizer:
         """Small adapter model covering the live configure/reset state."""
 
-        class RuleList(list):
-            def __deepcopy__(self, memo):
-                del memo
-                return self
-
         def __init__(self, rules, *, pipeline: str):
             self.pipeline = pipeline
-            self.rules = self.RuleList(rules)
+            self.rules = list(rules)
             self.cfg_rules = self.rules
             self._execution_scope_service = None
             self._execution_scope_project_name = "baseline"
@@ -145,7 +140,7 @@ def _prepare_started_manager(state) -> None:
             self._generation += 1
 
         def replace_rules(self, rules):
-            self.rules = self.RuleList(rules)
+            self.rules = list(rules)
             self.cfg_rules = self.rules
             self._active_instruction_rule_names_by_maturity.clear()
             self._residual_admission_cache_key = None
@@ -317,7 +312,9 @@ def test_live_rules_receive_exact_compiled_provider_maturities() -> None:
 
 
 @pytest.mark.ida_required
-def test_live_default_support_drift_fails_closed_with_stage_and_implementation() -> None:
+def test_live_default_support_drift_fails_closed_with_stage_and_implementation() -> (
+    None
+):
     class DriftedRule:
         name = "FoldReadonlyDataRule"
         default_maturities = (1, 2)
@@ -362,7 +359,9 @@ def test_started_activation_replaces_live_rule_collections_for_stage_switches(
             state._activate_project(project_index=9001, project=disabled)
             assert "FoldReadonlyDataRule" not in _live_rule_names(state)
             assert "ForwardConstantPropagationRule" not in _live_rule_names(state)
-            assert [rule.name for rule in state.manager.instruction_optimizer_rules] == []
+            assert [
+                rule.name for rule in state.manager.instruction_optimizer_rules
+            ] == []
             assert [rule.name for rule in state.manager.block_optimizer_rules] == []
 
             state._activate_project(project_index=9002, project=enabled)
@@ -371,17 +370,83 @@ def test_started_activation_replaces_live_rule_collections_for_stage_switches(
                 "ConstantSubtreeFoldRule",
                 "ForwardConstantPropagationRule",
             } <= _live_rule_names(state)
-            assert [rule.name for rule in state.manager.instruction_optimizer_rules] == [
+            assert [
+                rule.name for rule in state.manager.instruction_optimizer_rules
+            ] == [
                 "FoldReadonlyDataRule",
                 "ConstantSubtreeFoldRule",
             ]
             assert [rule.name for rule in state.manager.block_optimizer_rules] == [
                 "ForwardConstantPropagationRule"
             ]
+            constant_schedule = state.manager._constant_simplification_schedule
+            assert constant_schedule is not None
+            assert state.manager._constant_simplification_schedule is constant_schedule
+            assert state.manager._constant_preparation_options is (
+                constant_schedule.preparation
+            )
+            assert state.manager._global_const_persistence_enabled is (
+                constant_schedule.preparation.enabled
+            )
         finally:
             monkeypatch.undo()
             state.load_project(original_index)
             state.manager._started = False
+
+
+@pytest.mark.ida_required
+def test_start_d810_passes_compiled_constant_preparation_options(
+    d810_state, monkeypatch
+) -> None:
+    """Startup configures preparation from the exact compiled project schedule."""
+
+    with d810_state() as state:
+        original_index = state.current_project_index
+        project = _project_with_constant_stages(enabled=True)
+        constant_pass = next(
+            entry
+            for entry in project.additional_configuration["pipeline_v2"]
+            if entry["pass_id"] == "constant-simplification"
+        )
+        constant_pass["options"]["preparation"] = {
+            "global_const_types": {
+                "enabled": True,
+                "discover_bounded_tables": False,
+            }
+        }
+        state._activate_project(project_index=8999, project=project)
+        expected = state.manager._constant_simplification_schedule.preparation
+        captured: dict[str, object] = {}
+
+        monkeypatch.setattr(
+            "d810.manager.state.ensure_hexrays_available", lambda **_kwargs: True
+        )
+        monkeypatch.setattr(state, "_register_backend_analysis_providers", lambda: None)
+        monkeypatch.setattr(
+            state.manager,
+            "configure_instruction_optimizer",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            state.manager, "configure_block_optimizer", lambda *_args, **_kwargs: None
+        )
+
+        def capture_preparation(_scripts, **kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr(
+            state.manager, "configure_preparation_scripts", capture_preparation
+        )
+        monkeypatch.setattr(state.manager, "start", lambda: None)
+        monkeypatch.setattr(state.d810_config, "set", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(state.d810_config, "save", lambda: None)
+        try:
+            state.start_d810()
+            assert captured["constant_preparation_options"] is expected
+            assert captured["global_const_persistence_enabled"] is True
+        finally:
+            monkeypatch.undo()
+            state.load_project(original_index)
 
 
 @pytest.mark.ida_required
@@ -414,21 +479,56 @@ def test_started_activation_drift_preserves_previous_state_and_scope(
         before_manager_blk = tuple(manager.block_optimizer_rules)
         before_manager_config = dict(manager.config)
         before_schedule = manager._constant_simplification_schedule
+        before_preparation_options = manager._constant_preparation_options
+        before_persistence_enabled = manager._global_const_persistence_enabled
         before_scope = tuple(manager.execution_scope_service._stages)
 
-        rejected = _project_with_constant_stages(enabled=True)
+        class DriftedFoldReadonlyDataRule(FoldReadonlyDataRule):
+            NAME = "FoldReadonlyDataRule"
+
+            def __init__(self):
+                super().__init__()
+                self.maturities = self.maturities[:1]
+
+        drifted = DriftedFoldReadonlyDataRule()
+        # Registrant subclasses auto-register at class-definition time.  This
+        # deliberately malformed local model is injected explicitly below and
+        # must not remain discoverable by later project activations in the same
+        # pytest/IDA process.
+        drifted_registry_key = InstructionOptimizationRule.normalize_key(
+            InstructionOptimizationRule.keyof(DriftedFoldReadonlyDataRule)
+        )
+        assert (
+            InstructionOptimizationRule.registry.pop(drifted_registry_key, None)
+            is DriftedFoldReadonlyDataRule
+        )
+        known_rules = list(state.known_ins_rules)
+        drifted_index = next(
+            (
+                index
+                for index, rule in enumerate(known_rules)
+                if rule.name == drifted.name
+            ),
+            None,
+        )
+        if drifted_index is None:
+            known_rules.append(drifted)
+        else:
+            known_rules[drifted_index] = drifted
         monkeypatch.setattr(
-            state.manager,
-            "_compile_execution_scope",
-            lambda: (_ for _ in ()).throw(
-                ValueError(
+            state,
+            "_build_known_instruction_rules",
+            lambda: list(known_rules),
+        )
+        rejected = _project_with_constant_stages(enabled=True)
+        try:
+            with pytest.raises(
+                ValueError,
+                match=(
                     "constant-simplification stage fold-readonly-data "
                     "implementation FoldReadonlyDataRule"
-                )
-            ),
-        )
-        try:
-            with pytest.raises(ValueError) as failure:
+                ),
+            ) as failure:
                 state._activate_project(project_index=9003, project=rejected)
             message = str(failure.value)
             assert "constant-simplification" in message
@@ -442,6 +542,10 @@ def test_started_activation_drift_preserves_previous_state_and_scope(
             assert tuple(manager.block_optimizer_rules) == before_manager_blk
             assert manager.config == before_manager_config
             assert manager._constant_simplification_schedule is before_schedule
+            assert manager._constant_preparation_options is before_preparation_options
+            assert (
+                manager._global_const_persistence_enabled is before_persistence_enabled
+            )
             assert tuple(manager.execution_scope_service._stages) == before_scope
         finally:
             monkeypatch.undo()
@@ -535,17 +639,22 @@ def test_started_activation_restores_scope_caches_and_adapter_context_after_late
         manager._post_d810_runtime = SimpleNamespace(
             global_const_observer=live_observer
         )
+        before_schedule = manager._constant_simplification_schedule
+        before_options = manager._constant_preparation_options
+        before_persistence = manager._global_const_persistence_enabled
+        before_controller = manager.pre_hex_preparation
+        before_post_runtime = manager._post_d810_runtime
+        before_observer = manager._post_d810_runtime.global_const_observer
         before_preparation_lane = (
             live_controller.options,
             live_controller.pending,
         )
+        before_observation_lane = live_observer.snapshot_state()
         scope = manager.execution_scope_service
         scope._stages = ("baseline-stage",)
         scope._generation = 17
         scope._active_cache = {
-            ("baseline", "baseline-idb", 0x401000, "pass", 1): (
-                "baseline-decision",
-            )
+            ("baseline", "baseline-idb", 0x401000, "pass", 1): ("baseline-decision",)
         }
         scope._metadata_cache = {0x401000: "baseline-metadata"}
         before_scope_stages = scope._stages
@@ -590,12 +699,22 @@ def test_started_activation_restores_scope_caches_and_adapter_context_after_late
             assert scope._generation == before_scope_generation
             assert scope._active_cache == before_active_cache
             assert scope._metadata_cache == before_metadata_cache
-            assert instruction.capture_runtime_state() == before_adapter_state["instruction"]
+            assert (
+                instruction.capture_runtime_state()
+                == before_adapter_state["instruction"]
+            )
             assert block.capture_runtime_state() == before_adapter_state["block"]
             assert (
                 live_controller.options,
                 live_controller.pending,
             ) == before_preparation_lane
+            assert manager._constant_simplification_schedule is before_schedule
+            assert manager._constant_preparation_options is before_options
+            assert manager._global_const_persistence_enabled is before_persistence
+            assert manager.pre_hex_preparation is before_controller
+            assert manager._post_d810_runtime is before_post_runtime
+            assert manager._post_d810_runtime.global_const_observer is before_observer
+            assert live_observer.snapshot_state() == before_observation_lane
         finally:
             monkeypatch.undo()
             manager.pre_hex_preparation = previous_controller
@@ -605,10 +724,140 @@ def test_started_activation_restores_scope_caches_and_adapter_context_after_late
 
 
 @pytest.mark.ida_required
-def test_started_activation_rolls_back_canonical_project_after_failure(
+@pytest.mark.parametrize("failed_lane", ["controller", "observer"])
+def test_started_activation_lane_restore_failure_attempts_remaining_lanes_and_invalidates_once(
+    d810_state, monkeypatch, failed_lane
+) -> None:
+    """A controller/observer restore failure is aggregated before one cleanup."""
+
+    with d810_state() as state:
+        original_index = state.current_project_index
+        baseline = _project_with_constant_stages(enabled=True)
+        state._activate_project(project_index=8997, project=baseline)
+        _prepare_started_manager(state)
+        manager = state.manager
+        previous_controller = manager.pre_hex_preparation
+        previous_post_runtime = manager._post_d810_runtime
+        restore_calls: list[str] = []
+
+        class Controller:
+            def __init__(self):
+                self.options = ConstantPreparationOptions(enabled=True)
+                self.pending = ("baseline",)
+
+            def configure_preparation_options(self, options):
+                self.options = options
+
+            def snapshot_state(self):
+                return self.options, self.pending
+
+            def restore_state(self, snapshot):
+                restore_calls.append("controller")
+                if failed_lane == "controller":
+                    raise RuntimeError("forced controller restore failure")
+                self.options, self.pending = snapshot
+
+        class Observer:
+            def __init__(self):
+                self.options = ConstantPreparationOptions(enabled=True)
+                self.pending = ("baseline",)
+
+            def configure(self, options):
+                self.options = options
+
+            def snapshot_state(self):
+                return self.options, self.pending
+
+            def restore_state(self, snapshot):
+                restore_calls.append("observer")
+                if failed_lane == "observer":
+                    raise RuntimeError("forced observer restore failure")
+                self.options, self.pending = snapshot
+
+        controller = Controller()
+        observer = Observer()
+        manager.pre_hex_preparation = controller
+        manager._post_d810_runtime = SimpleNamespace(global_const_observer=observer)
+
+        adapter_restore_calls: list[str] = []
+        instruction_restore = manager.instruction_optimizer.restore_runtime_state
+        block_restore = manager.block_optimizer.restore_runtime_state
+
+        def restore_instruction(snapshot):
+            adapter_restore_calls.append("instruction")
+            instruction_restore(snapshot)
+
+        def restore_block(snapshot):
+            adapter_restore_calls.append("block")
+            block_restore(snapshot)
+
+        monkeypatch.setattr(
+            manager.instruction_optimizer,
+            "restore_runtime_state",
+            restore_instruction,
+        )
+        monkeypatch.setattr(
+            manager.block_optimizer,
+            "restore_runtime_state",
+            restore_block,
+        )
+
+        invalidation_calls = 0
+        stop_calls = 0
+        real_invalidate = manager.invalidate_runtime_after_activation_rollback
+        real_stop = manager.stop
+
+        def invalidate_once():
+            nonlocal invalidation_calls
+            invalidation_calls += 1
+            return real_invalidate()
+
+        def stop_once(*args, **kwargs):
+            nonlocal stop_calls
+            stop_calls += 1
+            return real_stop(*args, **kwargs)
+
+        monkeypatch.setattr(
+            manager, "invalidate_runtime_after_activation_rollback", invalidate_once
+        )
+        monkeypatch.setattr(manager, "stop", stop_once)
+
+        def fail_after_lane_drift():
+            controller.pending = ("candidate",)
+            observer.pending = ("candidate",)
+            raise RuntimeError("late scope compilation failure")
+
+        monkeypatch.setattr(manager, "_compile_execution_scope", fail_after_lane_drift)
+        try:
+            with pytest.raises(RuntimeError, match="rollback") as failure:
+                state._activate_project(
+                    project_index=9005,
+                    project=_project_with_constant_stages(enabled=False),
+                )
+            assert type(failure.value).__name__ == "RuntimeActivationRollbackError"
+            assert f"forced {failed_lane} restore failure" in str(failure.value)
+            assert failure.value.__cause__ is not None
+            assert "late scope compilation failure" in str(failure.value.__cause__)
+            assert restore_calls == ["controller", "observer"]
+            assert adapter_restore_calls == ["instruction", "block"]
+            assert invalidation_calls == 1
+            assert stop_calls == 1
+            assert manager.started is False
+            assert manager.runtime_invalidated is True
+        finally:
+            monkeypatch.undo()
+            manager.pre_hex_preparation = previous_controller
+            manager._post_d810_runtime = previous_post_runtime
+            manager._runtime_invalidated = False
+            state.load_project(original_index)
+            manager._started = False
+
+
+@pytest.mark.ida_required
+def test_started_activation_marks_runtime_invalid_when_adapter_rollback_fails(
     d810_state, monkeypatch
 ) -> None:
-    """A failed live activation leaves the canonical project unchanged."""
+    """A failed adapter restore must not report the live manager as healthy."""
     with d810_state() as state:
         original_index = state.current_project_index
         baseline = _project_with_constant_stages(enabled=True)
@@ -626,24 +875,24 @@ def test_started_activation_rolls_back_canonical_project_after_failure(
         state._activate_project(project_index=8997, project=baseline)
         _prepare_started_manager(state)
         manager = state.manager
-        before_project = state.current_project
-        before_config = dict(manager.config)
+        manager.instruction_optimizer.fail_restore = True
         monkeypatch.setattr(
             manager,
             "_compile_execution_scope",
-            lambda: (_ for _ in ()).throw(RuntimeError("late scope compilation failure")),
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("late scope compilation failure")
+            ),
         )
         try:
-            with pytest.raises(RuntimeError, match="late scope compilation failure"):
+            with pytest.raises(RuntimeError, match="rollback") as failure:
                 state._activate_project(
                     project_index=9005,
                     project=_project_with_constant_stages(enabled=False),
                 )
-            assert state.current_project is before_project
-            assert state.current_project_index == 8997
-            assert manager.config == before_config
-            assert manager.started is True
-            assert not getattr(manager, "runtime_invalidated", False)
+            assert "instruction" in str(failure.value)
+            assert "adapter restore failed" in str(failure.value)
+            assert manager.started is False
+            assert getattr(manager, "runtime_invalidated", False) is True
         finally:
             monkeypatch.undo()
             state.manager._runtime_invalidated = False
@@ -731,7 +980,6 @@ def test_actual_adapter_restore_failure_runs_full_manager_cleanup(
         original_index = state.current_project_index
         baseline = _project_with_constant_stages(enabled=False)
         state._activate_project(project_index=8996, project=baseline)
-        before_project = state.current_project
         _prepare_actual_started_manager(state)
         manager = state.manager
         calls: list[str] = []
@@ -757,6 +1005,7 @@ def test_actual_adapter_restore_failure_runs_full_manager_cleanup(
             "remove",
             lambda: calls.append("instruction.remove"),
         )
+
         def block_remove():
             calls.append("block.remove")
             raise RuntimeError("forced block cleanup failure")
@@ -781,23 +1030,44 @@ def test_actual_adapter_restore_failure_runs_full_manager_cleanup(
         )
         manager._analysis_bundle = Resource()
         manager._started = True
-        manager.instruction_optimizer.restore_runtime_state = lambda _state: (_ for _ in ()).throw(
-            RuntimeError("forced instruction restore failure")
-        )
+        manager.instruction_optimizer.restore_runtime_state = lambda _state: (
+            _ for _ in ()
+        ).throw(RuntimeError("forced instruction restore failure"))
         monkeypatch.setattr(
             manager,
             "_compile_execution_scope",
-            lambda: (_ for _ in ()).throw(RuntimeError("late scope compilation failure")),
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("late scope compilation failure")
+            ),
         )
         try:
-            with pytest.raises(RuntimeError, match="late scope compilation failure"):
+            with pytest.raises(RuntimeError, match="rollback") as failure:
                 state._activate_project(
                     project_index=9006,
                     project=_project_with_constant_stages(enabled=False),
                 )
-            assert state.current_project is before_project
-            assert state.current_project_index == 8996
-            assert manager.started is True
+            failure_message = str(failure.value)
+            assert "forced instruction restore failure" in failure_message
+            assert "block.remove" in failure_message
+            assert {
+                "native.uninstall",
+                "frontend.uninstall",
+                "instruction.remove",
+                "block.remove",
+                "hooks.unhook",
+                "execution_scope.detach",
+                "event_emitter.clear",
+                "resource.close",
+                "function_storage.close",
+            } <= set(calls)
+            assert manager.started is False
+            assert manager.runtime_invalidated is True
+            assert manager._native_preanalysis_handlers_installed is False
+            assert manager.decompilation_lifecycle is None
+            assert manager._idb_preparation_journal is None
+            assert manager._native_patch_journal is None
+            assert manager._native_patch_execution_journal is None
+            assert manager._analysis_bundle is None
         finally:
             monkeypatch.undo()
             state.manager._runtime_invalidated = False

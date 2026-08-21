@@ -30,9 +30,7 @@ def _live_container_snapshot(manager):
         "scope_active_cache": _capture_live_container(service._active_cache),
         "scope_metadata_cache": _capture_live_container(service._metadata_cache),
         "scope_hint_inferences": _capture_live_container(service._hint_inferences),
-        "scope_hint_suppressions": _capture_live_container(
-            service._hint_suppressions
-        ),
+        "scope_hint_suppressions": _capture_live_container(service._hint_suppressions),
         "instruction_scheduler": _capture_live_container(
             manager.instruction_pass_scheduler._pending_by_func
         ),
@@ -58,16 +56,12 @@ def _live_container_snapshot(manager):
                 )
     analyzer = getattr(optimizer, "analyzer", None)
     if analyzer is not None and isinstance(getattr(analyzer, "rules", None), set):
-        snapshot["instruction_analyzer_rules"] = _capture_live_container(
-            analyzer.rules
-        )
+        snapshot["instruction_analyzer_rules"] = _capture_live_container(analyzer.rules)
     block_optimizer = getattr(manager, "block_optimizer", None)
     if block_optimizer is not None and isinstance(
         getattr(block_optimizer, "cfg_rules", None), list
     ):
-        snapshot["block_cfg_rules"] = _capture_live_container(
-            block_optimizer.cfg_rules
-        )
+        snapshot["block_cfg_rules"] = _capture_live_container(block_optimizer.cfg_rules)
     return snapshot
 
 
@@ -93,6 +87,7 @@ def _assert_live_container_snapshot(manager, snapshot) -> None:
         assert current is container, key
         assert current == contents, key
 
+
 MALFORMED = "mba-solve has unknown options: ['maturities']"
 
 
@@ -108,6 +103,11 @@ def _activation_snapshot(state):
     """Capture identity-bearing state and mutable configuration for rollback tests."""
 
     manager = state.manager
+    controller = getattr(manager, "pre_hex_preparation", None)
+    controller_snapshot = getattr(controller, "snapshot_state", None)
+    post_runtime = getattr(manager, "_post_d810_runtime", None)
+    observer = getattr(post_runtime, "global_const_observer", None)
+    observer_snapshot = getattr(observer, "snapshot_state", None)
     return {
         "project": state.current_project,
         "project_index": state.current_project_index,
@@ -121,6 +121,20 @@ def _activation_snapshot(state):
         "manager_config_value": copy.deepcopy(manager.config),
         "manager_priors": manager.snapshot_function_analysis_priors(),
         "native_handlers": manager._native_preanalysis_handlers_installed,
+        "constant_schedule": manager._constant_simplification_schedule,
+        "constant_preparation_options": manager._constant_preparation_options,
+        "global_const_persistence_enabled": (manager._global_const_persistence_enabled),
+        "started": manager.started,
+        "runtime_invalidated": manager.runtime_invalidated,
+        "preparation_controller": controller,
+        "preparation_controller_state": (
+            controller_snapshot() if callable(controller_snapshot) else None
+        ),
+        "post_d810_runtime": post_runtime,
+        "global_const_observer": observer,
+        "global_const_observer_state": (
+            observer_snapshot() if callable(observer_snapshot) else None
+        ),
         "ins_rule_configs": tuple(
             (rule, copy.deepcopy(getattr(rule, "config", None)))
             for rule in state.current_ins_rules
@@ -145,10 +159,27 @@ def _assert_activation_snapshot_unchanged(state, before) -> None:
     assert manager.config is before["manager_config"]
     assert manager.config == before["manager_config_value"]
     assert manager.snapshot_function_analysis_priors() == before["manager_priors"]
+    assert manager._native_preanalysis_handlers_installed == before["native_handlers"]
+    assert manager._constant_simplification_schedule is before["constant_schedule"]
     assert (
-        manager._native_preanalysis_handlers_installed
-        == before["native_handlers"]
+        manager._constant_preparation_options is before["constant_preparation_options"]
     )
+    assert (
+        manager._global_const_persistence_enabled
+        is before["global_const_persistence_enabled"]
+    )
+    assert manager.started is before["started"]
+    assert manager.runtime_invalidated is before["runtime_invalidated"]
+    assert manager.pre_hex_preparation is before["preparation_controller"]
+    controller_snapshot = getattr(manager.pre_hex_preparation, "snapshot_state", None)
+    if callable(controller_snapshot):
+        assert controller_snapshot() == before["preparation_controller_state"]
+    assert manager._post_d810_runtime is before["post_d810_runtime"]
+    observer = getattr(manager._post_d810_runtime, "global_const_observer", None)
+    assert observer is before["global_const_observer"]
+    observer_snapshot = getattr(observer, "snapshot_state", None)
+    if callable(observer_snapshot):
+        assert observer_snapshot() == before["global_const_observer_state"]
     for rule, config in before["ins_rule_configs"] + before["blk_rule_configs"]:
         assert getattr(rule, "config", None) == config
 
@@ -313,9 +344,7 @@ def test_missing_config_v2_binding_fails_closed_and_preserves_active_project(
                 break
         if target_index is None or missing_rule_name is None:
             _restore(state, original_index)
-            raise AssertionError(
-                f"no loadable project selects a {rules_attr} rule"
-            )
+            raise AssertionError(f"no loadable project selects a {rules_attr} rule")
         target = state.project_manager.get(target_index)
         state.invalid_projects.pop(target.path.name, None)
         before = _activation_snapshot(state)
@@ -528,6 +557,16 @@ def test_started_optimizer_configuration_failure_rolls_back_everything(
         previous_block_optimizer = getattr(manager, "block_optimizer", None)
 
         class _Optimizer:
+            def capture_runtime_state(self):
+                return dict(vars(self))
+
+            def restore_runtime_state(self, snapshot):
+                for name in tuple(vars(self)):
+                    if name not in snapshot:
+                        delattr(self, name)
+                for name, value in snapshot.items():
+                    setattr(self, name, value)
+
             def configure(self, **kwargs):
                 return None
 
@@ -566,7 +605,9 @@ def test_started_optimizer_configuration_failure_rolls_back_everything(
             _assert_activation_snapshot_unchanged(state, before)
             assert lifecycle_events == []
             assert scope_events == []
-            assert getattr(optimizer, "_execution_scope_project_name", None) != "poisoned"
+            assert (
+                getattr(optimizer, "_execution_scope_project_name", None) != "poisoned"
+            )
         finally:
             manager._started = previous_started
             if previous_instruction_optimizer is None:
@@ -593,6 +634,16 @@ def test_execution_scope_compilation_failure_rolls_back_runtime_state(
         previous_block_optimizer = getattr(manager, "block_optimizer", None)
 
         class _Optimizer:
+            def capture_runtime_state(self):
+                return dict(vars(self))
+
+            def restore_runtime_state(self, snapshot):
+                for name in tuple(vars(self)):
+                    if name not in snapshot:
+                        delattr(self, name)
+                for name, value in snapshot.items():
+                    setattr(self, name, value)
+
             def configure(self, **kwargs):
                 return None
 
@@ -947,6 +998,43 @@ def test_started_activation_failure_restores_live_container_identity(
                 self.instruction_optimizers = (self.child,)
                 self.analyzer = _Analyzer()
 
+            def capture_runtime_state(self):
+                return {
+                    "child_rules": _capture_live_container(self.child.rules),
+                    "pattern_storage": _capture_live_container(
+                        self.child.pattern_storage
+                    ),
+                    "indexed_storage": _capture_live_container(
+                        self.child._indexed_storage
+                    ),
+                    "structural_rules": _capture_live_container(
+                        self.child._structural_rules_by_root_opcode
+                    ),
+                    "allowed_opcodes": _capture_live_container(
+                        self.child._allowed_root_opcodes
+                    ),
+                    "analyzer_rules": _capture_live_container(self.analyzer.rules),
+                }
+
+            def restore_runtime_state(self, snapshot):
+                for name, (container, contents) in snapshot.items():
+                    if isinstance(container, dict):
+                        container.clear()
+                        container.update(contents)
+                    elif isinstance(container, list):
+                        container[:] = contents
+                    else:
+                        container.clear()
+                        container.update(contents)
+                self.child.rules = snapshot["child_rules"][0]
+                self.child.pattern_storage = snapshot["pattern_storage"][0]
+                self.child._indexed_storage = snapshot["indexed_storage"][0]
+                self.child._structural_rules_by_root_opcode = snapshot[
+                    "structural_rules"
+                ][0]
+                self.child._allowed_root_opcodes = snapshot["allowed_opcodes"][0]
+                self.analyzer.rules = snapshot["analyzer_rules"][0]
+
             def replace_rules(self, _rules):
                 self.child.rules.clear()
                 self.child.rules.add("candidate-rule")
@@ -965,6 +1053,15 @@ def test_started_activation_failure_restores_live_container_identity(
             def __init__(self, owner):
                 super().__init__(owner)
                 self.cfg_rules = ["old-cfg-rule"]
+
+            def capture_runtime_state(self):
+                snapshot = super().capture_runtime_state()
+                snapshot["cfg_rules"] = _capture_live_container(self.cfg_rules)
+                return snapshot
+
+            def restore_runtime_state(self, snapshot):
+                super().restore_runtime_state(snapshot)
+                self.cfg_rules = snapshot["cfg_rules"][0]
 
         manager._started = True
         manager.instruction_optimizer = _Optimizer(manager)
@@ -1055,6 +1152,47 @@ def test_started_activation_failure_restores_real_pattern_storage_objects(
                 self.instruction_optimizers = (child,)
                 self.analyzer = _Analyzer()
 
+            def capture_runtime_state(self):
+                return {
+                    "pattern_storage": child.pattern_storage,
+                    "pattern_depth": child.pattern_storage.depth,
+                    "pattern_layers": _capture_live_container(
+                        child.pattern_storage.next_layer_patterns
+                    ),
+                    "pattern_resolved": _capture_live_container(
+                        child.pattern_storage.rule_resolved
+                    ),
+                    "indexed_storage": child._indexed_storage,
+                    "indexed_by_opcode": _capture_live_container(
+                        child._indexed_storage._by_opcode
+                    ),
+                    "indexed_total": child._indexed_storage._total_patterns,
+                    "analyzer_rules": _capture_live_container(self.analyzer.rules),
+                }
+
+            def restore_runtime_state(self, snapshot):
+                pattern = snapshot["pattern_storage"]
+                pattern.depth = snapshot["pattern_depth"]
+                layers, layer_contents = snapshot["pattern_layers"]
+                layers.clear()
+                layers.update(layer_contents)
+                resolved, resolved_contents = snapshot["pattern_resolved"]
+                resolved[:] = resolved_contents
+                pattern.next_layer_patterns = layers
+                pattern.rule_resolved = resolved
+                child.pattern_storage = pattern
+                indexed = snapshot["indexed_storage"]
+                by_opcode, opcode_contents = snapshot["indexed_by_opcode"]
+                by_opcode.clear()
+                by_opcode.update(opcode_contents)
+                indexed._by_opcode = by_opcode
+                indexed._total_patterns = snapshot["indexed_total"]
+                child._indexed_storage = indexed
+                analyzer_rules, analyzer_contents = snapshot["analyzer_rules"]
+                analyzer_rules.clear()
+                analyzer_rules.update(analyzer_contents)
+                self.analyzer.rules = analyzer_rules
+
             def replace_rules(self, _rules):
                 # This is the real PatternOptimizer reset path: it clears the
                 # rule set and rebinds both production dispatch storages.
@@ -1070,6 +1208,14 @@ def test_started_activation_failure_restores_real_pattern_storage_objects(
             def __init__(self, owner):
                 self.owner = owner
                 self.cfg_rules = ["old-cfg-rule"]
+
+            def capture_runtime_state(self):
+                return {"cfg_rules": _capture_live_container(self.cfg_rules)}
+
+            def restore_runtime_state(self, snapshot):
+                cfg_rules, contents = snapshot["cfg_rules"]
+                cfg_rules[:] = contents
+                self.cfg_rules = cfg_rules
 
             def replace_rules(self, _rules):
                 self.cfg_rules[:] = ["candidate-cfg-rule"]
@@ -1110,7 +1256,9 @@ def test_started_activation_failure_restores_real_pattern_storage_objects(
             )
             # The manager must restore the original live containers rather
             # than only equivalent copies of the custom storage state.
-            assert restored_child.pattern_storage.next_layer_patterns is old_pattern_layers
+            assert (
+                restored_child.pattern_storage.next_layer_patterns is old_pattern_layers
+            )
             assert restored_child.pattern_storage.rule_resolved is old_pattern_resolved
             assert restored_child._indexed_storage._by_opcode is old_indexed_by_opcode
         finally:

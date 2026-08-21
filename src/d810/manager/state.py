@@ -90,6 +90,12 @@ from d810.manager.workbench_recipe_models import (
 )
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
+from d810.optimizers.microcode.handler import configure_rule_with_maturity_contract
+from d810.hexrays.utils.hexrays_formatters import string_to_maturity
+from d810.passes.constant_simplification import (
+    CONSTANT_SIMPLIFICATION_PASS_ID,
+    constant_simplification_provider_maturities,
+)
 from d810.passes.config_v2_hook_runtime import (
     ConfigV2HookSchedule,
     compile_config_v2_hook_schedule,
@@ -105,6 +111,10 @@ if TYPE_CHECKING:
 
 logger = getLogger("d810")
 D810_LOG_DIR_NAME = "d810_logs"
+
+
+class RuntimeActivationRollbackError(RuntimeError):
+    """The previous live runtime could not be re-established after failure."""
 
 
 def _require_registered_schedule_bindings(
@@ -350,14 +360,87 @@ class D810State(metaclass=SingletonMeta):
                 "--in-place",
             )
         )
-        reason = (
-            f"{type(exc).__name__}: {exc}; migrate with: {migration_command}"
-        )
+        reason = f"{type(exc).__name__}: {exc}; migrate with: {migration_command}"
         self.invalid_projects[name] = reason
         logger.warning(
             "Skipping malformed project configuration %s: %s", project.path, reason
         )
         logger.debug("project activation traceback for %s", project.path, exc_info=True)
+
+    def _capture_project_activation_state(self) -> dict[str, object]:
+        """Capture state-owned identities plus the manager-owned runtime lanes."""
+
+        missing = object()
+        state_attributes = (
+            "current_project_index",
+            "current_project",
+            "current_ins_rules",
+            "current_blk_rules",
+            "known_ins_rules",
+            "known_blk_rules",
+            "last_config_v2_pass_ids",
+            "current_project_runtime_snapshot",
+            "current_certified_catalogue_snapshot",
+            "current_shadow_matcher_parity_ledger",
+        )
+        return {
+            "missing": missing,
+            "state": {name: getattr(self, name, missing) for name in state_attributes},
+            "manager": self.manager.snapshot_project_activation_state(),
+        }
+
+    def _restore_project_activation_state(
+        self,
+        captured: dict[str, object],
+        activation_error: BaseException,
+    ) -> None:
+        """Restore state and manager lanes or fail closed exactly once."""
+
+        from d810.manager.manager import ManagerActivationStateRestoreError
+
+        restore_failures: list[tuple[str, BaseException]] = []
+        missing = captured["missing"]
+        for name, value in captured["state"].items():  # type: ignore[union-attr]
+            try:
+                if value is missing:
+                    if hasattr(self, name):
+                        delattr(self, name)
+                else:
+                    setattr(self, name, value)
+            except BaseException as exc:
+                restore_failures.append((f"state.{name}", exc))
+
+        manager_restore_incomplete = False
+        try:
+            self.manager.restore_project_activation_state(
+                captured["manager"]  # type: ignore[arg-type]
+            )
+        except ManagerActivationStateRestoreError as exc:
+            manager_restore_incomplete = True
+            restore_failures.append(("manager", exc))
+
+        if not restore_failures:
+            return
+
+        cleanup_failures: list[tuple[str, BaseException]] = []
+        if manager_restore_incomplete or restore_failures:
+            try:
+                cleanup_failures.extend(
+                    ("runtime invalidation", error)
+                    for error in (
+                        self.manager.invalidate_runtime_after_activation_rollback()
+                    )
+                )
+            except BaseException as exc:
+                cleanup_failures.append(("runtime invalidation", exc))
+
+        all_failures = (*restore_failures, *cleanup_failures)
+        detail = "; ".join(
+            f"{label}: {type(error).__name__}: {error}" for label, error in all_failures
+        )
+        raise RuntimeActivationRollbackError(
+            f"runtime activation rollback failed: {detail}"
+        ) from activation_error
 
     def _activate_project(
         self,
@@ -377,19 +460,24 @@ class D810State(metaclass=SingletonMeta):
         # constructing/configuring any candidate rule.  Tigress-indirect
         # configuration registers reload/materialization handlers as a side
         # effect, so those globals are part of the same rollback boundary.
-        manager_snapshot = self.manager.snapshot_project_activation_state()
+        activation_snapshot = self._capture_project_activation_state()
+        rolled_back = False
 
-        def _rollback_activation() -> None:
-            try:
-                self.manager.restore_project_activation_state(manager_snapshot)
-            except BaseException:  # noqa: BLE001 - preserve primary failure
-                logger.exception("project activation rollback failed")
+        def _rollback_activation(activation_error: BaseException) -> None:
+            nonlocal rolled_back
+            if rolled_back:
+                return
+            rolled_back = True
+            self._restore_project_activation_state(
+                activation_snapshot,
+                activation_error,
+            )
 
         def _stage_call(callable_, *args, **kwargs):
             try:
                 return callable_(*args, **kwargs)
-            except BaseException:
-                _rollback_activation()
+            except BaseException as activation_error:
+                _rollback_activation(activation_error)
                 raise
 
         candidate_known_ins_rules = _stage_call(self._build_known_instruction_rules)
@@ -405,9 +493,47 @@ class D810State(metaclass=SingletonMeta):
         # configuration, but must not run until every declared concrete binding
         # has a candidate; otherwise a failed activation would retire the
         # active profile's cleanup hooks.
-        prepare_project_activation_cleanups()
+        _stage_call(prepare_project_activation_cleanups)
         candidate_ins_rules: list = []
         candidate_blk_rules: list = []
+        constant_schedule = schedule.constant_simplification_schedule
+        constant_stages_by_rule = {
+            stage.implementation_name: stage
+            for stage in (constant_schedule.stages if constant_schedule else ())
+            if stage.enabled and stage.implementation_name
+        }
+
+        def configure_rule(rule, effective_config) -> None:
+            stage = constant_stages_by_rule.get(rule.name)
+            if stage is None:
+                rule.configure(effective_config)
+                return
+            supported_names = constant_simplification_provider_maturities(
+                stage.supported_maturities
+            )
+            effective_names = constant_simplification_provider_maturities(
+                stage.effective_maturities
+            )
+            supported = tuple(string_to_maturity(name) for name in supported_names)
+            effective = tuple(string_to_maturity(name) for name in effective_names)
+            if any(value is None for value in (*supported, *effective)):
+                raise PipelineConfigError(
+                    f"{CONSTANT_SIMPLIFICATION_PASS_ID} stage {stage.stage_id} "
+                    f"implementation {stage.implementation_name} has an unknown "
+                    "provider maturity spelling"
+                )
+            configure_rule_with_maturity_contract(
+                rule,
+                effective_config,
+                pass_id=CONSTANT_SIMPLIFICATION_PASS_ID,
+                stage_id=stage.stage_id,
+                expected_supported=tuple(
+                    value for value in supported if value is not None
+                ),
+                expected_effective=tuple(
+                    value for value in effective if value is not None
+                ),
+            )
 
         # The compiled schedule is authoritative.  Binding order is the
         # declared pipeline order, never registry discovery order.
@@ -417,21 +543,17 @@ class D810State(metaclass=SingletonMeta):
             for rule in candidate_known_ins_rules:
                 if rule.name != rule_conf.name:
                     continue
-                effective_config = _stage_call(
-                    resolve_arch_config, rule_conf.config
-                )
+                effective_config = _stage_call(resolve_arch_config, rule_conf.config)
                 effective_config["dump_intermediate_microcode"] = self.d810_config.get(
                     "dump_intermediate_microcode"
                 )
-                _stage_call(rule.configure, effective_config)
+                _stage_call(configure_rule, rule, effective_config)
                 _stage_call(rule.set_log_dir, self.log_dir)
                 candidate_ins_rules.append(rule)
         logger.debug("Instruction rules configured")
 
         selected_catalogue_adapters = tuple(
-            rule
-            for rule in candidate_ins_rules
-            if isinstance(rule, IDAPatternAdapter)
+            rule for rule in candidate_ins_rules if isinstance(rule, IDAPatternAdapter)
         )
         # Snapshot construction fingerprints every selected rule and allocates
         # the parity ledger.  Neither belongs to ordinary schedule execution:
@@ -518,20 +640,18 @@ class D810State(metaclass=SingletonMeta):
             for blk_rule in candidate_known_blk_rules:
                 if blk_rule.name != rule_conf.name:
                     continue
-                effective_config = _stage_call(
-                    resolve_arch_config, rule_conf.config
+                effective_config = _stage_call(resolve_arch_config, rule_conf.config)
+                effective_config["dump_intermediate_microcode"] = self.d810_config.get(
+                    "dump_intermediate_microcode"
                 )
-                effective_config["dump_intermediate_microcode"] = (
-                    self.d810_config.get("dump_intermediate_microcode")
-                )
-                _stage_call(blk_rule.configure, effective_config)
+                _stage_call(configure_rule, blk_rule, effective_config)
                 _stage_call(blk_rule.set_log_dir, self.log_dir)
                 candidate_blk_rules.append(blk_rule)
         logger.debug("Block rules configured")
 
         cfg = _stage_call(dict, project.additional_configuration)
-        cfg["config_v2_native_state_machine_active"] = (
-            _stage_call(requires_native_preanalysis_handlers, schedule)
+        cfg["config_v2_native_state_machine_active"] = _stage_call(
+            requires_native_preanalysis_handlers, schedule
         )
         cfg.setdefault("project_name", project.path.name)
 
@@ -539,11 +659,15 @@ class D810State(metaclass=SingletonMeta):
             # Stage the candidate rule lists into manager-owned scope inputs.
             # The old lists and optimizer objects are restored if any manager
             # or started-optimizer operation fails.
-            self.manager.instruction_optimizer_rules = list(candidate_ins_rules)
-            self.manager.block_optimizer_rules = list(candidate_blk_rules)
-            if self.manager.started:
-                self.manager.instruction_optimizer.replace_rules(candidate_ins_rules)
-                self.manager.block_optimizer.cfg_rules = list(candidate_blk_rules)
+            self.manager.configure_constant_simplification_schedule(constant_schedule)
+            self.manager.configure_instruction_optimizer(
+                list(candidate_ins_rules),
+                **self.manager.instruction_optimizer_config,
+            )
+            self.manager.configure_block_optimizer(
+                list(candidate_blk_rules),
+                **self.manager.block_optimizer_config,
+            )
 
             self.manager.configure(**cfg)
             if self.manager.started:
@@ -551,26 +675,22 @@ class D810State(metaclass=SingletonMeta):
                     **self.manager.instruction_optimizer_config,
                     execution_scope_service=self.manager.execution_scope_service,
                     execution_scope_project_name=project.path.name,
-                    execution_scope_idb_key=str(
-                        cfg.get("idb_key", project.path.name)
-                    ),
+                    execution_scope_idb_key=str(cfg.get("idb_key", project.path.name)),
                     pass_scheduler=self.manager.instruction_pass_scheduler,
                 )
                 self.manager.block_optimizer.configure(
                     **cfg,
                     execution_scope_service=self.manager.execution_scope_service,
                     execution_scope_project_name=project.path.name,
-                    execution_scope_idb_key=str(
-                        cfg.get("idb_key", project.path.name)
-                    ),
+                    execution_scope_idb_key=str(cfg.get("idb_key", project.path.name)),
                     pass_scheduler=self.manager.block_pass_scheduler,
                     function_priors_provider=(
                         self.manager.function_analysis_priors_for_ea
                     ),
                 )
                 self.manager._compile_execution_scope()
-        except BaseException:
-            _rollback_activation()
+        except BaseException as activation_error:
+            _rollback_activation(activation_error)
             raise
 
         # This is the non-fallible publication point.  No identity/list field
@@ -589,7 +709,9 @@ class D810State(metaclass=SingletonMeta):
         self.current_blk_rules = candidate_blk_rules
         self.last_config_v2_pass_ids = schedule.configured_pass_ids
         self.current_project_runtime_snapshot = snapshot
-        self.current_certified_catalogue_snapshot = candidate_certified_catalogue_snapshot
+        self.current_certified_catalogue_snapshot = (
+            candidate_certified_catalogue_snapshot
+        )
         self.current_shadow_matcher_parity_ledger = (
             candidate_shadow_matcher_parity_ledger
         )
@@ -867,7 +989,9 @@ class D810State(metaclass=SingletonMeta):
         self,
         snapshot: DeobfuscationWorkbenchSnapshot,
     ) -> PipelineRecipeDraft:
-        return self.manager.create_workbench_recipe_draft(snapshot, self.current_project)
+        return self.manager.create_workbench_recipe_draft(
+            snapshot, self.current_project
+        )
 
     def create_active_workbench_recipe_draft(
         self,
@@ -1177,10 +1301,14 @@ class D810State(metaclass=SingletonMeta):
             **self.current_project.additional_configuration,
         )
         project_snapshot = self.get_project_runtime_snapshot()
+        constant_schedule = self.manager._constant_simplification_schedule
         self.manager.configure_preparation_scripts(
             project_snapshot.preparation_scripts,
             global_const_persistence_enabled=(
                 project_snapshot.global_const_persistence_enabled
+            ),
+            constant_preparation_options=(
+                constant_schedule.preparation if constant_schedule is not None else None
             ),
         )
         self.manager.start()
@@ -1225,6 +1353,7 @@ class D810State(metaclass=SingletonMeta):
         from d810.optimizers.microcode.instructions.analysis import (  # noqa: F401
             pattern_guess,
         )
+
         rules = [
             rule_cls()
             for rule_cls in InstructionOptimizationRule.registry.values()

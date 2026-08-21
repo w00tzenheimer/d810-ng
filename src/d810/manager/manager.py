@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import copy
 import dataclasses
 import importlib
 import json
@@ -210,14 +209,6 @@ def _session_telemetry_summary() -> dict[str, object]:
     except Exception:
         summary["mop_to_ast_cache"] = {"error": "unavailable"}
     return summary
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class _ActivationContainerSnapshot:
-    """Identity plus contents for a live mutable activation container."""
-
-    target: object
-    contents: object
 
 
 def _load_semantic_route_reference_oracle_registry(
@@ -655,15 +646,25 @@ class OptimizerRuntimeStateCaptureError(RuntimeError):
     """Raised when a live adapter does not expose the snapshot protocol."""
 
 
+class ManagerActivationStateRestoreError(RuntimeError):
+    """Raised after best-effort restoration leaves manager lanes incomplete."""
+
+    def __init__(self, failures: typing.Sequence[tuple[str, BaseException]]):
+        self.failures = tuple(failures)
+        details = "; ".join(
+            f"{label}: {type(error).__name__}: {error}"
+            for label, error in self.failures
+        )
+        super().__init__(f"manager activation state restoration failed: {details}")
+
+
 class ManagerCleanupError(RuntimeError):
     """One labelled failure from the full manager cleanup path."""
 
     def __init__(self, label: str, error: BaseException):
         self.label = label
         self.original_error = error
-        super().__init__(
-            f"{label}: {type(error).__name__}: {error}"
-        )
+        super().__init__(f"{label}: {type(error).__name__}: {error}")
 
 
 @dataclasses.dataclass
@@ -775,8 +776,8 @@ class D810Manager:
     _global_const_persistence_enabled: bool = dataclasses.field(
         default=False, init=False, repr=False
     )
-    _constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = dataclasses.field(
-        default=None, init=False, repr=False
+    _constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = (
+        dataclasses.field(default=None, init=False, repr=False)
     )
     _explicitly_suppressed_rule_names: frozenset[str] = dataclasses.field(
         default_factory=frozenset,
@@ -904,8 +905,7 @@ class D810Manager:
                 errors.append((name, exc))
         if errors:
             details = "; ".join(
-                f"{name}: {type(error).__name__}: {error}"
-                for name, error in errors
+                f"{name}: {type(error).__name__}: {error}" for name, error in errors
             )
             raise OptimizerRuntimeStateRestoreError(
                 f"optimizer runtime restoration failed: {details}"
@@ -1990,208 +1990,38 @@ class D810Manager:
             self._sync_native_preanalysis_handlers()
 
     @staticmethod
-    def _activation_copy(value: object) -> object:
-        """Copy ordinary activation state without cloning live rule objects.
+    def _capture_mapping_lane(mapping: dict) -> tuple[dict, dict]:
+        return mapping, dict(mapping)
 
-        Required live mutable containers are handled explicitly by
-        :meth:`_snapshot_activation_object`; this fallback is for opaque,
-        disposable implementation details only.
-        """
-
-        try:
-            return copy.deepcopy(value)
-        except Exception:  # noqa: BLE001 - some IDA/SWIG values are opaque
-            return value
-
-    @classmethod
-    def _snapshot_activation_object(
-        cls,
-        obj: object | None,
-        *,
-        preserve: frozenset[str] = frozenset(),
-    ) -> tuple[object | None, dict[str, object]] | None:
-        if obj is None:
-            return None
-        attributes = getattr(obj, "__dict__", None)
-        if not isinstance(attributes, dict):
-            return (obj, {})
-
-        def _preserve_nested_container(value: object) -> object:
-            if isinstance(value, dict):
-                return _ActivationContainerSnapshot(value, dict(value))
-            if isinstance(value, list):
-                return _ActivationContainerSnapshot(value, list(value))
-            if isinstance(value, set):
-                return _ActivationContainerSnapshot(value, set(value))
-            return value
-
-        def _preserved_value(name: str, value: object) -> object:
-            if isinstance(value, dict):
-                return _ActivationContainerSnapshot(value, dict(value))
-            if isinstance(value, list):
-                return _ActivationContainerSnapshot(value, list(value))
-            if isinstance(value, set):
-                return _ActivationContainerSnapshot(value, set(value))
-            if name in {"pattern_storage", "_indexed_storage"}:
-                object_dict = getattr(value, "__dict__", None)
-                if isinstance(object_dict, dict):
-                    contents = {
-                        attr: _preserve_nested_container(attr_value)
-                        for attr, attr_value in object_dict.items()
-                    }
-                    return _ActivationContainerSnapshot(value, contents)
-            if name == "_stages" and isinstance(value, tuple):
-                # Tuples are immutable; restoration rebinds the original tuple
-                # object.  It is an internal stage descriptor, not a mutable
-                # cache observed by callers.
-                return value
-            return value
-
-        return (
-            obj,
-            {
-                name: (
-                    _preserved_value(name, value)
-                    if name in preserve
-                    else cls._activation_copy(value)
-                )
-                for name, value in attributes.items()
-            },
-        )
-
-    @classmethod
-    def _restore_activation_container(
-        cls, snapshot: _ActivationContainerSnapshot
-    ) -> object:
-        target = snapshot.target
-        contents = snapshot.contents
-        if isinstance(contents, dict):
-            restored_contents = {
-                key: cls._restore_activation_container(value)
-                if isinstance(value, _ActivationContainerSnapshot)
-                else value
-                for key, value in contents.items()
-            }
-        else:
-            restored_contents = contents
-        if isinstance(target, dict) and isinstance(contents, dict):
-            target.clear()
-            target.update(restored_contents)
-        elif isinstance(target, list) and isinstance(contents, list):
-            target.clear()
-            target.extend(
-                cls._restore_activation_container(value)
-                if isinstance(value, _ActivationContainerSnapshot)
-                else value
-                for value in contents
-            )
-        elif isinstance(target, set) and isinstance(contents, set):
-            target.clear()
-            target.update(restored_contents)
-        else:
-            object_dict = getattr(target, "__dict__", None)
-            if isinstance(object_dict, dict) and isinstance(contents, dict):
-                object_dict.clear()
-                object_dict.update(restored_contents)
-        return target
-
-    @classmethod
-    def _restore_activation_object(cls, snapshot) -> None:
-        if snapshot is None:
-            return
-        obj, attributes = snapshot
-        if obj is None:
-            return
-        current = getattr(obj, "__dict__", None)
-        if not isinstance(current, dict):
-            return
-        for name in tuple(current):
-            if name not in attributes:
-                try:
-                    delattr(obj, name)
-                except Exception:  # noqa: BLE001 - preserve the primary error
-                    logger.exception(
-                        "project activation rollback could not remove %s.%s",
-                        type(obj).__name__,
-                        name,
-                    )
-        for name, value in attributes.items():
-            try:
-                if isinstance(value, _ActivationContainerSnapshot):
-                    value = cls._restore_activation_container(value)
-                setattr(obj, name, value)
-            except Exception:  # noqa: BLE001 - preserve the primary error
-                logger.exception(
-                    "project activation rollback could not restore %s.%s",
-                    type(obj).__name__,
-                    name,
-                )
+    @staticmethod
+    def _restore_mapping_lane(snapshot: tuple[dict, dict]) -> None:
+        mapping, contents = snapshot
+        mapping.clear()
+        mapping.update(contents)
 
     def snapshot_project_activation_state(self) -> dict[str, object]:
-        """Capture mutable manager/runtime state before project activation.
-
-        Project loading stages against candidate rule objects, but manager
-        configuration still touches the live execution-scope service and (when
-        started) optimizer adapters.  This snapshot is intentionally private
-        to the activation transaction and keeps object identity for live rules,
-        schedulers, event emitters, and IDA-owned services.
-        """
-
-        instruction_optimizer = getattr(self, "instruction_optimizer", None)
-        instruction_children = ()
-        if instruction_optimizer is not None:
-            instruction_children = tuple(
-                self._snapshot_activation_object(
-                    optimizer,
-                    preserve=frozenset(
-                        {
-                            "rules",
-                            "pattern_storage",
-                            "_indexed_storage",
-                            "_structural_rules_by_root_opcode",
-                            "_allowed_root_opcodes",
-                            "_active_cache",
-                            "event_emitter",
-                            "stats",
-                            "log_dir",
-                            "_run_later_callback",
-                        }
-                    ),
-                )
-                for optimizer in tuple(
-                    getattr(instruction_optimizer, "instruction_optimizers", ())
-                )
-            )
-            instruction_analyzer = self._snapshot_activation_object(
-                getattr(instruction_optimizer, "analyzer", None),
-                preserve=frozenset({"rules", "stats", "log_dir"}),
-            )
-        else:
-            instruction_analyzer = None
-
-        block_optimizer = getattr(self, "block_optimizer", None)
-        block_rule_snapshots = ()
-        if block_optimizer is not None:
-            block_rule_snapshots = tuple(
-                self._snapshot_activation_object(rule)
-                for rule in tuple(getattr(block_optimizer, "cfg_rules", ()))
-            )
+        """Capture manager-owned lanes before one canonical activation."""
 
         from d810.hexrays.preanalysis.indirect_jump_labels import (
             snapshot_indirect_materialization_registry,
         )
 
+        service = self.execution_scope_service
+        preparation_controller = getattr(self, "pre_hex_preparation", None)
+        capture_controller = getattr(preparation_controller, "snapshot_state", None)
+        post_d810_runtime = getattr(self, "_post_d810_runtime", None)
+        global_const_observer = getattr(
+            post_d810_runtime, "global_const_observer", None
+        )
+        capture_observer = getattr(global_const_observer, "snapshot_state", None)
         return {
             "project_activation_registries": snapshot_project_activation_registries(),
             "indirect_materialization_registry": (
                 snapshot_indirect_materialization_registry()
             ),
-            "config": (self.config, self._activation_copy(self.config)),
+            "config": self._capture_mapping_lane(self.config),
             "semantic_registry": self._semantic_route_reference_oracle_registry,
-            "priors": (
-                self._function_analysis_priors,
-                self._activation_copy(self._function_analysis_priors),
-            ),
+            "priors": self._capture_mapping_lane(self._function_analysis_priors),
             "native_handlers": self._native_preanalysis_handlers_installed,
             "instruction_rules": self.instruction_optimizer_rules,
             "instruction_config": self.instruction_optimizer_config,
@@ -2199,118 +2029,220 @@ class D810Manager:
             "block_config": self.block_optimizer_config,
             "ctree_rules": self.ctree_optimizer_rules,
             "ctree_config": self.ctree_optimizer_config,
-            "execution_scope": self._snapshot_activation_object(
-                self.execution_scope_service,
-                preserve=frozenset(
-                    {
-                        "_metadata_provider",
-                        "_inference_registry",
-                        "_attached_emitter",
-                        "_stages",
-                        "_active_cache",
-                        "_metadata_cache",
-                        "_hint_inferences",
-                        "_hint_suppressions",
-                    }
+            "constant_schedule": self._constant_simplification_schedule,
+            "constant_preparation_options": self._constant_preparation_options,
+            "global_const_persistence_enabled": (
+                self._global_const_persistence_enabled
+            ),
+            "started": self.started,
+            "runtime_invalidated": self.runtime_invalidated,
+            "preparation_controller": preparation_controller,
+            "preparation_controller_state": (
+                capture_controller() if callable(capture_controller) else None
+            ),
+            "post_d810_runtime": post_d810_runtime,
+            "global_const_observer": global_const_observer,
+            "global_const_observer_state": (
+                capture_observer() if callable(capture_observer) else None
+            ),
+            "started_optimizer_state": (self.capture_started_optimizer_runtime_state()),
+            "execution_scope": {
+                "service": service,
+                "metadata_provider": service._metadata_provider,
+                "inference_registry": service._inference_registry,
+                "attached_emitter": service._attached_emitter,
+                "stages": service._stages,
+                "generation": service._generation,
+                "active_cache": self._capture_mapping_lane(service._active_cache),
+                "metadata_cache": self._capture_mapping_lane(service._metadata_cache),
+                "hint_inferences": self._capture_mapping_lane(service._hint_inferences),
+                "hint_suppressions": self._capture_mapping_lane(
+                    service._hint_suppressions
                 ),
-            ),
-            "instruction_optimizer": self._snapshot_activation_object(
-                instruction_optimizer,
-                preserve=frozenset(
-                    {
-                        "instruction_optimizers",
-                        "analyzer",
-                        "event_emitter",
-                        "stats",
-                        "log_dir",
-                        "_instruction_optimizer_type",
-                        "instruction_visitor",
-                        "_active_rule_cache",
-                    }
+            },
+            "instruction_scheduler": {
+                "scheduler": self.instruction_pass_scheduler,
+                "pending": self._capture_mapping_lane(
+                    self.instruction_pass_scheduler._pending_by_func
                 ),
-            ),
-            "instruction_children": instruction_children,
-            "instruction_analyzer": instruction_analyzer,
-            "block_optimizer": self._snapshot_activation_object(
-                block_optimizer,
-                preserve=frozenset(
-                    {
-                        "cfg_rules",
-                        "event_emitter",
-                        "stats",
-                        "log_dir",
-                        "_flow_context_type",
-                        "_run_later_scheduler",
-                        "_active_cache",
-                    }
+            },
+            "block_scheduler": {
+                "scheduler": self.block_pass_scheduler,
+                "pending": self._capture_mapping_lane(
+                    self.block_pass_scheduler._pending_by_func
                 ),
-            ),
-            "block_rule_snapshots": block_rule_snapshots,
-            "instruction_scheduler": self._snapshot_activation_object(
-                self.instruction_pass_scheduler,
-                preserve=frozenset({"_pending_by_func"}),
-            ),
-            "block_scheduler": self._snapshot_activation_object(
-                self.block_pass_scheduler,
-                preserve=frozenset({"_pending_by_func"}),
-            ),
+            },
         }
 
     def restore_project_activation_state(self, snapshot: dict[str, object]) -> None:
-        """Restore a failed project activation without masking its exception."""
+        """Restore every manager lane, then report all labelled failures."""
 
-        config_ref, config_value = snapshot["config"]
-        try:
-            config_ref.clear()
-            config_ref.update(self._activation_copy(config_value))
-        except Exception:  # noqa: BLE001 - preserve the activation failure
-            logger.exception("project activation config rollback failed")
-        self.config = config_ref
-        self._semantic_route_reference_oracle_registry = snapshot[
-            "semantic_registry"
-        ]
-        priors_ref, priors_value = snapshot["priors"]
-        try:
-            priors_ref.clear()
-            priors_ref.update(self._activation_copy(priors_value))
-        except Exception:  # noqa: BLE001 - preserve the activation failure
-            logger.exception("project activation priors rollback failed")
-        self._function_analysis_priors = priors_ref
-        self.instruction_optimizer_rules = snapshot["instruction_rules"]
-        self.instruction_optimizer_config = snapshot["instruction_config"]
-        self.block_optimizer_rules = snapshot["block_rules"]
-        self.block_optimizer_config = snapshot["block_config"]
-        self.ctree_optimizer_rules = snapshot["ctree_rules"]
-        self.ctree_optimizer_config = snapshot["ctree_config"]
-        self._restore_activation_object(snapshot["execution_scope"])
-        self._restore_activation_object(snapshot["instruction_optimizer"])
-        for child_snapshot in snapshot["instruction_children"]:
-            self._restore_activation_object(child_snapshot)
-        self._restore_activation_object(snapshot["instruction_analyzer"])
-        self._restore_activation_object(snapshot["block_optimizer"])
-        for rule_snapshot in snapshot["block_rule_snapshots"]:
-            self._restore_activation_object(rule_snapshot)
-        self._restore_activation_object(snapshot["instruction_scheduler"])
-        self._restore_activation_object(snapshot["block_scheduler"])
+        failures: list[tuple[str, BaseException]] = []
+
+        def attempt(label: str, callback) -> None:
+            try:
+                callback()
+            except BaseException as exc:
+                failures.append((label, exc))
+
+        def restore_config() -> None:
+            config_snapshot = snapshot["config"]
+            self._restore_mapping_lane(config_snapshot)  # type: ignore[arg-type]
+            self.config = config_snapshot[0]  # type: ignore[index]
+
+        def restore_priors() -> None:
+            priors_snapshot = snapshot["priors"]
+            self._restore_mapping_lane(priors_snapshot)  # type: ignore[arg-type]
+            self._function_analysis_priors = priors_snapshot[0]  # type: ignore[index]
+
+        attempt("config", restore_config)
+        attempt(
+            "semantic registry",
+            lambda: setattr(
+                self,
+                "_semantic_route_reference_oracle_registry",
+                snapshot["semantic_registry"],
+            ),
+        )
+        attempt("function analysis priors", restore_priors)
+        for label, name, key in (
+            ("instruction rules", "instruction_optimizer_rules", "instruction_rules"),
+            (
+                "instruction config",
+                "instruction_optimizer_config",
+                "instruction_config",
+            ),
+            ("block rules", "block_optimizer_rules", "block_rules"),
+            ("block config", "block_optimizer_config", "block_config"),
+            ("ctree rules", "ctree_optimizer_rules", "ctree_rules"),
+            ("ctree config", "ctree_optimizer_config", "ctree_config"),
+            (
+                "constant schedule",
+                "_constant_simplification_schedule",
+                "constant_schedule",
+            ),
+            (
+                "constant preparation options",
+                "_constant_preparation_options",
+                "constant_preparation_options",
+            ),
+            (
+                "global const persistence",
+                "_global_const_persistence_enabled",
+                "global_const_persistence_enabled",
+            ),
+            (
+                "preparation controller identity",
+                "pre_hex_preparation",
+                "preparation_controller",
+            ),
+            (
+                "post-D810 runtime identity",
+                "_post_d810_runtime",
+                "post_d810_runtime",
+            ),
+        ):
+            attempt(
+                label,
+                lambda name=name, key=key: setattr(self, name, snapshot[key]),
+            )
+
+        controller = snapshot["preparation_controller"]
+        controller_state = snapshot["preparation_controller_state"]
+        if controller is not None and controller_state is not None:
+            attempt(
+                "preparation controller",
+                lambda: controller.restore_state(controller_state),  # type: ignore[union-attr]
+            )
+
+        post_d810_runtime = snapshot["post_d810_runtime"]
+        observer = snapshot["global_const_observer"]
+        if post_d810_runtime is not None:
+            attempt(
+                "global const observer identity",
+                lambda: setattr(
+                    post_d810_runtime,  # type: ignore[arg-type]
+                    "global_const_observer",
+                    observer,
+                ),
+            )
+        observer_state = snapshot["global_const_observer_state"]
+        if observer is not None and observer_state is not None:
+            attempt(
+                "global const observer",
+                lambda: observer.restore_state(observer_state),  # type: ignore[union-attr]
+            )
+
+        if snapshot["started"]:
+            attempt(
+                "started optimizer adapters",
+                lambda: self.restore_started_optimizer_runtime_state(
+                    snapshot["started_optimizer_state"]  # type: ignore[arg-type]
+                ),
+            )
+
+        scope = snapshot["execution_scope"]
+
+        def restore_execution_scope() -> None:
+            service = scope["service"]  # type: ignore[index]
+            self.execution_scope_service = service
+            service._metadata_provider = scope["metadata_provider"]  # type: ignore[index]
+            service._inference_registry = scope["inference_registry"]  # type: ignore[index]
+            service._attached_emitter = scope["attached_emitter"]  # type: ignore[index]
+            service._stages = scope["stages"]  # type: ignore[index]
+            service._generation = scope["generation"]  # type: ignore[index]
+            for name, key in (
+                ("_active_cache", "active_cache"),
+                ("_metadata_cache", "metadata_cache"),
+                ("_hint_inferences", "hint_inferences"),
+                ("_hint_suppressions", "hint_suppressions"),
+            ):
+                lane = scope[key]  # type: ignore[index]
+                self._restore_mapping_lane(lane)
+                setattr(service, name, lane[0])
+
+        attempt("execution scope", restore_execution_scope)
+
+        def restore_scheduler(snapshot_key: str, attribute: str) -> None:
+            scheduler_snapshot = snapshot[snapshot_key]
+            scheduler = scheduler_snapshot["scheduler"]  # type: ignore[index]
+            pending = scheduler_snapshot["pending"]  # type: ignore[index]
+            self._restore_mapping_lane(pending)
+            scheduler._pending_by_func = pending[0]
+            setattr(self, attribute, scheduler)
+
+        attempt(
+            "instruction scheduler",
+            lambda: restore_scheduler(
+                "instruction_scheduler", "instruction_pass_scheduler"
+            ),
+        )
+        attempt(
+            "block scheduler",
+            lambda: restore_scheduler("block_scheduler", "block_pass_scheduler"),
+        )
 
         expected_native = bool(snapshot["native_handlers"])
-        if self._native_preanalysis_handlers_installed != expected_native:
-            try:
-                if self._native_preanalysis_handlers_installed:
-                    self._uninstall_native_preanalysis_handlers()
-                if expected_native:
-                    self._install_native_preanalysis_handlers()
-            except Exception:  # noqa: BLE001 - preserve the activation failure
-                logger.exception("project activation native handler rollback failed")
-            self._native_preanalysis_handlers_installed = expected_native
 
-        # Native-handler reconciliation can itself touch the indirect
-        # materialization executor.  Restore profile-global registries last so
-        # their identity and contents are exact after every rollback path.
-        try:
-            restore_project_activation_registries(
+        def restore_native_handlers() -> None:
+            # Reconcile even when the flag did not change: a failed candidate
+            # install/uninstall may have mutated registries before raising.
+            self._uninstall_native_preanalysis_handlers()
+            self._native_preanalysis_handlers_installed = False
+            if expected_native:
+                self._install_native_preanalysis_handlers()
+                self._native_preanalysis_handlers_installed = True
+
+        attempt("native preanalysis handlers", restore_native_handlers)
+
+        attempt(
+            "project activation registries",
+            lambda: restore_project_activation_registries(
                 snapshot["project_activation_registries"]
-            )
+            ),
+        )
+
+        def restore_indirect_registry() -> None:
             from d810.hexrays.preanalysis.indirect_jump_labels import (
                 restore_indirect_materialization_registry,
             )
@@ -2318,8 +2250,14 @@ class D810Manager:
             restore_indirect_materialization_registry(
                 snapshot["indirect_materialization_registry"]
             )
-        except Exception:  # noqa: BLE001 - preserve the activation failure
-            logger.exception("project activation registry rollback failed")
+
+        attempt("indirect materialization registry", restore_indirect_registry)
+
+        if failures:
+            raise ManagerActivationStateRestoreError(failures) from failures[0][1]
+
+        self._runtime_invalidated = bool(snapshot["runtime_invalidated"])
+        self._started = bool(snapshot["started"])
 
     def reconfigure_function_storage(
         self,
@@ -3367,9 +3305,8 @@ class D810Manager:
         for config in configs:
             for descriptor in registry.stages_for(config.pass_id):
                 constant_stage = None
-                if (
-                    constant_schedule is not None
-                    and str(config.pass_id) == str(CONSTANT_SIMPLIFICATION_PASS_ID)
+                if constant_schedule is not None and str(config.pass_id) == str(
+                    CONSTANT_SIMPLIFICATION_PASS_ID
                 ):
                     constant_stage = constant_schedule.stage(str(descriptor.stage_id))
                     if not constant_stage.enabled:
@@ -3422,8 +3359,12 @@ class D810Manager:
                     effective_names = constant_simplification_provider_maturities(
                         constant_stage.effective_maturities
                     )
-                    supported = tuple(string_to_maturity(name) for name in supported_names)
-                    effective = tuple(string_to_maturity(name) for name in effective_names)
+                    supported = tuple(
+                        string_to_maturity(name) for name in supported_names
+                    )
+                    effective = tuple(
+                        string_to_maturity(name) for name in effective_names
+                    )
                     if any(value is None for value in (*supported, *effective)):
                         raise PipelineConfigError(
                             f"{CONSTANT_SIMPLIFICATION_PASS_ID} stage "
@@ -4547,10 +4488,9 @@ class D810Manager:
             )
             if callable(invalidate_cache):
                 invalidate_cache()
-            for child in (
-                list(getattr(optimizer, "instruction_optimizers", ()) or ())
-                + [getattr(optimizer, "analyzer", None)]
-            ):
+            for child in list(
+                getattr(optimizer, "instruction_optimizers", ()) or ()
+            ) + [getattr(optimizer, "analyzer", None)]:
                 invalidate = getattr(child, "invalidate", None)
                 if callable(invalidate):
                     invalidate()
@@ -4587,7 +4527,9 @@ class D810Manager:
         optimizer._active_optimizers = []
         optimizer._active_instruction_rule_names_by_maturity.clear()
         optimizer._execution_scope_func_ea = -1
-        invalidate_cache = getattr(optimizer, "_invalidate_residual_admission_cache", None)
+        invalidate_cache = getattr(
+            optimizer, "_invalidate_residual_admission_cache", None
+        )
         if callable(invalidate_cache):
             invalidate_cache()
         add_rule = getattr(optimizer, "add_rule", None)
@@ -4781,8 +4723,7 @@ class D810Manager:
         if full_cleanup:
             self._cleanup_errors = cleanup_errors
             errors = tuple(
-                ManagerCleanupError(label, error)
-                for label, error in cleanup_errors
+                ManagerCleanupError(label, error) for label, error in cleanup_errors
             )
             del self._cleanup_errors
             return errors
