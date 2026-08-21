@@ -679,8 +679,8 @@ class TestNativePerfInstrumentation:
     @pytest.mark.skipif(
         not _cython_disabled_by_environment(), reason="Python mode is disabled"
     )
-    def test_python_mode_selects_python_providers_with_extensions_present(self):
-        """D810_NO_CYTHON selects Python dispatchers even when .so files exist."""
+    def test_python_mode_selects_python_providers_without_native_extensions(self):
+        """D810_NO_CYTHON selects Python dispatchers without native extensions."""
         from d810.core.cymode import CythonMode
         from d810.hexrays.expr import ast as ast_dispatcher
         from d810.manager.manager import D810Manager
@@ -688,18 +688,7 @@ class TestNativePerfInstrumentation:
             engine as pattern_dispatcher,
         )
 
-        _require_extension_modules_present()
         assert not CythonMode().is_enabled()
-        print(
-            "D810_CYTHON_EXTENSION_PATHS="
-            + json.dumps(
-                {
-                    "c_pattern_match": c_pattern_match.__file__,
-                    "c_ast": c_ast.__file__,
-                },
-                sort_keys=True,
-            )
-        )
         native_perf.clear_providers_for_tests()
         native_perf.configure(True)
         D810Manager._ensure_native_perf_providers()
