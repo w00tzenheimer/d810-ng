@@ -173,7 +173,11 @@ def test_external_legacy_profile_saves_as_canonical_without_behavior_change(
         "allow_executable_readonly": False,
         "persist_global_const_annotations": True,
     }
-    legacy_entry["maturity_gates"] = ["GLOBAL_ANALYZED", "STRUCTURED"]
+    legacy_entry["maturity_gates"] = [
+        "GLOBAL_ANALYZED",
+        "GLOBAL_OPTIMIZED",
+        "STRUCTURED",
+    ]
     source = tmp_path / "legacy.json"
     destination = tmp_path / "canonical.json"
     source.write_text(json.dumps(source_document), encoding="utf-8")

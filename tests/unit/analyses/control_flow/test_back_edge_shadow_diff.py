@@ -37,9 +37,12 @@ class _Disp:
         self._r = dict(routes)
         self.default_target = default
 
-    def lookup(self, state):
+    def resolve_target(self, state):
         r = self._r.get(int(state))
         return None if r is None else int(r)
+
+    def lookup_row(self, _state):
+        return None
 
 
 def test_via_fixpoint_routes_singleton_and_returns_on_top() -> None:

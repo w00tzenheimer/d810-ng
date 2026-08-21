@@ -1034,6 +1034,11 @@ def test_unflatten_dispatcher_terminal_outcome_persists_pending_and_final_status
             projected_validation = rejected_validation
         else:
             observed_validation = rejected_validation
+    else:
+        observed_validation = DispatcherRemovalPreflightValidation(
+            passed=True,
+            reason="dispatcher_removal_proof_matches",
+        )
 
     observe_unflatten_dispatcher_corridor_coverage(
         func_ea=0x7FF859C06F60,

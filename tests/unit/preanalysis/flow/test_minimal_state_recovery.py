@@ -1601,6 +1601,38 @@ def test_partitioned_fixpoint_resolves_stack_address_alias_state_store(
     assert edge.proof.kind == "stack_address_alias_store"
 
 
+def test_partitioned_fixpoint_state_route_abstention_is_not_terminal(_seam) -> None:
+    """A current-snapshot router miss remains unresolved, not terminal."""
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20), (11,), ()),
+            10: _blk(
+                10,
+                (11,),
+                (2,),
+                (_mov(0x1000, _num(0x20), _stk(_STATE_OFF)),),
+            ),
+            11: _blk(11, (2,), (10,), ()),
+            20: _blk(20, (), (2,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+
+    edges = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        _dispatcher({0x20: 20}, exit_block=99),
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+        state_route_resolver=lambda _state: None,
+    )
+
+    assert len(edges) == 1
+    assert edges[0].next_state == 0x20
+    assert edges[0].target_handler is None
+    assert edges[0].is_return is False
+
+
 def test_partitioned_fixpoint_multi_entry_recovers_nonpredecessor_writer(
     _seam, monkeypatch
 ) -> None:

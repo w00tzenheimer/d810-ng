@@ -727,13 +727,6 @@ def _upstream_corridor_paths(
         reclassified as a merge.
         """
         nonlocal complete
-        if int(predecessor) == int(dispatcher_serial):
-            # The dispatcher is the corridor boundary, not another shared
-            # merge to expand.  Following its predecessors re-enters the same
-            # state-machine feeders and falsely turns a finite dispatcher
-            # cycle into incomplete enumeration.
-            append((int(predecessor), *suffix))
-            return
         incoming_to_predecessor = predecessors.get(int(predecessor), ())
         if len(incoming_to_predecessor) > 1 and successors.get(
             int(predecessor), ()
@@ -741,7 +734,7 @@ def _upstream_corridor_paths(
             for merge_input in incoming_to_predecessor:
                 merge_input = int(merge_input)
                 if merge_input in seen:
-                    if merge_input == int(dispatcher_serial) or is_dispatcher_self_reentry_input(
+                    if is_dispatcher_self_reentry_input(
                         predecessor=int(predecessor),
                         merge_input=merge_input,
                         suffix=suffix,

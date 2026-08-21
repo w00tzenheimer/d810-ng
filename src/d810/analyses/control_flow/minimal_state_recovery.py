@@ -35,6 +35,7 @@ IDA / Hex-Rays imports.  The MBA fold runs through the registered
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import Enum
 import operator
@@ -495,13 +496,15 @@ def enrich_native_bound_transition_routes(
     *,
     dispatcher_region_serials: frozenset[int] = frozenset(),
 ) -> tuple[StateWriteTransition, ...]:
-    """Fill unresolved state-write rows from exact native-bound route evidence.
+    """Fill or corroborate state-write rows from exact native-bound evidence.
 
-    This is intentionally a pure, additive join performed after all normal
-    fixpoint/emulator providers have run.  Native-bound evidence may only fill a
-    row that has no state or target yet, and the source EA has already been
-    rebound to the current ``write_block``/``via_block`` by the Hex-Rays
-    adapter.  Multiple disagreeing routes for one source abstain as a group.
+    This is intentionally a pure join performed after all normal
+    fixpoint/emulator providers have run.  A singleton native route may fill an
+    unresolved row, or corroborate a fully resolved row when its exact
+    ``(state, target)`` agrees; in the latter case the typed native-bound proof
+    becomes the route authority.  Multiple disagreeing routes for one source
+    abstain as a group.  The source EA has already been rebound to the current
+    ``write_block``/``via_block`` by the Hex-Rays adapter.
     """
     if not transitions or not routes:
         return transitions
@@ -530,11 +533,6 @@ def enrich_native_bound_transition_routes(
 
     enriched: list[StateWriteTransition] = []
     for transition in transitions:
-        # A fixpoint/emulator result, including a partial result, is stronger
-        # than this corroborating route and must never be overwritten.
-        if transition.next_state is not None or transition.target_handler is not None:
-            enriched.append(transition)
-            continue
         source_serials = {int(transition.write_block)}
         if transition.via_block is not None:
             source_serials.add(int(transition.via_block))
@@ -554,6 +552,31 @@ def enrich_native_bound_transition_routes(
             ),
         )
         state, target = route_key
+        if (
+            transition.next_state is not None
+            or transition.target_handler is not None
+        ):
+            if (
+                transition.next_state != state
+                or transition.target_handler != target
+            ):
+                enriched.append(transition)
+                continue
+            enriched.append(
+                replace(
+                    transition,
+                    proof=TransitionProof(
+                        "native_bound_transition_route",
+                        "native_bound_route",
+                        True,
+                        reason=(
+                            f"fact_id={route.fact_id};"
+                            f"native_ea=0x{int(route.source_instruction_ea):X}"
+                        ),
+                    ),
+                )
+            )
+            continue
         enriched.append(
             replace(
                 transition,
@@ -4975,6 +4998,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     dispatcher_region_serials: frozenset[int] = frozenset(),
     candidate_prefix_authority: CandidateScopedPrefixAuthority | None = None,
     include_entry_unreachable_back_edges: bool = False,
+    state_route_resolver: Callable[[int], int | None] | None = None,
 ) -> tuple[StateWriteTransition, ...]:
     """B2 shadow: predecessor-partitioned multi-cell fold -> the Case-2 ``via_block`` split.
 
@@ -5077,9 +5101,18 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     seeded: dict[int, dict[int | None, set[int]]] = {}
 
     def _classify(state: int) -> tuple[int | None, bool]:
-        routed = _resolved_dispatcher_target(dispatcher, state)
-        if routed is None:
-            return None, True
+        if state_route_resolver is not None:
+            routed = state_route_resolver(int(state) & 0xFFFFFFFF)
+            if routed is None:
+                # A current-snapshot resolver can abstain for a nested or
+                # otherwise non-authoritative router.  That is unknown route
+                # evidence, not proof of a terminal/default state; leave the
+                # row eligible for the downstream reconciliation providers.
+                return None, False
+        else:
+            routed = _resolved_dispatcher_target(dispatcher, state)
+            if routed is None:
+                return None, True
         if default is not None and int(routed) == int(default):
             return int(routed), True
         if _is_stop_block(flow_graph.get_block(int(routed))):

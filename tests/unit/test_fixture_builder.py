@@ -326,6 +326,22 @@ def test_windows_builder_preserves_explicit_masm_export_contract() -> None:
     assert 'throw "MASM source' in exporter
 
 
+def test_windows_builder_pins_layout_sensitive_masm_object_at_link_tail() -> None:
+    """The committed Hodur layout must survive addition of earlier-sorting MASM."""
+
+    makefile = (REPO / "samples/Makefile").read_text()
+
+    assert "MASM_LINK_LAST_FUNCS ?= sub_7FF855576B50" in makefile
+    assert "MASM_ASM_DISCOVERED  := $(wildcard src/masm/*.asm)" in makefile
+    assert (
+        "MASM_ASM   := $(filter-out $(MASM_ASM_LINK_LAST),$(MASM_ASM_DISCOVERED))"
+        in makefile
+    )
+    assert (
+        "$(filter $(MASM_ASM_LINK_LAST),$(MASM_ASM_DISCOVERED))" in makefile
+    )
+
+
 def test_windows_builder_uses_native_masm_relative_jump_table() -> None:
     """The authoritative ml64 build needs no post-link table repair."""
 

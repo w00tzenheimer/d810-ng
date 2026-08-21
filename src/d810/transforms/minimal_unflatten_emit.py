@@ -75,11 +75,13 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     resolve_materialized_handler_exit_states,
     resolve_materialized_handler_transition_targets,
     recover_state_write_transitions_via_partitioned_fixpoint,
+    route_current_u32_decision_forest,
     observe_candidate_scoped_prefix_authority,
     transition_uses_terminal_stack_alias_guard,
     transitions_use_terminal_stack_alias_guard,
     resolve_materialized_indirect_transfer_targets,
     _storage_dest_locator,
+    build_current_u32_decision_forest,
 )
 from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
 from d810.analyses.control_flow.materialized_indirect_transfer import (
@@ -9039,6 +9041,7 @@ def build_shared_merge_conditional_redirects(
                 )
             )
         suppressed.add(int(branch))
+        suppressed.add(int(inter))
         suppressed.add(int(merge))
     return redirects, suppressed
 
@@ -9521,6 +9524,39 @@ def emit_minimal_unflatten(
                 int(candidate_prefix_authority.prefix_serial),
             }
         )
+    state_route_resolver: Callable[[int], int | None] | None = None
+    if condition_chain_dag is not None and condition_chain_dag.nodes:
+        current_route_dag = build_current_u32_decision_forest(
+            flow_graph,
+            int(condition_chain_dag.root),
+            expected_identities=expected_u32_state_identities(
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+            ),
+            reference_dag=condition_chain_dag,
+        )
+        if current_route_dag is not None:
+
+            def _resolve_current_state_route(state: int) -> int | None:
+                routed = route_current_u32_decision_forest(
+                    flow_graph,
+                    current_route_dag,
+                    int(state) & 0xFFFFFFFF,
+                    entry_serial=int(current_route_dag.root),
+                )
+                if routed is None:
+                    return None
+                target, _path = routed
+                target = int(target)
+                if target in {int(serial) for serial in condition_chain_handlers}:
+                    return target
+                if _is_stop_block(flow_graph.get_block(target)):
+                    return target
+                # A non-handler target with a live successor is another router
+                # (typically a nested dispatcher), not an authoritative leaf.
+                return None
+
+            state_route_resolver = _resolve_current_state_route
     transitions = recover_state_write_transitions_via_partitioned_fixpoint(
         flow_graph,
         dispatcher,
@@ -9537,6 +9573,7 @@ def emit_minimal_unflatten(
         dispatcher_region_serials=recovery_dispatcher_region_serials,
         candidate_prefix_authority=candidate_prefix_authority,
         include_entry_unreachable_back_edges=materialized_computed_goto_profile,
+        state_route_resolver=state_route_resolver,
     )
     transitions = enrich_native_bound_transition_routes(
         transitions,
