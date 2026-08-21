@@ -540,7 +540,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 )
                 return
             execution_attempt_context = getattr(
-                flow_context,
+                self._flow_context,
                 "execution_attempt_context",
                 None,
             )
