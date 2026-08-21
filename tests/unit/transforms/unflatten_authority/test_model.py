@@ -16,6 +16,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from .helpers import import_authority_model
 from .helpers import authority_id, block_ref, edge_role, state_identity
+from d810.transforms.unflatten_authority.ids import _subject_factory, _claim_factory, _evidence_factory, subject_id
 
 
 def _subject(model, kind, role, locator):
@@ -33,10 +34,24 @@ def _subject(model, kind, role, locator):
     )
     if kind is model.SemanticSubjectKind.VALUE_FLOW:
         owner = anchor = None
-    return model.SemanticSubjectRef(
-        kind, role, authority_id(f"subject-{kind.value}-{role.value}-{repr(locator)}"),
-        owner, anchor, locator,
+    return _subject_factory(
+        model.SemanticSubjectRef,
+        kind=kind,
+        role=role,
+        block_ref=owner,
+        anchor_ea=anchor,
+        locator=locator,
     )
+
+
+def _reissued_claim(claim, **changes):
+    payload = {
+        name: getattr(claim, name)
+        for name in claim.__dataclass_fields__
+        if name != "claim_id"
+    }
+    payload.update(changes)
+    return _claim_factory(type(claim), **payload)
 
 
 class _RefSubclass:
@@ -93,8 +108,8 @@ def _valid_proposal(model):
     destination = _subject(model, model.SemanticSubjectKind.BLOCK,
                            model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
                            model.BlockSubjectLocator(b2, 0x1100))
-    claim = model.EquivalentSemanticRouteClaim(
-        authority_id("equivalent-valid"), model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
+    claim = _claim_factory(model.EquivalentSemanticRouteClaim,
+        model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
         retired_route, replacement_route, source, (destination,),
         (authority_id("proof"),), authority_id("group"), 3,
     )
@@ -176,7 +191,7 @@ def test_subject_kind_role_locator_matrix_is_closed() -> None:
         anchor = anchor if anchor is not None else getattr(locator, "owner_anchor_ea", None)
         anchor = anchor if anchor is not None else getattr(locator, "entry_anchor_ea", None)
         subject = model.SemanticSubjectRef(
-            kind=kind, role=role, subject_id=authority_id(str(index)),
+            kind=kind, role=role, subject_id=subject_id(kind, role, locator),
             block_ref=None if kind is model.SemanticSubjectKind.VALUE_FLOW else owner,
             anchor_ea=None if kind is model.SemanticSubjectKind.VALUE_FLOW else anchor,
             locator=locator,
@@ -239,7 +254,7 @@ def test_phase_binding_requires_serial_and_ea_together() -> None:
     b0 = block_ref("b0")
     subject = model.SemanticSubjectRef(
         model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_ENTRY,
-        authority_id("s"), b0, 0x1000, model.BlockSubjectLocator(b0, 0x1000),
+        subject_id(model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_ENTRY, model.BlockSubjectLocator(b0, 0x1000)), b0, 0x1000, model.BlockSubjectLocator(b0, 0x1000),
     )
     base = dict(subject=subject, phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
                 block_ref=b0, graph_fingerprint=authority_id("g"), generation=0,
@@ -257,7 +272,7 @@ def test_nonunique_phase_binding_has_no_serial_or_anchor() -> None:
     b0 = block_ref("b0")
     subject = model.SemanticSubjectRef(
         model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_ENTRY,
-        authority_id("s"), b0, 0x1000, model.BlockSubjectLocator(b0, 0x1000),
+        subject_id(model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_ENTRY, model.BlockSubjectLocator(b0, 0x1000)), b0, 0x1000, model.BlockSubjectLocator(b0, 0x1000),
     )
     with pytest.raises(ValueError):
         model.PhaseSubjectBinding(
@@ -271,8 +286,8 @@ def test_evidence_payload_union_is_closed() -> None:
     model = import_authority_model()
     binding = object()
     with pytest.raises((TypeError, ValueError)):
-        model.AuthorityEvidence(
-            authority_id("e"), model.AuthorityEvidenceKind.PHASE_BINDING,
+        _evidence_factory(model.AuthorityEvidence,
+            model.AuthorityEvidenceKind.PHASE_BINDING,
             object(), model.UnflattenAuthorityPhase.PRODUCER_FORECAST, binding,
         )
 
@@ -357,16 +372,18 @@ def test_every_evidence_kind_accepts_only_its_exact_payload_class() -> None:
     }
     assert set(payloads) == set(model._PAYLOAD_BY_KIND)
     for kind, payload in payloads.items():
-        evidence = model.AuthorityEvidence(
-            authority_id(f"evidence-{kind.value}"), kind, subject,
+        evidence = _evidence_factory(model.AuthorityEvidence,
+            kind, subject,
             model.UnflattenAuthorityPhase.PRODUCER_FORECAST, payload,
         )
         assert evidence.payload is payload
+        with pytest.raises(ValueError):
+            replace(evidence, evidence_id="sha256:" + "0" * 64)
         for other_kind, other_payload in payloads.items():
             if other_kind is not kind:
                 with pytest.raises(TypeError):
-                    model.AuthorityEvidence(
-                        authority_id("mismatch"), kind, subject,
+                    _evidence_factory(model.AuthorityEvidence,
+                        kind, subject,
                         model.UnflattenAuthorityPhase.PRODUCER_FORECAST, other_payload,
                     )
 
@@ -409,49 +426,52 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
                         model.SemanticSubjectRole.TERMINAL_SITE,
                         model.TerminalSubjectLocator(b1, 0x1100, model.TerminalKind.RETURN, 0x1104))
     claims = [
-        model.RetiredDispatcherInfrastructureClaim(
-            authority_id("retirement"), model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
+        _claim_factory(model.RetiredDispatcherInfrastructureClaim,
+            model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
             infra, corridor, (infra, infra2), (authority_id("retire-proof"),), 0,
         ),
-        model.EquivalentSemanticRouteClaim(
-            authority_id("equivalent"), model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
+        _claim_factory(model.EquivalentSemanticRouteClaim,
+            model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
             route, route2, source, (destination,), (authority_id("route-proof"),),
             authority_id("group"), 0,
         ),
-        model.ExactInfeasibleEffectClaim(
-            authority_id("exact"), model.UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT,
+        _claim_factory(model.ExactInfeasibleEffectClaim,
+            model.UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT,
             effect, source, predicate, destination, discarded, 1, state_identity(), 4,
             0x1004, 0x1008, 0x100C, model.SemanticEdgeRole.DIRECT,
             (authority_id("exact-proof"),),
             model.ProviderConsensusWitness(model.ProviderConsensusMode.NOT_APPLICABLE, ()), 0,
         ),
-        model.TerminalCycleBreakClaim(
-            authority_id("cycle"), model.UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
+        _claim_factory(model.TerminalCycleBreakClaim,
+            model.UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
             corridor, infra, terminal, (authority_id("terminal-proof"),), 0,
         ),
     ]
     assert all(claim for claim in claims)
+    for claim in claims:
+        with pytest.raises(ValueError):
+            replace(claim, claim_id="sha256:" + "0" * 64)
     bad_subject = source
     with pytest.raises(ValueError):
-        model.RetiredDispatcherInfrastructureClaim(
-            authority_id("bad-retirement"), model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
+        _claim_factory(model.RetiredDispatcherInfrastructureClaim,
+            model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
             bad_subject, corridor, (infra,), (authority_id("proof"),), 0,
         )
     with pytest.raises(ValueError):
-        model.EquivalentSemanticRouteClaim(
-            authority_id("bad-route"), model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
+        _claim_factory(model.EquivalentSemanticRouteClaim,
+            model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
             route, route2, destination, (destination,), (authority_id("proof"),), authority_id("group"), 0,
         )
     with pytest.raises(ValueError):
-        model.ExactInfeasibleEffectClaim(
-            authority_id("bad-effect"), model.UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT,
+        _claim_factory(model.ExactInfeasibleEffectClaim,
+            model.UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT,
             effect, source, predicate, source, discarded, 1, state_identity(), 4,
             0x1004, 0x1008, 0x100C, model.SemanticEdgeRole.DIRECT,
             (authority_id("proof"),), model.ProviderConsensusWitness(model.ProviderConsensusMode.NOT_APPLICABLE, ()), 0,
         )
     with pytest.raises(ValueError):
-        model.TerminalCycleBreakClaim(
-            authority_id("bad-cycle"), model.UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
+        _claim_factory(model.TerminalCycleBreakClaim,
+            model.UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
             corridor, source, terminal, (authority_id("proof"),), 0,
         )
 
@@ -467,8 +487,7 @@ def test_retirement_and_route_claims_preserve_cross_field_membership() -> None:
                         model.CorridorSubjectLocator(authority_id("corridor-x"), b0, 0x1000,
                                                      (b0, b1), (0x1000, 0x1100)))
     with pytest.raises(ValueError):
-        model.RetiredDispatcherInfrastructureClaim(
-            authority_id("retirement-mismatch"),
+        _claim_factory(model.RetiredDispatcherInfrastructureClaim,
             model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
             infra, corridor, (infra,), (authority_id("proof"),), 0,
         )
@@ -492,16 +511,14 @@ def test_retirement_and_route_claims_preserve_cross_field_membership() -> None:
                            model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
                            model.BlockSubjectLocator(b1, 0x1100))
     with pytest.raises(ValueError):
-        model.EquivalentSemanticRouteClaim(
-            authority_id("route-mismatch"),
+        _claim_factory(model.EquivalentSemanticRouteClaim,
             model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
             retired, replacement, source, (destination,),
             (authority_id("proof-route"),), authority_id("group-x"), 0,
         )
 
     with pytest.raises(ValueError, match="atomic_group_id"):
-        model.EquivalentSemanticRouteClaim(
-            authority_id("route-group-mismatch"),
+        _claim_factory(model.EquivalentSemanticRouteClaim,
             model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
             _subject(
                 model, model.SemanticSubjectKind.ROUTE,
@@ -538,7 +555,7 @@ def test_proposal_is_valid_but_rejects_incoherent_authority_inputs() -> None:
     proof_mismatch = model.ProposedUnflattenContract(**{
         **valid,
         "claims": (
-            replace(valid["claims"][0], route_proof_ids=(authority_id("missing-proof"),)),
+                _reissued_claim(valid["claims"][0], route_proof_ids=(authority_id("missing-proof"),)),
         ),
     })
     assert proof_mismatch.claims[0].route_proof_ids == (authority_id("missing-proof"),)
@@ -572,14 +589,13 @@ def test_proposal_is_valid_but_rejects_incoherent_authority_inputs() -> None:
     with pytest.raises(ValueError):
         model.ProposedUnflattenContract(**{
             **valid,
-            "claims": (replace(valid["claims"][0], source_generation=99),),
+            "claims": (_reissued_claim(valid["claims"][0], source_generation=99),),
         })
     with pytest.raises(ValueError):
         model.ProposedUnflattenContract(**{
             **valid,
             "claims": (
-                model.TerminalCycleBreakClaim(
-                        authority_id("cycle-exact-shape"),
+                _claim_factory(model.TerminalCycleBreakClaim,
                         model.UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
                         cycle, cleanup, terminal, (authority_id("shape-proof"),), 3,
                 ),
@@ -600,13 +616,15 @@ def test_closed_unions_reject_local_alias_and_subclass_smuggling() -> None:
     owner = _subject(model, model.SemanticSubjectKind.BLOCK,
                      model.SemanticSubjectRole.EFFECT_SITE,
                      model.BlockSubjectLocator(b0, 0x1000))
-    alias = model.LocalAliasEffectScalarizationClaim(
-        authority_id("alias"), model.UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION,
+    alias = _claim_factory(model.LocalAliasEffectScalarizationClaim,
+        model.UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION,
         _subject(model, model.SemanticSubjectKind.BLOCK,
                  model.SemanticSubjectRole.EFFECT_SITE,
                  model.BlockSubjectLocator(owner.block_ref, 0x1000)),
         0, 0x1000, 1, "alias", "base", None, None, authority_id("step"), 3,
     )
+    with pytest.raises(ValueError):
+        replace(alias, claim_id="sha256:" + "0" * 64)
     with pytest.raises(TypeError):
         model.ProposedUnflattenContract(**{**valid, "claims": (alias,)})
 
@@ -703,18 +721,21 @@ def test_alias_host_text_sha1_is_lowercase_40_hex() -> None:
         alias_token="alias", base_token="base", host_text_sha1="a" * 40,
         value_size=None, step_digest=authority_id("step-sha"), source_generation=0,
     )
-    model.LocalAliasEffectScalarizationClaim(**kwargs)
+    _claim_factory(model.LocalAliasEffectScalarizationClaim, **{key: value for key, value in kwargs.items() if key != "claim_id"})
     with pytest.raises(ValueError):
-        model.LocalAliasEffectScalarizationClaim(
-            **{**kwargs, "owner_subject": _subject(
+        _claim_factory(model.LocalAliasEffectScalarizationClaim, **{
+            **{key: value for key, value in kwargs.items() if key != "claim_id"},
+            "owner_subject": _subject(
                 model, model.SemanticSubjectKind.BLOCK,
                 model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
                 model.BlockSubjectLocator(b0, 0x1000),
-            )}
-        )
+            )})
     for malformed in ("A" * 40, "a" * 39, "a" * 41, "z" * 40):
         with pytest.raises(ValueError):
-            model.LocalAliasEffectScalarizationClaim(**{**kwargs, "host_text_sha1": malformed})
+            _claim_factory(model.LocalAliasEffectScalarizationClaim, **{
+                **{key: value for key, value in kwargs.items() if key != "claim_id"},
+                "host_text_sha1": malformed,
+            })
 
 
 def test_unordered_model_collections_have_reversed_input_equality() -> None:
@@ -760,8 +781,7 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
                         model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
                         model.CorridorSubjectLocator(authority_id("full-corridor"), b0, 0x1000,
                                                      (b0, b1), (0x1000, 0x1300)))
-    retirement = model.RetiredDispatcherInfrastructureClaim(
-        authority_id("full-retirement"),
+    retirement = _claim_factory(model.RetiredDispatcherInfrastructureClaim,
         model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
         infra, corridor, (infra, infra2), (authority_id("full-proof"),), 3,
     )
@@ -795,8 +815,7 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
                                     authority_id("foreign-corridor"), b2, 0x1100,
                                     (b2,), (0x1100,),
                                 ))
-    foreign_retirement = model.RetiredDispatcherInfrastructureClaim(
-        authority_id("foreign-retirement"),
+    foreign_retirement = _claim_factory(model.RetiredDispatcherInfrastructureClaim,
         model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
         foreign_infra, foreign_corridor, (foreign_infra,),
         (authority_id("foreign-proof"),), 3,

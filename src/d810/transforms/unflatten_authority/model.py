@@ -24,19 +24,17 @@ from d810.transforms.cfg_transaction import (
     NativeBlockRef,
     PlanBlockRef,
 )
+from .ids import _subject_id_from_record, _validate_id, claim_id, evidence_id
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
-_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 _CFG_REF_TYPES = (NativeBlockRef, LogicalBlockRef, PlanBlockRef)
 _AUTHORITY_REF_TYPES = (NativeBlockRef, LogicalBlockRef)
 
 
 def _id(value: object, label: str) -> str:
-    if not isinstance(value, str) or not _ID_RE.fullmatch(value):
-        raise ValueError(f"{label} must be a sha256 ID")
-    return value
+    return _validate_id(value, label)
 
 
 def _text(value: object, label: str) -> str:
@@ -549,6 +547,8 @@ class SemanticSubjectRef:
                 raise ValueError("value-flow subjects have no primary owner")
         elif self.block_ref != owner or self.anchor_ea != owner_ea:
             raise ValueError("subject primary owner must match locator")
+        if self.subject_id != _subject_id_from_record(self):
+            raise ValueError("subject_id does not match canonical subject content")
 
 
 @dataclass(frozen=True, slots=True)
@@ -849,6 +849,8 @@ class AuthorityEvidence:
         expected = _PAYLOAD_BY_KIND[self.kind]
         if type(self.payload) is not expected:
             raise TypeError("evidence payload type does not match evidence kind")
+        if self.evidence_id != evidence_id(self):
+            raise ValueError("evidence_id does not match canonical evidence content")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1011,6 +1013,8 @@ class RetiredDispatcherInfrastructureClaim:
         actual_members = tuple(_subject_block_pair(member) for member in members)
         if set(actual_members) != set(expected_members):
             raise ValueError("retirement members must match corridor members")
+        if self.claim_id != claim_id(self):
+            raise ValueError("claim_id does not match canonical claim content")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1055,6 +1059,8 @@ class EquivalentSemanticRouteClaim:
             or self.atomic_group_id != self.replacement_route_subject.locator.atomic_group_id
         ):
             raise ValueError("route claim atomic_group_id must match route locators")
+        if self.claim_id != claim_id(self):
+            raise ValueError("claim_id does not match canonical claim content")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1099,6 +1105,8 @@ class ExactInfeasibleEffectClaim:
         object.__setattr__(self, "route_proof_ids", proofs)
         if type(self.consensus) is not ProviderConsensusWitness:
             raise TypeError("consensus must be a ProviderConsensusWitness")
+        if self.claim_id != claim_id(self):
+            raise ValueError("claim_id does not match canonical claim content")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1130,6 +1138,8 @@ class LocalAliasEffectScalarizationClaim:
         if self.value_size is not None:
             _nonnegative(self.value_size, "value_size")
         _id(self.step_digest, "step_digest")
+        if self.claim_id != claim_id(self):
+            raise ValueError("claim_id does not match canonical claim content")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1151,6 +1161,8 @@ class TerminalCycleBreakClaim:
         for proof in proofs:
             _id(proof, "terminal_route_proof_ids item")
         object.__setattr__(self, "terminal_route_proof_ids", proofs)
+        if self.claim_id != claim_id(self):
+            raise ValueError("claim_id does not match canonical claim content")
 
 
 ProducerUnflattenClaim: TypeAlias = (
