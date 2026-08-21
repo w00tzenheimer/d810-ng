@@ -271,7 +271,7 @@ linklog="$BUILD_DIR/link.log"
 export_dump="$BUILD_DIR/export_table.txt"
 remove_link_artifacts "$out" "$pdb" "$export_dump"
 link_status=0
-"$LINKER" /DLL /NOENTRY /DEBUG /FORCE:UNRESOLVED "${export_flags[@]}" \
+"$LINKER" /DLL /NOENTRY /DEBUG /FORCE:UNRESOLVED /SECTION:HODCONST,R "${export_flags[@]}" \
     "/OUT:$out" "/PDB:$pdb" "/PDBALTPATH:$BINARY_NAME.pdb" \
     /PDBSOURCEPATH:/src/d810/samples "${objs[@]}" 2>"$linklog" || link_status=$?
 if [ "$link_status" -ne 0 ]; then

@@ -6,6 +6,7 @@ IDA-bound extract/resolve worker is covered by
 """
 
 import re
+import struct
 from pathlib import Path
 
 from d810.testing.fixture_builder import CallSiteFold, detect_indirect_call_folds
@@ -15,16 +16,46 @@ SUB = (REPO / "samples/src/masm/sub_1815C8C30.asm").read_text()
 
 
 def test_committed_windows_fixture_contains_every_masm_export():
-    """Do not let a stale DLL turn required fixture regressions into skips."""
+    """Do not let a stale DLL turn tracked MASM regressions into skips."""
     fixture = (REPO / "samples/bins/libobfuscated.dll").read_bytes()
-    required_exports = (
-        "constant_stage_controls",
-        "sub_7FF855576B50",
+    required_exports = tuple(
+        sorted(source.stem for source in (REPO / "samples/src/masm").glob("*.asm"))
     )
     missing = [
         name for name in required_exports if name.encode("ascii") + b"\0" not in fixture
     ]
     assert missing == []
+
+
+def _pe_sections(blob: bytes) -> tuple[tuple[str, int], ...]:
+    pe_offset = struct.unpack_from("<I", blob, 0x3C)[0]
+    assert blob[pe_offset : pe_offset + 4] == b"PE\0\0"
+    section_count = struct.unpack_from("<H", blob, pe_offset + 6)[0]
+    optional_size = struct.unpack_from("<H", blob, pe_offset + 20)[0]
+    table = pe_offset + 24 + optional_size
+    return tuple(
+        (
+            blob[offset : offset + 8].rstrip(b"\0").decode("ascii"),
+            struct.unpack_from("<I", blob, offset + 36)[0],
+        )
+        for offset in (table + 40 * index for index in range(section_count))
+    )
+
+
+def test_committed_hodur_constants_are_read_only_without_reclassifying_all_data():
+    """HODCONST is read-only while ordinary data sections retain write access."""
+    sections = _pe_sections((REPO / "samples/bins/libobfuscated.dll").read_bytes())
+    write_flag = 0x80000000
+    hodconst = [chars for name, chars in sections if name == "HODCONST"]
+    assert len(hodconst) == 1
+    assert hodconst[0] & write_flag == 0
+
+    writable_data = {
+        name
+        for name, chars in sections
+        if name in {".data", "_DATA"} and chars & write_flag
+    }
+    assert writable_data == {".data", "_DATA"}
 
 
 def test_committed_windows_fixture_exports_required_system_cases():
