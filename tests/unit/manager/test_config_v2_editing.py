@@ -286,6 +286,183 @@ def test_pass_selection_is_ordered_registered_and_can_remain_invalid_as_a_draft(
         service.add_pass(draft, "not-registered")
 
 
+def test_add_passes_appends_ordered_templates_in_one_revision(tmp_path: Path):
+    service, draft = _service_and_draft(tmp_path)
+
+    changed = service.add_passes(draft, ("jump-fixer", "mba-simplify"))
+
+    assert service.pipeline_pass_ids(changed) == (
+        "constant-simplification",
+        "mba-simplify",
+        "jump-fixer",
+        "jump-fixer",
+        "mba-simplify",
+    )
+    assert changed.revision == draft.revision + 1
+
+
+def test_add_passes_inserts_consecutive_templates_after_caller_computed_row(
+    tmp_path: Path,
+):
+    service, draft = _service_and_draft(tmp_path)
+
+    changed = service.add_passes(
+        draft,
+        ("jump-fixer", "constant-simplification"),
+        index=2,
+    )
+
+    assert service.pipeline_pass_ids(changed) == (
+        "constant-simplification",
+        "mba-simplify",
+        "jump-fixer",
+        "constant-simplification",
+        "jump-fixer",
+    )
+
+
+def test_add_passes_preserves_duplicate_selected_ids(tmp_path: Path):
+    service, draft = _service_and_draft(tmp_path)
+
+    changed = service.add_passes(draft, ("jump-fixer", "jump-fixer"))
+
+    assert service.pipeline_pass_ids(changed)[-2:] == (
+        "jump-fixer",
+        "jump-fixer",
+    )
+
+
+def test_add_passes_rejects_empty_selection(tmp_path: Path):
+    service, draft = _service_and_draft(tmp_path)
+
+    with pytest.raises(ConfigV2EditError, match="at least one"):
+        service.add_passes(draft, ())
+
+
+def test_add_passes_rejects_invalid_insertion_index(tmp_path: Path):
+    service, draft = _service_and_draft(tmp_path)
+
+    with pytest.raises(ConfigV2EditError, match="out of range"):
+        service.add_passes(
+            draft,
+            ("jump-fixer",),
+            index=len(service.pipeline_pass_ids(draft)) + 1,
+        )
+
+
+@pytest.mark.parametrize("index", [True, 1.9, "1", object()])
+def test_add_passes_rejects_non_integer_insertion_index_without_mutation(
+    tmp_path: Path, index: object
+):
+    service, draft = _service_and_draft(tmp_path)
+    original_document = draft.document_json
+    original_revision = draft.revision
+
+    with pytest.raises(ConfigV2EditError, match="integer"):
+        service.add_passes(draft, ("jump-fixer",), index=index)
+
+    assert draft.document_json == original_document
+    assert draft.revision == original_revision
+
+
+@pytest.mark.parametrize(
+    "pass_ids",
+    [
+        ("",),
+        (1,),
+        ("jump-fixer", 1),
+    ],
+)
+def test_add_passes_rejects_malformed_public_pass_ids_without_mutation(
+    tmp_path: Path, pass_ids: tuple[object, ...]
+):
+    service, draft = _service_and_draft(tmp_path)
+    original_document = draft.document_json
+    original_revision = draft.revision
+
+    with pytest.raises(ConfigV2EditError, match="pass IDs"):
+        service.add_passes(draft, pass_ids)  # type: ignore[arg-type]
+
+    assert draft.document_json == original_document
+    assert draft.revision == original_revision
+
+
+def test_add_passes_rejects_non_tuple_public_pass_ids_without_mutation(
+    tmp_path: Path,
+):
+    service, draft = _service_and_draft(tmp_path)
+    original_document = draft.document_json
+    original_revision = draft.revision
+
+    with pytest.raises(ConfigV2EditError, match="tuple"):
+        service.add_passes(draft, ["jump-fixer"])  # type: ignore[arg-type]
+
+    assert draft.document_json == original_document
+    assert draft.revision == original_revision
+
+
+def test_add_passes_preserves_unexpected_registry_value_error(tmp_path: Path):
+    class UnexpectedRegistry:
+        def config_template_for(self, pass_id: str) -> object:
+            return object()
+
+        def build_spec(self, template: object) -> object:
+            raise ValueError("unexpected factory defect")
+
+    service, draft = _service_and_draft(tmp_path)
+    service = ConfigV2EditingService(UnexpectedRegistry())
+    original_document = draft.document_json
+    original_revision = draft.revision
+
+    with pytest.raises(ValueError, match="unexpected factory defect"):
+        service.add_passes(draft, ("jump-fixer",))
+
+    assert draft.document_json == original_document
+    assert draft.revision == original_revision
+
+
+def test_add_passes_validates_every_template_before_mutating_unknown_batch(
+    tmp_path: Path,
+):
+    service, draft = _service_and_draft(tmp_path)
+    original_document = draft.document_json
+    original_revision = draft.revision
+
+    with pytest.raises(ConfigV2EditError, match="unknown pass"):
+        service.add_passes(
+            draft,
+            ("jump-fixer", "not-registered", "mba-simplify"),
+        )
+
+    assert draft.document_json == original_document
+    assert draft.revision == original_revision
+    assert service.pipeline_pass_ids(draft) == (
+        "constant-simplification",
+        "mba-simplify",
+        "jump-fixer",
+    )
+
+
+def test_add_passes_uses_canonical_constant_simplification_template(
+    tmp_path: Path,
+):
+    service, draft = _service_and_draft(tmp_path)
+    template = service._registry.config_template_for("constant-simplification")
+
+    changed = service.add_passes(draft, ("constant-simplification",))
+    inserted = json.loads(changed.document_json)["additional_configuration"][
+        "pipeline_v2"
+    ][-1]
+
+    assert inserted["options"] == template.options
+    assert set(inserted["options"]) == {"preparation", "stages"}
+    assert set(inserted["options"]["stages"]) == {
+        "fold-readonly-data",
+        "fold-constant-subtree",
+        "forward-constants",
+    }
+
+
 def test_recipe_materialization_serializes_only_canonical_entries(
     tmp_path: Path,
 ):

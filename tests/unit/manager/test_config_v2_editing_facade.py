@@ -62,6 +62,7 @@ def test_manager_owns_config_v2_editor_and_exposes_structured_operations():
         "validate_config_v2_project_draft": "validate",
         "set_config_v2_description": "set_description",
         "add_config_v2_pass": "add_pass",
+        "add_config_v2_passes": "add_passes",
         "remove_config_v2_pass": "remove_pass",
         "reorder_config_v2_pass": "reorder_pass",
         "set_config_v2_pass_options": "set_pass_options",
@@ -80,6 +81,7 @@ def test_state_exposes_config_v2_transform_and_raw_document_facades():
     path = _ROOT / "src/d810/manager/state.py"
     expected = {
         "set_config_v2_pass_transforms": "set_config_v2_pass_transforms",
+        "add_config_v2_passes": "add_config_v2_passes",
         "clear_config_v2_routing_override": "clear_config_v2_routing_override",
         "replace_config_v2_document": "replace_config_v2_document",
     }

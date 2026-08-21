@@ -1564,6 +1564,17 @@ class D810Manager:
     ) -> ConfigV2ProjectDraft:
         return self.config_v2_editing_service.add_pass(draft, pass_id, index=index)
 
+    def add_config_v2_passes(
+        self,
+        draft: ConfigV2ProjectDraft,
+        pass_ids: tuple[str, ...],
+        *,
+        index: int | None = None,
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.add_passes(
+            draft, pass_ids, index=index
+        )
+
     def remove_config_v2_pass(
         self, draft: ConfigV2ProjectDraft, pass_index: int
     ) -> ConfigV2ProjectDraft:

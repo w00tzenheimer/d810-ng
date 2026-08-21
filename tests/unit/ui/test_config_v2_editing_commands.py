@@ -220,6 +220,32 @@ def test_adapter_set_pass_transforms_delegates_once_then_revalidates_once() -> N
     ]
 
 
+def test_adapter_add_passes_delegates_once_then_validates_once() -> None:
+    draft = SimpleNamespace(revision=0)
+    edited = SimpleNamespace(revision=1)
+    validation = object()
+    events: list[object] = []
+    state = SimpleNamespace(
+        add_config_v2_passes=lambda candidate, pass_ids, index=None: (
+            events.append(("add-passes", candidate, pass_ids, index)) or edited
+        ),
+        validate_config_v2_project_draft=lambda candidate: (
+            events.append(("validate", candidate)) or validation
+        ),
+    )
+    adapter = ConfigV2EditingAdapter(state, destination=Path("/tmp/profile.json"))
+
+    assert adapter.add_passes(
+        draft,
+        ("jump-fixer", "mba-simplify"),
+        index=2,
+    ) == (edited, validation)
+    assert events == [
+        ("add-passes", draft, ("jump-fixer", "mba-simplify"), 2),
+        ("validate", edited),
+    ]
+
+
 def test_adapter_clear_routing_override_delegates_once_then_revalidates_once() -> None:
     draft = SimpleNamespace(revision=0)
     edited = ConfigV2ProjectDraft(
