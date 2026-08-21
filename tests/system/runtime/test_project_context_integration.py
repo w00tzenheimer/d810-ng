@@ -30,7 +30,7 @@ def get_func_ea(name: str) -> int:
 def _disable_forward_constants_stage(state) -> None:
     """Activate a scoped runtime copy with the typed FCP stage disabled."""
 
-    project = copy.deepcopy(state.current_runtime_project)
+    project = copy.deepcopy(state.current_project)
     assert project is not None
     constant_pass = next(
         entry
@@ -40,11 +40,9 @@ def _disable_forward_constants_stage(state) -> None:
     constant_pass["options"]["stages"]["forward-constants"]["enabled"] = False
     if state.manager.started:
         state.stop_d810()
-    state._activate_runtime_project(
+    state._activate_project(
         project_index=state.current_project_index,
-        source_project=state.current_project,
-        runtime_project=project,
-        default_selection=state.last_config_v2_default_selection,
+        project=project,
     )
 
 

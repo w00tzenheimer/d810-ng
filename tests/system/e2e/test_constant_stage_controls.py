@@ -21,7 +21,7 @@ from d810.core.typing import Any
 
 ROOT = Path(__file__).parents[3]
 MASM_SOURCE = ROOT / "samples" / "src" / "masm" / "constant_stage_controls.asm"
-CANARY = (
+CONSTANT_STAGE_CONTROLS = (
     ROOT / "src" / "d810" / "conf" / "constant_stage_controls.json"
 )
 
@@ -82,15 +82,16 @@ def _fixture_ea(name: str, idc: Any, idaapi: Any) -> int:
     pytest.fail(f"constant-stage fixture export is absent: {name}")
 
 
-def _load_canary(state):
+def _load_constant_stage_controls(state):
     index = next(
         index
         for index, project in enumerate(state.project_manager.projects())
-        if Path(project.path).name == CANARY.name
+        if Path(project.path).name == CONSTANT_STAGE_CONTROLS.name
     )
-    state.load_project(index)
-    assert state.current_runtime_project is not None
-    return state.current_runtime_project
+    project = state.load_project(index)
+    assert project is not None
+    assert state.current_project is project
+    return project
 
 
 def _pipeline_entry(project, pass_id: str) -> dict[str, object]:
@@ -107,22 +108,6 @@ def _constant_pass(project) -> dict[str, object]:
 
 def _mba_pass(project) -> dict[str, object]:
     return _pipeline_entry(project, "mba-simplify")
-
-
-def _activate_runtime_project(state, project) -> None:
-    # Project activation mutates the manager's rule worklists.  Replacing
-    # those lists while the native hooks are live can leave the already-built
-    # instruction optimizer with the previous project's rule set.  Always
-    # perform the replacement while stopped; callers start the manager after
-    # this helper returns.
-    if state.manager.started:
-        state.stop_d810()
-    state._activate_runtime_project(
-        project_index=state.current_project_index,
-        source_project=state.current_project,
-        runtime_project=project,
-        default_selection=state.last_config_v2_default_selection,
-    )
 
 
 def _live_instruction_rule_names(state) -> tuple[str, ...]:
@@ -399,9 +384,9 @@ class TestConstantStageControls:
     def test_fixture_manifest_and_semantic_oracle(self, copy_of_idb):
         _assert_fixture_semantics()
         source = _source_text()
-        assert CANARY.is_file(), CANARY
+        assert CONSTANT_STAGE_CONTROLS.is_file(), CONSTANT_STAGE_CONTROLS
         assert "PUBLIC constant_stage_controls" in source
-        document = json.loads(CANARY.read_text(encoding="utf-8"))
+        document = json.loads(CONSTANT_STAGE_CONTROLS.read_text(encoding="utf-8"))
         pipeline = document["additional_configuration"]["pipeline_v2"]
         constant = next(
             item for item in pipeline if item["pass_id"] == "constant-simplification"
@@ -422,7 +407,7 @@ class TestConstantStageControls:
         )
 
         with d810_state() as state:
-            project = _load_canary(state)
+            project = _load_constant_stage_controls(state)
             activation = pipeline_v2_hook_activation(project)
             schedule = activation.constant_simplification_schedule
             assert schedule is not None
@@ -465,7 +450,10 @@ class TestConstantStageControls:
                     rule.name
                     for rule in (*disabled.instruction_rules, *disabled.block_rules)
                 }.intersection(_RULE_FOR_STAGE.values())
-                _activate_runtime_project(state, project)
+                state._activate_project(
+                    project_index=state.current_project_index,
+                    project=project,
+                )
                 state.stop_d810()
                 state.start_d810()
                 ea = _fixture_ea("readonly_fold_without_prepare", idc, idaapi)
@@ -489,7 +477,7 @@ class TestConstantStageControls:
         from d810.capabilities.idb_preparation import PreparationState
 
         with d810_state() as state:
-            project = _load_canary(state)
+            project = _load_constant_stage_controls(state)
             ea = _fixture_ea("const_prepare_without_fold", idc, idaapi)
             before_types = _type_snapshot(ea)
             _set_constant_stages(
@@ -499,7 +487,10 @@ class TestConstantStageControls:
                 subtree=False,
                 forward=False,
             )
-            _activate_runtime_project(state, project)
+            state._activate_project(
+                project_index=state.current_project_index,
+                project=project,
+            )
             state.start_d810()
             before_log = len(state.stats.rule_execution_log)
             after_preparation_rendered = _render(
@@ -546,7 +537,10 @@ class TestConstantStageControls:
                 subtree=False,
                 forward=False,
             )
-            _activate_runtime_project(state, project)
+            state._activate_project(
+                project_index=state.current_project_index,
+                project=project,
+            )
             state.start_d810()
             baseline_log = len(state.stats.rule_execution_log)
             before_preparation_rendered = _render(
@@ -564,7 +558,7 @@ class TestConstantStageControls:
         self, copy_of_idb, d810_state, pseudocode_to_string
     ) -> None:
         with d810_state() as state:
-            project = _load_canary(state)
+            project = _load_constant_stage_controls(state)
             ea = _fixture_ea("readonly_fold_without_prepare", idc, idaapi)
             _set_constant_stages(
                 project,
@@ -573,7 +567,10 @@ class TestConstantStageControls:
                 subtree=False,
                 forward=False,
             )
-            _activate_runtime_project(state, project)
+            state._activate_project(
+                project_index=state.current_project_index,
+                project=project,
+            )
             state.start_d810()
             baseline_log = len(state.stats.rule_execution_log)
             readonly_disabled_rendered = _render(
@@ -592,7 +589,10 @@ class TestConstantStageControls:
                 subtree=False,
                 forward=False,
             )
-            _activate_runtime_project(state, project)
+            state._activate_project(
+                project_index=state.current_project_index,
+                project=project,
+            )
             state.start_d810()
             before_log = len(state.stats.rule_execution_log)
             before_types = _type_snapshot(ea)
@@ -626,7 +626,7 @@ class TestConstantStageControls:
         self, copy_of_idb, d810_state, pseudocode_to_string
     ) -> None:
         with d810_state() as state:
-            project = _load_canary(state)
+            project = _load_constant_stage_controls(state)
             ea = _fixture_ea("readonly_then_subtree", idc, idaapi)
             _set_constant_stages(
                 project,
@@ -635,7 +635,10 @@ class TestConstantStageControls:
                 subtree=True,
                 forward=True,
             )
-            _activate_runtime_project(state, project)
+            state._activate_project(
+                project_index=state.current_project_index,
+                project=project,
+            )
             state.start_d810()
             baseline_log = len(state.stats.rule_execution_log)
             readonly_disabled_rendered = _render(
@@ -654,7 +657,10 @@ class TestConstantStageControls:
                 subtree=True,
                 forward=True,
             )
-            _activate_runtime_project(state, project)
+            state._activate_project(
+                project_index=state.current_project_index,
+                project=project,
+            )
             state.start_d810()
             before_log = len(state.stats.rule_execution_log)
             readonly_enabled_rendered = _render(
@@ -688,7 +694,7 @@ class TestConstantStageControls:
         )
 
         with d810_state() as state:
-            project = _load_canary(state)
+            project = _load_constant_stage_controls(state)
             _set_constant_stages(
                 project,
                 preparation=False,
@@ -702,7 +708,10 @@ class TestConstantStageControls:
             # equivalent final pseudocode on its own; the accepted CFG receipt
             # is what attributes the selected run to D810.
             _constant_pass(project)["maturity_gates"] = ["GLOBAL_OPTIMIZED"]
-            _activate_runtime_project(state, project)
+            state._activate_project(
+                project_index=state.current_project_index,
+                project=project,
+            )
             state.start_d810()
             gated_log = len(state.stats.rule_execution_log)
             gated_cfg = len(
@@ -721,7 +730,10 @@ class TestConstantStageControls:
             )
 
             _constant_pass(project)["maturity_gates"] = []
-            _activate_runtime_project(state, project)
+            state._activate_project(
+                project_index=state.current_project_index,
+                project=project,
+            )
             activation = pipeline_v2_hook_activation(project)
             forward = next(
                 stage
@@ -773,7 +785,7 @@ class TestConstantStageControls:
         )
 
         with d810_state() as state:
-            project = _load_canary(state)
+            project = _load_constant_stage_controls(state)
             _set_constant_stages(
                 project, preparation=False, readonly=False, subtree=False, forward=True
             )
@@ -782,7 +794,10 @@ class TestConstantStageControls:
             # with an empty intersection is intentionally a configuration
             # error, so this exercises gating rather than that rejection path.
             _constant_pass(project)["maturity_gates"] = ["GLOBAL_OPTIMIZED"]
-            _activate_runtime_project(state, project)
+            state._activate_project(
+                project_index=state.current_project_index,
+                project=project,
+            )
             activation = pipeline_v2_hook_activation(project)
             forward = next(
                 stage
@@ -833,11 +848,14 @@ class TestConstantStageControls:
         from d810.capabilities.idb_preparation import PreparationState
 
         with d810_state() as state:
-            project = _load_canary(state)
+            project = _load_constant_stage_controls(state)
             _set_constant_stages(
                 project, preparation=True, readonly=True, subtree=False, forward=False
             )
-            _activate_runtime_project(state, project)
+            state._activate_project(
+                project_index=state.current_project_index,
+                project=project,
+            )
             table_ea = int(idc.get_name_ea_simple("csc_bounded_table"))
             assert table_ea != int(idaapi.BADADDR), "bounded table symbol is absent"
             baseline_type = _apply_nonconst_qword_array(table_ea, 128)
@@ -987,7 +1005,7 @@ class TestConstantStageControls:
         subscribed = False
         try:
             with d810_state() as state:
-                project = _load_canary(state)
+                project = _load_constant_stage_controls(state)
                 _set_constant_stages(
                     project,
                     preparation=False,
@@ -1020,7 +1038,10 @@ class TestConstantStageControls:
                     "z-3-setnz-generic": "Z3setnzRuleGeneric",
                     "z-3-lnot-generic": "Z3lnotRuleGeneric",
                 }[transform_id]
-                _activate_runtime_project(state, project)
+                state._activate_project(
+                    project_index=state.current_project_index,
+                    project=project,
+                )
                 state.start_d810()
                 live_rule_names = set(_live_instruction_rule_names(state))
                 assert rule_name in live_rule_names, live_rule_names
@@ -1071,7 +1092,7 @@ class TestConstantStageControls:
 
                 events.clear()
                 state.stop_d810()
-                project = _load_canary(state)
+                project = _load_constant_stage_controls(state)
                 _set_constant_stages(
                     project,
                     preparation=False,
@@ -1102,7 +1123,10 @@ class TestConstantStageControls:
                         "proof_timeout_ms": 50,
                     }
                     assert other_id not in mba_options["transform_options"]
-                _activate_runtime_project(state, project)
+                state._activate_project(
+                    project_index=state.current_project_index,
+                    project=project,
+                )
                 state.start_d810()
                 low_live_rule_names = set(_live_instruction_rule_names(state))
                 assert rule_name in low_live_rule_names, low_live_rule_names
