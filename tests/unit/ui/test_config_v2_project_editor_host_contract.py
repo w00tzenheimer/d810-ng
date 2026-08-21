@@ -441,7 +441,8 @@ class _SignalStub:
 
 
 class _WidgetStub:
-    def __init__(self) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         self.layout: _VBoxLayoutStub | None = None
 
 
@@ -464,7 +465,8 @@ class _VBoxLayoutStub:
 
 
 class _CheckBoxStub:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         self.text = text
         self._checked = False
         self._blocked = False
@@ -484,7 +486,8 @@ class _CheckBoxStub:
 
 
 class _ScrollAreaStub:
-    def __init__(self) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
         self._widget: _WidgetStub | None = None
         self.minimum_height: int | None = None
         self.maximum_height: int | None = None
@@ -505,6 +508,10 @@ class _ScrollAreaStub:
     def setMaximumHeight(self, height: int) -> None:
         self.maximum_height = height
 
+    def blockSignals(self, blocked: bool) -> bool:
+        del blocked
+        return False
+
 
 def _compiled_project_editor_method(name: str):
     class_node = ast.ClassDef(
@@ -518,17 +525,59 @@ def _compiled_project_editor_method(name: str):
     namespace = {
         "FieldControlKind": FieldControlKind,
         "FieldEditorSpec": FieldEditorSpec,
+        "CheckableChoiceListWidget": _compiled_checkable_choice_list_widget(),
         "QtWidgets": types.SimpleNamespace(
             QCheckBox=_CheckBoxStub,
             QScrollArea=_ScrollAreaStub,
             QVBoxLayout=_VBoxLayoutStub,
             QWidget=_WidgetStub,
         ),
-        "choice_list_height": lambda count: 24 + (count * 20),
         "typing": typing,
     }
     exec(compile(module, filename=str(PROJECT_EDITOR), mode="exec"), namespace)
     return getattr(namespace["ProjectEditorHarness"], name)
+
+
+def _compiled_checkable_choice_list_widget():
+    class _ChoiceList(_ScrollAreaStub):
+        def __init__(self, choices, selected, callback):
+            super().__init__()
+            self._choices = tuple(choices)
+            self._selected = set(selected)
+            self._callback = callback
+            self._boxes = {
+                choice: _CheckBoxStub(choice) for choice in self._choices
+            }
+            for choice, box in self._boxes.items():
+                box.setChecked(choice in self._selected)
+                box.toggled.connect(
+                    lambda checked, choice=choice: self._changed(choice, checked)
+                )
+            self.setMinimumHeight(24 + (len(self._choices) * 20))
+            self.setMaximumHeight(24 + (len(self._choices) * 20))
+
+        def choices(self):
+            return self._choices
+
+        def _changed(self, choice, checked):
+            previous = set(self._selected)
+            if checked:
+                self._selected.add(choice)
+            else:
+                self._selected.discard(choice)
+            if not self._callback(self.selected_choices()):
+                self._selected = previous
+                self._boxes[choice].blockSignals(True)
+                self._boxes[choice].setChecked(choice in previous)
+                self._boxes[choice].blockSignals(False)
+
+        def selected_choices(self):
+            return tuple(choice for choice in self._choices if choice in self._selected)
+
+        def checkbox_for(self, choice):
+            return self._boxes.get(choice)
+
+    return _ChoiceList
 
 
 def test_choice_backed_string_lists_emit_checkable_values_in_declared_order() -> None:
@@ -554,14 +603,12 @@ def test_choice_backed_string_lists_emit_checkable_values_in_declared_order() ->
         ["STRUCTURED", "CANONICAL"],
     )
 
-    choice_layout = control.widget().layout
-    assert choice_layout is not None
-    boxes = choice_layout.widgets
-    assert [box.text for box in boxes] == [
+    assert control.choices() == (
         "CANONICAL",
         "GLOBAL_ANALYZED",
         "STRUCTURED",
-    ]
+    )
+    boxes = [control.checkbox_for(choice) for choice in control.choices()]
     assert [box.isChecked() for box in boxes] == [True, False, True]
     assert control.minimum_height == 84
     assert control.maximum_height == 84

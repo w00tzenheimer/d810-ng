@@ -25,7 +25,6 @@ from d810.ui.config_v2_editing_logic import (
     project_serializer_rows,
 )
 from d810.ui.panel_density_logic import (
-    choice_list_height,
     primary_field_section_height,
 )
 from d810.ui.project_config_logic import ConfigV2FocusTarget
@@ -50,6 +49,7 @@ if IDA_AVAILABLE:
     from d810.ui.workbench_structured_details import JsonTreeEditor, RawJsonDialog
     from d810.ui.config_v2_transform_catalog import ConfigV2TransformCatalogWidget
     from d810.ui.config_v2_rule_catalog import ConfigV2RuleCatalogWidget
+    from d810.ui.checkable_choice_list import CheckableChoiceListWidget
 
     WOPN_NOT_CLOSED_BY_ESC = getattr(
         ida_kernwin,
@@ -917,9 +917,10 @@ if IDA_AVAILABLE:
             else:
                 # Choice-backed lists already display the user's new state.
                 # Refresh the authoritative draft projections and footer, but
-                # keep the native QListWidget alive until the user leaves the
-                # Inspector. Rebuilding it from its own checkbox event can
-                # retire the C++ signal sender and crash the IDA process.
+                # keep the reusable QScrollArea/QCheckBox choice control alive
+                # until the user leaves the Inspector. Rebuilding it from its
+                # own checkbox event can retire the C++ signal sender and
+                # crash the IDA process.
                 self._refresh_projection()
                 self._render_validation_state()
                 self._render_footer()
@@ -1205,60 +1206,32 @@ if IDA_AVAILABLE:
                 )
                 return control
             if field.control is FieldControlKind.STRING_LIST and field.choices:
-                control = QtWidgets.QScrollArea()
-                control.setWidgetResizable(True)
-                choice_body = QtWidgets.QWidget()
-                choice_layout = QtWidgets.QVBoxLayout(choice_body)
-                choice_layout.setContentsMargins(4, 2, 4, 2)
-                choice_layout.setSpacing(2)
                 selected = (
-                    {str(item) for item in value}
+                    tuple(str(item) for item in value)
                     if isinstance(value, (list, tuple))
-                    else set()
+                    else ()
                 )
-                for choice in field.choices:
-                    choice_box = QtWidgets.QCheckBox(choice)
-                    choice_box.setChecked(choice in selected)
-                    choice_layout.addWidget(choice_box)
-
-                    def apply_changed_choice(
-                        checked: bool,
-                        *,
-                        choice: str = choice,
-                        choice_box: typing.Any = choice_box,
-                        field: FieldEditorSpec = field,
-                        selected: set[str] = selected,
-                    ) -> None:
-                        previous = set(selected)
-                        if checked:
-                            selected.add(choice)
-                        else:
-                            selected.discard(choice)
-                        inspector = self._current_inspector()
-                        accepted = inspector is not None and self._apply_typed_option_at(
+                def apply_changed_choices(
+                    selected_choices: tuple[str, ...],
+                    *,
+                    field: FieldEditorSpec = field,
+                ) -> bool:
+                    inspector = self._current_inspector()
+                    if inspector is None:
+                        return False
+                    return bool(
+                        self._apply_typed_option_at(
                             inspector.pass_index,
                             field,
-                            [item for item in field.choices if item in selected],
+                            list(selected_choices),
                         )
-                        if accepted:
-                            return
-                        # Keep the visible control consistent when validation
-                        # rejects a choice set (mba-solve, for example, cannot
-                        # have zero selected maturities). Restoring only this
-                        # checkbox avoids destroying or traversing a native
-                        # item model from inside its signal frame.
-                        selected.clear()
-                        selected.update(previous)
-                        choice_box.blockSignals(True)
-                        choice_box.setChecked(choice in selected)
-                        choice_box.blockSignals(False)
+                    )
 
-                    choice_box.toggled.connect(apply_changed_choice)
-                choice_layout.addStretch(1)
-                control.setWidget(choice_body)
-                list_height = choice_list_height(len(field.choices))
-                control.setMinimumHeight(list_height)
-                control.setMaximumHeight(list_height)
+                control = CheckableChoiceListWidget(
+                    tuple(field.choices),
+                    selected,
+                    apply_changed_choices,
+                )
                 return control
             control = QtWidgets.QLineEdit()
             if field.control is FieldControlKind.STRING_LIST:

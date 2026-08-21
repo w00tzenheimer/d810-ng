@@ -287,6 +287,17 @@ def test_typed_option_controls_keep_experimental_and_advisory_metadata_visible()
     assert "field.advisory_reason" in source
 
 
+def test_choice_backed_fields_use_the_reusable_native_safe_widget() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    typed_source = _source("_typed_option_control")
+
+    assert "from d810.ui.checkable_choice_list import CheckableChoiceListWidget" in source
+    assert "CheckableChoiceListWidget" in typed_source
+    assert "list(selected_choices)" in typed_source
+    assert "QListWidget" not in typed_source
+    assert "itemChanged" not in typed_source
+
+
 def test_checkable_items_combine_flags_through_qt_compatibility() -> None:
     source = PANEL.read_text(encoding="utf-8")
 
@@ -942,6 +953,7 @@ def _load_behavior_panel(monkeypatch):
         types.SimpleNamespace(
             QtCore=qt,
             QtWidgets=widgets,
+            QT_GRAPHICS_AVAILABLE=True,
             qt_flag_or=lambda *flags: int(flags[0]) | int(flags[1]),
         ),
     )
@@ -1196,8 +1208,7 @@ def test_choice_checkboxes_apply_without_a_native_item_model(monkeypatch) -> Non
     panel._apply_typed_option_at = apply_option
     field = _behavior_sections(module, enabled=True)[1].entries[0].field
     control = panel._typed_option_control(field, ("two",))
-    choice_body = control._widget
-    first_choice = choice_body._layout.children[0]
+    first_choice = control.checkbox_for("one")
 
     first_choice.setChecked(True)
 
@@ -1217,15 +1228,14 @@ def test_rejected_choice_checkbox_restores_visible_and_local_selection(monkeypat
     panel._apply_typed_option_at = reject_option
     field = _behavior_sections(module, enabled=True)[1].entries[0].field
     control = panel._typed_option_control(field, ("two",))
-    choice_body = control._widget
-    second_choice = choice_body._layout.children[1]
+    second_choice = control.checkbox_for("two")
 
     second_choice.setChecked(False)
 
     assert attempts == [[]]
     assert second_choice.isChecked() is True
 
-    first_choice = choice_body._layout.children[0]
+    first_choice = control.checkbox_for("one")
     first_choice.setChecked(True)
     assert attempts == [[], ["one", "two"]]
 
