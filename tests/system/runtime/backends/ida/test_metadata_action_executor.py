@@ -40,6 +40,7 @@ idautils = pytest.importorskip("idautils")
 from d810.backends.ida.native_patch.metadata import (  # noqa: E402
     IdaMetadataActionExecutor,
     UnexecutableMetadataAction,
+    _parse_reversible_data_item_state,
 )
 from d810.transforms.native_patch_plan import NativeMetadataActionKind  # noqa: E402
 
@@ -151,11 +152,45 @@ class TestIdaMetadataActionExecutor:
                 return True
         return False
 
+    @staticmethod
+    def _xref_witness(
+        ea: int, size: int
+    ) -> tuple[tuple[int, int, int, bool, bool], ...]:
+        edges: set[tuple[int, int, int, bool, bool]] = set()
+        for item_ea in range(int(ea), int(ea) + int(size)):
+            incoming = ida_xref.xrefblk_t()
+            ok = incoming.first_to(item_ea, ida_xref.XREF_ALL)
+            while ok:
+                edges.add(
+                    (
+                        int(incoming.frm),
+                        int(incoming.to),
+                        int(incoming.type),
+                        bool(incoming.user),
+                        bool(incoming.iscode),
+                    )
+                )
+                ok = incoming.next_to()
+            outgoing = ida_xref.xrefblk_t()
+            ok = outgoing.first_from(item_ea, ida_xref.XREF_ALL)
+            while ok:
+                edges.add(
+                    (
+                        int(outgoing.frm),
+                        int(outgoing.to),
+                        int(outgoing.type),
+                        bool(outgoing.user),
+                        bool(outgoing.iscode),
+                    )
+                )
+                ok = outgoing.next_from()
+        return tuple(sorted(edges))
+
     @pytest.mark.parametrize("direction", ("incoming", "outgoing"))
-    def test_scalar_data_with_xrefs_is_not_admitted_as_reversible_snapshot(
+    def test_scalar_data_with_xrefs_is_captured_and_reverts_to_v1(
         self, copy_of_idb, direction: str
     ) -> None:
-        """The data:v1 token must not omit xrefs it cannot restore."""
+        """A temporary edge is represented by v2 and disappears afterward."""
 
         executor = IdaMetadataActionExecutor()
         kind = NativeMetadataActionKind.RECREATE_ITEM
@@ -173,10 +208,12 @@ class TestIdaMetadataActionExecutor:
         try:
             assert self._has_xrefs_in_item(data_head)
             observed = executor.read_state(kind, data_head)
-            assert not observed.startswith("data:v1:"), (
-                f"xref-bearing scalar item was admitted as {observed!r}; "
+            assert observed.startswith("data:v2:"), (
+                f"xref-bearing scalar item was not captured as v2: {observed!r}; "
                 f"item size={data_size} direction={direction}"
             )
+            witness = json.loads(observed.removeprefix("data:v2:"))["xrefs"]
+            assert witness
         finally:
             ida_xref.del_dref(xref_source, xref_target)
 
@@ -355,28 +392,86 @@ class TestIdaMetadataActionExecutor:
             == before
         )
 
-    def test_plain_tigress_label_data_round_trips_through_code_and_back(
+    def test_tigress_label_data_with_xrefs_round_trips_through_code_and_back(
         self, copy_of_idb
     ) -> None:
-        """The canonical Tigress label promotion must be losslessly reversible."""
+        """The exact canonical Tigress item must preserve its xref witness."""
         import ida_ua
 
         executor = IdaMetadataActionExecutor()
         kind = NativeMetadataActionKind.RECREATE_ITEM
-        _data_head, targets = self._decodable_scalar_target_pair(executor)
-        target_ea, _code_size = targets[0]
+        target_ea = 0x1800173A5
+        data_head = int(ida_bytes.get_item_head(target_ea))
+        data_size = int(ida_bytes.get_item_size(data_head))
+        assert f"data:{data_size}" == "data:1400"
+        assert self._has_xrefs_in_item(data_head)
         before = executor.read_state(kind, target_ea)
-        assert before.startswith("data:"), before
+        assert before is not None and before.startswith("data:v2:")
+        payload = json.loads(before.removeprefix("data:v2:"))
+        expected_witness = tuple(
+            tuple(
+                row[key]
+                for key in (
+                    "source_ea",
+                    "target_ea",
+                    "xref_type",
+                    "user_owned",
+                    "is_code",
+                )
+            )
+            for row in payload["xrefs"]
+        )
+        assert expected_witness
+        assert expected_witness == self._xref_witness(data_head, data_size)
 
         instruction = ida_ua.insn_t()
         code_size = int(ida_ua.decode_insn(instruction, target_ea))
-        assert code_size > 0
-        promoted = f"code:{code_size}"
+        assert code_size == 4
+        promoted = "code:4"
 
         assert executor.apply_state(kind, target_ea, promoted)
         assert executor.read_state(kind, target_ea) == promoted
+        assert expected_witness == self._xref_witness(data_head, data_size)
         assert executor.apply_state(kind, target_ea, before)
         assert executor.read_state(kind, target_ea) == before
+
+    def test_tigress_v2_xref_drift_is_rejected_without_item_mutation(
+        self, copy_of_idb
+    ) -> None:
+        """A changed witness cannot authorize a data-to-code transition."""
+
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        target_ea = 0x1800173A5
+        data_head = int(ida_bytes.get_item_head(target_ea))
+        original = executor.read_state(kind, target_ea)
+        assert original is not None and original.startswith("data:v2:")
+        original_data = _parse_reversible_data_item_state(
+            original, expected_ea=target_ea
+        )
+        assert original_data is not None
+
+        source_ea = _first_function_with_min_size()
+        data_size = int(ida_bytes.get_item_size(data_head))
+        existing = self._xref_witness(data_head, data_size)
+        xref_target = next(
+            candidate
+            for candidate in range(data_head, data_head + data_size)
+            if (source_ea, candidate, int(ida_xref.dr_R), False, False)
+            not in existing
+        )
+        assert ida_xref.add_dref(source_ea, xref_target, ida_xref.dr_R)
+        try:
+            drifted = executor.read_state(kind, target_ea)
+            assert drifted is not None and drifted != original
+            with pytest.raises(UnexecutableMetadataAction):
+                executor._apply_data_to_code(
+                    target_ea, "code:4", original, original_data
+                )
+            assert executor.read_state(kind, target_ea) == drifted
+        finally:
+            ida_xref.del_dref(source_ea, xref_target)
+        assert executor.read_state(kind, target_ea) == original
 
     def test_shared_tigress_data_item_targets_restore_as_one_item(
         self, copy_of_idb

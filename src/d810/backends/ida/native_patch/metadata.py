@@ -112,7 +112,8 @@ class MetadataActionExecutor(Protocol):
 
 _ITEM_CODE = "code"
 _ITEM_DATA = "data"
-_ITEM_DATA_SNAPSHOT_PREFIX = "data:v1:"
+_ITEM_DATA_SNAPSHOT_V1_PREFIX = "data:v1:"
+_ITEM_DATA_SNAPSHOT_V2_PREFIX = "data:v2:"
 _ITEM_UNKNOWN = "unknown"
 _SWITCH_NONE = "switch:none"
 _SWITCH_PREFIX = "switch:"
@@ -152,17 +153,23 @@ def _parse_reversible_data_item_state(
     must fail closed rather than guessing that a partial token is reversible.
     """
 
-    if not isinstance(token, str) or not token.startswith(
-        _ITEM_DATA_SNAPSHOT_PREFIX
-    ):
+    if not isinstance(token, str):
+        return None
+    if token.startswith(_ITEM_DATA_SNAPSHOT_V1_PREFIX):
+        prefix = _ITEM_DATA_SNAPSHOT_V1_PREFIX
+        version = 1
+    elif token.startswith(_ITEM_DATA_SNAPSHOT_V2_PREFIX):
+        prefix = _ITEM_DATA_SNAPSHOT_V2_PREFIX
+        version = 2
+    else:
         return None
     try:
-        payload = json.loads(token.removeprefix(_ITEM_DATA_SNAPSHOT_PREFIX))
+        payload = json.loads(token.removeprefix(prefix))
     except (TypeError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict):
         return None
-    if set(payload) != {
+    base_fields = {
         "bytes",
         "ea",
         "flags",
@@ -171,7 +178,9 @@ def _parse_reversible_data_item_state(
         "name",
         "offset",
         "size",
-    }:
+    }
+    expected_fields = base_fields | ({"xrefs"} if version == 2 else set())
+    if set(payload) != expected_fields:
         return None
     if not all(
         _is_int(payload.get(key))
@@ -209,6 +218,71 @@ def _parse_reversible_data_item_state(
         return None
     if len(raw) != size:
         return None
+    xrefs: tuple[tuple[int, int, int, bool, bool], ...] = ()
+    if version == 2:
+        raw_xrefs = payload["xrefs"]
+        if not isinstance(raw_xrefs, list):
+            return None
+        parsed_xrefs: list[tuple[int, int, int, bool, bool]] = []
+        for row in raw_xrefs:
+            if not isinstance(row, dict) or set(row) != {
+                "source_ea",
+                "target_ea",
+                "xref_type",
+                "user_owned",
+                "is_code",
+            }:
+                return None
+            source_ea = row["source_ea"]
+            target_ea = row["target_ea"]
+            xref_type = row["xref_type"]
+            user_owned = row["user_owned"]
+            is_code = row["is_code"]
+            if not all(
+                _is_int(value)
+                for value in (source_ea, target_ea, xref_type)
+            ) or not isinstance(user_owned, bool) or not isinstance(
+                is_code, bool
+            ):
+                return None
+            source_ea = int(source_ea)
+            target_ea = int(target_ea)
+            xref_type = int(xref_type)
+            if source_ea < 0 or target_ea < 0 or xref_type < 0:
+                return None
+            parsed_xrefs.append(
+                (source_ea, target_ea, xref_type, user_owned, is_code)
+            )
+        if not parsed_xrefs:
+            return None
+        if len(set(parsed_xrefs)) != len(parsed_xrefs):
+            return None
+        if parsed_xrefs != sorted(parsed_xrefs):
+            return None
+        if any(
+            not (
+                head_ea <= source_ea < head_ea + size
+                or head_ea <= target_ea < head_ea + size
+            )
+            for source_ea, target_ea, _xref_type, _user_owned, _is_code in parsed_xrefs
+        ):
+            return None
+        xrefs = tuple(parsed_xrefs)
+        canonical_payload = dict(payload)
+        canonical_payload["xrefs"] = [
+            {
+                "source_ea": source_ea,
+                "target_ea": target_ea,
+                "xref_type": xref_type,
+                "user_owned": user_owned,
+                "is_code": is_code,
+            }
+            for source_ea, target_ea, xref_type, user_owned, is_code in xrefs
+        ]
+        if token != prefix + json.dumps(
+            canonical_payload, sort_keys=True, separators=(",", ":")
+        ):
+            return None
     return {
         "bytes": raw,
         "ea": int(payload["ea"]),
@@ -218,6 +292,8 @@ def _parse_reversible_data_item_state(
         "name": name,
         "offset": offset,
         "size": size,
+        "version": version,
+        "xrefs": xrefs,
     }
 
 
@@ -348,13 +424,6 @@ class IdaMetadataActionExecutor:
             for predicate in operand_metadata_predicates
         ):
             return None
-        # Xrefs are metadata separate from the item bytes and flags.  The
-        # versioned snapshot has no xref vocabulary, so admitting an item
-        # with either incoming or outgoing edges would make reversal silently
-        # drop those edges.  Reject the whole item until the snapshot can
-        # carry and restore them losslessly.
-        if IdaMetadataActionExecutor._data_item_has_xrefs(head_ea, size):
-            return None
         full_flags = [
             int(ida_bytes.get_full_flags(head_ea + offset))
             for offset in range(size)
@@ -385,24 +454,73 @@ class IdaMetadataActionExecutor:
             "offset": int(ea) - head_ea,
             "size": int(size),
         }
-        return _ITEM_DATA_SNAPSHOT_PREFIX + json.dumps(
-            payload, sort_keys=True, separators=(",", ":")
-        )
+        xrefs = IdaMetadataActionExecutor._read_data_item_xrefs(head_ea, size)
+        if xrefs:
+            payload["xrefs"] = [
+                {
+                    "source_ea": source_ea,
+                    "target_ea": target_ea,
+                    "xref_type": xref_type,
+                    "user_owned": user_owned,
+                    "is_code": is_code,
+                }
+                for source_ea, target_ea, xref_type, user_owned, is_code in xrefs
+            ]
+            prefix = _ITEM_DATA_SNAPSHOT_V2_PREFIX
+        else:
+            prefix = _ITEM_DATA_SNAPSHOT_V1_PREFIX
+        return prefix + json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
-    def _data_item_has_xrefs(head_ea: int, size: int) -> bool:
-        """Return whether any byte in a data item owns or receives an xref."""
+    def _read_data_item_xrefs(
+        head_ea: int, size: int
+    ) -> tuple[tuple[int, int, int, bool, bool], ...]:
+        """Read the complete, canonical xref witness touching an item."""
 
         import ida_xref
 
+        edges: set[tuple[int, int, int, bool, bool]] = set()
         for item_ea in range(int(head_ea), int(head_ea) + int(size)):
             incoming = ida_xref.xrefblk_t()
-            if incoming.first_to(item_ea, ida_xref.XREF_ALL):
-                return True
+            ok = incoming.first_to(item_ea, ida_xref.XREF_ALL)
+            while ok:
+                edges.add(
+                    (
+                        int(incoming.frm),
+                        int(incoming.to),
+                        int(incoming.type),
+                        bool(incoming.user),
+                        bool(incoming.iscode),
+                    )
+                )
+                ok = incoming.next_to()
             outgoing = ida_xref.xrefblk_t()
-            if outgoing.first_from(item_ea, ida_xref.XREF_ALL):
-                return True
-        return False
+            ok = outgoing.first_from(item_ea, ida_xref.XREF_ALL)
+            while ok:
+                edges.add(
+                    (
+                        int(outgoing.frm),
+                        int(outgoing.to),
+                        int(outgoing.type),
+                        bool(outgoing.user),
+                        bool(outgoing.iscode),
+                    )
+                )
+                ok = outgoing.next_from()
+        return tuple(sorted(edges))
+
+    @classmethod
+    def _require_data_item_xrefs(
+        cls, head_ea: int, size: int, data_state: dict[str, object]
+    ) -> None:
+        if int(data_state.get("version", 1)) != 2:
+            return
+        expected = tuple(data_state.get("xrefs", ()))
+        observed = cls._read_data_item_xrefs(head_ea, size)
+        if observed != expected:
+            raise UnexecutableMetadataAction(
+                f"xref witness changed for data item at {head_ea:#x}"
+            )
 
     def _read_cref_state(self, ea: int) -> str:
         import ida_xref
@@ -569,7 +687,9 @@ class IdaMetadataActionExecutor:
         target_data = _parse_reversible_data_item_state(
             target_state, expected_ea=ea
         )
-        if target_state.startswith(_ITEM_DATA_SNAPSHOT_PREFIX):
+        if target_state.startswith(
+            (_ITEM_DATA_SNAPSHOT_V1_PREFIX, _ITEM_DATA_SNAPSHOT_V2_PREFIX)
+        ):
             if target_data is None:
                 raise UnexecutableMetadataAction(
                     f"malformed reversible data item state {target_state!r}"
@@ -632,6 +752,7 @@ class IdaMetadataActionExecutor:
 
         data_head = int(before_data["head_ea"])
         data_size = int(before_data["size"])
+        self._require_data_item_xrefs(data_head, data_size, before_data)
         try:
             ida_bytes.del_items(
                 data_head, ida_bytes.DELIT_SIMPLE, max(1, data_size)
@@ -643,6 +764,7 @@ class IdaMetadataActionExecutor:
                     f"IDA decoded item at {ea:#x} as {observed!r}, "
                     f"not {target_state!r}"
                 )
+            self._require_data_item_xrefs(data_head, data_size, before_data)
             return True
         except Exception as error:
             try:
@@ -688,6 +810,7 @@ class IdaMetadataActionExecutor:
             raise UnexecutableMetadataAction(
                 f"data snapshot bytes no longer match at {ea:#x}"
             )
+        self._require_data_item_xrefs(target_head, target_size, target_data)
         try:
             ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, max(1, code_size))
             self._restore_data_snapshot(ea, target_state, target_data)
@@ -695,6 +818,7 @@ class IdaMetadataActionExecutor:
         except Exception as error:
             try:
                 self._restore_code_item(ea, current, code_size)
+                self._require_data_item_xrefs(target_head, target_size, target_data)
             except Exception as restore_error:
                 raise UnexecutableMetadataAction(
                     f"item transition at {ea:#x} failed and rollback failed"
@@ -722,6 +846,9 @@ class IdaMetadataActionExecutor:
             raise UnexecutableMetadataAction(
                 f"data snapshot offset is inconsistent at {ea:#x}"
             )
+        self._require_data_item_xrefs(
+            data_head, int(target_data["size"]), target_data
+        )
         if not ida_bytes.create_data(
             data_head,
             int(target_data["flags"]),
@@ -740,6 +867,9 @@ class IdaMetadataActionExecutor:
             raise UnexecutableMetadataAction(
                 f"data recreation at {ea:#x} did not reproduce the recorded state"
             )
+        self._require_data_item_xrefs(
+            data_head, int(target_data["size"]), target_data
+        )
 
     def _restore_code_item(self, ea: int, target_state: str, code_size: int) -> None:
         import ida_ua

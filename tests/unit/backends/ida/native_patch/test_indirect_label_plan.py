@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from d810.backends.ida.native_patch.indirect_label_plan import (
     IndirectLabelPlanBuildError,
     IndirectLabelPlanFailureReason,
@@ -7,7 +9,10 @@ from d810.backends.ida.native_patch.indirect_label_plan import (
     _item_transition_order,
     _missing_cref_targets,
 )
-from d810.backends.ida.native_patch.metadata import is_reversible_data_item_state
+from d810.backends.ida.native_patch.metadata import (
+    is_reversible_data_item_state,
+    reversible_data_item_head,
+)
 
 
 def _data_snapshot(*, ea: int = 0x1000, head_ea: int | None = None) -> str:
@@ -36,6 +41,55 @@ def _data_snapshot(*, ea: int = 0x1000, head_ea: int | None = None) -> str:
     )
 
 
+def _data_snapshot_v2(
+    *,
+    ea: int = 0x1000,
+    head_ea: int | None = None,
+    xrefs: list[dict[str, object]] | None = None,
+) -> str:
+    if head_ea is None:
+        head_ea = ea
+    if xrefs is None:
+        xrefs = [
+            {
+                "source_ea": 0x1000,
+                "target_ea": 0x3000,
+                "xref_type": 0x20,
+                "user_owned": False,
+                "is_code": False,
+            },
+            {
+                "source_ea": 0x2000,
+                "target_ea": 0x1000,
+                "xref_type": 0x10,
+                "user_owned": True,
+                "is_code": True,
+            },
+        ]
+    return "data:v2:" + json.dumps(
+        {
+            "bytes": "488d0dba3401",
+            "ea": ea,
+            "flags": 0x10009400,
+            "full_flags": [
+                0x10009548,
+                0x10038D,
+                0x20030D,
+                0x3003BA,
+                0x200334,
+                0x500301,
+            ],
+            "head_ea": head_ea,
+            "name": "",
+            "offset": ea - head_ea,
+            "size": 6,
+            "xrefs": xrefs,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def test_reversible_data_snapshot_is_complete_and_address_bound() -> None:
     token = _data_snapshot()
 
@@ -44,6 +98,56 @@ def test_reversible_data_snapshot_is_complete_and_address_bound() -> None:
     assert not is_reversible_data_item_state(token, expected_ea=0x1001)
     assert not is_reversible_data_item_state("data:6")
     assert not is_reversible_data_item_state(token.removesuffix("}"))
+
+
+def test_reversible_data_snapshot_v2_preserves_canonical_xref_witness() -> None:
+    token = _data_snapshot_v2()
+
+    assert is_reversible_data_item_state(token)
+    assert is_reversible_data_item_state(token, expected_ea=0x1000)
+    assert reversible_data_item_head(token) == 0x1000
+    assert not is_reversible_data_item_state(token, expected_ea=0x1001)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload["xrefs"][0].pop("xref_type"),
+        lambda payload: payload["xrefs"][0].update(extra=True),
+        lambda payload: payload["xrefs"][0].update(source_ea=True),
+        lambda payload: payload["xrefs"][0].update(target_ea=-1),
+        lambda payload: payload["xrefs"][0].update(xref_type=-1),
+        lambda payload: payload["xrefs"][0].update(user_owned="true"),
+        lambda payload: payload["xrefs"][0].update(is_code=1),
+        lambda payload: payload["xrefs"].reverse(),
+        lambda payload: payload["xrefs"].append(dict(payload["xrefs"][0])),
+        lambda payload: payload.update(ea=0x1001),
+        lambda payload: payload.update(head_ea=0x1001),
+        lambda payload: payload.update(offset=6),
+        lambda payload: payload.update(size=0),
+        lambda payload: payload.update(size=7),
+    ),
+)
+def test_reversible_data_snapshot_v2_rejects_noncanonical_payloads(mutate) -> None:
+    payload = json.loads(_data_snapshot_v2().removeprefix("data:v2:"))
+    mutate(payload)
+    token = "data:v2:" + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    assert not is_reversible_data_item_state(token)
+
+
+@pytest.mark.parametrize(
+    "token",
+    (
+        "data:v2:{",
+        _data_snapshot_v2().replace("data:v2:", "data:v2:not-json:", 1),
+        "data:1400",
+    ),
+)
+def test_reversible_data_snapshot_v2_rejects_malformed_or_generic_tokens(
+    token: str,
+) -> None:
+    assert not is_reversible_data_item_state(token)
 
 
 def test_shared_data_item_groups_later_targets_as_unknown() -> None:
