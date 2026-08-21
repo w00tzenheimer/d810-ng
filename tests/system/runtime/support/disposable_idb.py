@@ -40,7 +40,6 @@ from dataclasses import dataclass
 import ida_auto
 import ida_bytes
 import idaapi
-import idapro
 import pytest
 
 __all__ = ["DisposableDatabase", "copy_of_idb", "count_patched_bytes"]
@@ -140,6 +139,8 @@ def copy_of_idb(request) -> DisposableDatabase:
     tempdir = pathlib.Path(tempfile.mkdtemp(prefix="d810-disposable-"))
     working = tempdir / canonical.name
     shutil.copy(canonical, working)
+
+    import idapro
 
     result = idapro.open_database(str(working), True)
     if result != 0:

@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import shutil
+import sys
 import time
 
 import pytest
@@ -69,9 +70,19 @@ def _live_state() -> object:
 
     host = getattr(__main__, "D810", None)
     state = getattr(host, "plugin", None)
-    if state is None or not state.is_loaded():
-        pytest.skip("D810 state is not loaded in the native IDA session")
+    assert state is not None, "D810 plugin prerequisite is missing"
+    assert state.is_loaded(), "D810 plugin prerequisite is not loaded"
     return state
+
+
+def _qt_critical_message_type(QtCore: object) -> object:
+    for owner in (QtCore, getattr(QtCore, "Qt", None)):
+        message_type = getattr(owner, "QtMsgType", None)
+        if message_type is not None and hasattr(message_type, "QtCriticalMsg"):
+            return message_type.QtCriticalMsg
+        if owner is not None and hasattr(owner, "QtCriticalMsg"):
+            return owner.QtCriticalMsg
+    raise AssertionError("Qt binding does not expose QtCriticalMsg")
 
 
 def _choice_control(panel: object, field_id: str) -> object:
@@ -150,7 +161,7 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
 
     assert QT_GRAPHICS_AVAILABLE is True
     assert QT_BINDING in {"PySide6", "PyQt5"}
-    assert idaapi.get_kernel_version().split(".", 1)[0] == "9"
+    assert idaapi.get_kernel_version().startswith("9.4")
 
     idb_path = pathlib.Path(ida_loader.get_path(ida_loader.PATH_TYPE_IDB)).resolve()
     assert idb_path.suffix == ".i64"
@@ -161,8 +172,7 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
     source_path = pathlib.Path(__file__).resolve().parents[4] / (
         "src/d810/conf/default_config_v2_canary.json"
     )
-    if not source_path.is_file():
-        pytest.skip("the disposable config fixture is not available")
+    assert source_path.is_file(), "the disposable config fixture is not available"
     source_hash_before = _sha256(source_path)
     copied_config = tmp_path / source_path.name
     shutil.copy2(source_path, copied_config)
@@ -172,9 +182,14 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
         destination=copied_config,
     )
 
-    qt_messages: list[str] = []
+    qt_messages: list[tuple[object, str]] = []
+    python_exceptions: list[tuple[type[BaseException], BaseException, object]] = []
+    previous_excepthook = sys.excepthook
+    sys.excepthook = lambda exc_type, exc, traceback: python_exceptions.append(
+        (exc_type, exc, traceback)
+    )
     previous_handler = QtCore.qInstallMessageHandler(
-        lambda _mode, _context, message: qt_messages.append(str(message))
+        lambda mode, _context, message: qt_messages.append((mode, str(message)))
     )
     panel = ConfigV2EditingPanel(
         adapter,
@@ -186,6 +201,11 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
         assert panel.show() is True
         _process_until(lambda: panel.parent is not None)
 
+        panel.pipeline_list.setCurrentRow(0)
+        selected_row = panel._builder_selected_pass_index()
+        assert selected_row == 0
+        insertion = selected_row + 1
+        before_ids = tuple(row.pass_id for row in panel._view.pipeline_rows)
         _drive_add_pass_dialog(receipt)
         panel._add_pass()
         assert "error" not in receipt, repr(receipt.get("error"))
@@ -200,7 +220,9 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
 
         selected_order = tuple(receipt["selected_after_clear"])
         pipeline_ids = tuple(row.pass_id for row in panel._view.pipeline_rows)
-        assert pipeline_ids[-2:] == selected_order
+        assert pipeline_ids[:insertion] == before_ids[:insertion]
+        assert pipeline_ids[insertion : insertion + len(selected_order)] == selected_order
+        assert pipeline_ids[insertion + len(selected_order) :] == before_ids[insertion:]
         assert selected_order == ("mba-solve", "constant-simplification")
 
         constant_entry = next(
@@ -228,6 +250,7 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
         assert panel._apply_edit(
             lambda: adapter.add_pass(panel._draft, "mba-solve")
         )
+        final_ids = pipeline_ids[:insertion] + selected_order + pipeline_ids[insertion + len(selected_order) :] + ("mba-solve",)
         duplicate_indexes = [
             index
             for index, inspector in enumerate(panel._editor_view.inspectors)
@@ -236,7 +259,9 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
         assert len(duplicate_indexes) >= 2
         duplicate_index = duplicate_indexes[-1]
         panel._show_builder()
-        panel._activate_pipeline_item(panel.pipeline_list.item(duplicate_index))
+        panel.pipeline_list.setCurrentRow(0)
+        panel.pipeline_list.itemActivated.emit(panel.pipeline_list.item(duplicate_index))
+        _process_until(lambda: panel._screen is ConfigV2EditorScreen.INSPECTOR)
         assert panel._screen is ConfigV2EditorScreen.INSPECTOR
         assert panel._selected_pass_index == duplicate_index
         duplicate_inspector = panel._current_inspector()
@@ -259,11 +284,7 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
 
         panel._save()
         assert copied_config.is_file()
-        assert tuple(row.pass_id for row in panel._view.pipeline_rows)[-3:] == (
-            "mba-solve",
-            "constant-simplification",
-            "mba-solve",
-        )
+        assert tuple(row.pass_id for row in panel._view.pipeline_rows) == final_ids
 
         panel.close()
         _process_until(lambda: panel._closed)
@@ -271,11 +292,7 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
         assert reopened.show() is True
         _process_until(lambda: reopened.parent is not None)
         reloaded_ids = tuple(row.pass_id for row in reopened._view.pipeline_rows)
-        assert reloaded_ids[-3:] == (
-            "mba-solve",
-            "constant-simplification",
-            "mba-solve",
-        )
+        assert reloaded_ids == final_ids
         reloaded_constant = next(
             row
             for row in reopened._view.pipeline_rows
@@ -290,10 +307,14 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
         if not panel._closed:
             panel.close()
         QtCore.qInstallMessageHandler(previous_handler)
+        sys.excepthook = previous_excepthook
 
     assert _sha256(source_path) == source_hash_before
     assert _sha256(idb_path) == idb_hash_before
-    lowered_messages = [message.casefold() for message in qt_messages]
-    assert not any("qstackedwidget::setcurrentwidget" in message for message in lowered_messages)
-    assert not any("traceback" in message for message in lowered_messages)
-    assert not any("qt" in message and "critical" in message for message in lowered_messages)
+    critical = _qt_critical_message_type(QtCore)
+    assert not any(mode == critical for mode, _message in qt_messages)
+    assert not any(
+        "qstackedwidget::setcurrentwidget" in message.casefold()
+        for _mode, message in qt_messages
+    )
+    assert not python_exceptions

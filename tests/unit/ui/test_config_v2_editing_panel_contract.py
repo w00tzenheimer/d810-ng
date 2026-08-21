@@ -257,6 +257,17 @@ def test_inspector_primary_region_or_elastic_sink_owns_available_height() -> Non
     )
 
 
+def test_primary_scroll_is_added_before_being_shown_for_native_qt() -> None:
+    source = _source("_render_typed_options")
+    primary_branch = source[source.index("if is_primary and section.enabled:") :]
+    add_position = primary_branch.index(
+        "self.options_sections_layout.addWidget("
+    )
+    show_position = primary_branch.index("self.options_scroll.setVisible(True)")
+
+    assert add_position < show_position
+
+
 def test_inspector_transform_catalog_is_projection_driven_and_fail_closed() -> None:
     render_source = _source("_render_inspector")
 

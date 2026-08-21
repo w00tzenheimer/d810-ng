@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ast
 import os
+import pathlib
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 
@@ -35,6 +37,89 @@ def test_system_conftest_owns_idapro_initialization() -> None:
 
     assert "import idapro" in text
     assert "System tests require IDA Pro or idalib." in text
+
+
+def test_native_gui_smoke_bypasses_idapro_for_embedded_venv_only(monkeypatch) -> None:
+    """The embedded IDA Python executable must not trigger idalib setup."""
+    system_conftest = _REPO_ROOT / "tests" / "system" / "conftest.py"
+    source = system_conftest.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(system_conftest))
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"_is_ida", "_should_initialize_idalib"}
+    }
+
+    assert set(functions) == {"_is_ida", "_should_initialize_idalib"}
+    namespace = {
+        "os": os,
+        "pathlib": pathlib,
+        "sys": types.SimpleNamespace(executable="/app/ida/.venv/bin/python3"),
+    }
+    exec(
+        compile(
+            ast.Module(body=list(functions.values()), type_ignores=[]),
+            str(system_conftest),
+            "exec",
+        ),
+        namespace,
+    )
+    should_initialize = namespace["_should_initialize_idalib"]
+
+    assert should_initialize(native_gui_smoke=True) is False
+    assert should_initialize(native_gui_smoke=False) is True
+    assert (
+        should_initialize(native_gui_smoke=False, executable="/usr/bin/idat64") is False
+    )
+    monkeypatch.setenv("D810_NATIVE_GUI_SMOKE", "1")
+    assert should_initialize() is False
+    monkeypatch.setenv("D810_NATIVE_GUI_SMOKE", "0")
+    assert should_initialize() is True
+
+    initializer = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Call)
+        and isinstance(node.test.func, ast.Name)
+        and node.test.func.id == "_should_initialize_idalib"
+    )
+    assert any(
+        isinstance(node, ast.Import)
+        and any(alias.name == "idapro" for alias in node.names)
+        for node in ast.walk(initializer)
+    )
+
+
+def test_disposable_idb_keeps_idapro_import_lazy_until_fixture_use() -> None:
+    """Native runtime collection must not initialize a separate idalib process."""
+    disposable = (
+        _REPO_ROOT / "tests" / "system" / "runtime" / "support" / "disposable_idb.py"
+    )
+    tree = ast.parse(disposable.read_text(encoding="utf-8"), filename=str(disposable))
+
+    def imports_idapro(node: ast.AST) -> bool:
+        if isinstance(node, ast.Import):
+            return any(alias.name == "idapro" for alias in node.names)
+        return isinstance(node, ast.ImportFrom) and node.module == "idapro"
+
+    assert not any(imports_idapro(node) for node in tree.body)
+    fixture = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "copy_of_idb"
+    )
+    assert sum(imports_idapro(node) for node in ast.walk(fixture)) == 1
+    calls = {
+        node.func.attr
+        for node in ast.walk(fixture)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "idapro"
+    }
+    assert {"open_database", "close_database"} <= calls
 
 
 def test_condition_chain_provider_import_does_not_require_live_ida() -> None:

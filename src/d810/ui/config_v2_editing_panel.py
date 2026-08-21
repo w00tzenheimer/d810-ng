@@ -1128,11 +1128,11 @@ if IDA_AVAILABLE:
                         )
                     )
                     self.options_scroll.setWidget(group)
-                    self.options_scroll.setVisible(True)
                     self.options_sections_layout.addWidget(
                         self.options_scroll,
                         stretch=stretch,
                     )
+                    self.options_scroll.setVisible(True)
                 else:
                     self.options_sections_layout.addWidget(group, stretch=stretch)
 

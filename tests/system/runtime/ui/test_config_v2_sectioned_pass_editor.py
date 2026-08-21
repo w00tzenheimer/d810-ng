@@ -13,6 +13,7 @@ import hashlib
 import os
 import pathlib
 import shutil
+import sys
 import time
 
 import pytest
@@ -52,9 +53,7 @@ class _DisposableStateProxy:
         self._state = state
         self.current_runtime_project = runtime_project
 
-    def create_config_v2_project_draft(
-        self, destination: pathlib.Path
-    ) -> object:
+    def create_config_v2_project_draft(self, destination: pathlib.Path) -> object:
         manager = self._state.manager
         return manager.create_config_v2_project_draft(
             self.current_runtime_project,
@@ -70,9 +69,19 @@ def _live_state() -> object:
 
     host = getattr(__main__, "D810", None)
     state = getattr(host, "plugin", None)
-    if state is None or not state.is_loaded():
-        pytest.skip("D810 state is not loaded in the native IDA session")
+    assert state is not None, "D810 plugin prerequisite is missing"
+    assert state.is_loaded(), "D810 plugin prerequisite is not loaded"
     return state
+
+
+def _qt_critical_message_type(QtCore: object) -> object:
+    for owner in (QtCore, getattr(QtCore, "Qt", None)):
+        message_type = getattr(owner, "QtMsgType", None)
+        if message_type is not None and hasattr(message_type, "QtCriticalMsg"):
+            return message_type.QtCriticalMsg
+        if owner is not None and hasattr(owner, "QtCriticalMsg"):
+            return owner.QtCriticalMsg
+    raise AssertionError("Qt binding does not expose QtCriticalMsg")
 
 
 def _choice_control(panel: object, field_id: str) -> object:
@@ -114,7 +123,7 @@ def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) ->
 
     assert QT_GRAPHICS_AVAILABLE is True
     assert QT_BINDING in {"PySide6", "PyQt5"}
-    assert idaapi.get_kernel_version().split(".", 1)[0] == "9"
+    assert idaapi.get_kernel_version().startswith("9.4")
 
     idb_path = pathlib.Path(ida_loader.get_path(ida_loader.PATH_TYPE_IDB)).resolve()
     assert idb_path.suffix == ".i64"
@@ -125,8 +134,7 @@ def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) ->
     source_path = pathlib.Path(__file__).resolve().parents[4] / (
         "src/d810/conf/default_config_v2_canary.json"
     )
-    if not source_path.is_file():
-        pytest.skip("the disposable config fixture is not available")
+    assert source_path.is_file(), "the disposable config fixture is not available"
 
     copied_config = tmp_path / source_path.name
     shutil.copy2(source_path, copied_config)
@@ -137,9 +145,14 @@ def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) ->
         destination=copied_config,
     )
 
-    qt_messages: list[str] = []
+    qt_messages: list[tuple[object, str]] = []
+    python_exceptions: list[tuple[type[BaseException], BaseException, object]] = []
+    previous_excepthook = sys.excepthook
+    sys.excepthook = lambda exc_type, exc, traceback: python_exceptions.append(
+        (exc_type, exc, traceback)
+    )
     previous_handler = QtCore.qInstallMessageHandler(
-        lambda _mode, _context, message: qt_messages.append(str(message))
+        lambda mode, _context, message: qt_messages.append((mode, str(message)))
     )
     panel = ConfigV2EditingPanel(
         adapter,
@@ -177,10 +190,13 @@ def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) ->
 
         section_titles = tuple(section.label for section in inspector.field_sections)
         assert section_titles
-        assert tuple(
-            panel.field_section_widgets[section.section_id].title()
-            for section in inspector.field_sections
-        ) == section_titles
+        assert (
+            tuple(
+                panel.field_section_widgets[section.section_id].title()
+                for section in inspector.field_sections
+            )
+            == section_titles
+        )
 
         primary_sections = tuple(
             section
@@ -190,13 +206,24 @@ def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) ->
         assert len(primary_sections) == 1
         primary_group = panel.field_section_widgets[primary_sections[0].section_id]
         assert panel.options_scroll.widget() is primary_group
+        assert panel.options_scroll.isVisible() is True
+        primary_index = panel._inspector_layout.indexOf(panel.primary_workspace)
         options_index = panel._inspector_layout.indexOf(panel.options_group)
+        sink_index = panel._inspector_layout.indexOf(panel.inspector_elastic_sink)
+        assert panel.primary_workspace.isVisible() is False
         assert options_index >= 0
-        assert panel._inspector_layout.stretch(options_index) == 1
+        assert primary_index >= 0
+        assert sink_index >= 0
+        assert panel._inspector_layout.stretch(primary_index) == 0
+        assert panel._inspector_layout.stretch(options_index) == 0
+        assert panel.inspector_elastic_sink.isVisible() is True
+        assert panel._inspector_layout.stretch(sink_index) == 1
 
         controller = _field_entry(panel, "auto_install_solver")
         subordinate_before = {
-            entry.field.field_id: copy.deepcopy(inspector.options.get(entry.field.field_id))
+            entry.field.field_id: copy.deepcopy(
+                inspector.options.get(entry.field.field_id)
+            )
             for section in inspector.field_sections
             for entry in section.entries
             if not entry.is_controller
@@ -207,7 +234,9 @@ def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) ->
         inspector = panel._current_inspector()
         assert inspector is not None
         assert {
-            entry.field.field_id: copy.deepcopy(inspector.options.get(entry.field.field_id))
+            entry.field.field_id: copy.deepcopy(
+                inspector.options.get(entry.field.field_id)
+            )
             for section in inspector.field_sections
             for entry in section.entries
             if not entry.is_controller
@@ -264,9 +293,14 @@ def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) ->
         if not panel._closed:
             panel.close()
         QtCore.qInstallMessageHandler(previous_handler)
+        sys.excepthook = previous_excepthook
 
     source_hash_after = _sha256(source_path)
     assert source_hash_after == source_hash_before
     assert _sha256(idb_path) == idb_hash_before
-    assert not any("QStackedWidget::setCurrentWidget" in item for item in qt_messages)
-    assert not any("Traceback" in item for item in qt_messages)
+    critical = _qt_critical_message_type(QtCore)
+    assert not any(mode == critical for mode, _message in qt_messages)
+    assert not any(
+        "QStackedWidget::setCurrentWidget" in message for _mode, message in qt_messages
+    )
+    assert not python_exceptions
