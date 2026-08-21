@@ -75,8 +75,8 @@ def _live_state() -> object:
     return state
 
 
-def _list_control(panel: object, field_id: str) -> object:
-    from d810.qt_shim import QtWidgets
+def _choice_control(panel: object, field_id: str) -> object:
+    from d810.ui.checkable_choice_list import CheckableChoiceListWidget
 
     inspector = panel._current_inspector()
     assert inspector is not None
@@ -86,8 +86,8 @@ def _list_control(panel: object, field_id: str) -> object:
         if any(entry.field.field_id == field_id for entry in section.entries)
     )
     group = panel.field_section_widgets[section_id]
-    for control in group.findChildren(QtWidgets.QListWidget):
-        if control.count() and control.item(0).text():
+    for control in group.findChildren(CheckableChoiceListWidget):
+        if control.choices():
             return control
     raise AssertionError(f"choice-backed control {field_id!r} was not rendered")
 
@@ -215,35 +215,28 @@ def test_config_v2_sectioned_pass_editor_native_ida94(tmp_path: pathlib.Path) ->
 
         choice_entry = _field_entry(panel, "maturities")
         assert choice_entry.field.choices
-        choice_control = _list_control(panel, "maturities")
-        declared_order = tuple(choice_entry.field.choices)
-        assert tuple(
-            choice_control.item(index).text()
-            for index in range(choice_control.count())
-        ) == declared_order
-        initial_checked = choice_control.item(0).checkState()
-        check_state = getattr(QtCore.Qt, "CheckState", QtCore.Qt)
-        checked = getattr(check_state, "Checked")
-        unchecked = getattr(check_state, "Unchecked")
-        opposite = (
-            unchecked if initial_checked == checked else checked
-        )
-        choice_control.item(0).setCheckState(opposite)
+        choice_control = _choice_control(panel, "maturities")
+        declared_order = choice_control.choices()
+        assert declared_order == tuple(choice_entry.field.choices)
+        first_checkbox = choice_control.checkbox_for(declared_order[0])
+        assert first_checkbox is not None
+        initial_checked = first_checkbox.isChecked()
+        first_checkbox.setChecked(not initial_checked)
         _process_until(lambda: panel._current_inspector() is not None)
         changed_inspector = panel._current_inspector()
         assert changed_inspector is not None
         assert changed_inspector.options["maturities"] != list(choice_entry.value)
-        choice_control = _list_control(panel, "maturities")
-        choice_control.item(0).setCheckState(initial_checked)
+        choice_control = _choice_control(panel, "maturities")
+        first_checkbox = choice_control.checkbox_for(declared_order[0])
+        assert first_checkbox is not None
+        first_checkbox.setChecked(initial_checked)
         _process_until(lambda: panel._current_inspector() is not None)
-        choice_control = _list_control(panel, "maturities")
+        choice_control = _choice_control(panel, "maturities")
         restored_inspector = panel._current_inspector()
         assert restored_inspector is not None
         assert restored_inspector.options["maturities"] == list(choice_entry.value)
-        assert tuple(
-            choice_control.item(index).text()
-            for index in range(choice_control.count())
-        ) == declared_order
+        assert choice_control.choices() == declared_order
+        assert choice_control.selected_choices() == tuple(choice_entry.value)
 
         draft_before_transition = panel._draft.document_json
         panel._show_builder()
