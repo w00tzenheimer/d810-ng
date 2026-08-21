@@ -393,8 +393,8 @@ def _parse_scoped_item_state(
     if not isinstance(item_state, str):
         return None
     if item_state == _ITEM_UNKNOWN:
-        pass
-    elif item_state.startswith(f"{_ITEM_CODE}:"):
+        return None
+    if item_state.startswith(f"{_ITEM_CODE}:"):
         code_size = item_state.removeprefix(f"{_ITEM_CODE}:")
         if not code_size.isdecimal() or int(code_size) <= 0:
             return None
@@ -473,6 +473,47 @@ def _parse_scoped_item_state(
         "size": size,
         "xrefs": xrefs,
     }
+
+
+def _predict_decoded_code_xrefs(
+    ea: int,
+    size: int,
+    feature: int,
+    operand_type: int,
+    operand_target: int,
+    *,
+    cf_stop: int,
+    cf_call: int,
+    cf_jump: int,
+    o_near: int,
+    o_far: int,
+    badaddr: int,
+    fl_f: int,
+    fl_cn: int,
+    fl_cf: int,
+    fl_jn: int,
+    fl_jf: int,
+) -> tuple[tuple[int, int, int, bool, bool], ...]:
+    """Predict only deterministic auto code xrefs from decoded fields."""
+
+    effects: set[tuple[int, int, int, bool, bool]] = set()
+    if not feature & cf_stop:
+        effects.add((int(ea), int(ea) + int(size), int(fl_f), False, True))
+    if feature & cf_call and operand_type in {o_near, o_far}:
+        if int(operand_target) == int(badaddr):
+            raise UnexecutableMetadataAction(
+                f"decoded transfer has no target at {ea:#x}"
+            )
+        xref_type = fl_cn if operand_type == o_near else fl_cf
+        effects.add((int(ea), int(operand_target), int(xref_type), False, True))
+    elif feature & cf_jump and operand_type in {o_near, o_far}:
+        if int(operand_target) == int(badaddr):
+            raise UnexecutableMetadataAction(
+                f"decoded transfer has no target at {ea:#x}"
+            )
+        xref_type = fl_jn if operand_type == o_near else fl_jf
+        effects.add((int(ea), int(operand_target), int(xref_type), False, True))
+    return tuple(sorted(effects))
 
 
 class IdaMetadataActionExecutor:
@@ -559,10 +600,11 @@ class IdaMetadataActionExecutor:
         """Capture only scalar data whose IDA representation we can restore.
 
         The target data item is a compiler-created scalar label (``FF_WORD``)
-        over the first six bytes of an instruction.  Structs, strings,
-        xref-bearing items, user-named/commented items, and other typed data
-        remain represented by the old ``data:<size>`` token and therefore
-        remain fail-closed.
+        over the first six bytes of an instruction.  A non-empty touching-xref
+        witness is represented by ``data:v2``; xref-free items use
+        ``data:v1``.  Structs, strings, user-named/commented items, and other
+        typed data remain represented by the old ``data:<size>`` token and
+        therefore remain fail-closed.
         """
 
         import ida_bytes
@@ -716,26 +758,51 @@ class IdaMetadataActionExecutor:
         far = int(getattr(idaapi, "o_far", -1))
         operand = instruction.ops[0]
         operand_type = int(getattr(operand, "type", -1))
-        is_transfer = bool(feature & (call | jump))
-        if is_transfer and operand_type not in {near, far}:
-            raise UnexecutableMetadataAction(
-                f"ambiguous decoded transfer at {ea:#x}"
-            )
-        effects: set[tuple[int, int, int, bool, bool]] = set()
-        if not feature & stop:
-            effects.add((int(ea), int(ea) + size, int(ida_xref.fl_F), False, True))
-        if is_transfer:
-            target = int(getattr(operand, "addr", idaapi.BADADDR))
-            if target == int(idaapi.BADADDR):
-                raise UnexecutableMetadataAction(
-                    f"decoded transfer has no target at {ea:#x}"
-                )
-            if feature & call:
-                xref_type = ida_xref.fl_CN if operand_type == near else ida_xref.fl_CF
-            else:
-                xref_type = ida_xref.fl_JN if operand_type == near else ida_xref.fl_JF
-            effects.add((int(ea), target, int(xref_type), False, True))
-        return size, tuple(sorted(effects))
+        return size, _predict_decoded_code_xrefs(
+            int(ea),
+            size,
+            feature,
+            operand_type,
+            int(getattr(operand, "addr", idaapi.BADADDR)),
+            cf_stop=stop,
+            cf_call=call,
+            cf_jump=jump,
+            o_near=near,
+            o_far=far,
+            badaddr=int(idaapi.BADADDR),
+            fl_f=int(ida_xref.fl_F),
+            fl_cn=int(ida_xref.fl_CN),
+            fl_cf=int(ida_xref.fl_CF),
+            fl_jn=int(ida_xref.fl_JN),
+            fl_jf=int(ida_xref.fl_JF),
+        )
+
+    @staticmethod
+    def _require_derived_xref_delta(
+        before: tuple[tuple[int, int, int, bool, bool], ...],
+        after: tuple[tuple[int, int, int, bool, bool], ...],
+        derived: tuple[tuple[int, int, int, bool, bool], ...],
+        *,
+        forward: bool,
+    ) -> None:
+        before_set = set(before)
+        after_set = set(after)
+        removed = before_set - after_set
+        added = after_set - before_set
+        expected = set(derived)
+        if forward:
+            valid = not removed and added == expected
+        else:
+            valid = not added and removed == expected
+        if valid:
+            return
+        direction = "forward" if forward else "reverse"
+        raise UnexecutableMetadataAction(
+            f"unexpected {direction} decoded xref delta: "
+            f"removed={tuple(sorted(removed))!r}, "
+            f"added={tuple(sorted(added))!r}, "
+            f"expected={tuple(sorted(expected))!r}"
+        )
 
     @classmethod
     def _require_data_item_xrefs(
@@ -1045,15 +1112,15 @@ class IdaMetadataActionExecutor:
                     f"decoded item at {ea:#x} does not match {target_inner!r}"
                 )
             expected_xrefs = tuple(sorted(set(entry_xrefs) | set(derived)))
-        elif target_inner == _ITEM_UNKNOWN or target_inner.startswith(
-            _ITEM_DATA_SNAPSHOT_V2_PREFIX
-        ):
+            forward = True
+        elif target_inner.startswith(_ITEM_DATA_SNAPSHOT_V2_PREFIX):
             if not current_inner.startswith(_ITEM_CODE + ":"):
                 raise UnexecutableMetadataAction(
                     f"cannot recreate {target_inner!r} over {current_inner!r}"
                 )
             _code_size, derived = self._predict_code_xrefs(ea)
             expected_xrefs = tuple(sorted(set(entry_xrefs) - set(derived)))
+            forward = False
         else:
             raise UnexecutableMetadataAction(
                 f"unsupported scoped item transition {target_state!r}"
@@ -1062,12 +1129,19 @@ class IdaMetadataActionExecutor:
             raise UnexecutableMetadataAction(
                 f"scoped item witness does not match decoded effect at {ea:#x}"
             )
+        self._require_derived_xref_delta(
+            entry_xrefs, target_xrefs, derived, forward=forward
+        )
         try:
             self._apply_item_state(
                 ea, target_inner, _scoped=True, _validate_witness=False
             )
             self._post_item_effect()
-            if self._read_data_item_xrefs(head_ea, size) != target_xrefs:
+            observed_xrefs = self._read_data_item_xrefs(head_ea, size)
+            self._require_derived_xref_delta(
+                entry_xrefs, observed_xrefs, derived, forward=forward
+            )
+            if observed_xrefs != target_xrefs:
                 raise UnexecutableMetadataAction(
                     f"scoped item transition at {ea:#x} produced an "
                     "unexpected xref effect"

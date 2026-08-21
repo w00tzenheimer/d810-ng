@@ -11,6 +11,7 @@ from d810.backends.ida.native_patch.indirect_label_plan import (
 )
 from d810.backends.ida.native_patch.metadata import (
     _parse_scoped_item_state,
+    _predict_decoded_code_xrefs,
     is_reversible_data_item_state,
     reversible_data_item_head,
 )
@@ -113,11 +114,42 @@ def test_reversible_data_snapshot_v2_preserves_canonical_xref_witness() -> None:
 @pytest.mark.parametrize(
     "mutate",
     (
+        lambda payload: payload.pop("bytes"),
+        lambda payload: payload.pop("ea"),
+        lambda payload: payload.pop("flags"),
+        lambda payload: payload.pop("full_flags"),
+        lambda payload: payload.pop("head_ea"),
+        lambda payload: payload.pop("name"),
+        lambda payload: payload.pop("offset"),
+        lambda payload: payload.pop("size"),
+        lambda payload: payload.pop("xrefs"),
+        lambda payload: payload.update(extra=True),
         lambda payload: payload["xrefs"][0].pop("xref_type"),
+        lambda payload: payload["xrefs"][0].pop("source_ea"),
+        lambda payload: payload["xrefs"][0].pop("target_ea"),
+        lambda payload: payload["xrefs"][0].pop("user_owned"),
+        lambda payload: payload["xrefs"][0].pop("is_code"),
         lambda payload: payload["xrefs"][0].update(extra=True),
+        lambda payload: payload.update(ea=True),
+        lambda payload: payload.update(flags=True),
+        lambda payload: payload.update(head_ea=True),
+        lambda payload: payload.update(offset=True),
+        lambda payload: payload.update(size=True),
+        lambda payload: payload["full_flags"].__setitem__(0, True),
+        lambda payload: payload.update(ea=-1),
+        lambda payload: payload.update(flags=-1),
+        lambda payload: payload.update(head_ea=-1),
+        lambda payload: payload.update(offset=-1),
+        lambda payload: payload.update(size=-1),
+        lambda payload: payload["full_flags"].__setitem__(0, -1),
         lambda payload: payload["xrefs"][0].update(source_ea=True),
+        lambda payload: payload["xrefs"][0].update(target_ea=True),
+        lambda payload: payload["xrefs"][0].update(xref_type=True),
         lambda payload: payload["xrefs"][0].update(target_ea=-1),
         lambda payload: payload["xrefs"][0].update(xref_type=-1),
+        lambda payload: payload["xrefs"][0].update(user_owned=1),
+        lambda payload: payload["xrefs"][0].update(is_code=0),
+        lambda payload: payload["xrefs"][0].update(source_ea=-1),
         lambda payload: payload["xrefs"][0].update(user_owned="true"),
         lambda payload: payload["xrefs"][0].update(is_code=1),
         lambda payload: payload["xrefs"].reverse(),
@@ -135,6 +167,14 @@ def test_reversible_data_snapshot_v2_rejects_noncanonical_payloads(mutate) -> No
     token = "data:v2:" + json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
     assert not is_reversible_data_item_state(token)
+
+
+def test_reversible_data_snapshot_v2_rejects_noncanonical_json() -> None:
+    payload = json.loads(_data_snapshot_v2().removeprefix("data:v2:"))
+
+    assert not is_reversible_data_item_state(
+        "data:v2:" + json.dumps(payload, indent=2)
+    )
 
 
 @pytest.mark.parametrize(
@@ -168,7 +208,7 @@ def _scoped_item(*, item_state: str = "code:4") -> str:
 
 @pytest.mark.parametrize(
     "item_state",
-    ("unknown", "code:4", _data_snapshot_v2()),
+    ("code:4", _data_snapshot_v2()),
 )
 def test_scoped_item_xref_token_is_canonical_and_scope_bound(item_state: str) -> None:
     token = _scoped_item(item_state=item_state)
@@ -185,9 +225,17 @@ def test_scoped_item_xref_token_is_canonical_and_scope_bound(item_state: str) ->
     "mutate",
     (
         lambda payload: payload.pop("ea"),
+        lambda payload: payload.pop("head_ea"),
+        lambda payload: payload.pop("item_state"),
+        lambda payload: payload.pop("size"),
+        lambda payload: payload.pop("xrefs"),
         lambda payload: payload.update(extra=True),
         lambda payload: payload.update(ea=True),
+        lambda payload: payload.update(head_ea=True),
+        lambda payload: payload.update(size=True),
+        lambda payload: payload.update(ea=-1),
         lambda payload: payload.update(head_ea=-1),
+        lambda payload: payload.update(size=-1),
         lambda payload: payload.update(size=0),
         lambda payload: payload["xrefs"].clear(),
         lambda payload: payload["xrefs"][0].pop("is_code"),
@@ -196,8 +244,13 @@ def test_scoped_item_xref_token_is_canonical_and_scope_bound(item_state: str) ->
         lambda payload: payload["xrefs"][0].pop("xref_type"),
         lambda payload: payload["xrefs"][0].pop("user_owned"),
         lambda payload: payload["xrefs"][0].update(source_ea=True),
+        lambda payload: payload["xrefs"][0].update(target_ea=True),
+        lambda payload: payload["xrefs"][0].update(xref_type=True),
         lambda payload: payload["xrefs"][0].update(target_ea=-1),
         lambda payload: payload["xrefs"][0].update(xref_type=-1),
+        lambda payload: payload["xrefs"][0].update(user_owned="true"),
+        lambda payload: payload["xrefs"][0].update(is_code=1),
+        lambda payload: payload["xrefs"][0].update(source_ea=-1),
         lambda payload: payload["xrefs"][0].update(user_owned=1),
         lambda payload: payload["xrefs"].reverse(),
         lambda payload: payload["xrefs"].append(dict(payload["xrefs"][0])),
@@ -224,6 +277,73 @@ def test_scoped_item_xref_token_rejects_noncanonical_json_and_inner_scope_drift(
         payload, sort_keys=True, separators=(",", ":")
     )
     assert _parse_scoped_item_state(drifted) is None
+
+
+def test_scoped_item_unknown_is_not_a_task1_admission_token() -> None:
+    assert _parse_scoped_item_state(_scoped_item(item_state="unknown")) is None
+
+
+@pytest.mark.parametrize(
+    ("feature", "operand_type", "target", "expected"),
+    (
+        (
+            0x2,
+            0xA,
+            0x2000,
+            ((0x1000, 0x1004, 0x14, False, True), (0x1000, 0x2000, 0x15, False, True)),
+        ),
+        (
+            0x2,
+            0xB,
+            0x3000,
+            ((0x1000, 0x1004, 0x14, False, True), (0x1000, 0x3000, 0x16, False, True)),
+        ),
+        (
+            0x4 | 0x1,
+            0xA,
+            0x4000,
+            ((0x1000, 0x4000, 0x17, False, True),),
+        ),
+        (
+            0x4 | 0x1,
+            0xB,
+            0x5000,
+            ((0x1000, 0x5000, 0x18, False, True),),
+        ),
+        (
+            0x4,
+            0xA,
+            0x6000,
+            ((0x1000, 0x1004, 0x14, False, True), (0x1000, 0x6000, 0x17, False, True)),
+        ),
+        (0x2, 0xC, 0x7000, ((0x1000, 0x1004, 0x14, False, True),)),
+        (0x4 | 0x1, 0xC, 0x8000, ()),
+    ),
+)
+def test_decoded_code_xref_effect_matrix(
+    feature: int,
+    operand_type: int,
+    target: int,
+    expected: tuple[tuple[int, int, int, bool, bool], ...],
+) -> None:
+    assert _predict_decoded_code_xrefs(
+        0x1000,
+        4,
+        feature,
+        operand_type,
+        target,
+        cf_stop=0x1,
+        cf_call=0x2,
+        cf_jump=0x4,
+        o_near=0xA,
+        o_far=0xB,
+        badaddr=-1,
+        fl_f=0x14,
+        fl_cn=0x15,
+        fl_cf=0x16,
+        fl_jn=0x17,
+        fl_jf=0x18,
+    ) == expected
 
 
 def test_shared_data_item_groups_later_targets_as_unknown() -> None:

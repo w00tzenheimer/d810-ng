@@ -227,6 +227,17 @@ class TestIdaMetadataActionExecutor:
         )
         return self._scoped_item_token("code:4", snapshot, xrefs=rows)
 
+    @staticmethod
+    def _scoped_code_with_rows(
+        snapshot: str,
+        xrefs: list[dict[str, object]],
+        *,
+        size: int = 4,
+    ) -> str:
+        return TestIdaMetadataActionExecutor._scoped_item_token(
+            "code:" + str(size), snapshot, xrefs=xrefs
+        )
+
     @pytest.mark.parametrize("direction", ("incoming", "outgoing"))
     def test_scalar_data_with_xrefs_is_captured_and_reverts_to_v1(
         self, copy_of_idb, direction: str
@@ -569,6 +580,211 @@ class TestIdaMetadataActionExecutor:
         finally:
             ida_xref.del_dref(source_ea, xref_target)
         assert executor.read_state(kind, target_ea) == original
+
+    def test_scoped_item_rejects_preexisting_predicted_row_and_restores(
+        self, copy_of_idb
+    ) -> None:
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        target_ea = 0x1800173A5
+        original = executor.read_state(kind, target_ea)
+        payload = json.loads(original.removeprefix("data:v2:"))
+        flow = {
+            "is_code": True,
+            "source_ea": target_ea,
+            "target_ea": target_ea + 4,
+            "user_owned": False,
+            "xref_type": int(ida_xref.fl_F),
+        }
+        rows = [*payload["xrefs"], flow]
+        rows.sort(
+            key=lambda row: (
+                row["source_ea"],
+                row["target_ea"],
+                row["xref_type"],
+                row["user_owned"],
+                row["is_code"],
+            )
+        )
+        original_read_item_state = executor._read_item_state
+
+        def read_with_preexisting_row(ea: int) -> str:
+            state = original_read_item_state(ea)
+            if state.startswith("data:v2:"):
+                payload = json.loads(state.removeprefix("data:v2:"))
+                payload["xrefs"] = rows
+                return "data:v2:" + json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                )
+            return state
+
+        executor._read_item_state = read_with_preexisting_row
+        original_read_xrefs = executor._read_data_item_xrefs
+
+        def read_with_preexisting_xref(head_ea: int, size: int):
+            return tuple(
+                sorted(
+                    set(original_read_xrefs(head_ea, size))
+                    | {
+                        (
+                            target_ea,
+                            target_ea + 4,
+                            int(ida_xref.fl_F),
+                            False,
+                            True,
+                        )
+                    }
+                )
+            )
+
+        executor._read_data_item_xrefs = read_with_preexisting_xref
+        drifted = executor.read_state(kind, target_ea)
+        assert drifted.startswith("data:v2:")
+        composite_before = self._scoped_item_token(drifted, drifted)
+        composite_after = self._scoped_code_with_rows(drifted, rows, size=4)
+        with pytest.raises(UnexecutableMetadataAction):
+            executor.apply_state(kind, target_ea, composite_after)
+        assert (
+            executor.read_state(kind, target_ea, scope_state=composite_before)
+            == composite_before
+        )
+
+    def test_scoped_item_rejects_missing_reverse_row_and_restores(
+        self, copy_of_idb
+    ) -> None:
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        target_ea = 0x1800173A5
+        original = executor.read_state(kind, target_ea)
+        composite_after = self._scoped_code_after(original, target_ea, 4)
+        assert executor.apply_state(kind, target_ea, composite_after)
+        assert ida_xref.del_cref(
+            target_ea, target_ea + 4, int(ida_xref.fl_F)
+        )
+        missing = self._scoped_item_token("code:4", original)
+        composite_before = self._scoped_item_token(original, original)
+        with pytest.raises(UnexecutableMetadataAction):
+            executor.apply_state(kind, target_ea, composite_before)
+        assert (
+            executor.read_state(kind, target_ea, scope_state=missing) == missing
+        )
+
+    def test_scoped_item_rejects_extra_synchronous_row_and_restores(
+        self, copy_of_idb
+    ) -> None:
+        target_ea = 0x1800173A5
+
+        class ExtraEffectExecutor(IdaMetadataActionExecutor):
+            def _post_item_effect(self):
+                assert ida_xref.add_cref(
+                    target_ea, target_ea + 5, int(ida_xref.fl_F)
+                )
+
+        executor = ExtraEffectExecutor()
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        original = executor.read_state(kind, target_ea)
+        composite_before = self._scoped_item_token(original, original)
+        composite_after = self._scoped_code_after(original, target_ea, 4)
+        with pytest.raises(UnexecutableMetadataAction):
+            executor.apply_state(kind, target_ea, composite_after)
+        assert (
+            executor.read_state(kind, target_ea, scope_state=composite_before)
+            == composite_before
+        )
+
+    def test_standalone_unknown_composite_is_rejected_before_mutation(
+        self, copy_of_idb
+    ) -> None:
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        target_ea = 0x1800173A5
+        original = executor.read_state(kind, target_ea)
+        code = self._scoped_code_after(original, target_ea, 4)
+        assert executor.apply_state(kind, target_ea, code)
+        unknown = self._scoped_item_token("unknown", original)
+        with pytest.raises(UnexecutableMetadataAction):
+            executor.apply_state(kind, target_ea, unknown)
+        assert (
+            executor.read_state(kind, target_ea, scope_state=code) == code
+        )
+
+    def test_predict_code_xrefs_covers_transfer_shapes_without_mutation(
+        self, copy_of_idb
+    ) -> None:
+        import ida_ua
+
+        executor = IdaMetadataActionExecutor()
+        call = int(idaapi.CF_CALL)
+        jump = int(idaapi.CF_JUMP)
+        stop = int(idaapi.CF_STOP)
+        near = int(ida_ua.o_near)
+        far = int(ida_ua.o_far)
+        candidates: dict[str, tuple[int, int, int, int, str]] = {}
+        for segment_ea in idautils.Segments():
+            segment = idaapi.getseg(segment_ea)
+            assert segment is not None
+            ea = int(segment.start_ea)
+            while ea < int(segment.end_ea):
+                instruction = ida_ua.insn_t()
+                size = int(ida_ua.decode_insn(instruction, ea))
+                if size <= 0:
+                    ea += 1
+                    continue
+                feature = int(instruction.get_canon_feature())
+                operand_type = int(instruction.ops[0].type)
+                mnemonic = str(ida_ua.print_insn_mnem(ea) or "").lower()
+                if feature & call:
+                    key = "direct_call" if operand_type in {near, far} else "indirect_call"
+                elif feature & jump:
+                    if operand_type in {near, far}:
+                        key = "conditional" if mnemonic != "jmp" and not feature & stop else "direct_jump"
+                    else:
+                        key = "indirect_jump"
+                else:
+                    key = None
+                if key:
+                    candidates.setdefault(
+                        key, (ea, size, feature, operand_type, mnemonic)
+                    )
+                ea += 1
+        for required in (
+            "indirect_call",
+            "indirect_jump",
+            "direct_call",
+        ):
+            assert required in candidates, f"fixture lacks {required} shape"
+
+        before = {
+            ea: executor.read_state(NativeMetadataActionKind.RECREATE_ITEM, ea)
+            for ea, _size, _feature, _operand_type, _mnemonic in candidates.values()
+        }
+        for key, (ea, size, feature, operand_type, _mnemonic) in candidates.items():
+            decoded_size, effects = executor._predict_code_xrefs(ea)
+            assert decoded_size == size
+            effect_set = set(effects)
+            flow = (ea, ea + size, int(ida_xref.fl_F), False, True)
+            if feature & stop:
+                assert flow not in effect_set
+            else:
+                assert flow in effect_set
+            if key.startswith("indirect"):
+                assert not any(
+                    row[0] == ea and row[2] != int(ida_xref.fl_F)
+                    for row in effect_set
+                )
+            else:
+                instruction = ida_ua.insn_t()
+                assert ida_ua.decode_insn(instruction, ea) == size
+                target = int(instruction.ops[0].addr)
+                if key == "direct_call":
+                    xref_type = ida_xref.fl_CN if operand_type == near else ida_xref.fl_CF
+                elif key == "direct_jump":
+                    xref_type = ida_xref.fl_JN if operand_type == near else ida_xref.fl_JF
+                else:
+                    xref_type = ida_xref.fl_JN if operand_type == near else ida_xref.fl_JF
+                assert (ea, target, int(xref_type), False, True) in effect_set
+        for ea, state in before.items():
+            assert executor.read_state(NativeMetadataActionKind.RECREATE_ITEM, ea) == state
 
     def test_scoped_item_post_create_failure_restores_without_xref_mutation(
         self, copy_of_idb, monkeypatch
