@@ -213,10 +213,11 @@ class _CallbackOptimizer:
         _blk,
         _ins,
         *,
+        contextual_anchor_ins=None,
         allowed_rule_names=None,
         scheduled_rule_names=None,
     ):
-        del allowed_rule_names, scheduled_rule_names
+        del contextual_anchor_ins, allowed_rule_names, scheduled_rule_names
         self.calls += 1
         return self.replacements[0] if self.replacements else None
 

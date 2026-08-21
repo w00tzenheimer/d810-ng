@@ -125,7 +125,7 @@ class TestModularProductNonzeroNative:
             assert code.count("__ctz") == 5, code
             assert "< 0x1D" in code, code
 
-    def test_failed_z3_proof_abstains_before_materialization(
+    def test_failed_structural_certificate_abstains_before_materialization(
         self,
         libobfuscated_setup,
         monkeypatch,
@@ -144,7 +144,7 @@ class TestModularProductNonzeroNative:
         assert mba is not None
         monkeypatch.setattr(
             native,
-            "z3_proves_modular_product_nonzero",
+            "certifies_modular_product_nonzero",
             lambda *_args, **_kwargs: False,
         )
         monkeypatch.setattr(
