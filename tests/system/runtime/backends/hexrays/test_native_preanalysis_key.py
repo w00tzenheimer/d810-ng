@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from d810 import __version__ as D810_VERSION
 from d810.backends.hexrays.native_preanalysis_key import (
     build_native_preanalysis_key,
     fingerprint_profile_config,
@@ -82,7 +83,8 @@ def test_build_key_uses_real_loader_function_profile_and_sdk_inputs(
     assert key.function_fingerprint == f"sha256:{function_hasher.hexdigest()}"
     assert key.profile_fingerprint == fingerprint_profile_config(profile)
     assert key.sdk_fingerprint == (
-        "ida-sdk:930:hexrays:9.3.0.250604:processor:PC:bitness:64:d810:1.0.0b1"
+        "ida-sdk:930:hexrays:9.3.0.250604:processor:PC:bitness:64:d810:"
+        f"{D810_VERSION}"
     )
 
 
