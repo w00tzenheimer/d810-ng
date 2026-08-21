@@ -13,6 +13,86 @@ def _editor_module() -> object:
     return pass_editor_spec
 
 
+def _field(field_id: str, *, control=None):
+    spec = _editor_module()
+    return spec.FieldEditorSpec(
+        field_id=field_id,
+        label=field_id.replace("_", " ").title(),
+        path=(field_id,),
+        control=control or spec.FieldControlKind.TEXT,
+        default=False if control is spec.FieldControlKind.BOOLEAN else "",
+    )
+
+
+def test_fields_editor_requires_explicit_complete_section_membership() -> None:
+    spec = _editor_module()
+    enabled = _field("enabled", control=spec.FieldControlKind.BOOLEAN)
+    value = _field("value")
+
+    with pytest.raises(ValueError, match="exactly one section"):
+        spec.PassEditorSpec.fields_editor((enabled, value), sections=())
+
+    with pytest.raises(ValueError, match="unassigned field"):
+        spec.PassEditorSpec.fields_editor(
+            (enabled, value),
+            sections=(
+                spec.PassEditorSectionSpec(
+                    section_id="main",
+                    label="Main",
+                    field_ids=("enabled",),
+                    presentation=spec.PassEditorSectionPresentation.PRIMARY,
+                ),
+            ),
+        )
+
+
+def test_section_rejects_duplicate_unknown_and_non_boolean_controller_fields() -> None:
+    spec = _editor_module()
+    enabled = _field("enabled", control=spec.FieldControlKind.BOOLEAN)
+    value = _field("value")
+    duplicate = (
+        spec.PassEditorSectionSpec("a", "A", ("enabled", "value")),
+        spec.PassEditorSectionSpec("b", "B", ("value",)),
+    )
+    with pytest.raises(ValueError, match="more than one section"):
+        spec.PassEditorSpec.fields_editor((enabled, value), sections=duplicate)
+
+    with pytest.raises(ValueError, match="unknown field"):
+        spec.PassEditorSpec.fields_editor(
+            (enabled, value),
+            sections=(spec.PassEditorSectionSpec("a", "A", ("missing",)),),
+        )
+
+    with pytest.raises(ValueError, match="boolean"):
+        spec.PassEditorSpec.fields_editor(
+            (enabled, value),
+            sections=(
+                spec.PassEditorSectionSpec(
+                    "a", "A", ("enabled", "value"), controller_field_id="value"
+                ),
+            ),
+        )
+
+
+def test_editor_rejects_multiple_primary_sections() -> None:
+    spec = _editor_module()
+    fields = (_field("one"), _field("two"))
+    with pytest.raises(ValueError, match="at most one primary"):
+        spec.PassEditorSpec.fields_editor(
+            fields,
+            sections=(
+                spec.PassEditorSectionSpec(
+                    "one", "One", ("one",),
+                    presentation=spec.PassEditorSectionPresentation.PRIMARY,
+                ),
+                spec.PassEditorSectionSpec(
+                    "two", "Two", ("two",),
+                    presentation=spec.PassEditorSectionPresentation.PRIMARY,
+                ),
+            ),
+        )
+
+
 def _transform(*, family_id: str = "multiplication") -> object:
     spec = _editor_module()
     return spec.TransformEditorSpec(
@@ -167,7 +247,17 @@ def test_fields_editor_renders_nested_defaults_and_validates_choice_lists() -> N
         choices=("strict", "aggressive"),
         default="strict",
     )
-    editor = spec.PassEditorSpec.fields_editor((maturity, policy))
+    editor = spec.PassEditorSpec.fields_editor(
+        (maturity, policy),
+        sections=(
+            spec.PassEditorSectionSpec(
+                "stage",
+                "Stage",
+                ("stage.maturities", "stage.policy"),
+                presentation=spec.PassEditorSectionPresentation.PRIMARY,
+            ),
+        ),
+    )
 
     assert editor.default_options() == {
         "stages": {

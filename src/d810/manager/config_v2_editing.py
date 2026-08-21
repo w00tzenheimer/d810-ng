@@ -252,17 +252,48 @@ class ConfigV2EditingService:
         *,
         index: int | None = None,
     ) -> ConfigV2ProjectDraft:
+        return self.add_passes(draft, (pass_id,), index=index)
+
+    def add_passes(
+        self,
+        draft: ConfigV2ProjectDraft,
+        pass_ids: tuple[str, ...],
+        *,
+        index: int | None = None,
+    ) -> ConfigV2ProjectDraft:
+        if not isinstance(pass_ids, tuple):
+            raise ConfigV2EditError("pass IDs must be provided as a tuple")
+        if not pass_ids:
+            raise ConfigV2EditError("at least one pass must be selected")
+        if any(
+            not isinstance(pass_id, str)
+            or not pass_id
+            or pass_id != pass_id.strip()
+            for pass_id in pass_ids
+        ):
+            raise ConfigV2EditError("pass IDs must contain non-empty strings")
+        if index is not None and (
+            isinstance(index, bool) or not isinstance(index, int)
+        ):
+            raise ConfigV2EditError("pass insertion index must be an integer or None")
         try:
-            template = self._registry.config_template_for(pass_id)
-            self._registry.build_spec(template)
-        except (UnknownPassIdError, PassRegistryError, PipelineConfigError) as error:
+            templates = tuple(
+                self._registry.config_template_for(pass_id) for pass_id in pass_ids
+            )
+            for template in templates:
+                self._registry.build_spec(template)
+        except (
+            UnknownPassIdError,
+            PassRegistryError,
+            PipelineConfigError,
+        ) as error:
             raise ConfigV2EditError(str(error)) from error
         document = _document(draft.document_json)
         pipeline = _pipeline(document)
-        insertion = len(pipeline) if index is None else int(index)
+        insertion = len(pipeline) if index is None else index
         if not 0 <= insertion <= len(pipeline):
             raise ConfigV2EditError("pass insertion index is out of range")
-        pipeline.insert(insertion, template.to_dict())
+        pipeline[insertion:insertion] = [template.to_dict() for template in templates]
         return self._updated(draft, document)
 
     def remove_pass(

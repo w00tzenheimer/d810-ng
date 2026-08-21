@@ -85,6 +85,17 @@ class ConfigV2EditingAdapter:
     ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
         return self._edited(self._state.add_config_v2_pass(draft, pass_id, index=index))
 
+    def add_passes(
+        self,
+        draft: ConfigV2ProjectDraft,
+        pass_ids: tuple[str, ...],
+        *,
+        index: int | None = None,
+    ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
+        return self._edited(
+            self._state.add_config_v2_passes(draft, pass_ids, index=index)
+        )
+
     def remove_pass(
         self,
         draft: ConfigV2ProjectDraft,

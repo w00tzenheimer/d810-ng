@@ -9,6 +9,8 @@ from d810.core.pass_editor_spec import (
     AdvisoryTone,
     FieldControlKind,
     FieldEditorSpec,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
     PassEditorSpec,
 )
 from d810.core.plugins import (
@@ -563,7 +565,52 @@ def mba_egraph_editor_spec() -> PassEditorSpec:
                 choices=maturity_choices,
                 default=list(DEFAULT_MATURITIES),
             ),
-        )
+        ),
+        sections=(
+            PassEditorSectionSpec(
+                "admission",
+                "Admission",
+                ("max_leaves", "max_operator_nodes", "max_degree", "residual_only"),
+                presentation=PassEditorSectionPresentation.PRIMARY,
+            ),
+            PassEditorSectionSpec(
+                "saturation",
+                "Saturation",
+                ("saturation_rounds", "max_eclasses", "max_enodes", "max_rule_firings"),
+            ),
+            PassEditorSectionSpec(
+                "cross-block-preparation",
+                "Cross-block preparation",
+                ("cross_block_constant_preparation", "cross_block_def_use_preparation"),
+            ),
+            PassEditorSectionSpec(
+                "learned-replay",
+                "Learned replay",
+                (
+                    "learned_replay_enabled",
+                    "learned_replay_max_entries",
+                    "learned_replay_max_bytes",
+                ),
+                controller_field_id="learned_replay_enabled",
+            ),
+            PassEditorSectionSpec(
+                "budgets",
+                "Budgets",
+                ("time_budget_ms", "function_time_budget_ms"),
+            ),
+            PassEditorSectionSpec(
+                "proof-and-execution",
+                "Proof and execution",
+                (
+                    "require_proof",
+                    "collect_stage_timings",
+                    "execution_mode",
+                    "native_proof_mode",
+                    "families",
+                    "maturities",
+                ),
+            ),
+        ),
     )
 
 

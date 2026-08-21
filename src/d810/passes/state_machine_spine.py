@@ -14,6 +14,8 @@ from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.pass_editor_spec import (
     FieldControlKind,
     FieldEditorSpec,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
     PassEditorSpec,
 )
 from d810.passes.pass_pipeline import (
@@ -75,7 +77,7 @@ DISPATCHER_ANALYSES = AnalysisContract(
             "recover_dispatcher",
             "recovered_machine",
         }
-    )
+    ),
 )
 TRANSITION_ANALYSES = AnalysisContract(
     required=frozenset({"recover_dispatcher"}),
@@ -268,7 +270,22 @@ _STATE_MACHINE_EDITOR_SPEC = PassEditorSpec.fields_editor(
             ),
             default=False,
         ),
-    )
+    ),
+    sections=(
+        PassEditorSectionSpec(
+            "recovery",
+            "Recovery",
+            ("min_state_constant", "family", "recovery_strategy"),
+            presentation=PassEditorSectionPresentation.PRIMARY,
+        ),
+        PassEditorSectionSpec(
+            "publication",
+            "Publication",
+            ("native_cfg_persistence",),
+            controller_field_id="native_cfg_persistence",
+            presentation=PassEditorSectionPresentation.SECONDARY,
+        ),
+    ),
 )
 
 

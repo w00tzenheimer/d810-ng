@@ -16,8 +16,9 @@ from d810.core.execution_journal import (
 )
 from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
-from d810.ir.maturity import IRMaturity
+from d810.ir.maturity import IRMaturity, IR_MATURITY_ORDER
 from d810.passes.mba_solve import (
+    DEFAULT_MATURITIES,
     DEFAULT_MAX_LEAVES,
     MBA_SOLVE_PASS_ID,
     MbaSolveCapability,
@@ -211,6 +212,16 @@ class TestAutoInstallSolver(unittest.TestCase):
         self.assertIn("auto_install_solver", field_ids)
         self.assertIn("auto_install_solver", template.options)
         self.assertIs(template.options["auto_install_solver"], False)
+
+    def test_maturities_editor_uses_authoritative_portable_ordered_choices(self):
+        editor = mba_solve_pass_registry().editor_spec_for(MBA_SOLVE_PASS_ID)
+        maturities = next(field for field in editor.fields if field.field_id == "maturities")
+
+        self.assertEqual(
+            maturities.choices,
+            tuple(maturity.name for maturity in IR_MATURITY_ORDER),
+        )
+        self.assertTrue(set(DEFAULT_MATURITIES).issubset(maturities.choices))
 
 
 class TestOptions(unittest.TestCase):

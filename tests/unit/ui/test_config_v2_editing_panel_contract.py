@@ -59,6 +59,7 @@ def test_panel_projects_one_draft_into_a_stacked_builder_and_inspector() -> None
     init_source = _source("__init__")
     create_source = _source("OnCreate")
     render_calls = _calls(_method("_render"))
+    projection_calls = _calls(_method("_refresh_projection"))
 
     assert "ConfigV2EditorScreen.BUILDER" in init_source
     assert "self._screen = screen" in init_source
@@ -67,7 +68,8 @@ def test_panel_projects_one_draft_into_a_stacked_builder_and_inspector() -> None
     assert "QStackedWidget" in init_source
     assert "builder_page" in create_source
     assert "inspector_page" in create_source
-    assert "project_config_v2_editor_view" in render_calls
+    assert "_refresh_projection" in render_calls
+    assert "project_config_v2_editor_view" in projection_calls
 
 
 def test_inspector_shell_is_capability_driven_and_contract_is_on_demand() -> None:
@@ -158,15 +160,71 @@ def test_details_disclosure_is_collapsed_readonly_contract_metadata() -> None:
 
 
 def test_inspector_details_and_typed_options_use_the_compact_form_policy() -> None:
-    init_source = _source("__init__")
     create_source = _source("OnCreate")
 
-    assert "configure_left_aligned_form(self.typed_options_layout)" in init_source
-    assert "self.typed_options_layout.setContentsMargins(0, 0, 0, 0)" in init_source
+    assert "configure_left_aligned_form(section_form)" in _source(
+        "_build_field_section_widget"
+    )
+    assert "section_form.setContentsMargins(0, 0, 0, 0)" in _source(
+        "_build_field_section_widget"
+    )
     assert "configure_left_aligned_form(details_layout)" in create_source
     assert "details_layout.setContentsMargins(0, 0, 0, 0)" in create_source
     assert "inspector_layout.setSpacing(4)" in create_source
     assert "layout.setSpacing(4)" in create_source
+
+
+def test_typed_options_render_generic_metadata_driven_field_sections() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+    render_source = _source("_render_typed_options")
+    section_source = _source("_build_field_section_widget")
+
+    assert "self.options_scroll = QtWidgets.QScrollArea()" in init_source
+    assert "self.options_scroll.setWidgetResizable(True)" in init_source
+    assert "self.field_section_widgets" in init_source
+    assert "self.options_sections_body" in create_source
+    assert "self.options_sections_layout" in init_source
+    assert "inspector.field_sections" in render_source
+    assert "section.section_id" in render_source
+    assert "self._build_field_section_widget(section)" in render_source
+    assert "entry.visible" in section_source
+    assert "entry.is_controller" in section_source
+    assert "entry.editable" in section_source
+    assert "section.label" in section_source
+    assert "section.description" in section_source
+    assert "section.presentation" in render_source
+    assert "QScrollArea" in source
+    for forbidden in (
+        "constant-simplification",
+        "fold-readonly-data",
+        "global_const_types",
+    ):
+        assert forbidden not in source
+
+
+def test_field_section_stretch_and_empty_projection_are_generic() -> None:
+    render_source = _source("_render_typed_options")
+
+    assert "if not section.entries" in render_source
+    assert "self.options_sections_layout.addWidget(group, stretch=stretch)" in (
+        render_source
+    )
+    assert "is_primary = section.presentation.value == 'primary'" in render_source
+    assert "stretch = 1 if is_primary and section.enabled else 0" in render_source
+    assert "self.field_section_widgets[section.section_id] = group" in (
+        render_source
+    )
+
+
+def test_section_renderer_preserves_controller_visibility_and_control_state() -> None:
+    section_source = _source("_build_field_section_widget")
+
+    assert "if not entry.visible" in section_source
+    assert "control.setEnabled(entry.editable)" in section_source
+    assert "entry.is_controller" in section_source
+    assert "_typed_option_control" in section_source
 
 
 def test_screen_transition_checks_stack_membership_before_switching() -> None:
@@ -199,6 +257,17 @@ def test_inspector_primary_region_or_elastic_sink_owns_available_height() -> Non
     )
 
 
+def test_primary_scroll_is_added_before_being_shown_for_native_qt() -> None:
+    source = _source("_render_typed_options")
+    primary_branch = source[source.index("if is_primary and section.enabled:") :]
+    add_position = primary_branch.index(
+        "self.options_sections_layout.addWidget("
+    )
+    show_position = primary_branch.index("self.options_scroll.setVisible(True)")
+
+    assert add_position < show_position
+
+
 def test_inspector_transform_catalog_is_projection_driven_and_fail_closed() -> None:
     render_source = _source("_render_inspector")
 
@@ -221,21 +290,29 @@ def test_inspector_rule_catalog_uses_the_typed_projection_and_closed_adapter_wri
 
 
 def test_typed_option_controls_keep_experimental_and_advisory_metadata_visible() -> None:
-    source = _source("_render_typed_options")
+    source = _source("_build_field_section_widget")
 
     assert "Experimental:" in source
     assert "Advisory:" in source
     assert "field.experimental_reason" in source
     assert "field.advisory_reason" in source
-    assert "transform_option_fields" in source
+
+
+def test_choice_backed_fields_use_the_reusable_native_safe_widget() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    typed_source = _source("_typed_option_control")
+
+    assert "from d810.ui.checkable_choice_list import CheckableChoiceListWidget" in source
+    assert "CheckableChoiceListWidget" in typed_source
+    assert "list(selected_choices)" in typed_source
+    assert "QListWidget" not in typed_source
+    assert "itemChanged" not in typed_source
 
 
 def test_checkable_items_combine_flags_through_qt_compatibility() -> None:
     source = PANEL.read_text(encoding="utf-8")
 
-    # The routing-family list and typed string-list controls both need the
-    # Qt-version-safe flag combiner.
-    assert source.count("qt_flag_or(item.flags(), _checkable_flag())") == 2
+    assert source.count("qt_flag_or(item.flags(), _checkable_flag())") == 1
     assert (
         "qt_flag_or(family_item.flags(), _checkable_flag())" in source
     )
@@ -244,7 +321,7 @@ def test_checkable_items_combine_flags_through_qt_compatibility() -> None:
 
 def test_inspector_callbacks_delegate_closed_typed_edits_and_rerender_rejections() -> None:
     transform_source = _source("_apply_transform_catalog_selection")
-    options_source = _source("_apply_typed_option")
+    options_source = _source("_apply_typed_option") + _source("_apply_typed_option_at")
     apply_source = _source("_apply_edit")
 
     assert "set_pass_transforms" in transform_source
@@ -272,6 +349,69 @@ def test_exact_focus_uses_the_requested_row_and_rejects_mismatches() -> None:
     assert "inspector.pass_index" in source
     assert "inspector.pass_id == target.pass_id" in source
     assert "self._selected_pass_index = target.pass_index" in source
+
+
+def test_builder_activation_uses_the_activated_item_and_shared_exact_inspector_route() -> None:
+    init_source = _source("__init__")
+    activate_source = _source("_activate_pipeline_item")
+    open_source = _source("_open_inspector_at")
+    selected_source = _source("_open_selected_inspector")
+
+    assert "self.pipeline_list.itemActivated.connect(self._activate_pipeline_item)" in init_source
+    assert "self.pipeline_list.row(item)" in activate_source
+    assert "self._open_inspector_at(index)" in activate_source
+    assert "self._open_inspector_at(index)" in selected_source
+    assert "inspector.pass_index == index" in open_source
+    assert "inspector.pass_id == row.pass_id" in open_source
+
+
+def test_builder_activation_opens_the_exact_duplicate_without_mutating_the_draft(
+    monkeypatch,
+) -> None:
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    panel = object.__new__(panel_type)
+    panel.pipeline_list = _BehaviorListWidget()
+    first = _BehaviorListItem("1. jump-fixer")
+    second = _BehaviorListItem("2. jump-fixer")
+    panel.pipeline_list.addItem(first)
+    panel.pipeline_list.addItem(second)
+    panel.pipeline_list.setCurrentRow(0)
+    panel._view = types.SimpleNamespace(
+        pipeline_rows=(
+            types.SimpleNamespace(index=0, pass_id="jump-fixer"),
+            types.SimpleNamespace(index=1, pass_id="jump-fixer"),
+        )
+    )
+    panel._editor_view = types.SimpleNamespace(
+        inspectors=(
+            types.SimpleNamespace(pass_index=0, pass_id="jump-fixer"),
+            types.SimpleNamespace(pass_index=1, pass_id="jump-fixer"),
+        )
+    )
+    panel._draft = types.SimpleNamespace(
+        document_json='{"pipeline_v2":[{"pass_id":"jump-fixer"},{"pass_id":"jump-fixer"}]}',
+        revision=11,
+    )
+    original_json = panel._draft.document_json
+    original_revision = panel._draft.revision
+    panel._selected_pass_index = 0
+    panel._screen = module.ConfigV2EditorScreen.BUILDER
+    panel.statuses = []
+    panel._set_status = panel.statuses.append
+    renders: list[tuple[object, int | None]] = []
+    panel._render = lambda: renders.append((panel._screen, panel._selected_pass_index))
+    panel.pipeline_list.itemActivated.connect(panel._activate_pipeline_item)
+
+    panel.pipeline_list.itemActivated.emit(second)
+
+    assert panel._screen is module.ConfigV2EditorScreen.INSPECTOR
+    assert panel._selected_pass_index == 1
+    assert renders == [(module.ConfigV2EditorScreen.INSPECTOR, 1)]
+    panel._show_builder()
+    assert panel._screen is module.ConfigV2EditorScreen.BUILDER
+    assert panel._draft.document_json == original_json
+    assert panel._draft.revision == original_revision
+    assert panel.statuses == []
 
 
 def test_panel_remains_a_thin_adapter_and_explicit_save_surface() -> None:
@@ -323,8 +463,15 @@ def test_builder_is_a_compact_ordered_active_pass_editor() -> None:
         assert label in source
     assert "getMultiLineText" in description_source
     assert "set_description" in description_source
-    assert "QLineEdit" in add_source
+    assert "FilterableCatalogDialog" in add_source
+    assert "CatalogColumnSpec" in add_source
+    assert "CatalogRow" in add_source
+    assert "CatalogSelectionMode.MULTI_CHECK" in add_source
+    assert "'Add pass'" in add_source
+    assert "action_verb='Add'" in add_source
     assert "self._catalog" in add_source
+    assert "add_passes" in add_source
+    assert "self._adapter.add_pass(" not in add_source
     assert "manifest_list" not in create_source
     assert "complete_document" not in create_source
     assert "unsupported_document" not in create_source
@@ -445,6 +592,9 @@ class _BehaviorWidget:
         self.clicked = _BehaviorSignal()
         self.toggled = _BehaviorSignal()
         self.textChanged = _BehaviorSignal()
+        self.editingFinished = _BehaviorSignal()
+        self._deleted = False
+        self._signals_blocked = False
 
     def setVisible(self, visible: bool) -> None:
         self._visible = bool(visible)
@@ -470,11 +620,34 @@ class _BehaviorWidget:
     def setContentsMargins(self, *args: object) -> None:
         del args
 
+    def hide(self) -> None:
+        self._visible = False
+
+    def setParent(self, parent: object) -> None:
+        del parent
+
+    def deleteLater(self) -> None:
+        self._deleted = True
+
+    def setWordWrap(self, enabled: bool) -> None:
+        del enabled
+
+    def setMinimumHeight(self, height: int) -> None:
+        self.minimum_height = int(height)
+
+    def setMaximumHeight(self, height: int) -> None:
+        self.maximum_height = int(height)
+
     def setSpacing(self, spacing: int) -> None:
         del spacing
 
     def setWindowTitle(self, title: str) -> None:
         self._text = title
+
+    def blockSignals(self, blocked: bool) -> bool:
+        previous = self._signals_blocked
+        self._signals_blocked = bool(blocked)
+        return previous
 
 
 class _BehaviorLayout(_BehaviorWidget):
@@ -483,6 +656,8 @@ class _BehaviorLayout(_BehaviorWidget):
         self.children: list[object] = []
         self.stretches: dict[int, int] = {}
         self.stretch_calls: list[tuple[int, int]] = []
+        if args and hasattr(args[0], "__dict__"):
+            args[0]._layout = self
 
     def addWidget(self, widget: object, **kwargs: object) -> None:
         self.children.append(widget)
@@ -491,6 +666,16 @@ class _BehaviorLayout(_BehaviorWidget):
 
     def addLayout(self, layout: object) -> None:
         self.children.append(layout)
+
+    def addRow(self, *widgets: object) -> None:
+        self.children.append(tuple(widgets))
+
+    def count(self) -> int:
+        return len(self.children)
+
+    def takeAt(self, index: int) -> object:
+        widget = self.children.pop(index)
+        return types.SimpleNamespace(widget=lambda: widget if hasattr(widget, "hide") else None)
 
     def addStretch(self, *args: object) -> None:
         del args
@@ -534,6 +719,19 @@ class _BehaviorStackedWidget(_BehaviorWidget):
         return self._current
 
 
+class _BehaviorScrollArea(_BehaviorWidget):
+    def setWidgetResizable(self, enabled: bool) -> None:
+        self.widget_resizable = bool(enabled)
+
+    def setWidget(self, widget: object) -> None:
+        self._widget = widget
+
+    def takeWidget(self) -> object | None:
+        widget = getattr(self, "_widget", None)
+        self._widget = None
+        return widget
+
+
 class _BehaviorGroupBox(_BehaviorWidget):
     def __init__(self, title: str = "", *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
@@ -546,7 +744,7 @@ class _BehaviorGroupBox(_BehaviorWidget):
     def setChecked(self, checked: bool) -> None:
         changed = self._checked != bool(checked)
         self._checked = bool(checked)
-        if changed:
+        if changed and not self._signals_blocked:
             self.toggled.emit(self._checked)
 
     def isChecked(self) -> bool:
@@ -593,6 +791,7 @@ class _BehaviorListItem:
         self._text = text
         self._data: dict[object, object] = {}
         self._checked = 0
+        self._owner: _BehaviorListWidget | None = None
 
     def flags(self) -> int:
         return 0
@@ -601,7 +800,10 @@ class _BehaviorListItem:
         del flags
 
     def setCheckState(self, checked: int) -> None:
+        changed = self._checked != checked
         self._checked = checked
+        if changed and self._owner is not None:
+            self._owner.itemChanged.emit(self)
 
     def checkState(self) -> int:
         return self._checked
@@ -621,8 +823,11 @@ class _BehaviorListWidget(_BehaviorWidget):
         super().__init__(*args, **kwargs)
         self._items: list[_BehaviorListItem] = []
         self._row = -1
+        self.itemChanged = _BehaviorSignal()
+        self.itemActivated = _BehaviorSignal()
 
     def addItem(self, item: _BehaviorListItem) -> None:
+        item._owner = self
         self._items.append(item)
 
     def count(self) -> int:
@@ -637,6 +842,15 @@ class _BehaviorListWidget(_BehaviorWidget):
 
     def setCurrentRow(self, row: int) -> None:
         self._row = row
+
+    def currentRow(self) -> int:
+        return self._row
+
+    def row(self, item: _BehaviorListItem) -> int:
+        try:
+            return self._items.index(item)
+        except ValueError:
+            return -1
 
     def currentItem(self) -> _BehaviorListItem | None:
         return self._items[self._row] if 0 <= self._row < len(self._items) else None
@@ -795,7 +1009,7 @@ def _load_behavior_panel(monkeypatch):
             CheckState=types.SimpleNamespace(Checked=2, Unchecked=0),
             ItemDataRole=types.SimpleNamespace(UserRole=32),
             ItemFlag=types.SimpleNamespace(ItemIsUserCheckable=1),
-        )
+        ),
     )
     widgets = types.SimpleNamespace(
         QCheckBox=_BehaviorCheckBox,
@@ -815,6 +1029,9 @@ def _load_behavior_panel(monkeypatch):
         QTabWidget=_BehaviorTabs,
         QToolButton=_BehaviorButton,
         QStackedWidget=_BehaviorStackedWidget,
+        QScrollArea=_BehaviorScrollArea,
+        QFormLayout=_BehaviorLayout,
+        QLineEdit=_BehaviorWidget,
         QVBoxLayout=_BehaviorLayout,
         QWidget=_BehaviorWidget,
     )
@@ -827,6 +1044,7 @@ def _load_behavior_panel(monkeypatch):
         types.SimpleNamespace(
             QtCore=qt,
             QtWidgets=widgets,
+            QT_GRAPHICS_AVAILABLE=True,
             qt_flag_or=lambda *flags: int(flags[0]) | int(flags[1]),
         ),
     )
@@ -839,6 +1057,11 @@ def _load_behavior_panel(monkeypatch):
             StructuredDetailsView=_BehaviorWidget,
         ),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.ui.filterable_catalog_widget",
+        types.SimpleNamespace(FilterableCatalogDialog=_BehaviorDialog),
+    )
     module_name = "d810.ui._task6_behavior_panel"
     spec = importlib.util.spec_from_file_location(module_name, PANEL)
     assert spec is not None and spec.loader is not None
@@ -850,6 +1073,296 @@ def _load_behavior_panel(monkeypatch):
         types.SimpleNamespace(name="tigress"),
     )
     return module, module.ConfigV2EditingPanel
+
+
+def test_fake_qt_section_renderer_omits_hidden_subordinates_and_keeps_controller(
+    monkeypatch,
+) -> None:
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    from d810.core.pass_editor_spec import FieldControlKind, FieldEditorSpec
+
+    controller = FieldEditorSpec(
+        field_id="enabled",
+        label="Enabled",
+        path=("enabled",),
+        control=FieldControlKind.BOOLEAN,
+        default=True,
+    )
+    subordinate = FieldEditorSpec(
+        field_id="value",
+        label="Value",
+        path=("value",),
+        control=FieldControlKind.TEXT,
+        default="kept",
+    )
+    section = types.SimpleNamespace(
+        label="Controls",
+        description="Declared controls.",
+        entries=(
+            types.SimpleNamespace(
+                field=controller,
+                value=True,
+                visible=True,
+                editable=True,
+                is_controller=True,
+            ),
+            types.SimpleNamespace(
+                field=subordinate,
+                value="kept",
+                visible=False,
+                editable=False,
+                is_controller=False,
+            ),
+        ),
+    )
+    panel = object.__new__(panel_type)
+    panel._apply_typed_option = lambda field, value: None
+
+    group, body = panel_type._build_field_section_widget(panel, section)
+
+    assert group._text == "Controls"
+    assert len(body._layout.children) == 1
+
+
+def _render_behavior_panel(monkeypatch):
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    panel = object.__new__(panel_type)
+    panel.options_scroll = module.QtWidgets.QScrollArea()
+    panel.options_scroll.setWidgetResizable(True)
+    panel.options_sections_body = module.QtWidgets.QWidget()
+    panel.options_sections_layout = module.QtWidgets.QVBoxLayout(
+        panel.options_sections_body
+    )
+    panel.options_group = module.QtWidgets.QGroupBox("Options")
+    panel.field_section_widgets = {}
+    panel._primary_options_enabled = False
+    panel._apply_typed_option = lambda field, value: None
+    panel._rendering_inspector = False
+    panel.primary_workspace = module.QtWidgets.QStackedWidget()
+    panel.transforms_group = module.QtWidgets.QGroupBox("Transforms")
+    panel.rules_group = module.QtWidgets.QGroupBox("Rules")
+    panel.primary_workspace.addWidget(panel.transforms_group)
+    panel.primary_workspace.addWidget(panel.rules_group)
+    panel.inspector_elastic_sink = module.QtWidgets.QWidget()
+    panel._inspector_layout = _BehaviorLayout()
+    panel._inspector_layout.addWidget(panel.primary_workspace, stretch=1)
+    panel._inspector_layout.addWidget(panel.options_group, stretch=0)
+    panel._inspector_layout.addWidget(panel.inspector_elastic_sink, stretch=0)
+    return module, panel_type, panel
+
+
+def _behavior_sections(module, *, enabled: bool):
+    from d810.core.pass_editor_spec import (
+        FieldControlKind,
+        FieldEditorSpec,
+        PassEditorSectionPresentation,
+    )
+
+    controller = FieldEditorSpec(
+        field_id="enabled",
+        label="Enabled",
+        path=("enabled",),
+        control=FieldControlKind.BOOLEAN,
+        default=True,
+    )
+    subordinate = FieldEditorSpec(
+        field_id="value",
+        label="Value",
+        path=("value",),
+        control=FieldControlKind.TEXT,
+        default="kept",
+    )
+    choices = FieldEditorSpec(
+        field_id="choices",
+        label="Choices",
+        path=("choices",),
+        control=FieldControlKind.STRING_LIST,
+        choices=("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"),
+    )
+    from d810.ui.config_v2_editing_logic import (
+        ConfigV2FieldSectionEntryView,
+        ConfigV2FieldSectionView,
+    )
+
+    return (
+        ConfigV2FieldSectionView(
+            section_id="primary",
+            label="Primary",
+            description="Primary controls.",
+            presentation=PassEditorSectionPresentation.PRIMARY,
+            enabled=enabled,
+            controller_field_id="enabled",
+            entries=(
+                ConfigV2FieldSectionEntryView(
+                    field=controller,
+                    value=enabled,
+                    is_controller=True,
+                    editable=True,
+                    visible=True,
+                ),
+                ConfigV2FieldSectionEntryView(
+                    field=subordinate,
+                    value="kept",
+                    is_controller=False,
+                    editable=enabled,
+                    visible=enabled,
+                ),
+            ),
+        ),
+        ConfigV2FieldSectionView(
+            section_id="secondary",
+            label="Secondary",
+            description="Secondary controls.",
+            presentation=PassEditorSectionPresentation.SECONDARY,
+            enabled=True,
+            controller_field_id=None,
+            entries=(
+                ConfigV2FieldSectionEntryView(
+                    field=choices,
+                    value=("two",),
+                    is_controller=False,
+                    editable=False,
+                    visible=True,
+                ),
+            ),
+        ),
+        ConfigV2FieldSectionView(
+            section_id="empty",
+            label="Empty",
+            description="Omitted.",
+            presentation=PassEditorSectionPresentation.SECONDARY,
+            enabled=True,
+            controller_field_id=None,
+            entries=(),
+        ),
+    )
+
+
+def test_fake_qt_render_rerender_routes_disabled_primary_to_sink(monkeypatch) -> None:
+    module, panel_type, panel = _render_behavior_panel(monkeypatch)
+    from d810.ui.panel_density_logic import (
+        CHOICE_LIST_MAX_HEIGHT,
+        primary_field_section_height,
+    )
+
+    enabled = types.SimpleNamespace(field_sections=_behavior_sections(module, enabled=True))
+    panel._render_typed_options(enabled)
+    first_primary = panel.field_section_widgets["primary"]
+
+    assert panel.options_scroll._widget is first_primary
+    assert panel.options_scroll.maximum_height == primary_field_section_height(
+        scalar_rows=2,
+        choice_row_counts=(),
+    )
+    assert panel.options_sections_layout.stretches == {0: 1, 1: 0}
+    panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
+    assert panel._inspector_layout.stretches == {0: 0, 1: 0, 2: 1}
+    assert panel.inspector_elastic_sink.isVisible() is True
+    assert panel.primary_workspace.pages == [panel.transforms_group, panel.rules_group]
+
+    disabled = types.SimpleNamespace(field_sections=_behavior_sections(module, enabled=False))
+    panel._render_typed_options(disabled)
+    disabled_primary = panel.field_section_widgets["primary"]
+
+    assert first_primary._deleted is True
+    assert panel.options_scroll._widget is None
+    assert panel.options_sections_layout.stretches == {0: 0, 1: 0}
+    assert panel.field_section_widgets.keys() == {"primary", "secondary"}
+    assert len(disabled_primary._layout.children) == 2
+    secondary = panel.field_section_widgets["secondary"]
+    secondary_body = secondary._layout.children[-1]
+    choice_control = secondary_body._layout.children[0][1]
+    assert choice_control.isEnabled() is False
+    assert choice_control.minimum_height == CHOICE_LIST_MAX_HEIGHT
+    assert choice_control.maximum_height == CHOICE_LIST_MAX_HEIGHT
+    panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
+    assert panel._inspector_layout.stretches == {0: 0, 1: 0, 2: 1}
+    assert panel.inspector_elastic_sink.isVisible() is True
+    assert panel.primary_workspace.pages == [panel.transforms_group, panel.rules_group]
+
+    panel._render_typed_options(enabled)
+    assert disabled_primary._deleted is True
+    assert panel.options_scroll._widget is panel.field_section_widgets["primary"]
+    panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
+    assert panel._inspector_layout.stretches == {0: 0, 1: 0, 2: 1}
+    assert panel.inspector_elastic_sink.isVisible() is True
+
+
+def test_choice_checkboxes_apply_without_a_native_item_model(monkeypatch) -> None:
+    module, _panel_type, panel = _render_behavior_panel(monkeypatch)
+    inspector = types.SimpleNamespace(
+        pass_index=3,
+        options={"choices": ["two"]},
+    )
+    panel._current_inspector = lambda: inspector
+    applied: list[tuple[int, str, object]] = []
+
+    def apply_option(pass_index, field, value) -> bool:
+        applied.append((pass_index, field.field_id, copy.deepcopy(value)))
+        return True
+
+    panel._apply_typed_option_at = apply_option
+    field = _behavior_sections(module, enabled=True)[1].entries[0].field
+    control = panel._typed_option_control(field, ("two",))
+    first_choice = control.checkbox_for("one")
+
+    first_choice.setChecked(True)
+
+    assert applied == [(3, "choices", ["one", "two"])]
+
+
+def test_rejected_choice_checkbox_restores_visible_and_local_selection(monkeypatch) -> None:
+    module, _panel_type, panel = _render_behavior_panel(monkeypatch)
+    inspector = types.SimpleNamespace(pass_index=3, options={"choices": ["two"]})
+    panel._current_inspector = lambda: inspector
+    attempts: list[object] = []
+
+    def reject_option(_pass_index, _field, value) -> bool:
+        attempts.append(copy.deepcopy(value))
+        return False
+
+    panel._apply_typed_option_at = reject_option
+    field = _behavior_sections(module, enabled=True)[1].entries[0].field
+    control = panel._typed_option_control(field, ("two",))
+    second_choice = control.checkbox_for("two")
+
+    second_choice.setChecked(False)
+
+    assert attempts == [[]]
+    assert second_choice.isChecked() is True
+
+    first_choice = control.checkbox_for("one")
+    first_choice.setChecked(True)
+    assert attempts == [[], ["one", "two"]]
+
+
+def test_choice_backed_typed_edit_does_not_rebuild_its_signal_sender(monkeypatch) -> None:
+    module, _panel_type, panel = _render_behavior_panel(monkeypatch)
+    field = _behavior_sections(module, enabled=True)[1].entries[0].field
+    panel._editor_view = types.SimpleNamespace(
+        inspectors=(
+            types.SimpleNamespace(
+                pass_index=0,
+                options={"choices": ["two"]},
+            ),
+        )
+    )
+    panel._draft = object()
+    panel._adapter = types.SimpleNamespace(
+        set_pass_options=lambda draft, **_kwargs: (draft, object())
+    )
+    rebuild_requests: list[bool] = []
+
+    def apply_edit(operation, *, rebuild_widgets=True) -> bool:
+        operation()
+        rebuild_requests.append(bool(rebuild_widgets))
+        return True
+
+    panel._apply_edit = apply_edit
+
+    panel._apply_typed_option_at(0, field, ["one", "two"])
+
+    assert rebuild_requests == [False]
 
 
 class _BehaviorAdapter:
@@ -975,8 +1488,8 @@ def test_inspector_stretch_routes_each_primary_section_to_the_elastic_owner(
     panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
 
     assert panel.primary_workspace.isVisible() is False
-    assert panel.inspector_elastic_sink.isVisible() is False
-    assert panel._inspector_layout.stretch_calls == [(0, 0), (1, 1), (2, 0)]
+    assert panel.inspector_elastic_sink.isVisible() is True
+    assert panel._inspector_layout.stretch_calls == [(0, 0), (1, 0), (2, 1)]
 
     panel._inspector_layout.stretch_calls.clear()
     panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.NONE)

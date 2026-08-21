@@ -50,7 +50,17 @@ def test_project_editor_uses_draft_rows_for_private_inspection_catalog() -> None
     assert "self._inspection_catalog = tuple(" in source
     assert "tuple(row.pass_id for row in self._view.pipeline_rows)" in source
     assert "inspection_catalog(self._validation.pass_ids)" not in source
-    assert "for entry in sorted(self._catalog" in source
+    assert "for entry in self._catalog" in source
+
+
+def test_project_editor_builder_activation_uses_exact_item_row_and_shared_helper() -> None:
+    source = PROJECT_EDITOR.read_text(encoding="utf-8")
+
+    assert "self.pipeline_list.itemActivated.connect(self._activate_pipeline_item)" in source
+    assert "index = self.pipeline_list.row(item)" in source
+    assert "self._open_inspector_at(index)" in source
+    assert "inspector.pass_index == index" in source
+    assert "inspector.pass_id == row.pass_id" in source
 
 
 class _Logger:
@@ -440,48 +450,77 @@ class _SignalStub:
             callback(*args)
 
 
-class _ListItemStub:
-    def __init__(self, text: str) -> None:
-        self._text = text
-        self._flags = 0
-        self._data: dict[object, object] = {}
-        self._check_state = 0
-
-    def text(self) -> str:
-        return self._text
-
-    def flags(self) -> int:
-        return self._flags
-
-    def setFlags(self, flags: int) -> None:
-        self._flags = flags
-
-    def setData(self, role: object, value: object) -> None:
-        self._data[role] = value
-
-    def data(self, role: object) -> object:
-        return self._data.get(role)
-
-    def setCheckState(self, state: int) -> None:
-        self._check_state = state
-
-    def checkState(self) -> int:
-        return self._check_state
+class _WidgetStub:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        self.layout: _VBoxLayoutStub | None = None
 
 
-class _ListWidgetStub:
-    def __init__(self) -> None:
-        self._items: list[_ListItemStub] = []
-        self.itemChanged = _SignalStub()
+class _VBoxLayoutStub:
+    def __init__(self, parent: _WidgetStub) -> None:
+        parent.layout = self
+        self.widgets: list[_CheckBoxStub] = []
 
-    def addItem(self, item: _ListItemStub) -> None:
-        self._items.append(item)
+    def setContentsMargins(self, *margins: int) -> None:
+        del margins
 
-    def count(self) -> int:
-        return len(self._items)
+    def setSpacing(self, spacing: int) -> None:
+        del spacing
 
-    def item(self, index: int) -> _ListItemStub:
-        return self._items[index]
+    def addWidget(self, widget: _CheckBoxStub) -> None:
+        self.widgets.append(widget)
+
+    def addStretch(self, stretch: int) -> None:
+        del stretch
+
+
+class _CheckBoxStub:
+    def __init__(self, text: str, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        self.text = text
+        self._checked = False
+        self._blocked = False
+        self.toggled = _SignalStub()
+
+    def setChecked(self, checked: bool) -> None:
+        changed = self._checked != checked
+        self._checked = checked
+        if changed and not self._blocked:
+            self.toggled.emit(checked)
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def blockSignals(self, blocked: bool) -> None:
+        self._blocked = blocked
+
+
+class _ScrollAreaStub:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        self._widget: _WidgetStub | None = None
+        self.minimum_height: int | None = None
+        self.maximum_height: int | None = None
+
+    def setWidgetResizable(self, resizable: bool) -> None:
+        assert resizable is True
+
+    def setWidget(self, widget: _WidgetStub) -> None:
+        self._widget = widget
+
+    def widget(self) -> _WidgetStub:
+        assert self._widget is not None
+        return self._widget
+
+    def setMinimumHeight(self, height: int) -> None:
+        self.minimum_height = height
+
+    def setMaximumHeight(self, height: int) -> None:
+        self.maximum_height = height
+
+    def blockSignals(self, blocked: bool) -> bool:
+        del blocked
+        return False
 
 
 def _compiled_project_editor_method(name: str):
@@ -496,19 +535,59 @@ def _compiled_project_editor_method(name: str):
     namespace = {
         "FieldControlKind": FieldControlKind,
         "FieldEditorSpec": FieldEditorSpec,
+        "CheckableChoiceListWidget": _compiled_checkable_choice_list_widget(),
         "QtWidgets": types.SimpleNamespace(
-            QListWidget=_ListWidgetStub,
-            QListWidgetItem=_ListItemStub,
+            QCheckBox=_CheckBoxStub,
+            QScrollArea=_ScrollAreaStub,
+            QVBoxLayout=_VBoxLayoutStub,
+            QWidget=_WidgetStub,
         ),
-        "_checkable_flag": lambda: 1,
-        "_checked_state": lambda: 2,
-        "_unchecked_state": lambda: 0,
-        "_user_role": lambda: 32,
-        "qt_flag_or": lambda left, right: left | right,
         "typing": typing,
     }
     exec(compile(module, filename=str(PROJECT_EDITOR), mode="exec"), namespace)
     return getattr(namespace["ProjectEditorHarness"], name)
+
+
+def _compiled_checkable_choice_list_widget():
+    class _ChoiceList(_ScrollAreaStub):
+        def __init__(self, choices, selected, callback):
+            super().__init__()
+            self._choices = tuple(choices)
+            self._selected = set(selected)
+            self._callback = callback
+            self._boxes = {
+                choice: _CheckBoxStub(choice) for choice in self._choices
+            }
+            for choice, box in self._boxes.items():
+                box.setChecked(choice in self._selected)
+                box.toggled.connect(
+                    lambda checked, choice=choice: self._changed(choice, checked)
+                )
+            self.setMinimumHeight(24 + (len(self._choices) * 20))
+            self.setMaximumHeight(24 + (len(self._choices) * 20))
+
+        def choices(self):
+            return self._choices
+
+        def _changed(self, choice, checked):
+            previous = set(self._selected)
+            if checked:
+                self._selected.add(choice)
+            else:
+                self._selected.discard(choice)
+            if not self._callback(self.selected_choices()):
+                self._selected = previous
+                self._boxes[choice].blockSignals(True)
+                self._boxes[choice].setChecked(choice in previous)
+                self._boxes[choice].blockSignals(False)
+
+        def selected_choices(self):
+            return tuple(choice for choice in self._choices if choice in self._selected)
+
+        def checkbox_for(self, choice):
+            return self._boxes.get(choice)
+
+    return _ChoiceList
 
 
 def test_choice_backed_string_lists_emit_checkable_values_in_declared_order() -> None:
@@ -520,11 +599,12 @@ def test_choice_backed_string_lists_emit_checkable_values_in_declared_order() ->
         choices=("CANONICAL", "GLOBAL_ANALYZED", "STRUCTURED"),
         default=["CANONICAL"],
     )
-    calls: list[tuple[object, object]] = []
+    calls: list[tuple[int, object, object]] = []
     panel = SimpleNamespace(
-        _apply_typed_option=lambda selected_field, value: calls.append(
-            (selected_field, value)
-        )
+        _current_inspector=lambda: SimpleNamespace(pass_index=4),
+        _apply_typed_option_at=lambda pass_index, selected_field, value: (
+            calls.append((pass_index, selected_field, value)) or True
+        ),
     )
 
     control = _compiled_project_editor_method("_typed_option_control")(
@@ -533,22 +613,22 @@ def test_choice_backed_string_lists_emit_checkable_values_in_declared_order() ->
         ["STRUCTURED", "CANONICAL"],
     )
 
-    assert all(control.item(index).flags() & 1 for index in range(control.count()))
-    assert [control.item(index).checkState() for index in range(control.count())] == [
-        2,
-        0,
-        2,
-    ]
-    assert [control.item(index).data(32) for index in range(control.count())] == [
+    assert control.choices() == (
         "CANONICAL",
         "GLOBAL_ANALYZED",
         "STRUCTURED",
-    ]
+    )
+    boxes = [control.checkbox_for(choice) for choice in control.choices()]
+    assert [box.isChecked() for box in boxes] == [True, False, True]
+    assert control.minimum_height == 84
+    assert control.maximum_height == 84
 
-    control.item(1).setCheckState(2)
-    control.itemChanged.emit(control.item(1))
-    assert calls[-1] == (field, ["CANONICAL", "GLOBAL_ANALYZED", "STRUCTURED"])
+    boxes[1].setChecked(True)
+    assert calls[-1] == (
+        4,
+        field,
+        ["CANONICAL", "GLOBAL_ANALYZED", "STRUCTURED"],
+    )
 
-    control.item(0).setCheckState(0)
-    control.itemChanged.emit(control.item(0))
-    assert calls[-1] == (field, ["GLOBAL_ANALYZED", "STRUCTURED"])
+    boxes[0].setChecked(False)
+    assert calls[-1] == (4, field, ["GLOBAL_ANALYZED", "STRUCTURED"])

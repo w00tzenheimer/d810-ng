@@ -11,6 +11,7 @@ from d810.core.logging import getLogger
 from d810.families.registry import registered_families
 from d810.ui.config_v2_editing_logic import (
     ConfigV2EditorScreen,
+    ConfigV2FieldSectionView,
     ConfigV2InspectorPrimarySection,
     apply_rule_catalog_selection,
     apply_rule_catalog_selection_to_options,
@@ -22,8 +23,9 @@ from d810.ui.config_v2_editing_logic import (
     project_config_v2_document,
     project_config_v2_editor_view,
     project_serializer_rows,
-    typed_field_option_value,
-    transform_option_fields,
+)
+from d810.ui.panel_density_logic import (
+    primary_field_section_height,
 )
 from d810.ui.project_config_logic import ConfigV2FocusTarget
 
@@ -47,6 +49,19 @@ if IDA_AVAILABLE:
     from d810.ui.workbench_structured_details import JsonTreeEditor, RawJsonDialog
     from d810.ui.config_v2_transform_catalog import ConfigV2TransformCatalogWidget
     from d810.ui.config_v2_rule_catalog import ConfigV2RuleCatalogWidget
+    from d810.ui.checkable_choice_list import CheckableChoiceListWidget
+    from d810.ui.filterable_catalog_logic import (
+        CatalogColumnSpec,
+        CatalogRow,
+        CatalogSelectionMode,
+    )
+    try:
+        from d810.ui.filterable_catalog_widget import FilterableCatalogDialog
+    except (AttributeError, ImportError):
+        # Narrow fake-Qt loaders used by non-catalog panel tests may expose
+        # widgets without Qt's signal factory.  Defer the failure until the
+        # catalog action is actually invoked in that environment.
+        FilterableCatalogDialog = None  # type: ignore[assignment]
 
     WOPN_NOT_CLOSED_BY_ESC = getattr(
         ida_kernwin,
@@ -184,11 +199,15 @@ if IDA_AVAILABLE:
                 on_query_changed=self._rule_catalog_query_changed,
                 on_selection_changed=self._apply_rule_catalog_selection,
             )
-            self.typed_options_body = QtWidgets.QWidget()
-            self.typed_options_layout = QtWidgets.QFormLayout(self.typed_options_body)
-            self.typed_options_layout.setContentsMargins(0, 0, 0, 0)
-            self.typed_options_layout.setSpacing(4)
-            configure_left_aligned_form(self.typed_options_layout)
+            self.options_sections_body = QtWidgets.QWidget()
+            self.options_sections_layout = QtWidgets.QVBoxLayout(
+                self.options_sections_body
+            )
+            self.options_sections_layout.setContentsMargins(0, 0, 0, 0)
+            self.options_sections_layout.setSpacing(4)
+            self.options_scroll = QtWidgets.QScrollArea()
+            self.options_scroll.setWidgetResizable(True)
+            self.field_section_widgets: dict[str, typing.Any] = {}
             self.raw_contract_button = QtWidgets.QToolButton()
             self.raw_contract_button.setText("View contract...")
             self.pipeline_button = QtWidgets.QToolButton()
@@ -210,6 +229,7 @@ if IDA_AVAILABLE:
             self.pass_buttons["inspector"].clicked.connect(
                 self._open_selected_inspector
             )
+            self.pipeline_list.itemActivated.connect(self._activate_pipeline_item)
             self.raw_contract_button.clicked.connect(self._show_raw_contract)
             self.pipeline_button.clicked.connect(self._show_builder)
             self.details_toggle.toggled.connect(self._set_details_expanded)
@@ -302,7 +322,7 @@ if IDA_AVAILABLE:
             options_layout = QtWidgets.QVBoxLayout(self.options_group)
             options_layout.setContentsMargins(4, 4, 4, 4)
             options_layout.setSpacing(4)
-            options_layout.addWidget(self.typed_options_body)
+            options_layout.addWidget(self.options_sections_body)
             inspector_layout.addWidget(self.options_group, stretch=0)
             inspector_layout.addWidget(self.inspector_elastic_sink, stretch=0)
 
@@ -453,7 +473,7 @@ if IDA_AVAILABLE:
                 self._render()
             return shown
 
-        def _render(self) -> None:
+        def _refresh_projection(self) -> None:
             self._view = project_config_v2_document(self._draft)
             self._inspection_catalog = tuple(
                 self._adapter.inspection_catalog(
@@ -468,6 +488,19 @@ if IDA_AVAILABLE:
                 self._validation,
                 self._inspection_catalog,
             )
+
+        def _render_validation_state(self) -> None:
+            if self._validation.valid:
+                self.validation_label.setText(
+                    f"Ready | {len(self._validation.pass_ids)} pass(es)"
+                )
+            else:
+                self.validation_label.setText(
+                    f"Blocked | {len(self._validation.diagnostics)} diagnostic(s)"
+                )
+
+        def _render(self) -> None:
+            self._refresh_projection()
             destination = str(self._adapter.destination)
             try:
                 try:
@@ -515,14 +548,7 @@ if IDA_AVAILABLE:
             if self._selected_pass_index is not None:
                 self.pipeline_list.setCurrentRow(self._selected_pass_index)
 
-            if self._validation.valid:
-                self.validation_label.setText(
-                    f"Ready | {len(self._validation.pass_ids)} pass(es)"
-                )
-            else:
-                self.validation_label.setText(
-                    f"Blocked | {len(self._validation.diagnostics)} diagnostic(s)"
-                )
+            self._render_validation_state()
             self._render_routing()
             self._render_footer()
             self._render_raw_document_trees()
@@ -714,7 +740,29 @@ if IDA_AVAILABLE:
             del checked
             index = self._builder_selected_pass_index()
             if index is not None:
-                self._show_inspector(index)
+                self._open_inspector_at(index)
+
+        def _activate_pipeline_item(self, item: typing.Any) -> None:
+            index = self.pipeline_list.row(item)
+            self._open_inspector_at(index)
+
+        def _open_inspector_at(self, index: int) -> None:
+            if not 0 <= index < len(self._view.pipeline_rows):
+                self._set_status(f"Pass row {index} is not present in this draft.")
+                return
+            row = self._view.pipeline_rows[index]
+            if not 0 <= index < len(self._editor_view.inspectors):
+                self._set_status(f"Pass row {index} is not present in this draft.")
+                return
+            inspector = self._editor_view.inspectors[index]
+            if not (
+                inspector.pass_index == index and inspector.pass_id == row.pass_id
+            ):
+                self._set_status(f"Pass row {index} does not match this draft.")
+                return
+            self._selected_pass_index = index
+            self._screen = ConfigV2EditorScreen.INSPECTOR
+            self._render()
 
         def _current_inspector(self) -> typing.Any | None:
             index = self._selected_pass_index
@@ -734,10 +782,12 @@ if IDA_AVAILABLE:
             }
             page = pages.get(primary)
             catalog_primary = page is not None
-            options_primary = primary is ConfigV2InspectorPrimarySection.OPTIONS
-            has_primary = catalog_primary or options_primary
             self.primary_workspace.setVisible(catalog_primary)
-            self.inspector_elastic_sink.setVisible(not has_primary)
+            # Catalogs are true canvases and may consume the available height.
+            # Typed field sections are deliberately bounded and scroll within
+            # that bound; unused dock height belongs to the neutral sink rather
+            # than stretching an almost-empty Options frame.
+            self.inspector_elastic_sink.setVisible(not catalog_primary)
             if self._inspector_layout is not None:
                 primary_index = self._inspector_layout.indexOf(self.primary_workspace)
                 options_index = self._inspector_layout.indexOf(self.options_group)
@@ -749,12 +799,10 @@ if IDA_AVAILABLE:
                         primary_index, 1 if catalog_primary else 0
                     )
                 if options_index >= 0:
-                    self._inspector_layout.setStretch(
-                        options_index, 1 if options_primary else 0
-                    )
+                    self._inspector_layout.setStretch(options_index, 0)
                 if sink_index >= 0:
                     self._inspector_layout.setStretch(
-                        sink_index, 0 if has_primary else 1
+                        sink_index, 0 if catalog_primary else 1
                     )
             if page is not None:
                 if self.primary_workspace.indexOf(page) < 0:
@@ -887,16 +935,30 @@ if IDA_AVAILABLE:
         def _apply_edit(
             self,
             operation: typing.Callable[[], tuple[typing.Any, typing.Any]],
+            *,
+            rebuild_widgets: bool = True,
         ) -> bool:
             try:
                 self._draft, self._validation = operation()
             except Exception as exc:
                 logger.warning("Config-v2 edit failed: %s", exc)
-                self._render()
+                if rebuild_widgets:
+                    self._render()
                 self._set_status(f"Edit failed: {exc}")
                 return False
             self._set_status("")
-            self._render()
+            if rebuild_widgets:
+                self._render()
+            else:
+                # Choice-backed lists already display the user's new state.
+                # Refresh the authoritative draft projections and footer, but
+                # keep the reusable QScrollArea/QCheckBox choice control alive
+                # until the user leaves the Inspector. Rebuilding it from its
+                # own checkbox event can retire the C++ signal sender and
+                # crash the IDA process.
+                self._refresh_projection()
+                self._render_validation_state()
+                self._render_footer()
             return True
 
         def _transform_catalog_query_changed(self, query: str) -> None:
@@ -980,66 +1042,140 @@ if IDA_AVAILABLE:
             if inspector is None:
                 self._render()
                 return
+            self._apply_typed_option_at(inspector.pass_index, field, value)
+
+        def _apply_typed_option_at(
+            self,
+            pass_index: int,
+            field: FieldEditorSpec,
+            value: object,
+        ) -> bool:
+            if not 0 <= pass_index < len(self._editor_view.inspectors):
+                self._render()
+                return False
+            inspector = self._editor_view.inspectors[pass_index]
+            if inspector.pass_index != pass_index:
+                self._render()
+                return False
             try:
                 options = apply_typed_field_option(inspector.options, field, value)
             except ValueError as exc:
                 self._render()
                 self._set_status(f"Invalid value for {field.label}: {exc}")
-                return
-            self._apply_edit(
+                return False
+            return self._apply_edit(
                 lambda: self._adapter.set_pass_options(
                     self._draft,
-                    pass_index=inspector.pass_index,
+                    pass_index=pass_index,
                     options=options,
-                )
+                ),
+                rebuild_widgets=not (
+                    field.control is FieldControlKind.STRING_LIST
+                    and bool(field.choices)
+                ),
             )
 
         def _render_typed_options(self, inspector: typing.Any | None) -> None:
-            while self.typed_options_layout.count():
-                item = self.typed_options_layout.takeAt(0)
+            previous_primary = self.options_scroll.takeWidget()
+            if previous_primary is not None:
+                previous_primary.hide()
+                previous_primary.setParent(None)
+                previous_primary.deleteLater()
+            while self.options_sections_layout.count():
+                item = self.options_sections_layout.takeAt(0)
                 widget = item.widget()
-                if widget is not None:
+                if widget is not None and widget is not self.options_scroll:
                     widget.hide()
                     widget.setParent(None)
                     widget.deleteLater()
-            self.typed_options_body.setVisible(False)
+            self.field_section_widgets.clear()
+            self.options_scroll.setVisible(False)
+            self.options_sections_body.setVisible(False)
+            self._primary_options_enabled = False
             self.options_group.setVisible(False)
             if inspector is None:
                 return
-            entry = self._catalog_by_pass_id.get(inspector.pass_id)
-            spec = entry.editor_spec if entry is not None else None
-            fields = tuple(spec.fields) if spec is not None else ()
-            if inspector.transform_catalog is not None:
-                fields += transform_option_fields(
-                    inspector.transform_catalog.pass_editor_spec,
-                    set(inspector.transform_catalog.selected_ids),
-                )
-            if spec is None or not fields:
+            sections = tuple(inspector.field_sections)
+            if not sections:
                 return
-            self.typed_options_body.setVisible(True)
+            self.options_sections_body.setVisible(True)
             self.options_group.setVisible(True)
-            for field in fields:
-                control = self._typed_option_control(
-                    field,
-                    typed_field_option_value(inspector.options, field),
-                )
+            for section in sections:
+                if not section.entries:
+                    continue
+                group, _body = self._build_field_section_widget(section)
+                self.field_section_widgets[section.section_id] = group
+                is_primary = section.presentation.value == "primary"
+                stretch = 1 if is_primary and section.enabled else 0
+                if is_primary and section.enabled:
+                    self._primary_options_enabled = True
+                    visible_entries = tuple(
+                        entry
+                        for entry in section.entries
+                        if entry.visible or entry.is_controller
+                    )
+                    choice_row_counts = tuple(
+                        len(entry.field.choices)
+                        for entry in visible_entries
+                        if entry.field.control is FieldControlKind.STRING_LIST
+                        and entry.field.choices
+                    )
+                    scalar_rows = len(visible_entries) - len(choice_row_counts)
+                    self.options_scroll.setMaximumHeight(
+                        primary_field_section_height(
+                            scalar_rows=scalar_rows,
+                            choice_row_counts=choice_row_counts,
+                        )
+                    )
+                    self.options_scroll.setWidget(group)
+                    self.options_sections_layout.addWidget(
+                        self.options_scroll,
+                        stretch=stretch,
+                    )
+                    self.options_scroll.setVisible(True)
+                else:
+                    self.options_sections_layout.addWidget(group, stretch=stretch)
+
+        def _build_field_section_widget(
+            self,
+            section: ConfigV2FieldSectionView,
+        ) -> tuple[typing.Any, typing.Any]:
+            """Build one section from its immutable projection metadata."""
+
+            group = QtWidgets.QGroupBox(section.label)
+            group_layout = QtWidgets.QVBoxLayout(group)
+            group_layout.setContentsMargins(4, 4, 4, 4)
+            group_layout.setSpacing(4)
+            if section.description:
+                description = QtWidgets.QLabel(section.description)
+                description.setWordWrap(True)
+                group_layout.addWidget(description)
+            body = QtWidgets.QWidget(group)
+            section_form = QtWidgets.QFormLayout(body)
+            section_form.setContentsMargins(0, 0, 0, 0)
+            section_form.setSpacing(4)
+            configure_left_aligned_form(section_form)
+            group_layout.addWidget(body)
+            for entry in section.entries:
+                if not entry.visible and not entry.is_controller:
+                    continue
+                field = entry.field
+                control = self._typed_option_control(field, entry.value)
                 annotations: list[str] = []
                 if field.experimental:
                     annotations.append(f"Experimental: {field.experimental_reason}")
                 if field.read_only:
                     annotations.append("Fixed: this safety setting cannot be disabled.")
                 if field.advisory.value != "none":
-                    annotations.append(
-                        f"Advisory: {field.advisory_reason}"
-                    )
+                    annotations.append(f"Advisory: {field.advisory_reason}")
                 label = QtWidgets.QLabel(field.label)
                 label.setToolTip("\n".join((field.description, *annotations)))
                 control.setToolTip(field.description)
-                control.setEnabled(not field.read_only)
+                control.setEnabled(entry.editable)
                 if not annotations:
-                    self.typed_options_layout.addRow(label, control)
+                    section_form.addRow(label, control)
                     continue
-                annotated_control = QtWidgets.QWidget(self.typed_options_body)
+                annotated_control = QtWidgets.QWidget(body)
                 annotated_layout = QtWidgets.QVBoxLayout(annotated_control)
                 annotated_layout.setContentsMargins(0, 0, 0, 0)
                 annotated_layout.setSpacing(2)
@@ -1048,7 +1184,9 @@ if IDA_AVAILABLE:
                 annotation.setWordWrap(True)
                 annotation.setToolTip("\n".join(annotations))
                 annotated_layout.addWidget(annotation)
-                self.typed_options_layout.addRow(label, annotated_control)
+                section_form.addRow(label, annotated_control)
+            group_layout.addStretch(1)
+            return group, body
 
         def _typed_option_control(
             self,
@@ -1103,33 +1241,31 @@ if IDA_AVAILABLE:
                 )
                 return control
             if field.control is FieldControlKind.STRING_LIST and field.choices:
-                control = QtWidgets.QListWidget()
-                current_values = value if isinstance(value, (list, tuple)) else ()
-                current = {
-                    item for item in current_values if isinstance(item, str)
-                }
-                for choice in field.choices:
-                    item = QtWidgets.QListWidgetItem(choice)
-                    item.setFlags(qt_flag_or(item.flags(), _checkable_flag()))
-                    item.setData(_user_role(), choice)
-                    item.setCheckState(
-                        _checked_state()
-                        if choice in current
-                        else _unchecked_state()
+                selected = (
+                    tuple(str(item) for item in value)
+                    if isinstance(value, (list, tuple))
+                    else ()
+                )
+                def apply_changed_choices(
+                    selected_choices: tuple[str, ...],
+                    *,
+                    field: FieldEditorSpec = field,
+                ) -> bool:
+                    inspector = self._current_inspector()
+                    if inspector is None:
+                        return False
+                    return bool(
+                        self._apply_typed_option_at(
+                            inspector.pass_index,
+                            field,
+                            list(selected_choices),
+                        )
                     )
-                    control.addItem(item)
 
-                def checked_choices() -> list[str]:
-                    return [
-                        control.item(index).text()
-                        for index in range(control.count())
-                        if control.item(index).checkState() == _checked_state()
-                    ]
-
-                control.itemChanged.connect(
-                    lambda _item, field=field: self._apply_typed_option(
-                        field, checked_choices()
-                    )
+                control = CheckableChoiceListWidget(
+                    tuple(field.choices),
+                    selected,
+                    apply_changed_choices,
                 )
                 return control
             control = QtWidgets.QLineEdit()
@@ -1177,55 +1313,46 @@ if IDA_AVAILABLE:
 
         def _add_pass(self, checked: bool = False) -> None:
             del checked
-            dialog = QtWidgets.QDialog(self.parent)
-            dialog.setWindowTitle("Add pass")
-            query = QtWidgets.QLineEdit(dialog)
-            query.setPlaceholderText("Filter public pass catalog")
-            catalog_list = QtWidgets.QListWidget(dialog)
-
-            def populate(filter_text: str) -> None:
-                catalog_list.clear()
-                needle = str(filter_text).strip().casefold()
-                for entry in sorted(self._catalog, key=lambda item: item.pass_id):
-                    label = f"{entry.display_name} ({entry.pass_id})"
-                    if needle and needle not in label.casefold():
-                        continue
-                    item = QtWidgets.QListWidgetItem(label)
-                    item.setData(_user_role(), entry.pass_id)
-                    catalog_list.addItem(item)
-                if catalog_list.count():
-                    catalog_list.setCurrentRow(0)
-
-            populate("")
-            query.textChanged.connect(populate)
-            add_button = QtWidgets.QPushButton("Add")
-            cancel_button = QtWidgets.QPushButton("Cancel")
-            add_button.clicked.connect(dialog.accept)
-            cancel_button.clicked.connect(dialog.reject)
-            controls = QtWidgets.QHBoxLayout()
-            controls.addStretch(1)
-            controls.addWidget(cancel_button)
-            controls.addWidget(add_button)
-            layout = QtWidgets.QVBoxLayout(dialog)
-            layout.addWidget(query)
-            layout.addWidget(catalog_list, stretch=1)
-            layout.addLayout(controls)
+            columns = (
+                CatalogColumnSpec("include", "Include", searchable=False),
+                CatalogColumnSpec("pass", "Pass"),
+                CatalogColumnSpec("id", "ID"),
+                CatalogColumnSpec("purpose", "Purpose"),
+            )
+            rows = tuple(
+                CatalogRow(
+                    entry.pass_id,
+                    (
+                        entry.display_name,
+                        entry.pass_id,
+                        entry.purpose,
+                    ),
+                )
+                for entry in self._catalog
+            )
+            dialog = FilterableCatalogDialog(
+                "Add pass",
+                columns,
+                rows,
+                mode=CatalogSelectionMode.MULTI_CHECK,
+                action_verb="Add",
+                parent=self.parent,
+            )
             try:
                 accepted_code = QtWidgets.QDialog.DialogCode.Accepted
             except AttributeError:
                 accepted_code = QtWidgets.QDialog.Accepted
             if dialog.exec_() != accepted_code:
                 return
-            selected_item = catalog_list.currentItem()
-            if selected_item is None:
+            selected_pass_ids = tuple(dialog.selected_keys())
+            if not selected_pass_ids:
                 return
-            pass_id = selected_item.data(_user_role())
             selected = self._builder_selected_pass_index()
             insertion = None if selected is None else selected + 1
             self._apply_edit(
-                lambda: self._adapter.add_pass(
+                lambda: self._adapter.add_passes(
                     self._draft,
-                    str(pass_id),
+                    selected_pass_ids,
                     index=insertion,
                 )
             )

@@ -105,6 +105,24 @@ def test_catalog_is_sorted_but_draft_keeps_effective_execution_order() -> None:
     ]
 
 
+def test_public_catalog_assigns_one_specific_purpose_to_every_registered_pass() -> None:
+    catalog = _service().catalog()
+    generic = "Registered config-v2 pass."
+    purpose_by_id = {entry.pass_id: entry.purpose for entry in catalog}
+
+    assert len(purpose_by_id) == len(catalog)
+    assert set(purpose_by_id) == {entry.pass_id for entry in catalog}
+    assert catalog
+    assert all(purpose and purpose != generic for purpose in purpose_by_id.values())
+    assert purpose_by_id["recover_dispatcher"] == "Recover dispatcher structure and state."
+    assert purpose_by_id["mba-egraph"] == (
+        "Saturate selected MBA expressions with e-graph rewriting."
+    )
+    assert purpose_by_id["mba-solve"] == (
+        "Solve selected MBA expressions with proof-backed equivalence."
+    )
+
+
 def test_catalog_exposes_only_the_consolidated_constant_operation():
     registry = operational_config_v2_pass_registry()
     service = RecipeService(registry)

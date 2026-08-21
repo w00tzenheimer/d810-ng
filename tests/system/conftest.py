@@ -52,10 +52,20 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # IDA Pro Initialization
 # =============================================================================
-def _is_ida():
+def _is_ida(executable: str | None = None):
     """Crude check to see if running inside IDA."""
-    exec_name = pathlib.Path(sys.executable).name.lower()
+    exec_name = pathlib.Path(executable or sys.executable).name.lower()
     return exec_name.startswith("ida") or exec_name.startswith("idat")
+
+
+def _should_initialize_idalib(
+    native_gui_smoke: bool | None = None,
+    executable: str | None = None,
+) -> bool:
+    """Return whether pytest should initialize the separate idalib process."""
+    if native_gui_smoke is None:
+        native_gui_smoke = os.environ.get("D810_NATIVE_GUI_SMOKE") == "1"
+    return not (_is_ida(executable) or native_gui_smoke)
 
 
 # Try to import idapro first to initialize IDA Python environment
@@ -63,7 +73,7 @@ def _is_ida():
 # are in the IDA Pro environment.
 # See: https://docs.hex-rays.com/user-guide/idalib#using-the-ida-library-python-module
 
-if not _is_ida():
+if _should_initialize_idalib():
     try:
         import idapro
 

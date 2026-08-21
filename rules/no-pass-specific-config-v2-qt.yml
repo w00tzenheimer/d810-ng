@@ -1,0 +1,27 @@
+# Pass-owned metadata belongs in PassEditorSpec; the Qt adapter renders projections only.
+# Config-v2 editor Qt code must not grow pass-specific branches as new passes land.
+
+id: no-pass-specific-config-v2-qt
+language: python
+severity: error
+
+files:
+  - "src/d810/ui/config_v2_editing_panel.py"
+
+message: |
+  Do not branch on pass IDs in the config-v2 Qt adapter. Pass-owned metadata
+  belongs in PassEditorSpec; the Qt adapter renders projections only.
+
+rule:
+  any:
+    - pattern: '$OBJECT.pass_id == "$VALUE"'
+    - pattern: '"$VALUE" == $OBJECT.pass_id'
+    - pattern: 'pass_id == "$VALUE"'
+    - pattern: '"$VALUE" == pass_id'
+    - pattern: 'pass_id in {$$$PASS_IDS}'
+    - pattern: '$OBJECT.pass_id in {$$$PASS_IDS}'
+
+note: |
+  Keep pass IDs available for ordinary display and dictionary lookup. The
+  editor's pass-owned labels, grouping, and field paths must be declared in
+  PassEditorSpec and consumed through the portable projection.

@@ -9,6 +9,9 @@ from d810.core.pass_editor_spec import PassEditorSpec
 from d810.manager.workbench_models import OutcomeStatus
 
 
+DEFAULT_PASS_PURPOSE = "Registered config-v2 pass."
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class PassCatalogEntry:
     pass_id: str
@@ -24,6 +27,7 @@ class PassCatalogEntry:
     configured: bool
     editor_spec: PassEditorSpec
     workflow_stage: StrategyWorkflowStage = StrategyWorkflowStage.CANONICAL_PIPELINE
+    purpose: str = DEFAULT_PASS_PURPOSE
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -104,6 +108,7 @@ class RecipeCommandResult:
 
 __all__ = [
     "FunctionPipelineOverride",
+    "DEFAULT_PASS_PURPOSE",
     "PassCatalogEntry",
     "PipelineRecipeDraft",
     "RecipeCommandRequest",

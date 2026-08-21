@@ -226,6 +226,13 @@ def _automation_environment(run: list[str]) -> str:
     return values[0].removeprefix(prefix)
 
 
+def _ida_arguments_after_startup(run: list[str], image: str) -> list[str]:
+    image_index = run.index(image)
+    assert run[image_index + 1] == "-lc"
+    assert run[image_index + 3] == "--"
+    return run[image_index + 4 :]
+
+
 def _audit_path_for_request(request_path: Path) -> Path:
     request_id = request_path.name.removeprefix("automation-request-").removesuffix(
         ".json"
@@ -262,11 +269,41 @@ def test_default_launch_mounts_root_checkout_portable_d810_state_and_samples(
     ):
         _assert_pair(run, "-v", value)
     assert f"{paths['ida_user']}:/root/.idapro" not in run
-    _assert_pair(run, "--entrypoint", "/app/ida/entrypoint.sh")
-    assert run[-1] == GUI_IMAGE
+    _assert_pair(run, "--entrypoint", "/bin/bash")
+    assert run[run.index("--entrypoint") + 2] == GUI_IMAGE
     assert f"checkout:  {paths['repo']}" in result.stdout
     assert f"d810 cfg:  {paths['d810_config']}" in result.stdout
     assert f"d810 logs: {paths['d810_logs']}" in result.stdout
+
+
+def test_gui_launch_prepares_native_speedups_before_ida_entrypoint(
+    tmp_path: Path,
+) -> None:
+    result, calls, _paths = _run(tmp_path, "--open-config")
+
+    assert result.returncode == 0, result.stderr
+    run = calls[-1]
+    _assert_pair(run, "--entrypoint", "/bin/bash")
+    command = run[run.index("-lc") + 1]
+    assert "D810_BUILD_SPEEDUPS=1" in command
+    assert 'install -e "/work[speedups]" -q' in command
+    assert "/work.[speedups]" not in command
+    assert "inspect_native_extensions" in command
+    assert command.index("inspect_native_extensions") < command.index(
+        "exec /app/ida/entrypoint.sh"
+    )
+
+
+def test_gui_speedup_preflight_fails_closed_before_ida_entrypoint(
+    tmp_path: Path,
+) -> None:
+    result, calls, _paths = _run(tmp_path, "--open-config")
+
+    assert result.returncode == 0, result.stderr
+    run = calls[-1]
+    command = run[run.index("-lc") + 1]
+    assert "native speedup preflight failed" in command
+    assert "exit 1" in command
 
 
 def test_plain_launch_has_no_mcp_mount_environment_publication_or_intent(
@@ -743,7 +780,8 @@ def test_default_image_is_the_baked_d810_x11_runtime(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert GUI_RUNTIME_IMAGE in calls[0]
-    assert calls[-1][-1] == GUI_RUNTIME_IMAGE
+    run = calls[-1]
+    assert run[run.index("--entrypoint") + 2] == GUI_RUNTIME_IMAGE
 
 
 def test_image_without_gui_runtime_dependencies_is_rejected(tmp_path: Path) -> None:
@@ -797,8 +835,7 @@ def test_worktree_launch_copies_sample_database_and_preserves_other_ida_argument
     assert (paths["samples"] / "database with space.i64").read_text(
         encoding="utf-8"
     ) == "sample"
-    image_index = run.index(GUI_IMAGE)
-    assert run[image_index + 1 :] == [
+    assert _ida_arguments_after_startup(run, GUI_IMAGE) == [
         "-A",
         f"/work/.tmp/ida-gui/{copies[0].name}",
     ]
@@ -838,8 +875,9 @@ def test_open_config_writes_exact_request_and_injects_only_named_bootstrap(
     }
     run = calls[-1]
     assert _automation_environment(run) == (f"/work/.tmp/ida-gui/{request_path.name}")
-    image_index = run.index(GUI_IMAGE)
-    assert run[image_index + 1 :] == ["-S/work/tools/scripts/ida_gui_bootstrap.py"]
+    assert _ida_arguments_after_startup(run, GUI_IMAGE) == [
+        "-S/work/tools/scripts/ida_gui_bootstrap.py"
+    ]
     assert list(request_path.parent.glob("*.tmp")) == []
 
 
@@ -876,8 +914,7 @@ def test_open_workbench_validates_function_and_records_copied_idb_context(
     }
     run = calls[-1]
     assert _automation_environment(run).endswith(request_path.name)
-    image_index = run.index(GUI_IMAGE)
-    assert run[image_index + 1 :] == [
+    assert _ida_arguments_after_startup(run, GUI_IMAGE) == [
         "-S/work/tools/scripts/ida_gui_bootstrap.py",
         "-A",
         f"/work/.tmp/ida-gui/{copies[0].name}",
@@ -907,8 +944,7 @@ def test_both_named_flags_are_config_first_and_preserve_post_boundary_arguments(
     ]
     assert document["request"]["function_selector"] == "target"
     run = calls[-1]
-    image_index = run.index(GUI_IMAGE)
-    assert run[image_index + 1 :] == [
+    assert _ida_arguments_after_startup(run, GUI_IMAGE) == [
         "-S/work/tools/scripts/ida_gui_bootstrap.py",
         "--open-config",
         "--function",
@@ -930,8 +966,7 @@ def test_plain_launch_writes_no_request_and_preserves_caller_script_argument(
     assert not (paths["repo"] / ".tmp" / "ida-gui").exists()
     run = calls[-1]
     assert not any(value.startswith("D810_GUI_AUTOMATION_REQUEST=") for value in run)
-    image_index = run.index(GUI_IMAGE)
-    assert run[image_index + 1 :] == [
+    assert _ida_arguments_after_startup(run, GUI_IMAGE) == [
         "-S/work/caller.py",
         "--open-workbench",
     ]

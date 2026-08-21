@@ -12,6 +12,7 @@ from d810.core.pass_editor_spec import (
     FieldControlKind,
     FieldEditorSpec,
     PassEditorKind,
+    PassEditorSectionPresentation,
     PassEditorSpec,
 )
 from d810.core.typing import AbstractSet
@@ -22,24 +23,6 @@ from d810.manager.config_v2_edit_models import (
 )
 from d810.manager.effective_pipeline_schedule import normalize_maturity
 from d810.manager.workbench_recipe_models import PassCatalogEntry
-
-
-_PASS_PURPOSES = {
-    "constant-simplification": "Fold provably constant program values.",
-    "mba-simplify": "Simplify selected mixed-boolean arithmetic transforms.",
-    "recover-dispatcher": "Recover dispatcher structure and state.",
-    "recover-state-transitions": "Recover state-transition edges.",
-    "plan-semantic-regions": "Plan semantic regions for safe lowering.",
-    "lower-state-machine": "Lower a recovered state machine.",
-    "cleanup-residual-dispatcher": "Remove residual dispatcher structure.",
-    "jump-fixer": "Repair direct control-flow jumps after rewrites.",
-    "indirect-call-resolver": "Resolve eligible indirect calls.",
-    "identity-call-resolver": "Resolve identity-preserving indirect calls.",
-    "indirect-branch-resolver": "Resolve eligible indirect branches.",
-    "single-trip-loop-peel": "Peel a verified single-trip loop.",
-    "simple-flattening-cleanup-unflattener": "Remove simple residual flattening structure.",
-    "mba-state-preconditioner": "Prepare state facts for MBA-backed recovery.",
-}
 
 
 def _project_maturity(value: object) -> tuple[str, str | None]:
@@ -249,6 +232,26 @@ class ConfigV2RuleCatalogView:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2FieldSectionEntryView:
+    field: FieldEditorSpec
+    value: object
+    is_controller: bool
+    editable: bool
+    visible: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2FieldSectionView:
+    section_id: str
+    label: str
+    description: str
+    presentation: PassEditorSectionPresentation
+    enabled: bool
+    controller_field_id: str | None
+    entries: tuple[ConfigV2FieldSectionEntryView, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class ConfigV2PassInspectorView:
     pass_index: int
     pass_id: str
@@ -259,6 +262,7 @@ class ConfigV2PassInspectorView:
     options: dict[str, object]
     contract: dict[str, object]
     contract_chips: tuple[tuple[str, str], ...]
+    field_sections: tuple[ConfigV2FieldSectionView, ...] = ()
     # Rule catalogs were added after the lightweight pipeline overview began
     # constructing inspector rows.  Keep the presentation-only addition
     # optional so an already-loaded overview cannot fail during a hot reload.
@@ -911,6 +915,49 @@ def typed_field_option_value(
     return value
 
 
+def project_field_sections(
+    spec: PassEditorSpec,
+    options: dict[str, object],
+    *,
+    selected_transform_ids: AbstractSet[str] = frozenset(),
+) -> tuple[ConfigV2FieldSectionView, ...]:
+    """Project pass-owned field sections into immutable presentation views."""
+
+    fields_by_id = {field.field_id: field for field in spec.fields}
+    sections: list[ConfigV2FieldSectionView] = []
+    for section in spec.sections:
+        controller_enabled = True
+        if section.controller_field_id is not None:
+            controller_field = fields_by_id[section.controller_field_id]
+            controller_enabled = typed_field_option_value(options, controller_field) is True
+        entries: list[ConfigV2FieldSectionEntryView] = []
+        for field_id in section.field_ids:
+            field = fields_by_id[field_id]
+            is_controller = field.field_id == section.controller_field_id
+            visible = is_controller or controller_enabled
+            entries.append(
+                ConfigV2FieldSectionEntryView(
+                    field=field,
+                    value=copy.deepcopy(typed_field_option_value(options, field)),
+                    is_controller=is_controller,
+                    editable=visible and not field.read_only,
+                    visible=visible,
+                )
+            )
+        sections.append(
+            ConfigV2FieldSectionView(
+                section_id=section.section_id,
+                label=section.label,
+                description=section.description,
+                presentation=section.presentation,
+                enabled=controller_enabled,
+                controller_field_id=section.controller_field_id,
+                entries=tuple(entries),
+            )
+        )
+    return tuple(sections)
+
+
 def _normalize_typed_field_value(field: FieldEditorSpec, value: object) -> object:
     if field.control is FieldControlKind.BOOLEAN:
         return bool(value)
@@ -1038,15 +1085,14 @@ def project_pass_inspector_layout(
     rule_catalog: ConfigV2RuleCatalogView | None,
     transform_catalog: ConfigV2TransformCatalogView | None,
     selected_transform_ids: AbstractSet[str],
+    field_sections: tuple[ConfigV2FieldSectionView, ...] = (),
 ) -> ConfigV2PassInspectorLayoutView:
-    option_fields = tuple(spec.fields) + transform_option_fields(
-        spec, selected_transform_ids
-    )
+    transform_fields = transform_option_fields(spec, selected_transform_ids)
     if rule_catalog is not None:
         primary = ConfigV2InspectorPrimarySection.RULES
     elif transform_catalog is not None:
         primary = ConfigV2InspectorPrimarySection.TRANSFORMS
-    elif option_fields:
+    elif field_sections or transform_fields:
         primary = ConfigV2InspectorPrimarySection.OPTIONS
     else:
         primary = ConfigV2InspectorPrimarySection.NONE
@@ -1054,7 +1100,7 @@ def project_pass_inspector_layout(
         primary_section=primary,
         show_rule_catalog=rule_catalog is not None,
         show_transform_catalog=transform_catalog is not None,
-        show_options=bool(option_fields),
+        show_options=bool(field_sections or transform_fields),
         show_summary_message=primary is ConfigV2InspectorPrimarySection.NONE,
         summary_message=(
             "This pass exposes no editable controls."
@@ -1101,7 +1147,12 @@ def project_config_v2_editor_view(
             if catalog_entry.editor_spec.kind is PassEditorKind.RULE_CATALOG
             else None
         )
-        purpose = _PASS_PURPOSES.get(pass_id, "Registered config-v2 pass.")
+        field_sections = project_field_sections(
+            catalog_entry.editor_spec,
+            options,
+            selected_transform_ids=(selected_transform_ids or frozenset()),
+        )
+        purpose = catalog_entry.purpose
         configured_maturities = options.get("maturities")
         provider_maturities: tuple[str, ...] = ()
         if isinstance(configured_maturities, list) and configured_maturities:
@@ -1155,6 +1206,7 @@ def project_config_v2_editor_view(
                     rule_catalog=rule_catalog,
                     transform_catalog=transform_catalog,
                     selected_transform_ids=(selected_transform_ids or frozenset()),
+                    field_sections=field_sections,
                 ),
                 options=options,
                 contract=_contract(catalog_entry),
@@ -1163,6 +1215,7 @@ def project_config_v2_editor_view(
                     ("Backend", catalog_entry.backend_route),
                     ("Safety", catalog_entry.safety_policy),
                 ),
+                field_sections=field_sections,
             )
         )
 
@@ -1226,6 +1279,8 @@ __all__ = [
     "ConfigV2EditorScreen",
     "ConfigV2EditorView",
     "ConfigV2FooterView",
+    "ConfigV2FieldSectionEntryView",
+    "ConfigV2FieldSectionView",
     "ConfigV2InspectorPrimarySection",
     "ConfigV2PassInspectorLayoutView",
     "ConfigV2PassInspectorView",
@@ -1249,6 +1304,7 @@ __all__ = [
     "config_v2_action_states",
     "project_config_v2_document",
     "project_config_v2_editor_view",
+    "project_field_sections",
     "project_pass_inspector_layout",
     "project_rule_catalog",
     "project_transform_catalog",

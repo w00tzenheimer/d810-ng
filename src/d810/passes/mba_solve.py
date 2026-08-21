@@ -33,10 +33,12 @@ from d810.core.pass_ids import PassId
 from d810.core.pass_editor_spec import (
     FieldControlKind,
     FieldEditorSpec,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
     PassEditorSpec,
 )
 from d810.core.typing import Mapping, Protocol
-from d810.ir.maturity import IRMaturity
+from d810.ir.maturity import IRMaturity, IR_MATURITY_ORDER
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PassResult,
@@ -387,6 +389,7 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                     control=FieldControlKind.STRING_LIST,
                     description="Hex-Rays maturities at which solver work may run.",
                     default=list(DEFAULT_MATURITIES),
+                    choices=tuple(maturity.name for maturity in IR_MATURITY_ORDER),
                 ),
                 FieldEditorSpec(
                     field_id="auto_install_solver",
@@ -399,7 +402,22 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                     ),
                     default=False,
                 ),
-            )
+            ),
+            sections=(
+                PassEditorSectionSpec(
+                    "solver",
+                    "Solver",
+                    ("max_leaves", "require_proof", "maturities"),
+                    presentation=PassEditorSectionPresentation.PRIMARY,
+                ),
+                PassEditorSectionSpec(
+                    "installation",
+                    "Installation",
+                    ("auto_install_solver",),
+                    controller_field_id="auto_install_solver",
+                    presentation=PassEditorSectionPresentation.SECONDARY,
+                ),
+            ),
         ),
     )
     return registry

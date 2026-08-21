@@ -724,6 +724,29 @@ if [ -n "$MCP_ENABLED" ]; then
   CONTAINER_PYTHONPATH="/root/.idapro/plugins/ida-pro-mcp/src/ida_pro_mcp:$CONTAINER_PYTHONPATH"
 fi
 
+GUI_STARTUP_COMMAND='set -eu
+IDA_VENV_PYTHON=/app/ida/.venv/bin/python
+IDA_VENV_PIP=/app/ida/.venv/bin/pip
+export IDA_PREFIX=/app/ida
+export IDA_INSTALL_DIR=/app/ida
+export D810_LIBCLANG_PATH=/app/ida/libclang.so
+export PYTHONPATH="/root/.idapro/plugins/d810/src:/app/ida/python${PYTHONPATH:+:$PYTHONPATH}"
+
+probe_native_speedups() {
+  "$IDA_VENV_PYTHON" -c "from d810.speedups.install import inspect_native_extensions; result = inspect_native_extensions(); print(result.detail); raise SystemExit(0 if result.ok else 1)"
+}
+
+if ! probe_native_speedups; then
+  echo "[speedups] native extensions absent; building mounted worktree"
+  D810_BUILD_SPEEDUPS=1 "$IDA_VENV_PIP" install -e "/work[speedups]" -q
+fi
+if ! probe_native_speedups; then
+  echo "ERROR: native speedup preflight failed for mounted worktree" >&2
+  exit 1
+fi
+echo "[speedups] native extensions ready"
+exec /app/ida/entrypoint.sh "$@"'
+
 DOCKER_ARGS=(
   run --rm
   --memory "$DOCKER_MEMORY"
@@ -758,7 +781,7 @@ fi
 if [ -d "$SAMPLES_DIR" ]; then
   DOCKER_ARGS+=( -v "$SAMPLES_DIR:/samples/bins:ro" )
 fi
-DOCKER_ARGS+=( --entrypoint /app/ida/entrypoint.sh "$DOCKER_IMAGE" )
+DOCKER_ARGS+=( --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$GUI_STARTUP_COMMAND" -- )
 if [ "${#IDA_ARGS[@]}" -gt 0 ]; then
   DOCKER_ARGS+=( "${IDA_ARGS[@]}" )
 fi

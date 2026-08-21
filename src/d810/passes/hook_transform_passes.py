@@ -9,6 +9,8 @@ from d810.core.pass_editor_spec import (
     AdvisoryTone,
     FieldControlKind,
     FieldEditorSpec,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
     PassEditorSpec,
     RuleEditorSpec,
     TransformCost,
@@ -479,14 +481,69 @@ _EDITOR_FIELDS_BY_PASS_ID: Mapping[str, tuple[FieldEditorSpec, ...]] = {
     ),
 }
 
+_EDITOR_SECTIONS_BY_PASS_ID: Mapping[str, tuple[PassEditorSectionSpec, ...]] = {
+    "identity-call-resolver": (
+        PassEditorSectionSpec(
+            "identity-call-resolution",
+            "Identity call resolution",
+            ("enable_experimental", "max_trampoline_depth", "max_search_instructions"),
+            controller_field_id="enable_experimental",
+            presentation=PassEditorSectionPresentation.PRIMARY,
+        ),
+    ),
+    "indirect-branch-resolver": (
+        PassEditorSectionSpec(
+            "indirect-branch-resolution",
+            "Indirect branch resolution",
+            ("table_entry_size", "candidate_max_depth"),
+            presentation=PassEditorSectionPresentation.PRIMARY,
+        ),
+    ),
+    "indirect-call-resolver": (
+        PassEditorSectionSpec(
+            "indirect-call-resolution",
+            "Indirect call resolution",
+            ("table_entry_size",),
+            presentation=PassEditorSectionPresentation.PRIMARY,
+        ),
+    ),
+    "mba-state-preconditioner": (
+        PassEditorSectionSpec(
+            "mba-state-preconditioning",
+            "MBA state preconditioning",
+            ("max_optimize_local_rounds", "require_unflattening_gate", "verify_after_round"),
+            presentation=PassEditorSectionPresentation.PRIMARY,
+        ),
+    ),
+    JUMP_FIXER_PASS_ID: (
+        PassEditorSectionSpec(
+            "jump-fixer-options",
+            "Jump fixer options",
+            (
+                "dump_intermediate_microcode",
+                "preserve_z3_discarded_side_effects",
+                "preserve_z3_discarded_side_effect_depth",
+                "preserve_z3_discarded_side_effect_constants",
+            ),
+            controller_field_id="preserve_z3_discarded_side_effects",
+            presentation=PassEditorSectionPresentation.SECONDARY,
+        ),
+    ),
+}
+
 
 def _editor_spec_for(pass_id: str) -> PassEditorSpec:
     """Return the closed typed editor contract for one public hook pass."""
     fields = _EDITOR_FIELDS_BY_PASS_ID.get(pass_id, ())
+    sections = _EDITOR_SECTIONS_BY_PASS_ID.get(pass_id, ())
     if pass_id == JUMP_FIXER_PASS_ID:
-        return PassEditorSpec.rule_catalog(JUMP_FIXER_RULE_SPECS, fields=fields)
+        return PassEditorSpec.rule_catalog(
+            JUMP_FIXER_RULE_SPECS,
+            fields=fields,
+            sections=sections,
+        )
     if fields:
-        return PassEditorSpec.fields_editor(fields)
+        return PassEditorSpec.fields_editor(fields, sections=sections)
     return PassEditorSpec.summary()
 
 

@@ -1,0 +1,32 @@
+id: no-pass-specific-config-v2-qt
+
+valid:
+  - |
+      def render_label(inspector, labels):
+          return labels.get(inspector.pass_id, inspector.pass_id)
+  - |
+      def render_index(pass_id, index):
+          return index[pass_id]
+  - |
+      def render_display(inspector):
+          return f"Pass {inspector.pass_id}"
+  - |
+      def render_field(field_id):
+          return field_id in {"enabled", "limits"}
+
+invalid:
+  - |
+      def render(inspector):
+          if inspector.pass_id == "constant-simplification":
+              return "Constants"
+          return inspector.display_name
+  - |
+      def render(pass_id):
+          if pass_id in {"mba-solve", "constant-simplification"}:
+              return "special"
+          return "generic"
+  - |
+      def render(pass_id):
+          if pass_id == "mba-solve":
+              return "special"
+          return "generic"

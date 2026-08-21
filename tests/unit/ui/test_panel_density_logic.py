@@ -4,7 +4,15 @@ import ast
 from pathlib import Path
 
 import d810.ui.panel_density_logic as panel_density_logic
-from d810.ui.panel_density_logic import MIN_TREE_ROWS, plan_panel_density
+from d810.ui.panel_density_logic import (
+    CHOICE_LIST_MAX_HEIGHT,
+    CHOICE_LIST_MIN_HEIGHT,
+    FIELD_SECTION_MAX_HEIGHT,
+    MIN_TREE_ROWS,
+    choice_list_height,
+    plan_panel_density,
+    primary_field_section_height,
+)
 
 
 ROW_PX = 20
@@ -96,4 +104,35 @@ def test_logic_module_imports_no_ida_or_qt_modules() -> None:
 
     assert imported_roots.isdisjoint(
         {"idaapi", "ida_kernwin", "ida_hexrays", "PyQt5", "PySide6"}
+    )
+
+
+def test_choice_list_height_clamps_zero_and_small_row_counts_to_minimum() -> None:
+    assert choice_list_height(0) == CHOICE_LIST_MIN_HEIGHT
+    assert choice_list_height(1) == CHOICE_LIST_MIN_HEIGHT
+
+
+def test_choice_list_height_scales_dense_choice_lists_without_screen_geometry() -> None:
+    four_rows = choice_list_height(4)
+    twelve_rows = choice_list_height(12)
+
+    assert CHOICE_LIST_MIN_HEIGHT < four_rows < CHOICE_LIST_MAX_HEIGHT
+    assert twelve_rows == CHOICE_LIST_MAX_HEIGHT
+
+
+def test_choice_list_height_rejects_negative_visible_row_counts() -> None:
+    assert choice_list_height(-1) == CHOICE_LIST_MIN_HEIGHT
+
+
+def test_sparse_primary_field_section_uses_content_height_not_full_viewport() -> None:
+    assert primary_field_section_height(scalar_rows=3, choice_row_counts=()) < 240
+
+
+def test_dense_primary_field_section_caps_height_and_scrolls_internally() -> None:
+    assert (
+        primary_field_section_height(
+            scalar_rows=3,
+            choice_row_counts=(8, 12),
+        )
+        == FIELD_SECTION_MAX_HEIGHT
     )
