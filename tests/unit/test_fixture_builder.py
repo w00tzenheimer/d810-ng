@@ -110,39 +110,82 @@ def _extract_hodur_crt_branches(source: str) -> tuple[str, str]:
     """Extract the two branches of Hodur's outer CRT preprocessor guard."""
 
     lines = source.splitlines(keepends=True)
-    outer = "#if defined(D810_FREESTANDING_FIXTURE)"
-    try:
-        start = next(index for index, line in enumerate(lines) if line.strip() == outer)
-    except StopIteration as exc:
-        raise ValueError("missing outer freestanding guard") from exc
+    directive_re = re.compile(
+        r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$"
+    )
+    target_re = re.compile(
+        r"^\s*defined\s*\(\s*D810_FREESTANDING_FIXTURE\s*\)\s*$"
+    )
+    stack: list[dict[str, int | bool | None]] = []
+    target: dict[str, int | bool | None] | None = None
+    target_occurrences = 0
 
-    depth = 1
-    else_index: int | None = None
-    for index in range(start + 1, len(lines)):
-        directive = lines[index].strip()
-        if directive.startswith(("#if ", "#ifdef ", "#ifndef ")):
-            depth += 1
-        elif directive.startswith("#elif "):
-            if depth == 1:
-                raise ValueError("outer freestanding guard must not use #elif")
-        elif directive == "#else":
-            if depth == 1:
-                if else_index is not None:
-                    raise ValueError("duplicate outer #else")
-                else_index = index
-        elif directive == "#endif":
-            depth -= 1
-            if depth == 0:
-                if else_index is None:
-                    raise ValueError("outer freestanding guard is missing #else")
-                return (
-                    "".join(lines[start + 1 : else_index]),
-                    "".join(lines[else_index + 1 : index]),
-                )
-            if depth < 0:
-                raise ValueError("unbalanced preprocessor directives")
+    for index, line in enumerate(lines):
+        match = directive_re.match(line)
+        if match is None:
+            continue
+        kind, expression = match.groups()
+        expression = expression.strip()
+        if kind in {"if", "ifdef", "ifndef"}:
+            is_target = kind == "if" and target_re.fullmatch(expression) is not None
+            if is_target:
+                target_occurrences += 1
+                if target_occurrences > 1 or stack:
+                    raise ValueError("target guard must occur exactly once at top level")
+                target = {
+                    "start": index,
+                    "else": None,
+                    "end": None,
+                    "has_else": False,
+                }
+            stack.append(
+                {
+                    "seen_else": False,
+                    "target": is_target,
+                }
+            )
+            continue
 
-    raise ValueError("unterminated outer freestanding guard")
+        if not stack:
+            raise ValueError(f"unmatched #{kind}")
+        frame = stack[-1]
+        if kind == "elif":
+            if bool(frame["seen_else"]):
+                raise ValueError("#elif after #else")
+            if bool(frame["target"]):
+                raise ValueError("target guard must not use #elif")
+            if target_re.fullmatch(expression) is not None:
+                target_occurrences += 1
+            continue
+        if kind == "else":
+            if bool(frame["seen_else"]):
+                raise ValueError("duplicate #else")
+            frame["seen_else"] = True
+            if bool(frame["target"]):
+                assert target is not None
+                target["else"] = index
+                target["has_else"] = True
+            continue
+
+        stack.pop()
+        if bool(frame["target"]):
+            assert target is not None
+            target["end"] = index
+
+    if stack:
+        raise ValueError("unterminated preprocessor directive")
+    if target_occurrences != 1 or target is None:
+        raise ValueError("missing target guard")
+    if not bool(target["has_else"]):
+        # ``has_else`` is populated below from the captured delimiter.
+        if target["else"] is None:
+            raise ValueError("target guard is missing #else")
+    if target["else"] is None or target["end"] is None:
+        raise ValueError("target guard is incomplete")
+    start = int(target["start"])
+    else_index = int(target["else"])
+    end = int(target["end"])
+    return "".join(lines[start + 1 : else_index]), "".join(lines[else_index + 1 : end])
 
 
 def test_hodur_crt_shim_is_only_enabled_for_local_freestanding_build():
@@ -167,28 +210,66 @@ def test_hodur_crt_shim_is_only_enabled_for_local_freestanding_build():
     [
         "#if defined(D810_FREESTANDING_FIXTURE)\n"
         "#if INNER\n"
-        "broken\n"
+        "nested\n"
         "#else\n"
-        "still broken\n"
+        "nested else\n"
         "#else\n"
-        "authoritative\n"
+        "duplicate nested else\n"
         "#endif\n",
         "#if defined(D810_FREESTANDING_FIXTURE)\n"
         "freestanding\n"
         "#else\n"
         "authoritative\n"
-        "#else\n"
-        "duplicate\n"
+        "#elif(0)\n"
+        "duplicate target branch\n"
         "#endif\n",
         "#if defined(D810_FREESTANDING_FIXTURE)\n"
         "freestanding\n"
+        "#if(INNER)\n"
+        "nested\n"
+        "#endif\n"
         "#else\n"
         "authoritative\n",
+        "#if defined(D810_FREESTANDING_FIXTURE)\n"
+        "freestanding\n"
+        "#elif(0)\n"
+        "authoritative\n"
+        "#endif\n",
+        "#if defined(D810_FREESTANDING_FIXTURE)\n"
+        "freestanding\n"
+        "#else\n"
+        "authoritative\n"
+        "#endif\n"
+        "#if defined(D810_FREESTANDING_FIXTURE)\n"
+        "duplicate target\n",
+        "#if defined(D810_FREESTANDING_FIXTURE)\n"
+        "freestanding\n"
+        "#else\n"
+        "authoritative\n"
+        "#endif\n"
+        "#endif\n",
+        "#if defined(D810_FREESTANDING_FIXTURE)\n"
+        "freestanding\n"
+        "#else\n"
+        "authoritative\n"
+        "#else\n"
+        "#endif\n",
     ],
 )
 def test_hodur_crt_branch_extractor_rejects_malformed_nesting(source: str) -> None:
     with pytest.raises(ValueError):
         _extract_hodur_crt_branches(source)
+
+
+def test_hodur_crt_branch_extractor_accepts_flexible_directive_spacing() -> None:
+    source = (
+        "\t# if\tdefined ( D810_FREESTANDING_FIXTURE )\n"
+        "freestanding\n\t# else\nauthoritative\n\t# endif\n"
+    )
+    assert _extract_hodur_crt_branches(source) == (
+        "freestanding\n",
+        "authoritative\n",
+    )
 
 
 def test_detects_slot_const_and_reg_from_committed_asm():
