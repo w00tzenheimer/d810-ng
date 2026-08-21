@@ -10,6 +10,8 @@ import re
 import struct
 from pathlib import Path
 
+import pytest
+
 from d810.testing.fixture_builder import CallSiteFold, detect_indirect_call_folds
 
 REPO = Path(__file__).resolve().parents[2]
@@ -104,18 +106,50 @@ def test_masm_builder_exports_public_c_text_symbols():
     assert 'export_flags+=("/EXPORT:$symbol")' in build_script
 
 
+def _extract_hodur_crt_branches(source: str) -> tuple[str, str]:
+    """Extract the two branches of Hodur's outer CRT preprocessor guard."""
+
+    lines = source.splitlines(keepends=True)
+    outer = "#if defined(D810_FREESTANDING_FIXTURE)"
+    try:
+        start = next(index for index, line in enumerate(lines) if line.strip() == outer)
+    except StopIteration as exc:
+        raise ValueError("missing outer freestanding guard") from exc
+
+    depth = 1
+    else_index: int | None = None
+    for index in range(start + 1, len(lines)):
+        directive = lines[index].strip()
+        if directive.startswith(("#if ", "#ifdef ", "#ifndef ")):
+            depth += 1
+        elif directive.startswith("#elif "):
+            if depth == 1:
+                raise ValueError("outer freestanding guard must not use #elif")
+        elif directive == "#else":
+            if depth == 1:
+                if else_index is not None:
+                    raise ValueError("duplicate outer #else")
+                else_index = index
+        elif directive == "#endif":
+            depth -= 1
+            if depth == 0:
+                if else_index is None:
+                    raise ValueError("outer freestanding guard is missing #else")
+                return (
+                    "".join(lines[start + 1 : else_index]),
+                    "".join(lines[else_index + 1 : index]),
+                )
+            if depth < 0:
+                raise ValueError("unbalanced preprocessor directives")
+
+    raise ValueError("unterminated outer freestanding guard")
+
+
 def test_hodur_crt_shim_is_only_enabled_for_local_freestanding_build():
     """The source guard keeps freestanding and authoritative CRT contracts separate."""
 
     source = (REPO / "samples/src/c/hodur_c2_flattened.c").read_text()
-    match = re.search(
-        r"(?ms)^#if defined\(D810_FREESTANDING_FIXTURE\)\n"
-        r"(?P<freestanding>.*?)^#else\n(?P<authoritative>.*?)^#endif",
-        source,
-    )
-    assert match is not None
-    freestanding = match.group("freestanding")
-    authoritative = match.group("authoritative")
+    freestanding, authoritative = _extract_hodur_crt_branches(source)
 
     assert "extern int printf(const char *format, ...);" in freestanding
     assert "#define memcpy(destination, source, count)" in freestanding
@@ -126,6 +160,35 @@ def test_hodur_crt_shim_is_only_enabled_for_local_freestanding_build():
     assert "#include <string.h>" in authoritative
     assert "extern int printf" not in authoritative
     assert "__builtin_memcpy" not in authoritative
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "#if defined(D810_FREESTANDING_FIXTURE)\n"
+        "#if INNER\n"
+        "broken\n"
+        "#else\n"
+        "still broken\n"
+        "#else\n"
+        "authoritative\n"
+        "#endif\n",
+        "#if defined(D810_FREESTANDING_FIXTURE)\n"
+        "freestanding\n"
+        "#else\n"
+        "authoritative\n"
+        "#else\n"
+        "duplicate\n"
+        "#endif\n",
+        "#if defined(D810_FREESTANDING_FIXTURE)\n"
+        "freestanding\n"
+        "#else\n"
+        "authoritative\n",
+    ],
+)
+def test_hodur_crt_branch_extractor_rejects_malformed_nesting(source: str) -> None:
+    with pytest.raises(ValueError):
+        _extract_hodur_crt_branches(source)
 
 
 def test_detects_slot_const_and_reg_from_committed_asm():
