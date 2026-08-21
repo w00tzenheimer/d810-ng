@@ -8,6 +8,7 @@ import hashlib
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.cfg_transaction import LogicalBlockRef
+from d810.transforms.unflatten_authority.ids import _subject_factory
 
 
 def import_authority_model():
@@ -49,5 +50,20 @@ def subject_kwargs(model, *, kind, role, locator, subject_id=None):
         subject_id=subject_id or authority_id("s"),
         block_ref=owner,
         anchor_ea=anchor,
+        locator=locator,
+    )
+
+
+def block_subject(model, *, role, token="subject", anchor_ea=0x1000):
+    """Build a canonical block-backed subject for evaluator fixtures."""
+
+    ref = block_ref(token)
+    locator = model.BlockSubjectLocator(ref, anchor_ea)
+    return _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=role,
+        block_ref=ref,
+        anchor_ea=anchor_ea,
         locator=locator,
     )

@@ -8,26 +8,41 @@ the later transaction authority implementation.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field as dataclass_field, fields, is_dataclass
 from enum import Enum
+import math
 import re
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    BoundCanonicalSemanticEvidence,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
-from d810.core.typing import Literal, TypeAlias
+from d810.core.typing import Literal, Protocol, TypeAlias, runtime_checkable
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.maturity import MaturityEnvelope
 from d810.ir.storage_identity import StorageIdentity
 from d810.transforms.cfg_transaction import (
     CfgBlockRef,
     LogicalBlockRef,
     NativeBlockRef,
     PlanBlockRef,
+    TransactionAttemptId,
 )
-from .ids import _subject_id_from_record, _validate_id, claim_id, evidence_id
+from .ids import (
+    _subject_id_from_record,
+    _validate_id,
+    authority_id,
+    case_id,
+    claim_id,
+    evidence_id,
+    justification_id,
+    receipt_id,
+)
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
+_OBLIGATION_INDEX_TOKEN = object()
+_PREPARATION_RECEIPT_TOKEN = object()
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 _CFG_REF_TYPES = (NativeBlockRef, LogicalBlockRef, PlanBlockRef)
 _AUTHORITY_REF_TYPES = (NativeBlockRef, LogicalBlockRef)
@@ -103,6 +118,8 @@ def _paired_tuples(
 def _structural_key(value: object):
     """Return a durable key for canonical unordered model collections."""
 
+    if value is None:
+        return ("none",)
     if isinstance(value, Enum):
         return ("enum", value.__class__.__qualname__, value.value)
     if isinstance(value, str):
@@ -603,6 +620,28 @@ class PhaseBindingEvidencePayload:
 
 
 @dataclass(frozen=True, slots=True)
+class TopologyEdgeRelation:
+    """One directed, native-anchored edge in a prepared topology witness."""
+
+    role: SemanticEdgeRole
+    source_subject_id: str
+    target_subject_id: str
+    native_edge_anchor_ea: int
+
+    def __post_init__(self) -> None:
+        _enum(self.role, SemanticEdgeRole, "role")
+        _id(self.source_subject_id, "source_subject_id")
+        _id(self.target_subject_id, "target_subject_id")
+        _ea(self.native_edge_anchor_ea, "native_edge_anchor_ea")
+
+    @property
+    def edge_role(self) -> SemanticEdgeRole:
+        """Compatibility accessor for the canonical ``role`` field."""
+
+        return self.role
+
+
+@dataclass(frozen=True, slots=True)
 class TopologyEvidencePayload:
     subject_id: str
     predecessor_subject_ids: tuple[str, ...]
@@ -610,6 +649,8 @@ class TopologyEvidencePayload:
     reciprocal_edges: bool
     expected_shape_digest: str
     candidate_shape_digest: str
+    expected_edge_relations: tuple[TopologyEdgeRelation, ...] = ()
+    candidate_edge_relations: tuple[TopologyEdgeRelation, ...] = ()
 
     def __post_init__(self) -> None:
         _id(self.subject_id, "subject_id")
@@ -622,6 +663,16 @@ class TopologyEvidencePayload:
             raise TypeError("reciprocal_edges must be a bool")
         _id(self.expected_shape_digest, "expected_shape_digest")
         _id(self.candidate_shape_digest, "candidate_shape_digest")
+        for name in ("expected_edge_relations", "candidate_edge_relations"):
+            relations = _tuple(getattr(self, name), name, sort=True)
+            if any(type(value) is not TopologyEdgeRelation for value in relations):
+                raise TypeError(f"{name} must contain TopologyEdgeRelation values")
+            object.__setattr__(self, name, relations)
+        if self.expected_edge_relations or self.candidate_edge_relations:
+            if self.expected_shape_digest != authority_id(self.expected_edge_relations):
+                raise ValueError("expected topology digest does not match edge relations")
+            if self.candidate_shape_digest != authority_id(self.candidate_edge_relations):
+                raise ValueError("candidate topology digest does not match edge relations")
 
 
 @dataclass(frozen=True, slots=True)
@@ -631,6 +682,7 @@ class StructuralLineageEvidencePayload:
     disposition: StructuralDisposition
     reciprocal_native_origin_eas: tuple[int, ...]
     claim_id: str | None
+    source_subject_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _id(self.source_subject_id, "source_subject_id")
@@ -645,6 +697,19 @@ class StructuralLineageEvidencePayload:
         object.__setattr__(self, "reciprocal_native_origin_eas", eas)
         if self.claim_id is not None:
             _id(self.claim_id, "claim_id")
+        sources = _tuple(self.source_subject_ids, "source_subject_ids", sort=True)
+        for value in sources:
+            _id(value, "source_subject_ids item")
+        if sources and self.source_subject_id not in sources:
+            raise ValueError("lineage source group must include source_subject_id")
+        normalized_sources = sources or (self.source_subject_id,)
+        if self.disposition is StructuralDisposition.FOLDED and (
+            len(normalized_sources) < 2 or len(candidates) != 1
+        ):
+            raise ValueError("folded lineage requires multiple sources and one candidate")
+        if self.disposition in (StructuralDisposition.PRESERVED, StructuralDisposition.SPLIT) and len(normalized_sources) != 1:
+            raise ValueError("preserved and split lineage require one source group")
+        object.__setattr__(self, "source_subject_ids", normalized_sources)
 
 
 @dataclass(frozen=True, slots=True)
@@ -869,7 +934,13 @@ class GenericCfgGateResult:
             values = _tuple(getattr(self, name), name, sort=True)
             for value in values:
                 _id(value, f"{name} item")
+            if len(set(values)) != len(values):
+                raise ValueError(f"{name} must not contain duplicate subject IDs")
             object.__setattr__(self, name, values)
+        if set(self.supported_subject_ids) & set(self.refuted_subject_ids):
+            raise ValueError("generic gate support and refutation must be disjoint")
+        if self.passed != (not self.refuted_subject_ids):
+            raise ValueError("generic gate passed must equal not refuted")
         _text(self.reason_code, "reason_code")
 
 
@@ -1410,6 +1481,662 @@ class ProposedUnflattenContract:
                 raise ValueError("full dispatcher retirement requires a retirement claim")
             if retired_refs != dispatcher_member_refs:
                 raise ValueError("full dispatcher retirement must retire all dispatcher members")
+
+@dataclass(frozen=True, slots=True)
+class ObligationKey:
+    subject: SemanticSubjectRef
+    dimension: SafetyDimension
+
+    def __post_init__(self) -> None:
+        if type(self.subject) is not SemanticSubjectRef:
+            raise TypeError("subject must be a SemanticSubjectRef")
+        _enum(self.dimension, SafetyDimension, "dimension")
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorityJustification:
+    justification_id: str
+    rule: UnflattenJustificationRule
+    premise_ids: tuple[str, ...]
+    conclusion: ObligationKey
+    polarity: EvidencePolarity
+    phase: UnflattenAuthorityPhase
+    claim_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _id(self.justification_id, "justification_id")
+        _enum(self.rule, UnflattenJustificationRule, "rule")
+        premises = _tuple(self.premise_ids, "premise_ids", sort=True)
+        for premise in premises:
+            _id(premise, "premise_id")
+        object.__setattr__(self, "premise_ids", premises)
+        if type(self.conclusion) is not ObligationKey:
+            raise TypeError("conclusion must be an ObligationKey")
+        _enum(self.polarity, EvidencePolarity, "polarity")
+        _enum(self.phase, UnflattenAuthorityPhase, "phase")
+        if self.claim_id is not None:
+            _id(self.claim_id, "claim_id")
+        if self.justification_id != justification_id(self):
+            raise ValueError("justification_id does not match canonical content")
+
+
+@dataclass(frozen=True, slots=True)
+class ObligationEvidenceCell:
+    key: ObligationKey
+    phase: UnflattenAuthorityPhase
+    supporting_justification_ids: tuple[str, ...]
+    refuting_justification_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.key) is not ObligationKey:
+            raise TypeError("key must be an ObligationKey")
+        _enum(self.phase, UnflattenAuthorityPhase, "phase")
+        for name in ("supporting_justification_ids", "refuting_justification_ids"):
+            values = _tuple(getattr(self, name), name, sort=True)
+            for value in values:
+                _id(value, f"{name} item")
+            object.__setattr__(self, name, values)
+        if set(self.supporting_justification_ids) & set(self.refuting_justification_ids):
+            raise ValueError("supporting and refuting justification IDs must be disjoint")
+
+    @property
+    def state(self) -> ObligationState:
+        support = bool(self.supporting_justification_ids)
+        refute = bool(self.refuting_justification_ids)
+        if support and refute:
+            return ObligationState.INCONSISTENT
+        if support:
+            return ObligationState.SATISFIED
+        if refute:
+            return ObligationState.VIOLATED
+        return ObligationState.UNPROVEN
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ObligationEvidenceIndex:
+    cells: tuple[ObligationEvidenceCell, ...]
+    _token: object = dataclass_field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if getattr(self, "_token", None) is not _OBLIGATION_INDEX_TOKEN:
+            raise TypeError("obligation index is evaluator-owned")
+        cells = _tuple(self.cells, "cells")
+        if any(type(cell) is not ObligationEvidenceCell for cell in cells):
+            raise TypeError("cells must contain ObligationEvidenceCell values")
+        if len({cell.key for cell in cells}) != len(cells):
+            raise ValueError("obligation index keys must be unique")
+        object.__setattr__(self, "cells", cells)
+
+
+@dataclass(frozen=True, slots=True)
+class FailedObligation:
+    key: ObligationKey
+    state: ObligationState
+
+    def __post_init__(self) -> None:
+        if type(self.key) is not ObligationKey:
+            raise TypeError("key must be an ObligationKey")
+        _enum(self.state, ObligationState, "state")
+        if self.state is ObligationState.SATISFIED:
+            raise ValueError("failed obligation cannot be satisfied")
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationBuildMetrics:
+    source_inventory_builds: int
+    candidate_inventory_builds: int
+    inventory_ms: float
+
+    def __post_init__(self) -> None:
+        if self.source_inventory_builds != 1 or self.candidate_inventory_builds != 1:
+            raise ValueError("preparation must build each inventory exactly once")
+        if type(self.inventory_ms) not in (int, float) or isinstance(self.inventory_ms, bool):
+            raise TypeError("inventory_ms must be a finite nonnegative number")
+        if not math.isfinite(float(self.inventory_ms)) or self.inventory_ms < 0:
+            raise ValueError("inventory_ms must be a finite nonnegative number")
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalSubjectRelation:
+    source_subject_id: str
+    target_subject_id: str
+    dimension: SafetyDimension
+    provenance_id: str
+
+    def __post_init__(self) -> None:
+        _id(self.source_subject_id, "source_subject_id")
+        _id(self.target_subject_id, "target_subject_id")
+        _enum(self.dimension, SafetyDimension, "dimension")
+        _id(self.provenance_id, "provenance_id")
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class PreparationAuthorityReceipt:
+    receipt_id: str
+    proposal_id: str
+    plan_id: str
+    source_fingerprint: str
+    candidate_fingerprint: str
+    source_generation: int
+    candidate_generation: int
+    source_inventory_digest: str
+    candidate_inventory_digest: str
+    source_binding_digest: str
+    candidate_binding_digest: str
+    route_expansion_digest: str
+    effect_catalog_digest: str
+    terminal_catalog_digest: str
+    plan_input_digest: str
+    dispatcher_member_digest: str
+    planned_helper_digest: str
+    patch_step_digest: str
+    conditional_relation_digest: str
+    metrics: PreparationBuildMetrics
+    _token: object = dataclass_field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if getattr(self, "_token", None) is not _PREPARATION_RECEIPT_TOKEN:
+            raise TypeError("preparation receipts are evaluator-owned")
+        for name in (
+            "receipt_id", "proposal_id", "plan_id", "source_fingerprint",
+            "candidate_fingerprint", "source_inventory_digest",
+            "candidate_inventory_digest", "source_binding_digest",
+            "candidate_binding_digest", "route_expansion_digest",
+            "effect_catalog_digest", "terminal_catalog_digest",
+            "plan_input_digest", "dispatcher_member_digest",
+            "planned_helper_digest", "patch_step_digest",
+            "conditional_relation_digest",
+        ):
+            _id(getattr(self, name), name)
+        _generation(self.source_generation, "source_generation")
+        _generation(self.candidate_generation, "candidate_generation")
+        if type(self.metrics) is not PreparationBuildMetrics:
+            raise TypeError("metrics must be PreparationBuildMetrics")
+        if self.receipt_id != receipt_id(self):
+            raise ValueError("receipt_id does not match canonical receipt content")
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticPhaseMetrics:
+    preparation_metrics: PreparationBuildMetrics
+    source_inventory_builds: int
+    candidate_inventory_builds: int
+    index_folds: int
+    view_graph_traversals: int
+
+    def __post_init__(self) -> None:
+        if type(self.preparation_metrics) is not PreparationBuildMetrics:
+            raise TypeError("preparation_metrics must be PreparationBuildMetrics")
+        if (
+            self.source_inventory_builds,
+            self.candidate_inventory_builds,
+            self.index_folds,
+            self.view_graph_traversals,
+        ) != (1, 1, 1, 0):
+            raise ValueError("evaluator metrics must be exactly (1, 1, 1, 0)")
+
+
+@dataclass(frozen=True, slots=True)
+class DerivedUnflattenPreparationInputs:
+    proposal: ProposedUnflattenContract
+    claims: tuple[UnflattenClaim, ...]
+    preparation_receipt: PreparationAuthorityReceipt
+    source_subjects: tuple[SemanticSubjectRef, ...]
+    candidate_subjects: tuple[SemanticSubjectRef, ...]
+    source_bindings: tuple[PhaseSubjectBinding, ...]
+    candidate_bindings: tuple[PhaseSubjectBinding, ...]
+    conditional_relations: tuple[ConditionalSubjectRelation, ...]
+    lineage_evidence: tuple[AuthorityEvidence, ...]
+    patch_step_evidence: tuple[AuthorityEvidence, ...]
+    generic_gates: tuple[GenericCfgGateResult, ...]
+    source_fingerprint: str
+    candidate_fingerprint: str
+    source_generation: int
+    candidate_generation: int
+    preparation_metrics: PreparationBuildMetrics
+
+    def __post_init__(self) -> None:
+        if type(self.proposal) is not ProposedUnflattenContract:
+            raise TypeError("proposal must be a ProposedUnflattenContract")
+        if type(self.preparation_receipt) is not PreparationAuthorityReceipt:
+            raise TypeError("preparation_receipt must be PreparationAuthorityReceipt")
+        if type(self.claims) is not tuple:
+            raise TypeError("claims must be an exact tuple")
+        for claim in self.claims:
+            if type(claim) not in (RetiredDispatcherInfrastructureClaim,
+                                   EquivalentSemanticRouteClaim, ExactInfeasibleEffectClaim,
+                                   LocalAliasEffectScalarizationClaim, TerminalCycleBreakClaim):
+                raise TypeError("claims must contain closed UnflattenClaim values")
+        for name in ("source_subjects", "candidate_subjects"):
+            values = _tuple(getattr(self, name), name, sort=True)
+            if any(type(value) is not SemanticSubjectRef for value in values):
+                raise TypeError(f"{name} must contain SemanticSubjectRef values")
+            if len({value.subject_id for value in values}) != len(values):
+                raise ValueError(f"{name} must not contain duplicate subjects")
+            object.__setattr__(self, name, values)
+        for name in ("source_bindings", "candidate_bindings"):
+            values = _tuple(getattr(self, name), name, sort=True)
+            if any(type(value) is not PhaseSubjectBinding for value in values):
+                raise TypeError(f"{name} must contain PhaseSubjectBinding values")
+            if len({value.subject.subject_id for value in values}) != len(values):
+                raise ValueError(f"{name} must not contain duplicate subjects")
+            object.__setattr__(self, name, values)
+        relations = _tuple(self.conditional_relations, "conditional_relations", sort=True)
+        if any(type(value) is not ConditionalSubjectRelation for value in relations):
+            raise TypeError("conditional_relations must contain ConditionalSubjectRelation values")
+        object.__setattr__(self, "conditional_relations", relations)
+        for name in ("lineage_evidence", "patch_step_evidence"):
+            values = _tuple(getattr(self, name), name)
+            if any(type(value) is not AuthorityEvidence for value in values):
+                raise TypeError(f"{name} must contain AuthorityEvidence values")
+            object.__setattr__(self, name, values)
+        gates = _tuple(self.generic_gates, "generic_gates")
+        if any(type(value) is not GenericCfgGateResult for value in gates):
+            raise TypeError("generic_gates must contain GenericCfgGateResult values")
+        if len(gates) != len(GenericCfgGateKind) or {value.gate for value in gates} != set(GenericCfgGateKind):
+            raise ValueError("generic_gates must contain exactly one row per gate")
+        object.__setattr__(self, "generic_gates", gates)
+        _id(self.source_fingerprint, "source_fingerprint")
+        _id(self.candidate_fingerprint, "candidate_fingerprint")
+        _generation(self.source_generation, "source_generation")
+        _generation(self.candidate_generation, "candidate_generation")
+        if type(self.preparation_metrics) is not PreparationBuildMetrics:
+            raise TypeError("preparation_metrics must be PreparationBuildMetrics")
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticSafetyCase:
+    case_id: str
+    authority_id: str
+    preparation_receipt_id: str
+    phase: UnflattenAuthorityPhase
+    candidate_fingerprint: str
+    candidate_generation: int
+    claims: tuple[UnflattenClaim, ...]
+    subjects: tuple[SemanticSubjectRef, ...]
+    bindings: tuple[PhaseSubjectBinding, ...]
+    conditional_relations: tuple[ConditionalSubjectRelation, ...]
+    required_obligations: tuple[ObligationKey, ...]
+    evidence: tuple[AuthorityEvidence, ...]
+    justifications: tuple[AuthorityJustification, ...]
+    obligation_index: ObligationEvidenceIndex
+    phase_metrics: SemanticPhaseMetrics
+
+    def __post_init__(self) -> None:
+        _id(self.case_id, "case_id")
+        _id(self.authority_id, "authority_id")
+        _id(self.preparation_receipt_id, "preparation_receipt_id")
+        _enum(self.phase, UnflattenAuthorityPhase, "phase")
+        _id(self.candidate_fingerprint, "candidate_fingerprint")
+        _generation(self.candidate_generation, "candidate_generation")
+        for name in ("claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications"):
+            object.__setattr__(self, name, _tuple(getattr(self, name), name))
+        if any(type(claim) not in (RetiredDispatcherInfrastructureClaim, EquivalentSemanticRouteClaim, ExactInfeasibleEffectClaim, LocalAliasEffectScalarizationClaim, TerminalCycleBreakClaim) for claim in self.claims):
+            raise TypeError("claims must contain closed UnflattenClaim values")
+        if any(type(subject) is not SemanticSubjectRef for subject in self.subjects):
+            raise TypeError("subjects must contain SemanticSubjectRef values")
+        if any(type(binding) is not PhaseSubjectBinding for binding in self.bindings):
+            raise TypeError("bindings must contain PhaseSubjectBinding values")
+        if any(type(relation) is not ConditionalSubjectRelation for relation in self.conditional_relations):
+            raise TypeError("conditional_relations must contain ConditionalSubjectRelation values")
+        if any(type(key) is not ObligationKey for key in self.required_obligations):
+            raise TypeError("required_obligations must contain ObligationKey values")
+        if not self.required_obligations:
+            raise ValueError("a semantic safety case must contain obligations")
+        if len(set(self.required_obligations)) != len(self.required_obligations):
+            raise ValueError("required_obligations must be unique")
+        if any(type(item) is not AuthorityEvidence for item in self.evidence):
+            raise TypeError("evidence must contain AuthorityEvidence values")
+        if any(type(item) is not AuthorityJustification for item in self.justifications):
+            raise TypeError("justifications must contain AuthorityJustification values")
+        if tuple(sorted(self.subjects, key=lambda item: item.subject_id)) != self.subjects:
+            raise ValueError("subjects must be in canonical subject-id order")
+        if tuple(sorted(self.claims, key=lambda item: item.claim_id)) != self.claims:
+            raise ValueError("claims must be in canonical claim-id order")
+        if tuple(sorted(self.conditional_relations, key=lambda item: (item.source_subject_id, item.target_subject_id, item.dimension.value, item.provenance_id))) != self.conditional_relations:
+            raise ValueError("conditional relations must be in canonical order")
+        if tuple(sorted(self.bindings, key=lambda item: item.subject.subject_id)) != self.bindings:
+            raise ValueError("bindings must be in canonical subject-id order")
+        if tuple(sorted(self.required_obligations, key=lambda item: (item.subject.subject_id, item.dimension.value))) != self.required_obligations:
+            raise ValueError("required obligations must be in canonical order")
+        if tuple(sorted(self.evidence, key=lambda item: item.evidence_id)) != self.evidence:
+            raise ValueError("evidence must be in canonical evidence-id order")
+        if tuple(sorted(self.justifications, key=lambda item: item.justification_id)) != self.justifications:
+            raise ValueError("justifications must be in canonical justification-id order")
+        if type(self.obligation_index) is not ObligationEvidenceIndex:
+            raise TypeError("obligation_index must be an ObligationEvidenceIndex")
+        if type(self.phase_metrics) is not SemanticPhaseMetrics:
+            raise TypeError("phase_metrics must be SemanticPhaseMetrics")
+        if tuple(cell.key for cell in self.obligation_index.cells) != self.required_obligations:
+            raise ValueError("obligation index must exactly cover required obligations")
+        if self.case_id != case_id(self):
+            raise ValueError("case_id does not match canonical case content")
+
+
+@dataclass(frozen=True, slots=True)
+class UnflattenAuthorityVerdict:
+    accepted: bool
+    phase: UnflattenAuthorityPhase
+    reason: UnflattenAuthorityReason
+    authority_id: str | None
+    binding_id: str | None
+    case_id: str | None
+    candidate_fingerprint: str
+    safety_case: SemanticSafetyCase | None
+    failed_obligations: tuple[FailedObligation, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.accepted) is not bool:
+            raise TypeError("accepted must be bool")
+        _enum(self.phase, UnflattenAuthorityPhase, "phase")
+        _enum(self.reason, UnflattenAuthorityReason, "reason")
+        for name in ("authority_id", "binding_id", "case_id"):
+            value = getattr(self, name)
+            if value is not None:
+                _id(value, name)
+        _id(self.candidate_fingerprint, "candidate_fingerprint")
+        if self.safety_case is not None and type(self.safety_case) is not SemanticSafetyCase:
+            raise TypeError("safety_case must be SemanticSafetyCase or None")
+        if self.safety_case is not None:
+            if self.case_id != self.safety_case.case_id or self.authority_id != self.safety_case.authority_id:
+                raise ValueError("verdict IDs must match its safety case")
+            if self.phase is not self.safety_case.phase:
+                raise ValueError("verdict phase does not match its safety case")
+            if self.candidate_fingerprint != self.safety_case.candidate_fingerprint:
+                raise ValueError("verdict fingerprint does not match its safety case")
+        elif self.case_id is not None:
+            raise ValueError("a verdict without a safety case cannot carry a case ID")
+        failed = _tuple(self.failed_obligations, "failed_obligations")
+        if any(type(item) is not FailedObligation for item in failed):
+            raise TypeError("failed_obligations must contain FailedObligation values")
+        object.__setattr__(self, "failed_obligations", failed)
+        if self.safety_case is not None:
+            expected_failed = tuple(
+                FailedObligation(cell.key, cell.state)
+                for cell in self.safety_case.obligation_index.cells
+                if cell.state is not ObligationState.SATISFIED
+            )
+            if failed != expected_failed:
+                raise ValueError("verdict failed obligations must match its safety case")
+            graph_mismatch = any(
+                binding.graph_fingerprint != self.safety_case.candidate_fingerprint
+                or binding.generation != self.safety_case.candidate_generation
+                for binding in self.safety_case.bindings
+                if binding.subject.kind is SemanticSubjectKind.BLOCK
+            )
+            binding_failed = any(
+                item.state is ObligationState.VIOLATED
+                and item.key.dimension is SafetyDimension.IDENTITY_BINDING
+                for item in expected_failed
+            )
+            expected_reason = (
+                UnflattenAuthorityReason.GRAPH_GENERATION_MISMATCH
+                if graph_mismatch else
+                {
+                    UnflattenAuthorityPhase.PRODUCER_FORECAST: UnflattenAuthorityReason.SOURCE_BINDING_FAILED,
+                    UnflattenAuthorityPhase.PROJECTED_PREFLIGHT: UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+                    UnflattenAuthorityPhase.OBSERVED_POST_APPLY: UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+                }[self.phase]
+                if binding_failed else
+                UnflattenAuthorityReason.OBLIGATION_INCONSISTENT
+                if any(item.state is ObligationState.INCONSISTENT for item in expected_failed) else
+                UnflattenAuthorityReason.OBLIGATION_VIOLATED
+                if any(item.state is ObligationState.VIOLATED for item in expected_failed) else
+                UnflattenAuthorityReason.OBLIGATION_UNPROVEN
+                if expected_failed else UnflattenAuthorityReason.ACCEPTED
+            )
+            if self.reason is not expected_reason:
+                raise ValueError("verdict reason does not match deterministic case priority")
+        if self.accepted and (self.reason is not UnflattenAuthorityReason.ACCEPTED or self.safety_case is None or failed):
+            raise ValueError("accepted verdict requires an accepted nonempty case")
+        if not self.accepted and self.reason is UnflattenAuthorityReason.ACCEPTED:
+            raise ValueError("rejected verdict cannot use accepted reason")
+        if not self.accepted and self.safety_case is None and failed:
+            raise ValueError("a pre-case rejection cannot carry failed obligations")
+
+
+@dataclass(frozen=True, slots=True)
+class UnflattenAuthorityNotApplicable:
+    route: Literal[UnflattenPlanRoute.ORDINARY]
+
+    def __post_init__(self) -> None:
+        if self.route is not UnflattenPlanRoute.ORDINARY:
+            raise ValueError("not-applicable route must be ordinary")
+
+
+@runtime_checkable
+class PatchPlanAuthority(Protocol):
+    plan_id: str
+    snapshot_id: str
+    source_generation: int | None
+    source_maturity: MaturityEnvelope | None
+    source_coordinates: tuple[tuple[NativeBlockRef | LogicalBlockRef, int], ...]
+
+
+@runtime_checkable
+class BoundPatchPlanAuthority(Protocol):
+    plan: PatchPlanAuthority
+    attempt_id: TransactionAttemptId
+    session_id: str
+    generation: int
+    maturity: int
+    bindings: tuple[tuple[CfgBlockRef, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedUnflattenAuthority:
+    authority_id: str
+    route: UnflattenPlanRoute
+    owning_plan: PatchPlanAuthority
+    proposal: ProposedUnflattenContract
+    claims: tuple[UnflattenClaim, ...]
+    bound_routes: BoundCanonicalSemanticEvidence
+    snapshot_id: str
+    source_maturity: MaturityEnvelope | None
+    source_coordinate_digest: str
+    source_fingerprint: str
+    projected_fingerprint: str
+    source_generation: int
+    projected_generation: int
+    source_bindings: tuple[PhaseSubjectBinding, ...]
+    projected_bindings: tuple[PhaseSubjectBinding, ...]
+    projected_case: SemanticSafetyCase
+
+    def __post_init__(self) -> None:
+        _id(self.authority_id, "authority_id")
+        _enum(self.route, UnflattenPlanRoute, "route")
+        if not isinstance(self.owning_plan, PatchPlanAuthority):
+            raise TypeError("owning_plan must satisfy PatchPlanAuthority")
+        if type(self.proposal) is not ProposedUnflattenContract:
+            raise TypeError("proposal must be ProposedUnflattenContract")
+        if type(self.bound_routes) is not BoundCanonicalSemanticEvidence:
+            raise TypeError("bound_routes must be BoundCanonicalSemanticEvidence")
+        _id(self.snapshot_id, "snapshot_id")
+        if self.source_maturity is not None and type(self.source_maturity) is not MaturityEnvelope:
+            raise TypeError("source_maturity must be MaturityEnvelope or None")
+        _id(self.source_coordinate_digest, "source_coordinate_digest")
+        _id(self.source_fingerprint, "source_fingerprint")
+        _id(self.projected_fingerprint, "projected_fingerprint")
+        _generation(self.source_generation, "source_generation")
+        _generation(self.projected_generation, "projected_generation")
+        for name in ("claims", "source_bindings", "projected_bindings"):
+            values = _tuple(getattr(self, name), name)
+            object.__setattr__(self, name, values)
+        if type(self.projected_case) is not SemanticSafetyCase:
+            raise TypeError("projected_case must be SemanticSafetyCase")
+        if self.owning_plan.plan_id != self.proposal.plan_id:
+            raise ValueError("owning plan does not match proposal")
+        if self.owning_plan.snapshot_id != self.snapshot_id:
+            raise ValueError("snapshot does not match owning plan")
+        if self.projected_case.authority_id != self.authority_id:
+            raise ValueError("projected case does not match authority")
+        if self.projected_case.phase is not UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+            raise ValueError("prepared authority requires a projected case")
+        if self.projected_case.candidate_fingerprint != self.projected_fingerprint:
+            raise ValueError("projected fingerprint does not match case")
+        if self.projected_case.candidate_generation != self.projected_generation:
+            raise ValueError("projected generation does not match case")
+        if tuple(self.projected_case.bindings) != tuple(sorted(self.projected_bindings, key=lambda item: item.subject.subject_id)):
+            raise ValueError("projected bindings do not match case")
+        if self.owning_plan.source_generation is not None and self.owning_plan.source_generation != self.source_generation:
+            raise ValueError("source generation does not match owning plan")
+        if self.source_maturity != self.owning_plan.source_maturity:
+            raise ValueError("source maturity does not match owning plan")
+        def coordinate_key(item: tuple[object, int]) -> tuple[str, int]:
+            return repr(item[0]), item[1]
+        expected_coordinates = tuple(sorted(
+            ((block.block_ref, block.anchor_ea)
+             for block in self.proposal.source_identity_catalog.blocks),
+            key=coordinate_key,
+        ))
+        if tuple(sorted(self.owning_plan.source_coordinates, key=coordinate_key)) != expected_coordinates:
+            raise ValueError("owning plan source coordinates do not match the proposal catalog")
+        if self.source_coordinate_digest != authority_id(expected_coordinates):
+            raise ValueError("source coordinate digest does not match the proposal catalog")
+        source_binding_coordinates = tuple(sorted(
+            ((binding.block_ref, binding.anchor_ea)
+             for binding in self.source_bindings
+             if binding.status is SubjectBindingStatus.UNIQUE
+             and binding.block_ref is not None and binding.anchor_ea is not None),
+            key=coordinate_key,
+        ))
+        if frozenset(source_binding_coordinates) != frozenset(expected_coordinates):
+            raise ValueError("source bindings do not cover the proposal catalog")
+        source_subjects = tuple(
+            subject for subject in self.projected_case.subjects
+            if subject.role is not SemanticSubjectRole.PLANNED_HELPER
+        )
+        if {binding.subject.subject_id for binding in self.source_bindings} != {
+            subject.subject_id for subject in source_subjects
+        }:
+            raise ValueError("source bindings must cover every projected source subject exactly")
+        if any(
+            binding.subject != subject
+            for subject in source_subjects
+            for binding in self.source_bindings
+            if binding.subject.subject_id == subject.subject_id
+        ):
+            raise ValueError("source binding subject identity does not match the projected source subject")
+        if self.bound_routes.evidence != self.proposal.route_evidence:
+            raise ValueError("bound routes do not exactly cover proposal route evidence")
+        if tuple(sorted(route.evidence.proof_id for route in self.bound_routes.routes)) != tuple(sorted(proof.proof_id for proof in self.proposal.route_evidence.route_proofs)):
+            raise ValueError("bound routes do not cover every proposal route proof")
+        proofs = {proof.proof_id: proof for proof in self.proposal.route_evidence.route_proofs}
+        for route in self.bound_routes.routes:
+            proof = proofs.get(route.evidence.proof_id)
+            if proof is None or route.evidence != proof:
+                raise ValueError("bound route proof does not match portable evidence")
+            if route.source.anchor_ea != proof.source_anchor_ea or route.source.identity != proof.source_identity:
+                raise ValueError("bound route source does not match portable proof anchor")
+            expected_destinations = {
+                (destination.role, destination.target_anchor_ea, destination.target_identity)
+                for destination in proof.destinations
+            }
+            actual_destinations = {
+                (destination.evidence.role, destination.block.anchor_ea, destination.block.identity)
+                for destination in route.destinations
+            }
+            if actual_destinations != expected_destinations:
+                raise ValueError("bound route destinations do not match portable proof anchors")
+        if any(
+            binding.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST
+            or binding.graph_fingerprint != self.source_fingerprint
+            or binding.generation != self.source_generation
+            for binding in self.source_bindings
+        ):
+            raise ValueError("source bindings do not match the prepared source snapshot")
+        if any(
+            binding.phase is not UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+            or binding.graph_fingerprint != self.projected_fingerprint
+            or binding.generation != self.projected_generation
+            for binding in self.projected_bindings
+        ):
+            raise ValueError("projected bindings do not match the prepared projected snapshot")
+        if tuple(self.claims) != tuple(self.projected_case.claims):
+            raise ValueError("prepared claims must exactly match projected case claims")
+
+
+@dataclass(frozen=True, slots=True)
+class BoundUnflattenAuthority:
+    binding_id: str
+    prepared: PreparedUnflattenAuthority
+    attempt_id: TransactionAttemptId
+    session_id: str
+    generation: int
+    live_maturity: MaturityEnvelope
+    live_bindings: tuple[tuple[CfgBlockRef, int], ...]
+
+    def __post_init__(self) -> None:
+        _id(self.binding_id, "binding_id")
+        if type(self.prepared) is not PreparedUnflattenAuthority:
+            raise TypeError("prepared must be PreparedUnflattenAuthority")
+        if type(self.attempt_id) is not TransactionAttemptId:
+            raise TypeError("attempt_id must be TransactionAttemptId")
+        _text(self.session_id, "session_id")
+        _generation(self.generation)
+        if self.attempt_id.session_id != self.session_id:
+            raise ValueError("attempt session does not match binding session")
+        if self.attempt_id.generation != self.generation:
+            raise ValueError("attempt generation does not match binding generation")
+        if self.attempt_id.plan_id != self.prepared.proposal.plan_id:
+            raise ValueError("attempt plan does not match prepared proposal")
+        if type(self.live_maturity) is not MaturityEnvelope:
+            raise TypeError("live_maturity must be MaturityEnvelope")
+        values = _tuple(self.live_bindings, "live_bindings")
+        for ref, serial in values:
+            _cfg_ref(ref)
+            _nonnegative(serial, "live binding serial")
+        object.__setattr__(self, "live_bindings", values)
+
+
+@dataclass(frozen=True, slots=True)
+class UnflattenAuthorityPreparationAccepted:
+    prepared: PreparedUnflattenAuthority
+    verdict: UnflattenAuthorityVerdict
+
+    def __post_init__(self) -> None:
+        if type(self.prepared) is not PreparedUnflattenAuthority:
+            raise TypeError("prepared must be PreparedUnflattenAuthority")
+        if type(self.verdict) is not UnflattenAuthorityVerdict or not self.verdict.accepted:
+            raise ValueError("preparation accepted requires an accepted verdict")
+        if (
+            self.verdict.authority_id != self.prepared.authority_id
+            or self.verdict.case_id != self.prepared.projected_case.case_id
+        ):
+            raise ValueError("preparation verdict does not match prepared authority")
+
+
+@dataclass(frozen=True, slots=True)
+class UnflattenAuthorityPreparationRejected:
+    verdict: UnflattenAuthorityVerdict
+
+    def __post_init__(self) -> None:
+        if type(self.verdict) is not UnflattenAuthorityVerdict or self.verdict.accepted:
+            raise ValueError("preparation rejected requires a rejected verdict")
+
+
+UnflattenAuthorityPreparationResult: TypeAlias = (UnflattenAuthorityNotApplicable | UnflattenAuthorityPreparationAccepted | UnflattenAuthorityPreparationRejected)
+
+
+@dataclass(frozen=True, slots=True)
+class UnflattenAuthorityBindingAccepted:
+    authority: BoundUnflattenAuthority
+
+    def __post_init__(self) -> None:
+        if type(self.authority) is not BoundUnflattenAuthority:
+            raise TypeError("authority must be BoundUnflattenAuthority")
+
+
+@dataclass(frozen=True, slots=True)
+class UnflattenAuthorityBindingRejected:
+    verdict: UnflattenAuthorityVerdict
+
+    def __post_init__(self) -> None:
+        if type(self.verdict) is not UnflattenAuthorityVerdict or self.verdict.accepted:
+            raise ValueError("binding rejected requires a rejected verdict")
+
+
+UnflattenAuthorityBindingResult: TypeAlias = UnflattenAuthorityBindingAccepted | UnflattenAuthorityBindingRejected
 
 
 __all__ = [

@@ -7,6 +7,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 import hashlib
 import json
+import math
 
 from d810.ir.flowgraph import (
     BlockKind,
@@ -24,6 +25,11 @@ _PREFIX = b"d810-unflatten-authority\0"
 SUBJECT_SCHEMA = "unflatten.subject.v1"
 CLAIM_SCHEMA = "unflatten.claim.v1"
 EVIDENCE_SCHEMA = "unflatten.evidence.v1"
+JUSTIFICATION_SCHEMA = "unflatten.justification.v1"
+CASE_SCHEMA = "unflatten.case.v1"
+RECEIPT_SCHEMA = "unflatten.preparation-receipt.v1"
+AUTHORITY_SCHEMA = "unflatten.authority.v1"
+BINDING_SCHEMA = "unflatten.binding.v1"
 SEMANTIC_GRAPH_SCHEMA = "unflatten.semantic-flowgraph.v1"
 DIGEST_FIXTURE_SCHEMA = "digest-fixture.v1"
 _REGISTRIES_READY = False
@@ -37,6 +43,11 @@ _RECORD_BY_NAME: dict[str, type[object]] = {}
 _CLAIM_TYPES: set[type[object]] = set()
 _EVIDENCE_TYPES: set[type[object]] = set()
 _SUBJECT_TYPE: type[object] | None = None
+class _DecodedIndexCells:
+    __slots__ = ("cells",)
+
+    def __init__(self, cells: tuple[object, ...]) -> None:
+        self.cells = cells
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +217,11 @@ def _validate_canonical_value(value: object, seen: set[int] | None = None) -> No
         try:
             for name in _RECORD_FIELDS.get(type(value), _EXTERNAL_FIELDS.get(type(value), ())):
                 item = type(value).SCHEMA_VERSION if type(value).__name__ == "NativePreanalysisKey" and name == "schema_version" else getattr(value, name)
-                _validate_canonical_value(item, seen)
+                if type(value).__name__ == "PreparationBuildMetrics" and name == "inventory_ms":
+                    if type(item) not in (int, float) or not math.isfinite(float(item)):
+                        raise ValueError("invalid preparation metric")
+                else:
+                    _validate_canonical_value(item, seen)
         finally:
             seen.remove(marker)
         return
@@ -382,7 +397,7 @@ def _ensure_registries() -> None:
         model.BlockSubjectLocator, model.EdgeSubjectLocator, model.RouteSubjectLocator,
         model.EffectSubjectLocator, model.HandlerSubjectLocator, model.TerminalSubjectLocator,
         model.ValueFlowSubjectLocator, model.CorridorSubjectLocator, model.SemanticSubjectRef,
-        model.PhaseSubjectBinding, model.PhaseBindingEvidencePayload, model.TopologyEvidencePayload,
+        model.PhaseSubjectBinding, model.PhaseBindingEvidencePayload, model.TopologyEdgeRelation, model.TopologyEvidencePayload,
         model.StructuralLineageEvidencePayload, model.SemanticRouteEvidencePayload,
         model.EffectSiteEvidencePayload, model.ReachabilityEvidencePayload,
         model.UseDefAuditEvidencePayload, model.CorridorCoverageEvidencePayload,
@@ -393,6 +408,12 @@ def _ensure_registries() -> None:
         model.TerminalCycleBreakClaim, model.UseDefFragmentWitness, model.SourceBlockIdentityWitness,
         model.SourceIdentityCatalog, model.AuthoritativeHandlerInput,
         model.UnflattenPlanInputCatalog, model.ProposedUnflattenContract,
+        model.ConditionalSubjectRelation, model.PreparationAuthorityReceipt,
+        model.ObligationKey, model.AuthorityJustification, model.ObligationEvidenceCell,
+        model.ObligationEvidenceIndex, model.FailedObligation, model.PreparationBuildMetrics,
+        model.SemanticPhaseMetrics,
+        model.DerivedUnflattenPreparationInputs, model.SemanticSafetyCase,
+        model.UnflattenAuthorityVerdict,
     )
     _RECORD_TYPES.update({DigestFixture, MopRecord, InsnRecord, BlockRecord, GraphRecord, *model_records})
     _CLAIM_TYPES.update({
@@ -422,8 +443,9 @@ def _ensure_registries() -> None:
         model.SemanticSubjectRef: ("kind", "role", "subject_id", "block_ref", "anchor_ea", "locator"),
         model.PhaseSubjectBinding: ("subject", "phase", "block_ref", "graph_fingerprint", "generation", "status", "serial", "anchor_ea", "native_instruction_eas", "role"),
         model.PhaseBindingEvidencePayload: ("binding",),
-        model.TopologyEvidencePayload: ("subject_id", "predecessor_subject_ids", "successor_subject_ids", "reciprocal_edges", "expected_shape_digest", "candidate_shape_digest"),
-        model.StructuralLineageEvidencePayload: ("source_subject_id", "candidate_subject_ids", "disposition", "reciprocal_native_origin_eas", "claim_id"),
+        model.TopologyEdgeRelation: ("role", "source_subject_id", "target_subject_id", "native_edge_anchor_ea"),
+        model.TopologyEvidencePayload: ("subject_id", "predecessor_subject_ids", "successor_subject_ids", "reciprocal_edges", "expected_shape_digest", "candidate_shape_digest", "expected_edge_relations", "candidate_edge_relations"),
+        model.StructuralLineageEvidencePayload: ("source_subject_id", "candidate_subject_ids", "disposition", "reciprocal_native_origin_eas", "claim_id", "source_subject_ids"),
         model.SemanticRouteEvidencePayload: ("route_subject_id", "proof_ids", "atomic_group_id", "source_subject_id", "destination_subject_ids", "matched"),
         model.EffectSiteEvidencePayload: ("effect_subject_id", "effect_kind", "instruction_ea", "opcode", "width", "storage_identity", "normalized_state", "provider_mode", "provider_ids", "preserved"),
         model.ReachabilityEvidencePayload: ("root_subject_id", "target_subject_id", "reachable", "path_subject_ids"),
@@ -445,6 +467,18 @@ def _ensure_registries() -> None:
         model.AuthoritativeHandlerInput: ("block_ref", "anchor_ea", "normalized_states"),
         model.UnflattenPlanInputCatalog: ("shape", "source_entry_ref", "dispatcher_entry_ref", "dispatcher_member_refs", "authoritative_handlers", "state_identity"),
         model.ProposedUnflattenContract: ("schema_version", "rule_set_version", "plan_id", "route_evidence", "source_identity_catalog", "use_def_witness", "claims", "plan_inputs"),
+        model.ObligationKey: ("subject", "dimension"),
+        model.AuthorityJustification: ("justification_id", "rule", "premise_ids", "conclusion", "polarity", "phase", "claim_id"),
+        model.ObligationEvidenceCell: ("key", "phase", "supporting_justification_ids", "refuting_justification_ids"),
+        model.ObligationEvidenceIndex: ("cells",),
+        model.FailedObligation: ("key", "state"),
+        model.PreparationBuildMetrics: ("source_inventory_builds", "candidate_inventory_builds", "inventory_ms"),
+        model.SemanticPhaseMetrics: ("preparation_metrics", "source_inventory_builds", "candidate_inventory_builds", "index_folds", "view_graph_traversals"),
+        model.ConditionalSubjectRelation: ("source_subject_id", "target_subject_id", "dimension", "provenance_id"),
+        model.PreparationAuthorityReceipt: ("receipt_id", "proposal_id", "plan_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "source_inventory_digest", "candidate_inventory_digest", "source_binding_digest", "candidate_binding_digest", "route_expansion_digest", "effect_catalog_digest", "terminal_catalog_digest", "plan_input_digest", "dispatcher_member_digest", "planned_helper_digest", "patch_step_digest", "conditional_relation_digest", "metrics"),
+        model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_subjects", "candidate_subjects", "source_bindings", "candidate_bindings", "conditional_relations", "lineage_evidence", "patch_step_evidence", "generic_gates", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "preparation_metrics"),
+        model.SemanticSafetyCase: ("case_id", "authority_id", "preparation_receipt_id", "phase", "candidate_fingerprint", "candidate_generation", "claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications", "obligation_index", "phase_metrics"),
+        model.UnflattenAuthorityVerdict: ("accepted", "phase", "reason", "authority_id", "binding_id", "case_id", "candidate_fingerprint", "safety_case", "failed_obligations"),
     })
     _EXTERNAL_TYPES.update({
         NativePreanalysisKey, NativeEaInterval, NativeEaIntervalSet, StorageIdentity,
@@ -483,7 +517,7 @@ def _ensure_registries() -> None:
             raise RuntimeError(f"duplicate canonical record name: {record_type.__name__}")
         _RECORD_BY_NAME[record_type.__name__] = record_type
     for record_type, names in _RECORD_FIELDS.items():
-        declared = tuple(field.name for field in fields(record_type))
+        declared = tuple(field.name for field in fields(record_type) if not field.name.startswith("_"))
         if names != declared:
             raise RuntimeError(f"canonical record schema drift: {record_type.__name__}")
     for external_type, names in _EXTERNAL_FIELDS.items():
@@ -533,7 +567,17 @@ def _wire(value: object) -> object:
         return _external_wire(value)
     if type(value) in _RECORD_TYPES and is_dataclass(value):
         names = _RECORD_FIELDS[type(value)]
-        return {"t": "record", "n": type(value).__name__, "v": [[name, _wire(getattr(value, name))] for name in names]}
+        pairs = []
+        for name in names:
+            field_value = getattr(value, name)
+            if type(value).__name__ == "PreparationBuildMetrics" and name == "inventory_ms":
+                if type(field_value) not in (int, float) or not math.isfinite(float(field_value)):
+                    raise ValueError("invalid preparation metric")
+                encoded = {"t": "decimal", "v": float(field_value).hex()}
+            else:
+                encoded = _wire(field_value)
+            pairs.append([name, encoded])
+        return {"t": "record", "n": type(value).__name__, "v": pairs}
     raise TypeError(f"no canonical encoding for {type(value).__name__}")
 
 
@@ -557,14 +601,14 @@ def canonical_bytes(value: object) -> bytes:
     return _json_bytes(_wire(value))
 
 
-def _decode_wire(value: object) -> object:
+def _decode_wire(value: object, *, allow_index: bool = False) -> object:
     _ensure_registries()
     if not isinstance(value, dict) or not isinstance(value.get("t"), str):
         raise ValueError("invalid canonical wire value")
     tag = value["t"]
     expected = {
         "none": {"t"}, "bool": {"t", "v"}, "int": {"t", "v"},
-        "str": {"t", "v"}, "bytes": {"t", "v"}, "list": {"t", "v"},
+        "str": {"t", "v"}, "decimal": {"t", "v"}, "bytes": {"t", "v"}, "list": {"t", "v"},
         "tuple": {"t", "v"}, "frozenset": {"t", "v"}, "map": {"t", "v"},
         "enum": {"t", "n", "v"}, "record": {"t", "n", "v"},
     }.get(tag)
@@ -587,6 +631,15 @@ def _decode_wire(value: object) -> object:
         if type(value["v"]) is not str:
             raise ValueError("invalid str wire value")
         result = value["v"]
+    elif tag == "decimal":
+        if type(value["v"]) is not str:
+            raise ValueError("invalid decimal wire value")
+        try:
+            result = float.fromhex(value["v"])
+        except ValueError as exc:
+            raise ValueError("invalid decimal wire value") from exc
+        if not math.isfinite(result):
+            raise ValueError("invalid decimal wire value")
     elif tag == "bytes":
         if type(value["v"]) is not str:
             raise ValueError("invalid bytes wire value")
@@ -597,15 +650,15 @@ def _decode_wire(value: object) -> object:
     elif tag == "list":
         if type(value["v"]) is not list:
             raise ValueError("invalid list wire value")
-        result = [_decode_wire(item) for item in value["v"]]
+        result = [_decode_wire(item, allow_index=allow_index) for item in value["v"]]
     elif tag == "tuple":
         if type(value["v"]) is not list:
             raise ValueError("invalid tuple wire value")
-        result = tuple(_decode_wire(item) for item in value["v"])
+        result = tuple(_decode_wire(item, allow_index=allow_index) for item in value["v"])
     elif tag == "frozenset":
         if type(value["v"]) is not list:
             raise ValueError("invalid frozenset wire value")
-        result = frozenset(_decode_wire(item) for item in value["v"])
+        result = frozenset(_decode_wire(item, allow_index=allow_index) for item in value["v"])
     elif tag == "map":
         if type(value["v"]) is not list:
             raise ValueError("invalid map wire value")
@@ -613,19 +666,19 @@ def _decode_wire(value: object) -> object:
         for encoded_key, item in value["v"]:
             if type(encoded_key) is not dict or type(item) is not dict:
                 raise ValueError("invalid map pair")
-            key = _decode_wire(encoded_key)
+            key = _decode_wire(encoded_key, allow_index=allow_index)
             if type(key) is not str:
                 raise ValueError("canonical mapping key must decode to string")
             if key in result:
                 raise ValueError("duplicate canonical mapping key")
-            result[key] = _decode_wire(item)
+            result[key] = _decode_wire(item, allow_index=allow_index)
     elif tag == "enum":
         if type(value["n"]) is not str:
             raise ValueError("invalid enum name")
         enum_type = _ENUM_BY_NAME.get(value["n"])
         if enum_type is None:
             raise ValueError("unknown enum name")
-        raw = _decode_wire(value["v"])
+        raw = _decode_wire(value["v"], allow_index=allow_index)
         try:
             result = enum_type(raw)
         except (TypeError, ValueError) as exc:
@@ -648,17 +701,55 @@ def _decode_wire(value: object) -> object:
             if name in seen or name != expected_name:
                 raise ValueError("invalid record field order")
             seen.add(name)
-            kwargs[name] = _decode_wire(pair[1])
+            kwargs[name] = _decode_wire(
+                pair[1],
+                allow_index=(allow_index or (
+                    record_type.__name__ == "SemanticSafetyCase"
+                    and name == "obligation_index"
+                )),
+            )
         try:
             if record_type.__name__ == "NativePreanalysisKey":
                 result = record_type.from_dict(kwargs)
+            elif record_type.__name__ == "ObligationEvidenceIndex":
+                if not allow_index:
+                    raise ValueError("obligation indexes require case context")
+                # Keep untrusted serialized cells unprivileged until the
+                # surrounding case has recomputed and compared its fold.
+                result = _DecodedIndexCells(kwargs["cells"])
+            elif record_type.__name__ == "SemanticSafetyCase":
+                serialized_index = kwargs.get("obligation_index")
+                if not isinstance(serialized_index, _DecodedIndexCells):
+                    raise ValueError("case obligation index lacks decode context")
+                from d810.transforms.unflatten_authority.evaluate import (
+                    _build_obligation_index,
+                    _validate_justification_graph,
+                )
+                _validate_justification_graph(
+                    kwargs["justifications"], kwargs["required_obligations"],
+                    kwargs["evidence"], kwargs["phase"], kwargs["claims"],
+                    kwargs["conditional_relations"],
+                )
+                expected_index = _build_obligation_index(
+                    kwargs["required_obligations"], kwargs["justifications"], kwargs["phase"],
+                )
+                if serialized_index.cells != expected_index.cells:
+                    raise ValueError("serialized obligation index does not match the case fold")
+                kwargs["obligation_index"] = expected_index
+                result = record_type(**kwargs)
             else:
                 result = record_type(**kwargs)
         except (TypeError, ValueError) as exc:
             raise ValueError("invalid record value") from exc
         if type(result) in _PINNED_RECORD_TYPES:
             _validate_pinned_record(result)
-    if canonical_bytes(result) != _json_bytes(value):
+    if isinstance(result, _DecodedIndexCells):
+        return result
+    if tag == "decimal":
+        canonical_value = {"t": "decimal", "v": result.hex()}
+    else:
+        canonical_value = _wire(result)
+    if canonical_value != value:
         raise ValueError("non-canonical wire encoding")
     return result
 
@@ -671,6 +762,8 @@ def canonical_decode(encoded: bytes) -> object:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid canonical encoding") from exc
     result = _decode_wire(value)
+    if type(result).__name__ == "ObligationEvidenceIndex":
+        raise ValueError("obligation indexes are evaluator-owned and require case context")
     if canonical_bytes(result) != encoded:
         raise ValueError("non-canonical canonical encoding")
     return result
@@ -701,6 +794,35 @@ def evidence_id(value: object) -> str:
     if type(value) not in _EVIDENCE_TYPES:
         raise TypeError("evidence_id requires a registered evidence record")
     return _record_content_id(EVIDENCE_SCHEMA, value, "evidence_id")
+
+
+def justification_id(value: object) -> str:
+    _ensure_registries()
+    if type(value) not in _RECORD_TYPES:
+        raise TypeError("justification_id requires a registered justification record")
+    return _record_content_id(JUSTIFICATION_SCHEMA, value, "justification_id")
+
+
+def case_id(value: object) -> str:
+    _ensure_registries()
+    if type(value) not in _RECORD_TYPES:
+        raise TypeError("case_id requires a registered safety case record")
+    return _record_content_id(CASE_SCHEMA, value, "case_id")
+
+
+def receipt_id(value: object) -> str:
+    _ensure_registries()
+    if type(value) not in _RECORD_TYPES:
+        raise TypeError("receipt_id requires a registered preparation receipt")
+    return _record_content_id(RECEIPT_SCHEMA, value, "receipt_id")
+
+
+def authority_id(value: object) -> str:
+    return content_id(AUTHORITY_SCHEMA, value)
+
+
+def binding_id(value: object) -> str:
+    return content_id(BINDING_SCHEMA, value)
 
 
 def _subject_id_from_record(value: object) -> str:
@@ -734,7 +856,7 @@ def _record_content_id(schema: str, value: object, omitted_field: str) -> str:
         "t": "record",
         "n": type(value).__name__,
         "v": [
-            [name, _wire(getattr(value, name))]
+                [name, _wire(getattr(value, name, None))]
             for name in names
             if name != omitted_field
         ],
@@ -810,6 +932,36 @@ def _evidence_factory(cls: type[object], *args: object, **kwargs: object) -> obj
         kwargs["evidence_id"] = normalized_id
         return cls(**kwargs)
     return raw
+
+
+def _justification_factory(cls: type[object], **kwargs: object) -> object:
+    _ensure_registries()
+    names = _RECORD_FIELDS.get(cls)
+    if cls.__name__ != "AuthorityJustification" or names is None:
+        raise TypeError("justification factory requires AuthorityJustification")
+    payload = {name: kwargs[name] for name in names if name != "justification_id"}
+    if set(kwargs) != set(payload):
+        raise TypeError("justification factory accepts only non-ID fields")
+    raw = object.__new__(cls)
+    for name, value in payload.items():
+        object.__setattr__(raw, name, value)
+    object.__setattr__(raw, "justification_id", "sha256:" + "0" * 64)
+    return cls(justification_id=justification_id(raw), **payload)
+
+
+def _case_factory(cls: type[object], **kwargs: object) -> object:
+    _ensure_registries()
+    names = _RECORD_FIELDS.get(cls)
+    if cls.__name__ != "SemanticSafetyCase" or names is None:
+        raise TypeError("case factory requires SemanticSafetyCase")
+    payload = {name: kwargs[name] for name in names if name != "case_id"}
+    if set(kwargs) != set(payload):
+        raise TypeError("case factory accepts only non-ID fields")
+    raw = object.__new__(cls)
+    for name, value in payload.items():
+        object.__setattr__(raw, name, value)
+    object.__setattr__(raw, "case_id", "sha256:" + "0" * 64)
+    return cls(case_id=case_id(raw), **payload)
 
 
 def _operand_projection(value: object) -> object:
@@ -905,5 +1057,6 @@ __all__ = [
     "BlockRecord", "CLAIM_SCHEMA", "DigestFixture", "DIGEST_FIXTURE_SCHEMA",
     "EVIDENCE_SCHEMA", "GraphRecord", "InsnRecord", "MopRecord", "SEMANTIC_GRAPH_SCHEMA",
     "SUBJECT_SCHEMA", "canonical_bytes", "canonical_decode", "claim_id", "content_id",
-    "evidence_id", "semantic_graph_fingerprint", "subject_id",
+    "evidence_id", "justification_id", "case_id", "authority_id", "binding_id",
+    "semantic_graph_fingerprint", "subject_id",
 ]
