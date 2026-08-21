@@ -53,6 +53,16 @@ def test_project_editor_uses_draft_rows_for_private_inspection_catalog() -> None
     assert "for entry in self._catalog" in source
 
 
+def test_project_editor_builder_activation_uses_exact_item_row_and_shared_helper() -> None:
+    source = PROJECT_EDITOR.read_text(encoding="utf-8")
+
+    assert "self.pipeline_list.itemActivated.connect(self._activate_pipeline_item)" in source
+    assert "index = self.pipeline_list.row(item)" in source
+    assert "self._open_inspector_at(index)" in source
+    assert "inspector.pass_index == index" in source
+    assert "inspector.pass_id == row.pass_id" in source
+
+
 class _Logger:
     def debug(self, *args: object) -> None:
         del args

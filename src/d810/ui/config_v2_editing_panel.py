@@ -229,6 +229,7 @@ if IDA_AVAILABLE:
             self.pass_buttons["inspector"].clicked.connect(
                 self._open_selected_inspector
             )
+            self.pipeline_list.itemActivated.connect(self._activate_pipeline_item)
             self.raw_contract_button.clicked.connect(self._show_raw_contract)
             self.pipeline_button.clicked.connect(self._show_builder)
             self.details_toggle.toggled.connect(self._set_details_expanded)
@@ -739,7 +740,29 @@ if IDA_AVAILABLE:
             del checked
             index = self._builder_selected_pass_index()
             if index is not None:
-                self._show_inspector(index)
+                self._open_inspector_at(index)
+
+        def _activate_pipeline_item(self, item: typing.Any) -> None:
+            index = self.pipeline_list.row(item)
+            self._open_inspector_at(index)
+
+        def _open_inspector_at(self, index: int) -> None:
+            if not 0 <= index < len(self._view.pipeline_rows):
+                self._set_status(f"Pass row {index} is not present in this draft.")
+                return
+            row = self._view.pipeline_rows[index]
+            if not 0 <= index < len(self._editor_view.inspectors):
+                self._set_status(f"Pass row {index} is not present in this draft.")
+                return
+            inspector = self._editor_view.inspectors[index]
+            if not (
+                inspector.pass_index == index and inspector.pass_id == row.pass_id
+            ):
+                self._set_status(f"Pass row {index} does not match this draft.")
+                return
+            self._selected_pass_index = index
+            self._screen = ConfigV2EditorScreen.INSPECTOR
+            self._render()
 
         def _current_inspector(self) -> typing.Any | None:
             index = self._selected_pass_index

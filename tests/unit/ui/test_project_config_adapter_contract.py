@@ -309,8 +309,15 @@ def test_recipe_profile_opens_builder_before_closing_the_previous_editor() -> No
 
 
 class _Signal:
+    def __init__(self) -> None:
+        self.callbacks: list[object] = []
+
     def connect(self, callback: object) -> None:
-        del callback
+        self.callbacks.append(callback)
+
+    def emit(self, *args: object) -> None:
+        for callback in tuple(self.callbacks):
+            callback(*args)
 
 
 class _Widget:
@@ -323,6 +330,7 @@ class _Widget:
         del args, kwargs
         self.clicked = _Signal()
         self.itemChanged = _Signal()
+        self.itemActivated = _Signal()
         self.toggled = _Signal()
         self._row = -1
         self._items: list[object] = []
@@ -361,6 +369,12 @@ class _Widget:
 
     def item(self, index: int) -> object:
         return self._items[index]
+
+    def row(self, item: object) -> int:
+        try:
+            return self._items.index(item)
+        except ValueError:
+            return -1
 
     def setCurrentRow(self, index: int) -> None:
         self._row = index
@@ -493,6 +507,7 @@ class _RouteAdapter:
         self.reset_count = 0
         self.transform_edits: list[tuple[int, tuple[str, ...]]] = []
         self.inspection_requests: list[tuple[str, ...]] = []
+        self.retarget_calls: list[tuple[object, Path]] = []
         document = {
             "description": "route proof",
             "additional_configuration": {
@@ -566,6 +581,14 @@ class _RouteAdapter:
         assert draft is self.draft
         self.transform_edits.append((pass_index, transform_ids))
         return self.draft, self.validation
+
+    def retarget(
+        self,
+        draft: ConfigV2ProjectDraft,
+        destination: Path,
+    ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
+        self.retarget_calls.append((draft, destination))
+        return draft, self.validation
 
     def remove_pass(
         self,
@@ -709,6 +732,19 @@ def test_routes_focus_duplicate_by_exact_row_and_share_draft_across_screens(
     assert inspector._selected_pass_index == 1
     assert inspector.screen_stack.currentWidget() is inspector.inspector_page
     assert builder_adapter.reset_count == inspector_adapter.reset_count == 1
+    builder.pipeline_list.setCurrentRow(0)
+    original_json = builder._draft.document_json
+    original_revision = builder._draft.revision
+    builder.pipeline_list.itemActivated.emit(builder.pipeline_list.item(1))
+    assert builder._screen is ConfigV2EditorScreen.INSPECTOR
+    assert builder._selected_pass_index == 1
+    builder._show_builder()
+    assert builder._adapter is builder_adapter
+    assert builder._draft is builder_adapter.draft
+    assert builder._draft.document_json == original_json
+    assert builder._draft.revision == original_revision
+    assert builder_adapter.reset_count == 1
+    assert builder_adapter.retarget_calls == []
     owned_draft = inspector._draft
     inspector._show_builder()
     assert inspector.screen_stack.currentWidget() is inspector.builder_page
@@ -730,6 +766,85 @@ def test_routes_focus_duplicate_by_exact_row_and_share_draft_across_screens(
         focus_target=ambiguous_focus,
     )
     assert refused._selected_pass_index is None
+
+
+def test_builder_activation_refuses_a_foreign_item_without_mutating_state(
+    monkeypatch,
+) -> None:
+    panel_type = _load_gui_panel(monkeypatch)
+    adapter = _RouteAdapter()
+    panel = panel_type(adapter, screen=ConfigV2EditorScreen.BUILDER)
+    panel.pipeline_list.setCurrentRow(0)
+    foreign_item = _ListItem("foreign")
+    original_draft = panel._draft
+    original_json = original_draft.document_json
+    original_revision = original_draft.revision
+
+    panel._activate_pipeline_item(foreign_item)
+
+    assert panel._screen is ConfigV2EditorScreen.BUILDER
+    assert panel._selected_pass_index == 0
+    assert panel._draft is original_draft
+    assert panel._draft.document_json == original_json
+    assert panel._draft.revision == original_revision
+    assert adapter.reset_count == 1
+    assert adapter.retarget_calls == []
+
+
+def test_builder_activation_refuses_a_projected_inspector_index_mismatch(
+    monkeypatch,
+) -> None:
+    panel_type = _load_gui_panel(monkeypatch)
+    adapter = _RouteAdapter()
+    panel = panel_type(adapter, screen=ConfigV2EditorScreen.BUILDER)
+    panel.pipeline_list.setCurrentRow(0)
+    panel._editor_view = types.SimpleNamespace(
+        inspectors=(
+            types.SimpleNamespace(pass_index=0, pass_id="mba-simplify"),
+            types.SimpleNamespace(pass_index=99, pass_id="mba-simplify"),
+        )
+    )
+    original_draft = panel._draft
+    original_json = original_draft.document_json
+    original_revision = original_draft.revision
+
+    panel._activate_pipeline_item(panel.pipeline_list.item(1))
+
+    assert panel._screen is ConfigV2EditorScreen.BUILDER
+    assert panel._selected_pass_index == 0
+    assert panel._draft is original_draft
+    assert panel._draft.document_json == original_json
+    assert panel._draft.revision == original_revision
+    assert adapter.reset_count == 1
+    assert adapter.retarget_calls == []
+
+
+def test_builder_activation_refuses_a_projected_inspector_pass_id_mismatch(
+    monkeypatch,
+) -> None:
+    panel_type = _load_gui_panel(monkeypatch)
+    adapter = _RouteAdapter()
+    panel = panel_type(adapter, screen=ConfigV2EditorScreen.BUILDER)
+    panel.pipeline_list.setCurrentRow(0)
+    panel._editor_view = types.SimpleNamespace(
+        inspectors=(
+            types.SimpleNamespace(pass_index=0, pass_id="mba-simplify"),
+            types.SimpleNamespace(pass_index=1, pass_id="wrong-pass"),
+        )
+    )
+    original_draft = panel._draft
+    original_json = original_draft.document_json
+    original_revision = original_draft.revision
+
+    panel._activate_pipeline_item(panel.pipeline_list.item(1))
+
+    assert panel._screen is ConfigV2EditorScreen.BUILDER
+    assert panel._selected_pass_index == 0
+    assert panel._draft is original_draft
+    assert panel._draft.document_json == original_json
+    assert panel._draft.revision == original_revision
+    assert adapter.reset_count == 1
+    assert adapter.retarget_calls == []
 
 
 def test_remove_pass_keeps_rendering_remaining_rows_when_draft_is_invalid(

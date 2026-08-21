@@ -340,6 +340,69 @@ def test_exact_focus_uses_the_requested_row_and_rejects_mismatches() -> None:
     assert "self._selected_pass_index = target.pass_index" in source
 
 
+def test_builder_activation_uses_the_activated_item_and_shared_exact_inspector_route() -> None:
+    init_source = _source("__init__")
+    activate_source = _source("_activate_pipeline_item")
+    open_source = _source("_open_inspector_at")
+    selected_source = _source("_open_selected_inspector")
+
+    assert "self.pipeline_list.itemActivated.connect(self._activate_pipeline_item)" in init_source
+    assert "self.pipeline_list.row(item)" in activate_source
+    assert "self._open_inspector_at(index)" in activate_source
+    assert "self._open_inspector_at(index)" in selected_source
+    assert "inspector.pass_index == index" in open_source
+    assert "inspector.pass_id == row.pass_id" in open_source
+
+
+def test_builder_activation_opens_the_exact_duplicate_without_mutating_the_draft(
+    monkeypatch,
+) -> None:
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    panel = object.__new__(panel_type)
+    panel.pipeline_list = _BehaviorListWidget()
+    first = _BehaviorListItem("1. jump-fixer")
+    second = _BehaviorListItem("2. jump-fixer")
+    panel.pipeline_list.addItem(first)
+    panel.pipeline_list.addItem(second)
+    panel.pipeline_list.setCurrentRow(0)
+    panel._view = types.SimpleNamespace(
+        pipeline_rows=(
+            types.SimpleNamespace(index=0, pass_id="jump-fixer"),
+            types.SimpleNamespace(index=1, pass_id="jump-fixer"),
+        )
+    )
+    panel._editor_view = types.SimpleNamespace(
+        inspectors=(
+            types.SimpleNamespace(pass_index=0, pass_id="jump-fixer"),
+            types.SimpleNamespace(pass_index=1, pass_id="jump-fixer"),
+        )
+    )
+    panel._draft = types.SimpleNamespace(
+        document_json='{"pipeline_v2":[{"pass_id":"jump-fixer"},{"pass_id":"jump-fixer"}]}',
+        revision=11,
+    )
+    original_json = panel._draft.document_json
+    original_revision = panel._draft.revision
+    panel._selected_pass_index = 0
+    panel._screen = module.ConfigV2EditorScreen.BUILDER
+    panel.statuses = []
+    panel._set_status = panel.statuses.append
+    renders: list[tuple[object, int | None]] = []
+    panel._render = lambda: renders.append((panel._screen, panel._selected_pass_index))
+    panel.pipeline_list.itemActivated.connect(panel._activate_pipeline_item)
+
+    panel.pipeline_list.itemActivated.emit(second)
+
+    assert panel._screen is module.ConfigV2EditorScreen.INSPECTOR
+    assert panel._selected_pass_index == 1
+    assert renders == [(module.ConfigV2EditorScreen.INSPECTOR, 1)]
+    panel._show_builder()
+    assert panel._screen is module.ConfigV2EditorScreen.BUILDER
+    assert panel._draft.document_json == original_json
+    assert panel._draft.revision == original_revision
+    assert panel.statuses == []
+
+
 def test_panel_remains_a_thin_adapter_and_explicit_save_surface() -> None:
     imports = {
         node.module
@@ -750,6 +813,7 @@ class _BehaviorListWidget(_BehaviorWidget):
         self._items: list[_BehaviorListItem] = []
         self._row = -1
         self.itemChanged = _BehaviorSignal()
+        self.itemActivated = _BehaviorSignal()
 
     def addItem(self, item: _BehaviorListItem) -> None:
         item._owner = self
@@ -767,6 +831,15 @@ class _BehaviorListWidget(_BehaviorWidget):
 
     def setCurrentRow(self, row: int) -> None:
         self._row = row
+
+    def currentRow(self) -> int:
+        return self._row
+
+    def row(self, item: _BehaviorListItem) -> int:
+        try:
+            return self._items.index(item)
+        except ValueError:
+            return -1
 
     def currentItem(self) -> _BehaviorListItem | None:
         return self._items[self._row] if 0 <= self._row < len(self._items) else None
