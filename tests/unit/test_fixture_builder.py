@@ -94,6 +94,7 @@ def test_masm_builder_supports_masm_only_probe_source_directory():
     assert "hodur-egglog-probe:" in makefile
     assert "MASM_SOURCE_DIR=src/masm_probes" in makefile
     assert "MASM_INCLUDE_C=0" in makefile
+    assert "-DD810_FREESTANDING_FIXTURE=1" in build_script
 
 
 def test_masm_builder_exports_public_c_text_symbols():
@@ -103,47 +104,28 @@ def test_masm_builder_exports_public_c_text_symbols():
     assert 'export_flags+=("/EXPORT:$symbol")' in build_script
 
 
-def test_hodur_crt_shim_is_only_enabled_for_local_freestanding_build(tmp_path):
-    """The portable shim must not perturb authoritative Windows codegen."""
+def test_hodur_crt_shim_is_only_enabled_for_local_freestanding_build():
+    """The source guard keeps freestanding and authoritative CRT contracts separate."""
 
-    fake_crt = tmp_path / "fake_crt"
-    fake_crt.mkdir()
-    (fake_crt / "stdio.h").write_text(
-        "extern int d810_authoritative_stdio_header;\n"
-        "extern int printf(const char *, ...);\n"
+    source = (REPO / "samples/src/c/hodur_c2_flattened.c").read_text()
+    match = re.search(
+        r"(?ms)^#if defined\(D810_FREESTANDING_FIXTURE\)\n"
+        r"(?P<freestanding>.*?)^#else\n(?P<authoritative>.*?)^#endif",
+        source,
     )
-    (fake_crt / "string.h").write_text(
-        "extern int d810_authoritative_string_header;\n"
-        "void *memcpy(void *, const void *, __SIZE_TYPE__);\n"
-    )
+    assert match is not None
+    freestanding = match.group("freestanding")
+    authoritative = match.group("authoritative")
 
-    source = REPO / "samples/src/c/hodur_c2_flattened.c"
-    base_command = [
-        "clang",
-        "--target=x86_64-pc-windows-msvc",
-        "-E",
-        "-P",
-        "-I",
-        str(fake_crt),
-        "-I",
-        str(REPO / "samples/include"),
-        str(source),
-    ]
-    authoritative = _sp.run(base_command, capture_output=True, text=True)
-    assert authoritative.returncode == 0, authoritative.stderr
-    assert "d810_authoritative_stdio_header" in authoritative.stdout
-    assert "d810_authoritative_string_header" in authoritative.stdout
-    assert "__builtin_memcpy" not in authoritative.stdout
-
-    freestanding = _sp.run(
-        [*base_command[:1], "-DD810_FREESTANDING_FIXTURE=1", *base_command[1:]],
-        capture_output=True,
-        text=True,
-    )
-    assert freestanding.returncode == 0, freestanding.stderr
-    assert "d810_authoritative_stdio_header" not in freestanding.stdout
-    assert "d810_authoritative_string_header" not in freestanding.stdout
-    assert "__builtin_memcpy" in freestanding.stdout
+    assert "extern int printf(const char *format, ...);" in freestanding
+    assert "#define memcpy(destination, source, count)" in freestanding
+    assert "__builtin_memcpy((destination), (source), (count))" in freestanding
+    assert "#include <stdio.h>" not in freestanding
+    assert "#include <string.h>" not in freestanding
+    assert "#include <stdio.h>" in authoritative
+    assert "#include <string.h>" in authoritative
+    assert "extern int printf" not in authoritative
+    assert "__builtin_memcpy" not in authoritative
 
 
 def test_detects_slot_const_and_reg_from_committed_asm():
@@ -465,6 +447,7 @@ def test_authoritative_windows_builder_marks_hodconst_read_only() -> None:
         text=True,
     )
     assert dry_run.returncode == 0, dry_run.stderr
+    assert "D810_FREESTANDING_FIXTURE" not in dry_run.stdout
     link_lines = [line for line in dry_run.stdout.splitlines() if "link.exe" in line]
     assert len(link_lines) == 1
     assert "/SECTION:HODCONST,R" in link_lines[0].split()
