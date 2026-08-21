@@ -46,6 +46,7 @@ from __future__ import annotations
 import dataclasses
 import enum
 import hashlib
+import json
 from dataclasses import dataclass
 
 from d810.capabilities.native_patch import NativeInstructionSequenceShape
@@ -702,7 +703,20 @@ class NativePatchPlan:
         final_targets: dict[tuple[str, int], str] = {}
         for operation in self.operations:
             for action in operation.metadata_actions:
-                final_targets[(action.kind.value, action.ea)] = action.expected_after
+                target = action.expected_after
+                for prefix in ("item-xrefs:v1:", "item-xrefs:v2:"):
+                    if not target.startswith(prefix):
+                        continue
+                    try:
+                        payload = json.loads(target.removeprefix(prefix))
+                    except (TypeError, json.JSONDecodeError):
+                        break
+                    if isinstance(payload, dict) and isinstance(
+                        payload.get("item_state"), str
+                    ):
+                        target = payload["item_state"]
+                    break
+                final_targets[(action.kind.value, action.ea)] = target
         targets = tuple(
             (kind, ea, after) for (kind, ea), after in sorted(final_targets.items())
         )
@@ -775,6 +789,7 @@ class NativeCertificate:
     # observed EA-anchor quotient; ``target_cfg_fingerprint`` remains the
     # independently frozen expected value.
     observed_native_cfg_fingerprint: str | None = None
+    metadata_postconditions: tuple[tuple[str, int, str], ...] = ()
 
     def __post_init__(self) -> None:
         _require_identifier(self.certificate_id, "certificate_id")
@@ -789,6 +804,8 @@ class NativeCertificate:
             raise TypeError("state must be a NativeCertificateState")
         if self.execution_safe is not False:
             raise ValueError("execution_safe must be False (invariant 23)")
+        if tuple(sorted(self.metadata_postconditions)) != self.metadata_postconditions:
+            raise ValueError("metadata_postconditions must be sorted")
 
 
 def certificate_to_payload(certificate: NativeCertificate) -> dict:
@@ -824,6 +841,10 @@ def certificate_to_payload(certificate: NativeCertificate) -> dict:
         "observed_native_cfg_fingerprint": (
             certificate.observed_native_cfg_fingerprint
         ),
+        "metadata_postconditions": [
+            [kind, ea, state]
+            for kind, ea, state in certificate.metadata_postconditions
+        ],
     }
 
 
@@ -860,5 +881,9 @@ def certificate_from_payload(payload: dict) -> NativeCertificate:
             None
             if payload.get("observed_native_cfg_fingerprint") is None
             else str(payload["observed_native_cfg_fingerprint"])
+        ),
+        metadata_postconditions=tuple(
+            (str(kind), int(ea), str(state))
+            for kind, ea, state in payload.get("metadata_postconditions", ())
         ),
     )

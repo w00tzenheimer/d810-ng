@@ -17,6 +17,24 @@ from d810.backends.ida.native_patch.metadata import (
 )
 
 
+def _scoped_item_v2(*, item_state: str = "code:4", targets=(0x1000, 0x1002)) -> str:
+    origin = _data_snapshot_v2(ea=0x1000, head_ea=0x1000)
+    payload = json.loads(origin.removeprefix("data:v2:"))
+    return "item-xrefs:v2:" + json.dumps(
+        {
+            "ea": 0x1000,
+            "group_targets": list(targets),
+            "head_ea": 0x1000,
+            "item_state": item_state,
+            "origin_data_state": origin,
+            "size": 6,
+            "xrefs": payload["xrefs"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _data_snapshot(*, ea: int = 0x1000, head_ea: int | None = None) -> str:
     if head_ea is None:
         head_ea = ea
@@ -284,6 +302,40 @@ def test_scoped_item_xref_token_rejects_noncanonical_json_and_inner_scope_drift(
 
 def test_scoped_item_unknown_is_not_a_task1_admission_token() -> None:
     assert _parse_scoped_item_state(_scoped_item(item_state="unknown")) is None
+
+
+def test_scoped_item_v2_preserves_group_provenance_and_allows_member_unknown() -> None:
+    token = _scoped_item_v2(item_state="unknown")
+    parsed = _parse_scoped_item_state(token, expected_ea=0x1000)
+
+    assert parsed is not None
+    assert parsed["origin_data_state"].startswith("data:v2:")
+    assert parsed["group_targets"] == (0x1000, 0x1002)
+
+    later = json.loads(token.removeprefix("item-xrefs:v2:"))
+    later["ea"] = 0x1002
+    later["item_state"] = "unknown"
+    later_token = "item-xrefs:v2:" + json.dumps(
+        later, sort_keys=True, separators=(",", ":")
+    )
+    assert _parse_scoped_item_state(later_token, expected_ea=0x1002) is not None
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload.update(group_targets=[0x1002, 0x1000]),
+        lambda payload: payload.update(group_targets=[0x1000]),
+        lambda payload: payload.update(origin_data_state=_data_snapshot_v2(ea=0x1002)),
+        lambda payload: payload.update(group_targets=[0x1000, 0x2000]),
+    ),
+)
+def test_scoped_item_v2_rejects_mismatched_group_provenance(mutate) -> None:
+    payload = json.loads(_scoped_item_v2().removeprefix("item-xrefs:v2:"))
+    mutate(payload)
+    token = "item-xrefs:v2:" + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    assert _parse_scoped_item_state(token) is None
 
 
 @pytest.mark.parametrize(

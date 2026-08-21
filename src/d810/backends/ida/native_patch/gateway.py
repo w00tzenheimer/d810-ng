@@ -136,6 +136,16 @@ from d810.transforms.native_patch_plan import (
 
 logger = getLogger("d810.backends.ida.native_patch.gateway")
 
+
+def _metadata_scope_hint(state: str) -> str | None:
+    """Return a historical item scope only for composite metadata tokens."""
+    return (
+        state
+        if isinstance(state, str)
+        and state.startswith(("item-xrefs:v1:", "item-xrefs:v2:"))
+        else None
+    )
+
 __all__ = [
     "IdaNativeByteWriter",
     "NativeApplyReceipt",
@@ -549,7 +559,11 @@ class NativePatchGateway:
 
         for op in plan.operations:
             for action in op.metadata_actions:
-                observed = self._metadata_executor.read_state(action.kind, action.ea)
+                observed = self._metadata_executor.read_state(
+                    action.kind,
+                    action.ea,
+                    scope_state=_metadata_scope_hint(action.expected_before),
+                )
                 if observed != action.expected_before:
                     raise MetadataStateMismatch(
                         action.kind.value,
@@ -581,7 +595,11 @@ class NativePatchGateway:
                         action.kind.value,
                         action.ea,
                         action.expected_after,
-                        self._metadata_executor.read_state(action.kind, action.ea),
+                        self._metadata_executor.read_state(
+                            action.kind,
+                            action.ea,
+                            scope_state=_metadata_scope_hint(action.expected_after),
+                        ),
                     )
 
     def _reverse_metadata_actions(
@@ -603,7 +621,11 @@ class NativePatchGateway:
         for action in reversed(actions):
             try:
                 kind = NativeMetadataActionKind(action.kind)
-                current = self._metadata_executor.read_state(kind, action.ea)
+                current = self._metadata_executor.read_state(
+                    kind,
+                    action.ea,
+                    scope_state=_metadata_scope_hint(action.expected_after),
+                )
                 if current == action.recorded_before:
                     continue
                 if current != action.expected_after:
@@ -661,7 +683,11 @@ class NativePatchGateway:
             for action in operation.metadata_actions:
                 final_actions[(action.kind, action.ea)] = action
         for action in final_actions.values():
-            observed = self._metadata_executor.read_state(action.kind, action.ea)
+            observed = self._metadata_executor.read_state(
+                action.kind,
+                action.ea,
+                scope_state=_metadata_scope_hint(action.expected_after),
+            )
             if observed != action.expected_after:
                 raise MetadataStateMismatch(
                     action.kind.value,
@@ -911,9 +937,18 @@ class NativePatchGateway:
         normalized_fingerprint = self._recapture_fingerprint(
             plan, record.transaction_id
         )
+        postconditions = tuple(
+            sorted(
+                {
+                    (action.kind.value, int(action.ea), action.expected_after)
+                    for operation in plan.operations
+                    for action in operation.metadata_actions
+                }
+            )
+        )
         return NativeCertificate(
             certificate_id=uuid4().hex,
-            schema_version=2,
+            schema_version=3,
             database_identity=plan.database_identity,
             function_identity=plan.function_identity,
             inherited_fingerprint=plan.inherited_function_fingerprint,
@@ -927,6 +962,7 @@ class NativePatchGateway:
             authorization_class=plan.patch_class,
             state=NativeCertificateState.APPLIED,
             certified_at=time.time(),
+            metadata_postconditions=postconditions,
         )
 
     def _recapture_fingerprint(
@@ -992,14 +1028,16 @@ class NativePatchGateway:
         if self._metadata_executor is None:
             return False
         try:
-            final_actions = {}
-            for operation in plan.operations:
-                for action in operation.metadata_actions:
-                    final_actions[(action.kind, action.ea)] = action
-            for action in final_actions.values():
+            if not certificate.metadata_postconditions:
+                return False
+            for kind_name, ea, expected_after in certificate.metadata_postconditions:
                 if (
-                    self._metadata_executor.read_state(action.kind, action.ea)
-                    != action.expected_after
+                    self._metadata_executor.read_state(
+                        NativeMetadataActionKind(kind_name),
+                        ea,
+                        scope_state=_metadata_scope_hint(expected_after),
+                    )
+                    != expected_after
                 ):
                     return False
         except Exception:
@@ -1079,7 +1117,7 @@ class NativePatchGateway:
             # payload without the current-state witness.
             logger.warning("ignoring malformed or obsolete native certificate")
             return None
-        if certificate.schema_version not in {2, 3}:
+        if certificate.schema_version != 3:
             logger.warning(
                 "ignoring obsolete native certificate schema %s",
                 certificate.schema_version,

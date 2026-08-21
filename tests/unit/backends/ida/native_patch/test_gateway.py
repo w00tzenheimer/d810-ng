@@ -286,7 +286,11 @@ class CrashingStageCCertificateUpdateBlobStore(FakeBlobStore):
     """Models process death after the Stage C receipt but before cert update."""
 
     def set_native_patch_blob(self, scope, key, payload):
-        if scope == "certificate" and payload.get("schema_version") == 3:
+        if (
+            scope == "certificate"
+            and payload.get("schema_version") == 3
+            and payload.get("observed_native_cfg_fingerprint") is not None
+        ):
             raise KeyboardInterrupt("injected: Stage C certificate update crash")
         super().set_native_patch_blob(scope, key, payload)
 
@@ -1541,10 +1545,12 @@ class FakeMetadataExecutor:
     ):
         self.state: dict = dict(initial or {})
         self.applied: list[tuple[str, int, str]] = []
+        self.scope_reads: list[tuple[str, int, str | None]] = []
         self._fail_on_apply = fail_on_apply
         self._mutate_then_fail = mutate_then_fail
 
-    def read_state(self, kind, ea):
+    def read_state(self, kind, ea, *, scope_state=None):
+        self.scope_reads.append((kind.value, ea, scope_state))
         return self.state.get((kind, ea), "unknown")
 
     def apply_state(self, kind, ea, target_state):
@@ -1645,6 +1651,48 @@ class TestMetadataActionExecution:
 
         assert receipt.ok, receipt.rejection_reasons
         assert [a[2] for a in executor.applied] == ["code:2", "cref:0x1010"]
+
+    def test_gateway_reads_use_action_scope_and_certificate_postconditions(
+        self, tmp_path
+    ) -> None:
+        from d810.transforms.native_patch_plan import NativeMetadataActionKind
+
+        plan, _ = _plan_with_metadata_actions()
+        actions = list(plan.operations[0].metadata_actions)
+        actions[0] = dataclasses.replace(
+            actions[0],
+            expected_before="item-xrefs:v2:before",
+            expected_after="item-xrefs:v2:after",
+        )
+        operation = dataclasses.replace(
+            plan.operations[0], metadata_actions=tuple(actions)
+        )
+        plan = dataclasses.replace(plan, operations=(operation,))
+        initial = self._initial_state()
+        initial[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = (
+            "item-xrefs:v2:before"
+        )
+        executor = FakeMetadataExecutor(initial)
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+
+        receipt = rig.gateway.apply(plan)
+
+        assert receipt.certificate is not None
+        assert receipt.certificate.metadata_postconditions
+        assert any(
+            scope == "item-xrefs:v2:before" for _kind, _ea, scope in executor.scope_reads
+        )
+        assert any(
+            scope == "item-xrefs:v2:after" for _kind, _ea, scope in executor.scope_reads
+        )
+        executor.scope_reads.clear()
+        assert rig.gateway.certificate_matches_current(plan, receipt.certificate)
+        assert executor.scope_reads
+        assert all(
+            scope == "item-xrefs:v2:after"
+            for _kind, _ea, scope in executor.scope_reads
+            if _kind == "recreate_item"
+        )
 
     def test_metadata_only_operation_never_calls_the_byte_writer(
         self, tmp_path

@@ -331,7 +331,18 @@ def test_enabled_request_applies_real_metadata_plan_and_records_child_effects(
 
             def observe_result():
                 success = all(
-                    metadata.read_state(action.kind, action.ea) == action.expected_after
+                    metadata.read_state(
+                        action.kind,
+                        action.ea,
+                        scope_state=(
+                            action.expected_after
+                            if action.expected_after.startswith(
+                                ("item-xrefs:v1:", "item-xrefs:v2:")
+                            )
+                            else None
+                        ),
+                    )
+                    == action.expected_after
                     for action in plan.operations[0].metadata_actions
                 )
                 return IndirectLabelMaterializationResult(

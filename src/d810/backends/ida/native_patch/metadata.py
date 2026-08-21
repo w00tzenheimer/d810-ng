@@ -121,6 +121,7 @@ _ITEM_DATA = "data"
 _ITEM_DATA_SNAPSHOT_V1_PREFIX = "data:v1:"
 _ITEM_DATA_SNAPSHOT_V2_PREFIX = "data:v2:"
 _ITEM_SCOPED_XREF_V1_PREFIX = "item-xrefs:v1:"
+_ITEM_SCOPED_XREF_V2_PREFIX = "item-xrefs:v2:"
 _ITEM_UNKNOWN = "unknown"
 _SWITCH_NONE = "switch:none"
 _SWITCH_PREFIX = "switch:"
@@ -331,6 +332,8 @@ def _scoped_item_token(
     size: int,
     item_state: str,
     xrefs: tuple[tuple[int, int, int, bool, bool], ...],
+    origin_data_state: str | None = None,
+    group_targets: tuple[int, ...] = (),
 ) -> str:
     payload = {
         "ea": int(ea),
@@ -348,7 +351,13 @@ def _scoped_item_token(
             for source_ea, target_ea, xref_type, user_owned, is_code in xrefs
         ],
     }
-    return _ITEM_SCOPED_XREF_V1_PREFIX + json.dumps(
+    if origin_data_state is not None:
+        payload["origin_data_state"] = origin_data_state
+        payload["group_targets"] = list(group_targets)
+        prefix = _ITEM_SCOPED_XREF_V2_PREFIX
+    else:
+        prefix = _ITEM_SCOPED_XREF_V1_PREFIX
+    return prefix + json.dumps(
         payload, sort_keys=True, separators=(",", ":")
     )
 
@@ -356,23 +365,32 @@ def _scoped_item_token(
 def _parse_scoped_item_state(
     token: str, *, expected_ea: int | None = None
 ) -> dict[str, object] | None:
-    if not isinstance(token, str) or not token.startswith(
-        _ITEM_SCOPED_XREF_V1_PREFIX
-    ):
+    if not isinstance(token, str):
+        return None
+    if token.startswith(_ITEM_SCOPED_XREF_V1_PREFIX):
+        prefix = _ITEM_SCOPED_XREF_V1_PREFIX
+        version = 1
+    elif token.startswith(_ITEM_SCOPED_XREF_V2_PREFIX):
+        prefix = _ITEM_SCOPED_XREF_V2_PREFIX
+        version = 2
+    else:
         return None
     try:
         payload = json.loads(
-            token.removeprefix(_ITEM_SCOPED_XREF_V1_PREFIX)
+            token.removeprefix(prefix)
         )
     except (TypeError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or set(payload) != {
+    fields = {
         "ea",
         "head_ea",
         "item_state",
         "size",
         "xrefs",
-    }:
+    }
+    if version == 2:
+        fields |= {"origin_data_state", "group_targets"}
+    if not isinstance(payload, dict) or set(payload) != fields:
         return None
     if not all(
         _is_int(payload.get(key)) for key in ("ea", "head_ea", "size")
@@ -392,9 +410,35 @@ def _parse_scoped_item_state(
     item_state = payload["item_state"]
     if not isinstance(item_state, str):
         return None
+    origin_data_state: str | None = None
+    group_targets: tuple[int, ...] = ()
+    if version == 2:
+        origin_data_state = payload["origin_data_state"]
+        raw_targets = payload["group_targets"]
+        if not isinstance(origin_data_state, str) or not isinstance(raw_targets, list):
+            return None
+        if len(raw_targets) < 2 or any(not _is_int(value) for value in raw_targets):
+            return None
+        group_targets = tuple(int(value) for value in raw_targets)
+        if group_targets != tuple(sorted(set(group_targets))):
+            return None
+        if any(not head_ea <= value < head_ea + size for value in group_targets):
+            return None
+        origin = _parse_reversible_data_item_state(origin_data_state)
+        if (
+            origin is None
+            or int(origin["head_ea"]) != head_ea
+            or int(origin["size"]) != size
+        ):
+            return None
+        if int(origin["ea"]) not in group_targets:
+            return None
     if item_state == _ITEM_UNKNOWN:
-        return None
-    if item_state.startswith(f"{_ITEM_CODE}:"):
+        if version != 2 or ea not in group_targets:
+            return None
+    if item_state == _ITEM_UNKNOWN:
+        pass
+    elif item_state.startswith(f"{_ITEM_CODE}:"):
         code_size = item_state.removeprefix(f"{_ITEM_CODE}:")
         if not code_size.isdecimal() or int(code_size) <= 0:
             return None
@@ -457,12 +501,19 @@ def _parse_scoped_item_state(
         assert data is not None
         if tuple(data["xrefs"]) != xrefs:
             return None
+    if version == 2:
+        origin = _parse_reversible_data_item_state(origin_data_state)
+        assert origin is not None
+        if tuple(origin["xrefs"]) != xrefs:
+            return None
     canonical = _scoped_item_token(
         ea=ea,
         head_ea=head_ea,
         size=size,
         item_state=item_state,
         xrefs=xrefs,
+        origin_data_state=origin_data_state,
+        group_targets=group_targets,
     )
     if token != canonical:
         return None
@@ -472,6 +523,8 @@ def _parse_scoped_item_state(
         "item_state": item_state,
         "size": size,
         "xrefs": xrefs,
+        "origin_data_state": origin_data_state,
+        "group_targets": group_targets,
     }
 
 
@@ -569,6 +622,8 @@ class IdaMetadataActionExecutor:
             size=int(scope["size"]),
             item_state=self._read_item_state(ea),
             xrefs=xrefs,
+            origin_data_state=scope.get("origin_data_state"),
+            group_targets=tuple(scope.get("group_targets", ())),
         )
 
     def _read_item_state(self, ea: int) -> str:
@@ -791,9 +846,12 @@ class IdaMetadataActionExecutor:
         added = after_set - before_set
         expected = set(derived)
         if forward:
-            valid = not removed and added == expected
+            # IDA may drop pre-existing automatic rows while rebuilding an
+            # item. They are repaired by the scoped owner below; the decoded
+            # effect itself must still be present and no user row may drift.
+            valid = expected <= added and not any(row[3] for row in removed)
         else:
-            valid = not added and removed == expected
+            valid = expected <= removed and not any(row[3] for row in added)
         if valid:
             return
         direction = "forward" if forward else "reverse"
@@ -803,6 +861,45 @@ class IdaMetadataActionExecutor:
             f"added={tuple(sorted(added))!r}, "
             f"expected={tuple(sorted(expected))!r}"
         )
+
+    @staticmethod
+    def _reconcile_auto_xrefs(
+        observed: tuple[tuple[int, int, int, bool, bool], ...],
+        wanted: tuple[tuple[int, int, int, bool, bool], ...],
+    ) -> None:
+        """Repair only automatic rows in a scoped item witness.
+
+        IDA's item mutators legitimately rebuild derived rows, but do not
+        promise to preserve unrelated automatic data references.  The
+        composite owner may restore those rows; user-owned rows remain a hard
+        safety boundary and are never passed to an xref mutator.
+        """
+        import ida_xref
+
+        current = set(observed)
+        target = set(wanted)
+        removed = sorted(current - target)
+        added = sorted(target - current)
+        changed = removed + added
+        if any(row[3] for row in changed):
+            raise UnexecutableMetadataAction(
+                "scoped item xref reconciliation encountered a user-owned row"
+            )
+        try:
+            for source, target_ea, _kind, _user, is_code in removed:
+                if is_code:
+                    ida_xref.del_cref(source, target_ea, False)
+                else:
+                    ida_xref.del_dref(source, target_ea)
+            for source, target_ea, xref_type, _user, is_code in added:
+                if is_code:
+                    ida_xref.add_cref(source, target_ea, xref_type)
+                else:
+                    ida_xref.add_dref(source, target_ea, xref_type)
+        except Exception as error:
+            raise UnexecutableMetadataAction(
+                "scoped item xref reconciliation failed"
+            ) from error
 
     @classmethod
     def _require_data_item_xrefs(
@@ -913,7 +1010,9 @@ class IdaMetadataActionExecutor:
         # to prove that the requested state already holds.
         scope_state = (
             target_state
-            if target_state.startswith(_ITEM_SCOPED_XREF_V1_PREFIX)
+            if target_state.startswith(
+                (_ITEM_SCOPED_XREF_V1_PREFIX, _ITEM_SCOPED_XREF_V2_PREFIX)
+            )
             else None
         )
         if self.read_state(kind, ea, scope_state=scope_state) == target_state:
@@ -991,7 +1090,9 @@ class IdaMetadataActionExecutor:
         import ida_bytes
         import ida_ua
 
-        if target_state.startswith(_ITEM_SCOPED_XREF_V1_PREFIX):
+        if target_state.startswith(
+            (_ITEM_SCOPED_XREF_V1_PREFIX, _ITEM_SCOPED_XREF_V2_PREFIX)
+        ):
             target_scope = _parse_scoped_item_state(
                 target_state, expected_ea=ea
             )
@@ -1088,6 +1189,8 @@ class IdaMetadataActionExecutor:
         size = int(target_scope["size"])
         target_inner = str(target_scope["item_state"])
         target_xrefs = tuple(target_scope["xrefs"])
+        origin_data_state = target_scope.get("origin_data_state")
+        group_targets = tuple(target_scope.get("group_targets", ()))
         current_inner = self._read_item_state(ea)
         entry_xrefs = self._read_data_item_xrefs(head_ea, size)
         current_state = _scoped_item_token(
@@ -1096,6 +1199,8 @@ class IdaMetadataActionExecutor:
             size=size,
             item_state=current_inner,
             xrefs=entry_xrefs,
+            origin_data_state=origin_data_state,
+            group_targets=group_targets,
         )
         if current_state == target_state:
             return True
@@ -1113,7 +1218,7 @@ class IdaMetadataActionExecutor:
                 )
             expected_xrefs = tuple(sorted(set(entry_xrefs) | set(derived)))
             forward = True
-        elif target_inner.startswith(_ITEM_DATA_SNAPSHOT_V2_PREFIX):
+        elif target_inner.startswith((_ITEM_DATA_SNAPSHOT_V2_PREFIX, _ITEM_UNKNOWN)):
             if not current_inner.startswith(_ITEM_CODE + ":"):
                 raise UnexecutableMetadataAction(
                     f"cannot recreate {target_inner!r} over {current_inner!r}"
@@ -1142,6 +1247,9 @@ class IdaMetadataActionExecutor:
                 entry_xrefs, observed_xrefs, derived, forward=forward
             )
             if observed_xrefs != target_xrefs:
+                self._reconcile_auto_xrefs(observed_xrefs, target_xrefs)
+                observed_xrefs = self._read_data_item_xrefs(head_ea, size)
+            if observed_xrefs != target_xrefs:
                 raise UnexecutableMetadataAction(
                     f"scoped item transition at {ea:#x} produced an "
                     "unexpected xref effect"
@@ -1165,6 +1273,9 @@ class IdaMetadataActionExecutor:
                         _scoped=True,
                         _validate_witness=False,
                     )
+                observed_after_restore = self._read_data_item_xrefs(head_ea, size)
+                if observed_after_restore != entry_xrefs:
+                    self._reconcile_auto_xrefs(observed_after_restore, entry_xrefs)
                 if self.read_state(
                     NativeMetadataActionKind.RECREATE_ITEM,
                     ea,

@@ -518,7 +518,7 @@ class SQLiteNativePatchJournal:
         )
         for action in operation.metadata_actions:
             if action.kind.value == "recreate_item":
-                scopes.append(("item", int(action.ea)))
+                scopes.extend((("item_graph", 0), ("xref_graph", 0)))
             elif action.kind.value == "update_xref":
                 scopes.append(("xref_source", int(action.ea)))
             elif action.kind.value == "set_switch_info":
@@ -531,6 +531,24 @@ class SQLiteNativePatchJournal:
                 # durable scope also serializes any future implementation.
                 scopes.append((f"metadata:{action.kind.value}", int(action.ea)))
         return tuple(scopes)
+
+    @staticmethod
+    def _metadata_scopes_overlap(
+        left: tuple[str, int], right: tuple[str, int]
+    ) -> bool:
+        left_kind, left_ea = left
+        right_kind, right_ea = right
+        if left_kind == "item_graph" or right_kind == "item_graph":
+            return left_kind in {"item_graph", "item"} or right_kind in {
+                "item_graph",
+                "item",
+            }
+        if left_kind == "xref_graph" or right_kind == "xref_graph":
+            return left_kind in {"xref_graph", "xref_source"} and right_kind in {
+                "xref_graph",
+                "xref_source",
+            }
+        return left_kind == right_kind and left_ea == right_ea
 
     def prepare(self, plan: NativePatchPlanEnvelope) -> NativePatchTransactionRecord:
         database_identity = str(plan.database_identity.idb_uuid)
@@ -579,7 +597,12 @@ class SQLiteNativePatchJournal:
                 for scope_kind, scope_ea in self._metadata_scopes_for_operation(
                     operation
                 ):
-                    if (scope_kind, scope_ea) in active_metadata_scopes:
+                    if any(
+                        self._metadata_scopes_overlap(
+                            (scope_kind, scope_ea), active_scope
+                        )
+                        for active_scope in active_metadata_scopes
+                    ):
                         raise NativePatchMetadataScopeConflictError(
                             operation.operation_id, scope_kind, scope_ea
                         )

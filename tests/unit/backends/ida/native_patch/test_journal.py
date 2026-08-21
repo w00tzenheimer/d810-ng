@@ -55,6 +55,46 @@ def store(tmp_path):
 
 
 class TestPrepare:
+    def test_composite_item_scope_conflicts_with_active_xref_graph(self, store) -> None:
+        composite = "item-xrefs:v2:{\"ea\":4096,\"group_targets\":[4096,4098],\"head_ea\":4096,\"item_state\":\"code:4\",\"origin_data_state\":\"data:v2:x\",\"size\":6,\"xrefs\":[]}"  # noqa: E501
+        item = NativeMetadataAction(
+            kind=NativeMetadataActionKind.RECREATE_ITEM,
+            ea=0x1000,
+            expected_before=composite,
+            expected_after=composite,
+        )
+        first = fixtures.plan(operations=(fixtures.operation(metadata_actions=(item,)),))
+        store.prepare(first)
+        xref = NativeMetadataAction(
+            kind=NativeMetadataActionKind.UPDATE_XREF,
+            ea=0x5000,
+            expected_before="cref3:",
+            expected_after="cref3:",
+        )
+        second_operation = fixtures.operation(
+            operation_id="op-2", start_ea=0x2000, end_ea=0x2002,
+            metadata_actions=(xref,),
+        )
+        ownership = dataclasses.replace(
+            second_operation.expected_function_ownership,
+            owning_function_entry_ea=0x2000,
+        )
+        second_operation = dataclasses.replace(
+            second_operation,
+            expected_function_ownership=ownership,
+            restore_snapshot=dataclasses.replace(
+                second_operation.restore_snapshot, function_ownership=ownership
+            ),
+        )
+        second = fixtures.plan(
+            operations=(second_operation,),
+            plan_id="plan-2",
+            function_identity=dataclasses.replace(
+                fixtures.plan().function_identity, entry_ea=0x2000
+            ),
+        )
+        with pytest.raises(NativePatchMetadataScopeConflictError):
+            store.prepare(second)
     def test_prepare_durably_commits_prepared_before_returning(self, store) -> None:
         record = store.prepare(fixtures.plan())
         assert record.state is NativeJournalState.PREPARED

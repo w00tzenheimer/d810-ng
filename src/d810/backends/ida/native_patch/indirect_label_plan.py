@@ -19,6 +19,8 @@ from d810.backends.ida.native_patch.capture import (
 )
 from d810.backends.ida.native_patch.metadata import (
     IdaMetadataActionExecutor,
+    _parse_reversible_data_item_state,
+    _scoped_item_token,
     reversible_data_item_head,
     is_reversible_data_item_state,
 )
@@ -380,9 +382,35 @@ def build_indirect_label_metadata_plan(
             ),
         )
 
+    ordered_targets = _item_transition_order(request.target_eas)
+    captured_before = {
+        int(target_ea): executor.read_state(
+            NativeMetadataActionKind.RECREATE_ITEM, int(target_ea)
+        )
+        for target_ea in ordered_targets
+    }
+    grouped_targets: dict[int, tuple[int, ...]] = {}
+    for target_ea, before in captured_before.items():
+        head_ea = reversible_data_item_head(before, expected_ea=target_ea)
+        if head_ea is None or not before.startswith("data:v2:"):
+            continue
+        group = tuple(
+            sorted(
+                candidate
+                for candidate, candidate_before in captured_before.items()
+                if candidate_before.startswith("data:v2:")
+                and reversible_data_item_head(candidate_before, expected_ea=candidate)
+                == head_ea
+            )
+        )
+        grouped_targets[head_ea] = group
+    group_progress: dict[int, tuple[tuple[int, int, int, bool, bool], ...]] = {}
+    group_origins: dict[int, str] = {}
+    group_sizes: dict[int, int] = {}
+    group_code_sizes: dict[int, dict[int, int]] = {}
     seen_data_heads: set[int] = set()
-    for target_ea in _item_transition_order(request.target_eas):
-        before = executor.read_state(NativeMetadataActionKind.RECREATE_ITEM, target_ea)
+    for target_ea in ordered_targets:
+        before = captured_before[target_ea]
         after = f"code:{_instruction_size(target_ea)}"
         if before == "unknown":
             flags = ida_bytes.get_flags(int(target_ea))
@@ -417,17 +445,61 @@ def build_indirect_label_metadata_plan(
             # A narrow scalar-data snapshot preserves the exact IDA flags,
             # per-byte flags, and bytes needed to reverse the data->code
             # promotion.  Generic ``data:<size>`` remains fail-closed.
-            expected_before = _group_item_transition_before(
-                before,
-                target_ea=int(target_ea),
-                seen_data_heads=seen_data_heads,
-            )
+            if before.startswith("data:v2:"):
+                data = _parse_reversible_data_item_state(
+                    before, expected_ea=int(target_ea)
+                )
+                assert data is not None
+                head_ea = int(data["head_ea"])
+                group = grouped_targets.get(head_ea, ())
+                if len(group) < 2:
+                    raise IndirectLabelPlanBuildError(
+                        "v2 xref snapshot requires at least two grouped targets"
+                    )
+                cumulative = group_progress.get(head_ea, tuple(data["xrefs"]))
+                if head_ea not in group_origins:
+                    inner_before = before
+                    group_origins[head_ea] = before
+                else:
+                    inner_before = "unknown"
+                expected_before = _scoped_item_token(
+                    ea=int(target_ea),
+                    head_ea=head_ea,
+                    size=int(data["size"]),
+                    item_state=inner_before,
+                    xrefs=cumulative,
+                    origin_data_state=group_origins[head_ea],
+                    group_targets=group,
+                )
+                derived = executor._predict_code_xrefs(int(target_ea))[1]
+                cumulative = tuple(sorted(set(cumulative) | set(derived)))
+                group_progress[head_ea] = cumulative
+                group_sizes[head_ea] = int(data["size"])
+                group_code_sizes.setdefault(head_ea, {})[int(target_ea)] = int(
+                    _instruction_size(target_ea)
+                )
+                expected_after = _scoped_item_token(
+                    ea=int(target_ea),
+                    head_ea=head_ea,
+                    size=int(data["size"]),
+                    item_state=after,
+                    xrefs=cumulative,
+                    origin_data_state=group_origins[head_ea],
+                    group_targets=group,
+                )
+            else:
+                expected_before = _group_item_transition_before(
+                    before,
+                    target_ea=int(target_ea),
+                    seen_data_heads=seen_data_heads,
+                )
+                expected_after = after
             actions.append(
                 NativeMetadataAction(
                     kind=NativeMetadataActionKind.RECREATE_ITEM,
                     ea=int(target_ea),
                     expected_before=expected_before,
-                    expected_after=after,
+                    expected_after=expected_after,
                 )
             )
         elif before != after:
@@ -546,6 +618,44 @@ def build_indirect_label_metadata_plan(
                 )
             )
 
+    # Read-only composite seals are the final scoped metadata proof for each
+    # grouped target.  They are deliberately appended after explicit user
+    # cref actions so their witness includes every planned edge touching the
+    # former data range; the gateway therefore never journals or mutates them.
+    for head_ea, group in sorted(grouped_targets.items()):
+        if head_ea not in group_progress or head_ea not in group_origins:
+            continue
+        low, high = head_ea, head_ea + group_sizes[head_ea]
+        witness = set(group_progress[head_ea])
+        for action in actions:
+            if action.kind is not NativeMetadataActionKind.UPDATE_XREF:
+                continue
+            for target, xref_type, user_owned in _parse_cref_state(
+                action.expected_after
+            ):
+                if user_owned and (low <= action.ea < high or low <= target < high):
+                    witness.add((int(action.ea), int(target), int(xref_type), True, True))
+        for target_ea in group:
+            code_size = group_code_sizes[head_ea].get(int(target_ea))
+            if code_size is None:
+                continue
+            seal = _scoped_item_token(
+                ea=int(target_ea),
+                head_ea=head_ea,
+                size=group_sizes[head_ea],
+                item_state=f"code:{code_size}",
+                xrefs=tuple(sorted(witness)),
+                origin_data_state=group_origins[head_ea],
+                group_targets=group,
+            )
+            actions.append(
+                NativeMetadataAction(
+                    kind=NativeMetadataActionKind.RECREATE_ITEM,
+                    ea=int(target_ea),
+                    expected_before=seal,
+                    expected_after=seal,
+                )
+            )
     if request.install_switch_info:
         # IDA canonicalizes a persisted switch record (including flags,
         # version, and expression EA) only after ``set_switch_info``.  A

@@ -41,6 +41,21 @@ from d810.transforms.native_patch_plan import (
 )
 
 
+def test_metadata_target_fingerprint_normalizes_composite_code_target() -> None:
+    composite = "item-xrefs:v2:{\"ea\":4096,\"group_targets\":[4096,4098],\"head_ea\":4096,\"item_state\":\"code:4\",\"origin_data_state\":\"data:v2:x\",\"size\":6,\"xrefs\":[]}"  # noqa: E501
+    action = NativeMetadataAction(
+        kind=NativeMetadataActionKind.RECREATE_ITEM,
+        ea=0x1000,
+        expected_before="code:4",
+        expected_after=composite,
+    )
+    plain = dataclasses.replace(action, expected_after="code:4")
+    first = _plan(operations=(dataclasses.replace(_operation(), metadata_actions=(action,)),))
+    reread = _plan(operations=(dataclasses.replace(_operation(), metadata_actions=(plain,)),))
+
+    assert first.metadata_target_fingerprint == reread.metadata_target_fingerprint
+
+
 def test_function_ownership_requires_sorted_unique_exact_flow_refs() -> None:
     ref = NativeFunctionFlowRef(0x1000, 0x1004, 21, False)
     ownership = NativeFunctionOwnership(
