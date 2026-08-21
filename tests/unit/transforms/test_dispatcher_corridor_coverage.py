@@ -924,6 +924,11 @@ def test_dispatcher_self_reentry_corridor_is_enumerated_completely() -> None:
 
     assert report.enumeration_complete
     assert not report.residual_corridors
+    assert report.covered_corridors
+    for corridor in report.covered_corridors:
+        assert corridor.label == " -> ".join(
+            f"blk{anchor.serial}@0x{anchor.ea:x}" for anchor in corridor.path
+        )
 
 
 def test_unrelated_reverse_cycle_keeps_corridor_enumeration_incomplete() -> None:
@@ -952,6 +957,33 @@ def test_repeated_merge_node_keeps_corridor_enumeration_incomplete() -> None:
     )
 
     assert not report.enumeration_complete
+
+
+def test_corridor_scope_does_not_promote_unrelated_reverse_cycle() -> None:
+    """A foreign cycle is diagnostic context, not covered dispatcher scope."""
+
+    graph = _dispatcher_self_reentry_corridor_graph(reverse_cycle=True)
+    report = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(
+            RedirectGoto(from_serial=1, old_target=3, new_target=9),
+            RedirectGoto(from_serial=2, old_target=3, new_target=9),
+        ),
+        dispatcher_entry_serial=3,
+    )
+
+    assert report.covered_corridors
+    covered_identities = {
+        (anchor.serial, anchor.ea)
+        for corridor in report.covered_corridors
+        for anchor in corridor.path
+    }
+    assert not report.enumeration_complete
+    assert {(0, 0x1000), (8, 0x1080)}.isdisjoint(covered_identities)
+    for corridor in report.covered_corridors:
+        assert corridor.label == " -> ".join(
+            f"blk{anchor.serial}@0x{anchor.ea:x}" for anchor in corridor.path
+        )
 
 
 @pytest.mark.parametrize(

@@ -148,6 +148,28 @@ def test_query_failure_keeps_the_complete_batch_without_authoritative_filtering(
     assert out == mods
 
 
+def test_state_only_finding_does_not_authorize_a_non_state_sibling(monkeypatch):
+    """State-slot exemptions stay local; a sibling non-state finding vetoes all."""
+
+    class _MixedUseDef:
+        def redirect_use_def_violations(self, mod, live_function, pre_cfg):
+            del live_function, pre_cfg
+            return (
+                (_violation(STATE_VAR) if int(mod.from_serial) == 1 else _violation(0x100)),
+            )
+
+    monkeypatch.setenv("D810_USE_DEF_VETO", "1")
+    mods = [_goto(1), _goto(2)]
+
+    assert filter_use_def_severing_redirects(
+        mods,
+        use_def_safety=_MixedUseDef(),
+        live_function=object(),
+        pre_cfg=None,
+        state_var_stkoff=STATE_VAR,
+    ) == []
+
+
 def test_state_machine_unflatten_spine_uses_atomic_filter_boundary(monkeypatch):
     """The real fallback caller cannot retain a clean sibling after a veto."""
     monkeypatch.setenv("D810_USE_DEF_VETO", "1")

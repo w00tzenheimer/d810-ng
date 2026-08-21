@@ -2630,6 +2630,18 @@ def test_backend_accepts_only_replayed_exact_infeasible_effect_loss() -> None:
         state_identity=StorageIdentity(StorageIdentityKind.STACK, 1724),
     )
     assert proof is not None
+    assert (proof.source_serial, proof.source_ea, proof.source_write_ea) == (
+        1,
+        0x1001,
+        0x1101,
+    )
+    assert (proof.predicate_serial, proof.predicate_ea, proof.predicate_branch_ea) == (
+        2,
+        0x1002,
+        0x1201,
+    )
+    assert (proof.selected_target_serial, proof.selected_target_ea) == (3, 0x1003)
+    assert (proof.discarded_effect_serial, proof.discarded_effect_ea) == (4, 0x1004)
     plan = plan.with_metadata(
         **{
             EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA: (
@@ -2697,6 +2709,45 @@ def test_backend_rejects_forged_effect_exclusion_before_mutation() -> None:
     assert translator.lower_calls == []
     assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
     assert "effect exclusion" in str(backend.last_patch_failure)
+
+
+def test_backend_rejects_foreign_native_binding_before_lowering() -> None:
+    """A reference from another native authority cannot reach the translator."""
+
+    cfg = _make_cfg([(0, 1)], stop_serials=(1,))
+    plan = _ordinary_plan(
+        PatchConvertToGoto,
+        serials=(0, 1),
+        block_serial=0,
+        goto_target=1,
+    )
+    foreign_ref = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas(
+            (0x1000,),
+            native_key=make_native_key(input_identity="sha256:foreign-input"),
+        )
+    )
+    foreign_plan = replace(
+        plan,
+        steps=(replace(plan.steps[0], block_serial=foreign_ref),),
+        source_coordinates=((foreign_ref, 0), plan.source_coordinates[1]),
+    )
+    translator = _FakeTranslator(cfg)
+    gateway = _ordinary_gateway(cfg, foreign_plan)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=gateway,
+        translator=translator,
+    )
+
+    with pytest.raises(ValueError):
+        backend.apply(
+            foreign_plan,
+            live_source=SimpleNamespace(qty=cfg.num_blocks),
+        )
+
+    assert translator.lower_calls == []
+    assert not gateway.mutation_started
+    assert not gateway.generation_poisoned
 
 
 def test_backend_persists_observed_dispatcher_verdict_after_late_contract_poison(

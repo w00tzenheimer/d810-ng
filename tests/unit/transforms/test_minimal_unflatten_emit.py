@@ -4094,9 +4094,15 @@ def test_intermediate_stage_carries_exact_infeasible_effect_proof(_seam) -> None
     (proof,) = stage.effect_exclusions
     assert proof.normalized_state == state
     assert proof.source_serial == 452
+    assert proof.source_ea == 0x18002A9CE
+    assert proof.source_write_ea == 0x18002A9E6
     assert proof.predicate_serial == 78
+    assert proof.predicate_ea == 0x180016411
+    assert proof.predicate_branch_ea == 0x180016416
     assert proof.selected_target_serial == 79
+    assert proof.selected_target_ea == 0x23C0
     assert proof.discarded_effect_serial == 546
+    assert proof.discarded_effect_ea == 0x18002CF19
 
 
 def test_source_keyed_route_does_not_override_exact_live_edge(_seam) -> None:
