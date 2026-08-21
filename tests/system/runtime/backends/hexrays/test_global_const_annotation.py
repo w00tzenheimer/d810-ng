@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import platform
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,6 +27,7 @@ from d810.backends.hexrays.global_const_annotation import (
 from d810.backends.ida.type_serialization import capture_serialized_tinfo
 from d810.capabilities.idb_preparation import PreparationTransactionId
 from d810.core.persistence import Netnode
+from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
 
 
 def _get_default_binary() -> str:
@@ -56,7 +58,17 @@ def _enable_global_const_persistence(state) -> None:
         for entry in additional["pipeline_v2"]
         if entry["pass_id"] == "constant-simplification"
     )
-    constant_pass.setdefault("options", {})["persist_global_const_annotations"] = True
+    constant_pass["options"] = {
+        "preparation": {
+            "global_const_types": {
+                "enabled": True,
+                "discover_bounded_tables": True,
+            }
+        },
+        "stages": {
+            "fold-readonly-data": {"enabled": False},
+        },
+    }
     project.additional_configuration = additional
     state._activate_project(
         project_index=project_index,
@@ -95,6 +107,14 @@ def _lookup_table_access():
     pytest.fail("no bounded dynamic global-table access found")
 
 
+def _clear_proposals(proposal_store) -> None:
+    pending = pending_global_const_proposals(proposal_store=proposal_store)
+    acknowledge_global_const_proposals(
+        pending,
+        proposal_store=proposal_store,
+    )
+
+
 @pytest.fixture(scope="class")
 def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     if not idaapi.init_hexrays_plugin():
@@ -104,6 +124,104 @@ def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_fun
 
 class TestGlobalConstAnnotation:
     binary_name = _get_default_binary()
+
+    @pytest.mark.ida_required
+    def test_post_capture_passes_manager_generation_explicitly(self) -> None:
+        calls: list[tuple[object, object, int]] = []
+        observer = SimpleNamespace(
+            observe=lambda mba, maturity, *, generation: calls.append(
+                (mba, maturity, generation)
+            )
+        )
+        mba = SimpleNamespace(entry_ea=0x401000, qty=0)
+        runtime = HexRaysPostD810Runtime(
+            preanalysis_runtime=None,
+            block_optimizer=SimpleNamespace(cfg_rules=()),
+            global_const_observer=observer,
+            mba_generation_provider=lambda function_ea: function_ea + 9,
+        )
+
+        runtime.observe_global_const_types(mba, 17)
+
+        assert calls == [(mba, 17, 0x401009)]
+
+    @pytest.mark.ida_required
+    def test_manager_observer_pending_provider_is_database_scoped(
+        self,
+        libobfuscated_setup,
+        d810_state,
+    ) -> None:
+        access = _lookup_table_access()
+        item_ea = access.item_head
+        original = ida_typeinf.tinfo_t()
+        had_original = bool(
+            ida_nalt.get_tinfo(original, item_ea) and not original.empty()
+        )
+        if had_original:
+            working = original.copy()
+            working.clr_const()
+            assert ida_typeinf.apply_tinfo(
+                item_ea,
+                working,
+                ida_typeinf.TINFO_DEFINITE,
+            )
+        else:
+            ida_nalt.del_tinfo(item_ea)
+
+        proposals = Netnode("$ d810.global_const_proposals.v1")
+        try:
+            _clear_proposals(proposals)
+            with d810_state() as state:
+                _enable_global_const_persistence(state)
+                state.start_d810()
+                database_identity = state.manager.pre_hex_preparation.database_identity
+                foreign = annotate_global_table_access(
+                    access,
+                    function_ea=0x401000,
+                    database_identity="foreign-idb",
+                    proposal_store=proposals,
+                )
+                assert foreign.queued_count == 1
+
+                observer = (
+                    state.manager._ensure_post_d810_runtime().global_const_observer
+                )
+                empty_mba = SimpleNamespace(entry_ea=0x401000, qty=0)
+                observer.observe(
+                    empty_mba,
+                    ida_hexrays.MMAT_CALLS,
+                    generation=1,
+                )
+                assert observer.pending_identities == ()
+                assert observer.pending_reason is None
+
+                local = annotate_global_table_access(
+                    access,
+                    function_ea=0x402000,
+                    database_identity=database_identity,
+                    proposal_store=proposals,
+                )
+                assert local.queued_count == 1
+                observer.observe(
+                    empty_mba,
+                    ida_hexrays.MMAT_CALLS,
+                    generation=2,
+                )
+                assert tuple(
+                    identity.database_identity
+                    for identity in observer.pending_identities
+                ) == (database_identity,)
+                assert observer.pending_reason == "next preparation round"
+        finally:
+            _clear_proposals(proposals)
+            if had_original:
+                ida_typeinf.apply_tinfo(
+                    item_ea,
+                    original,
+                    ida_typeinf.TINFO_DEFINITE,
+                )
+            else:
+                ida_nalt.del_tinfo(item_ea)
 
     @pytest.mark.ida_required
     def test_runtime_index_still_discovers_complete_lookup_table(
@@ -140,7 +258,7 @@ class TestGlobalConstAnnotation:
         assert eligible
 
         originals: dict[int, ida_typeinf.tinfo_t | None] = {}
-        proposals: dict[int, object] = {}
+        proposals: dict[int | str, object] = {}
         try:
             for item in eligible:
                 item_ea = item.evidence.item_head
@@ -168,7 +286,12 @@ class TestGlobalConstAnnotation:
                 live = ida_typeinf.tinfo_t()
                 if ida_nalt.get_tinfo(live, item.evidence.item_head):
                     assert not live.is_const()
-                assert item.evidence.item_head in proposals
+                assert any(
+                    proposal.item_head == item.evidence.item_head
+                    for proposal in pending_global_const_proposals(
+                        proposal_store=proposals
+                    )
+                )
         finally:
             for item_ea, original in originals.items():
                 if original is None:
@@ -208,16 +331,12 @@ class TestGlobalConstAnnotation:
         proposals = Netnode("$ d810.global_const_proposals.v1")
         before_snapshot = capture_serialized_tinfo(item_ea)
         try:
-            try:
-                del proposals[item_ea]
-            except KeyError:
-                pass
+            _clear_proposals(proposals)
             with d810_state() as state:
                 project_index = next(
                     index
                     for index, project in enumerate(state.project_manager.projects())
-                    if project.path.name
-                    == "default_instruction_only.json"
+                    if project.path.name == "default_instruction_only.json"
                 )
                 state.load_project(project_index)
                 state.start_d810()
@@ -229,10 +348,7 @@ class TestGlobalConstAnnotation:
             assert capture_serialized_tinfo(item_ea) == before_snapshot
             assert not pending_global_const_proposals(proposal_store=proposals)
         finally:
-            try:
-                del proposals[item_ea]
-            except KeyError:
-                pass
+            _clear_proposals(proposals)
             if had_original:
                 ida_typeinf.apply_tinfo(
                     item_ea,
@@ -270,10 +386,7 @@ class TestGlobalConstAnnotation:
         before_snapshot = capture_serialized_tinfo(item_ea)
         proposals = Netnode("$ d810.global_const_proposals.v1")
         try:
-            try:
-                del proposals[item_ea]
-            except KeyError:
-                pass
+            _clear_proposals(proposals)
             with d810_state() as state:
                 _enable_global_const_persistence(state)
                 state.start_d810()
@@ -314,10 +427,7 @@ class TestGlobalConstAnnotation:
                 assert restored.ok, restored
                 assert capture_serialized_tinfo(item_ea) == before_snapshot
         finally:
-            try:
-                del proposals[item_ea]
-            except KeyError:
-                pass
+            _clear_proposals(proposals)
             if had_original:
                 ida_typeinf.apply_tinfo(
                     item_ea,
@@ -348,7 +458,7 @@ class TestGlobalConstAnnotation:
         else:
             ida_nalt.del_tinfo(item_ea)
 
-        proposals: dict[int, object] = {}
+        proposals: dict[int | str, object] = {}
         before_snapshot = capture_serialized_tinfo(item_ea)
         try:
             first = annotate_global_table_access(
@@ -376,6 +486,64 @@ class TestGlobalConstAnnotation:
             )
             assert not pending_global_const_proposals(proposal_store=proposals)
         finally:
+            if had_original:
+                ida_typeinf.apply_tinfo(
+                    item_ea,
+                    original,
+                    ida_typeinf.TINFO_DEFINITE,
+                )
+            else:
+                ida_nalt.del_tinfo(item_ea)
+
+    @pytest.mark.ida_required
+    def test_proposals_from_two_functions_sharing_item_head_do_not_collide(
+        self, libobfuscated_setup
+    ) -> None:
+        access = _lookup_table_access()
+        item_ea = access.item_head
+        original = ida_typeinf.tinfo_t()
+        had_original = bool(
+            ida_nalt.get_tinfo(original, item_ea) and not original.empty()
+        )
+        if had_original:
+            working = original.copy()
+            working.clr_const()
+            assert ida_typeinf.apply_tinfo(
+                item_ea,
+                working,
+                ida_typeinf.TINFO_DEFINITE,
+            )
+        else:
+            ida_nalt.del_tinfo(item_ea)
+
+        proposals: dict[object, object] = {}
+        try:
+            first = annotate_global_table_access(
+                access,
+                function_ea=0x401000,
+                database_identity="idb-a",
+                proposal_store=proposals,
+            )
+            second = annotate_global_table_access(
+                access,
+                function_ea=0x402000,
+                database_identity="idb-a",
+                proposal_store=proposals,
+            )
+
+            assert first.queued_count == 1
+            assert second.queued_count == 1
+            pending = pending_global_const_proposals(proposal_store=proposals)
+            assert len(pending) == 2
+            assert {proposal.function_ea for proposal in pending} == {
+                0x401000,
+                0x402000,
+            }
+        finally:
+            acknowledge_global_const_proposals(
+                pending_global_const_proposals(proposal_store=proposals),
+                proposal_store=proposals,
+            )
             if had_original:
                 ida_typeinf.apply_tinfo(
                     item_ea,
@@ -436,7 +604,7 @@ class TestGlobalConstAnnotation:
             ida_nalt.get_tinfo(original, item_ea) and not original.empty()
         )
         ida_nalt.del_tinfo(item_ea)
-        proposals: dict[int, object] = {}
+        proposals: dict[int | str, object] = {}
         write_added = False
         try:
             first = annotate_global_table_access(access, proposal_store=proposals)
@@ -451,7 +619,10 @@ class TestGlobalConstAnnotation:
             current = ida_typeinf.tinfo_t()
             assert not ida_nalt.get_tinfo(current, item_ea)
             assert cancelled.cancelled_count == 1
-            assert item_ea not in proposals
+            assert not any(
+                proposal.item_head == item_ea
+                for proposal in pending_global_const_proposals(proposal_store=proposals)
+            )
 
             user_const = ida_typeinf.tinfo_t()
             user_const.create_simple_type(ida_typeinf.BTF_UINT32)
@@ -515,10 +686,7 @@ class TestGlobalConstAnnotation:
         ida_nalt.del_tinfo(item_ea)
         proposals = Netnode("$ d810.global_const_proposals.v1")
         try:
-            try:
-                del proposals[item_ea]
-            except KeyError:
-                pass
+            _clear_proposals(proposals)
             with d810_state() as state:
                 _enable_global_const_persistence(state)
                 state.start_d810()
@@ -547,10 +715,7 @@ class TestGlobalConstAnnotation:
             print(f"[PSEUDOCODE BEFORE]\n{before_decompiled}")
             print(f"[PSEUDOCODE AFTER]\n{decompiled}")
         finally:
-            try:
-                del proposals[item_ea]
-            except KeyError:
-                pass
+            _clear_proposals(proposals)
             if had_original:
                 ida_typeinf.apply_tinfo(
                     item_ea,
