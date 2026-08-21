@@ -141,7 +141,7 @@ def test_capture_rejects_missing_or_conflicting_actual_profile_evidence() -> Non
                 ),
                 _Provider(
                     _outcome(
-                        MbaProviderKind.EGGLOG,
+                        MbaProviderKind.EGRAPH,
                         ProviderOutcomeStatus.APPLIED,
                         profile,
                     )
@@ -204,12 +204,12 @@ def test_capture_emits_declared_unavailable_rows_for_missing_provider_history() 
                 _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED, profile)
             ),
         ),
-        expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGGLOG),
+        expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGRAPH),
     )
 
     assert [(outcome.provider, outcome.status) for outcome in case.outcomes] == [
         (MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED),
-        (MbaProviderKind.EGGLOG, ProviderOutcomeStatus.UNAVAILABLE),
+        (MbaProviderKind.EGRAPH, ProviderOutcomeStatus.UNAVAILABLE),
     ]
 
 
@@ -238,7 +238,7 @@ def test_manifest_runner_snapshots_each_case_and_rejects_evicted_delta() -> None
         capture=capture,
         cases=cases,
         rules=(provider,),
-        expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGGLOG),
+        expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGRAPH),
         run_case=run_case,
     )
 
@@ -280,14 +280,14 @@ def test_manifest_runner_records_no_native_candidate_as_explicit_unavailability(
         capture=capture,
         cases=(ManifestNativeCaptureCase("elided", "chain"),),
         rules=(_Provider(),),
-        expected_providers=(MbaProviderKind.STRUCTURAL_CHAIN, MbaProviderKind.EGGLOG),
+        expected_providers=(MbaProviderKind.STRUCTURAL_CHAIN, MbaProviderKind.EGRAPH),
         run_case=lambda _case, _snapshot: None,
     )
 
     assert captured[0].profile is None
     assert {outcome.provider for outcome in captured[0].outcomes} == {
         MbaProviderKind.STRUCTURAL_CHAIN,
-        MbaProviderKind.EGGLOG,
+        MbaProviderKind.EGRAPH,
     }
     assert all(
         outcome.status is ProviderOutcomeStatus.UNAVAILABLE
@@ -301,7 +301,7 @@ def test_native_capture_profile_requires_one_actual_candidate_profile() -> None:
     second = _profile("second")
     provider = _Provider(
         _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.UNCHANGED, first),
-        _outcome(MbaProviderKind.EGGLOG, ProviderOutcomeStatus.UNCHANGED, second),
+        _outcome(MbaProviderKind.EGRAPH, ProviderOutcomeStatus.UNCHANGED, second),
     )
 
     with pytest.raises(ValueError, match="ambiguous native capture profile"):
@@ -316,12 +316,12 @@ def test_profile_selection_ignores_non_candidate_receipts_without_native_profile
     profile = _profile()
     provider = _Provider(
         MbaProviderOutcome(
-            provider=MbaProviderKind.EGGLOG,
+            provider=MbaProviderKind.EGRAPH,
             status=ProviderOutcomeStatus.INELIGIBLE,
             fingerprint="unprofiled",
             refusal_reason="non_mba_candidate",
         ),
-        _outcome(MbaProviderKind.EGGLOG, ProviderOutcomeStatus.UNCHANGED, profile),
+        _outcome(MbaProviderKind.EGRAPH, ProviderOutcomeStatus.UNCHANGED, profile),
     )
 
     assert select_native_capture_profile((provider,)) == profile

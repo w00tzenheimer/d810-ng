@@ -6,7 +6,7 @@
   "provider_matrix": [
     "structural_chain",
     "catalogue",
-    "egglog",
+    "egraph",
     "coefficient_solver"
   ],
   "lowering_contract": {
@@ -383,7 +383,7 @@
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver"
       ],
       "expected_minimum_degree": 2,
@@ -398,7 +398,7 @@
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver"
       ],
       "expected_minimum_degree": 2,
@@ -413,7 +413,7 @@
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver"
       ],
       "expected_minimum_degree": 2,
@@ -428,7 +428,7 @@
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver"
       ],
       "expected_minimum_degree": 2,
@@ -443,7 +443,7 @@
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver"
       ],
       "expected_minimum_degree": 2,
@@ -458,7 +458,7 @@
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver"
       ],
       "expected_minimum_degree": 2,
@@ -473,7 +473,7 @@
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver"
       ],
       "expected_minimum_degree": 2,
@@ -488,7 +488,7 @@
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver"
       ],
       "expected_minimum_degree": 2,
@@ -503,7 +503,7 @@
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver"
       ],
       "expected_minimum_degree": 2,
@@ -518,7 +518,7 @@
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
-        "egglog",
+        "egraph",
         "coefficient_solver"
       ],
       "expected_minimum_degree": 2,
@@ -957,7 +957,7 @@
       "stratum": "semantic_canonicalization",
       "expected_route": [
         "catalogue",
-        "egglog"
+        "egraph"
       ],
       "expected_minimum_degree": 1,
       "expected_canonical_root": "sub",
@@ -974,7 +974,7 @@
       "stratum": "semantic_canonicalization",
       "expected_route": [
         "catalogue",
-        "egglog"
+        "egraph"
       ],
       "expected_minimum_degree": 1,
       "expected_canonical_root": "sub",
@@ -990,7 +990,7 @@
       "width": 32,
       "stratum": "fixed_shift",
       "expected_route": [
-        "egglog"
+        "egraph"
       ],
       "expected_minimum_degree": 1,
       "expected_canonical_root": "or",
@@ -1007,7 +1007,7 @@
       "stratum": "fixed_shift",
       "expected_route": [],
       "expected_minimum_degree": 0,
-      "expected_blocker": "no_degree_eligible_improvement",
+      "expected_blocker": "non_mba_candidate",
       "semantic_form": "noncomplementary_fixed_shift",
       "semantic_seed": 883,
       "authorship": "independently_authored"

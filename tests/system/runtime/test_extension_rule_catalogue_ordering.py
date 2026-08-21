@@ -138,20 +138,15 @@ def test_the_contributed_rule_is_registered_exactly_once(
     assert names.count(RULE_NAME) == 1
 
 
-def test_disabled_egglog_catalogue_construction_stays_cold(
-    d810_state, monkeypatch
-) -> None:
-    """Registry discovery may instantiate Egglog, but must not certify rules."""
-    from d810.optimizers.microcode.instructions.egraph import egglog_handler
+def test_real_egglog_rule_reaches_the_catalogue_before_snapshot(d810_state) -> None:
+    """The installed Egglog extension follows the same ordering contract."""
 
-    monkeypatch.setattr(
-        egglog_handler,
-        "compiled_rules_for_families",
-        lambda _families: (_ for _ in ()).throw(
-            AssertionError("disabled mba-egglog must not compile its catalogue")
-        ),
-    )
+    pytest.importorskip("d810_egglog")
     with d810_state() as state:
-        catalogue = state._build_known_instruction_rules()
+        names = [
+            rule.name
+            for rule in state._build_known_instruction_rules()
+            if rule.name == "EgglogOptimizer"
+        ]
 
-    assert "EgglogOptimizer" in {rule.name for rule in catalogue}
+    assert names == ["EgglogOptimizer"]

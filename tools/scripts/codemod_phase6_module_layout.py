@@ -18,8 +18,6 @@ import libcst as cst
 MODULE_RENAMES: dict[str, str] = {
     "d810.backends.z3": "d810.backends.mba.z3",
     "d810.backends.ida": "d810.backends.mba.ida",
-    "d810.backends.egglog_backend": "d810.backends.mba.egglog_backend",
-    "d810.backends.egraph": "d810.backends.mba.egraph",
     "d810.cfg.portable_cfg": "d810.cfg.flowgraph",
     "d810.cfg.cfg_backend": "d810.cfg.protocol",
     "d810.cfg.cfg_pass": "d810.cfg.passes._base",
@@ -29,8 +27,6 @@ MODULE_RENAMES: dict[str, str] = {
 FILE_RENAMES: dict[str, str] = {
     "src/d810/backends/z3.py": "src/d810/backends/mba/z3.py",
     "src/d810/backends/ida.py": "src/d810/backends/mba/ida.py",
-    "src/d810/backends/egglog_backend.py": "src/d810/backends/mba/egglog_backend.py",
-    "src/d810/backends/egraph.py": "src/d810/backends/mba/egraph.py",
     "src/d810/cfg/portable_cfg.py": "src/d810/cfg/flowgraph.py",
     "src/d810/cfg/cfg_backend.py": "src/d810/cfg/protocol.py",
     "src/d810/cfg/cfg_pass.py": "src/d810/cfg/passes/_base.py",

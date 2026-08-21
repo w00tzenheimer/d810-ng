@@ -1,9 +1,10 @@
 # Egglog MBA Semantic Simplification
 
-This document summarizes the domain-lifted Egglog/MBA work integrated into
-`cfg-recon-mainline` at `202f42294`. The merge added a proof-carrying,
-opt-in semantic MBA pipeline. It did not add a destructive global Hex-Rays AST
-canonicalizer.
+This document summarizes the domain-lifted e-graph/MBA work integrated into
+`cfg-recon-mainline` at `202f42294`. The public config-v2 pass is
+`mba-egraph`; its proof-carrying implementation is supplied by the optional
+`d810-egglog` extension. The merge added an opt-in semantic MBA pipeline. It
+did not add a destructive global Hex-Rays AST canonicalizer.
 
 ## Execution model
 
@@ -14,13 +15,13 @@ chain and direct fast paths
   -> residual-candidate gate
   -> portable fixed-width semantic canonicalization
   -> IDB learned-replay lookup
-  -> bounded Egglog degree-1/degree-2 saturation
+  -> bounded e-graph degree-1/degree-2 saturation
   -> native reconstruction
   -> mandatory semantic proof
   -> outer mutation acceptance
 ```
 
-The fast chain and direct catalogue matchers remain first. Egglog receives only
+The fast chain and direct catalogue matchers remain first. The e-graph provider receives only
 the supported residual expressions that survive those providers and the
 configured structural budgets.
 
@@ -65,7 +66,7 @@ include the pattern, replacement, constraints, supported widths, rule
 implementation inputs, and the matcher/emitter runtime semantics.
 
 This creates a bounded alternative to generating large commutative and
-associative pattern-permutation inventories. The shipped Egglog profiles set
+associative pattern-permutation inventories. The shipped e-graph profiles set
 `generate_commutative_permutations` to `false`.
 
 Structural matching remains certificate-gated and legacy-default. An
@@ -86,9 +87,9 @@ Relevant implementation:
 - [`src/d810/backends/mba/runtime_semantics.py`](src/d810/backends/mba/runtime_semantics.py)
 - [`src/d810/backends/mba/ida.py`](src/d810/backends/mba/ida.py)
 
-### Bounded multi-rule Egglog composition
+### Bounded multi-rule e-graph composition
 
-The certified catalogue is compiled into a bounded Egglog saturation model.
+The certified catalogue is compiled into a bounded e-graph saturation model.
 Degree 1 permits one certified rewrite step; degree 2 permits two sequential
 steps. Degree 2 can cross a non-improving intermediate that a strict one-rule
 optimizer cannot use. One proven example is:
@@ -113,11 +114,23 @@ The result carries the ordered derivation trace. Saturation is bounded by:
 An equal-cost canonical reshaping is telemetry only. A native mutation requires
 a strictly cheaper result and successful proof.
 
-Relevant implementation:
+Relevant implementation is owned by the optional `d810-egglog` distribution,
+not this core repository. Install it with `python -m pip install d810-egglog`;
+the corresponding installed modules are:
 
-- [`src/d810/backends/mba/egglog_saturation.py`](src/d810/backends/mba/egglog_saturation.py)
-- [`src/d810/backends/mba/egglog_structural_rules.py`](src/d810/backends/mba/egglog_structural_rules.py)
-- [`src/d810/optimizers/microcode/instructions/egraph/egglog_handler.py`](src/d810/optimizers/microcode/instructions/egraph/egglog_handler.py)
+- `d810_egglog.saturation`
+- `d810_egglog.structural_rules`
+- `d810_egglog.rules.egglog_optimizer`
+
+### Activation boundary
+
+Core always exposes the `mba-egraph` editor and pass schema, even when the
+optional provider is absent. Selecting that pass in a project causes the
+backend registry to resolve the `d810.backends` declaration, probe the
+Egglog runtime, and then import the declared `EgglogOptimizer` rule. A missing
+or unavailable provider is reported as a configuration error; there is no
+legacy pass alias or silent translation. Install `d810-egglog` before selecting
+one of the packaged profiles.
 
 ### Fixed shifts and rotates
 
@@ -147,7 +160,7 @@ the search path and predecessor count configurable and bounded.
 
 ### IDB-local learned replay
 
-After a fresh Egglog derivation is rebuilt, proved, and accepted by the outer
+After a fresh e-graph derivation is rebuilt, proved, and accepted by the outer
 mutation owner, the alpha-normalized composite template can be stored in the
 IDB netnode:
 
@@ -161,13 +174,18 @@ semantics. They never retain a live `cfunc_t`, `mop_t`, native leaf, or a
 historical proof verdict.
 
 A later equivalent candidate still binds live leaves, rebuilds the native
-result, and proves it, but it can avoid another Egglog saturation run.
+result, and proves it, but it can avoid another e-graph saturation run.
 
 ## Shipped profiles
 
+The profiles below are package resources in the optional `d810-egglog`
+distribution, not files in this core repository. After installing the package,
+copy the selected resource into `~/.idapro/cfg/d810` as described by the
+extension's install instructions.
+
 ### Interactive spike
 
-[`src/d810/conf/mba_portfolio_spike.json`](src/d810/conf/mba_portfolio_spike.json)
+`d810_egglog.profiles/mba_portfolio_spike.json`
 
 - fast chain/direct providers before Egglog;
 - ADD family;
@@ -183,7 +201,7 @@ This is the appropriate starting point for interactive use.
 
 ### Deep diagnostic profile
 
-[`src/d810/conf/mba_portfolio_deep.json`](src/d810/conf/mba_portfolio_deep.json)
+`d810_egglog.profiles/mba_portfolio_deep.json`
 
 - all eight certified MBA families: `add`, `and`, `bnot`, `mul`, `neg`, `or`,
   `sub`, and `xor`;
@@ -200,7 +218,7 @@ default everyday profile.
 
 ### 3 ms telemetry lane
 
-[`src/d810/conf/mba_portfolio_telemetry_3ms.json`](src/d810/conf/mba_portfolio_telemetry_3ms.json)
+`d810_egglog.profiles/mba_portfolio_telemetry_3ms.json`
 
 The 3 ms configuration is an explicit no-engine measurement lane. It is useful
 for measuring admission behavior, but it should not be used to expect Egglog
@@ -210,7 +228,7 @@ deobfuscation yield.
 
 ### IDA log receipts
 
-Every Egglog attempt emits an information-level extraction receipt:
+Every e-graph attempt emits an information-level extraction receipt:
 
 ```bash
 rg "egglog MBA extraction receipt" ~/.idapro/logs/d810_logs/d810.log
@@ -256,10 +274,12 @@ Important metadata fields include:
 - native matcher comparisons, lazy swaps, and backend;
 - proof mode, verdict, and timing;
 - cache status and replay timing;
-- `egglog_run_count` and `replay_saved_egglog_runs`;
+- generic e-graph counters `egraph_work_units`, `egraph_run_count`, and
+  `replay_saved_egraph_runs`; the lane may retain concrete Egglog backend
+  metadata such as `backend`, `backend_version`, and `egglog_version`;
 - portable `mba_provider_outcome`.
 
-Set `collect_stage_timings` to `true` in the `mba-egglog` options to add a
+Set `collect_stage_timings` to `true` in the `mba-egraph` options to add a
 per-stage timing breakdown.
 
 ### Recognizing learned replay
@@ -269,8 +289,8 @@ A replayed result should report values equivalent to:
 ```text
 execution_path = learned_replay
 cache_status = hit
-egglog_run_count = 0
-replay_saved_egglog_runs > 0
+egraph_run_count = 0
+replay_saved_egraph_runs > 0
 ```
 
 The rebuilt result is still checked against the live candidate and proof gate.

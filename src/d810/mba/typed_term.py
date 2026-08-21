@@ -130,6 +130,14 @@ def _leaf_key_fingerprint(
     return tuple(_leaf_key_part_fingerprint(part) for part in leaf_key)
 
 
+def leaf_key_fingerprint(
+    leaf_key: tuple[object, ...],
+) -> tuple[tuple[object, ...], ...]:
+    """Return the stable, JSON-friendly identity of a typed-term leaf."""
+
+    return _leaf_key_fingerprint(leaf_key)
+
+
 def _term_sort_key(term: TypedBvTerm) -> tuple[object, ...]:
     if term.operation is None and term.value is not None:
         return ("constant", term.width, term.value)
@@ -216,6 +224,7 @@ __all__ = [
     "TypedBvTerm",
     "canonicalize_ac_term",
     "fixed_shift_term",
+    "leaf_key_fingerprint",
     "term_cost",
     "term_fingerprint",
 ]

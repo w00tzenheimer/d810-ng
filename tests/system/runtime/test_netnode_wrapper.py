@@ -8,7 +8,6 @@ import uuid
 
 import pytest
 
-from d810.backends.mba.egglog_idb_composite_cache import EgglogIdbCompositeCache
 from d810.core.persistence import (
     FunctionFingerprint,
     Netnode,
@@ -16,8 +15,6 @@ from d810.core.persistence import (
     create_optimization_storage,
 )
 from d810.core.provider_phase import ProviderPhaseSnapshot
-from d810.mba.egglog_composite_rewrite import ActiveSemantics, EgglogCompositeRewrite
-from d810.mba.typed_term import TypedBvTerm
 
 
 def _get_default_binary() -> str:
@@ -45,34 +42,6 @@ def _require_ida9_netnode() -> None:
 
     if major < 9:
         pytest.skip(f"Netnode wrapper test requires IDA9+, found IDA {major}")
-
-
-def _runtime_composite_rewrite() -> EgglogCompositeRewrite:
-    semantics = ActiveSemantics(
-        canonicalizer_version=1,
-        catalogue_digest="a" * 64,
-        profile_digest="b" * 64,
-        egglog_version="13.2.0",
-        proof_mode="shadow",
-        active_rule_names=(("add", "R"),),
-    )
-    x = TypedBvTerm(None, 32, leaf_key=("register", "runtime_x"))
-    source = TypedBvTerm(
-        "add",
-        32,
-        children=(TypedBvTerm("add", 32, children=(x, x)), x),
-    )
-    output = TypedBvTerm(
-        "mul",
-        32,
-        children=(TypedBvTerm(None, 32, value=3), x),
-    )
-    return EgglogCompositeRewrite.from_extraction(
-        input_term=source,
-        output_term=output,
-        derivation_trace=(("add", "R", ()),),
-        semantics=semantics,
-    )
 
 
 @pytest.fixture
@@ -146,26 +115,6 @@ class TestNetnodeWrapperRuntime:
     def test_netnode_rejects_none_value(self, netnode: Netnode) -> None:
         with pytest.raises(ValueError, match="must not be None"):
             netnode["none"] = None
-
-    def test_egglog_composite_cache_netnode_roundtrip(self, ida_database) -> None:
-        _require_ida9_netnode()
-        node_name = f"$ d810.test.egglog_composites.{uuid.uuid4().hex}"
-        node = Netnode(node_name)
-        reopened: Netnode | None = None
-        try:
-            rewrite = _runtime_composite_rewrite()
-            EgglogIdbCompositeCache(node).store(rewrite)
-            reopened = Netnode(node_name)
-            cache = EgglogIdbCompositeCache(reopened)
-            result = cache.get(rewrite.bucket_key)
-            assert len(result) == 1
-            assert result[0].template_id == rewrite.template_id
-            assert result[0].created_sequence == 1
-            assert result[0].last_used_sequence == 2
-        finally:
-            # The node name is unique to this test; no shared feature node is
-            # killed or cleared during teardown.
-            node.kill()
 
     def test_create_optimization_storage_uses_netnode_backend(
         self,

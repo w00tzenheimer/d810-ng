@@ -1,11 +1,11 @@
-"""Direct native-term matching for the certified Egglog MBA catalogue."""
+"""Direct native-term matching for the certified e-graph MBA catalogue."""
 
 from __future__ import annotations
 
 import pytest
 
-from d810.backends.mba.egglog_add_rule_compiler import (
-    CompiledEgglogAddRule,
+from d810.mba.certified_rule_compiler import (
+    CompiledMbaRule,
     _enroll_admitted_rule,
     compile_add_rule_catalogue,
 )
@@ -34,7 +34,7 @@ def _rule(name: str):
 
 
 def _xor_rule(name: str):
-    from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
 
     return compile_mba_rule_catalogue().receipt_for("xor", name).compiled_rule
 
@@ -51,9 +51,7 @@ def _admitted_probe_rule(name: str, pattern: SymbolicExpression):
             "CONSTRAINTS": (),
         },
     )
-    return _enroll_admitted_rule(
-        CompiledEgglogAddRule(name, (), rule_type, (32,), False)
-    )
+    return _enroll_admitted_rule(CompiledMbaRule(name, (), rule_type, (32,), False))
 
 
 def test_compiled_catalogue_matches_ac_operands_without_variant_rules() -> None:
@@ -120,51 +118,6 @@ def test_compiled_catalogue_preserves_certified_declaration_order() -> None:
     catalogue = CompiledPatternCatalogue.from_rules((second, first))
 
     assert tuple(item.rule for item in catalogue.rules) == (second, first)
-
-
-def test_fixed_binding_extraction_does_not_rematch_or_construct_an_ast(
-    monkeypatch,
-) -> None:
-    pytest.importorskip("egglog")
-    from d810.backends.mba.egglog_saturation import (
-        EgglogExtractionBudget,
-        extract_bounded_term,
-    )
-    import d810.backends.mba.egglog_add_rule_compiler as compiler_module
-    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-
-    rule = _rule("Add_HackersDelightRule_2")
-    assert rule is not None
-    x, y = _leaf("x"), _leaf("y")
-    candidate = _node(
-        "add",
-        _node("xor", x, y),
-        _node("mul", _constant(2), _node("and", x, y)),
-    )
-    match = (
-        CompiledPatternCatalogue.from_rules((rule,)).match_root(candidate).matches[0]
-    )
-    monkeypatch.setattr(
-        compiler_module,
-        "apply_compiled_rule_to_term",
-        lambda *_args: pytest.fail("fixed degree-one binding was rematched"),
-    )
-
-    result = extract_bounded_term(
-        canonicalize_ac_term(candidate.to_typed_term()),
-        (rule,),
-        EgglogExtractionBudget(time_budget_ms=1000),
-        destination_size=4,
-        initial_replacements={
-            id(match.rule): match.bindings.materialize_replacement(match.rule)
-        },
-    )
-
-    assert result.replacement_ast is None
-    assert result.replacement_term == canonicalize_ac_term(
-        _node("add", x, y).to_typed_term()
-    )
-    assert result.receipt.degree == 1
 
 
 def test_compiled_catalogue_rejects_unadmitted_rule_objects() -> None:
@@ -292,7 +245,7 @@ def test_canonical_catalogue_preserves_earlier_match_at_declaration_budget_bound
 
 
 def test_canonical_catalogue_keeps_constraint_derived_bindings_without_paths():
-    from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
     rule = compile_mba_rule_catalogue().receipt_for(
@@ -323,7 +276,7 @@ def test_canonical_catalogue_keeps_constraint_derived_bindings_without_paths():
 
 def test_canonical_catalogue_uses_frozen_constraints_at_match_time(monkeypatch):
     import d810.backends.mba.compiled_pattern_catalogue as catalogue_module
-    from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
     rule = compile_mba_rule_catalogue().receipt_for(

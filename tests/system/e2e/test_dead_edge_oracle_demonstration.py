@@ -26,7 +26,7 @@ prescribes, in order:
 8. Restore through the gateway; assert the post-restore pseudocode reverts
    to ``baseline_off``.
 
-Ground truth for this specific function (``libobfuscated.dll``,
+Ground truth for this specific function (``dead_edge_oracle_fixture.dll``,
 ``single_iteration_simple`` @ ``0x180011390``), established by direct
 disassembly and a Docker dump run with the ``bogus_loops.json`` project
 before this test was written:
@@ -113,13 +113,10 @@ PROJECT_NAME = "bogus_loops.json"
 # Ground truth, asserted (not assumed) below -- as offsets from the function
 # entry, never absolute EAs.
 #
-# ``samples/bins/libobfuscated.dll`` is rebuilt routinely on mainline (both
-# commits between 6e479fc8e and 04d81502d touched it), and a rebuild relocates
-# this function without changing its shape: the absolute site moved
-# 0x1800113C6 -> 0x1800113E6 (+0x20) while all three offsets below stayed
-# byte-identical. Pinning absolute addresses made this test fail on a sample
-# rebuild that had broken nothing. Offsets still pin the exact instruction, so
-# the test cannot silently drift onto a different candidate.
+# This test uses a dedicated binary because rebuilding the shared
+# ``libobfuscated.dll`` changes unrelated MASM fixtures. Offsets still pin the
+# exact instruction while allowing the dedicated PE to be relocated without
+# silently drifting onto a different candidate.
 EXPECTED_SITE_OFFSET = 0x36
 EXPECTED_CURRENT_TARGET_OFFSET = 0x18
 EXPECTED_PROPOSED_TARGET_OFFSET = 0x38
@@ -237,7 +234,7 @@ def _emulate_range_safely(func_ea: int, func_end_ea: int):
 
 
 class TestDeadEdgeOracleDemonstration:
-    binary_name = "libobfuscated.dll"
+    binary_name = "dead_edge_oracle_fixture.dll"
 
     def test_manager_owned_stage_b_is_reachable_and_restorable(
         self, copy_of_idb, d810_state, pseudocode_to_string

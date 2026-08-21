@@ -110,7 +110,20 @@ class Xor_HackersDelightRule_1(VerifiableRule):
 
 **Correctness by construction:** `verify_rule()` proves `PATTERN` and `REPLACEMENT` equivalent via the Z3 backend. If verification fails, Z3 returns a counterexample. Tests parametrize over all registered rules, so new rules are verified automatically.
 
-**Extensible constraints:** Constraints are declarative and backend-agnostic. The `VerificationEngine` protocol supports pluggable backends (Z3 and egglog today). Constraint forms include:
+**Extensible constraints:** Constraints are declarative and backend-agnostic. The `VerificationEngine` protocol is provider-neutral, and core ships the Z3 provider. Egglog rule analysis and execution are owned by the optional `d810-egglog` extension, so Egglog is not a core dependency. Constraint forms include:
+
+Install the optional e-graph provider through the convenience extra when that
+backend is needed:
+
+```bash
+python -m pip install "d810-ng[egraph]"
+```
+
+This extra resolves the separately packaged `d810-egglog` provider; the core
+distribution itself has no Egglog or cloudpickle runtime dependency.
+Projects select the backend-neutral `mba-egraph` pass. The installed provider
+declares its concrete `EgglogOptimizer` implementation through the
+`d810.backends` entry-point group and is probed before that rule is imported.
 
 * Declarative `ConstraintExpr` (e.g. `bnot_x == ~x`, `c_minus_2 == Const("-2", -2)`)
 * Runtime predicates (`when.equal_mops`, `when.is_bnot`) for IDA-specific checks; optionally attach additional backends for verification.
@@ -364,7 +377,7 @@ So an unknown obfuscator that flattens with, say, an equality-chain dispatcher i
 
 ## Installation
 
-**D-810 ng supports IDA 9 or later with Python 3.10 or later.**
+**D-810 ng supports IDA 9 or later with Python 3.11 or later.**
 
 There are two supported installation paths: a managed HCLI installation for
 normal use, or an editable source checkout for development.
@@ -404,7 +417,7 @@ restart IDA before using D-810.
 
 The local Docker installation proof covers one target only: Linux ARM64,
 CPython 3.13, and IDA 9.4. The release matrix remains responsible for Linux
-x86-64, Windows x86-64, macOS x86-64, macOS ARM64, and CPython 3.10 through
+x86-64, Windows x86-64, macOS x86-64, macOS ARM64, and CPython 3.11 through
 3.13.
 
 ### Install from source

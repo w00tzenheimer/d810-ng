@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+from d810.mba.certified_rule_compiler import compile_add_rule_catalogue
 from d810.backends.mba.native_z3 import _prove_generic_native_terms
 from d810.backends.mba.native_z3_proof_template import (
     NativeZ3ProofTemplate,

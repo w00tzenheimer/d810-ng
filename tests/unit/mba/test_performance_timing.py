@@ -13,20 +13,20 @@ def test_stage_timer_records_ordered_elapsed_durations() -> None:
 
     timer.begin("native_preflight")
     timer.finish("native_preflight")
-    timer.begin("egglog_extraction")
-    timer.finish("egglog_extraction")
+    timer.begin("egraph_extraction")
+    timer.finish("egraph_extraction")
 
     timings = timer.freeze()
 
     assert tuple(name for name, _elapsed in timings.stages) == (
         "native_preflight",
-        "egglog_extraction",
+        "egraph_extraction",
     )
     assert tuple(elapsed for _name, elapsed in timings.stages) == pytest.approx(
         (2.0, 4.0)
     )
     assert timings.as_dict() == pytest.approx(
-        {"native_preflight": 2.0, "egglog_extraction": 4.0}
+        {"native_preflight": 2.0, "egraph_extraction": 4.0}
     )
 
 

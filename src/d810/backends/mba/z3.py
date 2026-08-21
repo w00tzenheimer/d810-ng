@@ -151,6 +151,28 @@ class Z3VerificationEngine:
         bit_width = options.bit_width if options else 32
         return create_z3_variables(var_names, bit_width)
 
+    def create_z3_variables(
+        self, var_names: set[str], bit_width: int = 32
+    ) -> dict[str, z3.BitVecRef]:
+        """Expose the pure fixed-width variable helper through the registry."""
+
+        return create_z3_variables(var_names, bit_width)
+
+    def constraint_to_z3(
+        self,
+        constraint: Any,
+        z3_vars: dict[str, z3.BitVecRef],
+        bit_width: int = 32,
+    ) -> z3.BoolRef:
+        """Expose declarative constraint lowering through the registry."""
+
+        return constraint_to_z3(constraint, z3_vars, bit_width)
+
+    def verify_rule(self, rule: Any, bit_width: int | None = None) -> bool:
+        """Expose rule certification through the registry."""
+
+        return verify_rule(rule, bit_width=bit_width)
+
     def prove_equivalence(
         self,
         pattern: "SymbolicExpression",

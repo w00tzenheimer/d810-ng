@@ -22,6 +22,10 @@ from d810.core.plugins import (
     BackendUnavailable,
     ENTRY_POINT_GROUP,
     ManifestError,
+    PassImplementationAmbiguous,
+    PassImplementationCandidate,
+    PassImplementationMisdeclared,
+    PassImplementationMissing,
     PluginCapabilityOffer,
     format_report,
     has_defects,
@@ -690,7 +694,6 @@ class TestBuiltinBackends(unittest.TestCase):
     #: installed -- and pass for the wrong reason on one that has it.
     EXPECTED = {
         "mba.z3",
-        "mba.egglog",
         "emulation.triton",
         "emulation.unicorn",
         "ast.z3",
@@ -728,8 +731,8 @@ class TestBuiltinBackends(unittest.TestCase):
     def test_probe_hooks_agree_with_the_legacy_flags(self):
         """Backwards compatible: the old flags stay and remain authoritative.
 
-        Only backends importable outside IDA are checked here; ``ast.z3`` and
-        ``mba.egglog`` need ``ida_hexrays`` to import at all.
+        Only backends importable outside IDA are checked here; ``ast.z3`` needs
+        ``ida_hexrays`` to import at all.
         """
         import importlib
 
@@ -840,11 +843,12 @@ class TestPassImplementations(unittest.TestCase):
     so this costs no extra import: the backend's heavy half stays untouched.
     """
 
-    def manifest(self, implements):
+    def manifest(self, implements, *, rules=(), provides=None):
         return BackendManifest(
             name="cobra",
             api_version=PLUGIN_API_VERSION,
-            provides=Recorder(result=object()),
+            provides=provides if provides is not None else Recorder(result=object()),
+            rules=rules,
             implements=implements,
         )
 
@@ -888,6 +892,45 @@ class TestPassImplementations(unittest.TestCase):
         )
         self.assertEqual(reg.implementation_for("mba-solve"), "CobraSolveRule")
 
+    def test_typed_and_mapping_manifests_reject_malformed_implementations(self):
+        malformed = (
+            ("non-string pass id", {1: "Rule"}),
+            ("empty pass id", {"": "Rule"}),
+            ("non-string rule name", {"mba-egraph": object()}),
+            ("empty rule name", {"mba-egraph": ""}),
+        )
+        for label, implements in malformed:
+            for kind in ("typed", "mapping"):
+                with self.subTest(label=label, kind=kind):
+                    if kind == "typed":
+                        manifest = BackendManifest(
+                            name="cobra",
+                            api_version=PLUGIN_API_VERSION,
+                            provides=Recorder(result=object()),
+                            rules=("acme.rules.egraph",),
+                            implements=implements,
+                        )
+                    else:
+                        manifest = {
+                            "name": "cobra",
+                            "api_version": PLUGIN_API_VERSION,
+                            "provides": Recorder(result=object()),
+                            "rules": ("acme.rules.egraph",),
+                            "implements": implements,
+                        }
+                    reg = registry(
+                        [
+                            BackendSpec(
+                                name="cobra",
+                                origin="test",
+                                load_manifest=lambda manifest=manifest: manifest,
+                            )
+                        ]
+                    )
+
+                    with self.assertRaises(PassImplementationMisdeclared):
+                        reg.implementation_candidates_for("mba-egraph")
+
     def test_resolution_does_not_import_the_backend(self):
         """The whole point of manifest indirection: no heavy half, no IDA."""
         load = Recorder(result=object())
@@ -914,6 +957,161 @@ class TestPassImplementations(unittest.TestCase):
             [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
         )
         self.assertIsNone(reg.implementation_for("mba-solve"))
+
+    def test_first_compatible_mba_solve_declaration_remains_the_legacy_answer(self):
+        """The strict mba-egraph path must not change mba-solve semantics."""
+        first = self.manifest({"mba-solve": "FirstSolver"})
+        second = self.manifest({"mba-solve": "SecondSolver"})
+        reg = registry(
+            [
+                BackendSpec(name="first", origin="first-origin", load_manifest=lambda: first),
+                BackendSpec(name="second", origin="second-origin", load_manifest=lambda: second),
+            ]
+        )
+
+        self.assertEqual(reg.implementation_for("mba-solve"), "FirstSolver")
+
+    def test_compatible_manifest_produces_an_immutable_candidate(self):
+        manifest = self.manifest(
+            {"mba-egraph": "EgglogOptimizer"},
+            rules=("acme.rules.first", "acme.rules.second"),
+        )
+        reg = registry(
+            [
+                BackendSpec(
+                    name="cobra",
+                    origin="d810-cobra 1.0",
+                    load_manifest=lambda: manifest,
+                )
+            ]
+        )
+
+        self.assertEqual(
+            reg.implementation_candidates_for("mba-egraph"),
+            (
+                PassImplementationCandidate(
+                    pass_id="mba-egraph",
+                    backend_name="cobra",
+                    backend_origin="d810-cobra 1.0",
+                    rule_modules=("acme.rules.first", "acme.rules.second"),
+                    rule_name="EgglogOptimizer",
+                ),
+            ),
+        )
+
+    def test_incompatible_manifest_is_ignored_without_resolving_provides(self):
+        load = Recorder(result=object())
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION - 1,
+            provides=load,
+            rules=("acme.rules.solve",),
+            implements={"mba-egraph": "EgglogOptimizer"},
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="old", load_manifest=lambda: manifest)]
+        )
+
+        self.assertEqual(reg.implementation_candidates_for("mba-egraph"), ())
+        self.assertEqual(load.calls, 0)
+
+    def test_two_compatible_declarations_are_ambiguous_in_deterministic_order(self):
+        first = self.manifest(
+            {"mba-egraph": "FirstRule"},
+            rules=("first.rules",),
+        )
+        second = self.manifest(
+            {"mba-egraph": "SecondRule"},
+            rules=("second.rules",),
+        )
+        reg = registry(
+            [
+                BackendSpec(name="zeta", origin="z-origin", load_manifest=lambda: second),
+                BackendSpec(name="acme", origin="a-origin", load_manifest=lambda: first),
+            ]
+        )
+
+        with self.assertRaises(PassImplementationAmbiguous) as ctx:
+            reg.require_unique_implementation("mba-egraph", install_hint="d810-egglog")
+
+        self.assertEqual(
+            [candidate.backend_origin for candidate in ctx.exception.candidates],
+            ["a-origin", "z-origin"],
+        )
+        self.assertIn("a-origin", str(ctx.exception))
+        self.assertIn("z-origin", str(ctx.exception))
+
+    def test_no_declaration_reports_install_hint(self):
+        with self.assertRaises(PassImplementationMissing) as ctx:
+            registry().require_unique_implementation(
+                "mba-egraph", install_hint="d810-egglog"
+            )
+
+        self.assertIn("install d810-egglog", str(ctx.exception))
+
+    def test_implementation_without_rule_modules_is_misdeclared(self):
+        manifest = self.manifest({"mba-egraph": "EgglogOptimizer"})
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+
+        with self.assertRaises(PassImplementationMisdeclared):
+            reg.implementation_candidates_for("mba-egraph")
+
+    def test_typed_manifest_with_malformed_rules_is_misdeclared(self):
+        """Runtime callers can bypass dataclass annotations; validate anyway."""
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION,
+            provides=Recorder(result=object()),
+            rules="bad",
+            implements={"mba-egraph": "EgglogOptimizer"},
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+
+        with self.assertRaises(PassImplementationMisdeclared):
+            reg.require_unique_implementation("mba-egraph", install_hint="d810-egglog")
+
+    def test_duck_typed_manifest_with_non_iterable_rules_is_misdeclared(self):
+        raw = {
+            "name": "cobra",
+            "api_version": PLUGIN_API_VERSION,
+            "provides": Recorder(result=object()),
+            "rules": 42,
+            "implements": {"mba-egraph": "EgglogOptimizer"},
+        }
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: raw)]
+        )
+
+        with self.assertRaises(PassImplementationMisdeclared):
+            reg.require_unique_implementation("mba-egraph", install_hint="d810-egglog")
+
+    def test_candidate_read_does_not_probe_or_resolve_backend(self):
+        probe_calls = []
+
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                probe_calls.append("probe")
+                return None
+
+        load = Recorder(result=Backend)
+        manifest = self.manifest(
+            {"mba-egraph": "EgglogOptimizer"},
+            rules=("acme.rules",),
+            provides=load,
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+
+        reg.implementation_candidates_for("mba-egraph")
+
+        self.assertEqual(probe_calls, [])
+        self.assertEqual(load.calls, 0)
 
 
 if __name__ == "__main__":

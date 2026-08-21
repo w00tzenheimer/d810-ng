@@ -5,7 +5,6 @@ MBA expressions (d810.mba.dsl.SymbolicExpression):
 
 - z3: Z3 SMT solver backend for verification and equivalence checking
 - ida: IDA Pro integration (minsn_t * SymbolicExpression conversion)
-- egglog_backend: E-graph backend using egglog (optional)
 
 Each backend is optional and can be used independently based on available
 dependencies and use case.
@@ -33,9 +32,20 @@ See the module docstrings in each file for full details.
 import importlib
 
 from d810.core import getLogger
-from d810.core.plugins import BackendRegistry, BackendSpec, builtin, make_singleton
+from d810.core.plugins import (
+    BackendRegistry,
+    BackendSpec,
+    PassImplementationCandidate,
+    builtin,
+    make_singleton,
+)
 
-__all__ = ["BUILTIN_BACKENDS", "load_extension_rules", "registry"]
+__all__ = [
+    "BUILTIN_BACKENDS",
+    "load_extension_rule_for_candidate",
+    "load_extension_rules",
+    "registry",
+]
 
 logger = getLogger(__name__)
 
@@ -65,7 +75,6 @@ logger = getLogger(__name__)
 #: to a d810 commit.
 BUILTIN_BACKENDS: tuple[BackendSpec, ...] = (
     builtin("mba.z3", "d810.backends.mba.z3"),
-    builtin("mba.egglog", "d810.backends.mba.egglog_backend"),
     builtin("ast.z3", "d810.backends.ast.z3"),
     builtin("emulation.triton", "d810.backends.emulation.triton"),
     builtin("emulation.unicorn", "d810.backends.emulation.unicorn"),
@@ -73,10 +82,31 @@ BUILTIN_BACKENDS: tuple[BackendSpec, ...] = (
 )
 
 
+def load_extension_rule_for_candidate(
+    candidate: PassImplementationCandidate,
+):
+    """Find an instruction rule after its declared modules have imported.
+
+    The optimizer layer owns the concrete ``InstructionOptimizationRule``
+    registry.  Keeping this callback here lets ``d810.core.plugins`` perform
+    strict activation without importing that higher layer.
+    """
+    # This is a deliberate composition-root adapter.  Keep the dependency
+    # dynamic so the backend layer does not acquire an upward import edge (and
+    # unit-test catalogue reads do not pull IDA/Hex-Rays into core).
+    module = importlib.import_module(
+        "d810.optimizers.microcode.instructions.handler"
+    )
+    return module.InstructionOptimizationRule.find(candidate.rule_name)
+
+
 #: The process-wide backend registry. Assembled here rather than in
 #: ``core.plugins`` so the mechanism stays beneath the backends it serves.
 registry = make_singleton(
-    lambda: BackendRegistry(builtins=BUILTIN_BACKENDS)
+    lambda: BackendRegistry(
+        builtins=BUILTIN_BACKENDS,
+        registration_lookup=load_extension_rule_for_candidate,
+    )
 )
 
 

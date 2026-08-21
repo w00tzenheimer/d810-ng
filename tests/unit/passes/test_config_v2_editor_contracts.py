@@ -15,6 +15,7 @@ from d810.core.pass_editor_spec import (
     TransformEditorSpec,
     VerificationStatus,
 )
+from d810.core.plugins import BackendRegistry
 from d810.manager.workbench_recipe_service import RecipeService
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError, PassResult
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
@@ -80,7 +81,9 @@ def test_public_config_registration_rejects_a_json_only_option() -> None:
         )
 
 
-def test_public_config_registration_requires_explicit_template_and_editor_spec() -> None:
+def test_public_config_registration_requires_explicit_template_and_editor_spec() -> (
+    None
+):
     registry = PassRegistry()
 
     with pytest.raises(PassRegistryError, match="explicit config template"):
@@ -252,7 +255,10 @@ def test_public_transform_catalog_rejects_non_string_option_keys() -> None:
         registry.build_spec(
             PipelineConfig(
                 pass_id="public-transforms",
-                options={"transforms": ["known-transform"], "transform_options": {1: {}}},
+                options={
+                    "transforms": ["known-transform"],
+                    "transform_options": {1: {}},
+                },
             )
         )
 
@@ -293,8 +299,10 @@ def test_operational_config_v2_public_passes_have_complete_editor_contracts() ->
     assert registry.validate_editor_contracts() == ()
 
 
-def test_mba_egglog_replay_options_are_flat_typed_and_editor_visible() -> None:
-    entry = next(item for item in registered_pass_catalog() if item.pass_id == "mba-egglog")
+def test_mba_egraph_replay_options_are_flat_typed_and_editor_visible() -> None:
+    entry = next(
+        item for item in registered_pass_catalog() if item.pass_id == "mba-egraph"
+    )
     fields = {field.path: field for field in entry.editor_spec.fields}
 
     assert set(fields) >= {
@@ -312,11 +320,29 @@ def test_mba_egglog_replay_options_are_flat_typed_and_editor_visible() -> None:
     assert fields[("learned_replay_max_bytes",)].default == 2_097_152
 
 
+def test_mba_egraph_public_editor_survives_absent_extension(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "d810.backends.registry",
+        lambda: BackendRegistry(source=lambda: ()),
+    )
+
+    registry = operational_config_v2_pass_registry()
+    assert "mba-egraph" in registry.public_pass_ids()
+    entry = next(
+        item for item in registered_pass_catalog() if item.pass_id == "mba-egraph"
+    )
+    assert entry.editor_spec is not None
+
+
 def test_shipped_passes_project_their_declared_primary_editor_surface() -> None:
     by_pass_id = {entry.pass_id: entry for entry in registered_pass_catalog()}
 
-    assert by_pass_id["constant-simplification"].editor_spec.kind is PassEditorKind.FIELDS
-    assert by_pass_id["mba-simplify"].editor_spec.kind is PassEditorKind.TRANSFORM_CATALOG
+    assert (
+        by_pass_id["constant-simplification"].editor_spec.kind is PassEditorKind.FIELDS
+    )
+    assert (
+        by_pass_id["mba-simplify"].editor_spec.kind is PassEditorKind.TRANSFORM_CATALOG
+    )
     assert by_pass_id["jump-fixer"].editor_spec.kind is PassEditorKind.RULE_CATALOG
 
 

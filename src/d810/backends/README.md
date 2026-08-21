@@ -26,8 +26,6 @@ src/d810/backends/
 │   └── ida.py          # IDA mba_t → InductionVariableFactCollector lifter
 └── mba/                # MBA-expression backends (the original "MBA Backends")
     ├── __init__.py
-    ├── egglog_backend.py
-    ├── egraph.py
     ├── ida.py          # IDA pattern-matching adapter
     └── z3.py           # Z3 prover over pure SymbolicExpression
 ```
@@ -102,38 +100,9 @@ ast_node = visitor.visit(pattern)
 - `IDANodeVisitor` - Converts SymbolicExpression trees to IDA AstNode trees
 - `adapt_rules()` - Batch wrap rules with IDAPatternAdapter
 
-### 3. E-graph Backend (`egglog_backend.py`)
-
-**Purpose:** E-graph pattern matching and equivalence verification
-**Dependencies:** `egglog` (optional)
-**Status:** ✅ Complete
-
-**Planned API:**
-```python
-from d810.backends.mba.egraph import MBARuleset, EGraphSimplifier
-from d810.mba import Var
-
-# Create ruleset from verified MBA rules
-ruleset = MBARuleset([XorRule1(), XorRule2()])
-ruleset.verify_all()  # Z3 proves correctness
-
-# Create simplifier
-simplifier = EGraphSimplifier(ruleset)
-
-# Optimize expression
-x, y, z = Var("x"), Var("y"), Var("z")
-complex = ((x + y) - 2*(x & y) | z) - ((x + y) - 2*(x & y) & z)
-simple = simplifier.simplify(complex)
-print(simple)  # x ^ y ^ z
-```
-
-**Key advantages:**
-- Automatic chain discovery (multi-step simplifications in one pass)
-- Bidirectional rewrites (explore all equivalent forms)
-- Optimality guarantees (saturation proves best form found)
-- Subexpression sharing (automatically handles common subexpressions)
-
-**See also:** `docs/EGRAPH_DESIGN.md` for comprehensive design
+Egglog-based MBA extraction is supplied by the optional `d810-egglog`
+extension.  Core owns the portable typed-term catalogue, native matcher, and
+Z3 proof boundary; it does not ship an in-tree Egglog backend.
 
 ## Backend Selection
 
@@ -159,8 +128,6 @@ cobra              available     builtin
 emulation.triton   available     builtin
 emulation.unicorn  available     builtin
 llvm               available     builtin
-mba.egglog         unavailable   builtin
-                   -> No module named 'ida_hexrays'
 mba.z3             available     builtin
 ```
 
@@ -177,7 +144,6 @@ protocol version this d810 no longer speaks). A missing optional dependency is
 Each backend degrades gracefully:
 - Missing Z3 → verification disabled, but DSL still works
 - Missing IDA → pure Python mode, standalone tools work
-- Missing e-graph → pattern matching fallback
 
 ## Design Principles
 
@@ -247,8 +213,8 @@ raising `AttributeError` on import gets silently filed as "not installed". The
 registry keeps them apart as `UNAVAILABLE` vs `BROKEN`, and only the latter
 exits non-zero.
 
-The legacy flags (`Z3_INSTALLED`, `TRITON_AVAILABLE`, `UNICORN_AVAILABLE`,
-`EGGLOG_AVAILABLE`) are unchanged and remain authoritative; the hooks read
+The remaining legacy flags (`Z3_INSTALLED`, `TRITON_AVAILABLE`, and
+`UNICORN_AVAILABLE`) are unchanged and remain authoritative; the hooks read
 them. Existing code keeps working.
 
 ### Out-of-tree backends

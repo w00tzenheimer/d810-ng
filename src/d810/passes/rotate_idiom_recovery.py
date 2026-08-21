@@ -1,7 +1,7 @@
 """Config-v2 adapter for strict 64-bit rotate idiom recovery.
 
 This is intentionally a narrow structural lift, not an algebraic solver and
-not an Egglog vocabulary extension.  It is enabled only by the Eid
+not an e-graph vocabulary extension.  It is enabled only by the Eid
 constant-solve profile while we gather further idioms.
 """
 

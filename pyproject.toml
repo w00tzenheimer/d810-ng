@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "d810-ng"
-requires-python = ">= 3.10"
+requires-python = ">=3.11"
 dynamic = ["version"]
 authors = [
     { name = "w00tzenheimer", email = "w00tzenheimer@gmail.com" },
@@ -17,7 +17,7 @@ dependencies = ["typing-extensions"]
 
 [project.optional-dependencies]
 speedups = ["Cython>=3.0.0"]
-egraph = ["egglog>=13.2.0,<14", "cloudpickle>=3.0.0"]
+egraph = ["d810-egglog>=0.1.0"]
 emulation = ["unicorn>=2.1,<3"]
 dev = [
     "setuptools>=77.0.1",

@@ -600,7 +600,7 @@ def rebuild_hexrays_island(
             return native
 
         rebuilt = rebuild(term, top_level=True)
-        if isinstance(rebuilt, runtime.AstNode):
+        if isinstance(rebuilt, (runtime.AstNode, runtime.AstLeaf)):
             return rebuilt
         # Rotate helpers are instruction-level value producers.  The shared
         # materializer intentionally returns a live minsn_t rather than a

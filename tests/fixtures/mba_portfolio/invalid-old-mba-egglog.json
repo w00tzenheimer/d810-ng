@@ -1,0 +1,8 @@
+{
+  "pipeline_v2": [
+    {
+      "pass_id": "mba-egglog",
+      "options": {}
+    }
+  ]
+}

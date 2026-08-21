@@ -4,7 +4,7 @@
     "plugin": {
         "name": "d810-ng",
         "entryPoint": "d810ng.py",
-        "version": "1.0.0b1",
+        "version": "1.0.0b2",
         "urls": {
             "repository": "https://github.com/w00tzenheimer/d810-ng"
         },
@@ -38,7 +38,7 @@
             }
         ],
         "pythonDependencies": [
-            "d810-ng==1.0.0b1"
+            "d810-ng==1.0.0b2"
         ],
         "logoPath": "resources/d810ng-logo.png",
         "idaVersions": ">=9.0",

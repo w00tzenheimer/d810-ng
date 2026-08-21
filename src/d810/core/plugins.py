@@ -114,6 +114,12 @@ __all__ = [
     "BackendStatus",
     "BackendUnavailable",
     "ManifestError",
+    "PassImplementationAmbiguous",
+    "PassImplementationCandidate",
+    "PassImplementationError",
+    "PassImplementationMisdeclared",
+    "PassImplementationMissing",
+    "PassImplementationUnavailable",
     "PluginCapabilityOffer",
     "builtin",
     "entry_point_source",
@@ -285,10 +291,116 @@ class ManifestError(ValueError):
     """A manifest is missing required fields or has the wrong shape."""
 
 
+@dataclass(frozen=True, slots=True)
+class PassImplementationCandidate:
+    """One declaration that can implement a config-v2 pass.
+
+    The declaration contains only manifest data.  In particular, creating a
+    candidate never resolves ``provides`` or imports any rule module.  This is
+    what lets a caller distinguish a deterministic declaration conflict from a
+    backend that is merely unavailable on the current machine.
+    """
+
+    pass_id: str
+    backend_name: str
+    backend_origin: str
+    rule_modules: tuple[str, ...]
+    rule_name: str
+
+
+class PassImplementationError(RuntimeError):
+    """Base class for strict pass implementation resolution failures."""
+
+
+class PassImplementationMissing(PassImplementationError):
+    """No compatible backend declared an implementation for a pass."""
+
+    def __init__(self, pass_id: str, install_hint: str) -> None:
+        self.pass_id = str(pass_id)
+        self.install_hint = str(install_hint)
+        hint = self.install_hint
+        if not hint.lower().startswith("install "):
+            hint = f"install {hint}"
+        super().__init__(
+            f"pass {self.pass_id!r} has no implementation; {hint}"
+        )
+
+
+class PassImplementationAmbiguous(PassImplementationError):
+    """More than one compatible backend declared the same pass."""
+
+    def __init__(
+        self,
+        pass_id: str,
+        candidates: Iterable[PassImplementationCandidate],
+    ) -> None:
+        self.pass_id = str(pass_id)
+        self.candidates = tuple(candidates)
+        origins = ", ".join(
+            f"{candidate.backend_name} ({candidate.backend_origin})"
+            for candidate in self.candidates
+        )
+        super().__init__(
+            f"pass {self.pass_id!r} has ambiguous implementations: {origins}"
+        )
+
+
+class PassImplementationUnavailable(PassImplementationError):
+    """A declared implementation's backend could not be activated."""
+
+    def __init__(
+        self,
+        candidate: PassImplementationCandidate,
+        reason: str,
+    ) -> None:
+        self.candidate = candidate
+        self.reason = str(reason)
+        super().__init__(
+            f"pass {candidate.pass_id!r} implementation "
+            f"{candidate.rule_name!r} from {candidate.backend_origin!r} "
+            f"is unavailable: {self.reason}"
+        )
+
+
+class PassImplementationMisdeclared(PassImplementationError):
+    """A declaration or registered rule does not match its manifest."""
+
+    def __init__(
+        self,
+        pass_id: str,
+        *,
+        backend_name: str,
+        backend_origin: str,
+        reason: str,
+        candidate: PassImplementationCandidate | None = None,
+    ) -> None:
+        self.pass_id = str(pass_id)
+        self.backend_name = backend_name
+        self.backend_origin = backend_origin
+        self.reason = str(reason)
+        self.candidate = candidate
+        super().__init__(
+            f"pass {self.pass_id!r} implementation from "
+            f"{backend_name!r} ({backend_origin!r}) is misdeclared: "
+            f"{self.reason}"
+        )
+
+
 def manifest_of(raw: Any) -> BackendManifest:
     """Coerce a duck-typed manifest into a :class:`BackendManifest`."""
     if isinstance(raw, BackendManifest):
-        return raw
+        rules = _validate_rules(raw.rules)
+        implements = _coerce_implements(raw)
+        if rules == raw.rules and implements == raw.implements:
+            return raw
+        return BackendManifest(
+            name=raw.name,
+            api_version=raw.api_version,
+            provides=raw.provides,
+            capabilities=raw.capabilities,
+            rules=rules,
+            implements=implements,
+        )
 
     getter = (
         (lambda key: raw[key])
@@ -364,13 +476,32 @@ def _coerce_rules(raw: Any) -> tuple[str, ...]:
         declared = raw["rules"] if isinstance(raw, Mapping) else raw.rules
     except (KeyError, AttributeError):
         return ()
+    return _validate_rules(declared)
+
+
+def _validate_rules(declared: Any) -> tuple[str, ...]:
+    """Validate and freeze an ordered manifest rule-module declaration."""
     if declared is None:
         return ()
 
     if isinstance(declared, str):
         raise ManifestError(
-            f"rules must be a sequence of import paths, not a bare string: "
+            f"rules must be an ordered sequence of import paths, not a bare string: "
             f"{declared!r} (did you mean ({declared!r},)?)"
+        )
+    if isinstance(declared, (bytes, bytearray, memoryview)):
+        raise ManifestError(
+            "rules must be an ordered sequence of text import paths, not "
+            f"{type(declared).__name__}"
+        )
+    if isinstance(declared, Mapping):
+        raise ManifestError(
+            "rules must be an ordered sequence of import paths, not a mapping"
+        )
+    if not isinstance(declared, Sequence):
+        raise ManifestError(
+            "rules must be an ordered tuple/list-like sequence of import "
+            f"paths, got {type(declared).__name__}: {declared!r}"
         )
 
     modules = tuple(declared)
@@ -380,6 +511,8 @@ def _coerce_rules(raw: Any) -> tuple[str, ...]:
                 f"rules entries must be import-path strings, "
                 f"got {type(module).__name__}: {module!r}"
             )
+        if not module:
+            raise ManifestError("rules entries must be nonempty import paths")
     return modules
 
 
@@ -398,9 +531,14 @@ def _coerce_implements(raw: Any) -> Mapping[str, str]:
             f"got {type(declared).__name__}: {declared!r}"
         )
     for pass_id, rule_name in declared.items():
-        if not isinstance(pass_id, str) or not isinstance(rule_name, str):
+        if (
+            not isinstance(pass_id, str)
+            or not isinstance(rule_name, str)
+            or not pass_id
+            or not rule_name
+        ):
             raise ManifestError(
-                f"implements entries must be str -> str, "
+                f"implements entries must be non-empty str -> str, "
                 f"got {pass_id!r} -> {rule_name!r}"
             )
     return types.MappingProxyType(dict(declared))
@@ -511,6 +649,9 @@ class BackendRegistry:
         *,
         builtins: Sequence[BackendSpec] = (),
         source: Callable[[], Iterable[BackendSpec]] | None = None,
+        registration_lookup: Callable[
+            [PassImplementationCandidate], Any | None
+        ] | None = None,
     ) -> None:
         self._builtins = tuple(builtins)
         self._source = source if source is not None else entry_point_source
@@ -527,6 +668,8 @@ class BackendRegistry:
         self._manifests: dict[str, BackendManifest] = {}
         self._loaded: dict[str, Any] = {}
         self._errors: dict[str, BaseException] = {}
+        #: Injected to keep optimizer-layer imports out of ``core.plugins``.
+        self._registration_lookup = registration_lookup
 
     # -- discovery ---------------------------------------------------------
 
@@ -675,6 +818,161 @@ class BackendRegistry:
                 if found:
                     return found
         return None
+
+    def implementation_candidates_for(
+        self, pass_id: PassId | str
+    ) -> tuple[PassImplementationCandidate, ...]:
+        """Collect compatible declarations without activating a backend.
+
+        This is the declaration phase of strict implementation resolution.  It
+        reads manifests only: neither ``provides`` nor any rule module is
+        imported, and no backend probe is called.  The result is sorted by the
+        stable identity promised by the extension contract so ambiguity is
+        reproducible across entry-point ordering.
+        """
+        pass_name = str(pass_id)
+        self.discover()
+        with self._lock:
+            specs = tuple(
+                spec
+                for candidates in self._candidates.values()
+                for spec in candidates
+            )
+
+        found: list[PassImplementationCandidate] = []
+        for spec in specs:
+            try:
+                manifest = manifest_of(spec.load_manifest())
+            except ImportError:
+                # A manifest import can itself depend on an optional package.
+                # It contributes no declaration, just as implementation_for()
+                # historically treated it.
+                continue
+            except ManifestError as exc:
+                raise PassImplementationMisdeclared(
+                    pass_name,
+                    backend_name=spec.name,
+                    backend_origin=spec.origin,
+                    reason=str(exc),
+                ) from exc
+            except Exception:
+                # A broken manifest cannot be activated.  Keep declaration
+                # discovery conservative; probe() remains the diagnostic path
+                # that classifies arbitrary loader failures.
+                continue
+
+            if manifest.api_version != PLUGIN_API_VERSION:
+                continue
+            rule_name = manifest.implements.get(pass_name)
+            if not rule_name:
+                continue
+            if not manifest.rules:
+                raise PassImplementationMisdeclared(
+                    pass_name,
+                    backend_name=spec.name,
+                    backend_origin=spec.origin,
+                    reason=(
+                        f"implementation {rule_name!r} does not declare any "
+                        "rule modules"
+                    ),
+                )
+            found.append(
+                PassImplementationCandidate(
+                    pass_id=pass_name,
+                    backend_name=spec.name,
+                    backend_origin=spec.origin,
+                    rule_modules=tuple(manifest.rules),
+                    rule_name=rule_name,
+                )
+            )
+
+        return tuple(
+            sorted(
+                found,
+                key=lambda candidate: (
+                    candidate.backend_name,
+                    candidate.backend_origin,
+                    candidate.rule_name,
+                ),
+            )
+        )
+
+    def require_unique_implementation(
+        self, pass_id: PassId | str, *, install_hint: str
+    ) -> PassImplementationCandidate:
+        """Return the one compatible declaration, or report strict failure."""
+        pass_name = str(pass_id)
+        candidates = self.implementation_candidates_for(pass_name)
+        if not candidates:
+            raise PassImplementationMissing(pass_name, install_hint)
+        if len(candidates) > 1:
+            raise PassImplementationAmbiguous(pass_name, candidates)
+        return candidates[0]
+
+    def activate_implementation(
+        self, candidate: PassImplementationCandidate
+    ) -> None:
+        """Probe, import, and verify one selected implementation.
+
+        The sequence is intentionally explicit: backend availability is known
+        before any extension rule module is imported, and registration lookup
+        remains injected so this portable registry never imports optimizer
+        layers.
+        """
+        try:
+            info = self.probe(candidate.backend_name)
+        except (KeyError, BackendUnavailable) as exc:
+            raise PassImplementationUnavailable(candidate, str(exc)) from exc
+
+        if info.status is not BackendStatus.AVAILABLE:
+            raise PassImplementationUnavailable(
+                candidate,
+                info.reason or info.status.value,
+            )
+        if info.origin != candidate.backend_origin:
+            raise PassImplementationUnavailable(
+                candidate,
+                f"resolved backend origin is {info.origin!r}",
+            )
+
+        for module_name in candidate.rule_modules:
+            try:
+                importlib.import_module(module_name)
+            except Exception as exc:
+                raise PassImplementationUnavailable(
+                    candidate,
+                    f"rule module {module_name!r} failed to import: "
+                    f"{type(exc).__name__}: {exc}",
+                ) from exc
+
+        if self._registration_lookup is None:
+            raise PassImplementationMisdeclared(
+                candidate.pass_id,
+                backend_name=candidate.backend_name,
+                backend_origin=candidate.backend_origin,
+                candidate=candidate,
+                reason="no registration lookup was injected",
+            )
+        try:
+            registered = self._registration_lookup(candidate)
+        except Exception as exc:
+            raise PassImplementationMisdeclared(
+                candidate.pass_id,
+                backend_name=candidate.backend_name,
+                backend_origin=candidate.backend_origin,
+                candidate=candidate,
+                reason=(
+                    f"registration lookup raised {type(exc).__name__}: {exc}"
+                ),
+            ) from exc
+        if registered is None:
+            raise PassImplementationMisdeclared(
+                candidate.pass_id,
+                backend_name=candidate.backend_name,
+                backend_origin=candidate.backend_origin,
+                candidate=candidate,
+                reason=f"rule {candidate.rule_name!r} is not registered",
+            )
 
     def rule_modules(self) -> tuple[str, ...]:
         """Optimizer rule modules contributed by backends that resolved.

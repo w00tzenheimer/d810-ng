@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from d810.backends.mba.egglog_add_rule_compiler import (
+from d810.mba.certified_rule_compiler import (
     compile_mba_rule_catalogue,
 )
 from d810.mba.dsl import Const, SymbolicExpression, Var, Zext

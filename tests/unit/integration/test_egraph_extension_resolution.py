@@ -1,0 +1,111 @@
+"""Declaration/activation boundary regressions for optional e-graph rules."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from d810.core.config import ProjectConfiguration
+from d810.core.plugins import (
+    PLUGIN_API_VERSION,
+    BackendManifest,
+    BackendRegistry,
+    BackendSpec,
+)
+from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+
+
+def test_declaration_resolution_never_imports_runtime_or_rule_module(
+    tmp_path, monkeypatch
+):
+    runtime_marker = tmp_path / "runtime.marker"
+    rule_marker = tmp_path / "rule.marker"
+    module_name = "task16_declaration_only_rule"
+    (tmp_path / f"{module_name}.py").write_text(
+        f"from pathlib import Path\nPath({str(rule_marker)!r}).write_text('imported')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def provides():
+        runtime_marker.write_text("loaded", encoding="utf-8")
+        return object()
+
+    manifest = BackendManifest(
+        name="egglog",
+        api_version=PLUGIN_API_VERSION,
+        provides=provides,
+        rules=(module_name,),
+        implements={"mba-egraph": "EgglogOptimizer"},
+    )
+    registry = BackendRegistry(
+        source=lambda: (
+            BackendSpec(
+                name="egglog",
+                origin="declaration-only",
+                load_manifest=lambda: manifest,
+            ),
+        ),
+        registration_lookup=lambda _candidate: object(),
+    )
+
+    candidates = registry.implementation_candidates_for("mba-egraph")
+
+    assert len(candidates) == 1
+    assert candidates[0].backend_origin == "declaration-only"
+    assert candidates[0].rule_modules == (module_name,)
+    assert not runtime_marker.exists()
+    assert not rule_marker.exists()
+
+
+def test_mba_solve_still_uses_first_compatible_declaration(monkeypatch):
+    """The strict e-graph resolver must not change legacy ``mba-solve``."""
+
+    import d810.backends as backends
+
+    first_manifest = BackendManifest(
+        name="solver-a",
+        api_version=PLUGIN_API_VERSION,
+        provides=lambda: object(),
+        implements={"mba-solve": "FirstSolver"},
+    )
+    second_manifest = BackendManifest(
+        name="solver-b",
+        api_version=PLUGIN_API_VERSION,
+        provides=lambda: object(),
+        implements={"mba-solve": "SecondSolver"},
+    )
+    registry = BackendRegistry(
+        source=lambda: (
+            BackendSpec(
+                name="solver-a",
+                origin="first-solver-origin",
+                load_manifest=lambda: first_manifest,
+            ),
+            BackendSpec(
+                name="solver-b",
+                origin="second-solver-origin",
+                load_manifest=lambda: second_manifest,
+            ),
+        ),
+        registration_lookup=lambda _candidate: object(),
+    )
+    monkeypatch.setattr(backends, "registry", lambda: registry)
+
+    activation = pipeline_v2_hook_activation(
+        ProjectConfiguration(
+            path=Path("task16-mba-solve.json"),
+            additional_configuration={
+                "pipeline_v2_mode": "config-v2",
+                "pipeline_v2": [
+                    {
+                        "pass_id": "mba-solve",
+                        "options": {"max_leaves": 4, "require_proof": True},
+                    }
+                ],
+            },
+        )
+    )
+
+    assert activation.configured_pass_ids == ("mba-solve",)
+    assert [rule.name for rule in activation.instruction_rules] == ["FirstSolver"]
+    assert activation.block_rules == ()

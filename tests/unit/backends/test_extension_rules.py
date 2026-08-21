@@ -21,6 +21,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from d810.backends import load_extension_rules
+from d810.core.plugins import (
+    PLUGIN_API_VERSION,
+    BackendManifest,
+    BackendRegistry,
+    BackendSpec,
+    PassImplementationMisdeclared,
+    PassImplementationUnavailable,
+)
 
 
 class _FakeRegistry:
@@ -54,12 +62,32 @@ class TestLoadExtensionRules(unittest.TestCase):
             import pathlib
             {body}
             # Written at import time: the only proof the module actually ran.
-            pathlib.Path({str(marker)!r}).write_text("imported")
+            _marker = pathlib.Path({str(marker)!r})
+            _marker.write_text(_marker.read_text() + "imported" if _marker.exists() else "imported")
             """
         )
         (self.root / f"{name}.py").write_text(source)
         self._planted.append(name)
         return marker
+
+    def registry_for(self, backend, *, origin, rule_module, rule_name, lookup):
+        manifest = BackendManifest(
+            name=origin,
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: backend,
+            rules=(rule_module,),
+            implements={"mba-egraph": rule_name},
+        )
+        return BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name=origin,
+                    origin=origin,
+                    load_manifest=lambda: manifest,
+                )
+            ],
+            registration_lookup=lookup,
+        )
 
     def _patch_registry(self, fake) -> None:
         import d810.backends
@@ -118,6 +146,174 @@ class TestLoadExtensionRules(unittest.TestCase):
         load_extension_rules()
 
         self.assertEqual(fake.calls, 1)
+
+    def test_activation_probes_before_importing_rule_module(self):
+        probe_marker = self.root / "probe.marker"
+        rule_marker = self.write_rule(
+            "acme_ext_rule_ordered",
+            body=(
+                f"if not pathlib.Path({str(probe_marker)!r}).exists():\n"
+                "                raise RuntimeError('rule imported before probe')"
+            ),
+        )
+
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                probe_marker.write_text("probed")
+                return None
+
+        looked_up = []
+        reg = self.registry_for(
+            Backend,
+            origin="cobra",
+            rule_module="acme_ext_rule_ordered",
+            rule_name="EgglogOptimizer",
+            lookup=lambda candidate: looked_up.append(candidate.rule_name) or object(),
+        )
+        candidate = reg.implementation_candidates_for("mba-egraph")[0]
+
+        self.assertFalse(rule_marker.exists())
+        reg.activate_implementation(candidate)
+
+        self.assertEqual(looked_up, ["EgglogOptimizer"])
+        self.assertEqual(rule_marker.read_text(), "imported")
+
+    def test_unavailable_probe_prevents_rule_import(self):
+        rule_marker = self.write_rule("acme_ext_rule_unavailable")
+
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                return "native extension not built"
+
+        reg = self.registry_for(
+            Backend,
+            origin="cobra",
+            rule_module="acme_ext_rule_unavailable",
+            rule_name="EgglogOptimizer",
+            lookup=lambda candidate: object(),
+        )
+        candidate = reg.implementation_candidates_for("mba-egraph")[0]
+
+        with self.assertRaises(PassImplementationUnavailable):
+            reg.activate_implementation(candidate)
+
+        self.assertFalse(rule_marker.exists())
+
+    def test_successful_rule_module_import_is_idempotent(self):
+        rule_marker = self.write_rule("acme_ext_rule_idempotent")
+
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                return None
+
+        reg = self.registry_for(
+            Backend,
+            origin="cobra",
+            rule_module="acme_ext_rule_idempotent",
+            rule_name="EgglogOptimizer",
+            lookup=lambda candidate: object(),
+        )
+        candidate = reg.implementation_candidates_for("mba-egraph")[0]
+
+        reg.activate_implementation(candidate)
+        reg.activate_implementation(candidate)
+
+        self.assertEqual(rule_marker.read_text(), "imported")
+
+    def test_imported_module_without_registered_class_is_misdeclared(self):
+        rule_marker = self.write_rule("acme_ext_rule_unregistered")
+
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                return None
+
+        reg = self.registry_for(
+            Backend,
+            origin="cobra",
+            rule_module="acme_ext_rule_unregistered",
+            rule_name="EgglogOptimizer",
+            lookup=lambda candidate: None,
+        )
+        candidate = reg.implementation_candidates_for("mba-egraph")[0]
+
+        with self.assertRaises(PassImplementationMisdeclared):
+            reg.activate_implementation(candidate)
+
+        self.assertTrue(rule_marker.exists())
+
+    def test_startup_loading_probes_every_contributor_before_importing_rules(self):
+        solve_probe = self.root / "solve.probe"
+        egraph_probe = self.root / "egraph.probe"
+        solve_rule = self.write_rule(
+            "acme_ext_rule_solve",
+            body=(
+                f"if not pathlib.Path({str(solve_probe)!r}).exists():\n"
+                "                raise RuntimeError('solve rule imported before probe')"
+            ),
+        )
+        egraph_rule = self.write_rule(
+            "acme_ext_rule_egraph",
+            body=(
+                f"if not pathlib.Path({str(egraph_probe)!r}).exists():\n"
+                "                raise RuntimeError('egraph rule imported before probe')"
+            ),
+        )
+
+        class SolveBackend:
+            @staticmethod
+            def d810_backend_probe():
+                solve_probe.write_text("probed")
+                return None
+
+        class EgraphBackend:
+            @staticmethod
+            def d810_backend_probe():
+                egraph_probe.write_text("probed")
+                return None
+
+        solve_manifest = BackendManifest(
+            name="solve",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: SolveBackend,
+            rules=("acme_ext_rule_solve",),
+            implements={"mba-solve": "CobraSolveRule"},
+        )
+        egraph_manifest = BackendManifest(
+            name="egraph",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: EgraphBackend,
+            rules=("acme_ext_rule_egraph",),
+            implements={"mba-egraph": "EgglogOptimizer"},
+        )
+        real = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="solve",
+                    origin="solve",
+                    load_manifest=lambda: solve_manifest,
+                ),
+                BackendSpec(
+                    name="egraph",
+                    origin="egraph",
+                    load_manifest=lambda: egraph_manifest,
+                ),
+            ]
+        )
+        self._patch_registry(real)
+
+        load_extension_rules()
+
+        self.assertEqual(solve_rule.read_text(), "imported")
+        self.assertEqual(egraph_rule.read_text(), "imported")
+        # Re-running startup catalogue construction must not execute either
+        # module body again.
+        load_extension_rules()
+        self.assertEqual(solve_rule.read_text(), "imported")
+        self.assertEqual(egraph_rule.read_text(), "imported")
 
 
 if __name__ == "__main__":

@@ -106,11 +106,13 @@ class TestPassIdCoversTheShippedPasses:
             SIMPLE_FLATTENING_CLEANUP_PASS_ID,
         )
         from d810.passes.constant_simplification import CONSTANT_SIMPLIFICATION_PASS_ID
+        from d810.passes.mba_egraph import MBA_EGRAPH_PASS_ID
         from d810.passes.mba_simplify import MBA_SIMPLIFY_PASS_ID
         from d810.passes.mba_solve import MBA_SOLVE_PASS_ID
 
         assert MBA_SIMPLIFY_PASS_ID is PassId.MBA_SIMPLIFY
         assert MBA_SOLVE_PASS_ID is PassId.MBA_SOLVE
+        assert MBA_EGRAPH_PASS_ID is PassId.MBA_EGRAPH
         assert CONSTANT_SIMPLIFICATION_PASS_ID is PassId.CONSTANT_SIMPLIFICATION
         assert (
             SIMPLE_FLATTENING_CLEANUP_PASS_ID is PassId.SIMPLE_FLATTENING_CLEANUP
@@ -176,6 +178,10 @@ class TestPassIdCoversTheShippedPasses:
             PassId.SIMPLE_FLATTENING_CLEANUP
             == "simple-flattening-cleanup-unflattener"
         )
+
+    def test_egraph_pass_id_is_the_only_public_wire_name(self):
+        assert PassId.MBA_EGRAPH == "mba-egraph"
+        assert len(PassId.__members__) == len(tuple(PassId))
 
 
 class TestPassIdStaysInTheCoreLayer:

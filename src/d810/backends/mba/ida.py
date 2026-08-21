@@ -71,7 +71,7 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# Egglog-based Pattern Generation Helpers
+# E-graph-based Pattern Generation Helpers
 # =============================================================================
 
 # Map DSL operation names to commutative status
@@ -1559,7 +1559,7 @@ class IDAPatternAdapter:
 
             # Commutative permutations are correct BY CONSTRUCTION -- they are
             # generated from each operation's commutativity, so there is
-            # nothing to verify. An egglog equivalence check used to run here
+            # nothing to verify. An e-graph equivalence check used to run here
             # and was removed: it cost 30+ seconds at startup across 170+ rules
             # to confirm what the generator already guarantees.
             candidates = []
@@ -2046,9 +2046,6 @@ def attach_selected_certified_catalogue_snapshot(
         build_certified_catalogue_snapshot,
         load_structural_matcher_parity_certificate,
     )
-    from d810.backends.mba.egglog_structural_rules import (
-        compile_all_fixed_rotate_rules,
-    )
 
     selected = tuple(adapters)
     rules = tuple(adapter.rule for adapter in selected)
@@ -2064,11 +2061,6 @@ def attach_selected_certified_catalogue_snapshot(
         rules,
         compiler_version="verifiable-rule-dsl-v1",
         enabled_families=enabled_families,
-        structural_rules=tuple(
-            receipt.compiled_rule
-            for receipt in compile_all_fixed_rotate_rules()
-            if receipt.compiled_rule is not None
-        ),
         runtime_semantics_digest=active_runtime_semantics_digest,
     )
     parity_certificate = None

@@ -14,8 +14,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from d810.backends.mba.egglog_add_rule_compiler import (
-    CompiledEgglogRule,
+from d810.mba.certified_rule_compiler import (
+    CompiledMbaRule,
     _constraints_match_term,
     apply_compiled_rule_to_term,
     is_admitted_compiled_rule,
@@ -30,7 +30,7 @@ from d810.mba.typed_term import (
 
 _TEMPLATE_WIDTHS = frozenset({8, 16, 32, 64})
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
-_TEMPLATE_RULES: dict[int, weakref.ReferenceType[CompiledEgglogRule]] = {}
+_TEMPLATE_RULES: dict[int, weakref.ReferenceType[CompiledMbaRule]] = {}
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ class NativeZ3ProofTemplate:
 
     @classmethod
     def from_compiled_rule(
-        cls, rule: CompiledEgglogRule, *, width: int
+        cls, rule: CompiledMbaRule, *, width: int
     ) -> NativeZ3ProofTemplate | None:
         """Admit only an exact enrolled, width-preserving rule declaration."""
 
@@ -303,7 +303,7 @@ def _lower_validated_term(
             raise ValueError("validated leaf key must be hashable") from exc
         return variables.setdefault(
             leaf_key,
-            z3.BitVec(f"egglog_template_leaf_{len(variables)}", width),
+            z3.BitVec(f"mba_template_leaf_{len(variables)}", width),
         )
     if type(operation) is not str or operation not in SUPPORTED_OPERATIONS:
         raise ValueError("unsupported validated operation")
@@ -362,34 +362,13 @@ def _lower_validated_term(
 def prove_typed_term_equivalence(
     original: TypedBvTerm, replacement: TypedBvTerm
 ) -> bool:
-    """Prove two exact fixed-width terms with the shared native typed gate.
+    """Delegate the portable typed-term proof to the single public seam."""
 
-    Structural Egglog rules use this seam at compile time.  It deliberately
-    shares the recursive state validation, typed lowering, and 50 ms solver
-    contract used by the native proof templates; it does not persist a
-    candidate verdict or any solver state.
-    """
+    from d810.mba.extension_api import (
+        prove_typed_term_equivalence as _prove_typed_term_equivalence,
+    )
 
-    if type(original) is not TypedBvTerm or type(replacement) is not TypedBvTerm:
-        return False
-    if (
-        original.width != replacement.width
-        or original.width not in _TEMPLATE_WIDTHS
-        or not _is_exact_validated_term(original, width=original.width)
-        or not _is_exact_validated_term(replacement, width=original.width)
-    ):
-        return False
-    try:
-        import z3
-    except ImportError:
-        return False
-    variables: dict[tuple[object, ...], object] = {}
-    left = _lower_validated_term(original, variables=variables, z3=z3)
-    right = _lower_validated_term(replacement, variables=variables, z3=z3)
-    solver = z3.Solver()
-    solver.set(timeout=50)
-    solver.add(left != right)
-    return solver.check() == z3.unsat
+    return _prove_typed_term_equivalence(original, replacement)
 
 
 def _shape_from_expression(expression: object) -> NativeProofShape:
@@ -501,7 +480,7 @@ def _ordered_leaf_keys(*terms: TypedBvTerm) -> tuple[tuple[object, ...], ...]:
 
 @functools.lru_cache(maxsize=32)
 def _cached_templates(
-    enrolled: tuple[tuple[int, CompiledEgglogRule], ...],
+    enrolled: tuple[tuple[int, CompiledMbaRule], ...],
 ) -> Mapping[tuple[int, int], NativeZ3ProofTemplate]:
     templates: dict[tuple[int, int], NativeZ3ProofTemplate] = {}
     for identity, rule in enrolled:
@@ -515,7 +494,7 @@ def _cached_templates(
 
 
 def native_z3_proof_templates_for_rules(
-    rules: Iterable[CompiledEgglogRule],
+    rules: Iterable[CompiledMbaRule],
 ) -> Mapping[tuple[int, int], NativeZ3ProofTemplate]:
     """Return cached immutable descriptors keyed by exact rule identity and width."""
 
@@ -523,10 +502,10 @@ def native_z3_proof_templates_for_rules(
     return _cached_templates(enrolled)
 
 
-def _enroll_template_rule(rule: CompiledEgglogRule) -> None:
+def _enroll_template_rule(rule: CompiledMbaRule) -> None:
     identity = id(rule)
 
-    def discard(reference: weakref.ReferenceType[CompiledEgglogRule]) -> None:
+    def discard(reference: weakref.ReferenceType[CompiledMbaRule]) -> None:
         if _TEMPLATE_RULES.get(identity) is reference:
             _TEMPLATE_RULES.pop(identity, None)
 
@@ -544,7 +523,7 @@ def apply_compiled_rule_to_term_by_identity(
 
 def _template_rule_by_identity(
     declaration_identity: int,
-) -> CompiledEgglogRule | None:
+) -> CompiledMbaRule | None:
     """Return one live admitted template declaration by exact identity."""
 
     reference = _TEMPLATE_RULES.get(declaration_identity)

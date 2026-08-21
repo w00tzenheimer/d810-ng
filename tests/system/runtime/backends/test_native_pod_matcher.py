@@ -214,7 +214,7 @@ def test_public_catalogue_keeps_associative_chain_matching_in_cython(
 ) -> None:
     from d810.backends.mba import native_pod_matcher
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_add_rule_catalogue
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 
     rule = (
@@ -254,7 +254,7 @@ def test_public_catalogue_keeps_associative_chain_matching_in_cython(
 
 def test_cython_pod_catalogue_adapter_matches_portable_catalogue() -> None:
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_add_rule_catalogue
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
     from d810.backends.mba.native_pod_matcher import match_root_pod
 
@@ -289,7 +289,7 @@ def test_cython_catalogue_returns_clean_no_match_for_unselected_root_family() ->
     """A missing root/width bucket is a no-match, never a Cython exception."""
 
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_add_rule_catalogue
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 
     catalogue = CompiledPatternCatalogue.from_rules(
@@ -320,7 +320,7 @@ def test_cython_catalogue_shares_feasibility_before_tight_comparison_budget(
     """An impossible first pattern cannot starve a later valid Cython match."""
 
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-    from d810.backends.mba.egglog_add_rule_compiler import _compile_rule_families
+    from d810.mba.certified_rule_compiler import _compile_rule_families
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
     from d810.mba.dsl import Const, Var
     from d810.mba.rules._base import VerifiableRule
@@ -369,7 +369,7 @@ def test_cython_pod_catalogue_reuses_packed_terms_without_view_rematerialization
     monkeypatch,
 ) -> None:
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_add_rule_catalogue
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 
     catalogue = CompiledPatternCatalogue.from_rules(
@@ -412,7 +412,7 @@ def test_cython_pod_catalogue_reuses_packed_terms_without_view_rematerialization
 def test_public_catalogue_match_uses_cython_pod_backend(monkeypatch) -> None:
     from d810.backends.mba import native_pod_matcher
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_add_rule_catalogue
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 
     catalogue = CompiledPatternCatalogue.from_rules(
@@ -458,7 +458,7 @@ def test_public_catalogue_uses_cython_at_the_handler_comparison_budget(
     """The live handler's 256-comparison ceiling must remain accelerated."""
 
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_add_rule_catalogue
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 
     catalogue = CompiledPatternCatalogue.from_rules(
@@ -501,7 +501,7 @@ def test_public_catalogue_match_reuses_its_numeric_compiled_patterns(
 ) -> None:
     from d810.backends.mba import native_pod_matcher
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_add_rule_catalogue
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 
     catalogue = CompiledPatternCatalogue.from_rules(
@@ -537,7 +537,7 @@ def test_public_catalogue_match_reuses_its_numeric_compiled_patterns(
 def test_public_catalogue_match_falls_back_to_portable_oracle(monkeypatch) -> None:
     from d810.backends.mba import native_pod_matcher
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.mba.certified_rule_compiler import compile_add_rule_catalogue
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 
     rule = (

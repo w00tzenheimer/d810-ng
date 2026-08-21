@@ -60,7 +60,7 @@ def test_outcome_serializes_stably_with_cost_proof_provenance_and_matcher_metada
 def test_outcome_rejects_non_finite_elapsed_or_metadata_values(bad_float: float) -> None:
     with pytest.raises(ValueError, match="finite"):
         MbaProviderOutcome(
-            provider=MbaProviderKind.EGGLOG,
+            provider=MbaProviderKind.EGRAPH,
             status=ProviderOutcomeStatus.OVER_BUDGET,
             fingerprint="fingerprint",
             elapsed_ms=bad_float,
@@ -68,7 +68,7 @@ def test_outcome_rejects_non_finite_elapsed_or_metadata_values(bad_float: float)
 
     with pytest.raises(ValueError, match="finite"):
         MbaProviderOutcome(
-            provider=MbaProviderKind.EGGLOG,
+            provider=MbaProviderKind.EGRAPH,
             status=ProviderOutcomeStatus.OVER_BUDGET,
             fingerprint="fingerprint",
             elapsed_ms=0.0,

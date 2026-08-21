@@ -1463,11 +1463,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     ) -> bool:
         """Whether this callback gave a configured fast MBA tier first refusal.
 
-        Egglog is a residual tier only in profiles that request it.  The actual
+        The e-graph provider is a residual tier only in profiles that request it.  The actual
         candidate handoff remains the existing outer loop: any earlier fast
         candidate returns immediately, so a residual rule is reached only when
         every eligible fast rule returned ``None``.  This predicate prevents a
-        residual-only Egglog rule from silently becoming a standalone matcher
+        residual-only e-graph rule from silently becoming a standalone matcher
         when a profile forgot to configure its fast tier.
         """
 

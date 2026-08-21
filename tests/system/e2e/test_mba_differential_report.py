@@ -60,7 +60,7 @@ def _run_cli(tmp_path: Path, *input_paths: Path) -> subprocess.CompletedProcess[
             "--out",
             str(out_path),
             "--providers",
-            "catalogue,egglog",
+            "catalogue,egraph",
             *(str(path) for path in input_paths),
         ],
         cwd=_REPO_ROOT,
@@ -75,7 +75,7 @@ def test_differential_report_cli_requires_one_explicit_provider_row_per_case(
     tmp_path: Path,
 ) -> None:
     catalogue_path = tmp_path / "catalogue.json"
-    egglog_path = tmp_path / "egglog.json"
+    egraph_path = tmp_path / "egraph.json"
     _write_rows(
         catalogue_path,
         [
@@ -88,23 +88,23 @@ def test_differential_report_cli_requires_one_explicit_provider_row_per_case(
         ],
     )
     _write_rows(
-        egglog_path,
+        egraph_path,
         [
             {
                 "case_id": "case",
                 "stratum": "direct",
                 "profile": _profile(),
-                "outcome": _outcome("egglog", "unavailable"),
+                "outcome": _outcome("egraph", "unavailable"),
             }
         ],
     )
 
-    completed = _run_cli(tmp_path, catalogue_path, egglog_path)
+    completed = _run_cli(tmp_path, catalogue_path, egraph_path)
 
     assert completed.returncode == 0, completed.stderr
     report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-    assert report["summary"]["by_provider"]["egglog"]["unavailable"] == 1
-    assert "| egglog |" in (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert report["summary"]["by_provider"]["egraph"]["unavailable"] == 1
+    assert "| egraph |" in (tmp_path / "report.md").read_text(encoding="utf-8")
 
 
 def test_differential_report_cli_rejects_omitted_provider_rows(tmp_path: Path) -> None:
@@ -124,14 +124,14 @@ def test_differential_report_cli_rejects_omitted_provider_rows(tmp_path: Path) -
     completed = _run_cli(tmp_path, catalogue_path)
 
     assert completed.returncode == 2
-    assert "missing outcome rows for egglog" in completed.stderr
+    assert "missing outcome rows for egraph" in completed.stderr
 
 
 def test_differential_report_cli_rejects_duplicate_applied_mutations(
     tmp_path: Path,
 ) -> None:
     catalogue_path = tmp_path / "catalogue.json"
-    egglog_path = tmp_path / "egglog.json"
+    egraph_path = tmp_path / "egraph.json"
     _write_rows(
         catalogue_path,
         [
@@ -144,18 +144,18 @@ def test_differential_report_cli_rejects_duplicate_applied_mutations(
         ],
     )
     _write_rows(
-        egglog_path,
+        egraph_path,
         [
             {
                 "case_id": "case",
                 "stratum": "direct",
                 "profile": _profile(),
-                "outcome": _outcome("egglog", "applied"),
+                "outcome": _outcome("egraph", "applied"),
             }
         ],
     )
 
-    completed = _run_cli(tmp_path, catalogue_path, egglog_path)
+    completed = _run_cli(tmp_path, catalogue_path, egraph_path)
 
     assert completed.returncode == 2
     assert "at most one applied provider" in completed.stderr

@@ -12,12 +12,13 @@ from d810.mba.differential_report import (
     MbaCorpusCaseReport,
     MbaDifferentialReport,
     compare_provider_outcomes,
-    egglog_receipt_to_outcome,
+    egraph_receipt_to_outcome,
     normalize_outcome_rows,
     outcome_from_dict,
     report_from_dict,
     summary_markdown,
 )
+from d810.mba.egraph_contracts import EgraphExtractionReceipt, EgraphSkipReason
 from d810.mba.island_profile import IslandBlocker, MbaIslandClass, MbaIslandProfile
 from d810.mba.provider_outcome import (
     MbaProviderKind,
@@ -117,7 +118,7 @@ def test_summary_keeps_unique_shared_miss_proof_abstention_and_unavailable_disti
                         elapsed_ms=3.0,
                     ),
                     _outcome(
-                        MbaProviderKind.EGGLOG,
+                        MbaProviderKind.EGRAPH,
                         ProviderOutcomeStatus.APPLIED,
                         second.fingerprint,
                         elapsed_ms=4.0,
@@ -136,7 +137,7 @@ def test_summary_keeps_unique_shared_miss_proof_abstention_and_unavailable_disti
                         elapsed_ms=5.0,
                     ),
                     _outcome(
-                        MbaProviderKind.EGGLOG,
+                        MbaProviderKind.EGRAPH,
                         ProviderOutcomeStatus.INELIGIBLE,
                         third.fingerprint,
                         elapsed_ms=6.0,
@@ -156,15 +157,15 @@ def test_summary_keeps_unique_shared_miss_proof_abstention_and_unavailable_disti
 
     assert summary.by_provider[MbaProviderKind.STRUCTURAL_CHAIN].unique_wins == 1
     assert summary.by_provider[MbaProviderKind.CATALOGUE].shared_wins == 1
-    assert summary.by_provider[MbaProviderKind.EGGLOG].shared_wins == 1
+    assert summary.by_provider[MbaProviderKind.EGRAPH].shared_wins == 1
     assert summary.by_provider[MbaProviderKind.CATALOGUE].misses == 1
     assert summary.by_provider[MbaProviderKind.CATALOGUE].proof_failures == 1
-    assert summary.by_provider[MbaProviderKind.EGGLOG].unsafe_abstentions == 0
+    assert summary.by_provider[MbaProviderKind.EGRAPH].unsafe_abstentions == 0
     assert summary.by_provider[MbaProviderKind.COEFFICIENT_SOLVER].unavailable == 1
     assert summary.by_provider[MbaProviderKind.COEFFICIENT_SOLVER].misses == 0
     assert summary.by_provider[MbaProviderKind.STRUCTURAL_CHAIN].node_reduction == 4
-    assert summary.by_provider[MbaProviderKind.EGGLOG].p50_elapsed_ms == 5.0
-    assert summary.by_provider[MbaProviderKind.EGGLOG].p95_elapsed_ms == 5.9
+    assert summary.by_provider[MbaProviderKind.EGRAPH].p50_elapsed_ms == 5.0
+    assert summary.by_provider[MbaProviderKind.EGRAPH].p95_elapsed_ms == 5.9
     assert summary.by_stratum["chain"].unique_wins == 1
     # Stratum yield counts solved corpus cases, not provider rows.  The two
     # providers both improve the same ``shared`` case.
@@ -197,7 +198,7 @@ def test_summary_only_counts_blocked_cases_as_unsafe_abstentions() -> None:
                 profile=safe,
                 outcomes=(
                     _outcome(
-                        MbaProviderKind.EGGLOG,
+                        MbaProviderKind.EGRAPH,
                         ProviderOutcomeStatus.OVER_BUDGET,
                         safe.fingerprint,
                     ),
@@ -219,7 +220,7 @@ def test_summary_only_counts_blocked_cases_as_unsafe_abstentions() -> None:
                 profile=blocked,
                 outcomes=(
                     _outcome(
-                        MbaProviderKind.EGGLOG,
+                        MbaProviderKind.EGRAPH,
                         ProviderOutcomeStatus.INELIGIBLE,
                         blocked.fingerprint,
                     ),
@@ -230,9 +231,9 @@ def test_summary_only_counts_blocked_cases_as_unsafe_abstentions() -> None:
 
     summary = compare_provider_outcomes(report)
 
-    egglog = summary.by_provider[MbaProviderKind.EGGLOG]
-    assert egglog.unsafe_abstentions == 1
-    assert egglog.over_budget == 1
+    egraph = summary.by_provider[MbaProviderKind.EGRAPH]
+    assert egraph.unsafe_abstentions == 1
+    assert egraph.over_budget == 1
     assert summary.by_provider[MbaProviderKind.CATALOGUE].unsafe_abstentions == 0
     assert summary.by_provider[MbaProviderKind.CATALOGUE].reconstruction_failures == 1
 
@@ -259,7 +260,7 @@ def test_normalization_requires_exactly_one_explicit_outcome_for_each_provider_c
                 "stratum": "direct",
                 "profile": profile,
                 "outcome": _outcome(
-                    MbaProviderKind.EGGLOG,
+                    MbaProviderKind.EGRAPH,
                     ProviderOutcomeStatus.UNCHANGED,
                     profile.fingerprint,
                 ),
@@ -267,7 +268,7 @@ def test_normalization_requires_exactly_one_explicit_outcome_for_each_provider_c
         ),
         corpus_identity="unit",
         toolchain_identity={"compiler": "unit"},
-        expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGGLOG),
+        expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGRAPH),
     )
     assert normalized.cases[0].outcomes[0].status is ProviderOutcomeStatus.UNAVAILABLE
 
@@ -283,7 +284,7 @@ def test_normalization_requires_exactly_one_explicit_outcome_for_each_provider_c
             ),
             corpus_identity="unit",
             toolchain_identity={"compiler": "unit"},
-            expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGGLOG),
+            expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGRAPH),
         )
 
 
@@ -307,7 +308,7 @@ def test_report_round_trips_explicit_native_candidate_unavailability() -> None:
             "stratum": "chain",
             "profile": None,
             "outcome": MbaProviderOutcome(
-                provider=MbaProviderKind.EGGLOG,
+                provider=MbaProviderKind.EGRAPH,
                 status=ProviderOutcomeStatus.UNAVAILABLE,
                 fingerprint="native_candidate_not_observed:elided",
                 refusal_reason="native_candidate_not_observed",
@@ -318,7 +319,7 @@ def test_report_round_trips_explicit_native_candidate_unavailability() -> None:
         rows,
         corpus_identity="unit",
         toolchain_identity={"compiler": "unit"},
-        expected_providers=(MbaProviderKind.STRUCTURAL_CHAIN, MbaProviderKind.EGGLOG),
+        expected_providers=(MbaProviderKind.STRUCTURAL_CHAIN, MbaProviderKind.EGRAPH),
     )
 
     assert report.cases[0].profile is None
@@ -379,7 +380,7 @@ def test_case_report_rejects_two_applied_providers_for_one_fingerprint() -> None
                     profile.fingerprint,
                 ),
                 _outcome(
-                    MbaProviderKind.EGGLOG,
+                    MbaProviderKind.EGRAPH,
                     ProviderOutcomeStatus.APPLIED,
                     profile.fingerprint,
                 ),
@@ -387,7 +388,7 @@ def test_case_report_rejects_two_applied_providers_for_one_fingerprint() -> None
         )
 
 
-def test_egglog_receipt_conversion_preserves_skip_semantics_without_invoking_egglog() -> (
+def test_egraph_receipt_conversion_preserves_skip_semantics_without_invoking_backend() -> (
     None
 ):
     class Receipt:
@@ -409,26 +410,26 @@ def test_egglog_receipt_conversion_preserves_skip_semantics_without_invoking_egg
         blockers = ()
         skip_reason = None
 
-    improved = egglog_receipt_to_outcome(Receipt())
+    improved = egraph_receipt_to_outcome(Receipt())
     assert improved.status is ProviderOutcomeStatus.IMPROVED
     assert improved.proof_verdict is True
     assert improved.source_provenance == ("add_identity", "add_zero")
 
-    Receipt.skip_reason = "egglog_unavailable"
-    unavailable = egglog_receipt_to_outcome(Receipt())
+    Receipt.skip_reason = "runtime_unavailable"
+    unavailable = egraph_receipt_to_outcome(Receipt())
     assert unavailable.status is ProviderOutcomeStatus.UNAVAILABLE
-    Receipt.skip_reason = "native_z3_failed"
+    Receipt.skip_reason = "proof_failed"
     assert (
-        egglog_receipt_to_outcome(Receipt()).status
+        egraph_receipt_to_outcome(Receipt()).status
         is ProviderOutcomeStatus.PROOF_FAILED
     )
     Receipt.skip_reason = "candidate_budget"
     assert (
-        egglog_receipt_to_outcome(Receipt()).status is ProviderOutcomeStatus.INELIGIBLE
+        egraph_receipt_to_outcome(Receipt()).status is ProviderOutcomeStatus.INELIGIBLE
     )
 
 
-def test_egglog_receipt_metadata_is_additive_and_legacy_rows_remain_readable() -> None:
+def test_egraph_receipt_metadata_retains_the_concrete_backend() -> None:
     class Receipt:
         input_cost = (5, 8)
         extracted_cost = (2, 3)
@@ -438,9 +439,11 @@ def test_egglog_receipt_metadata_is_additive_and_legacy_rows_remain_readable() -
         execution_path = "fresh_saturation"
         cache_status = "disabled"
         cache_key = None
+        backend = "egglog"
+        backend_version = "13.2.0"
         skip_reason = None
 
-    outcome = egglog_receipt_to_outcome(Receipt())
+    outcome = egraph_receipt_to_outcome(Receipt())
     assert outcome.input_cost == (5, 8)
     assert outcome.metadata["canonicalizer_version"] == 1
     assert outcome.metadata["canonical_input_cost"] == (3, 5)
@@ -450,13 +453,15 @@ def test_egglog_receipt_metadata_is_additive_and_legacy_rows_remain_readable() -
     )
     assert outcome.metadata["execution_path"] == "fresh_saturation"
     assert outcome.metadata["cache_status"] == "disabled"
-    assert "egglog_run_count" not in outcome.metadata
+    assert outcome.metadata["backend"] == "egglog"
+    assert outcome.metadata["backend_version"] == "13.2.0"
+    assert "egraph_run_count" not in outcome.metadata
     encoded = json.loads(outcome.to_json())
     assert encoded["metadata"]["canonical_input_cost"] == [3, 5]
 
     legacy = outcome_from_dict(
         {
-            "provider": "egglog",
+            "provider": "egraph",
             "status": "unchanged",
             "fingerprint": "legacy-row",
             "input_cost": [5, 8],
@@ -472,27 +477,66 @@ def test_egglog_receipt_metadata_is_additive_and_legacy_rows_remain_readable() -
     assert legacy.metadata == {}
 
 
-def test_report_does_not_infer_egglog_runs_from_a_replay_path() -> None:
+def test_report_does_not_infer_egraph_runs_from_a_replay_path() -> None:
     class Receipt:
         execution_path = "learned_replay"
         skip_reason = None
 
-    outcome = egglog_receipt_to_outcome(Receipt())
+    outcome = egraph_receipt_to_outcome(Receipt())
 
-    assert "egglog_run_count" not in outcome.metadata
+    assert "egraph_run_count" not in outcome.metadata
+
+
+def test_egraph_receipt_conversion_preserves_trace_and_generic_skip_semantics() -> None:
+    trace = (("add", "add.identity", ("add.alias",)),)
+    proof_failed = EgraphExtractionReceipt(
+        input_cost=(5, 8),
+        extracted_cost=(2, 3),
+        derivation_trace=trace,
+        egraph_work_units=7,
+        egraph_run_count=1,
+        replay_saved_egraph_runs=0,
+        backend="egglog",
+        backend_version="13.2.0",
+        skip_reason=EgraphSkipReason.PROOF_FAILED,
+    )
+
+    outcome = egraph_receipt_to_outcome(proof_failed)
+
+    assert outcome.status is ProviderOutcomeStatus.PROOF_FAILED
+    assert outcome.metadata["derivation_trace"] == trace
+    assert outcome.metadata["egraph_work_units"] == 7
+    assert outcome.metadata["egraph_run_count"] == 1
+    assert outcome.metadata["replay_saved_egraph_runs"] == 0
+    assert outcome.metadata["backend"] == "egglog"
+    assert outcome.metadata["backend_version"] == "13.2.0"
+    serialized = json.loads(outcome.to_json())
+    assert serialized["metadata"]["derivation_trace"] == [
+        ["add", "add.identity", ["add.alias"]]
+    ]
+
+    unavailable = EgraphExtractionReceipt(
+        skip_reason=EgraphSkipReason.RUNTIME_UNAVAILABLE,
+        backend="egglog",
+        backend_version="13.2.0",
+    )
+    assert (
+        egraph_receipt_to_outcome(unavailable).status
+        is ProviderOutcomeStatus.UNAVAILABLE
+    )
 
 
 def test_report_requires_explicit_replay_saved_runs_measurement() -> None:
     profile = _profile("replay-measurement")
     replay = MbaProviderOutcome(
-        provider=MbaProviderKind.EGGLOG,
+        provider=MbaProviderKind.EGRAPH,
         status=ProviderOutcomeStatus.APPLIED,
         fingerprint=profile.fingerprint,
         input_cost=(4, 6),
         output_cost=(2, 3),
         metadata={
             "execution_path": "learned_replay",
-            "egglog_run_count": 0,
+            "egraph_run_count": 0,
         },
     )
     report = MbaDifferentialReport(
@@ -508,7 +552,7 @@ def test_report_requires_explicit_replay_saved_runs_measurement() -> None:
         ),
     )
 
-    assert compare_provider_outcomes(report).rollout_evidence.replay_saved_egglog_runs is None
+    assert compare_provider_outcomes(report).rollout_evidence.replay_saved_egraph_runs is None
 
 
 def test_report_sums_explicit_replay_saved_runs_measurements() -> None:
@@ -519,15 +563,15 @@ def test_report_sums_explicit_replay_saved_runs_measurements() -> None:
             profile=profile,
             outcomes=(
                 MbaProviderOutcome(
-                    provider=MbaProviderKind.EGGLOG,
+                    provider=MbaProviderKind.EGRAPH,
                     status=ProviderOutcomeStatus.APPLIED,
                     fingerprint=profile.fingerprint,
                     input_cost=(4, 6),
                     output_cost=(2, 3),
                     metadata={
                         "execution_path": "learned_replay",
-                        "egglog_run_count": 0,
-                        "replay_saved_egglog_runs": saved,
+                        "egraph_run_count": 0,
+                        "replay_saved_egraph_runs": saved,
                     },
                 ),
             ),
@@ -541,7 +585,7 @@ def test_report_sums_explicit_replay_saved_runs_measurements() -> None:
         cases=cases,
     )
 
-    assert compare_provider_outcomes(report).rollout_evidence.replay_saved_egglog_runs == 5
+    assert compare_provider_outcomes(report).rollout_evidence.replay_saved_egraph_runs == 5
 
 
 def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_rows(
@@ -555,13 +599,13 @@ def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_row
         ProviderOutcomeStatus.APPLIED,
         profile.fingerprint,
     )
-    egglog = _outcome(
-        MbaProviderKind.EGGLOG,
+    egraph = _outcome(
+        MbaProviderKind.EGRAPH,
         ProviderOutcomeStatus.UNAVAILABLE,
         profile.fingerprint,
     )
     first_path = tmp_path / "catalogue.json"
-    second_path = tmp_path / "egglog.json"
+    second_path = tmp_path / "egraph.json"
     first_path.write_text(
         json.dumps(
             [
@@ -582,7 +626,7 @@ def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_row
                     "case_id": "case",
                     "stratum": "direct",
                     "profile": _profile_dict(profile),
-                    "outcome": egglog.to_dict(),
+                    "outcome": egraph.to_dict(),
                 }
             ]
         ),
@@ -592,12 +636,12 @@ def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_row
     payload, markdown = build_report((first_path, second_path))
 
     assert payload["cases"][0]["case_id"] == "case"
-    assert payload["summary"]["by_provider"]["egglog"]["unavailable"] == 1
-    assert "| egglog |" in markdown
+    assert payload["summary"]["by_provider"]["egraph"]["unavailable"] == 1
+    assert "| egraph |" in markdown
     with pytest.raises(ValueError, match="missing outcome rows"):
         build_report(
             (first_path,),
-            expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGGLOG),
+            expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGRAPH),
         )
 
 
@@ -679,14 +723,14 @@ def test_offline_cli_uses_manifest_provider_matrix_when_no_override_is_given(
     manifest_path.write_text(
         json.dumps(
             {
-                "provider_matrix": ["catalogue", "egglog"],
+                "provider_matrix": ["catalogue", "egraph"],
                 "cases": [{"case_id": "case"}],
             }
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="missing outcome rows for egglog"):
+    with pytest.raises(ValueError, match="missing outcome rows for egraph"):
         build_report((outcomes_path,), manifest=manifest_path)
 
 
@@ -702,7 +746,7 @@ def test_summary_markdown_keeps_budget_and_reconstruction_failures_distinct() ->
                 profile=profile,
                 outcomes=(
                     _outcome(
-                        MbaProviderKind.EGGLOG,
+                        MbaProviderKind.EGRAPH,
                         ProviderOutcomeStatus.OVER_BUDGET,
                         profile.fingerprint,
                     ),
@@ -713,7 +757,7 @@ def test_summary_markdown_keeps_budget_and_reconstruction_failures_distinct() ->
                 profile=profile,
                 outcomes=(
                     _outcome(
-                        MbaProviderKind.EGGLOG,
+                        MbaProviderKind.EGRAPH,
                         ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
                         profile.fingerprint,
                     ),
@@ -726,7 +770,7 @@ def test_summary_markdown_keeps_budget_and_reconstruction_failures_distinct() ->
 
     assert "over budget" in markdown
     assert "reconstruction failures" in markdown
-    assert "| egglog | 2 |" in markdown
+    assert "| egraph | 2 |" in markdown
 
 
 def test_rollout_evidence_keeps_runtime_modes_refusals_and_root_only_misses_distinct() -> None:
@@ -744,7 +788,7 @@ def test_rollout_evidence_keeps_runtime_modes_refusals_and_root_only_misses_dist
                 stratum="degree2",
                 outcomes=(
                     MbaProviderOutcome(
-                        provider=MbaProviderKind.EGGLOG,
+                        provider=MbaProviderKind.EGRAPH,
                         status=ProviderOutcomeStatus.APPLIED,
                         fingerprint=profile.fingerprint,
                         input_cost=(4, 7),
@@ -752,7 +796,7 @@ def test_rollout_evidence_keeps_runtime_modes_refusals_and_root_only_misses_dist
                         elapsed_ms=2.0,
                         metadata={
                             "degree": 1,
-                            "egglog_execution_mode": "interactive",
+                            "egraph_execution_mode": "interactive",
                             "candidate_elapsed_ms": 2.0,
                             "whole_function_elapsed_ms": 9.0,
                             "root_only_strict_subisland_miss": False,
@@ -766,14 +810,14 @@ def test_rollout_evidence_keeps_runtime_modes_refusals_and_root_only_misses_dist
                 stratum="degree2",
                 outcomes=(
                     MbaProviderOutcome(
-                        provider=MbaProviderKind.EGGLOG,
+                        provider=MbaProviderKind.EGRAPH,
                         status=ProviderOutcomeStatus.OVER_BUDGET,
                         fingerprint=profile.fingerprint,
                         elapsed_ms=3.0,
                         refusal_reason="time_budget",
                         metadata={
                             "degree": 2,
-                            "egglog_execution_mode": "telemetry_3ms",
+                            "egraph_execution_mode": "telemetry_3ms",
                             "candidate_elapsed_ms": 3.0,
                             "whole_function_elapsed_ms": 11.0,
                             "root_only_strict_subisland_miss": True,
@@ -795,7 +839,7 @@ def test_rollout_evidence_keeps_runtime_modes_refusals_and_root_only_misses_dist
 
     evidence = compare_provider_outcomes(report).rollout_evidence
 
-    assert evidence.egglog_unique_wins_by_degree == {1: 1, 2: 0}
+    assert evidence.egraph_unique_wins_by_degree == {1: 1, 2: 0}
     assert evidence.refusals_by_reason == {"time_budget": 1}
     assert evidence.matcher_bucket_size_p50 == 4.0
     assert evidence.matcher_attempted_rules_p95 == 3.0
@@ -804,12 +848,12 @@ def test_rollout_evidence_keeps_runtime_modes_refusals_and_root_only_misses_dist
     assert evidence.lifecycle_measurements["cold_snapshot_ms"].p50_ms == 12.0
     assert evidence.lifecycle_measurements["catalogue_cache_hits"].count == 1
     assert evidence.lifecycle_measurements["native_proof_invocations"].total == 1
-    assert evidence.candidate_latency_by_mode["interactive"]["egglog"].p50_ms == 2.0
-    assert evidence.whole_function_latency_by_mode["telemetry_3ms"]["egglog"].p95_ms == 11.0
+    assert evidence.candidate_latency_by_mode["interactive"]["egraph"].p50_ms == 2.0
+    assert evidence.whole_function_latency_by_mode["telemetry_3ms"]["egraph"].p95_ms == 11.0
     assert evidence.root_only_strict_subisland_misses == 1
     markdown = summary_markdown(compare_provider_outcomes(report))
     assert "## Rollout evidence" in markdown
-    assert "Egglog unique wins by degree" in markdown
+    assert "E-graph unique wins by degree" in markdown
     assert "telemetry_3ms" in markdown
     assert "Root-only strict-sub-island misses: 1" in markdown
 
@@ -841,10 +885,10 @@ def test_rollout_evidence_marks_unmeasured_questions_as_unavailable() -> None:
     assert evidence.candidate_latency_by_mode == {}
     assert evidence.whole_function_latency_by_mode == {}
     assert evidence.lifecycle_measurements == {}
-    assert evidence.egglog_unique_wins_by_degree == {}
-    assert summary.to_dict()["rollout_evidence"]["egglog_unique_wins_by_degree"] == {}
+    assert evidence.egraph_unique_wins_by_degree == {}
+    assert summary.to_dict()["rollout_evidence"]["egraph_unique_wins_by_degree"] == {}
     markdown = summary_markdown(summary)
-    assert "Egglog unique wins by degree: unmeasured" in markdown
+    assert "E-graph unique wins by degree: unmeasured" in markdown
     assert "degree 1=0" not in markdown
     assert "degree 2=0" not in markdown
 
@@ -864,7 +908,7 @@ def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> Non
                 stratum="semantic_canonicalization",
                 outcomes=(
                     MbaProviderOutcome(
-                        provider=MbaProviderKind.EGGLOG,
+                        provider=MbaProviderKind.EGRAPH,
                         status=ProviderOutcomeStatus.APPLIED,
                         fingerprint=profile.fingerprint,
                         input_cost=(5, 8),
@@ -878,8 +922,8 @@ def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> Non
                             ),
                             "execution_path": "fresh_saturation",
                             "cache_status": "miss",
-                            "egglog_work_units": 7,
-                            "egglog_run_count": 1,
+                            "egraph_work_units": 7,
+                            "egraph_run_count": 1,
                         },
                     ),
                 ),
@@ -890,7 +934,7 @@ def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> Non
                 stratum="semantic_canonicalization",
                 outcomes=(
                     MbaProviderOutcome(
-                        provider=MbaProviderKind.EGGLOG,
+                        provider=MbaProviderKind.EGRAPH,
                         status=ProviderOutcomeStatus.APPLIED,
                         fingerprint=profile.fingerprint,
                         input_cost=(5, 8),
@@ -900,8 +944,8 @@ def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> Non
                             "canonical_input_cost": (3, 5),
                             "execution_path": "learned_replay",
                             "cache_status": "hit",
-                            "egglog_work_units": 0,
-                            "egglog_run_count": 0,
+                            "egraph_work_units": 0,
+                            "egraph_run_count": 0,
                             "cache_lookup_elapsed_ms": 0.25,
                             "replay_rebuild_elapsed_ms": 0.5,
                             "replay_proof_elapsed_ms": 0.75,
@@ -915,7 +959,7 @@ def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> Non
                 stratum="fixed_shift",
                 outcomes=(
                     MbaProviderOutcome(
-                        provider=MbaProviderKind.EGGLOG,
+                        provider=MbaProviderKind.EGRAPH,
                         status=ProviderOutcomeStatus.APPLIED,
                         fingerprint=profile.fingerprint,
                         elapsed_ms=2.0,
@@ -934,7 +978,7 @@ def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> Non
                 stratum="fixed_shift",
                 outcomes=(
                     MbaProviderOutcome(
-                        provider=MbaProviderKind.EGGLOG,
+                        provider=MbaProviderKind.EGRAPH,
                         status=ProviderOutcomeStatus.INELIGIBLE,
                         fingerprint=profile.fingerprint,
                         refusal_reason="noncomplementary_shift",
@@ -949,10 +993,10 @@ def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> Non
                 "legacy_permutation_count": 36,
             },
             "cache_measurements": {
-                # Provider receipts below are authoritative when measured;
-                # this deliberately differs to guard against capture-only
-                # replay-savings claims.
-                "saved_egglog_runs": 9,
+            # Provider receipts below are authoritative when measured;
+            # this deliberately differs to guard against capture-only
+            # replay-savings claims.
+                "saved_egraph_runs": 9,
                 "peak_entries": 2,
                 "peak_bytes": 1024,
             },
@@ -970,14 +1014,14 @@ def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> Non
     assert evidence.raw_vs_canonical_input_costs == (
         {
             "case_id": "fresh",
-            "provider": "egglog",
+            "provider": "egraph",
             "raw_input_cost": [5, 8],
             "canonical_input_cost": [3, 5],
             "non_yield": True,
         },
         {
             "case_id": "replay",
-            "provider": "egglog",
+            "provider": "egraph",
             "raw_input_cost": [5, 8],
             "canonical_input_cost": [3, 5],
             "non_yield": True,
@@ -996,7 +1040,7 @@ def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> Non
     }
     # The legacy capture-only aggregate is intentionally ignored.  A saved-run
     # claim now requires the accepted template's explicit producer measurement.
-    assert evidence.replay_saved_egglog_runs is None
+    assert evidence.replay_saved_egraph_runs is None
     assert evidence.cache_status_counts == {"hit": 1, "miss": 1}
     assert evidence.cache_peak_entries == 2
     assert evidence.cache_peak_bytes == 1024
@@ -1023,7 +1067,7 @@ def test_rollout_evidence_counts_declared_nonlinear_residual_without_profile() -
                 stratum="nonlinear",
                 outcomes=(
                     MbaProviderOutcome(
-                        MbaProviderKind.EGGLOG,
+                        MbaProviderKind.EGRAPH,
                         ProviderOutcomeStatus.UNAVAILABLE,
                         "nonlinear-native-refusal",
                         refusal_reason="native_candidate_not_observed",
@@ -1056,7 +1100,7 @@ def test_capture_metadata_supplies_measured_provider_lanes_without_row_duplicati
                         elapsed_ms=1.5,
                     ),
                     _outcome(
-                        MbaProviderKind.EGGLOG,
+                        MbaProviderKind.EGRAPH,
                         ProviderOutcomeStatus.OVER_BUDGET,
                         profile.fingerprint,
                         elapsed_ms=3.0,
@@ -1067,7 +1111,7 @@ def test_capture_metadata_supplies_measured_provider_lanes_without_row_duplicati
         capture_metadata={
             "provider_execution_modes": {
                 "catalogue": "interactive",
-                "egglog": "telemetry_3ms",
+                "egraph": "telemetry_3ms",
             },
             "whole_function_elapsed_ms_by_case": {"case": 12.0},
             "lifecycle_measurements": {
@@ -1091,9 +1135,9 @@ def test_capture_metadata_supplies_measured_provider_lanes_without_row_duplicati
     evidence = compare_provider_outcomes(report).rollout_evidence
 
     assert evidence.candidate_latency_by_mode["interactive"]["catalogue"].p50_ms == 1.5
-    assert evidence.candidate_latency_by_mode["telemetry_3ms"]["egglog"].p50_ms == 3.0
+    assert evidence.candidate_latency_by_mode["telemetry_3ms"]["egraph"].p50_ms == 3.0
     assert evidence.whole_function_latency_by_mode["interactive"]["catalogue"].p95_ms == 12.0
-    assert evidence.whole_function_latency_by_mode["telemetry_3ms"]["egglog"].p95_ms == 12.0
+    assert evidence.whole_function_latency_by_mode["telemetry_3ms"]["egraph"].p95_ms == 12.0
     assert evidence.lifecycle_measurements["handler_startup_ms"].p50_ms == 4.0
     assert evidence.lifecycle_measurements["registration_pattern_count"].total == 9
     assert evidence.matcher_bucket_size_p50 == 3.0
@@ -1102,7 +1146,7 @@ def test_capture_metadata_supplies_measured_provider_lanes_without_row_duplicati
 
 
 def test_rollout_evidence_keeps_zero_sample_telemetry_lane_visible() -> None:
-    """Configured telemetry is evidence even when no candidate reaches Egglog."""
+    """Configured telemetry is evidence even when no candidate reaches an e-graph."""
 
     profile = _profile("telemetry-empty")
     report = MbaDifferentialReport(
@@ -1115,7 +1159,7 @@ def test_rollout_evidence_keeps_zero_sample_telemetry_lane_visible() -> None:
                 profile=profile,
                 outcomes=(
                     _outcome(
-                        MbaProviderKind.EGGLOG,
+                        MbaProviderKind.EGRAPH,
                         ProviderOutcomeStatus.UNAVAILABLE,
                         profile.fingerprint,
                     ),
@@ -1123,13 +1167,13 @@ def test_rollout_evidence_keeps_zero_sample_telemetry_lane_visible() -> None:
             ),
         ),
         capture_metadata={
-            "provider_execution_modes": {"egglog": "telemetry_3ms"},
+            "provider_execution_modes": {"egraph": "telemetry_3ms"},
         },
     )
 
     lane = compare_provider_outcomes(report).rollout_evidence.candidate_latency_by_mode[
         "telemetry_3ms"
-    ]["egglog"]
+    ]["egraph"]
     assert lane.count == 0
     assert lane.p50_ms is None
     assert "p50=not measured" in summary_markdown(compare_provider_outcomes(report))
@@ -1161,14 +1205,14 @@ def test_rollout_evidence_accepts_sidecar_latency_lanes() -> None:
                 {
                     "population": "candidate",
                     "mode": "telemetry_3ms",
-                    "provider": "egglog",
+                    "provider": "egraph",
                 }
             ],
             "latency_samples": [
                 {
                     "population": "whole_function",
                     "mode": "telemetry_3ms",
-                    "provider": "egglog",
+                    "provider": "egraph",
                     "elapsed_ms": 7.0,
                 }
             ],
@@ -1176,8 +1220,8 @@ def test_rollout_evidence_accepts_sidecar_latency_lanes() -> None:
     )
 
     evidence = compare_provider_outcomes(report).rollout_evidence
-    assert evidence.candidate_latency_by_mode["telemetry_3ms"]["egglog"].count == 0
-    assert evidence.whole_function_latency_by_mode["telemetry_3ms"]["egglog"].p95_ms == 7.0
+    assert evidence.candidate_latency_by_mode["telemetry_3ms"]["egraph"].count == 0
+    assert evidence.whole_function_latency_by_mode["telemetry_3ms"]["egraph"].p95_ms == 7.0
 
 
 def test_report_wire_round_trip_preserves_capture_metadata() -> None:
