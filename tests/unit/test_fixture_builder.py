@@ -103,6 +103,49 @@ def test_masm_builder_exports_public_c_text_symbols():
     assert 'export_flags+=("/EXPORT:$symbol")' in build_script
 
 
+def test_hodur_crt_shim_is_only_enabled_for_local_freestanding_build(tmp_path):
+    """The portable shim must not perturb authoritative Windows codegen."""
+
+    fake_crt = tmp_path / "fake_crt"
+    fake_crt.mkdir()
+    (fake_crt / "stdio.h").write_text(
+        "extern int d810_authoritative_stdio_header;\n"
+        "extern int printf(const char *, ...);\n"
+    )
+    (fake_crt / "string.h").write_text(
+        "extern int d810_authoritative_string_header;\n"
+        "void *memcpy(void *, const void *, __SIZE_TYPE__);\n"
+    )
+
+    source = REPO / "samples/src/c/hodur_c2_flattened.c"
+    base_command = [
+        "clang",
+        "--target=x86_64-pc-windows-msvc",
+        "-E",
+        "-P",
+        "-I",
+        str(fake_crt),
+        "-I",
+        str(REPO / "samples/include"),
+        str(source),
+    ]
+    authoritative = _sp.run(base_command, capture_output=True, text=True)
+    assert authoritative.returncode == 0, authoritative.stderr
+    assert "d810_authoritative_stdio_header" in authoritative.stdout
+    assert "d810_authoritative_string_header" in authoritative.stdout
+    assert "__builtin_memcpy" not in authoritative.stdout
+
+    freestanding = _sp.run(
+        [*base_command[:1], "-DD810_FREESTANDING_FIXTURE=1", *base_command[1:]],
+        capture_output=True,
+        text=True,
+    )
+    assert freestanding.returncode == 0, freestanding.stderr
+    assert "d810_authoritative_stdio_header" not in freestanding.stdout
+    assert "d810_authoritative_string_header" not in freestanding.stdout
+    assert "__builtin_memcpy" in freestanding.stdout
+
+
 def test_detects_slot_const_and_reg_from_committed_asm():
     folds = detect_indirect_call_folds(SUB)
     assert (

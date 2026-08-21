@@ -221,6 +221,7 @@ rm -rf "$BUILD_DIR"; mkdir -p "$BUILD_DIR" bins
 
 CFLAGS=(--target=x86_64-pc-windows-msvc -c -O0 -g -Iinclude -ffreestanding
         -fms-compatibility -fms-extensions -Wno-error -DD810_DLL_EXPORT=1
+        -DD810_FREESTANDING_FIXTURE=1
         "-fdebug-prefix-map=$SAMPLES_DIR=/src/d810/samples")
 
 # --- exclude the C bodies the asm replaces ---------------------------------
