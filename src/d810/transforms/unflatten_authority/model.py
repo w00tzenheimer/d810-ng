@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field as dataclass_field, fields, is_dataclass
 from enum import Enum
+import hashlib
 import math
 import re
 from d810.analyses.control_flow.semantic_route_evidence import (
@@ -32,6 +33,7 @@ from .ids import (
     _subject_id_from_record,
     _validate_id,
     authority_id,
+    canonical_decode,
     case_id,
     claim_id,
     evidence_id,
@@ -46,6 +48,36 @@ _PREPARATION_RECEIPT_TOKEN = object()
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 _CFG_REF_TYPES = (NativeBlockRef, LogicalBlockRef, PlanBlockRef)
 _AUTHORITY_REF_TYPES = (NativeBlockRef, LogicalBlockRef)
+
+
+def _legacy_unflatten_keys() -> frozenset[str]:
+    """Return the reserved-key set owned by the current producer modules."""
+
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+        FULL_UNFLATTENING_CLAIM_METADATA,
+        USE_DEF_SEVERANCE_AUDIT_METADATA,
+        UNFLATTEN_COMPLETION_STATUS_METADATA,
+    )
+    from d810.transforms.minimal_unflatten_emit import (
+        CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
+        EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+        NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
+    )
+
+    return frozenset(
+        {
+            DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+            UNFLATTEN_COMPLETION_STATUS_METADATA,
+            FULL_UNFLATTENING_CLAIM_METADATA,
+            USE_DEF_SEVERANCE_AUDIT_METADATA,
+            EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+            CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
+            NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
+        }
+    )
 
 
 def _id(value: object, label: str) -> str:
@@ -1369,6 +1401,66 @@ class UnflattenPlanInputCatalog:
             raise TypeError("state_identity must be a StorageIdentity")
         object.__setattr__(self, "dispatcher_member_refs", members)
         object.__setattr__(self, "authoritative_handlers", handlers)
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyShadowEntry:
+    """One canonical, non-authoritative legacy metadata payload."""
+
+    key: str
+    canonical_payload: bytes
+    payload_sha256: str
+
+    def __post_init__(self) -> None:
+        _text(self.key, "key")
+        if self.key not in _legacy_unflatten_keys():
+            raise ValueError("key is not a reserved unflatten metadata key")
+        if not isinstance(self.canonical_payload, bytes) or not self.canonical_payload:
+            raise TypeError("canonical_payload must be non-empty bytes")
+        try:
+            canonical_decode(self.canonical_payload)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("canonical_payload must be canonical bytes") from exc
+        if (
+            not isinstance(self.payload_sha256, str)
+            or len(self.payload_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in self.payload_sha256)
+        ):
+            raise ValueError("payload_sha256 must be a lowercase SHA-256 digest")
+        digest = hashlib.sha256(self.canonical_payload).hexdigest()
+        if self.payload_sha256 != digest:
+            raise ValueError("payload digest does not match canonical_payload")
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyUnflattenShadowEnvelope:
+    """Temporary transport for legacy facts; never an authority input."""
+
+    schema_version: Literal[1]
+    plan_id: str
+    snapshot_id: str
+    source_generation: int
+    entries: tuple[LegacyShadowEntry, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported legacy shadow schema")
+        _text(self.plan_id, "plan_id")
+        _text(self.snapshot_id, "snapshot_id")
+        _generation(self.source_generation, "source_generation")
+        if not isinstance(self.entries, tuple):
+            raise TypeError("entries must be a tuple")
+        if not self.entries:
+            raise ValueError("legacy shadow envelope must not be empty")
+        if any(type(entry) is not LegacyShadowEntry for entry in self.entries):
+            raise TypeError("entries must contain LegacyShadowEntry values")
+        for entry in self.entries:
+            LegacyShadowEntry.__post_init__(entry)
+        keys = tuple(entry.key for entry in self.entries)
+        if len(set(keys)) != len(keys):
+            raise ValueError("legacy shadow entries must have unique keys")
+        if keys != tuple(sorted(keys)):
+            raise ValueError("legacy shadow entries must be sorted by key")
 
 
 @dataclass(frozen=True, slots=True)

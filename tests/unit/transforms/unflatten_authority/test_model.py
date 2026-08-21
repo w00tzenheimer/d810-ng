@@ -317,6 +317,26 @@ def test_plan_input_catalog_and_handler_rows_are_closed() -> None:
     assert "plan_inputs" in model.ProposedUnflattenContract.__dataclass_fields__
 
 
+def test_legacy_shadow_transport_has_exact_closed_schema() -> None:
+    model = import_authority_model()
+    from hashlib import sha256
+
+    from d810.transforms.unflatten_authority.ids import canonical_bytes
+
+    payload = canonical_bytes({"legacy": [1, 2]})
+    entry = model.LegacyShadowEntry(
+        "dispatcher_corridor_coverage", payload, sha256(payload).hexdigest()
+    )
+    envelope = model.LegacyUnflattenShadowEnvelope(
+        1, "plan", "snapshot", 0, (entry,)
+    )
+    assert tuple(model.LegacyShadowEntry.__dataclass_fields__) == (
+        "key", "canonical_payload", "payload_sha256"
+    )
+    assert envelope.entries == (entry,)
+    assert getattr(model.LegacyShadowEntry, "__slots__")
+
+
 def test_supplied_ids_are_structurally_validated_only() -> None:
     model = import_authority_model()
     b0 = block_ref("b0")

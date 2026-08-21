@@ -12,13 +12,14 @@ source authority before mutating backend state.
 
 from __future__ import annotations
 
+from collections.abc import Mapping as AbcMapping
 from dataclasses import dataclass, field, fields, replace
 from contextvars import ContextVar
 from enum import Enum
 from uuid import uuid4
 
 from d810.core.algorithm_metadata import algorithm_metadata
-from d810.core.typing import ClassVar, Mapping, Protocol, TypeAlias, Union
+from d810.core.typing import TYPE_CHECKING, ClassVar, Mapping, Protocol, TypeAlias, Union
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.maturity import MaturityEnvelope
@@ -76,6 +77,12 @@ from d810.transforms.cfg_transaction import (
     PlanBlockRef,
 )
 
+if TYPE_CHECKING:
+    from d810.transforms.unflatten_authority.model import (
+        LegacyUnflattenShadowEnvelope,
+        ProposedUnflattenContract,
+    )
+
 
 class ExecutionPolicy(str, Enum):
     """Controls verification behaviour during plan lowering.
@@ -132,6 +139,33 @@ def _coerce_compiler_ref(value: object) -> object:
     if value not in refs_by_serial:
         raise TypeError(f"block serial {value} has no typed source authority")
     return refs_by_serial[value]
+
+
+class _MetadataNormalizationFailure(tuple):
+    """Immutable marker retained so route selection can fail closed."""
+
+    def __new__(cls):
+        return super().__new__(cls)
+
+
+def normalized_metadata_items(
+    metadata: object,
+) -> tuple[tuple[object, object], ...]:
+    """Normalize metadata once while retaining raw pair order and duplicates."""
+
+    if isinstance(metadata, _MetadataNormalizationFailure):
+        raise ValueError("PatchPlan metadata normalization failed")
+    try:
+        source = metadata.items() if isinstance(metadata, AbcMapping) else iter(metadata)
+        result: list[tuple[object, object]] = []
+        for item in source:
+            pair = tuple(item)
+            if len(pair) != 2:
+                raise ValueError("PatchPlan metadata must contain key/value pairs")
+            result.append((pair[0], pair[1]))
+        return tuple(result)
+    except Exception as exc:
+        raise ValueError("PatchPlan metadata must contain key/value pairs") from exc
 
 
 class _PatchRefValidated:
@@ -1267,12 +1301,43 @@ class PatchPlan:
     metadata: tuple[tuple[str, object], ...] = ()
     semantic_contract: FragmentContractBundle | None = None
     source_coordinates: tuple[tuple[NativeBlockRef | LogicalBlockRef, int], ...] = ()
+    unflatten_proposal: ProposedUnflattenContract | None = None
+    legacy_unflatten_shadow: LegacyUnflattenShadowEnvelope | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan_id, str) or not self.plan_id.strip():
             raise ValueError("PatchPlan requires a non-empty plan_id")
         if not isinstance(self.snapshot_id, str) or not self.snapshot_id.strip():
             raise ValueError("PatchPlan requires a non-empty snapshot_id")
+        try:
+            metadata_snapshot = normalized_metadata_items(self.metadata)
+        except Exception:
+            metadata_snapshot = _MetadataNormalizationFailure()
+        object.__setattr__(self, "metadata", metadata_snapshot)
+        if self.unflatten_proposal is not None or self.legacy_unflatten_shadow is not None:
+            from d810.transforms.unflatten_authority.model import (
+                LegacyUnflattenShadowEnvelope,
+                ProposedUnflattenContract,
+            )
+
+        if self.unflatten_proposal is not None:
+            if type(self.unflatten_proposal) is not ProposedUnflattenContract:
+                raise TypeError("unflatten_proposal must be a ProposedUnflattenContract")
+            if self.unflatten_proposal.plan_id != self.plan_id:
+                raise ValueError("unflatten proposal authority differs from PatchPlan")
+        if self.legacy_unflatten_shadow is not None:
+            if type(self.legacy_unflatten_shadow) is not LegacyUnflattenShadowEnvelope:
+                raise TypeError(
+                    "legacy_unflatten_shadow must be a LegacyUnflattenShadowEnvelope"
+                )
+            if self.unflatten_proposal is None:
+                raise ValueError("legacy shadow requires an unflatten proposal")
+            if self.legacy_unflatten_shadow.plan_id != self.plan_id:
+                raise ValueError("legacy shadow plan authority differs from PatchPlan")
+            if self.legacy_unflatten_shadow.snapshot_id != self.snapshot_id:
+                raise ValueError("legacy shadow snapshot differs from PatchPlan")
+            if self.source_generation != self.legacy_unflatten_shadow.source_generation:
+                raise ValueError("legacy shadow generation differs from PatchPlan")
         if self.source_maturity is not None and not isinstance(
             self.source_maturity, MaturityEnvelope
         ):
@@ -1325,7 +1390,7 @@ class PatchPlan:
 
     def metadata_dict(self) -> dict[str, object]:
         """Return plan metadata as a dict for consumers that need keyed facts."""
-        return dict(self.metadata)
+        return dict(normalized_metadata_items(self.metadata))
 
     def metadata_value(self, key: str, default: object = None) -> object:
         """Return one metadata value without exposing the immutable pair storage."""
@@ -3483,6 +3548,7 @@ __all__ = [
     "PatchReorderBlocks",
     "PatchOperation",
     "projected_source_coordinate",
+    "normalized_metadata_items",
     "PatchStep",
     "PatchPlan",
     "LoweringInput",

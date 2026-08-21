@@ -21,6 +21,7 @@ from d810.transforms.cfg_transaction import (
     PreparedCfgTransaction,
     TransactionAttemptId,
 )
+from d810.transforms.plan import PatchPlan
 
 
 def _attempt(
@@ -59,6 +60,41 @@ def test_patch_execution_result_is_portable_commit_authority() -> None:
         PatchPlanExecutionResult(-1, graph)
     with pytest.raises(TypeError, match="FlowGraph"):
         PatchPlanExecutionResult(0, object())  # type: ignore[arg-type]
+
+
+def test_ordinary_patch_plan_keeps_typed_authority_channels_optional() -> None:
+    plan = PatchPlan(plan_id="ordinary", snapshot_id="snapshot")
+
+    assert plan.steps == ()
+    assert plan.metadata == ()
+    assert plan.unflatten_proposal is None
+    assert plan.legacy_unflatten_shadow is None
+
+
+def test_ordinary_patch_plan_does_not_import_authority_model() -> None:
+    """The generic plan path must not load the semantic authority package."""
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = "src"
+    script = (
+        "import sys; "
+        "from d810.transforms.plan import PatchPlan; "
+        "assert 'd810.transforms.unflatten_authority.model' not in sys.modules; "
+        "PatchPlan(plan_id='ordinary', snapshot_id='snapshot'); "
+        "assert 'd810.transforms.unflatten_authority.model' not in sys.modules"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.getcwd(),
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_plan_local_refs_are_nominal_and_replay_stable() -> None:
