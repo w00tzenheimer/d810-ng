@@ -1662,7 +1662,15 @@ class TestMetadataActionExecution:
         actions[0] = dataclasses.replace(
             actions[0],
             expected_before="item-xrefs:v2:before",
-            expected_after="item-xrefs:v2:after",
+            expected_after="item-xrefs:v2:middle",
+        )
+        actions.insert(
+            1,
+            dataclasses.replace(
+                actions[0],
+                expected_before="item-xrefs:v2:middle",
+                expected_after="item-xrefs:v2:final",
+            ),
         )
         operation = dataclasses.replace(
             plan.operations[0], metadata_actions=tuple(actions)
@@ -1683,16 +1691,19 @@ class TestMetadataActionExecution:
             scope == "item-xrefs:v2:before" for _kind, _ea, scope in executor.scope_reads
         )
         assert any(
-            scope == "item-xrefs:v2:after" for _kind, _ea, scope in executor.scope_reads
+            scope == "item-xrefs:v2:middle" for _kind, _ea, scope in executor.scope_reads
         )
         executor.scope_reads.clear()
         assert rig.gateway.certificate_matches_current(plan, receipt.certificate)
         assert executor.scope_reads
         assert all(
-            scope == "item-xrefs:v2:after"
+            scope == "item-xrefs:v2:final"
             for _kind, _ea, scope in executor.scope_reads
             if _kind == "recreate_item"
         )
+        assert receipt.certificate.metadata_postconditions.count(
+            ("recreate_item", 0x1000, "item-xrefs:v2:final")
+        ) == 1
 
     def test_metadata_only_operation_never_calls_the_byte_writer(
         self, tmp_path
@@ -1843,6 +1854,35 @@ class TestMetadataActionExecution:
         rig.db.bytes[0x1003] = 0xCC
 
         assert not rig.gateway.certificate_matches_current(plan, receipt.certificate)
+
+    def test_schema_two_byte_certificate_remains_reusable_but_metadata_does_not(
+        self, tmp_path
+    ) -> None:
+        byte_plan = fixtures.plan()
+        rig = build_gateway(tmp_path, byte_plan.operations)
+        byte_receipt = rig.gateway.apply(byte_plan)
+        assert byte_receipt.certificate is not None
+        old_byte_certificate = dataclasses.replace(
+            byte_receipt.certificate, schema_version=2
+        )
+        assert rig.gateway.certificate_matches_current(byte_plan, old_byte_certificate)
+
+        metadata_plan, _ = _plan_with_metadata_actions()
+        metadata_executor = FakeMetadataExecutor(self._initial_state())
+        metadata_root = tmp_path / "metadata"
+        metadata_root.mkdir()
+        metadata_rig = build_gateway(
+            metadata_root, metadata_plan.operations,
+            metadata_executor=metadata_executor,
+        )
+        metadata_receipt = metadata_rig.gateway.apply(metadata_plan)
+        assert metadata_receipt.certificate is not None
+        old_metadata_certificate = dataclasses.replace(
+            metadata_receipt.certificate, schema_version=2
+        )
+        assert not metadata_rig.gateway.certificate_matches_current(
+            metadata_plan, old_metadata_certificate
+        )
 
     def test_a_before_state_mismatch_aborts_rather_than_applying(
         self, tmp_path

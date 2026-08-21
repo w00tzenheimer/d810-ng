@@ -501,11 +501,6 @@ def _parse_scoped_item_state(
         assert data is not None
         if tuple(data["xrefs"]) != xrefs:
             return None
-    if version == 2:
-        origin = _parse_reversible_data_item_state(origin_data_state)
-        assert origin is not None
-        if tuple(origin["xrefs"]) != xrefs:
-            return None
     canonical = _scoped_item_token(
         ea=ea,
         head_ea=head_ea,
@@ -846,12 +841,9 @@ class IdaMetadataActionExecutor:
         added = after_set - before_set
         expected = set(derived)
         if forward:
-            # IDA may drop pre-existing automatic rows while rebuilding an
-            # item. They are repaired by the scoped owner below; the decoded
-            # effect itself must still be present and no user row may drift.
-            valid = expected <= added and not any(row[3] for row in removed)
+            valid = not removed and added == expected
         else:
-            valid = expected <= removed and not any(row[3] for row in added)
+            valid = not added and removed == expected
         if valid:
             return
         direction = "forward" if forward else "reverse"
@@ -861,45 +853,6 @@ class IdaMetadataActionExecutor:
             f"added={tuple(sorted(added))!r}, "
             f"expected={tuple(sorted(expected))!r}"
         )
-
-    @staticmethod
-    def _reconcile_auto_xrefs(
-        observed: tuple[tuple[int, int, int, bool, bool], ...],
-        wanted: tuple[tuple[int, int, int, bool, bool], ...],
-    ) -> None:
-        """Repair only automatic rows in a scoped item witness.
-
-        IDA's item mutators legitimately rebuild derived rows, but do not
-        promise to preserve unrelated automatic data references.  The
-        composite owner may restore those rows; user-owned rows remain a hard
-        safety boundary and are never passed to an xref mutator.
-        """
-        import ida_xref
-
-        current = set(observed)
-        target = set(wanted)
-        removed = sorted(current - target)
-        added = sorted(target - current)
-        changed = removed + added
-        if any(row[3] for row in changed):
-            raise UnexecutableMetadataAction(
-                "scoped item xref reconciliation encountered a user-owned row"
-            )
-        try:
-            for source, target_ea, _kind, _user, is_code in removed:
-                if is_code:
-                    ida_xref.del_cref(source, target_ea, False)
-                else:
-                    ida_xref.del_dref(source, target_ea)
-            for source, target_ea, xref_type, _user, is_code in added:
-                if is_code:
-                    ida_xref.add_cref(source, target_ea, xref_type)
-                else:
-                    ida_xref.add_dref(source, target_ea, xref_type)
-        except Exception as error:
-            raise UnexecutableMetadataAction(
-                "scoped item xref reconciliation failed"
-            ) from error
 
     @classmethod
     def _require_data_item_xrefs(
@@ -1247,9 +1200,6 @@ class IdaMetadataActionExecutor:
                 entry_xrefs, observed_xrefs, derived, forward=forward
             )
             if observed_xrefs != target_xrefs:
-                self._reconcile_auto_xrefs(observed_xrefs, target_xrefs)
-                observed_xrefs = self._read_data_item_xrefs(head_ea, size)
-            if observed_xrefs != target_xrefs:
                 raise UnexecutableMetadataAction(
                     f"scoped item transition at {ea:#x} produced an "
                     "unexpected xref effect"
@@ -1273,9 +1223,6 @@ class IdaMetadataActionExecutor:
                         _scoped=True,
                         _validate_witness=False,
                     )
-                observed_after_restore = self._read_data_item_xrefs(head_ea, size)
-                if observed_after_restore != entry_xrefs:
-                    self._reconcile_auto_xrefs(observed_after_restore, entry_xrefs)
                 if self.read_state(
                     NativeMetadataActionKind.RECREATE_ITEM,
                     ea,

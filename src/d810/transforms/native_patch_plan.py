@@ -97,6 +97,46 @@ def _stable_hash(content: tuple) -> str:
     return hashlib.sha256(repr(content).encode("utf-8")).hexdigest()
 
 
+def _canonical_composite_inner_state(token: str) -> str | None:
+    """Return an inner target only for a structurally canonical composite."""
+    for prefix, version in (("item-xrefs:v1:", 1), ("item-xrefs:v2:", 2)):
+        if not token.startswith(prefix):
+            continue
+        try:
+            payload = json.loads(token.removeprefix(prefix))
+        except (TypeError, json.JSONDecodeError):
+            return None
+        fields = {"ea", "head_ea", "item_state", "size", "xrefs"}
+        if version == 2:
+            fields |= {"origin_data_state", "group_targets"}
+        if not isinstance(payload, dict) or set(payload) != fields:
+            return None
+        canonical = prefix + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        if token != canonical:
+            return None
+        if not all(
+            isinstance(payload.get(key), int) and not isinstance(payload.get(key), bool)
+            for key in ("ea", "head_ea", "size")
+        ) or int(payload["size"]) <= 0:
+            return None
+        if not isinstance(payload["item_state"], str):
+            return None
+        if version == 2:
+            targets = payload["group_targets"]
+            origin = payload["origin_data_state"]
+            if (
+                not isinstance(targets, list)
+                or len(targets) < 2
+                or targets != sorted(set(targets))
+                or not all(isinstance(value, int) and not isinstance(value, bool) for value in targets)
+                or not isinstance(origin, str)
+                or not origin.startswith("data:v2:")
+            ):
+                return None
+        return payload["item_state"]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # NativeAddressRange
 # ---------------------------------------------------------------------------
@@ -704,18 +744,9 @@ class NativePatchPlan:
         for operation in self.operations:
             for action in operation.metadata_actions:
                 target = action.expected_after
-                for prefix in ("item-xrefs:v1:", "item-xrefs:v2:"):
-                    if not target.startswith(prefix):
-                        continue
-                    try:
-                        payload = json.loads(target.removeprefix(prefix))
-                    except (TypeError, json.JSONDecodeError):
-                        break
-                    if isinstance(payload, dict) and isinstance(
-                        payload.get("item_state"), str
-                    ):
-                        target = payload["item_state"]
-                    break
+                inner = _canonical_composite_inner_state(target)
+                if inner is not None:
+                    target = inner
                 final_targets[(action.kind.value, action.ea)] = target
         targets = tuple(
             (kind, ea, after) for (kind, ea), after in sorted(final_targets.items())

@@ -315,6 +315,21 @@ def test_scoped_item_v2_preserves_group_provenance_and_allows_member_unknown() -
     later = json.loads(token.removeprefix("item-xrefs:v2:"))
     later["ea"] = 0x1002
     later["item_state"] = "unknown"
+    later["xrefs"].append(
+        {
+            "is_code": False,
+            "source_ea": 0x1002,
+            "target_ea": 0x2000,
+            "user_owned": False,
+            "xref_type": 0x14,
+        }
+    )
+    later["xrefs"] = sorted(
+        later["xrefs"], key=lambda row: (
+            row["source_ea"], row["target_ea"], row["xref_type"],
+            row["user_owned"], row["is_code"],
+        )
+    )
     later_token = "item-xrefs:v2:" + json.dumps(
         later, sort_keys=True, separators=(",", ":")
     )

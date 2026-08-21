@@ -9,9 +9,11 @@ import pytest
 pytestmark = [pytest.mark.requires_ida, pytest.mark.runtime, pytest.mark.hexrays]
 
 ida_bytes = pytest.importorskip("ida_bytes")
+idaapi = pytest.importorskip("idaapi")
 ida_funcs = pytest.importorskip("ida_funcs")
 ida_nalt = pytest.importorskip("ida_nalt")
 idautils = pytest.importorskip("idautils")
+idc = pytest.importorskip("idc")
 
 from d810.backends.hexrays.native_patch_lifecycle import (  # noqa: E402
     IdaCallerDiscovery,
@@ -63,6 +65,9 @@ from d810.hexrays.preanalysis.indirect_jump_labels import (  # noqa: E402
     IndirectLabelMaterializationPlan,
     IndirectLabelMaterializationResult,
     NativePatchPlanRequest,
+)
+from d810.hexrays.preanalysis.indirect_jump_discovery import (  # noqa: E402
+    discover_indirect_jump_table,
 )
 from d810.manager.native_writer_migration import (  # noqa: E402
     ManagerOwnedNativePatchRequestExecutor,
@@ -449,4 +454,92 @@ def test_enabled_request_applies_real_metadata_plan_and_records_child_effects(
             ) == (action.recorded_before)
     finally:
         execution_journal.close()
+        native_journal.close()
+
+
+def test_tigress_canonical_31_target_gateway_round_trip(
+    copy_of_idb, setup_libobfuscated_funcs, tmp_path
+) -> None:
+    """Exercise the real Tigress table through the canonical gateway."""
+    function_ea = int(idc.get_name_ea_simple("tigress_flatten_indirect"))
+    assert function_ea != int(getattr(idaapi, "BADADDR", -1))
+    discovered = discover_indirect_jump_table(function_ea)
+    assert discovered is not None
+    target_eas = tuple(dict.fromkeys(int(ea) for ea in discovered.target_eas))
+    assert len(target_eas) == 31
+    assert len(set(target_eas)) == 31
+    request = IndirectLabelPlanRequest(
+        function_ea=function_ea,
+        label_start=int(discovered.label_start),
+        label_end=int(discovered.label_end),
+        table_address=int(discovered.table_address),
+        table_count=int(discovered.table_count),
+        target_eas=target_eas,
+        dispatch_jump_ea=int(discovered.dispatch_jump_ea),
+        switch_start_ea=None,
+        install_switch_info=False,
+        state_base=int(discovered.initial_state or 0),
+        state_var_stkoff=discovered.state_var_stkoff,
+    )
+    metadata = IdaMetadataActionExecutor()
+    before = {
+        int(ea): metadata.read_state(NativeMetadataActionKind.RECREATE_ITEM, int(ea))
+        for ea in target_eas
+    }
+    plan = build_indirect_label_metadata_plan(
+        request,
+        authorizing_attempt_id=ExecutionAttemptId(DecompilationSessionId.new(), 1),
+    )
+    item_actions = [
+        action
+        for action in plan.operations[0].metadata_actions
+        if action.kind is NativeMetadataActionKind.RECREATE_ITEM
+    ]
+    assert len(item_actions) >= 31
+    native_journal = SQLiteNativePatchJournal(tmp_path / "tigress-native.sqlite")
+    certificate_store = SQLiteOptimizationStorage(":memory:")
+    try:
+        identity = resolve_native_preanalysis_identity(function_ea, profile_config={})
+        database_uuid = identity.identity_resolution.database_uuid
+        assert database_uuid is not None
+        gateway = NativePatchGateway(
+            journal=native_journal,
+            reader=IdaLiveDatabaseReader(),
+            writer=IdaNativeByteWriter(),
+            decode_replacement=lambda _ea, _data: (_ for _ in ()).throw(
+                RuntimeError("metadata-only plan attempted byte decoding")
+            ),
+            reanalyzer=IdaFunctionReanalyzer(),
+            extent_restorer=IdaFunctionExtentRestorer(),
+            flow_restorer=IdaFunctionFlowRestorer(),
+            metadata_executor=metadata,
+            cache_invalidator=IdaCfuncCacheInvalidator(),
+            caller_discovery=IdaCallerDiscovery(),
+            redo_decompiler=IdaControlledRedoDecompiler(),
+            certificate_store=certificate_store,
+            issuer_registry=NativePatchIssuerRegistry((indirect_label_materializer_issuer(),)),
+            current_database_identity=database_uuid,
+            d810_version="tigress-canonical-31-system-test",
+        )
+        receipt = gateway.apply(plan)
+        assert receipt.ok, receipt.rejection_reasons
+        assert receipt.certificate is not None
+        assert receipt.certificate.state.value == "applied"
+        assert gateway.certificate_matches_current(plan, receipt.certificate)
+        for ea in target_eas:
+            assert metadata.read_state(
+                NativeMetadataActionKind.RECREATE_ITEM,
+                ea,
+                scope_state=next(
+                    action.expected_after
+                    for action in item_actions
+                    if action.ea == ea
+                    and action.expected_after.startswith("item-xrefs:v2:")
+                ),
+            ).startswith("item-xrefs:v2:")
+        restored = gateway.restore(receipt.transaction_id)
+        assert restored.ok, restored.rejection_reasons
+        for ea, token in before.items():
+            assert metadata.read_state(NativeMetadataActionKind.RECREATE_ITEM, ea) == token
+    finally:
         native_journal.close()

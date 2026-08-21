@@ -20,6 +20,7 @@ from d810.backends.ida.native_patch.capture import (
 from d810.backends.ida.native_patch.metadata import (
     IdaMetadataActionExecutor,
     _parse_reversible_data_item_state,
+    _parse_scoped_item_state,
     _scoped_item_token,
     reversible_data_item_head,
     is_reversible_data_item_state,
@@ -247,6 +248,45 @@ def _item_transition_order(target_eas: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(sorted((int(ea) for ea in target_eas), reverse=True))
 
 
+def _validate_grouped_item_actions(actions: list[NativeMetadataAction]) -> None:
+    """Validate v2 sequencing and provenance before a plan is emitted."""
+    groups: dict[tuple[int, tuple[int, ...]], dict[str, object]] = {}
+    for action in actions:
+        if action.kind is not NativeMetadataActionKind.RECREATE_ITEM:
+            continue
+        for token in (action.expected_before, action.expected_after):
+            if not token.startswith("item-xrefs:v2:"):
+                continue
+            parsed = _parse_scoped_item_state(token, expected_ea=action.ea)
+            if parsed is None:
+                raise IndirectLabelPlanBuildError(
+                    f"malformed grouped item action at {action.ea:#x}"
+                )
+            key = (int(parsed["head_ea"]), tuple(parsed["group_targets"]))
+            group = groups.setdefault(
+                key,
+                {"origin": parsed["origin_data_state"], "seen_first": False},
+            )
+            if parsed["origin_data_state"] != group["origin"]:
+                raise IndirectLabelPlanBuildError("group origin provenance drift")
+            item_state = str(parsed["item_state"])
+            if item_state.startswith("data:v2:"):
+                if group["seen_first"]:
+                    raise IndirectLabelPlanBuildError(
+                        "group contains more than one first data transition"
+                    )
+                group["seen_first"] = True
+            elif item_state == "unknown" and not group["seen_first"]:
+                raise IndirectLabelPlanBuildError(
+                    "standalone grouped unknown is not an authorized transition"
+                )
+    for group in groups.values():
+        if not group["seen_first"]:
+            raise IndirectLabelPlanBuildError(
+                "group has no first data:v2 transition"
+            )
+
+
 def _with_user_cref(
     executor: IdaMetadataActionExecutor,
     *,
@@ -383,6 +423,20 @@ def build_indirect_label_metadata_plan(
         )
 
     ordered_targets = _item_transition_order(request.target_eas)
+    decoded_sizes: dict[int, int] = {}
+    for target_ea in ordered_targets:
+        try:
+            decoded_sizes[int(target_ea)] = _instruction_size(int(target_ea))
+        except IndirectLabelPlanBuildError:
+            raise
+    for first_ea, first_size in sorted(decoded_sizes.items()):
+        for second_ea, second_size in sorted(decoded_sizes.items()):
+            if first_ea >= second_ea:
+                continue
+            if first_ea + first_size > second_ea:
+                raise IndirectLabelPlanBuildError(
+                    f"decoded target extents overlap at {first_ea:#x} and {second_ea:#x}"
+                )
     captured_before = {
         int(target_ea): executor.read_state(
             NativeMetadataActionKind.RECREATE_ITEM, int(target_ea)
@@ -411,7 +465,7 @@ def build_indirect_label_metadata_plan(
     seen_data_heads: set[int] = set()
     for target_ea in ordered_targets:
         before = captured_before[target_ea]
-        after = f"code:{_instruction_size(target_ea)}"
+        after = f"code:{decoded_sizes[target_ea]}"
         if before == "unknown":
             flags = ida_bytes.get_flags(int(target_ea))
             if not (
@@ -453,9 +507,30 @@ def build_indirect_label_metadata_plan(
                 head_ea = int(data["head_ea"])
                 group = grouped_targets.get(head_ea, ())
                 if len(group) < 2:
-                    raise IndirectLabelPlanBuildError(
-                        "v2 xref snapshot requires at least two grouped targets"
+                    derived = executor._predict_code_xrefs(int(target_ea))[1]
+                    expected_before = _scoped_item_token(
+                        ea=int(target_ea),
+                        head_ea=head_ea,
+                        size=int(data["size"]),
+                        item_state=before,
+                        xrefs=tuple(data["xrefs"]),
                     )
+                    expected_after = _scoped_item_token(
+                        ea=int(target_ea),
+                        head_ea=head_ea,
+                        size=int(data["size"]),
+                        item_state=after,
+                        xrefs=tuple(sorted(set(data["xrefs"]) | set(derived))),
+                    )
+                    actions.append(
+                        NativeMetadataAction(
+                            kind=NativeMetadataActionKind.RECREATE_ITEM,
+                            ea=int(target_ea),
+                            expected_before=expected_before,
+                            expected_after=expected_after,
+                        )
+                    )
+                    continue
                 cumulative = group_progress.get(head_ea, tuple(data["xrefs"]))
                 if head_ea not in group_origins:
                     inner_before = before
@@ -475,9 +550,9 @@ def build_indirect_label_metadata_plan(
                 cumulative = tuple(sorted(set(cumulative) | set(derived)))
                 group_progress[head_ea] = cumulative
                 group_sizes[head_ea] = int(data["size"])
-                group_code_sizes.setdefault(head_ea, {})[int(target_ea)] = int(
-                    _instruction_size(target_ea)
-                )
+                group_code_sizes.setdefault(head_ea, {})[int(target_ea)] = decoded_sizes[
+                    int(target_ea)
+                ]
                 expected_after = _scoped_item_token(
                     ea=int(target_ea),
                     head_ea=head_ea,
@@ -670,6 +745,8 @@ def build_indirect_label_metadata_plan(
         raise IndirectLabelPlanBuildError(
             "label request has no required metadata change"
         )
+
+    _validate_grouped_item_actions(actions)
 
     operation = NativePatchOperation(
         operation_id="indirect-label-metadata",

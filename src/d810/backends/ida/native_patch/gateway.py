@@ -937,14 +937,13 @@ class NativePatchGateway:
         normalized_fingerprint = self._recapture_fingerprint(
             plan, record.transaction_id
         )
+        final_actions: dict[tuple[str, int], str] = {}
+        for operation in plan.operations:
+            for action in operation.metadata_actions:
+                final_actions[(action.kind.value, int(action.ea))] = action.expected_after
         postconditions = tuple(
-            sorted(
-                {
-                    (action.kind.value, int(action.ea), action.expected_after)
-                    for operation in plan.operations
-                    for action in operation.metadata_actions
-                }
-            )
+            (kind, ea, state)
+            for (kind, ea), state in sorted(final_actions.items())
         )
         return NativeCertificate(
             certificate_id=uuid4().hex,
@@ -1023,8 +1022,11 @@ class NativePatchGateway:
             != plan.target_cfg_fingerprint
         ):
             return False
-        if not any(op.metadata_actions for op in plan.operations):
+        has_metadata = any(op.metadata_actions for op in plan.operations)
+        if not has_metadata:
             return True
+        if certificate.schema_version != 3:
+            return False
         if self._metadata_executor is None:
             return False
         try:
@@ -1117,7 +1119,7 @@ class NativePatchGateway:
             # payload without the current-state witness.
             logger.warning("ignoring malformed or obsolete native certificate")
             return None
-        if certificate.schema_version != 3:
+        if certificate.schema_version not in {2, 3}:
             logger.warning(
                 "ignoring obsolete native certificate schema %s",
                 certificate.schema_version,
