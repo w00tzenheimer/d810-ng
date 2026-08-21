@@ -46,18 +46,18 @@ def _sha256(path: pathlib.Path) -> str:
 
 
 class _DisposableStateProxy:
-    """Use a copied runtime project while retaining the live manager services."""
+    """Use a copied project while retaining the live manager services."""
 
-    def __init__(self, state: object, runtime_project: object) -> None:
+    def __init__(self, state: object, project: object) -> None:
         self._state = state
-        self.current_runtime_project = runtime_project
+        self.current_project = project
 
     def create_config_v2_project_draft(
         self, destination: pathlib.Path
     ) -> object:
         manager = self._state.manager
         return manager.create_config_v2_project_draft(
-            self.current_runtime_project,
+            self.current_project,
             destination=destination,
         )
 
@@ -170,7 +170,7 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
 
     state = _live_state()
     source_path = pathlib.Path(__file__).resolve().parents[4] / (
-        "src/d810/conf/default_config_v2_canary.json"
+        "src/d810/conf/default.json"
     )
     assert source_path.is_file(), "the disposable config fixture is not available"
     source_hash_before = _sha256(source_path)
