@@ -622,6 +622,9 @@ class NativePatchPlan:
     fallback_policy: str  # "mba" | "preopt" | "no_patch"
     authorizing_attempt_id: ExecutionAttemptId
     execution_safe: bool = False
+    # Optional exact phase-A/phase-B analysis witness for grouped metadata
+    # plans.  Phase-less plans retain the schema-2/3 byte and item semantics.
+    analysis_phase_witness: str | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.plan_id, "plan_id")
@@ -690,6 +693,11 @@ class NativePatchPlan:
         if not isinstance(self.authorizing_attempt_id, ExecutionAttemptId):
             raise TypeError("authorizing_attempt_id must be an ExecutionAttemptId")
 
+        if self.analysis_phase_witness is not None and not isinstance(
+            self.analysis_phase_witness, str
+        ):
+            raise TypeError("analysis_phase_witness must be a string or None")
+
         if self.execution_safe is not False:
             raise ValueError("execution_safe must be False (invariant 23)")
 
@@ -717,6 +725,7 @@ class NativePatchPlan:
             self.provenance,
             tuple(op._content_for_hash() for op in self.operations),
             self.fallback_policy,
+            self.analysis_phase_witness,
         )
 
     @property
@@ -821,9 +830,16 @@ class NativeCertificate:
     # independently frozen expected value.
     observed_native_cfg_fingerprint: str | None = None
     metadata_postconditions: tuple[tuple[str, int, str], ...] = ()
+    analysis_phase_witness: str | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.certificate_id, "certificate_id")
+        if not isinstance(self.schema_version, int) or isinstance(
+            self.schema_version, bool
+        ):
+            raise TypeError("schema_version must be an int")
+        if self.schema_version not in {2, 3, 4}:
+            raise ValueError("certificate schema_version must be 2, 3, or 4")
         _require_identifier(
             self.metadata_target_fingerprint, "metadata_target_fingerprint"
         )
@@ -837,6 +853,19 @@ class NativeCertificate:
             raise ValueError("execution_safe must be False (invariant 23)")
         if tuple(sorted(self.metadata_postconditions)) != self.metadata_postconditions:
             raise ValueError("metadata_postconditions must be sorted")
+        if self.analysis_phase_witness is not None and not isinstance(
+            self.analysis_phase_witness, str
+        ):
+            raise TypeError("analysis_phase_witness must be a string or None")
+        if self.schema_version in {2, 3} and self.analysis_phase_witness is not None:
+            raise ValueError(
+                f"certificate schema {self.schema_version} cannot carry a phase witness"
+            )
+        if self.schema_version == 4 and (
+            self.analysis_phase_witness is None
+            or not self.analysis_phase_witness.startswith("analysis-phase:v4:")
+        ):
+            raise ValueError("certificate schema 4 requires an analysis-phase:v4 witness")
 
 
 def certificate_to_payload(certificate: NativeCertificate) -> dict:
@@ -876,6 +905,7 @@ def certificate_to_payload(certificate: NativeCertificate) -> dict:
             [kind, ea, state]
             for kind, ea, state in certificate.metadata_postconditions
         ],
+        "analysis_phase_witness": certificate.analysis_phase_witness,
     }
 
 
@@ -916,5 +946,10 @@ def certificate_from_payload(payload: dict) -> NativeCertificate:
         metadata_postconditions=tuple(
             (str(kind), int(ea), str(state))
             for kind, ea, state in payload.get("metadata_postconditions", ())
+        ),
+        analysis_phase_witness=(
+            None
+            if payload.get("analysis_phase_witness") is None
+            else str(payload["analysis_phase_witness"])
         ),
     )

@@ -38,6 +38,7 @@ from d810.transforms.native_patch_plan import (
 )
 
 from . import _plan_fixtures as fixtures
+from .test_phase_schema import _payload as phase_payload, _token as phase_token
 
 pytestmark = pytest.mark.pure_python
 
@@ -55,6 +56,29 @@ def store(tmp_path):
 
 
 class TestPrepare:
+    def test_phase_reverse_schedule_and_cursor_are_durable(self, tmp_path) -> None:
+        plan = dataclasses.replace(
+            fixtures.plan(),
+            analysis_phase_witness=phase_token(phase_payload()),
+        )
+        first = SQLiteNativePatchJournal(tmp_path / "phase.db")
+        record = first.prepare(plan)
+        steps = first.analysis_reverse_steps(record.transaction_id)
+        assert [row["step_index"] for row in steps] == [0, 1]
+        assert [row["status"] for row in steps] == ["pending", "pending"]
+        first.record_analysis_reverse_intent(record.transaction_id, 0, "before")
+        first.record_analysis_reverse_completion(record.transaction_id, 0, "after")
+        first.close()
+
+        second = SQLiteNativePatchJournal(tmp_path / "phase.db")
+        try:
+            reread = second.analysis_reverse_steps(record.transaction_id)
+            assert reread[0]["status"] == "complete"
+            assert reread[0]["intent"] == "before"
+            assert reread[0]["completion"] == "after"
+        finally:
+            second.close()
+
     def test_composite_item_scope_conflicts_with_active_xref_graph(self, store) -> None:
         composite = "item-xrefs:v2:{\"ea\":4096,\"group_targets\":[4096,4098],\"head_ea\":4096,\"item_state\":\"code:4\",\"origin_data_state\":\"data:v2:x\",\"size\":6,\"xrefs\":[]}"  # noqa: E501
         item = NativeMetadataAction(

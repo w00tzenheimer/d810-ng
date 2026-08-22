@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import enum
+import json
 from dataclasses import dataclass
+from collections.abc import Callable
 
 from d810.backends.ida.native_patch.capture import (
     IdaLiveDatabaseReader,
@@ -42,11 +44,267 @@ from d810.transforms.native_patch_plan import (
 )
 
 __all__ = [
+    "DecodedClosureBoundaryStop",
+    "DecodedClosureInstruction",
+    "DecodedClosureResult",
     "IndirectLabelPlanBuildError",
     "IndirectLabelPlanFailureReason",
     "IndirectLabelPlanRequest",
     "build_indirect_label_metadata_plan",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class DecodedClosureInstruction:
+    """Provider-neutral decoded instruction used by the closure oracle.
+
+    ``effects`` is already the mutation-free, authorized decoded effect for
+    this instruction.  The closure does not inspect live IDA xrefs: it only
+    follows code rows whose source is this instruction and whose target is in
+    the bounded group range.
+    """
+
+    ea: int
+    size: int
+    effects: tuple[tuple[int, int, int, bool, bool], ...]
+    control_edges: tuple[tuple[int, str, bool], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DecodedClosureBoundaryStop:
+    """A decoded start whose extent reaches preserved bytes at the boundary.
+
+    The bytes are intentionally not admitted to the derived item partition;
+    IDA cannot recreate them without consuming the neighboring original item.
+    This is distinct from an undecodable instruction, which remains a hard
+    planner failure.
+    """
+
+    ea: int
+    effects: tuple[tuple[int, int, int, bool, bool], ...] = ()
+    control_edges: tuple[tuple[int, str, bool], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DecodedClosureResult:
+    """Exact derived item partition and xref witness for one group."""
+
+    roots: tuple[int, ...]
+    items: tuple[tuple[int, int], ...]
+    xrefs: tuple[tuple[int, int, int, bool, bool], ...]
+
+
+def _extent_is_fully_covered(
+    start: int, end: int, extents: tuple[tuple[int, int], ...]
+) -> bool:
+    """Return whether every byte in ``[start,end)`` is planned for clearing."""
+
+    cursor = int(start)
+    for low, high in sorted(extents):
+        if int(high) <= cursor:
+            continue
+        if int(low) > cursor:
+            return False
+        cursor = max(cursor, int(high))
+        if cursor >= int(end):
+            return True
+    return cursor >= int(end)
+
+
+def _bounded_decoded_cfg_closure(
+    *,
+    group_low: int,
+    group_high: int,
+    roots: tuple[int, ...],
+    decode: Callable[
+        [int], DecodedClosureInstruction | DecodedClosureBoundaryStop | None
+    ],
+    seed_effects: tuple[tuple[int, int, int, bool, bool], ...] = (),
+) -> DecodedClosureResult:
+    """Compute a finite, mutation-free decoded CFG closure.
+
+    Roots are supplied by already-authorized immediate effects.  Every
+    decoded extent must be wholly inside ``[group_low, group_high)`` and all
+    in-range code successors must be statically represented by the decoded
+    effect.  An outgoing row is retained but never traversed.  Any malformed
+    decoder result, overlap, target-to-interior edge, or missing decode is a
+    hard planner abstention.
+    """
+
+    low, high = int(group_low), int(group_high)
+    if low < 0 or high <= low:
+        raise IndirectLabelPlanBuildError("invalid decoded closure range")
+    seed_rows = tuple(sorted(set(seed_effects)))
+    if any(
+        not isinstance(row, tuple)
+        or len(row) != 5
+        or not all(isinstance(value, int) for value in row[:3])
+        or any(value < 0 for value in row[:3])
+        or not isinstance(row[3], bool)
+        or not isinstance(row[4], bool)
+        for row in seed_rows
+    ):
+        raise IndirectLabelPlanBuildError("closure seed provenance is invalid")
+    ordered_roots = tuple(
+        sorted(
+            {
+                *map(int, roots),
+                *(int(target) for _source, target, _type, _user, is_code in seed_rows if is_code and low <= int(target) < high),
+            }
+        )
+    )
+    if any(root < low or root >= high for root in ordered_roots):
+        raise IndirectLabelPlanBuildError("closure root escapes its group range")
+
+    queue = list(ordered_roots)
+    decoded: dict[int, DecodedClosureInstruction] = {}
+    boundary_rows: set[tuple[int, int, int, bool, bool]] = set()
+    while queue:
+        ea = int(queue.pop(0))
+        prior = decoded.get(ea)
+        if prior is not None:
+            continue
+        try:
+            record = decode(ea)
+        except Exception as error:
+            raise IndirectLabelPlanBuildError(
+                f"closure decode failed at {ea:#x}"
+            ) from error
+        if isinstance(record, DecodedClosureBoundaryStop):
+            if int(record.ea) != ea:
+                raise IndirectLabelPlanBuildError(
+                    f"closure boundary stop is inconsistent at {ea:#x}"
+                )
+            effects = tuple(record.effects)
+            if effects != tuple(sorted(set(effects))):
+                raise IndirectLabelPlanBuildError(
+                    f"closure boundary effects are not canonical at {ea:#x}"
+                )
+            edge_map = {
+                (int(target), str(kind)): bool(loaded)
+                for target, kind, loaded in record.control_edges
+            }
+            if len(edge_map) != len(record.control_edges):
+                raise IndirectLabelPlanBuildError(
+                    f"closure boundary edges are not canonical at {ea:#x}"
+                )
+            for source, target, _type, _user, is_code in effects:
+                if source != ea or not is_code:
+                    continue
+                matching = [
+                    loaded
+                    for (edge_target, edge_kind), loaded in edge_map.items()
+                    if edge_target == int(target) and edge_kind == "fallthrough"
+                ]
+                if len(matching) != 1 or not matching[0]:
+                    raise IndirectLabelPlanBuildError(
+                        f"closure boundary lacks a proven preserved fallthrough at {ea:#x}"
+                    )
+            boundary_rows.update(effects)
+            continue
+        if record is None or not isinstance(record, DecodedClosureInstruction):
+            raise IndirectLabelPlanBuildError(
+                f"closure decode failed at {ea:#x}"
+            )
+        if int(record.ea) != ea or int(record.size) <= 0:
+            raise IndirectLabelPlanBuildError(
+                f"closure decoder returned an inconsistent record at {ea:#x}"
+            )
+        end = ea + int(record.size)
+        if end > high:
+            raise IndirectLabelPlanBuildError(
+                f"closure instruction escapes group at {ea:#x}"
+            )
+        for other_ea, other in decoded.items():
+            if ea < other_ea + int(other.size) and other_ea < end:
+                raise IndirectLabelPlanBuildError(
+                    f"closure instruction extents overlap at {ea:#x}"
+                )
+            if other_ea < ea < other_ea + int(other.size):
+                raise IndirectLabelPlanBuildError(
+                    f"closure target enters instruction interior at {ea:#x}"
+                )
+        effects = tuple(record.effects)
+        if effects != tuple(sorted(set(effects))):
+            raise IndirectLabelPlanBuildError(
+                f"closure effects are not canonical at {ea:#x}"
+            )
+        if any(
+            not isinstance(row, tuple)
+            or len(row) != 5
+            or not all(isinstance(value, int) for value in row[:3])
+            or any(value < 0 for value in row[:3])
+            or not isinstance(row[3], bool)
+            or not isinstance(row[4], bool)
+            or row[0] != ea
+            for row in effects
+        ):
+            raise IndirectLabelPlanBuildError(
+                f"closure effect provenance is invalid at {ea:#x}"
+            )
+        edge_map = {
+            (int(target), str(kind)): bool(loaded)
+            for target, kind, loaded in record.control_edges
+        }
+        if len(edge_map) != len(record.control_edges):
+            raise IndirectLabelPlanBuildError(
+                f"closure control edges are not canonical at {ea:#x}"
+            )
+        for source, target, _xref_type, _user_owned, is_code in effects:
+            if not is_code or source != ea:
+                continue
+            matching = [
+                loaded
+                for (edge_target, edge_kind), loaded in edge_map.items()
+                if edge_target == int(target)
+                and edge_kind in {"fallthrough", "direct_near"}
+            ]
+            if len(matching) != 1 or not matching[0]:
+                raise IndirectLabelPlanBuildError(
+                    f"closure code edge lacks a loaded direct provenance at {ea:#x}"
+                )
+            edge_kind = next(
+                edge_kind
+                for edge_target, edge_kind in edge_map
+                if edge_target == int(target)
+            )
+            if not (low <= int(target) < high) and edge_kind != "direct_near":
+                raise IndirectLabelPlanBuildError(
+                    f"closure fallthrough escapes group at {ea:#x}"
+                )
+        decoded[ea] = DecodedClosureInstruction(
+            ea, int(record.size), effects, tuple(record.control_edges)
+        )
+        for source, target, _xref_type, _user_owned, is_code in effects:
+            if not is_code or source != ea:
+                continue
+            if low <= target < high:
+                queue.append(int(target))
+
+    starts = tuple(sorted(decoded))
+    for ea, record in decoded.items():
+        end = ea + int(record.size)
+        for target in starts:
+            if ea < target < end:
+                raise IndirectLabelPlanBuildError(
+                    f"closure target enters instruction interior at {target:#x}"
+                )
+    effects = tuple(
+        sorted(
+            set(seed_rows)
+            | boundary_rows
+            | {
+                row
+                for record in decoded.values()
+                for row in record.effects
+            }
+        )
+    )
+    return DecodedClosureResult(
+        roots=ordered_roots,
+        items=tuple((ea, int(decoded[ea].size)) for ea in starts),
+        xrefs=effects,
+    )
 
 class IndirectLabelPlanFailureReason(str, enum.Enum):
     """Stable machine-readable reasons for planner abstention receipts."""
@@ -395,6 +653,53 @@ def _reverse_group_witnesses(
     return reversed_projection
 
 
+def _analysis_phase_token(
+    *,
+    origin_data_state: str,
+    group_targets: tuple[int, ...],
+    before_items: tuple[tuple[int, int, str], ...],
+    after_items: tuple[tuple[int, int, str], ...],
+    before_xrefs: tuple[tuple[int, int, int, bool, bool], ...],
+    after_xrefs: tuple[tuple[int, int, int, bool, bool], ...],
+    postconditions: tuple[tuple[int, str], ...],
+) -> str:
+    """Serialize one exact phase-A/phase-B analysis witness."""
+
+    payload = {
+        "version": 4,
+        "origin_data_state": origin_data_state,
+        "group_targets": list(group_targets),
+        "before_items": [list(row) for row in before_items],
+        "after_items": [list(row) for row in after_items],
+        "before_xrefs": [
+            {
+                "source_ea": source,
+                "target_ea": target,
+                "xref_type": xref_type,
+                "user_owned": user_owned,
+                "is_code": is_code,
+            }
+            for source, target, xref_type, user_owned, is_code in before_xrefs
+        ],
+        "after_xrefs": [
+            {
+                "source_ea": source,
+                "target_ea": target,
+                "xref_type": xref_type,
+                "user_owned": user_owned,
+                "is_code": is_code,
+            }
+            for source, target, xref_type, user_owned, is_code in after_xrefs
+        ],
+        "postconditions": [
+            {"ea": ea, "state": state} for ea, state in postconditions
+        ],
+    }
+    return "analysis-phase:v4:" + json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    )
+
+
 def _with_user_cref(
     executor: IdaMetadataActionExecutor,
     *,
@@ -614,31 +919,6 @@ def build_indirect_label_metadata_plan(
                 assert data is not None
                 head_ea = int(data["head_ea"])
                 group = grouped_targets.get(head_ea, ())
-                if len(group) < 2:
-                    derived = executor._predict_code_xrefs(int(target_ea))[1]
-                    expected_before = _scoped_item_token(
-                        ea=int(target_ea),
-                        head_ea=head_ea,
-                        size=int(data["size"]),
-                        item_state=before,
-                        xrefs=tuple(data["xrefs"]),
-                    )
-                    expected_after = _scoped_item_token(
-                        ea=int(target_ea),
-                        head_ea=head_ea,
-                        size=int(data["size"]),
-                        item_state=after,
-                        xrefs=tuple(sorted(set(data["xrefs"]) | set(derived))),
-                    )
-                    actions.append(
-                        NativeMetadataAction(
-                            kind=NativeMetadataActionKind.RECREATE_ITEM,
-                            ea=int(target_ea),
-                            expected_before=expected_before,
-                            expected_after=expected_after,
-                        )
-                    )
-                    continue
                 cumulative = group_progress.get(head_ea, tuple(data["xrefs"]))
                 if head_ea not in group_origins:
                     inner_before = before
@@ -840,6 +1120,59 @@ def build_indirect_label_metadata_plan(
                 )
             )
 
+    # Singleton v2 scopes also need a final synchronous seal when a planned
+    # user edge touches their retained range.  Without this read-only seal,
+    # the last action for the item would describe the pre-user-edge witness
+    # and phase-A verification would quite correctly reject the transaction.
+    singleton_seals: list[NativeMetadataAction] = []
+    for action in tuple(actions):
+        parsed = _parse_scoped_item_state(
+            action.expected_after, expected_ea=action.ea
+        )
+        if parsed is None or parsed.get("origin_data_state") is not None:
+            continue
+        item_state = str(parsed["item_state"])
+        if not item_state.startswith("code:"):
+            continue
+        low = int(parsed["head_ea"])
+        high = low + int(parsed["size"])
+        witness = set(parsed["xrefs"])
+        for edge_action in actions:
+            if edge_action.kind is not NativeMetadataActionKind.UPDATE_XREF:
+                continue
+            for target, xref_type, user_owned in _parse_cref_state(
+                edge_action.expected_after
+            ):
+                if user_owned and (
+                    low <= int(edge_action.ea) < high or low <= int(target) < high
+                ):
+                    witness.add(
+                        (
+                            int(edge_action.ea),
+                            int(target),
+                            int(xref_type),
+                            True,
+                            True,
+                        )
+                    )
+        sealed = _scoped_item_token(
+            ea=int(parsed["ea"]),
+            head_ea=low,
+            size=int(parsed["size"]),
+            item_state=item_state,
+            xrefs=tuple(sorted(witness)),
+        )
+        if sealed != action.expected_after:
+            singleton_seals.append(
+                NativeMetadataAction(
+                    kind=NativeMetadataActionKind.RECREATE_ITEM,
+                    ea=int(parsed["ea"]),
+                    expected_before=sealed,
+                    expected_after=sealed,
+                )
+            )
+    actions.extend(singleton_seals)
+
     # Re-project every authorized effect in global action order.  A decoded
     # effect from an adjacent item can touch this group's read surface, even
     # though that item is not a member of the group.  The local group
@@ -935,6 +1268,428 @@ def build_indirect_label_metadata_plan(
             )
         )
     actions = projected_actions
+    analysis_phase_witness: str | None = None
+    if group_specs:
+        phase_groups: list[dict[str, object]] = []
+        import ida_ua
+        active_high = 0
+        active_low = 0
+        active_head = 0
+        planned_cleared_extents: tuple[tuple[int, int], ...] = ()
+        cleared_extent_set = {
+            (
+                int(origin["head_ea"]),
+                int(origin["head_ea"]) + int(origin["size"]),
+            )
+            for token in group_origins.values()
+            if (origin := _parse_reversible_data_item_state(token)) is not None
+        }
+        for action in actions:
+            for token in (action.expected_before, action.expected_after):
+                scoped = _parse_scoped_item_state(token, expected_ea=action.ea)
+                candidate = (
+                    str(scoped["item_state"])
+                    if scoped is not None
+                    else token
+                )
+                origin = _parse_reversible_data_item_state(candidate)
+                if origin is not None:
+                    cleared_extent_set.add(
+                        (
+                            int(origin["head_ea"]),
+                            int(origin["head_ea"]) + int(origin["size"]),
+                        )
+                    )
+                if scoped is not None and str(scoped["item_state"]).startswith("code:"):
+                    try:
+                        code_size = int(str(scoped["item_state"]).removeprefix("code:"))
+                    except ValueError:
+                        continue
+                    cleared_extent_set.add((int(action.ea), int(action.ea) + code_size))
+        planned_cleared_extents = tuple(sorted(cleared_extent_set))
+
+        def _decode_closure(
+            ea: int,
+        ) -> DecodedClosureInstruction | DecodedClosureBoundaryStop | None:
+            import ida_bytes
+
+            instruction = ida_ua.insn_t()
+            try:
+                size = int(ida_ua.decode_insn(instruction, int(ea)))
+                if size <= 0:
+                    return None
+                _predicted_size, predicted_effects = executor._predict_code_xrefs(int(ea))
+                predicted_effects = tuple(
+                    effect
+                    for effect in predicted_effects
+                    if not effect[4]
+                    or active_low <= int(effect[1]) < active_high
+                    or bool(ida_bytes.is_loaded(int(effect[1])))
+                )
+                if int(ea) + size > active_high:
+                    # A decoder can interpret the tail bytes of the original
+                    # enclosing data item as an instruction even though the
+                    # planned materialization cannot create an item crossing
+                    # into the preserved neighboring item.  Stop only when
+                    # IDA proves that exact original data boundary; arbitrary
+                    # crossing instructions remain a hard abstention.
+                    if (
+                        int(ida_bytes.get_item_head(int(ea))) == active_head
+                        and int(ida_bytes.get_item_end(int(ea))) == active_high
+                    ):
+                        crossed_start, crossed_end = active_high, int(ea) + size
+                        planned = _extent_is_fully_covered(
+                            crossed_start, crossed_end, planned_cleared_extents
+                        )
+                        preserved_target = crossed_end
+                        import ida_xref
+                        import idaapi
+                        unknown_suffix = (
+                            bool(ida_bytes.is_data(ida_bytes.get_flags(crossed_start)))
+                            and int(ida_bytes.get_item_head(crossed_start)) == crossed_start
+                            and int(ida_bytes.get_item_end(crossed_start)) >= crossed_end
+                            and all(
+                                bool(ida_bytes.is_loaded(offset))
+                                and not bool(ida_bytes.is_code(ida_bytes.get_flags(offset)))
+                                and int(ida_xref.get_first_cref_to(offset))
+                                == int(getattr(idaapi, "BADADDR", -1))
+                                and int(ida_xref.get_first_dref_to(offset))
+                                == int(getattr(idaapi, "BADADDR", -1))
+                                for offset in range(crossed_start, crossed_end)
+                            )
+                        )
+                        if unknown_suffix and any(
+                            bool(is_code) and int(source) == int(ea)
+                            and int(target) == preserved_target
+                            for source, target, _type, _user, is_code in predicted_effects
+                        ):
+                            return DecodedClosureBoundaryStop(
+                                int(ea), predicted_effects,
+                                ((preserved_target, "fallthrough", True),),
+                            )
+                        preserved = (
+                            not planned
+                            and bool(ida_bytes.is_loaded(preserved_target))
+                            and not bool(ida_bytes.is_data(ida_bytes.get_flags(crossed_start)))
+                            and int(ida_bytes.get_item_head(crossed_start)) != active_head
+                            and int(ida_bytes.get_item_end(crossed_start)) >= crossed_end
+                            and not any(
+                                low <= crossed_start < high
+                                or low < crossed_end <= high
+                                for low, high in planned_cleared_extents
+                            )
+                        )
+                        if planned and any(
+                            bool(is_code) and int(source) == int(ea)
+                            and int(target) == preserved_target
+                            for source, target, _type, _user, is_code in predicted_effects
+                        ):
+                            boundary_edges = ((preserved_target, "fallthrough", True),)
+                            return DecodedClosureBoundaryStop(
+                                int(ea), predicted_effects, boundary_edges
+                            )
+                        if preserved:
+                            return DecodedClosureBoundaryStop(int(ea))
+                        return None
+                # A promoted instruction may end exactly at the original
+                # data boundary while its fallthrough points at the next
+                # item.  That edge is still outside this closure: retain it
+                # only when the next item is a complete, loaded neighboring
+                # item whose extent is either explicitly planned or proven
+                # preserved.  A gap or unknown extent remains fail-closed.
+                exact_boundary_targets = tuple(
+                    sorted(
+                        {
+                            int(target)
+                            for source, target, _type, _user, is_code in predicted_effects
+                            if is_code
+                            and int(source) == int(ea)
+                            and int(target) == int(ea) + size
+                            and int(target) >= active_high
+                        }
+                    )
+                )
+                if exact_boundary_targets:
+                    import idaapi
+
+                    badaddr = int(getattr(idaapi, "BADADDR", -1))
+                    for target in exact_boundary_targets:
+                        if not bool(ida_bytes.is_loaded(target)):
+                            continue
+                        target_flags = ida_bytes.get_flags(target)
+                        target_head = int(ida_bytes.get_item_head(target))
+                        target_end = int(ida_bytes.get_item_end(target))
+                        if (
+                            target_head != target
+                            or target_end <= target
+                            or bool(ida_bytes.is_unknown(target_flags))
+                            or target == badaddr
+                        ):
+                            continue
+                        target_planned = _extent_is_fully_covered(
+                            target, target_end, planned_cleared_extents
+                        )
+                        if target_planned or (
+                            not any(
+                                low < target_end and target < high
+                                for low, high in planned_cleared_extents
+                            )
+                            and (
+                                bool(ida_bytes.is_data(target_flags))
+                                or bool(ida_bytes.is_code(target_flags))
+                            )
+                        ):
+                            return DecodedClosureBoundaryStop(
+                                int(ea),
+                                predicted_effects,
+                                ((target, "fallthrough", True),),
+                            )
+                    return None
+                effects = predicted_effects
+            except Exception:
+                return None
+            effects = tuple(
+                effect
+                for effect in effects
+                if not effect[4]
+                or active_low <= int(effect[1]) < active_high
+                or bool(ida_bytes.is_loaded(int(effect[1])))
+            )
+            control_edges = tuple(
+                (
+                    int(target),
+                    (
+                        "fallthrough"
+                        if int(target) == int(ea) + size
+                        else "direct_near"
+                    ),
+                    bool(
+                        ida_bytes.is_loaded(int(target))
+                        or (
+                            active_low <= int(target) < active_high
+                            and int(ida_bytes.get_item_head(int(target))) == active_head
+                        )
+                    ),
+                )
+                for source, target, _type, _user, is_code in effects
+                if is_code and int(source) == int(ea)
+            )
+            return DecodedClosureInstruction(
+                ea=int(ea),
+                size=size,
+                effects=tuple(effects),
+                control_edges=control_edges,
+            )
+
+        for head_ea, (low, high, origin_rows) in sorted(group_specs.items()):
+            active_low = low
+            active_high = high
+            active_head = head_ea
+            immediate_after = set(projected[len(actions) - 1][head_ea][1])
+            immediate_rows = tuple(
+                sorted(
+                    set(origin_rows)
+                    | immediate_after
+                    | {
+                        row
+                        for effect in action_effects.values()
+                        for row in effect
+                        if row[4] and low <= int(row[1]) < high
+                    }
+                )
+            )
+            roots = tuple(
+                sorted(
+                    {
+                        int(row[1])
+                        for row in immediate_rows
+                        if low <= int(row[1]) < high
+                    }
+                )
+            )
+            closure = _bounded_decoded_cfg_closure(
+                group_low=low,
+                group_high=high,
+                roots=roots,
+                decode=_decode_closure,
+                seed_effects=immediate_rows,
+            )
+            closure_rows = tuple(
+                row for row in closure.xrefs if row not in immediate_after
+            )
+            after_rows = tuple(sorted(immediate_after | set(closure_rows)))
+            origin = _parse_reversible_data_item_state(group_origins[head_ea])
+            assert origin is not None
+            group = grouped_targets[head_ea]
+            item_records: dict[int, tuple[int, str]] = {}
+            for target_ea in grouped_targets[head_ea]:
+                size = group_code_sizes[head_ea].get(int(target_ea))
+                if size is None:
+                    raise IndirectLabelPlanBuildError(
+                        f"missing grouped target decode at {target_ea:#x}"
+                    )
+                item_records[int(target_ea)] = (int(size), f"code:{int(size)}")
+            for item_ea, item_size in closure.items:
+                item_records.setdefault(int(item_ea), (int(item_size), f"code:{int(item_size)}"))
+            after_items = tuple(
+                sorted((ea, size, state) for ea, (size, state) in item_records.items())
+            )
+            phase_a_items = tuple(
+                sorted(
+                    (
+                        int(target_ea),
+                        int(group_code_sizes[head_ea][int(target_ea)]),
+                        f"code:{int(group_code_sizes[head_ea][int(target_ea)])}",
+                    )
+                    for target_ea in group
+                )
+            )
+            postconditions: list[tuple[int, str]] = []
+            for target_ea in group:
+                code_size, _state = item_records[int(target_ea)]
+                postconditions.append(
+                    (
+                        int(target_ea),
+                        _scoped_item_token(
+                            ea=int(target_ea),
+                            head_ea=int(head_ea),
+                            size=int(group_sizes[head_ea]),
+                            item_state=f"code:{code_size}",
+                            xrefs=after_rows,
+                            origin_data_state=group_origins[head_ea],
+                            group_targets=group,
+                        ),
+                    )
+                )
+            group_token = _analysis_phase_token(
+                origin_data_state=group_origins[head_ea],
+                group_targets=group,
+                before_items=phase_a_items,
+                after_items=after_items,
+                before_xrefs=tuple(sorted(immediate_after)),
+                after_xrefs=after_rows,
+                postconditions=tuple(sorted(postconditions)),
+            )
+            phase_groups.append(
+                json.loads(group_token.removeprefix("analysis-phase:v4:"))
+            )
+        # Persist the exact carrier-reversal state machine.  Start from the
+        # sealed P graph with only the user-owned additions removed (those
+        # UPDATE_XREF actions are reversed before any carrier recreation),
+        # then remove each carrier's auto code rows in dependency order.
+        phase_group_by_head = {
+            int(_parse_reversible_data_item_state(group["origin_data_state"])["head_ea"]): group
+            for group in phase_groups
+        }
+        group_ranges = {
+            int(head): (int(head), int(head) + int(group_sizes[int(head)]))
+            for head in phase_group_by_head
+        }
+        all_phase_rows = {
+            tuple(
+                (
+                    int(row["source_ea"]), int(row["target_ea"]),
+                    int(row["xref_type"]), bool(row["user_owned"]),
+                    bool(row["is_code"]),
+                )
+            )
+            for group in phase_groups
+            for row in group["after_xrefs"]
+        }
+        user_added_rows = {
+            tuple(row)
+            for effect in action_effects.values()
+            for row in effect
+            if bool(row[3])
+        }
+        reverse_rows = set(all_phase_rows - user_added_rows)
+        dependency_edges = {int(head): set() for head in group_ranges}
+        for source, target, _xref_type, _user, is_code in all_phase_rows:
+            if not is_code:
+                continue
+            source_head = next(
+                (head for head, (low, high) in group_ranges.items() if low <= source < high),
+                None,
+            )
+            target_head = next(
+                (head for head, (low, high) in group_ranges.items() if low <= target < high),
+                None,
+            )
+            if source_head is not None and target_head is not None and source_head != target_head:
+                dependency_edges[source_head].add(target_head)
+        reverse_heads: list[int] = []
+        pending = {head: set(edges) for head, edges in dependency_edges.items()}
+        while pending:
+            # dependency_edges stores source -> destination.  A source must
+            # be recreated before its destination so the destination's R_i
+            # witness reflects the removed incoming edge.
+            ready = sorted(
+                head
+                for head in pending
+                if not any(head in edges for edges in pending.values())
+            )
+            if not ready:
+                raise IndirectLabelPlanBuildError(
+                    "carrier reverse dependency graph contains a cycle"
+                )
+            reverse_heads.extend(ready)
+            for head in ready:
+                pending.pop(head)
+            for edges in pending.values():
+                edges.difference_update(ready)
+
+        def _phase_rows(rows: set[tuple[int, int, int, bool, bool]]) -> list[dict[str, object]]:
+            return [
+                {
+                    "source_ea": source,
+                    "target_ea": target,
+                    "xref_type": xref_type,
+                    "user_owned": user_owned,
+                    "is_code": is_code,
+                }
+                for source, target, xref_type, user_owned, is_code in sorted(rows)
+            ]
+
+        for head in reverse_heads:
+            low, high = group_ranges[head]
+            current = {
+                row for row in reverse_rows
+                if low <= row[0] < high or low <= row[1] < high
+            }
+            removed = {
+                row for row in current
+                if low <= row[0] < high
+            }
+            phase_group_by_head[head]["reverse_before_xrefs"] = _phase_rows(current)
+            phase_group_by_head[head]["reverse_after_xrefs"] = _phase_rows(current - removed)
+            reverse_rows.difference_update(removed)
+        analysis_phase_witness = "analysis-phase:v4:" + json.dumps(
+            {
+                "version": 4,
+                "groups": phase_groups,
+                "reverse_schedule": [
+                    *(
+                        {
+                            "action_kind": action.kind.value,
+                            "ea": int(action.ea),
+                            "expected_after": action.expected_after,
+                            "index": index,
+                            "kind": "action",
+                        }
+                        for index, action in reversed(tuple(enumerate(actions)))
+                    ),
+                    *(
+                        {
+                            "head_ea": int(head_ea),
+                            "kind": "group",
+                        }
+                        for head_ea in reverse_heads
+                    ),
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     if request.install_switch_info:
         # IDA canonicalizes a persisted switch record (including flags,
         # version, and expression EA) only after ``set_switch_info``.  A
@@ -1006,4 +1761,5 @@ def build_indirect_label_metadata_plan(
         operations=(operation,),
         fallback_policy="no_patch",
         authorizing_attempt_id=authorizing_attempt_id,
+        analysis_phase_witness=analysis_phase_witness,
     )

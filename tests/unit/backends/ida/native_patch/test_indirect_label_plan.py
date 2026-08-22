@@ -3,6 +3,7 @@ import json
 import pytest
 
 from d810.backends.ida.native_patch.indirect_label_plan import (
+    DecodedClosureInstruction,
     IndirectLabelPlanBuildError,
     IndirectLabelPlanFailureReason,
     _bundle_cref_targets,
@@ -10,6 +11,8 @@ from d810.backends.ida.native_patch.indirect_label_plan import (
     _missing_cref_targets,
     _project_group_witnesses,
     _reverse_group_witnesses,
+    _bounded_decoded_cfg_closure,
+    _extent_is_fully_covered,
 )
 from d810.backends.ida.native_patch.metadata import (
     _parse_scoped_item_state,
@@ -344,7 +347,7 @@ def test_scoped_item_v2_preserves_group_provenance_and_allows_member_unknown() -
     "mutate",
     (
         lambda payload: payload.update(group_targets=[0x1002, 0x1000]),
-        lambda payload: payload.update(group_targets=[0x1000]),
+        lambda payload: payload.update(group_targets=[]),
         lambda payload: payload.update(origin_data_state=_data_snapshot_v2(ea=0x1002)),
         lambda payload: payload.update(group_targets=[0x1000, 0x2000]),
     ),
@@ -355,6 +358,16 @@ def test_scoped_item_v2_rejects_mismatched_group_provenance(mutate) -> None:
     token = "item-xrefs:v2:" + json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
     assert _parse_scoped_item_state(token) is None
+
+
+def test_scoped_item_v2_accepts_singleton_group_provenance() -> None:
+    payload = json.loads(_scoped_item_v2().removeprefix("item-xrefs:v2:"))
+    payload["group_targets"] = [0x1000]
+    token = "item-xrefs:v2:" + json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    )
+
+    assert _parse_scoped_item_state(token, expected_ea=0x1000) is not None
 
 
 @pytest.mark.parametrize(
@@ -638,3 +651,180 @@ def test_group_witness_replay_does_not_fabricate_non_touching_effects() -> None:
 
     projected = _project_group_witnesses(actions, effects, groups)
     assert projected[5][0x2006][0] == projected[5][0x2006][1]
+
+
+def test_bounded_closure_follows_only_authorized_in_range_successors() -> None:
+    def rows(source: int, target: int) -> tuple[int, int, int, bool, bool]:
+        return (source, target, 0x15, False, True)
+    graph = {
+        0x1000: DecodedClosureInstruction(
+            ea=0x1000,
+            size=2,
+            effects=(rows(0x1000, 0x1002),),
+            control_edges=((0x1002, "fallthrough", True),),
+        ),
+        0x1002: DecodedClosureInstruction(
+            ea=0x1002,
+            size=2,
+            effects=(rows(0x1002, 0x1004),),
+            control_edges=((0x1004, "fallthrough", True),),
+        ),
+        0x1004: DecodedClosureInstruction(
+            ea=0x1004,
+            size=2,
+            effects=(rows(0x1004, 0x2000),),
+            control_edges=((0x2000, "direct_near", True),),
+        ),
+    }
+
+    result = _bounded_decoded_cfg_closure(
+        group_low=0x1000,
+        group_high=0x1006,
+        roots=(0x1000,),
+        decode=graph.__getitem__,
+    )
+
+    assert result.items == ((0x1000, 2), (0x1002, 2), (0x1004, 2))
+    assert result.xrefs == (
+        rows(0x1000, 0x1002),
+        rows(0x1002, 0x1004),
+        rows(0x1004, 0x2000),
+    )
+    assert result.roots == (0x1000,)
+
+
+def test_bounded_closure_seeds_authorized_external_source_by_in_range_target() -> None:
+    row = (0x0F00, 0x1000, 0x19, False, True)
+    graph = {
+        0x1000: DecodedClosureInstruction(
+            ea=0x1000,
+            size=2,
+            effects=((0x1000, 0x1002, 0x15, False, True),),
+            control_edges=((0x1002, "fallthrough", True),),
+        ),
+        0x1002: DecodedClosureInstruction(
+            ea=0x1002,
+            size=2,
+            effects=((0x1002, 0x2000, 0x19, False, True),),
+            control_edges=((0x2000, "direct_near", True),),
+        ),
+    }
+
+    result = _bounded_decoded_cfg_closure(
+        group_low=0x1000,
+        group_high=0x1004,
+        roots=(0x1000,),
+        decode=graph.__getitem__,
+        seed_effects=(row,),
+    )
+
+    assert result.roots == (0x1000,)
+    assert row in result.xrefs
+
+
+def test_decoded_unconditional_near_transfer_is_classified_without_cf_jump() -> None:
+    assert _predict_decoded_code_xrefs(
+        0x1000,
+        2,
+        0x01,  # CF_STOP without CF_JUMP
+        1,  # o_near
+        0x2000,
+        cf_stop=0x01,
+        cf_call=0x02,
+        cf_jump=0x04,
+        o_near=1,
+        o_far=2,
+        badaddr=-1,
+        fl_f=0x15,
+        fl_cn=0x13,
+        fl_cf=0x14,
+        fl_jn=0x19,
+        fl_jf=0x16,
+    ) == ((0x1000, 0x2000, 0x19, False, True),)
+
+
+def test_decoded_conditional_near_transfer_retains_fallthrough_and_direct_edge() -> None:
+    assert _predict_decoded_code_xrefs(
+        0x1000,
+        2,
+        0x00,
+        0xA,
+        0x2000,
+        cf_stop=0x01,
+        cf_call=0x02,
+        cf_jump=0x04,
+        o_near=0xA,
+        o_far=0xB,
+        badaddr=-1,
+        fl_f=0x15,
+        fl_cn=0x13,
+        fl_cf=0x14,
+        fl_jn=0x19,
+        fl_jf=0x16,
+        conditional_near=True,
+    ) == (
+        (0x1000, 0x1002, 0x15, False, True),
+        (0x1000, 0x2000, 0x19, False, True),
+    )
+
+
+@pytest.mark.parametrize(
+    ("extents", "expected"),
+    (
+        (((0x1000, 0x1010),), True),
+        (((0x1000, 0x1008), (0x1008, 0x1010)), True),
+        (((0x1000, 0x1008), (0x1009, 0x1010)), False),
+        (((0x0FF0, 0x1010),), True),
+    ),
+)
+def test_crossing_extent_requires_complete_planned_clear_partition(extents, expected):
+    assert _extent_is_fully_covered(0x1000, 0x1010, extents) is expected
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda graph: graph.update(
+            {
+                0x1000: DecodedClosureInstruction(
+                    0x1000, 2, ((0x1000, 0x1001, 0x15, False, True),),
+                    ((0x1001, "fallthrough", True),),
+                )
+            }
+        ),
+        lambda graph: graph.update(
+            {
+                0x1000: DecodedClosureInstruction(
+                        0x1000, 3, ((0x1000, 0x1002, 0x15, False, True),),
+                        ((0x1002, "fallthrough", True),),
+                )
+            }
+        ),
+        lambda graph: graph.update({0x1000: None}),
+        lambda graph: graph.update(
+            {
+                0x1000: DecodedClosureInstruction(
+                    0x1000, 2, ((0x1000, 0x1003, 0x15, False, True),),
+                    ((0x1003, "fallthrough", True),),
+                )
+            }
+        ),
+    ),
+)
+def test_bounded_closure_fails_closed_for_invalid_decode_or_target(mutate) -> None:
+    graph = {
+        0x1000: DecodedClosureInstruction(
+            0x1000, 2, ((0x1000, 0x1002, 0x15, False, True),),
+            ((0x1002, "fallthrough", True),),
+        ),
+        0x1002: DecodedClosureInstruction(0x1002, 2, (), ()),
+    }
+    mutate(graph)
+
+    with pytest.raises(IndirectLabelPlanBuildError):
+        _bounded_decoded_cfg_closure(
+            group_low=0x1000,
+            group_high=0x1004,
+            roots=(0x1000,),
+            decode=graph.__getitem__,
+        )

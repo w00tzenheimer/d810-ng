@@ -814,3 +814,25 @@ class NativePatchJournalStore(Protocol):
     ) -> dict[str, tuple[int, tuple[bytes, bytes | None, bytes | None] | None]]:
         """Exact inherited flags and SDK-serialized function type per operation."""
         ...
+
+    def analysis_phase_witness(
+        self, transaction_id: NativePatchTransactionId
+    ) -> str | None: ...
+
+    def analysis_reverse_steps(
+        self, transaction_id: NativePatchTransactionId
+    ) -> tuple[dict[str, object], ...]: ...
+
+    def record_analysis_reverse_intent(
+        self,
+        transaction_id: NativePatchTransactionId,
+        step_index: int,
+        intent: str,
+    ) -> None: ...
+
+    def record_analysis_reverse_completion(
+        self,
+        transaction_id: NativePatchTransactionId,
+        step_index: int,
+        completion: str,
+    ) -> None: ...

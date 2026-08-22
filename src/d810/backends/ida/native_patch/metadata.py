@@ -417,7 +417,7 @@ def _parse_scoped_item_state(
         raw_targets = payload["group_targets"]
         if not isinstance(origin_data_state, str) or not isinstance(raw_targets, list):
             return None
-        if len(raw_targets) < 2 or any(not _is_int(value) for value in raw_targets):
+        if len(raw_targets) < 1 or any(not _is_int(value) for value in raw_targets):
             return None
         group_targets = tuple(int(value) for value in raw_targets)
         if group_targets != tuple(sorted(set(group_targets))):
@@ -541,6 +541,7 @@ def _predict_decoded_code_xrefs(
     fl_cf: int,
     fl_jn: int,
     fl_jf: int,
+    conditional_near: bool = False,
 ) -> tuple[tuple[int, int, int, bool, bool], ...]:
     """Predict only deterministic auto code xrefs from decoded fields."""
 
@@ -554,7 +555,16 @@ def _predict_decoded_code_xrefs(
             )
         xref_type = fl_cn if operand_type == o_near else fl_cf
         effects.add((int(ea), int(operand_target), int(xref_type), False, True))
-    elif feature & cf_jump and operand_type in {o_near, o_far}:
+    elif conditional_near and operand_type == o_near:
+        if int(operand_target) == int(badaddr):
+            raise UnexecutableMetadataAction(
+                f"decoded transfer has no target at {ea:#x}"
+            )
+        effects.add((int(ea), int(operand_target), int(fl_jn), False, True))
+    elif (
+        operand_type in {o_near, o_far}
+        and (feature & cf_jump or feature & cf_stop)
+    ):
         if int(operand_target) == int(badaddr):
             raise UnexecutableMetadataAction(
                 f"decoded transfer has no target at {ea:#x}"
@@ -847,8 +857,11 @@ class IdaMetadataActionExecutor:
         stop = int(getattr(idaapi, "CF_STOP", 0))
         call = int(getattr(idaapi, "CF_CALL", 0))
         jump = int(getattr(idaapi, "CF_JUMP", 0))
-        near = int(getattr(idaapi, "o_near", -1))
-        far = int(getattr(idaapi, "o_far", -1))
+        # Operand kinds are owned by ida_ua.  idaapi does not expose the
+        # same constants consistently across IDA 9.x, and using its fallback
+        # silently abstains on conditional near branches (o_near == 7).
+        near = int(getattr(ida_ua, "o_near", getattr(idaapi, "o_near", -1)))
+        far = int(getattr(ida_ua, "o_far", getattr(idaapi, "o_far", -1)))
         operand = instruction.ops[0]
         operand_type = int(getattr(operand, "type", -1))
         code_effects = _predict_decoded_code_xrefs(
@@ -868,6 +881,11 @@ class IdaMetadataActionExecutor:
             fl_cf=int(ida_xref.fl_CF),
             fl_jn=int(ida_xref.fl_JN),
             fl_jf=int(ida_xref.fl_JF),
+            conditional_near=(
+                int(operand_type) == int(near)
+                and str(instruction.get_canon_mnem()).lower().startswith("j")
+                and str(instruction.get_canon_mnem()).lower() not in {"jmp", "ljmp"}
+            ),
         )
         data_operand = instruction.ops[1]
         mapped_data_ea = int(
@@ -1048,6 +1066,26 @@ class IdaMetadataActionExecutor:
             return self._apply_chunk_state(ea, target_state)
         raise UnexecutableMetadataAction(getattr(kind, "value", str(kind)))
 
+    def apply_phase_inverse(
+        self, ea: int, target_state: str
+    ) -> bool:
+        """Naturally recreate an enclosing data snapshot after phase-B.
+
+        This is intentionally separate from ordinary action reversal: the
+        live witness may include the bounded recursive-analysis closure, so
+        the per-action synchronous delta is no longer the right inverse.
+        The operation still performs one IDA item recreation and requires the
+        exact target witness afterward; it never calls an xref mutator.
+        """
+        scope = _parse_scoped_item_state(target_state, expected_ea=int(ea))
+        if scope is None or not str(scope["item_state"]).startswith(
+            _ITEM_DATA_SNAPSHOT_V2_PREFIX
+        ):
+            raise UnexecutableMetadataAction("malformed phase inverse target")
+        return self._apply_scoped_item_state(
+            int(ea), target_state, scope, _phase_inverse=True
+        )
+
     def _apply_switch_state(self, ea: int, target_state: str) -> bool:
         import ida_nalt
 
@@ -1105,6 +1143,7 @@ class IdaMetadataActionExecutor:
         *,
         _scoped: bool = False,
         _validate_witness: bool = True,
+        _phase_inverse: bool = False,
     ) -> bool:
         import ida_bytes
         import ida_ua
@@ -1119,7 +1158,9 @@ class IdaMetadataActionExecutor:
                 raise UnexecutableMetadataAction(
                     f"malformed scoped item state {target_state!r}"
                 )
-            return self._apply_scoped_item_state(ea, target_state, target_scope)
+            return self._apply_scoped_item_state(
+                ea, target_state, target_scope, _phase_inverse=_phase_inverse
+            )
         target_data = _parse_reversible_data_item_state(
             target_state, expected_ea=ea
         )
@@ -1140,6 +1181,7 @@ class IdaMetadataActionExecutor:
                 target_state,
                 target_data,
                 validate_witness=_validate_witness,
+                phase_inverse=_phase_inverse,
             )
 
         kind_name, _, _size_text = target_state.partition(":")
@@ -1203,6 +1245,8 @@ class IdaMetadataActionExecutor:
         ea: int,
         target_state: str,
         target_scope: dict[str, object],
+        *,
+        _phase_inverse: bool = False,
     ) -> bool:
         head_ea = int(target_scope["head_ea"])
         size = int(target_scope["size"])
@@ -1249,22 +1293,35 @@ class IdaMetadataActionExecutor:
             raise UnexecutableMetadataAction(
                 f"unsupported scoped item transition {target_state!r}"
             )
+        if _phase_inverse and target_inner.startswith(_ITEM_DATA_SNAPSHOT_V2_PREFIX):
+            expected_xrefs = target_xrefs
         if target_xrefs != expected_xrefs:
             raise UnexecutableMetadataAction(
                 f"scoped item witness does not match decoded effect at {ea:#x}"
             )
-        self._require_derived_xref_delta(
-            entry_xrefs, target_xrefs, derived, forward=forward
-        )
+        if not _phase_inverse:
+            self._require_derived_xref_delta(
+                entry_xrefs, target_xrefs, derived, forward=forward
+            )
         try:
             self._apply_item_state(
-                ea, target_inner, _scoped=True, _validate_witness=False
+                ea,
+                target_inner,
+                _scoped=True,
+                _validate_witness=False,
+                _phase_inverse=_phase_inverse,
             )
             self._post_item_effect()
             observed_xrefs = self._read_data_item_xrefs(head_ea, size)
-            self._require_derived_xref_delta(
-                entry_xrefs, observed_xrefs, derived, forward=forward
-            )
+            if _phase_inverse:
+                if observed_xrefs != target_xrefs:
+                    raise UnexecutableMetadataAction(
+                        f"phase inverse at {ea:#x} did not remove the exact closure"
+                    )
+            else:
+                self._require_derived_xref_delta(
+                    entry_xrefs, observed_xrefs, derived, forward=forward
+                )
             if observed_xrefs != target_xrefs:
                 raise UnexecutableMetadataAction(
                     f"scoped item transition at {ea:#x} produced an "
@@ -1363,6 +1420,7 @@ class IdaMetadataActionExecutor:
         target_data: dict[str, object],
         *,
         validate_witness: bool = True,
+        phase_inverse: bool = False,
     ) -> bool:
         import ida_bytes
 
@@ -1392,7 +1450,14 @@ class IdaMetadataActionExecutor:
         if validate_witness:
             self._require_data_item_xrefs(target_head, target_size, target_data)
         try:
-            ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, max(1, code_size))
+            if phase_inverse:
+                ida_bytes.del_items(
+                    target_head,
+                    ida_bytes.DELIT_SIMPLE,
+                    max(1, target_size),
+                )
+            else:
+                ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, max(1, code_size))
             self._restore_data_snapshot(
                 ea,
                 target_state,
@@ -1456,7 +1521,8 @@ class IdaMetadataActionExecutor:
             raise UnexecutableMetadataAction(
                 f"IDA refused data name recreation at {data_head:#x}"
             )
-        if self._read_item_state(ea) != target_state:
+        recreated_state = self._read_item_state(ea)
+        if recreated_state != target_state:
             raise UnexecutableMetadataAction(
                 f"data recreation at {ea:#x} did not reproduce the recorded state"
             )

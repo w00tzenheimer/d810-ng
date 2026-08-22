@@ -48,6 +48,7 @@ from d810.capabilities.native_patch import (
     OperationByteRecord,
     is_legal_native_journal_transition,
 )
+from d810.backends.ida.native_patch.phase_schema import parse_analysis_phase_witness
 from d810.core.execution_journal import DecompilationSessionId, ExecutionAttemptId
 
 __all__ = [
@@ -326,6 +327,40 @@ class SQLiteNativePatchJournal:
                     scope_kind TEXT NOT NULL,
                     scope_ea INTEGER NOT NULL,
                     PRIMARY KEY (transaction_id, operation_id, action_index)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_analysis_phases (
+                    transaction_id TEXT PRIMARY KEY,
+                    witness TEXT NOT NULL,
+                    FOREIGN KEY (transaction_id)
+                        REFERENCES native_patch_transactions(transaction_id)
+                )
+                """
+            )
+            # The reverse schedule is durable independently of the
+            # certificate.  ``status`` and the two exact state snapshots make
+            # a crash between a carrier intent and its natural inverse
+            # distinguishable from a completed step.
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_analysis_reverse_steps (
+                    transaction_id TEXT NOT NULL,
+                    step_index INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    head_ea INTEGER,
+                    action_index INTEGER,
+                    action_kind TEXT,
+                    ea INTEGER,
+                    expected_after TEXT,
+                    status TEXT NOT NULL,
+                    intent TEXT,
+                    completion TEXT,
+                    PRIMARY KEY (transaction_id, step_index),
+                    FOREIGN KEY (transaction_id)
+                        REFERENCES native_patch_transactions(transaction_id)
                 )
                 """
             )
@@ -760,6 +795,36 @@ class SQLiteNativePatchJournal:
                             op.replacement_bytes[offset],
                         ),
                     )
+            if plan.analysis_phase_witness is not None:
+                phase = parse_analysis_phase_witness(plan.analysis_phase_witness)
+                self._conn.execute(
+                    """
+                    INSERT INTO native_patch_analysis_phases
+                        (transaction_id, witness)
+                    VALUES (?, ?)
+                    """,
+                    (transaction_id.value, plan.analysis_phase_witness),
+                )
+                for step_index, step in enumerate(phase.reverse_schedule):
+                    self._conn.execute(
+                        """
+                        INSERT INTO native_patch_analysis_reverse_steps
+                            (transaction_id, step_index, kind, head_ea,
+                             action_index, action_kind, ea, expected_after,
+                             status, intent, completion)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL)
+                        """,
+                        (
+                            transaction_id.value,
+                            step_index,
+                            step.kind,
+                            step.head_ea,
+                            step.index,
+                            step.action_kind,
+                            step.ea,
+                            step.expected_after,
+                        ),
+                    )
             self._conn.execute(
                 """
                 INSERT INTO native_patch_transitions
@@ -1058,6 +1123,102 @@ class SQLiteNativePatchJournal:
             )
             for row in rows
         )
+
+    def analysis_phase_witness(
+        self, transaction_id: NativePatchTransactionId
+    ) -> str | None:
+        row = self._conn.execute(
+            """
+            SELECT witness FROM native_patch_analysis_phases
+            WHERE transaction_id = ?
+            """,
+            (transaction_id.value,),
+        ).fetchone()
+        return None if row is None else str(row["witness"])
+
+    def analysis_reverse_steps(
+        self, transaction_id: NativePatchTransactionId
+    ) -> tuple[dict[str, object], ...]:
+        """Return the immutable global reverse schedule and its cursor state."""
+        rows = self._conn.execute(
+            """
+            SELECT step_index, kind, head_ea, action_index, action_kind, ea,
+                   expected_after, status, intent, completion
+            FROM native_patch_analysis_reverse_steps
+            WHERE transaction_id = ?
+            ORDER BY step_index
+            """,
+            (transaction_id.value,),
+        ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def record_analysis_reverse_intent(
+        self,
+        transaction_id: NativePatchTransactionId,
+        step_index: int,
+        intent: str,
+    ) -> None:
+        """Durably record a reverse-step pre-mutation intent."""
+        if not isinstance(step_index, int) or isinstance(step_index, bool) or step_index < 0:
+            raise ValueError("step_index must be a non-negative integer")
+        if not isinstance(intent, str) or not intent:
+            raise ValueError("reverse-step intent must be a non-empty string")
+        row = self._conn.execute(
+            """
+            SELECT status, intent FROM native_patch_analysis_reverse_steps
+            WHERE transaction_id = ? AND step_index = ?
+            """,
+            (transaction_id.value, step_index),
+        ).fetchone()
+        if row is None:
+            raise ValueError("unknown analysis reverse step")
+        if row["status"] == "complete":
+            if row["intent"] != intent:
+                raise ValueError("completed reverse step intent mismatch")
+            return
+        if row["status"] == "intent" and row["intent"] != intent:
+            raise ValueError("reverse step already has a different intent")
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE native_patch_analysis_reverse_steps
+                SET status = 'intent', intent = ?
+                WHERE transaction_id = ? AND step_index = ?
+                """,
+                (intent, transaction_id.value, step_index),
+            )
+
+    def record_analysis_reverse_completion(
+        self,
+        transaction_id: NativePatchTransactionId,
+        step_index: int,
+        completion: str,
+    ) -> None:
+        """Durably record the exact post-mutation reverse-step witness."""
+        if not isinstance(completion, str) or not completion:
+            raise ValueError("reverse-step completion must be a non-empty string")
+        row = self._conn.execute(
+            """
+            SELECT status, completion FROM native_patch_analysis_reverse_steps
+            WHERE transaction_id = ? AND step_index = ?
+            """,
+            (transaction_id.value, step_index),
+        ).fetchone()
+        if row is None or row["status"] not in {"intent", "complete"}:
+            raise ValueError("reverse step completion without durable intent")
+        if row["status"] == "complete":
+            if row["completion"] != completion:
+                raise ValueError("completed reverse step witness mismatch")
+            return
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE native_patch_analysis_reverse_steps
+                SET status = 'complete', completion = ?
+                WHERE transaction_id = ? AND step_index = ?
+                """,
+                (completion, transaction_id.value, step_index),
+            )
 
     def operation_ownership(
         self, transaction_id: NativePatchTransactionId
