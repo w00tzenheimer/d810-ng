@@ -8,6 +8,8 @@ from d810.backends.ida.native_patch.indirect_label_plan import (
     _bundle_cref_targets,
     _item_transition_order,
     _missing_cref_targets,
+    _project_group_witnesses,
+    _reverse_group_witnesses,
 )
 from d810.backends.ida.native_patch.metadata import (
     _parse_scoped_item_state,
@@ -16,6 +18,7 @@ from d810.backends.ida.native_patch.metadata import (
     is_reversible_data_item_state,
     reversible_data_item_head,
 )
+from d810.transforms.native_patch_plan import NativeMetadataAction, NativeMetadataActionKind
 
 
 def _scoped_item_v2(*, item_state: str = "code:4", targets=(0x1000, 0x1002)) -> str:
@@ -568,3 +571,70 @@ def test_cref_targets_share_one_exact_after_token() -> None:
     assert after == (
         "cref3:0x2000@0x13@a,0x3000@0x13@u,0x4000@0x13@u"
     )
+
+
+def _replay_fixture() -> tuple[
+    list[NativeMetadataAction],
+    dict[int, tuple[tuple[int, int, int, bool, bool], ...]],
+    dict[int, tuple[int, int, tuple[tuple[int, int, int, bool, bool], ...]]],
+]:
+    low, high = 0x2006, 0x2016
+    origin = tuple((low + index, low + index + 1, 0x15, False, True) for index in range(5))
+    actions = [
+        NativeMetadataAction(NativeMetadataActionKind.RECREATE_ITEM, 0x200E, "data", "code")
+        for _ in range(5)
+    ]
+    actions.extend(
+        (
+            NativeMetadataAction(NativeMetadataActionKind.RECREATE_ITEM, 0x2000, "data", "code"),
+            NativeMetadataAction(NativeMetadataActionKind.UPDATE_XREF, 0x3000, "before", "after"),
+            NativeMetadataAction(NativeMetadataActionKind.RECREATE_ITEM, 0x200E, "seal", "seal"),
+        )
+    )
+    boundary = (0x2000, low + 1, 0x15, False, True)
+    user = (0x3000, low + 2, 0x13, True, True)
+    effects = {
+        index: ((low + 8 + index, low + 9 + index, 0x15, False, True),)
+        for index in range(5)
+    }
+    effects[5] = (boundary,)
+    effects[6] = (user,)
+    effects[7] = ()
+    return actions, effects, {low: (low, high, origin)}
+
+
+def test_group_witness_replay_routes_adjacent_effect_in_global_order() -> None:
+    actions, effects, groups = _replay_fixture()
+
+    projected = _project_group_witnesses(actions, effects, groups)
+    boundary = (0x2000, 0x2007, 0x15, False, True)
+    user = (0x3000, 0x2008, 0x13, True, True)
+
+    for index in range(5):
+        assert boundary not in projected[index][0x2006][1]
+    assert boundary in projected[5][0x2006][1]
+    assert user in projected[6][0x2006][1]
+    assert len(projected[7][0x2006][1]) == 12
+
+    reversed_projection = _reverse_group_witnesses(actions, effects, groups)
+    assert boundary in reversed_projection[5][0x2006][1]
+    assert boundary not in reversed_projection[5][0x2006][0]
+    assert reversed_projection[0][0x2006][0] == groups[0x2006][2]
+
+
+def test_group_witness_replay_rejects_preexisting_predicted_row() -> None:
+    actions, effects, groups = _replay_fixture()
+    low, high, origin = groups[0x2006]
+    boundary = effects[5][0]
+    groups[0x2006] = (low, high, origin + (boundary,))
+
+    with pytest.raises(IndirectLabelPlanBuildError, match="already exists"):
+        _project_group_witnesses(actions, effects, groups)
+
+
+def test_group_witness_replay_does_not_fabricate_non_touching_effects() -> None:
+    actions, effects, groups = _replay_fixture()
+    effects[5] = ((0x3000, 0x4000, 0x15, False, True),)
+
+    projected = _project_group_witnesses(actions, effects, groups)
+    assert projected[5][0x2006][0] == projected[5][0x2006][1]

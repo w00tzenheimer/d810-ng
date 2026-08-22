@@ -12,6 +12,7 @@ ida_bytes = pytest.importorskip("ida_bytes")
 idaapi = pytest.importorskip("idaapi")
 ida_funcs = pytest.importorskip("ida_funcs")
 ida_nalt = pytest.importorskip("ida_nalt")
+ida_xref = pytest.importorskip("ida_xref")
 idautils = pytest.importorskip("idautils")
 idc = pytest.importorskip("idc")
 
@@ -38,7 +39,10 @@ from d810.backends.ida.native_patch.indirect_label_plan import (  # noqa: E402
     build_indirect_label_metadata_plan,
 )
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal  # noqa: E402
-from d810.backends.ida.native_patch.metadata import IdaMetadataActionExecutor  # noqa: E402
+from d810.backends.ida.native_patch.metadata import (  # noqa: E402
+    IdaMetadataActionExecutor,
+    _parse_scoped_item_state,
+)
 from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
     IdaFunctionExtentRestorer,
     IdaFunctionFlowRestorer,
@@ -543,3 +547,111 @@ def test_tigress_canonical_31_target_gateway_round_trip(
             assert metadata.read_state(NativeMetadataActionKind.RECREATE_ITEM, ea) == token
     finally:
         native_journal.close()
+
+
+def test_tigress_boundary_flow_projects_after_adjacent_source(
+    copy_of_idb, setup_libobfuscated_funcs, monkeypatch
+) -> None:
+    """The adjacent source's natural flow enters the group only afterward."""
+    function_ea = int(idc.get_name_ea_simple("tigress_flatten_indirect"))
+    discovered = discover_indirect_jump_table(function_ea)
+    assert discovered is not None
+    target_eas = tuple(dict.fromkeys(int(ea) for ea in discovered.target_eas))
+    request = IndirectLabelPlanRequest(
+        function_ea=function_ea,
+        label_start=int(discovered.label_start),
+        label_end=int(discovered.label_end),
+        table_address=int(discovered.table_address),
+        table_count=int(discovered.table_count),
+        target_eas=target_eas,
+        dispatch_jump_ea=int(discovered.dispatch_jump_ea),
+        switch_start_ea=None,
+        install_switch_info=False,
+        state_base=int(discovered.initial_state or 0),
+        state_var_stkoff=discovered.state_var_stkoff,
+    )
+    plan = build_indirect_label_metadata_plan(
+        request,
+        authorizing_attempt_id=ExecutionAttemptId(DecompilationSessionId.new(), 1),
+    )
+    metadata = IdaMetadataActionExecutor()
+    item_actions = [
+        action
+        for action in plan.operations[0].metadata_actions
+        if action.kind is NativeMetadataActionKind.RECREATE_ITEM
+    ]
+    grouped = []
+    group_head = None
+    for action in item_actions:
+        parsed = _parse_scoped_item_state(action.expected_after, expected_ea=action.ea)
+        if parsed is None or len(tuple(parsed["group_targets"])) != 5:
+            continue
+        grouped.append(action)
+        group_head = int(parsed["head_ea"])
+    assert len(grouped) == 10  # five transitions plus five final seals
+    assert group_head is not None
+    transitions = [action for action in grouped if action.expected_before != action.expected_after]
+    assert len(transitions) == 5
+    source = next(
+        action
+        for action in item_actions
+        if (before := _parse_scoped_item_state(action.expected_before, expected_ea=action.ea))
+        is not None
+        and int(before["head_ea"]) + int(before["size"]) == group_head
+        and action.ea + metadata._predict_code_xrefs(action.ea)[0] == group_head + 1
+    )
+    boundary = (int(source.ea), group_head + 1, int(ida_xref.fl_F), False, True)
+    calls = []
+    for name in ("add_cref", "del_cref", "add_dref", "del_dref"):
+        monkeypatch.setattr(ida_xref, name, lambda *args, _name=name: calls.append(_name))
+    scope = next(
+        action.expected_after
+        for action in transitions
+        if action.expected_after.startswith("item-xrefs:v2:")
+    )
+    scope_ea = int(_parse_scoped_item_state(scope)["ea"])
+    for action in transitions:
+        assert metadata.apply_state(
+            NativeMetadataActionKind.RECREATE_ITEM, action.ea, action.expected_after
+        )
+    before_source = _parse_scoped_item_state(
+        metadata.read_state(
+            NativeMetadataActionKind.RECREATE_ITEM,
+            scope_ea,
+            scope_state=scope,
+        ),
+        expected_ea=scope_ea,
+    )
+    assert before_source is not None
+    assert boundary not in tuple(before_source["xrefs"])
+    assert metadata.apply_state(
+        NativeMetadataActionKind.RECREATE_ITEM, source.ea, source.expected_after
+    )
+    after_source = _parse_scoped_item_state(
+        metadata.read_state(
+            NativeMetadataActionKind.RECREATE_ITEM,
+            scope_ea,
+            scope_state=scope,
+        ),
+        expected_ea=scope_ea,
+    )
+    assert after_source is not None
+    assert boundary in tuple(after_source["xrefs"])
+    assert metadata.apply_state(
+        NativeMetadataActionKind.RECREATE_ITEM, source.ea, source.expected_before
+    )
+    restored_group = _parse_scoped_item_state(
+        metadata.read_state(
+            NativeMetadataActionKind.RECREATE_ITEM,
+            scope_ea,
+            scope_state=scope,
+        ),
+        expected_ea=scope_ea,
+    )
+    assert restored_group is not None
+    assert boundary not in tuple(restored_group["xrefs"])
+    for action in reversed(transitions):
+        assert metadata.apply_state(
+            NativeMetadataActionKind.RECREATE_ITEM, action.ea, action.expected_before
+        )
+    assert calls == []

@@ -287,6 +287,114 @@ def _validate_grouped_item_actions(actions: list[NativeMetadataAction]) -> None:
             )
 
 
+def _touching_xrefs(
+    rows: tuple[tuple[int, int, int, bool, bool], ...],
+    *,
+    low: int,
+    high: int,
+) -> set[tuple[int, int, int, bool, bool]]:
+    return {
+        row
+        for row in rows
+        if low <= int(row[0]) < high or low <= int(row[1]) < high
+    }
+
+
+def _project_group_witnesses(
+    actions: list[NativeMetadataAction],
+    effects: dict[int, tuple[tuple[int, int, int, bool, bool], ...]],
+    groups: dict[
+        int,
+        tuple[int, int, tuple[tuple[int, int, int, bool, bool], ...]],
+    ],
+) -> dict[
+    int,
+    dict[int, tuple[
+        tuple[tuple[int, int, int, bool, bool], ...],
+        tuple[tuple[int, int, int, bool, bool], ...],
+    ]],
+]:
+    """Replay every authorized action into every touching grouped witness.
+
+    ``effects`` is the mutation-free, action-owned effect set: decoded rows
+    for item actions and exact after-minus-before rows for xref actions.  This
+    projection only routes rows into scopes; it never invents a row from an
+    address relationship.
+    """
+
+    current = {
+        head: set(origin)
+        for head, (_low, _high, origin) in groups.items()
+    }
+    projected: dict[int, dict[int, tuple[tuple, tuple]]] = {}
+    for index, _action in enumerate(actions):
+        if index not in effects:
+            raise IndirectLabelPlanBuildError(
+                f"missing exact effect provenance for action {index}"
+            )
+        event = tuple(effects[index])
+        projected[index] = {}
+        for head, (low, high, _origin) in groups.items():
+            before = set(current[head])
+            touching = _touching_xrefs(event, low=low, high=high)
+            if before.intersection(touching):
+                raise IndirectLabelPlanBuildError(
+                    f"predicted grouped xref already exists before action {index}"
+                )
+            after = before | touching
+            projected[index][head] = (
+                tuple(sorted(before)),
+                tuple(sorted(after)),
+            )
+            current[head] = after
+    return projected
+
+
+def _reverse_group_witnesses(
+    actions: list[NativeMetadataAction],
+    effects: dict[int, tuple[tuple[int, int, int, bool, bool], ...]],
+    groups: dict[
+        int,
+        tuple[int, int, tuple[tuple[int, int, int, bool, bool], ...]],
+    ],
+) -> dict[
+    int,
+    dict[int, tuple[
+        tuple[tuple[int, int, int, bool, bool], ...],
+        tuple[tuple[int, int, int, bool, bool], ...],
+    ]],
+]:
+    """Replay exact event removal in reverse action order."""
+
+    forward = _project_group_witnesses(actions, effects, groups)
+    final = {
+        head: set(forward[len(actions) - 1][head][1])
+        for head in groups
+    }
+    reversed_projection: dict[int, dict[int, tuple[tuple, tuple]]] = {}
+    for index in reversed(range(len(actions))):
+        if index not in effects:
+            raise IndirectLabelPlanBuildError(
+                f"missing exact effect provenance for action {index}"
+            )
+        event = tuple(effects[index])
+        reversed_projection[index] = {}
+        for head, (low, high, _origin) in groups.items():
+            present = set(final[head])
+            touching = _touching_xrefs(event, low=low, high=high)
+            if not touching.issubset(present):
+                raise IndirectLabelPlanBuildError(
+                    f"predicted grouped xref is absent before reverse action {index}"
+                )
+            before = present - touching
+            reversed_projection[index][head] = (
+                tuple(sorted(before)),
+                tuple(sorted(present)),
+            )
+            final[head] = before
+    return reversed_projection
+
+
 def _with_user_cref(
     executor: IdaMetadataActionExecutor,
     *,
@@ -731,6 +839,102 @@ def build_indirect_label_metadata_plan(
                     expected_after=seal,
                 )
             )
+
+    # Re-project every authorized effect in global action order.  A decoded
+    # effect from an adjacent item can touch this group's read surface, even
+    # though that item is not a member of the group.  The local group
+    # accumulator above remains useful for constructing the action sequence;
+    # this replay is the final exact witness authority for every scoped token.
+    group_specs: dict[
+        int, tuple[int, int, tuple[tuple[int, int, int, bool, bool], ...]]
+    ] = {}
+    for head_ea in group_origins:
+        origin = _parse_reversible_data_item_state(group_origins[head_ea])
+        if origin is None:
+            raise IndirectLabelPlanBuildError(
+                f"group origin is not a reversible data snapshot at {head_ea:#x}"
+            )
+        group_specs[head_ea] = (
+            int(head_ea),
+            int(head_ea) + int(group_sizes[head_ea]),
+            tuple(origin["xrefs"]),
+        )
+    action_effects: dict[
+        int, tuple[tuple[int, int, int, bool, bool], ...]
+    ] = {}
+    for index, action in enumerate(actions):
+        if action.kind is NativeMetadataActionKind.RECREATE_ITEM:
+            if action.expected_before == action.expected_after:
+                action_effects[index] = ()
+            else:
+                action_effects[index] = executor._predict_code_xrefs(action.ea)[1]
+        elif action.kind is NativeMetadataActionKind.UPDATE_XREF:
+            before_rows = _parse_cref_state(action.expected_before)
+            after_rows = _parse_cref_state(action.expected_after)
+            action_effects[index] = tuple(
+                sorted(
+                    (
+                        int(action.ea),
+                        int(target),
+                        int(xref_type),
+                        bool(user_owned),
+                        True,
+                    )
+                    for target, xref_type, user_owned in after_rows - before_rows
+                )
+            )
+        else:
+            action_effects[index] = ()
+    projected = _project_group_witnesses(actions, action_effects, group_specs)
+    _reverse_group_witnesses(actions, action_effects, group_specs)
+    projected_actions: list[NativeMetadataAction] = []
+    for index, action in enumerate(actions):
+        before = _parse_scoped_item_state(
+            action.expected_before, expected_ea=action.ea
+        )
+        after = _parse_scoped_item_state(
+            action.expected_after, expected_ea=action.ea
+        )
+        if before is None and after is None:
+            projected_actions.append(action)
+            continue
+        scope = before if before is not None else after
+        assert scope is not None
+        head_ea = int(scope["head_ea"])
+        if head_ea not in group_specs:
+            projected_actions.append(action)
+            continue
+        if head_ea not in projected[index]:
+            raise IndirectLabelPlanBuildError(
+                f"group action {index} has no replayed witness scope"
+            )
+        before_xrefs, after_xrefs = projected[index][head_ea]
+
+        def _projected_token(
+            parsed: dict[str, object] | None,
+            xrefs: tuple[tuple[int, int, int, bool, bool], ...],
+        ) -> str:
+            if parsed is None:
+                return action.expected_before
+            return _scoped_item_token(
+                ea=int(parsed["ea"]),
+                head_ea=int(parsed["head_ea"]),
+                size=int(parsed["size"]),
+                item_state=str(parsed["item_state"]),
+                xrefs=xrefs,
+                origin_data_state=parsed.get("origin_data_state"),
+                group_targets=tuple(parsed.get("group_targets", ())),
+            )
+
+        projected_actions.append(
+            NativeMetadataAction(
+                kind=action.kind,
+                ea=action.ea,
+                expected_before=_projected_token(before, before_xrefs),
+                expected_after=_projected_token(after, after_xrefs),
+            )
+        )
+    actions = projected_actions
     if request.install_switch_info:
         # IDA canonicalizes a persisted switch record (including flags,
         # version, and expression EA) only after ``set_switch_info``.  A
