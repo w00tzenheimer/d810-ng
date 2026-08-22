@@ -3,7 +3,10 @@ import json
 import pytest
 
 from d810.backends.ida.native_patch.indirect_label_plan import (
+    DecodedClosureBoundaryStop,
     DecodedClosureInstruction,
+    DecodedClosureTransfer,
+    DecodedClosureTransferKind,
     IndirectLabelPlanBuildError,
     IndirectLabelPlanFailureReason,
     _bundle_cref_targets,
@@ -766,6 +769,82 @@ def test_decoded_conditional_near_transfer_retains_fallthrough_and_direct_edge()
         (0x1000, 0x1002, 0x15, False, True),
         (0x1000, 0x2000, 0x19, False, True),
     )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
+        DecodedClosureTransferKind.CALL,
+        DecodedClosureTransferKind.FAR,
+        DecodedClosureTransferKind.INDIRECT,
+    ),
+)
+def test_bounded_closure_rejects_unproved_transfer_classes(kind) -> None:
+    graph = {
+        0x1000: DecodedClosureInstruction(
+            0x1000,
+            2,
+            ((0x1000, 0x2000, 0x15, False, True),),
+            (DecodedClosureTransfer(0x2000, kind, True, "test-unproved"),),
+        )
+    }
+    with pytest.raises(IndirectLabelPlanBuildError, match="direct provenance"):
+        _bounded_decoded_cfg_closure(
+            group_low=0x1000,
+            group_high=0x1002,
+            roots=(0x1000,),
+            decode=graph.__getitem__,
+        )
+
+
+def test_boundary_stop_rejects_effect_without_proven_fallthrough() -> None:
+    graph = {
+        0x1000: DecodedClosureBoundaryStop(
+            0x1000,
+            ((0x1000, 0x1002, 0x15, False, True),),
+            (DecodedClosureTransfer(
+                0x1002,
+                DecodedClosureTransferKind.DIRECT_NEAR,
+                True,
+                "test-effect-bearing-boundary",
+            ),),
+        )
+    }
+    with pytest.raises(IndirectLabelPlanBuildError, match="boundary"):
+        _bounded_decoded_cfg_closure(
+            group_low=0x1000,
+            group_high=0x1002,
+            roots=(0x1000,),
+            decode=graph.__getitem__,
+        )
+
+
+def test_bounded_closure_accepts_proven_unknown_suffix_destruction_extent() -> None:
+    """A transient crossing may consume only an exact loaded UNKNOWN suffix."""
+    graph = {
+        0x1000: DecodedClosureInstruction(
+            0x1000,
+            6,
+            ((0x1000, 0x1006, 0x15, False, True),),
+            (DecodedClosureTransfer(
+                0x1006,
+                DecodedClosureTransferKind.FALLTHROUGH,
+                True,
+                "ida-loaded-unknown-suffix",
+            ),),
+            (0x1000, 0x1006),
+        )
+    }
+
+    result = _bounded_decoded_cfg_closure(
+        group_low=0x1000,
+        group_high=0x1004,
+        roots=(0x1000,),
+        decode=graph.__getitem__,
+    )
+
+    assert result.items == ((0x1000, 6),)
+    assert result.xrefs == ((0x1000, 0x1006, 0x15, False, True),)
 
 
 @pytest.mark.parametrize(

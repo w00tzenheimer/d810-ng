@@ -338,6 +338,7 @@ class NativeJournalState(str, enum.Enum):
     ROLLING_BACK = "ROLLING_BACK"
     RESTORING = "RESTORING"
     RESTORE_BYTES_RESTORED = "RESTORE_BYTES_RESTORED"
+    ANALYSIS_RECONCILED = "ANALYSIS_RECONCILED"
     RESTORED = "RESTORED"
     RESTORE_FAILED = "RESTORE_FAILED"
     RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
@@ -440,6 +441,7 @@ _LEGAL_NATIVE_JOURNAL_TRANSITIONS: dict[
     NativeJournalState.ROLLING_BACK: frozenset(
         {
             NativeJournalState.RESTORED,
+            NativeJournalState.ANALYSIS_RECONCILED,
             NativeJournalState.RESTORE_FAILED,
             NativeJournalState.RECOVERY_REQUIRED,
         }
@@ -457,6 +459,14 @@ _LEGAL_NATIVE_JOURNAL_TRANSITIONS: dict[
     # This durable receipt means a restart need not infer whether the
     # byte-reversal loop completed before it resumes metadata/analysis work.
     NativeJournalState.RESTORE_BYTES_RESTORED: frozenset(
+        {
+            NativeJournalState.ANALYSIS_RECONCILED,
+            NativeJournalState.RESTORED,
+            NativeJournalState.RESTORE_FAILED,
+            NativeJournalState.RECOVERY_REQUIRED,
+        }
+    ),
+    NativeJournalState.ANALYSIS_RECONCILED: frozenset(
         {
             NativeJournalState.RESTORED,
             NativeJournalState.RESTORE_FAILED,
@@ -818,6 +828,27 @@ class NativePatchJournalStore(Protocol):
     def analysis_phase_witness(
         self, transaction_id: NativePatchTransactionId
     ) -> str | None: ...
+
+    def analysis_phase_attestation(
+        self, transaction_id: NativePatchTransactionId
+    ) -> str | None: ...
+
+    def record_certificate_link(
+        self,
+        transaction_id: NativePatchTransactionId,
+        certificate_id: str,
+        plan_hash: str,
+        database_key: str,
+        function_key: str,
+    ) -> None: ...
+
+    def certificate_link(
+        self, transaction_id: NativePatchTransactionId
+    ) -> dict[str, str] | None: ...
+
+    def install_analysis_phase_attestation(
+        self, transaction_id: NativePatchTransactionId, attestation: str
+    ) -> None: ...
 
     def analysis_reverse_steps(
         self, transaction_id: NativePatchTransactionId

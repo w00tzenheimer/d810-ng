@@ -98,7 +98,14 @@ from d810.backends.ida.native_patch.preflight import (
 )
 from d810.backends.ida.native_patch.phase_schema import (
     AnalysisPhaseWitness,
+    canonical_phase_item_state,
+    PhaseExtent,
+    PhaseGlobalState,
+    PhaseItem,
+    PhaseXref,
     PhaseWitnessError,
+    make_analysis_phase_attestation,
+    parse_analysis_phase_attestation,
     parse_analysis_phase_witness,
 )
 from d810.backends.ida.native_patch.reanalysis import (
@@ -407,6 +414,10 @@ class NativePatchGateway:
         # cannot enter recovery with an ambiguous inverse authority.
         phase_witness = None
         if plan.analysis_phase_witness is not None:
+            if not plan.analysis_phase_witness.startswith("analysis-phase:v4:"):
+                raise NativePatchGatewayError(
+                    "closure-bearing plans require an analysis-phase:v4 witness"
+                )
             try:
                 phase_witness = parse_analysis_phase_witness(
                     plan.analysis_phase_witness
@@ -415,6 +426,10 @@ class NativePatchGateway:
                 raise NativePatchGatewayError(
                     f"malformed analysis phase witness: {error}"
                 ) from error
+            if any(operation.writes_bytes for operation in plan.operations):
+                raise NativePatchGatewayError(
+                    "closure-bearing phase plans must be metadata-only"
+                )
 
         record = self._journal.prepare(plan)
         self._mirror_transaction(record)
@@ -473,6 +488,28 @@ class NativePatchGateway:
                 )
             if phase_witness is not None:
                 self._verify_analysis_phase(plan, phase_witness)
+                # The v4 token is immutable semantic authorization.  Capture
+                # the complete concrete post-reanalysis partition separately;
+                # non-code item flags are IDA's observed authority and must
+                # never be fabricated by the planner.
+                observed_p = self._live_phase_global_state(phase_witness)
+                attestation = make_analysis_phase_attestation(
+                    plan.analysis_phase_witness,
+                    phase_witness,
+                    observed_p,
+                    record.transaction_id.value,
+                )
+                install_attestation = getattr(
+                    self._journal, "install_analysis_phase_attestation", None
+                )
+                if not callable(install_attestation):
+                    raise NativePatchCertificationFailed(
+                        record.transaction_id,
+                        "atomic observed analysis attestation authority is unavailable",
+                    )
+                install_attestation(
+                    record.transaction_id, attestation,
+                )
             else:
                 self._verify_metadata_actions(plan)
             record = self._journal.transition(
@@ -654,23 +691,44 @@ class NativePatchGateway:
         them in the order they were made would break those dependencies.
         """
         actions = self._journal.metadata_actions(transaction_id)
-        if not actions:
-            return ()
         if self._metadata_executor is None:
+            if not actions:
+                return ()
             return tuple(f"{a.kind}@{a.ea:#x}" for a in actions)
 
         phase = self._phase_witness_for_transaction(transaction_id)
+        if not actions and phase is None:
+            return ()
+        durable_auth = self._journal.analysis_phase_witness(transaction_id)
+        attestation_reader = getattr(self._journal, "analysis_phase_attestation", None)
+        if (
+            durable_auth is not None
+            and durable_auth.startswith("analysis-phase:v4:")
+            and callable(attestation_reader)
+            and attestation_reader(transaction_id) is None
+        ):
+            return ("analysis-phase:missing-observed-attestation",)
         if phase is not None:
             phase_state = self._analysis_phase_state(transaction_id, phase)
-            if phase_state == "P":
+            if phase_state in {"P", "R_i", "cleared-mid-carrier"}:
                 return self._reverse_analysis_phase(transaction_id, actions, phase)
-            if phase_state != "B":
+            if phase_state not in {"B", "partial-analysis"}:
                 return (f"analysis-phase:{phase_state}-recovery-required",)
+            if phase_state == "B":
+                try:
+                    live = self._live_phase_global_state(
+                        phase, items_field="before_items", xrefs_field="before_xrefs"
+                    )
+                    expected = self._expected_phase_global_state(phase, sealed=False)
+                    if live != expected:
+                        return ("analysis-phase:global-state-drift-recovery-required",)
+                except Exception:
+                    return ("analysis-phase:global-state-drift-recovery-required",)
             # Exact B is still the synchronous action partition.  It has not
             # crossed the reanalysis cut point, so ordinary journaled action
             # reversal is the exact inverse and closure recreation is not
             # authorized yet.
-        if any(
+        if phase is None and any(
             (_parse_scoped_item_state(action.expected_after, expected_ea=action.ea) or {}).get(
                 "origin_data_state"
             )
@@ -682,7 +740,7 @@ class NativePatchGateway:
             # is missing or malformed.
             return ("analysis-phase:missing-journal-witness",)
 
-        failed: list[str] = []
+        reversible: list[tuple[object, NativeMetadataActionKind]] = []
         for action in reversed(actions):
             try:
                 kind = NativeMetadataActionKind(action.kind)
@@ -694,8 +752,13 @@ class NativePatchGateway:
                 if current == action.recorded_before:
                     continue
                 if current != action.expected_after:
-                    failed.append(f"{action.kind}@{action.ea:#x}")
-                    continue
+                    return (f"{action.kind}@{action.ea:#x}",)
+                reversible.append((action, kind))
+            except Exception:
+                return (f"{action.kind}@{action.ea:#x}",)
+        failed: list[str] = []
+        for action, kind in reversible:
+            try:
                 ok = self._metadata_executor.apply_state(
                     kind, action.ea, action.recorded_before
                 )
@@ -705,75 +768,67 @@ class NativePatchGateway:
                 failed.append(f"{action.kind}@{action.ea:#x}")
         return tuple(failed)
 
-    def _phase_witness_for_transaction(
-        self, transaction_id: NativePatchTransactionId
-    ) -> AnalysisPhaseWitness | None:
-        durable = self._journal.analysis_phase_witness(transaction_id)
-        try:
-            return None if durable is None else parse_analysis_phase_witness(durable)
-        except PhaseWitnessError:
-            return None
-
     def _reverse_analysis_phase(
         self,
         transaction_id: NativePatchTransactionId,
         actions,
-        phase: dict[str, object],
+        phase: AnalysisPhaseWitness,
     ) -> tuple[str, ...]:
-        """Remove phase-B closure by natural enclosing-data recreation."""
+        """Remove phase-B closure by the durable natural inverse schedule."""
         assert self._metadata_executor is not None
         failures: list[str] = []
-        # P is the only valid starting point for the phase inverse.  In
-        # particular, a post-reanalysis exception must not cause recovery to
-        # mutate a partially analysed state.
         phase_state = self._analysis_phase_state(transaction_id, phase)
-        if phase_state != "P":
-            return (f"analysis-phase:{phase_state}-recovery-required",)
+        if phase_state not in {"P", "R_i", "cleared-mid-carrier"}:
+            return (
+                f"analysis-phase:{phase_state}"
+                "-recovery-required",
+            )
 
         schedule = phase.get("reverse_schedule")
         if not isinstance(schedule, tuple):
             return ("analysis-phase:missing-reverse-schedule",)
-        schedule_actions: dict[int, dict[str, object]] = {}
-        group_heads: list[int] = []
-        schedule_step_index: dict[tuple[str, int], int] = {}
         durable_steps = self._journal.analysis_reverse_steps(transaction_id)
         if len(durable_steps) != len(schedule):
             return ("analysis-phase:missing-reverse-schedule",)
+        try:
+            self._verify_reverse_cursor_global_state(
+                transaction_id, phase, durable_steps
+            )
+        except Exception:
+            return ("analysis-phase:reverse-cursor-drift",)
+        schedule_actions: dict[int, object] = {}
+        schedule_step_index: dict[tuple[str, int], int] = {}
+        group_heads: list[int] = []
         for step_index, entry in enumerate(schedule):
             kind = entry.get("kind")
             if kind == "action":
                 index = entry.get("index")
                 if (
                     not isinstance(index, int)
+                    or isinstance(index, bool)
                     or index < 0
                     or not isinstance(entry.get("action_kind"), str)
                     or not isinstance(entry.get("ea"), int)
+                    or isinstance(entry.get("ea"), bool)
                     or not isinstance(entry.get("expected_after"), str)
                 ):
                     return ("analysis-phase:malformed-reverse-schedule",)
                 if index in schedule_actions:
                     return ("analysis-phase:duplicate-reverse-action",)
-                schedule_actions[index] = {
-                    "action_kind": entry.get("action_kind"),
-                    "ea": entry.get("ea"),
-                    "expected_after": entry.get("expected_after"),
-                    "index": index,
-                }
+                schedule_actions[index] = entry
                 schedule_step_index[("action", index)] = step_index
             elif kind == "group" and isinstance(entry.get("head_ea"), int):
-                group_heads.append(int(entry["head_ea"]))
-                schedule_step_index[("group", int(entry["head_ea"]))] = step_index
+                head_ea = int(entry["head_ea"])
+                if head_ea in group_heads:
+                    return ("analysis-phase:duplicate-reverse-group",)
+                group_heads.append(head_ea)
+                schedule_step_index[("group", head_ea)] = step_index
             else:
                 return ("analysis-phase:malformed-reverse-schedule",)
-        if not schedule_actions:
-            return ("analysis-phase:incomplete-reverse-schedule",)
-        max_index = max(schedule_actions)
-        if set(schedule_actions) != set(range(max_index + 1)):
-            return ("analysis-phase:incomplete-reverse-schedule",)
-        for step_index, (row, entry) in enumerate(zip(durable_steps, schedule)):
-            if row["step_index"] != step_index or row["kind"] != entry.get("kind"):
+            row = durable_steps[step_index]
+            if row["step_index"] != step_index or row["kind"] != kind:
                 return ("analysis-phase:reverse-schedule-drift",)
-            if entry.get("kind") == "group":
+            if kind == "group":
                 if row["head_ea"] != entry.get("head_ea"):
                     return ("analysis-phase:reverse-schedule-drift",)
             elif (
@@ -783,37 +838,63 @@ class NativePatchGateway:
                 or row["expected_after"] != entry.get("expected_after")
             ):
                 return ("analysis-phase:reverse-schedule-drift",)
+        if not schedule_actions:
+            return ("analysis-phase:incomplete-reverse-schedule",)
 
-        # The schedule is authored against the complete plan, while the
-        # journal contains only actions that actually mutated state. Bind each
-        # journal row to its unique global action identity, then execute those
-        # rows in the persisted global order. This retains interleaving with
-        # no-op seals without pretending they were journaled mutations.
         journal_by_index: dict[int, object] = {}
         for action in actions:
             matches = [
-                index
-                for index, entry in schedule_actions.items()
-                if entry["action_kind"] == str(action.kind)
-                and int(entry["ea"]) == int(action.ea)
-                and entry["expected_after"] == action.expected_after
+                index for index, entry in schedule_actions.items()
+                if entry.get("action_kind") == str(action.kind)
+                and entry.get("ea") == action.ea
+                and entry.get("expected_after") == action.expected_after
             ]
             if len(matches) != 1:
                 return ("analysis-phase:action-schedule-identity-mismatch",)
             journal_by_index[matches[0]] = action
 
-        # Reverse journaled user-owned references first.  Their removals are
-        # part of the persisted R0 state consumed by the carrier steps below.
+        # User-owned actions are reversed in the persisted global order. A
+        # carrier action is only a witness; its enclosing group owns the P->R
+        # inverse and is executed at its durable group schedule position.
         for entry in schedule:
             if entry.get("kind") != "action":
                 continue
             action_index = int(entry["index"])
             step_index = schedule_step_index[("action", action_index)]
             action = journal_by_index.get(action_index)
-            intent = f"action:{action_index}:{entry['action_kind']}@{int(entry['ea']):#x}"
+            durable_step = durable_steps[step_index]
+            if durable_step["status"] == "complete":
+                # A completed action is already part of the durable reverse
+                # prefix.  Verify its exact before-state and never replay its
+                # mutator after a carrier interruption.
+                if action is not None:
+                    if (
+                        _parse_scoped_item_state(
+                            action.expected_after, expected_ea=action.ea
+                        )
+                        or {}
+                    ).get("origin_data_state") is not None:
+                        # Carrier item actions are durable witnesses for the
+                        # enclosing group; their data transition is executed
+                        # by the group step, not by this action row.
+                        continue
+                    try:
+                        kind = NativeMetadataActionKind(action.kind)
+                        current = self._metadata_executor.read_state(
+                            kind,
+                            action.ea,
+                            scope_state=_metadata_scope_hint(action.expected_after),
+                        )
+                    except Exception:
+                        current = None
+                    if current != action.recorded_before:
+                        failures.append(f"{action.kind}@{action.ea:#x}")
+                continue
             try:
                 self._journal.record_analysis_reverse_intent(
-                    transaction_id, step_index, intent
+                    transaction_id,
+                    step_index,
+                    f"action:{action_index}:{entry['action_kind']}@{int(entry['ea']):#x}",
                 )
             except Exception:
                 return ("analysis-phase:reverse-intent-drift",)
@@ -825,7 +906,9 @@ class NativePatchGateway:
                 except Exception:
                     return ("analysis-phase:reverse-completion-drift",)
                 continue
-            scope = _parse_scoped_item_state(action.expected_after, expected_ea=action.ea)
+            scope = _parse_scoped_item_state(
+                action.expected_after, expected_ea=action.ea
+            )
             if scope is not None and scope.get("origin_data_state") is not None:
                 try:
                     self._journal.record_analysis_reverse_completion(
@@ -837,17 +920,18 @@ class NativePatchGateway:
             try:
                 kind = NativeMetadataActionKind(action.kind)
                 current = self._metadata_executor.read_state(
-                    kind, action.ea, scope_state=_metadata_scope_hint(action.expected_after)
+                    kind, action.ea,
+                    scope_state=_metadata_scope_hint(action.expected_after),
                 )
                 if current == action.recorded_before:
                     self._journal.record_analysis_reverse_completion(
                         transaction_id, step_index, "action-already-restored"
                     )
-                    continue
-                if current != action.expected_after:
+                elif current != action.expected_after:
                     failures.append(f"{action.kind}@{action.ea:#x}")
-                    continue
-                if not self._metadata_executor.apply_state(kind, action.ea, action.recorded_before):
+                elif not self._metadata_executor.apply_state(
+                    kind, action.ea, action.recorded_before
+                ):
                     failures.append(f"{action.kind}@{action.ea:#x}")
                 else:
                     self._journal.record_analysis_reverse_completion(
@@ -858,46 +942,39 @@ class NativePatchGateway:
         if failures:
             return tuple(failures)
 
-        phase_by_head: dict[int, dict[str, object]] = {}
-        for raw_group in phase.get("groups", ()):
-            if not hasattr(raw_group, "get"):
-                return ("analysis-phase:malformed-reverse-groups",)
-            origin_token = raw_group.get("origin_data_state")
+        groups_by_head: dict[int, object] = {}
+        for group in phase.get("groups", ()):
+            origin_token = group.get("origin_data_state")
             if not isinstance(origin_token, str):
                 return ("analysis-phase:malformed-reverse-groups",)
             origin = _parse_reversible_data_item_state(origin_token)
             if origin is None:
                 return ("analysis-phase:malformed-reverse-groups",)
             head_ea = int(origin["head_ea"])
-            if head_ea in phase_by_head:
+            if head_ea in groups_by_head:
                 return ("analysis-phase:duplicate-reverse-group",)
-            phase_by_head[head_ea] = raw_group
-        if len(group_heads) != len(set(group_heads)) or set(group_heads) != set(phase_by_head):
+            groups_by_head[head_ea] = group
+        if set(group_heads) != set(groups_by_head):
             return ("analysis-phase:incomplete-reverse-groups",)
 
-        # The natural enclosing-data recreation is the sole P->origin
-        # inverse for each closure-bearing carrier. It must run after exact P
-        # verification and before any ordinary action reversal.
         for head_ea in group_heads:
-            group = phase_by_head[head_ea]
+            group = groups_by_head[head_ea]
             step_index = schedule_step_index[("group", head_ea)]
-            try:
-                self._journal.record_analysis_reverse_intent(
-                    transaction_id, step_index, f"carrier:{head_ea:#x}"
-                )
-            except Exception:
-                return ("analysis-phase:reverse-intent-drift",)
-            origin_token = group["origin_data_state"]
-            assert isinstance(origin_token, str)
-            origin = _parse_reversible_data_item_state(origin_token)
-            assert origin is not None
+            origin_token = group.get("origin_data_state")
             targets = group.get("group_targets")
-            if not isinstance(targets, list) or any(not isinstance(ea, int) for ea in targets):
+            if (
+                not isinstance(origin_token, str)
+                or not isinstance(targets, list)
+                or any(not isinstance(ea, int) or isinstance(ea, bool) for ea in targets)
+            ):
                 return ("analysis-phase:malformed-reverse-groups",)
             try:
+                origin = _parse_reversible_data_item_state(origin_token)
                 reverse_before = self._phase_xrefs(group, "reverse_before_xrefs")
                 reverse_after = self._phase_xrefs(group, "reverse_after_xrefs")
             except Exception:
+                return ("analysis-phase:malformed-reverse-groups",)
+            if origin is None:
                 return ("analysis-phase:malformed-reverse-groups",)
             origin_ea = int(origin["ea"])
             origin_head = int(origin["head_ea"])
@@ -909,8 +986,7 @@ class NativePatchGateway:
                 (
                     row for row in postconditions
                     if isinstance(row, dict)
-                    and isinstance(row.get("ea"), int)
-                    and int(row["ea"]) == origin_ea
+                    and row.get("ea") == origin_ea
                     and isinstance(row.get("state"), str)
                 ),
                 None,
@@ -918,7 +994,7 @@ class NativePatchGateway:
             if postcondition is None:
                 return ("analysis-phase:malformed-reverse-groups",)
             current_scope = _parse_scoped_item_state(
-                str(postcondition["state"]), expected_ea=origin_ea
+                postcondition["state"], expected_ea=origin_ea
             )
             if current_scope is None:
                 return ("analysis-phase:malformed-reverse-groups",)
@@ -929,17 +1005,16 @@ class NativePatchGateway:
                 item_state=str(current_scope["item_state"]),
                 xrefs=reverse_before,
                 origin_data_state=origin_token,
-                group_targets=tuple(int(ea) for ea in targets),
+                group_targets=tuple(targets),
             )
-            try:
+            durable_step = durable_steps[step_index]
+            if durable_step["status"] not in {"intent", "complete"}:
                 if self._metadata_executor.read_state(
                     NativeMetadataActionKind.RECREATE_ITEM,
                     origin_ea,
                     scope_state=current_state,
                 ) != current_state:
                     return ("analysis-phase:carrier-state-drift",)
-            except Exception:
-                return ("analysis-phase:carrier-state-drift",)
             inverse_data = json.loads(origin_token.removeprefix("data:v2:"))
             inverse_data["xrefs"] = [
                 {
@@ -954,31 +1029,81 @@ class NativePatchGateway:
             inverse_data_state = "data:v2:" + json.dumps(
                 inverse_data, sort_keys=True, separators=(",", ":")
             )
-            target = _scoped_item_token(
+            target_state = _scoped_item_token(
                 ea=origin_ea,
                 head_ea=origin_head,
                 size=origin_size,
                 item_state=inverse_data_state,
                 xrefs=reverse_after,
                 origin_data_state=origin_token,
-                group_targets=tuple(int(ea) for ea in targets),
+                group_targets=tuple(targets),
             )
             try:
-                ok = self._metadata_executor.apply_phase_inverse(origin_ea, target)
-            except Exception:
-                ok = False
-            if not ok:
-                failures.append(f"analysis-phase@{origin_ea:#x}")
-            else:
-                try:
-                    self._journal.record_analysis_reverse_completion(
-                        transaction_id, step_index, f"carrier-restored:{origin_ea:#x}"
+                if durable_step["status"] == "complete":
+                    self._verify_reverse_cursor_global_state(
+                        transaction_id,
+                        phase,
+                        self._journal.analysis_reverse_steps(transaction_id),
                     )
-                except Exception:
+                    continue
+                intent = (
+                    durable_step["intent"]
+                    if durable_step["status"] == "intent"
+                    else f"carrier:{head_ea:#x}"
+                )
+                self._journal.record_analysis_reverse_intent(
+                    transaction_id, step_index, intent
+                )
+                current_origin = self._metadata_executor.read_state(
+                    NativeMetadataActionKind.RECREATE_ITEM, origin_ea
+                )
+                if current_origin == origin_token:
+                    ok = True
+                elif current_origin == "unknown" and durable_step["status"] == "intent":
+                    ok = self._metadata_executor.recreate_data_item(
+                        origin_ea, target_state
+                    )
+                elif durable_step["status"] == "intent":
+                    ok = False
+                else:
+                    ok = self._metadata_executor.apply_phase_inverse(
+                        origin_ea, target_state
+                    )
+                if not ok:
                     failures.append(f"analysis-phase@{origin_ea:#x}")
-        if failures:
-            return tuple(failures)
+                else:
+                    self._journal.record_analysis_reverse_completion(
+                        transaction_id,
+                        step_index,
+                        f"carrier-restored:{origin_ea:#x}",
+                    )
+            except Exception:
+                failures.append(f"analysis-phase@{origin_ea:#x}")
         return tuple(failures)
+
+    def _phase_witness_for_transaction(
+        self, transaction_id: NativePatchTransactionId
+    ) -> AnalysisPhaseWitness | None:
+        attestation_reader = getattr(self._journal, "analysis_phase_attestation", None)
+        if callable(attestation_reader):
+            attestation_token = attestation_reader(transaction_id)
+            if attestation_token is not None:
+                try:
+                    attestation = parse_analysis_phase_attestation(attestation_token)
+                    return replace(
+                        attestation.phase_witness,
+                        sealed_state=attestation.observed_state,
+                        reverse_schedule=attestation.reverse_schedule,
+                    )
+                except PhaseWitnessError:
+                    return None
+        durable = self._journal.analysis_phase_witness(transaction_id)
+        if durable is not None and not durable.startswith("analysis-phase:v4:"):
+            return None
+        try:
+            return None if durable is None else parse_analysis_phase_witness(durable)
+        except PhaseWitnessError:
+            return None
 
     def _analysis_phase_state(
         self, transaction_id: NativePatchTransactionId, phase: AnalysisPhaseWitness
@@ -990,6 +1115,18 @@ class NativePatchGateway:
         partition, the sealed P partition, nor a completed R_i is recovery
         required and never enters an inverse mutator.
         """
+        record = self._journal.get(transaction_id)
+        # Before the durable analysis barrier, a miniature provider may
+        # expose the same code head as P. The journal lifecycle is the
+        # authority that distinguishes exact synchronous B/partial-A from
+        # post-reanalysis P and prevents a closure inverse too early.
+        if record is not None and record.state in {
+            NativeJournalState.PREPARED,
+            NativeJournalState.BYTES_APPLIED,
+            NativeJournalState.METADATA_APPLIED,
+            NativeJournalState.ANALYSIS_PENDING,
+        }:
+            return "B"
         try:
             self._verify_phase_partition(
                 phase, items_field="after_items", xrefs_field="after_xrefs"
@@ -1009,7 +1146,15 @@ class NativePatchGateway:
             return "cleared-mid-carrier"
         if any(row["status"] == "complete" for row in steps):
             return "R_i"
-        return "partial-analysis"
+        record = self._journal.get(transaction_id)
+        if record is not None and record.state in {
+            NativeJournalState.PREPARED,
+            NativeJournalState.BYTES_APPLIED,
+            NativeJournalState.METADATA_APPLIED,
+            NativeJournalState.ANALYSIS_PENDING,
+        }:
+            return "partial-analysis"
+        return "unknown"
 
     @staticmethod
     def _all_operations_cleanly_applied(
@@ -1070,7 +1215,7 @@ class NativePatchGateway:
     @staticmethod
     def _parse_analysis_phase_witness(plan: NativePatchPlan) -> AnalysisPhaseWitness:
         token = plan.analysis_phase_witness
-        if not isinstance(token, str):
+        if not isinstance(token, str) or not token.startswith("analysis-phase:v4:"):
             raise NativePatchCertificationFailed(
                 NativePatchTransactionId("phase-witness"),
                 "missing or unsupported analysis phase witness",
@@ -1147,6 +1292,8 @@ class NativePatchGateway:
                 if ea in seen:
                     raise MetadataStateMismatch("analysis-phase", ea, "unique item", repr(row))
                 seen.add(ea)
+                if item_state == "unknown":
+                    continue
                 expected = _scoped_item_token(
                     ea=int(ea),
                     head_ea=int(origin["head_ea"]),
@@ -1163,6 +1310,183 @@ class NativePatchGateway:
                 )
                 if observed != expected:
                     raise MetadataStateMismatch("analysis-phase", int(ea), expected, observed)
+
+    def _expected_phase_global_state(
+        self, phase: AnalysisPhaseWitness, *, sealed: bool
+    ) -> PhaseGlobalState:
+        items: dict[tuple[int, int], PhaseItem] = {}
+        xrefs: dict[tuple[int, int, int, bool, bool], PhaseXref] = {}
+        for group in phase.groups:
+            raw_items = group.after_items if sealed else group.before_items
+            raw_xrefs = group.after_xrefs if sealed else group.before_xrefs
+            for item in raw_items:
+                items[(item.ea, item.size)] = item
+            for row in raw_xrefs:
+                xrefs[(row.source_ea, row.target_ea, row.xref_type, row.user_owned, row.is_code)] = row
+        if phase.sealed_state is not None:
+            extents = phase.sealed_state.extents
+        else:
+            extents = tuple(
+                PhaseExtent(
+                    int(_parse_reversible_data_item_state(group.origin_data_state)["head_ea"]),
+                    int(_parse_reversible_data_item_state(group.origin_data_state)["head_ea"])
+                    + int(_parse_reversible_data_item_state(group.origin_data_state)["size"]),
+                )
+                for group in phase.groups
+            )
+        return PhaseGlobalState(
+            items=tuple(sorted(items.values(), key=lambda row: (row.ea, row.size, row.state))),
+            xrefs=tuple(sorted(xrefs.values(), key=lambda row: (
+                row.source_ea, row.target_ea, row.xref_type, row.user_owned, row.is_code
+            ))),
+            extents=extents,
+        )
+
+    def _live_phase_global_state(
+        self, phase: AnalysisPhaseWitness, *, items_field: str = "after_items", xrefs_field: str = "after_xrefs"
+    ) -> PhaseGlobalState:
+        """Reconstruct the complete live global state through the provider seam."""
+        assert self._metadata_executor is not None
+        enumerate_partition = getattr(self._metadata_executor, "enumerate_item_partition", None)
+        if not callable(enumerate_partition):
+            raise MetadataStateMismatch("analysis-phase", 0, "item partition provider", "missing")
+        items: dict[tuple[int, int], PhaseItem] = {}
+        xrefs: dict[tuple[int, int, int, bool, bool], PhaseXref] = {}
+        if phase.sealed_state is None:
+            raise MetadataStateMismatch("analysis-phase", 0, "sealed extents", "missing")
+        extents = [(extent.low, extent.high) for extent in phase.sealed_state.extents]
+        if not extents:
+            raise MetadataStateMismatch("analysis-phase", 0, "sealed extents", "empty")
+        for low, high in extents:
+            try:
+                partition = enumerate_partition(low, high)
+            except Exception as error:
+                raise MetadataStateMismatch("analysis-phase", low, "item partition", repr(error)) from error
+            for ea, size, state in partition:
+                if (
+                    not isinstance(ea, int) or isinstance(ea, bool)
+                    or not isinstance(size, int) or isinstance(size, bool)
+                    or size <= 0 or not isinstance(state, str) or not state
+                ):
+                    raise MetadataStateMismatch("analysis-phase", low, "item partition", repr((ea, size, state)))
+                try:
+                    state = canonical_phase_item_state(state, head_ea=ea)
+                except PhaseWitnessError as error:
+                    raise MetadataStateMismatch(
+                        "analysis-phase", ea, "canonical item state", repr(error)
+                    ) from error
+                item = PhaseItem(ea, size, state)
+                key = (item.ea, item.size)
+                previous = items.get(key)
+                if previous is not None and previous.state != item.state:
+                    raise MetadataStateMismatch("analysis-phase", low, "item partition", repr((previous, item)))
+                items[key] = item
+        enumerate_xrefs = getattr(self._metadata_executor, "enumerate_scoped_xrefs", None)
+        if not callable(enumerate_xrefs):
+            raise MetadataStateMismatch("analysis-phase", 0, "scoped xref provider", "missing")
+        try:
+            raw_xrefs = enumerate_xrefs(tuple(extents))
+        except Exception as error:
+            raise MetadataStateMismatch("analysis-phase", 0, "scoped xrefs", repr(error)) from error
+        for row in raw_xrefs:
+            if not isinstance(row, (tuple, list)) or len(row) != 5:
+                raise MetadataStateMismatch("analysis-phase", 0, "scoped xrefs", repr(row))
+            source, target, xref_type, user_owned, is_code = row
+            if (
+                not isinstance(source, int) or isinstance(source, bool)
+                or not isinstance(target, int) or isinstance(target, bool)
+                or not isinstance(xref_type, int) or isinstance(xref_type, bool)
+                or not isinstance(user_owned, bool) or not isinstance(is_code, bool)
+            ):
+                raise MetadataStateMismatch("analysis-phase", 0, "scoped xrefs", repr(row))
+            ref = PhaseXref(source, target, xref_type, user_owned, is_code)
+            xrefs[(source, target, xref_type, user_owned, is_code)] = ref
+        # Overlapping carrier extents can enumerate the same UNKNOWN bytes
+        # from two provider views.  Canonicalize the union as one partition,
+        # letting concrete items win and regenerating UNKNOWN complements.
+        merged_extents: list[tuple[int, int]] = []
+        for low, high in sorted(extents):
+            if merged_extents and low <= merged_extents[-1][1]:
+                merged_extents[-1] = (
+                    merged_extents[-1][0], max(merged_extents[-1][1], high)
+                )
+            else:
+                merged_extents.append((low, high))
+        concrete = sorted(
+            (item for item in items.values() if item.state != "unknown"),
+            key=lambda item: (item.ea, item.size, item.state),
+        )
+        previous_end = -1
+        for item in concrete:
+            if item.ea < previous_end:
+                raise MetadataStateMismatch(
+                    "analysis-phase", item.ea, "non-overlapping items", repr(item)
+                )
+            previous_end = item.ea + item.size
+        canonical_items: list[PhaseItem] = []
+        for low, high in merged_extents:
+            cursor = low
+            for item in concrete:
+                item_end = item.ea + item.size
+                if item_end <= low:
+                    continue
+                if item.ea >= high:
+                    break
+                if item.ea < cursor or item_end > high:
+                    raise MetadataStateMismatch(
+                        "analysis-phase", item.ea, "item within extents", repr(item)
+                    )
+                if item.ea > cursor:
+                    canonical_items.append(PhaseItem(cursor, item.ea - cursor, "unknown"))
+                canonical_items.append(item)
+                cursor = item_end
+            if cursor < high:
+                canonical_items.append(PhaseItem(cursor, high - cursor, "unknown"))
+        return PhaseGlobalState(
+            items=tuple(canonical_items),
+            xrefs=tuple(sorted(xrefs.values(), key=lambda row: (
+                row.source_ea, row.target_ea, row.xref_type, row.user_owned, row.is_code
+            ))),
+            extents=tuple(PhaseExtent(low, high) for low, high in extents),
+        )
+
+    def _verify_reverse_cursor_global_state(
+        self,
+        transaction_id: NativePatchTransactionId,
+        phase: AnalysisPhaseWitness,
+        steps: tuple[dict[str, object], ...],
+        *,
+        allow_intent_after: bool = True,
+    ) -> None:
+        """Preflight the exact global state before any reverse mutation."""
+        if phase.sealed_state is None or phase.origin_state is None:
+            raise MetadataStateMismatch("analysis-phase", 0, "global state", "missing")
+        live = self._live_phase_global_state(phase)
+        statuses = [row.get("status") for row in steps]
+        if any(status not in {"pending", "intent", "complete"} for status in statuses):
+            raise MetadataStateMismatch("analysis-phase", 0, "cursor", repr(steps))
+        complete = [index for index, status in enumerate(statuses) if status == "complete"]
+        intents = [index for index, status in enumerate(statuses) if status == "intent"]
+        if complete != list(range(len(complete))):
+            raise MetadataStateMismatch("analysis-phase", 0, "cursor", repr(steps))
+        if len(intents) > 1 or (intents and intents[0] != len(complete)):
+            raise MetadataStateMismatch("analysis-phase", 0, "cursor", repr(steps))
+        if intents and any(status != "pending" for status in statuses[intents[0] + 1 :]):
+            raise MetadataStateMismatch("analysis-phase", 0, "cursor", repr(steps))
+        if intents:
+            index = intents[0]
+            step = phase.reverse_schedule[index]
+            allowed = {step.global_before}
+            if allow_intent_after:
+                allowed.add(step.global_after)
+            if step.cleared_state is not None:
+                allowed.add(step.cleared_state)
+            if live not in allowed:
+                raise MetadataStateMismatch("analysis-phase", 0, "intent global state", repr(live))
+            return
+        expected = phase.sealed_state if not complete else phase.reverse_schedule[complete[-1]].global_after
+        if live != expected:
+            raise MetadataStateMismatch("analysis-phase", 0, "cursor global state", repr(live))
 
     def _verify_analysis_phase(
         self, plan: NativePatchPlan, phase: AnalysisPhaseWitness | None = None
@@ -1439,6 +1763,23 @@ class NativePatchGateway:
             (kind, ea, state)
             for (kind, ea), state in sorted(final_actions.items())
         )
+        authorization_hash = None
+        attestation_hash = None
+        attestation_locator = None
+        if plan.analysis_phase_witness is not None:
+            authorization_hash = hashlib.sha256(
+                plan.analysis_phase_witness.encode()
+            ).hexdigest()
+            attestation_token = self._journal.analysis_phase_attestation(
+                record.transaction_id
+            )
+            if attestation_token is None:
+                raise NativePatchCertificationFailed(
+                    record.transaction_id,
+                    "observed analysis-phase attestation is missing",
+                )
+            attestation_hash = hashlib.sha256(attestation_token.encode()).hexdigest()
+            attestation_locator = record.transaction_id.value
         return NativeCertificate(
             certificate_id=uuid4().hex,
             schema_version=phase_schema,
@@ -1457,6 +1798,9 @@ class NativePatchGateway:
             certified_at=time.time(),
             metadata_postconditions=postconditions,
             analysis_phase_witness=plan.analysis_phase_witness,
+            analysis_phase_authorization_hash=authorization_hash,
+            analysis_phase_attestation_hash=attestation_hash,
+            analysis_phase_attestation_locator=attestation_locator,
         )
 
     def _recapture_fingerprint(
@@ -1528,6 +1872,80 @@ class NativePatchGateway:
                 == plan.analysis_phase_witness
             ):
                 return False
+        if certificate.schema_version == 4:
+            if plan.analysis_phase_witness is None:
+                return False
+            authorization_hash = hashlib.sha256(
+                plan.analysis_phase_witness.encode()
+            ).hexdigest()
+            if certificate.analysis_phase_authorization_hash != authorization_hash:
+                return False
+            locator = certificate.analysis_phase_attestation_locator
+            if not isinstance(locator, str) or not locator:
+                return False
+            linked_transaction = self._journal.get(
+                NativePatchTransactionId(locator)
+            )
+            if linked_transaction is None:
+                return False
+            if linked_transaction.state is not NativeJournalState.CERTIFIED:
+                return False
+            if linked_transaction.database_identity != plan.database_identity.idb_uuid:
+                return False
+            if (
+                linked_transaction.plan_hash != plan.plan_hash
+                or certificate.native_plan_hash != plan.plan_hash
+                or certificate.database_identity != plan.database_identity
+            ):
+                return False
+            link_reader = getattr(self._journal, "certificate_link", None)
+            link = link_reader(NativePatchTransactionId(locator)) if callable(link_reader) else None
+            expected_database_key = self._certificate_key(
+                plan.function_identity.entry_ea, plan.database_identity
+            )
+            expected_function_key = json.dumps(
+                {
+                    "entry_ea": plan.function_identity.entry_ea,
+                    "chunk_ranges": [
+                        [row.start_ea, row.end_ea]
+                        for row in plan.function_identity.chunk_ranges
+                    ],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if link != {
+                "certificate_id": certificate.certificate_id,
+                "plan_hash": plan.plan_hash,
+                "database_key": expected_database_key,
+                "function_key": expected_function_key,
+            }:
+                return False
+            attestation_token = self._journal.analysis_phase_attestation(
+                NativePatchTransactionId(locator)
+            )
+            if attestation_token is None or certificate.analysis_phase_attestation_hash != hashlib.sha256(
+                attestation_token.encode()
+            ).hexdigest():
+                return False
+            try:
+                attestation = parse_analysis_phase_attestation(attestation_token)
+                if attestation.transaction_id != locator:
+                    return False
+                if attestation.phase_witness.token != plan.analysis_phase_witness:
+                    return False
+                phase = parse_analysis_phase_witness(plan.analysis_phase_witness)
+                if self._live_phase_global_state(phase) != attestation.observed_state:
+                    return False
+            except (PhaseWitnessError, MetadataStateMismatch):
+                return False
+        if certificate.analysis_phase_authorization_hash is not None:
+            if plan.analysis_phase_witness is None or hashlib.sha256(
+                plan.analysis_phase_witness.encode()
+            ).hexdigest() != certificate.analysis_phase_authorization_hash:
+                return False
+        if certificate.schema_version == 4 and certificate.analysis_phase_attestation_hash is None:
+            return False
         if self._metadata_executor is None:
             return False
         if certificate.analysis_phase_witness is not None:
@@ -1575,6 +1993,25 @@ class NativePatchGateway:
         )
         self._certificate_store.set_native_patch_blob(
             "certificate", key, certificate_to_payload(certificate)
+        )
+        database_key = key
+        function_key = json.dumps(
+            {
+                "entry_ea": plan.function_identity.entry_ea,
+                "chunk_ranges": [
+                    [row.start_ea, row.end_ea]
+                    for row in plan.function_identity.chunk_ranges
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self._journal.record_certificate_link(
+            transaction_id,
+            certificate.certificate_id,
+            certificate.native_plan_hash,
+            database_key,
+            function_key,
         )
 
     def _revoke_certificate(self, transaction_id: NativePatchTransactionId) -> bool:
@@ -1688,9 +2125,14 @@ class NativePatchGateway:
                 NativeJournalState.RESTORING,
                 note="Stage C postcondition failed; restoring pending overlay",
             )
+        elif record.state is NativeJournalState.ANALYSIS_RECONCILED:
+            # Resume from the durable post-analysis cut below.  No lifecycle
+            # operation may run again before the origin proof.
+            pass
         elif record.state not in {
             NativeJournalState.RESTORING,
             NativeJournalState.RESTORE_BYTES_RESTORED,
+            NativeJournalState.ANALYSIS_RECONCILED,
         }:
             raise NativePatchRestoreNotCertified(record.state)
 
@@ -1733,6 +2175,140 @@ class NativePatchGateway:
                 note="restore byte image reconciled",
             )
 
+        if record.state is NativeJournalState.ANALYSIS_RECONCILED:
+            try:
+                phase = self._phase_witness_for_transaction(transaction_id)
+                if phase is not None:
+                    self._verify_phase_origin(phase)
+                certificate_revoked = self._revoke_certificate(transaction_id)
+            except Exception as error:
+                return self._restore_failed(
+                    transaction_id,
+                    restored_eas=restored_eas,
+                    reason=f"analysis reconciliation cut verification raised: {error}",
+                )
+            if not certificate_revoked:
+                record = self._journal.transition(
+                    transaction_id,
+                    NativeJournalState.RECOVERY_REQUIRED,
+                    note="database restored but applied certificate could not be revoked",
+                )
+                return NativeRestoreReceipt(
+                    transaction_id=transaction_id,
+                    state=record.state,
+                    restored_eas=restored_eas,
+                    interference_eas=(),
+                    controlled_redo_function_eas=self._function_eas_for_transaction(transaction_id),
+                )
+            record = self._journal.transition(
+                transaction_id, NativeJournalState.RESTORED,
+                note="explicit restore resumed after analysis reconciliation",
+            )
+            return NativeRestoreReceipt(
+                transaction_id=transaction_id,
+                state=record.state,
+                restored_eas=restored_eas,
+                interference_eas=(),
+                controlled_redo_function_eas=self._function_eas_for_transaction(transaction_id),
+            )
+
+        # Closure-bearing plans are metadata-only.  Their exact inverse is
+        # authorized directly from observed P and must not be preceded by a
+        # fresh analysis/redo pass that can rematerialize the closure.
+        phase_only = self._phase_witness_for_transaction(transaction_id)
+        if phase_only is not None:
+            try:
+                # Reconcile the owning function lifecycle while the exact P
+                # closure still exists.  No inverse mutation is permitted
+                # until this pass completes and P is reread unchanged.
+                phase_state = self._analysis_phase_state(transaction_id, phase_only)
+                if phase_state not in {"P", "R_i", "cleared-mid-carrier"}:
+                    raise MetadataStateMismatch(
+                        "analysis-phase", 0, "exact post-analysis state", "drift"
+                    )
+                lifecycle_functions = self._function_eas_for_transaction(
+                    transaction_id
+                )
+                ownership_failures = self._restore_function_extents(transaction_id)
+                if ownership_failures:
+                    raise MetadataStateMismatch(
+                        "analysis-phase", 0,
+                        "pre-inverse function ownership", ownership_failures,
+                    )
+                if phase_state == "P":
+                    for function_ea in lifecycle_functions:
+                        reanalyze_and_wait(function_ea, reanalyzer=self._reanalyzer)
+                        invalidate_target_and_callers(
+                            function_ea,
+                            invalidator=self._cache_invalidator,
+                            discovery=self._caller_discovery,
+                        )
+                        controlled_redo(function_ea, decompiler=self._redo_decompiler)
+                    if self._analysis_phase_state(transaction_id, phase_only) != "P":
+                        raise MetadataStateMismatch(
+                            "analysis-phase", 0, "stable post-analysis state", "drift"
+                        )
+                else:
+                    self._verify_reverse_cursor_global_state(
+                        transaction_id,
+                        phase_only,
+                        self._journal.analysis_reverse_steps(transaction_id),
+                    )
+                unreversed_metadata = self._reverse_metadata_actions(transaction_id)
+                if unreversed_metadata:
+                    record = self._journal.transition(
+                        transaction_id,
+                        NativeJournalState.RECOVERY_REQUIRED,
+                        note=f"phase inverse failed: {unreversed_metadata}",
+                    )
+                    return NativeRestoreReceipt(
+                        transaction_id=transaction_id,
+                        state=record.state,
+                        restored_eas=restored_eas,
+                        interference_eas=(),
+                        failure_reason=";".join(unreversed_metadata),
+                    )
+                post_extent_failures = self._restore_function_extents(transaction_id)
+                post_flow_failures = self._restore_function_flow_refs(transaction_id)
+                if post_extent_failures or post_flow_failures:
+                    raise MetadataStateMismatch(
+                        "analysis-phase", 0, "post-inverse lifecycle", (
+                            post_extent_failures, post_flow_failures
+                        )
+                    )
+                for function_ea in self._function_eas_for_transaction(transaction_id):
+                    invalidate_target_and_callers(
+                        function_ea,
+                        invalidator=self._cache_invalidator,
+                        discovery=self._caller_discovery,
+                    )
+                self._journal.transition(
+                    transaction_id,
+                    NativeJournalState.ANALYSIS_RECONCILED,
+                    note="metadata-only phase inverse reconciled without reanalysis",
+                )
+                self._verify_phase_origin(phase_only)
+                if not self._revoke_certificate(transaction_id):
+                    raise RuntimeError("applied certificate could not be revoked")
+                record = self._journal.transition(
+                    transaction_id,
+                    NativeJournalState.RESTORED,
+                    note="metadata-only phase restore complete",
+                )
+                return NativeRestoreReceipt(
+                    transaction_id=transaction_id,
+                    state=record.state,
+                    restored_eas=restored_eas,
+                    interference_eas=(),
+                    controlled_redo_function_eas=(),
+                )
+            except Exception as error:
+                return self._restore_failed(
+                    transaction_id,
+                    restored_eas=restored_eas,
+                    reason=f"metadata-only phase restore raised: {error}",
+                )
+
         # Re-establish the pre-patch function extent BEFORE reanalysis.
         #
         # Order matters. Restoring bytes is not restoring state: erasing a
@@ -1742,7 +2318,11 @@ class NativePatchGateway:
         # reanalyze+invalidate runs over the whole restored function rather
         # than the truncated one.
         try:
-            unreversed_metadata = self._reverse_metadata_actions(transaction_id)
+            # Defer the exact phase inverse until after the final lifecycle
+            # pass.  Reanalysis may decode restored bytes back into transient
+            # code items; carrier deletion must be the last operation that
+            # can remove those items.
+            unreversed_metadata: tuple[str, ...] = ()
             unrestored_extents = self._restore_function_extents(transaction_id)
 
             reanalyzed_function_eas = self._function_eas_for_transaction(transaction_id)
@@ -1755,7 +2335,15 @@ class NativePatchGateway:
                 )
             )
 
-            unrestored_flow_refs = self._restore_function_flow_refs(transaction_id)
+            # Keep the journaled flow graph at the exact sealed phase while
+            # the carrier inverse runs.  Restoring original flow refs here
+            # would make the live state neither P nor an authorized R_i cut;
+            # apply that final origin reconciliation after carrier recreation.
+            unrestored_flow_refs: tuple[str, ...] = (
+                ()
+                if self._phase_witness_for_transaction(transaction_id) is not None
+                else self._restore_function_flow_refs(transaction_id)
+            )
             for function_ea in reanalyzed_function_eas:
                 invalidate_target_and_callers(
                     function_ea,
@@ -1773,12 +2361,6 @@ class NativePatchGateway:
                     unrestored_extents + self._restore_function_extents(transaction_id)
                 )
             )
-            unrestored_flow_refs = tuple(
-                dict.fromkeys(
-                    unrestored_flow_refs
-                    + self._restore_function_flow_refs(transaction_id)
-                )
-            )
             for function_ea in reanalyzed_function_eas:
                 invalidate_target_and_callers(
                     function_ea,
@@ -1786,14 +2368,26 @@ class NativePatchGateway:
                     discovery=self._caller_discovery,
                 )
 
-            # The inverse is not complete until every phase carrier has been
-            # reread as its exact original data snapshot after the final
-            # reanalysis/redo cycle.  A successful primitive return alone is
-            # insufficient: IDA may recreate a visually similar item with
-            # different flags, bytes, or outgoing data xrefs.
-            phase = self._phase_witness_for_transaction(transaction_id)
-            if phase is not None:
-                self._verify_phase_origin(phase)
+            unreversed_metadata = self._reverse_metadata_actions(transaction_id)
+            if not unreversed_metadata:
+                unrestored_flow_refs = self._restore_function_flow_refs(transaction_id)
+
+            # This is the last lifecycle operation.  Persist the cut before
+            # reading the final origin witness so a crash cannot repeat
+            # analysis/redo after the exact inverse has been established.
+            if not unreversed_metadata and not unrestored_flow_refs:
+                self._journal.transition(
+                    transaction_id,
+                    NativeJournalState.ANALYSIS_RECONCILED,
+                    note="restore lifecycle reconciliation complete",
+                )
+
+                # The inverse is not complete until every phase carrier has
+                # been reread as its exact original data snapshot after the
+                # final reanalysis/redo cycle.
+                phase = self._phase_witness_for_transaction(transaction_id)
+                if phase is not None:
+                    self._verify_phase_origin(phase)
         except Exception as error:
             return self._restore_failed(
                 transaction_id,
@@ -2026,19 +2620,11 @@ class NativePatchGateway:
     def _function_eas_for_transaction(
         self, transaction_id: NativePatchTransactionId
     ) -> tuple[int, ...]:
-        anchors: dict[str, int] = {}
-        for record in self._journal.operation_bytes(transaction_id):
-            if (
-                record.operation_id not in anchors
-                or record.ea < anchors[record.operation_id]
-            ):
-                anchors[record.operation_id] = record.ea
         seen: dict[int, None] = {}
-        for anchor_ea in anchors.values():
-            ownership = self._reader.read_function_ownership(anchor_ea)
-            if ownership is None:
-                continue
-            seen[ownership.owning_function_entry_ea] = None
+        for entry_ea, _chunks in self._journal.operation_ownership(
+            transaction_id
+        ).values():
+            seen[int(entry_ea)] = None
         return tuple(seen.keys())
 
     # ------------------------------------------------------------------
@@ -2065,6 +2651,7 @@ class NativePatchGateway:
         if record.state in {
             NativeJournalState.RESTORING,
             NativeJournalState.RESTORE_BYTES_RESTORED,
+            NativeJournalState.ANALYSIS_RECONCILED,
             NativeJournalState.RESTORE_FAILED,
         }:
             self.restore(transaction_id)
@@ -2075,6 +2662,109 @@ class NativePatchGateway:
         if record.state is NativeJournalState.RECOVERY_REQUIRED:
             return
         self._emergency_recover(transaction_id)
+
+    def _emergency_recover_phase(
+        self,
+        transaction_id: NativePatchTransactionId,
+        phase: AnalysisPhaseWitness,
+    ) -> bool:
+        """Recover a phase transaction with the same ordered lifecycle as restore.
+
+        This lane is entered only after the journal has classified the live
+        state as P, an exact R_i cut, or a durable cleared carrier intent.
+        Ownership is journal authority; after the inverse starts, no analysis
+        operation is allowed to run again.
+        """
+        phase_state = self._analysis_phase_state(transaction_id, phase)
+        if phase_state not in {"P", "R_i", "cleared-mid-carrier"}:
+            self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note=f"phase recovery state is {phase_state}",
+            )
+            return False
+        function_eas = self._function_eas_for_transaction(transaction_id)
+        # Every accepted post-analysis cut must begin by reasserting the
+        # journaled ownership/flags/type snapshot.  R_i and cleared cuts do
+        # not need fresh analysis, but they still need the same ownership
+        # authority before their remaining inverse can mutate metadata.
+        ownership_failures = self._restore_function_extents(transaction_id)
+        if ownership_failures:
+            self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note=f"phase ownership restore failed: {ownership_failures}",
+            )
+            return False
+        if phase_state == "P":
+            try:
+                for function_ea in function_eas:
+                    reanalyze_and_wait(function_ea, reanalyzer=self._reanalyzer)
+                    invalidate_target_and_callers(
+                        function_ea,
+                        invalidator=self._cache_invalidator,
+                        discovery=self._caller_discovery,
+                    )
+                    controlled_redo(function_ea, decompiler=self._redo_decompiler)
+            except Exception as error:
+                self._journal.transition(
+                    transaction_id,
+                    NativeJournalState.RECOVERY_REQUIRED,
+                    note=f"phase lifecycle reconciliation failed: {error}",
+                )
+                return False
+            if self._analysis_phase_state(transaction_id, phase) != "P":
+                self._journal.transition(
+                    transaction_id,
+                    NativeJournalState.RECOVERY_REQUIRED,
+                    note="phase P drifted before inverse",
+                )
+                return False
+        failures = self._reverse_metadata_actions(transaction_id)
+        if failures:
+            self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note=f"phase inverse failed: {failures}",
+            )
+            return False
+        self._journal.transition(
+            transaction_id,
+            NativeJournalState.ANALYSIS_RECONCILED,
+            note="phase inverse completed before flow restoration",
+        )
+        flow_failures = self._restore_function_flow_refs(transaction_id)
+        for function_ea in function_eas:
+            try:
+                invalidate_target_and_callers(
+                    function_ea,
+                    invalidator=self._cache_invalidator,
+                    discovery=self._caller_discovery,
+                )
+            except Exception as error:
+                flow_failures = tuple(flow_failures) + (str(error),)
+        if flow_failures:
+            self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note=f"phase flow restoration failed: {flow_failures}",
+            )
+            return False
+        try:
+            self._verify_phase_origin(phase)
+        except Exception as error:
+            self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note=f"phase origin verification failed: {error}",
+            )
+            return False
+        self._journal.transition(
+            transaction_id,
+            NativeJournalState.RESTORED,
+            note="phase apply failure recovered",
+        )
+        return True
 
     def _emergency_recover(self, transaction_id: NativePatchTransactionId) -> None:
         record = self._journal.get(transaction_id)
@@ -2099,6 +2789,33 @@ class NativePatchGateway:
                     note="certificate persistence interrupted; certificate cleanup failed",
                 )
                 return
+
+        phase = self._phase_witness_for_transaction(transaction_id)
+        attestation_reader = getattr(self._journal, "analysis_phase_attestation", None)
+        durable_auth = self._journal.analysis_phase_witness(transaction_id)
+        if (
+            durable_auth is not None
+            and durable_auth.startswith("analysis-phase:v4:")
+            and callable(attestation_reader)
+            and attestation_reader(transaction_id) is None
+        ):
+            self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note="phase recovery requires a durable observed attestation",
+            )
+            return
+        if phase is not None and self._analysis_phase_state(
+            transaction_id, phase
+        ) in {"P", "R_i", "cleared-mid-carrier"}:
+            if record.state is not NativeJournalState.ROLLING_BACK:
+                record = self._journal.transition(
+                    transaction_id,
+                    NativeJournalState.ROLLING_BACK,
+                    note="phase apply failure entering ordered inverse lane",
+                )
+            self._emergency_recover_phase(transaction_id, phase)
+            return
 
         unreversed_metadata = self._reverse_metadata_actions(transaction_id)
         if unreversed_metadata:

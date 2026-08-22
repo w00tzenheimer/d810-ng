@@ -831,6 +831,9 @@ class NativeCertificate:
     observed_native_cfg_fingerprint: str | None = None
     metadata_postconditions: tuple[tuple[str, int, str], ...] = ()
     analysis_phase_witness: str | None = None
+    analysis_phase_authorization_hash: str | None = None
+    analysis_phase_attestation_hash: str | None = None
+    analysis_phase_attestation_locator: str | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.certificate_id, "certificate_id")
@@ -861,11 +864,37 @@ class NativeCertificate:
             raise ValueError(
                 f"certificate schema {self.schema_version} cannot carry a phase witness"
             )
+        if self.schema_version in {2, 3} and (
+            self.analysis_phase_authorization_hash is not None
+            or self.analysis_phase_attestation_hash is not None
+            or self.analysis_phase_attestation_locator is not None
+        ):
+            raise ValueError(
+                f"certificate schema {self.schema_version} cannot carry phase hashes"
+            )
         if self.schema_version == 4 and (
             self.analysis_phase_witness is None
             or not self.analysis_phase_witness.startswith("analysis-phase:v4:")
         ):
             raise ValueError("certificate schema 4 requires an analysis-phase:v4 witness")
+        if self.schema_version == 4 and (
+            self.analysis_phase_authorization_hash is None
+            or self.analysis_phase_attestation_hash is None
+            or self.analysis_phase_attestation_locator is None
+            or not isinstance(self.analysis_phase_attestation_locator, str)
+            or not self.analysis_phase_attestation_locator
+        ):
+            raise ValueError("certificate schema 4 requires phase hashes and locator")
+        for value, field in (
+            (self.analysis_phase_authorization_hash, "analysis_phase_authorization_hash"),
+            (self.analysis_phase_attestation_hash, "analysis_phase_attestation_hash"),
+        ):
+            if value is not None and (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(char not in "0123456789abcdef" for char in value)
+            ):
+                raise ValueError(f"{field} must be a lowercase sha256 hash")
 
 
 def certificate_to_payload(certificate: NativeCertificate) -> dict:
@@ -874,7 +903,7 @@ def certificate_to_payload(certificate: NativeCertificate) -> dict:
     The only representation ``d810.core.persistence``'s opaque blob storage
     ever sees -- see the layering note above ``NativeCertificate``.
     """
-    return {
+    payload = {
         "certificate_id": certificate.certificate_id,
         "schema_version": certificate.schema_version,
         "database_identity": dataclasses.asdict(certificate.database_identity),
@@ -905,8 +934,17 @@ def certificate_to_payload(certificate: NativeCertificate) -> dict:
             [kind, ea, state]
             for kind, ea, state in certificate.metadata_postconditions
         ],
-        "analysis_phase_witness": certificate.analysis_phase_witness,
     }
+    if certificate.schema_version == 4:
+        payload.update(
+            {
+                "analysis_phase_witness": certificate.analysis_phase_witness,
+                "analysis_phase_authorization_hash": certificate.analysis_phase_authorization_hash,
+                "analysis_phase_attestation_hash": certificate.analysis_phase_attestation_hash,
+                "analysis_phase_attestation_locator": certificate.analysis_phase_attestation_locator,
+            }
+        )
+    return payload
 
 
 def certificate_from_payload(payload: dict) -> NativeCertificate:
@@ -921,6 +959,18 @@ def certificate_from_payload(payload: dict) -> NativeCertificate:
         ),
         inherited_bytes_hash=str(payload["function_identity"]["inherited_bytes_hash"]),
     )
+    phase_witness = payload.get("analysis_phase_witness")
+    phase_authorization_hash = payload.get("analysis_phase_authorization_hash")
+    phase_attestation_hash = payload.get("analysis_phase_attestation_hash")
+    phase_attestation_locator = payload.get("analysis_phase_attestation_locator")
+    for value, field in (
+        (phase_witness, "analysis_phase_witness"),
+        (phase_authorization_hash, "analysis_phase_authorization_hash"),
+        (phase_attestation_hash, "analysis_phase_attestation_hash"),
+        (phase_attestation_locator, "analysis_phase_attestation_locator"),
+    ):
+        if value is not None and not isinstance(value, str):
+            raise TypeError(f"{field} must be a string or None")
     return NativeCertificate(
         certificate_id=str(payload["certificate_id"]),
         schema_version=int(payload["schema_version"]),
@@ -947,9 +997,8 @@ def certificate_from_payload(payload: dict) -> NativeCertificate:
             (str(kind), int(ea), str(state))
             for kind, ea, state in payload.get("metadata_postconditions", ())
         ),
-        analysis_phase_witness=(
-            None
-            if payload.get("analysis_phase_witness") is None
-            else str(payload["analysis_phase_witness"])
-        ),
+        analysis_phase_witness=phase_witness,
+        analysis_phase_authorization_hash=phase_authorization_hash,
+        analysis_phase_attestation_hash=phase_attestation_hash,
+        analysis_phase_attestation_locator=phase_attestation_locator,
     )

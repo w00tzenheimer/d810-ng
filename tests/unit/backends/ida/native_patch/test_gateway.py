@@ -17,6 +17,7 @@ exercises the real ``ida_bytes``/``ida_funcs``/``ida_hexrays`` calls.
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import pytest
 
@@ -31,6 +32,7 @@ from d810.backends.ida.native_patch.issuer import (
     stage_c_native_cfg_issuer,
 )
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
+from d810.backends.ida.native_patch.metadata import _scoped_item_token
 from d810.capabilities.native_patch import NativeJournalState
 from d810.manager.native_normalization import (
     NativeNormalizationOutcome,
@@ -42,6 +44,8 @@ from d810.manager.native_normalization import (
 from d810.transforms.native_patch_plan import (
     NativeAddressRange,
     NativeCertificateState,
+    NativeMetadataAction,
+    NativeMetadataActionKind,
     NativeFunctionOwnership,
 )
 
@@ -148,17 +152,22 @@ def _sole_transaction_id(journal: SQLiteNativePatchJournal):
 
 
 class RecordingReanalyzer:
-    def __init__(self, raise_on: str | None = None):
+    def __init__(self, raise_on: str | None = None, events: list[str] | None = None):
         self.calls: list[tuple] = []
         self._raise_on = raise_on
+        self._events = events
 
     def reanalyze_function(self, function_ea):
         self.calls.append(("reanalyze_function", function_ea))
+        if self._events is not None:
+            self._events.append("reanalyze")
         if self._raise_on == "reanalyze_function":
             raise RuntimeError("injected: reanalyze_function")
 
     def auto_wait(self):
         self.calls.append(("auto_wait",))
+        if self._events is not None:
+            self._events.append("auto_wait")
         if self._raise_on == "auto_wait":
             raise RuntimeError("injected: auto_wait")
 
@@ -171,14 +180,22 @@ class RecordingExtentRestorer:
     database whose shape was not restored.
     """
 
-    def __init__(self, succeeds: bool = True, raise_always: bool = False):
+    def __init__(
+        self,
+        succeeds: bool = True,
+        raise_always: bool = False,
+        events: list[str] | None = None,
+    ):
         self.calls: list[tuple[int, int]] = []
         self.ownership_calls: list[NativeFunctionOwnership] = []
         self._succeeds = succeeds
         self._raise_always = raise_always
+        self._events = events
 
     def restore_function_ownership(self, ownership: NativeFunctionOwnership) -> bool:
         self.ownership_calls.append(ownership)
+        if self._events is not None:
+            self._events.append("ownership")
         entry_ea = ownership.owning_function_entry_ea
         entry_chunk = next(
             chunk for chunk in ownership.chunk_ranges if chunk.start_ea == entry_ea
@@ -190,12 +207,15 @@ class RecordingExtentRestorer:
 
 
 class RecordingFlowRestorer:
-    def __init__(self, succeeds: bool = True):
+    def __init__(self, succeeds: bool = True, events: list[str] | None = None):
         self.calls: list[object] = []
         self._succeeds = succeeds
+        self._events = events
 
     def restore_function_flow_refs(self, ownership) -> bool:
         self.calls.append(ownership)
+        if self._events is not None:
+            self._events.append("flows")
         return self._succeeds
 
 
@@ -1341,6 +1361,34 @@ class TestRestore:
         }
         assert set(rig.extent_restorer.calls) == expected
 
+    def test_restore_uses_journaled_function_identity_when_live_ownership_is_gone(
+        self, rig
+    ) -> None:
+        receipt = rig.gateway.apply(fixtures.plan())
+        rig.db._ownership.clear()  # noqa: SLF001 - simulate IDA ownership drift
+
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.ok
+        assert rig.extent_restorer.calls
+
+    def test_phase_restore_reanalyzes_journaled_identity_after_live_clear(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, before, _after, _origin = _singleton_phase_recovery_plan()
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = before
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        receipt = rig.gateway.apply(plan)
+        assert receipt.ok
+        rig.db._ownership.clear()  # noqa: SLF001 - live ownership drift
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.state is NativeJournalState.RESTORED
+        assert ("reanalyze_function", 0x1000) in rig.reanalyzer.calls
+        rig.journal.close()
+
+
     def test_restore_reconciles_exact_entry_tail_flags_and_type_snapshot(
         self, rig
     ) -> None:
@@ -1528,6 +1576,614 @@ class TestRecover:
         after = rig.journal.get(receipt.transaction_id)
         assert after.state == before.state
 
+    def test_reopened_gateway_recovers_exact_phase_p_and_persists_cursor(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, before, after, _origin_target = _phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = rig.journal.prepare(plan)
+        _record_phase_attestation(rig, plan, record)
+        rig.journal.record_metadata_action(
+            record.transaction_id,
+            operation_id=plan.operations[0].operation_id,
+            kind=NativeMetadataActionKind.RECREATE_ITEM.value,
+            ea=0x1000,
+            recorded_before=before,
+            expected_after=after,
+        )
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = after
+        for state in (
+            NativeJournalState.BYTES_APPLIED,
+            NativeJournalState.METADATA_APPLIED,
+            NativeJournalState.ANALYSIS_PENDING,
+            NativeJournalState.ANALYSIS_VALIDATED,
+        ):
+            rig.journal.transition(record.transaction_id, state)
+        rig.journal.close()
+
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        reopened.gateway.recover(record.transaction_id)
+
+        assert reopened.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        assert executor.phase_origin_state[0x1000].startswith("data:v2:")
+        steps = reopened.journal.analysis_reverse_steps(record.transaction_id)
+        assert [row["status"] for row in steps] == ["complete", "complete"]
+        reopened.journal.close()
+
+    def test_reopened_gateway_restore_enters_phase_inverse_from_exact_p(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, before, after, _origin_target = _phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = rig.journal.prepare(plan)
+        _record_phase_attestation(rig, plan, record)
+        action = plan.operations[0].metadata_actions[0]
+        rig.journal.record_metadata_action(
+            record.transaction_id,
+            operation_id=plan.operations[0].operation_id,
+            kind=action.kind.value,
+            ea=action.ea,
+            recorded_before=before,
+            expected_after=after,
+        )
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = after
+        for state in (
+            NativeJournalState.BYTES_APPLIED,
+            NativeJournalState.METADATA_APPLIED,
+            NativeJournalState.ANALYSIS_PENDING,
+            NativeJournalState.ANALYSIS_VALIDATED,
+            NativeJournalState.CACHE_INVALIDATED,
+            NativeJournalState.CERTIFICATE_PENDING,
+            NativeJournalState.CERTIFIED,
+        ):
+            rig.journal.transition(record.transaction_id, state)
+        rig.journal.close()
+
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        restored = reopened.gateway.restore(record.transaction_id)
+
+        assert restored.state is NativeJournalState.RESTORED
+        assert [row["status"] for row in reopened.journal.analysis_reverse_steps(record.transaction_id)] == [
+            "complete", "complete"
+        ]
+        reopened.journal.close()
+
+    def test_phase_restore_retry_after_post_inverse_flow_failure_does_not_reanalyze(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        flow_restorer = RecordingFlowRestorer(succeeds=False)
+        plan, before, after, _origin_target = _phase_recovery_plan()
+        rig = build_gateway(
+            tmp_path,
+            plan.operations,
+            metadata_executor=executor,
+            flow_restorer=flow_restorer,
+        )
+        record = rig.journal.prepare(plan)
+        _record_phase_attestation(rig, plan, record)
+        action = plan.operations[0].metadata_actions[0]
+        rig.journal.record_metadata_action(
+            record.transaction_id,
+            operation_id=plan.operations[0].operation_id,
+            kind=action.kind.value,
+            ea=action.ea,
+            recorded_before=before,
+            expected_after=after,
+        )
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = after
+        for state in (
+            NativeJournalState.BYTES_APPLIED,
+            NativeJournalState.METADATA_APPLIED,
+            NativeJournalState.ANALYSIS_PENDING,
+            NativeJournalState.ANALYSIS_VALIDATED,
+            NativeJournalState.CACHE_INVALIDATED,
+            NativeJournalState.CERTIFICATE_PENDING,
+            NativeJournalState.CERTIFIED,
+        ):
+            rig.journal.transition(record.transaction_id, state)
+
+        failed = rig.gateway.restore(record.transaction_id)
+
+        assert failed.state is NativeJournalState.RESTORE_FAILED
+        flow_restorer._succeeds = True  # noqa: SLF001 - retry cut-point
+        rig.reanalyzer.calls.clear()
+        resumed = rig.gateway.restore(record.transaction_id)
+
+        assert resumed.state is NativeJournalState.RESTORED
+        assert rig.reanalyzer.calls == []
+
+    def test_reopened_phase_inverse_after_mutation_crash_does_not_repeat_inverse(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor(phase_inverse_mutate_then_crash=True)
+        plan, before, after, _origin_target = _phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = rig.journal.prepare(plan)
+        _record_phase_attestation(rig, plan, record)
+        action = plan.operations[0].metadata_actions[0]
+        rig.journal.record_metadata_action(
+            record.transaction_id,
+            operation_id=plan.operations[0].operation_id,
+            kind=action.kind.value,
+            ea=action.ea,
+            recorded_before=before,
+            expected_after=after,
+        )
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = after
+        for state in (
+            NativeJournalState.BYTES_APPLIED,
+            NativeJournalState.METADATA_APPLIED,
+            NativeJournalState.ANALYSIS_PENDING,
+            NativeJournalState.ANALYSIS_VALIDATED,
+        ):
+            rig.journal.transition(record.transaction_id, state)
+        executor.applied.clear()
+        with pytest.raises(KeyboardInterrupt, match="phase inverse"):
+            rig.gateway._reverse_analysis_phase(  # noqa: SLF001 - crash cut
+                record.transaction_id,
+                rig.journal.metadata_actions(record.transaction_id),
+                rig.gateway._phase_witness_for_transaction(record.transaction_id),  # noqa: SLF001
+            )
+        first_apply_count = sum(
+            kind == "phase_inverse" for kind, _ea, _state in executor.applied
+        )
+        rig.journal.close()
+
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        reopened.gateway.recover(record.transaction_id)
+
+        assert first_apply_count == 1
+        assert sum(
+            kind == "phase_inverse" for kind, _ea, _state in executor.applied
+        ) == 1
+        assert reopened.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        reopened.journal.close()
+
+    def test_singleton_grouped_real_apply_close_reopen_restore(self, tmp_path) -> None:
+        executor = FakeMetadataExecutor()
+        plan, before, _after, _origin_target = _singleton_phase_recovery_plan()
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = before
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+
+        receipt = rig.gateway.apply(plan)
+
+        assert receipt.ok
+        phase = rig.gateway._phase_witness_for_transaction(  # noqa: SLF001
+            receipt.transaction_id
+        )
+        assert phase is not None
+        assert len(phase.groups[0].group_targets) == 1
+        rig.journal.close()
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        restored = reopened.gateway.restore(receipt.transaction_id)
+        assert restored.state is NativeJournalState.RESTORED
+        assert executor.phase_origin_state[0x1000].startswith("data:v2:")
+        assert reopened.gateway.lookup_certificate(
+            plan.function_identity.entry_ea, plan.database_identity
+        ) is None
+        assert all(
+            row["status"] == "complete"
+            for row in reopened.journal.analysis_reverse_steps(receipt.transaction_id)
+        )
+        reopened.journal.close()
+
+    def test_equal_p_attestation_rejects_altered_cleared_state(self) -> None:
+        from d810.backends.ida.native_patch.phase_schema import (
+            make_analysis_phase_attestation,
+            parse_analysis_phase_witness,
+        )
+
+        plan, _before, _after, _origin = _phase_recovery_plan()
+        payload = json.loads(
+            plan.analysis_phase_witness.removeprefix("analysis-phase:v4:")
+        )
+        payload["reverse_schedule"][1]["cleared_state"]["items"] = [
+            [0x1000, 15, "unknown"],
+            [0x100F, 1, "unknown"],
+        ]
+        tampered = "analysis-phase:v4:" + json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        phase = parse_analysis_phase_witness(tampered)
+
+        with pytest.raises(Exception, match="cleared state"):
+            make_analysis_phase_attestation(
+                tampered, phase, phase.sealed_state, "transaction-id"
+            )
+
+    def test_parser_to_gateway_handoff_consumes_exact_observed_schedule(
+        self, tmp_path
+    ) -> None:
+        from d810.backends.ida.native_patch.phase_schema import (
+            parse_analysis_phase_attestation,
+        )
+
+        executor = FakeMetadataExecutor()
+        plan, before, _after, _origin = _singleton_phase_recovery_plan()
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = before
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        receipt = rig.gateway.apply(plan)
+        token = rig.journal.analysis_phase_attestation(receipt.transaction_id)
+        assert token is not None
+        parsed = parse_analysis_phase_attestation(token)
+        consumed = rig.gateway._phase_witness_for_transaction(  # noqa: SLF001
+            receipt.transaction_id
+        )
+        assert consumed is not None
+        assert consumed.reverse_schedule == parsed.reverse_schedule
+        rig.journal.close()
+
+    def test_emergency_phase_lifecycle_orders_ownership_reanalysis_inverse_flows(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, before, after, _origin = _phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = rig.journal.prepare(plan)
+        _record_phase_attestation(rig, plan, record)
+        action = plan.operations[0].metadata_actions[0]
+        rig.journal.record_metadata_action(
+            record.transaction_id, operation_id=plan.operations[0].operation_id,
+            kind=action.kind.value, ea=action.ea,
+            recorded_before=before, expected_after=after,
+        )
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = after
+        for state in (
+            NativeJournalState.BYTES_APPLIED,
+            NativeJournalState.METADATA_APPLIED,
+            NativeJournalState.ANALYSIS_PENDING,
+            NativeJournalState.ANALYSIS_VALIDATED,
+        ):
+            rig.journal.transition(record.transaction_id, state)
+        rig.gateway.recover(record.transaction_id)
+
+        assert rig.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        assert rig.extent_restorer.ownership_calls
+        assert rig.reanalyzer.calls
+        assert executor.applied[-1][0] == "phase_inverse"
+        assert rig.flow_restorer.calls
+        rig.journal.close()
+
+    def test_emergency_phase_ownership_failure_has_no_later_events(self, tmp_path) -> None:
+        executor = FakeMetadataExecutor()
+        plan, before, after, _origin = _phase_recovery_plan()
+        extent = RecordingExtentRestorer(succeeds=False)
+        rig = build_gateway(
+            tmp_path, plan.operations, metadata_executor=executor,
+            extent_restorer=extent,
+        )
+        record = rig.journal.prepare(plan)
+        _record_phase_attestation(rig, plan, record)
+        action = plan.operations[0].metadata_actions[0]
+        rig.journal.record_metadata_action(
+            record.transaction_id, operation_id=plan.operations[0].operation_id,
+            kind=action.kind.value, ea=action.ea,
+            recorded_before=before, expected_after=after,
+        )
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = after
+        for state in (
+            NativeJournalState.BYTES_APPLIED,
+            NativeJournalState.METADATA_APPLIED,
+            NativeJournalState.ANALYSIS_PENDING,
+            NativeJournalState.ANALYSIS_VALIDATED,
+        ):
+            rig.journal.transition(record.transaction_id, state)
+        rig.gateway.recover(record.transaction_id)
+
+        assert rig.journal.get(record.transaction_id).state is NativeJournalState.RECOVERY_REQUIRED
+        assert rig.reanalyzer.calls == []
+        assert executor.applied == []
+        assert rig.flow_restorer.calls == []
+        rig.journal.close()
+
+    def test_emergency_phase_shared_event_order_for_p_cut(self, tmp_path) -> None:
+        events: list[str] = []
+        executor = FakeMetadataExecutor(events=events)
+        reanalyzer = RecordingReanalyzer(events=events)
+        extent = RecordingExtentRestorer(events=events)
+        flow = RecordingFlowRestorer(events=events)
+        plan, before, after, _origin = _phase_recovery_plan()
+        rig = build_gateway(
+            tmp_path, plan.operations, metadata_executor=executor,
+            reanalyzer=reanalyzer, extent_restorer=extent, flow_restorer=flow,
+        )
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state=after,
+            journal_state=NativeJournalState.ANALYSIS_VALIDATED,
+        )
+        rig.gateway.recover(record.transaction_id)
+
+        assert rig.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        assert events == ["ownership", "reanalyze", "auto_wait", "inverse", "flows"]
+        rig.journal.close()
+
+    def test_emergency_phase_shared_event_order_for_ri_cut_without_reanalysis(
+        self, tmp_path
+    ) -> None:
+        events: list[str] = []
+        executor = FakeMetadataExecutor(events=events)
+        reanalyzer = RecordingReanalyzer(events=events)
+        extent = RecordingExtentRestorer(events=events)
+        flow = RecordingFlowRestorer(events=events)
+        plan, before, after, origin_target = _two_carrier_phase_recovery_plan()
+        rig = build_gateway(
+            tmp_path, plan.operations, metadata_executor=executor,
+            reanalyzer=reanalyzer, extent_restorer=extent, flow_restorer=flow,
+        )
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state=after,
+            journal_state=NativeJournalState.ANALYSIS_VALIDATED,
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 0, "action:0:recreate_item@0x1000"
+        )
+        rig.journal.record_analysis_reverse_completion(
+            record.transaction_id, 0, "action-carrier-deferred"
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 1, "carrier:0x1000"
+        )
+        rig.journal.record_analysis_reverse_completion(
+            record.transaction_id, 1, "carrier-restored:0x1000"
+        )
+        phase_payload = json.loads(
+            plan.analysis_phase_witness.removeprefix("analysis-phase:v4:")
+        )
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = (
+            phase_payload["groups"][0]["origin_data_state"]
+        )
+        after2 = phase_payload["reverse_schedule"][2]["expected_after"]
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x2000)] = after2
+        rig.gateway.recover(record.transaction_id)
+
+        assert rig.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        assert events == ["ownership", "inverse", "flows"]
+        rig.journal.close()
+
+    def test_emergency_phase_ownership_failure_stops_ri_inverse_and_flows(
+        self, tmp_path
+    ) -> None:
+        events: list[str] = []
+        executor = FakeMetadataExecutor(events=events)
+        extent = RecordingExtentRestorer(succeeds=False, events=events)
+        flow = RecordingFlowRestorer(events=events)
+        plan, before, after, origin_target = _two_carrier_phase_recovery_plan()
+        rig = build_gateway(
+            tmp_path, plan.operations, metadata_executor=executor,
+            extent_restorer=extent, flow_restorer=flow,
+        )
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state=after,
+            journal_state=NativeJournalState.ANALYSIS_VALIDATED,
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 0, "action:0:recreate_item@0x1000"
+        )
+        rig.journal.record_analysis_reverse_completion(
+            record.transaction_id, 0, "action-carrier-deferred"
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 1, "carrier:0x1000"
+        )
+        rig.journal.record_analysis_reverse_completion(
+            record.transaction_id, 1, "carrier-restored:0x1000"
+        )
+        phase_payload = json.loads(
+            plan.analysis_phase_witness.removeprefix("analysis-phase:v4:")
+        )
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = (
+            phase_payload["groups"][0]["origin_data_state"]
+        )
+        after2 = phase_payload["reverse_schedule"][2]["expected_after"]
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x2000)] = after2
+        rig.gateway.recover(record.transaction_id)
+
+        assert rig.journal.get(record.transaction_id).state is NativeJournalState.RECOVERY_REQUIRED
+        assert events == ["ownership"]
+        rig.journal.close()
+
+    def test_emergency_phase_shared_event_order_for_cleared_carrier_cut(
+        self, tmp_path
+    ) -> None:
+        events: list[str] = []
+        executor = FakeMetadataExecutor(events=events)
+        extent = RecordingExtentRestorer(events=events)
+        flow = RecordingFlowRestorer(events=events)
+        plan, before, _after, _origin = _phase_recovery_plan()
+        rig = build_gateway(
+            tmp_path, plan.operations, metadata_executor=executor,
+            extent_restorer=extent, flow_restorer=flow,
+        )
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state="unknown",
+            journal_state=NativeJournalState.ANALYSIS_VALIDATED,
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 0, "action:0:recreate_item@0x1000"
+        )
+        rig.journal.record_analysis_reverse_completion(
+            record.transaction_id, 0, "action-carrier-deferred"
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 1, "carrier-delete:0x1000"
+        )
+        rig.gateway.recover(record.transaction_id)
+
+        assert rig.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        assert events == ["ownership", "inverse", "flows"]
+        rig.journal.close()
+
+    def test_reopened_gateway_exact_b_reverses_action_without_carrier_mutation(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, before, _after, _origin = _phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state=before,
+            journal_state=NativeJournalState.METADATA_APPLIED,
+        )
+        rig.journal.close()
+
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        reopened.gateway.recover(record.transaction_id)
+
+        assert reopened.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        assert not any(kind == "phase_inverse" for kind, _ea, _state in executor.applied)
+        reopened.journal.close()
+
+    def test_reopened_gateway_partial_analysis_prefix_uses_exact_journaled_before(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, before, _after, _origin = _phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state=before,
+            journal_state=NativeJournalState.ANALYSIS_PENDING,
+        )
+        rig.journal.close()
+
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        reopened.gateway.recover(record.transaction_id)
+
+        assert reopened.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        assert not any(kind == "phase_inverse" for kind, _ea, _state in executor.applied)
+        reopened.journal.close()
+
+    def test_reopened_gateway_unknown_phase_drift_is_mutation_free(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, _before, after, _origin = _phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state="drifted-state",
+            journal_state=NativeJournalState.ANALYSIS_VALIDATED,
+        )
+        rig.journal.close()
+
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        reopened.gateway.recover(record.transaction_id)
+
+        assert reopened.journal.get(record.transaction_id).state is NativeJournalState.RECOVERY_REQUIRED
+        assert executor.applied == []
+        reopened.journal.close()
+
+    def test_reopened_gateway_rejects_completed_cursor_with_live_drift(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, _before, after, origin_target = _phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state=after,
+            journal_state=NativeJournalState.ANALYSIS_VALIDATED,
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 0, "action:0:recreate_item@0x1000"
+        )
+        rig.journal.record_analysis_reverse_completion(
+            record.transaction_id, 0, "action-carrier-deferred"
+        )
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = origin_target
+        rig.journal.close()
+
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        reopened.gateway.recover(record.transaction_id)
+
+        assert reopened.journal.get(record.transaction_id).state is NativeJournalState.RECOVERY_REQUIRED
+        assert executor.applied == []
+        reopened.journal.close()
+
+    def test_two_carrier_wrong_ri_cut_is_recovery_required_without_mutation(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, before, after, _origin = _two_carrier_phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state=after,
+            journal_state=NativeJournalState.ANALYSIS_VALIDATED,
+        )
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x2000)] = after
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 0, "action:0:recreate_item@0x1000"
+        )
+        rig.journal.record_analysis_reverse_completion(
+            record.transaction_id, 0, "action-carrier-deferred"
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 1, "carrier:0x1000"
+        )
+        rig.journal.record_analysis_reverse_completion(
+            record.transaction_id, 1, "carrier-restored:0x1000"
+        )
+        rig.journal.close()
+
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        reopened.gateway.recover(record.transaction_id)
+
+        assert reopened.journal.get(record.transaction_id).state is NativeJournalState.RECOVERY_REQUIRED
+        assert executor.applied == []
+        reopened.journal.close()
+
+    def test_skips_only_verified_completed_prefix(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, _before, after, _origin = _phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state=after,
+            journal_state=NativeJournalState.ANALYSIS_VALIDATED,
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 0, "action:0:recreate_item@0x1000"
+        )
+        rig.journal.close()
+
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        reopened.gateway.recover(record.transaction_id)
+        reopened.gateway.recover(record.transaction_id)
+
+        assert reopened.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        assert [row["status"] for row in reopened.journal.analysis_reverse_steps(record.transaction_id)] == [
+            "complete", "complete"
+        ]
+        reopened.journal.close()
+
+    def test_resumes_after_del_items_before_create_data(
+        self, tmp_path
+    ) -> None:
+        executor = FakeMetadataExecutor()
+        plan, _before, _after, _origin_target = _phase_recovery_plan()
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        record = _seed_phase_recovery_transaction(
+            rig, plan, executor, live_state="unknown",
+            journal_state=NativeJournalState.ANALYSIS_VALIDATED,
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 0, "action:0:recreate_item@0x1000"
+        )
+        rig.journal.record_analysis_reverse_completion(
+            record.transaction_id, 0, "action-carrier-deferred"
+        )
+        rig.journal.record_analysis_reverse_intent(
+            record.transaction_id, 1, "carrier-delete:0x1000"
+        )
+        rig.journal.close()
+
+        reopened = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        reopened.gateway.recover(record.transaction_id)
+
+        assert reopened.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        assert not any(kind == "phase_inverse" for kind, _ea, _state in executor.applied)
+        reopened.journal.close()
+
 
 class FakeMetadataExecutor:
     """In-memory metadata state keyed by ``(kind, ea)``.
@@ -1542,15 +2198,23 @@ class FakeMetadataExecutor:
         initial: dict | None = None,
         fail_on_apply: bool = False,
         mutate_then_fail: bool = False,
+        phase_inverse_mutate_then_crash: bool = False,
+        events: list[str] | None = None,
     ):
         self.state: dict = dict(initial or {})
         self.applied: list[tuple[str, int, str]] = []
         self.scope_reads: list[tuple[str, int, str | None]] = []
         self._fail_on_apply = fail_on_apply
         self._mutate_then_fail = mutate_then_fail
+        self._phase_inverse_mutate_then_crash = phase_inverse_mutate_then_crash
+        self.phase_origin_state: dict[int, str] = {}
+        self._events = events
 
     def read_state(self, kind, ea, *, scope_state=None):
         self.scope_reads.append((kind.value, ea, scope_state))
+        if scope_state is None and kind is NativeMetadataActionKind.RECREATE_ITEM:
+            if int(ea) in self.phase_origin_state:
+                return self.phase_origin_state[int(ea)]
         return self.state.get((kind, ea), "unknown")
 
     def apply_state(self, kind, ea, target_state):
@@ -1562,6 +2226,93 @@ class FakeMetadataExecutor:
             self._mutate_then_fail = False
             return False
         return True
+
+    def apply_phase_inverse(self, ea, target_state):
+        self.applied.append(("phase_inverse", ea, target_state))
+        if self._events is not None:
+            self._events.append("inverse")
+        self.state[(NativeMetadataActionKind.RECREATE_ITEM, ea)] = target_state
+        scope = target_state.removeprefix("item-xrefs:v2:")
+        try:
+            payload = json.loads(scope)
+            origin = payload.get("origin_data_state")
+        except (TypeError, json.JSONDecodeError):
+            origin = None
+        if isinstance(origin, str):
+            self.phase_origin_state[int(ea)] = origin
+        if self._phase_inverse_mutate_then_crash:
+            self._phase_inverse_mutate_then_crash = False
+            raise KeyboardInterrupt("injected: phase inverse after mutation")
+        return True
+
+    def recreate_data_item(self, ea, target_state):
+        self.applied.append(("recreate_data", int(ea), target_state))
+        if self._events is not None:
+            self._events.append("inverse")
+        self.state[(NativeMetadataActionKind.RECREATE_ITEM, int(ea))] = target_state
+        scope = target_state.removeprefix("item-xrefs:v2:")
+        try:
+            payload = json.loads(scope)
+            origin = payload.get("origin_data_state")
+        except (TypeError, json.JSONDecodeError):
+            origin = None
+        if isinstance(origin, str):
+            self.phase_origin_state[int(ea)] = origin
+        return True
+
+    def enumerate_item_partition(self, start_ea, end_ea):
+        value = self.state.get(
+            (NativeMetadataActionKind.RECREATE_ITEM, int(start_ea)), "unknown"
+        )
+        if value == "unknown":
+            return ((int(start_ea), int(end_ea) - int(start_ea), "unknown"),)
+        if value.startswith("item-xrefs:v2:"):
+            payload = json.loads(value.removeprefix("item-xrefs:v2:"))
+            item_state = str(payload["item_state"])
+            # The scoped token carries the enclosing origin extent in
+            # ``size``; the partition row must expose the current item's
+            # extent, which is the tiny code item in this recovery fixture.
+            item_size = 2 if item_state == "code:2" else int(payload["size"])
+            if item_size == 2:
+                return (
+                    (int(payload["head_ea"]), item_size, item_state),
+                    (
+                        int(payload["head_ea"]) + item_size,
+                        int(payload["size"]) - item_size,
+                        "unknown",
+                    ),
+                )
+            return ((int(payload["head_ea"]), item_size, item_state),)
+        if value.startswith("data:v2:"):
+            payload = json.loads(value.removeprefix("data:v2:"))
+            return ((int(payload["head_ea"]), int(payload["size"]), value),)
+        return ((int(start_ea), int(end_ea) - int(start_ea), value),)
+
+    def enumerate_scoped_xrefs(self, extents):
+        rows = set()
+        for start_ea, _end_ea in extents:
+            value = self.state.get(
+                (NativeMetadataActionKind.RECREATE_ITEM, int(start_ea)), "unknown"
+            )
+            if value.startswith("item-xrefs:v2:"):
+                payload = json.loads(value.removeprefix("item-xrefs:v2:"))
+                rows.update(
+                    (
+                        int(row["source_ea"]), int(row["target_ea"]),
+                        int(row["xref_type"]), bool(row["user_owned"]), bool(row["is_code"]),
+                    )
+                    for row in payload["xrefs"]
+                )
+            elif value.startswith("data:v2:"):
+                payload = json.loads(value.removeprefix("data:v2:"))
+                rows.update(
+                    (
+                        int(row["source_ea"]), int(row["target_ea"]),
+                        int(row["xref_type"]), bool(row["user_owned"]), bool(row["is_code"]),
+                    )
+                    for row in payload["xrefs"]
+                )
+        return tuple(sorted(rows))
 
 
 def _plan_with_metadata_actions():
@@ -1597,6 +2348,283 @@ def _plan_with_metadata_actions():
         ),
         op,
     )
+
+
+def _phase_recovery_plan() -> tuple[object, object, object, object]:
+    """Build one tiny v4 phase plan for restart/recovery cut-point tests."""
+    row = {
+        "source_ea": 0x1000,
+        "target_ea": 0x1010,
+        "xref_type": 21,
+        "user_owned": False,
+        "is_code": True,
+    }
+    origin = "data:v2:" + json.dumps(
+        {
+            "bytes": "00" * 16,
+            "ea": 0x1000,
+            "flags": 0,
+            "full_flags": [0] * 16,
+            "head_ea": 0x1000,
+            "name": "",
+            "offset": 0,
+            "size": 16,
+            "xrefs": [row],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    before = _scoped_item_token(
+        ea=0x1000, head_ea=0x1000, size=16, item_state="code:2",
+        xrefs=((0x1000, 0x1010, 21, False, True),),
+        origin_data_state=origin, group_targets=(0x1000,),
+    )
+    after = _scoped_item_token(
+        ea=0x1000, head_ea=0x1000, size=16, item_state="code:2",
+        xrefs=((0x1000, 0x1010, 21, False, True),),
+        origin_data_state=origin, group_targets=(0x1000,),
+    )
+    inverse_origin_payload = json.loads(origin.removeprefix("data:v2:"))
+    inverse_origin_payload["xrefs"] = [row]
+    inverse_origin = "data:v2:" + json.dumps(
+        inverse_origin_payload, sort_keys=True, separators=(",", ":")
+    )
+    origin_target = _scoped_item_token(
+        ea=0x1000, head_ea=0x1000, size=16, item_state=inverse_origin,
+        xrefs=((0x1000, 0x1010, 21, False, True),),
+        origin_data_state=origin, group_targets=(0x1000,),
+    )
+    group = {
+        "version": 4,
+        "origin_data_state": origin,
+        "origin_extent": [0x1000, 0x1010],
+        "destruction_extent": [0x1000, 0x1010],
+        "group_targets": [0x1000],
+        "before_items": [[0x1000, 2, "code:2"], [0x1002, 14, "unknown"]],
+        "after_items": [[0x1000, 2, "code:2"], [0x1002, 14, "unknown"]],
+        "before_xrefs": [row],
+        "after_xrefs": [row],
+        "reverse_before_xrefs": [row],
+        "reverse_after_xrefs": [row],
+        "postconditions": [{"ea": 0x1000, "state": after}],
+    }
+    sealed_state = {
+        "items": [[0x1000, 2, "code:2"], [0x1002, 14, "unknown"]],
+        "xrefs": [row],
+        "extents": [[0x1000, 0x1010]],
+    }
+    origin_state = {
+        "items": [[0x1000, 16, inverse_origin]],
+        "xrefs": [row],
+        "extents": [[0x1000, 0x1010]],
+    }
+    payload = {
+        "version": 4,
+        "groups": [group],
+        "sealed_state": sealed_state,
+        "origin_state": origin_state,
+        "reverse_schedule": [
+            {
+                "kind": "action", "action_kind": "recreate_item", "ea": 0x1000,
+                "index": 0, "expected_after": after,
+                "before_state": before, "after_state": after,
+                "global_before": sealed_state, "global_after": sealed_state,
+            },
+            {
+                "kind": "group", "head_ea": 0x1000,
+                "origin_extent": [0x1000, 0x1010],
+                "destruction_extent": [0x1000, 0x1010],
+                "before_items": group["before_items"],
+                "after_items": group["after_items"],
+                "before_xrefs": group["before_xrefs"],
+                "after_xrefs": group["after_xrefs"],
+                "global_before": sealed_state, "global_after": origin_state,
+                "cleared_state": {
+                    "items": [[0x1000, 16, "unknown"]],
+                    "xrefs": [],
+                    "extents": [[0x1000, 0x1010]],
+                },
+            },
+        ],
+    }
+    token = "analysis-phase:v4:" + json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    )
+    action = NativeMetadataAction(
+        kind=NativeMetadataActionKind.RECREATE_ITEM,
+        ea=0x1000,
+        expected_before=before,
+        expected_after=after,
+    )
+    operation = dataclasses.replace(
+        fixtures.operation(
+            metadata_actions=(action,),
+            replacement_bytes=fixtures.operation().expected_current_bytes,
+        ),
+        writes_bytes=False,
+        expected_after_shape=fixtures.operation().expected_before_shape,
+    )
+    plan = dataclasses.replace(
+        fixtures.plan(operations=(operation,)),
+        analysis_phase_witness=token,
+    )
+    return plan, before, after, origin_target
+
+
+def _singleton_phase_recovery_plan() -> tuple[object, object, object, object]:
+    plan, before, after, origin = _phase_recovery_plan()
+    ownership = dataclasses.replace(
+        plan.operations[0].expected_function_ownership,
+        chunk_ranges=(NativeAddressRange(0x1000, 0x1002),),
+    )
+    operation = dataclasses.replace(
+        plan.operations[0],
+        expected_function_ownership=ownership,
+        restore_snapshot=dataclasses.replace(
+            plan.operations[0].restore_snapshot,
+            function_ownership=ownership,
+        ),
+    )
+    return (
+        dataclasses.replace(
+            plan,
+            operations=(operation,),
+            function_identity=dataclasses.replace(
+                plan.function_identity,
+                chunk_ranges=(NativeAddressRange(0x1000, 0x1002),),
+            ),
+        ),
+        before,
+        after,
+        origin,
+    )
+
+
+def _two_carrier_phase_recovery_plan() -> tuple[object, object, object, object]:
+    """Expand the miniature authorization to two disjoint carrier groups."""
+    plan, before, after, origin = _phase_recovery_plan()
+    payload = json.loads(plan.analysis_phase_witness.removeprefix("analysis-phase:v4:"))
+    group1 = payload["groups"][0]
+    origin_token1 = group1["origin_data_state"]
+    origin1 = json.loads(origin_token1.removeprefix("data:v2:"))
+    row1 = group1["before_xrefs"][0]
+    origin2 = dict(origin1, ea=0x2000, head_ea=0x2000)
+    row2 = dict(row1, source_ea=0x2000, target_ea=0x2010)
+    origin2["xrefs"] = [row2]
+    origin_token2 = "data:v2:" + json.dumps(origin2, sort_keys=True, separators=(",", ":"))
+    before2 = _scoped_item_token(
+        ea=0x2000, head_ea=0x2000, size=16, item_state="code:2",
+        xrefs=((0x2000, 0x2010, 21, False, True),),
+        origin_data_state=origin_token2, group_targets=(0x2000,),
+    )
+    group2 = json.loads(json.dumps(group1))
+    group2.update({
+        "origin_data_state": origin_token2,
+        "origin_extent": [0x2000, 0x2010],
+        "destruction_extent": [0x2000, 0x2010],
+        "group_targets": [0x2000],
+        "before_items": [[0x2000, 2, "code:2"], [0x2002, 14, "unknown"]],
+        "after_items": [[0x2000, 2, "code:2"], [0x2002, 14, "unknown"]],
+        "before_xrefs": [row2], "after_xrefs": [row2],
+        "reverse_before_xrefs": [row2], "reverse_after_xrefs": [row2],
+        "postconditions": [{"ea": 0x2000, "state": before2}],
+    })
+    sealed = {
+        "items": [[0x1000, 2, "code:2"], [0x1002, 14, "unknown"],
+                  [0x2000, 2, "code:2"], [0x2002, 14, "unknown"]],
+        "xrefs": [row1, row2], "extents": [[0x1000, 0x1010], [0x2000, 0x2010]],
+    }
+    origin_state = {
+        "items": [[0x1000, 16, origin_token1], [0x2000, 16, origin_token2]],
+        "xrefs": [row1, row2], "extents": [[0x1000, 0x1010], [0x2000, 0x2010]],
+    }
+    intermediate = {
+        "items": [[0x1000, 16, origin_token1], [0x2000, 2, "code:2"], [0x2002, 14, "unknown"]],
+        "xrefs": [row1, row2], "extents": sealed["extents"],
+    }
+    payload["groups"] = [group1, group2]
+    payload["sealed_state"] = sealed
+    payload["origin_state"] = origin_state
+    payload["reverse_schedule"] = [
+        {"kind": "action", "action_kind": "recreate_item", "ea": 0x1000,
+         "index": 0, "expected_after": after, "before_state": before,
+         "after_state": after, "global_before": sealed, "global_after": sealed},
+        {"kind": "group", "head_ea": 0x1000, "origin_extent": [0x1000, 0x1010],
+         "destruction_extent": [0x1000, 0x1010], "before_items": group1["before_items"],
+         "after_items": group1["after_items"], "before_xrefs": [row1],
+         "after_xrefs": [row1], "global_before": sealed, "global_after": intermediate,
+         "cleared_state": {"items": [[0x1000, 16, "unknown"], [0x2000, 2, "code:2"], [0x2002, 14, "unknown"]],
+                            "xrefs": [row2], "extents": sealed["extents"]}},
+        {"kind": "action", "action_kind": "recreate_item", "ea": 0x2000,
+         "index": 1, "expected_after": before2, "before_state": before2,
+         "after_state": before2, "global_before": intermediate, "global_after": intermediate},
+        {"kind": "group", "head_ea": 0x2000, "origin_extent": [0x2000, 0x2010],
+         "destruction_extent": [0x2000, 0x2010], "before_items": group2["before_items"],
+         "after_items": group2["after_items"], "before_xrefs": [row2],
+         "after_xrefs": [row2], "global_before": intermediate, "global_after": origin_state,
+         "cleared_state": {"items": [[0x1000, 16, origin_token1], [0x2000, 16, "unknown"]],
+                            "xrefs": [row1], "extents": sealed["extents"]}},
+    ]
+    token = "analysis-phase:v4:" + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return dataclasses.replace(plan, analysis_phase_witness=token), before, after, origin
+
+
+def _record_phase_attestation(rig, plan, record) -> None:
+    from d810.backends.ida.native_patch.phase_schema import (
+        make_analysis_phase_attestation,
+        parse_analysis_phase_witness,
+    )
+
+    phase = parse_analysis_phase_witness(plan.analysis_phase_witness)
+    assert phase.sealed_state is not None
+    rig.journal.install_analysis_phase_attestation(
+        record.transaction_id,
+        make_analysis_phase_attestation(
+            plan.analysis_phase_witness, phase, phase.sealed_state,
+            record.transaction_id.value,
+        ),
+    )
+
+
+def _seed_phase_recovery_transaction(
+    rig, plan, executor, *, live_state: str, journal_state: NativeJournalState
+):
+    from d810.backends.ida.native_patch.phase_schema import (
+        make_analysis_phase_attestation,
+        parse_analysis_phase_witness,
+    )
+
+    record = rig.journal.prepare(plan)
+    phase = parse_analysis_phase_witness(plan.analysis_phase_witness)
+    assert phase.sealed_state is not None
+    rig.journal.install_analysis_phase_attestation(
+        record.transaction_id,
+        make_analysis_phase_attestation(
+            plan.analysis_phase_witness, phase, phase.sealed_state,
+            record.transaction_id.value,
+        ),
+    )
+    action = plan.operations[0].metadata_actions[0]
+    rig.journal.record_metadata_action(
+        record.transaction_id,
+        operation_id=plan.operations[0].operation_id,
+        kind=action.kind.value,
+        ea=action.ea,
+        recorded_before=action.expected_before,
+        expected_after=action.expected_after,
+    )
+    executor.state[(NativeMetadataActionKind.RECREATE_ITEM, action.ea)] = live_state
+    for state in (
+        NativeJournalState.BYTES_APPLIED,
+        NativeJournalState.METADATA_APPLIED,
+        NativeJournalState.ANALYSIS_PENDING,
+    ):
+        rig.journal.transition(record.transaction_id, state)
+        if state is journal_state:
+            break
+    if rig.journal.get(record.transaction_id).state is not journal_state:
+        rig.journal.transition(record.transaction_id, journal_state)
+    return record
 
 
 def _disjoint_same_function_plan():
@@ -1807,6 +2835,73 @@ class TestMetadataActionExecution:
         executor.state[(NativeMetadataActionKind.UPDATE_XREF, 0x1000)] = "cref:"
 
         assert not rig.gateway.certificate_matches_current(plan, receipt.certificate)
+
+    def test_schema4_certificate_reuse_rejects_pending_linked_transaction(
+        self, tmp_path
+    ) -> None:
+        plan, before, _after, _origin = _singleton_phase_recovery_plan()
+        executor = FakeMetadataExecutor()
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = before
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        receipt = rig.gateway.apply(plan)
+        assert receipt.certificate is not None
+        assert rig.gateway.certificate_matches_current(plan, receipt.certificate)
+        rig.journal._conn.execute(  # noqa: SLF001 - state cut injection
+            "UPDATE native_patch_transactions SET state = ? WHERE transaction_id = ?",
+            (NativeJournalState.CERTIFICATE_PENDING.value, receipt.transaction_id.value),
+        )
+        rig.journal._conn.commit()  # noqa: SLF001 - state cut injection
+        assert not rig.gateway.certificate_matches_current(plan, receipt.certificate)
+        rig.journal.close()
+
+    def test_schema4_certificate_reuse_rejects_foreign_linked_idb(self, tmp_path) -> None:
+        plan, before, _after, _origin = _singleton_phase_recovery_plan()
+        executor = FakeMetadataExecutor()
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = before
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        receipt = rig.gateway.apply(plan)
+        assert receipt.certificate is not None
+        rig.journal._conn.execute(  # noqa: SLF001 - identity cut injection
+            "UPDATE native_patch_transactions SET idb_uuid = ? WHERE transaction_id = ?",
+            ("idb-foreign", receipt.transaction_id.value),
+        )
+        rig.journal._conn.commit()  # noqa: SLF001 - identity cut injection
+        assert not rig.gateway.certificate_matches_current(plan, receipt.certificate)
+        rig.journal.close()
+
+    def test_schema4_certificate_reuse_rejects_embedded_transaction_mismatch(
+        self, tmp_path
+    ) -> None:
+        import hashlib
+
+        plan, before, _after, _origin = _singleton_phase_recovery_plan()
+        executor = FakeMetadataExecutor()
+        executor.state[(NativeMetadataActionKind.RECREATE_ITEM, 0x1000)] = before
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        receipt = rig.gateway.apply(plan)
+        assert receipt.certificate is not None
+        locator = receipt.certificate.analysis_phase_attestation_locator
+        assert locator is not None
+        token = rig.journal.analysis_phase_attestation(receipt.transaction_id)
+        assert token is not None
+        payload = json.loads(token.removeprefix("analysis-attestation:v1:"))
+        payload["transaction_id"] = "foreign-transaction"
+        altered = "analysis-attestation:v1:" + json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        rig.journal._conn.execute(  # noqa: SLF001 - attestation cut injection
+            "UPDATE native_patch_analysis_attestations SET attestation = ? WHERE transaction_id = ?",
+            (altered, locator),
+        )
+        rig.journal._conn.commit()  # noqa: SLF001 - attestation cut injection
+        altered_certificate = dataclasses.replace(
+            receipt.certificate,
+            analysis_phase_attestation_hash=hashlib.sha256(
+                altered.encode()
+            ).hexdigest(),
+        )
+        assert not rig.gateway.certificate_matches_current(plan, altered_certificate)
+        rig.journal.close()
 
     def test_metadata_certificate_rejects_function_wide_byte_divergence(
         self, tmp_path

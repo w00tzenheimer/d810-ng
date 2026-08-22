@@ -11,6 +11,7 @@ retroactively change SQLite transaction state).
 from __future__ import annotations
 
 import dataclasses
+import json
 import sqlite3
 import threading
 
@@ -39,6 +40,11 @@ from d810.transforms.native_patch_plan import (
 
 from . import _plan_fixtures as fixtures
 from .test_phase_schema import _payload as phase_payload, _token as phase_token
+from d810.backends.ida.native_patch.phase_schema import (
+    _parse_global_state,
+    make_analysis_phase_attestation,
+    parse_analysis_phase_witness,
+)
 
 pytestmark = pytest.mark.pure_python
 
@@ -56,6 +62,245 @@ def store(tmp_path):
 
 
 class TestPrepare:
+    def test_attestation_install_binds_schedule_in_one_operation(self, tmp_path) -> None:
+        plan = dataclasses.replace(
+            fixtures.plan(), analysis_phase_witness=phase_token(phase_payload())
+        )
+        store = SQLiteNativePatchJournal(tmp_path / "atomic-attestation.db")
+        try:
+            record = store.prepare(plan)
+            phase = parse_analysis_phase_witness(plan.analysis_phase_witness)
+            observed = _parse_global_state(
+                {"items": [[0x1000, 0x10, "unknown"]], "xrefs": [], "extents": [[0x1000, 0x1010]]},
+                "observed",
+            )
+            attestation = make_analysis_phase_attestation(
+                plan.analysis_phase_witness, phase, observed,
+                record.transaction_id.value,
+            )
+            store.install_analysis_phase_attestation(
+                record.transaction_id, attestation
+            )
+            assert store.analysis_phase_attestation(record.transaction_id) == attestation
+            with pytest.raises(ValueError, match="already installed"):
+                store.install_analysis_phase_attestation(
+                    record.transaction_id, attestation
+                )
+        finally:
+            store.close()
+
+    def test_atomic_attestation_abort_leaves_neither_side_installed(self, tmp_path) -> None:
+        plan = dataclasses.replace(
+            fixtures.plan(), analysis_phase_witness=phase_token(phase_payload())
+        )
+        store = SQLiteNativePatchJournal(tmp_path / "atomic-abort.db")
+        try:
+            record = store.prepare(plan)
+            phase = parse_analysis_phase_witness(plan.analysis_phase_witness)
+            observed = _parse_global_state(
+                {"items": [[0x1000, 0x10, "unknown"]], "xrefs": [], "extents": [[0x1000, 0x1010]]},
+                "observed",
+            )
+            attestation = make_analysis_phase_attestation(
+                plan.analysis_phase_witness, phase, observed,
+                record.transaction_id.value,
+            )
+            store._conn.execute(
+                """
+                CREATE TRIGGER fail_phase_state_update
+                BEFORE UPDATE OF global_before ON native_patch_analysis_reverse_steps
+                BEGIN SELECT RAISE(ABORT, 'injected atomic failure'); END
+                """
+            )
+            with pytest.raises(Exception, match="injected atomic failure"):
+                store.install_analysis_phase_attestation(record.transaction_id, attestation)
+            assert store.analysis_phase_attestation(record.transaction_id) is None
+            assert all(
+                row["global_before"] is None
+                for row in store.analysis_reverse_steps(record.transaction_id)
+            )
+        finally:
+            store.close()
+
+    def test_attestation_install_holds_write_lock_before_checks_and_releases_on_commit(
+        self, tmp_path
+    ) -> None:
+        plan = dataclasses.replace(
+            fixtures.plan(), analysis_phase_witness=phase_token(phase_payload())
+        )
+        path = tmp_path / "attestation-lock.db"
+        store = SQLiteNativePatchJournal(path)
+        try:
+            record = store.prepare(plan)
+            phase = parse_analysis_phase_witness(plan.analysis_phase_witness)
+            observed = _parse_global_state(
+                {"items": [[0x1000, 0x10, "unknown"]], "xrefs": [],
+                 "extents": [[0x1000, 0x1010]]},
+                "observed",
+            )
+            attestation = make_analysis_phase_attestation(
+                plan.analysis_phase_witness, phase, observed,
+                record.transaction_id.value,
+            )
+            entered = threading.Event()
+            intent_done = threading.Event()
+            intent_error: list[BaseException] = []
+
+            def record_intent() -> None:
+                connection = sqlite3.connect(path, timeout=0.1)
+                try:
+                    connection.execute(
+                        """
+                        UPDATE native_patch_analysis_reverse_steps
+                        SET status = 'intent', intent = ?
+                        WHERE transaction_id = ? AND step_index = 0
+                        """,
+                        ("blocked-before-attestation", record.transaction_id.value),
+                    )
+                    connection.commit()
+                except BaseException as error:
+                    intent_error.append(error)
+                finally:
+                    connection.close()
+                    intent_done.set()
+            intent_thread = threading.Thread(target=record_intent)
+
+            def hold_lock() -> int:
+                entered.set()
+                intent_thread.start()
+                assert intent_done.wait(5)
+                return 1
+
+            store._conn.create_function("hold_phase_lock", 0, hold_lock)  # noqa: SLF001
+            store._conn.execute(
+                """
+                CREATE TRIGGER hold_phase_lock_before_attestation
+                BEFORE INSERT ON native_patch_analysis_attestations
+                BEGIN SELECT hold_phase_lock(); END
+                """
+            )
+            store._conn.commit()
+            store.install_analysis_phase_attestation(
+                record.transaction_id, attestation
+            )
+            assert entered.is_set()
+            intent_thread.join(timeout=5)
+            assert not intent_thread.is_alive()
+            assert intent_done.is_set()
+            assert len(intent_error) == 1
+            assert isinstance(intent_error[0], sqlite3.OperationalError)
+            assert "locked" in str(intent_error[0])
+            second = SQLiteNativePatchJournal(path)
+            try:
+                with pytest.raises(ValueError, match="already installed"):
+                    second.install_analysis_phase_attestation(
+                        record.transaction_id, attestation
+                    )
+            finally:
+                second.close()
+        finally:
+            store.close()
+
+    def test_attestation_install_rollback_releases_write_lock(self, tmp_path) -> None:
+        plan = dataclasses.replace(
+            fixtures.plan(), analysis_phase_witness=phase_token(phase_payload())
+        )
+        path = tmp_path / "attestation-rollback-lock.db"
+        store = SQLiteNativePatchJournal(path)
+        try:
+            record = store.prepare(plan)
+            phase = parse_analysis_phase_witness(plan.analysis_phase_witness)
+            observed = _parse_global_state(
+                {"items": [[0x1000, 0x10, "unknown"]], "xrefs": [],
+                 "extents": [[0x1000, 0x1010]]},
+                "observed",
+            )
+            attestation = make_analysis_phase_attestation(
+                plan.analysis_phase_witness, phase, observed,
+                record.transaction_id.value,
+            )
+            store._conn.execute(  # noqa: SLF001 - deterministic abort cut
+                """
+                CREATE TRIGGER fail_attestation_insert
+                BEFORE INSERT ON native_patch_analysis_attestations
+                BEGIN SELECT RAISE(ABORT, 'injected rollback'); END
+                """
+            )
+            store._conn.commit()
+            with pytest.raises(sqlite3.IntegrityError, match="injected rollback"):
+                store.install_analysis_phase_attestation(
+                    record.transaction_id, attestation
+                )
+            second = SQLiteNativePatchJournal(path)
+            try:
+                second.record_analysis_reverse_intent(
+                    record.transaction_id, 0, "after-rollback"
+                )
+                assert second.analysis_reverse_steps(record.transaction_id)[0]["status"] == "intent"
+            finally:
+                second.close()
+        finally:
+            store.close()
+
+    def test_attestation_install_rejects_a_tampered_embedded_transaction_id(
+        self, tmp_path
+    ) -> None:
+        plan = dataclasses.replace(
+            fixtures.plan(), analysis_phase_witness=phase_token(phase_payload())
+        )
+        store = SQLiteNativePatchJournal(tmp_path / "attestation-id.db")
+        try:
+            record = store.prepare(plan)
+            phase = parse_analysis_phase_witness(plan.analysis_phase_witness)
+            observed = _parse_global_state(
+                {"items": [[0x1000, 0x10, "unknown"]], "xrefs": [], "extents": [[0x1000, 0x1010]]},
+                "observed",
+            )
+            attestation = make_analysis_phase_attestation(
+                plan.analysis_phase_witness, phase, observed,
+                record.transaction_id.value,
+            )
+            payload = json.loads(attestation.removeprefix("analysis-attestation:v1:"))
+            payload["transaction_id"] = "foreign-transaction"
+            tampered = "analysis-attestation:v1:" + json.dumps(
+                payload, sort_keys=True, separators=(",", ":")
+            )
+            with pytest.raises(ValueError, match="transaction id"):
+                store.install_analysis_phase_attestation(record.transaction_id, tampered)
+            assert store.analysis_phase_attestation(record.transaction_id) is None
+        finally:
+            store.close()
+
+    def test_observed_phase_attestation_is_durable_and_immutable(self, tmp_path) -> None:
+        plan = dataclasses.replace(
+            fixtures.plan(), analysis_phase_witness=phase_token(phase_payload())
+        )
+        store = SQLiteNativePatchJournal(tmp_path / "attestation.db")
+        try:
+            record = store.prepare(plan)
+            phase = parse_analysis_phase_witness(plan.analysis_phase_witness)
+            observed = _parse_global_state(
+                {
+                    "items": [[0x1000, 0x10, "unknown"]],
+                    "xrefs": [],
+                    "extents": [[0x1000, 0x1010]],
+                },
+                "observed",
+            )
+            attestation = make_analysis_phase_attestation(
+                plan.analysis_phase_witness, phase, observed,
+                record.transaction_id.value,
+            )
+            store.install_analysis_phase_attestation(record.transaction_id, attestation)
+            assert store.analysis_phase_attestation(record.transaction_id) == attestation
+            with pytest.raises(ValueError, match="already installed"):
+                store.install_analysis_phase_attestation(
+                    record.transaction_id,
+                    attestation,
+                )
+        finally:
+            store.close()
+
     def test_phase_reverse_schedule_and_cursor_are_durable(self, tmp_path) -> None:
         plan = dataclasses.replace(
             fixtures.plan(),

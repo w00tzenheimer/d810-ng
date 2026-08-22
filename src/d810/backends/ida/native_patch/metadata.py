@@ -115,6 +115,22 @@ class MetadataActionExecutor(Protocol):
         """
         ...
 
+    def enumerate_item_partition(
+        self, start_ea: int, end_ea: int
+    ) -> tuple[tuple[int, int, str], ...]:
+        """Return every item and canonical unknown gap in an extent."""
+        ...
+
+    def recreate_data_item(self, ea: int, target_state: str) -> bool:
+        """Recreate a data snapshot after the complete extent is cleared."""
+        ...
+
+    def enumerate_scoped_xrefs(
+        self, extents: tuple[tuple[int, int], ...]
+    ) -> tuple[tuple[int, int, int, bool, bool], ...]:
+        """Return the complete canonical xref graph touching these extents."""
+        ...
+
 
 _ITEM_CODE = "code"
 _ITEM_DATA = "data"
@@ -693,6 +709,87 @@ class IdaMetadataActionExecutor:
         # stable diagnostic token so the planner fails closed rather than
         # treating it as an undefined item head.
         return f"unsupported-item-flags:{int(flags):#x}"
+
+    def enumerate_item_partition(
+        self, start_ea: int, end_ea: int
+    ) -> tuple[tuple[int, int, str], ...]:
+        """Enumerate every live IDA item intersecting ``[start_ea,end_ea)``.
+
+        This is deliberately a read-only provider seam.  A caller validating
+        a phase witness must compare the complete item partition, rather than
+        rereading only the heads it expected and silently missing an extra
+        item or a gap.
+        """
+        import ida_bytes
+
+        start, end = int(start_ea), int(end_ea)
+        if start < 0 or end <= start:
+            raise UnexecutableMetadataAction("invalid item-partition extent")
+        rows: list[tuple[int, int, str]] = []
+        cursor = start
+        while cursor < end:
+            head = int(ida_bytes.get_item_head(cursor))
+            item_end = int(ida_bytes.get_item_end(cursor))
+            if item_end <= cursor:
+                raise UnexecutableMetadataAction(
+                    f"item partition escapes extent at {cursor:#x}"
+                )
+            state = self._read_item_state(head)
+            if (
+                rows
+                and rows[-1][2] == _ITEM_UNKNOWN
+                and state == _ITEM_UNKNOWN
+                and rows[-1][0] + rows[-1][1] == head
+            ):
+                rows[-1] = (rows[-1][0], rows[-1][1] + item_end - head, _ITEM_UNKNOWN)
+            elif not rows or rows[-1][0] != head:
+                rows.append((head, item_end - head, state))
+            # A carrier extent may begin inside an item owned by a
+            # neighboring carrier.  Preserve that complete item in the
+            # provider result; the typed global-state verifier clips only for
+            # coverage checks and never invents a partial item.
+            cursor = max(cursor, item_end)
+            if cursor >= end:
+                break
+        if not rows or rows[0][0] > start:
+            raise UnexecutableMetadataAction("item partition has a leading gap")
+        if rows[-1][0] + rows[-1][1] < end:
+            raise UnexecutableMetadataAction("item partition has a trailing gap")
+        return tuple(rows)
+
+    def recreate_data_item(self, ea: int, target_state: str) -> bool:
+        """Recreate a carrier's data snapshot after its extent was cleared."""
+        scope = _parse_scoped_item_state(target_state, expected_ea=int(ea))
+        if scope is None or not str(scope["item_state"]).startswith(
+            _ITEM_DATA_SNAPSHOT_V2_PREFIX
+        ):
+            raise UnexecutableMetadataAction("malformed carrier data target")
+        data_state = str(scope["item_state"])
+        data = _parse_reversible_data_item_state(data_state, expected_ea=int(ea))
+        if data is None:
+            raise UnexecutableMetadataAction("malformed carrier data snapshot")
+        self._restore_data_snapshot(
+            int(ea), data_state, data, validate_witness=False
+        )
+        self._post_item_effect()
+        if self.read_state(
+            NativeMetadataActionKind.RECREATE_ITEM,
+            int(ea),
+            scope_state=target_state,
+        ) != target_state:
+            raise UnexecutableMetadataAction("carrier data recreation witness mismatch")
+        return True
+
+    def enumerate_scoped_xrefs(
+        self, extents: tuple[tuple[int, int], ...]
+    ) -> tuple[tuple[int, int, int, bool, bool], ...]:
+        edges: set[tuple[int, int, int, bool, bool]] = set()
+        for low, high in extents:
+            low, high = int(low), int(high)
+            if high <= low:
+                raise UnexecutableMetadataAction("invalid xref extent")
+            edges.update(self._read_data_item_xrefs(low, high - low))
+        return tuple(sorted(edges))
 
     @staticmethod
     def _read_reversible_data_snapshot(ea: int) -> str | None:

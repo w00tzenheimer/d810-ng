@@ -237,7 +237,6 @@ class IdaFunctionExtentRestorer:
         )
 
     def restore_function_ownership(self, ownership: NativeFunctionOwnership) -> bool:
-        import ida_auto
         import ida_funcs
 
         entry_ea = int(ownership.owning_function_entry_ea)
@@ -280,9 +279,6 @@ class IdaFunctionExtentRestorer:
         for start_ea, end_ea in sorted(expected_tails - live_chunks):
             if not ida_funcs.append_func_tail(func, start_ea, end_ea):
                 return False
-
-        for start_ea, end_ea in expected_chunks:
-            ida_auto.plan_and_wait(start_ea, end_ea)
 
         if not ida_funcs.set_func_flags(entry_ea, ownership.function_flags):
             return False

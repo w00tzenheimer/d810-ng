@@ -25,6 +25,7 @@ is a plain Python callable, not a mocked IDA module.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from collections.abc import Callable
@@ -48,7 +49,10 @@ from d810.capabilities.native_patch import (
     OperationByteRecord,
     is_legal_native_journal_transition,
 )
-from d810.backends.ida.native_patch.phase_schema import parse_analysis_phase_witness
+from d810.backends.ida.native_patch.phase_schema import (
+    parse_analysis_phase_attestation,
+    parse_analysis_phase_witness,
+)
 from d810.core.execution_journal import DecompilationSessionId, ExecutionAttemptId
 
 __all__ = [
@@ -166,6 +170,7 @@ _STARTUP_RECOVERABLE_STATES = frozenset(
         NativeJournalState.POSTCONDITION_PENDING,
         NativeJournalState.RESTORING,
         NativeJournalState.RESTORE_BYTES_RESTORED,
+        NativeJournalState.ANALYSIS_RECONCILED,
         NativeJournalState.RESTORE_FAILED,
     }
 )
@@ -340,6 +345,29 @@ class SQLiteNativePatchJournal:
                 )
                 """
             )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_analysis_attestations (
+                    transaction_id TEXT PRIMARY KEY,
+                    attestation TEXT NOT NULL,
+                    FOREIGN KEY (transaction_id)
+                        REFERENCES native_patch_transactions(transaction_id)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_certificate_links (
+                    transaction_id TEXT PRIMARY KEY,
+                    certificate_id TEXT NOT NULL,
+                    plan_hash TEXT NOT NULL,
+                    database_key TEXT NOT NULL,
+                    function_key TEXT NOT NULL,
+                    FOREIGN KEY (transaction_id)
+                        REFERENCES native_patch_transactions(transaction_id)
+                )
+                """
+            )
             # The reverse schedule is durable independently of the
             # certificate.  ``status`` and the two exact state snapshots make
             # a crash between a carrier intent and its natural inverse
@@ -354,7 +382,12 @@ class SQLiteNativePatchJournal:
                     action_index INTEGER,
                     action_kind TEXT,
                     ea INTEGER,
+                    before_state TEXT,
+                    after_state TEXT,
                     expected_after TEXT,
+                    global_before TEXT,
+                    global_after TEXT,
+                    cleared_state TEXT,
                     status TEXT NOT NULL,
                     intent TEXT,
                     completion TEXT,
@@ -364,6 +397,21 @@ class SQLiteNativePatchJournal:
                 )
                 """
             )
+            reverse_columns = {
+                str(row["name"])
+                for row in self._conn.execute(
+                    "PRAGMA table_info(native_patch_analysis_reverse_steps)"
+                ).fetchall()
+            }
+            for column in (
+                "before_state", "after_state", "global_before", "global_after",
+                "cleared_state",
+            ):
+                if column not in reverse_columns:
+                    self._conn.execute(
+                        f"ALTER TABLE native_patch_analysis_reverse_steps "
+                        f"ADD COLUMN {column} TEXT"
+                    )
             # Pre-patch function extent, captured while the database still
             # holds the truth. A separate table rather than columns on
             # native_patch_operations so an existing journal file picks it up
@@ -810,9 +858,11 @@ class SQLiteNativePatchJournal:
                         """
                         INSERT INTO native_patch_analysis_reverse_steps
                             (transaction_id, step_index, kind, head_ea,
-                             action_index, action_kind, ea, expected_after,
+                            action_index, action_kind, ea, before_state,
+                            after_state, expected_after, global_before, global_after,
+                            cleared_state,
                              status, intent, completion)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL)
                         """,
                         (
                             transaction_id.value,
@@ -822,7 +872,21 @@ class SQLiteNativePatchJournal:
                             step.index,
                             step.action_kind,
                             step.ea,
+                            step.before_state,
+                            step.after_state,
                             step.expected_after,
+                            (
+                                None if step.global_before is None
+                                else json.dumps(step.global_before.as_payload(), sort_keys=True, separators=(",", ":"))
+                            ),
+                            (
+                                None if step.global_after is None
+                                else json.dumps(step.global_after.as_payload(), sort_keys=True, separators=(",", ":"))
+                            ),
+                            (
+                                None if step.cleared_state is None
+                                else json.dumps(step.cleared_state.as_payload(), sort_keys=True, separators=(",", ":"))
+                            ),
                         ),
                     )
             self._conn.execute(
@@ -1136,6 +1200,160 @@ class SQLiteNativePatchJournal:
         ).fetchone()
         return None if row is None else str(row["witness"])
 
+    def analysis_phase_attestation(
+        self, transaction_id: NativePatchTransactionId
+    ) -> str | None:
+        row = self._conn.execute(
+            """
+            SELECT attestation FROM native_patch_analysis_attestations
+            WHERE transaction_id = ?
+            """,
+            (transaction_id.value,),
+        ).fetchone()
+        return None if row is None else str(row["attestation"])
+
+    def record_certificate_link(
+        self,
+        transaction_id: NativePatchTransactionId,
+        certificate_id: str,
+        plan_hash: str,
+        database_key: str,
+        function_key: str,
+    ) -> None:
+        values = (certificate_id, plan_hash, database_key, function_key)
+        if any(not isinstance(value, str) or not value for value in values):
+            raise ValueError("certificate link fields must be non-empty strings")
+        with self._conn:
+            existing = self._conn.execute(
+                "SELECT certificate_id, plan_hash, database_key, function_key "
+                "FROM native_patch_certificate_links WHERE transaction_id = ?",
+                (transaction_id.value,),
+            ).fetchone()
+            if existing is not None and tuple(existing) != values:
+                raise ValueError("certificate link is immutable")
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO native_patch_certificate_links
+                    (transaction_id, certificate_id, plan_hash, database_key, function_key)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (transaction_id.value, *values),
+            )
+
+    def certificate_link(
+        self, transaction_id: NativePatchTransactionId
+    ) -> dict[str, str] | None:
+        row = self._conn.execute(
+            "SELECT certificate_id, plan_hash, database_key, function_key "
+            "FROM native_patch_certificate_links WHERE transaction_id = ?",
+            (transaction_id.value,),
+        ).fetchone()
+        return None if row is None else {key: str(row[key]) for key in row.keys()}
+
+    def install_analysis_phase_attestation(
+        self, transaction_id: NativePatchTransactionId, attestation: str
+    ) -> None:
+        """Atomically install attestation and its observed reverse states."""
+        # Lock before all transaction/authorization/cursor reads.  The
+        # installer and reverse cursor are independent SQLite handles, so an
+        # implicit transaction here would leave a race before the first write.
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            parsed = parse_analysis_phase_attestation(attestation)
+            transaction = self._conn.execute(
+                "SELECT transaction_id FROM native_patch_transactions WHERE transaction_id = ?",
+                (transaction_id.value,),
+            ).fetchone()
+            if transaction is None:
+                raise ValueError("analysis attestation transaction does not exist")
+            authorized = self.analysis_phase_witness(transaction_id)
+            if authorized is None:
+                raise ValueError("analysis attestation transaction is not phase-bearing")
+            if parsed.transaction_id != transaction_id.value:
+                raise ValueError("analysis attestation transaction id mismatch")
+            if parsed.phase_witness.token != authorized:
+                raise ValueError("analysis attestation is unrelated to transaction authorization")
+            # parse_analysis_phase_attestation already materializes and
+            # validates the observed-P schedule. Consume that exact authority;
+            # do not derive a second schedule in the journal layer.
+            schedule = parsed.reverse_schedule
+            rows = self.analysis_reverse_steps(transaction_id)
+            if len(rows) != len(schedule) or not rows:
+                raise ValueError("analysis reverse schedule is incomplete")
+            if self.analysis_phase_attestation(transaction_id) is not None:
+                raise ValueError("analysis phase attestation is already installed")
+            for index, (row, step) in enumerate(zip(rows, schedule)):
+                if row["status"] != "pending":
+                    raise ValueError("analysis reverse schedule is already in progress")
+                for column, expected in (
+                    ("kind", step.kind),
+                    ("head_ea", step.head_ea),
+                    ("action_index", step.index),
+                    ("action_kind", step.action_kind),
+                    ("ea", step.ea),
+                    ("before_state", step.before_state),
+                    ("after_state", step.after_state),
+                    ("expected_after", step.expected_after),
+                ):
+                    if row[column] != expected:
+                        raise ValueError(
+                            f"analysis reverse identity mismatch at step {index}: {column}"
+                        )
+            cursor = self._conn.execute(
+                """
+                INSERT INTO native_patch_analysis_attestations
+                    (transaction_id, attestation)
+                VALUES (?, ?)
+                """,
+                (transaction_id.value, attestation),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("analysis attestation insert affected unexpected rows")
+            for index, step in enumerate(schedule):
+                cursor = self._conn.execute(
+                    """
+                    UPDATE native_patch_analysis_reverse_steps
+                    SET before_state = ?, after_state = ?,
+                        global_before = ?, global_after = ?, cleared_state = ?
+                    WHERE transaction_id = ? AND step_index = ?
+                      AND status = 'pending'
+                      AND kind IS ? AND head_ea IS ? AND action_index IS ?
+                      AND action_kind IS ? AND ea IS ? AND expected_after IS ?
+                    """,
+                    (
+                        step.before_state,
+                        step.after_state,
+                        None if step.global_before is None else json.dumps(
+                            step.global_before.as_payload(), sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        None if step.global_after is None else json.dumps(
+                            step.global_after.as_payload(), sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        None if step.cleared_state is None else json.dumps(
+                            step.cleared_state.as_payload(), sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        transaction_id.value,
+                        index,
+                        step.kind,
+                        step.head_ea,
+                        step.index,
+                        step.action_kind,
+                        step.ea,
+                        step.expected_after,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError(
+                        f"analysis reverse state update affected unexpected rows at {index}"
+                    )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
     def analysis_reverse_steps(
         self, transaction_id: NativePatchTransactionId
     ) -> tuple[dict[str, object], ...]:
@@ -1143,7 +1361,9 @@ class SQLiteNativePatchJournal:
         rows = self._conn.execute(
             """
             SELECT step_index, kind, head_ea, action_index, action_kind, ea,
-                   expected_after, status, intent, completion
+                   before_state, after_state, expected_after, global_before,
+                   global_after, cleared_state, status, intent,
+                   completion
             FROM native_patch_analysis_reverse_steps
             WHERE transaction_id = ?
             ORDER BY step_index
@@ -1178,6 +1398,26 @@ class SQLiteNativePatchJournal:
             return
         if row["status"] == "intent" and row["intent"] != intent:
             raise ValueError("reverse step already has a different intent")
+        cursor = self._conn.execute(
+            """
+            SELECT step_index, status FROM native_patch_analysis_reverse_steps
+            WHERE transaction_id = ? ORDER BY step_index
+            """,
+            (transaction_id.value,),
+        ).fetchall()
+        statuses = [str(item["status"]) for item in cursor]
+        if any(status not in {"pending", "intent", "complete"} for status in statuses):
+            raise ValueError("malformed reverse cursor")
+        completed = [index for index, status in enumerate(statuses) if status == "complete"]
+        intents = [index for index, status in enumerate(statuses) if status == "intent"]
+        if completed != list(range(len(completed))):
+            raise ValueError("reverse cursor completed prefix is not contiguous")
+        if intents and (len(intents) != 1 or intents[0] != len(completed)):
+            raise ValueError("reverse cursor has more than one or misplaced intent")
+        if int(step_index) != len(completed):
+            raise ValueError("reverse cursor intent is not the next pending step")
+        if any(status != "pending" for status in statuses[int(step_index) + 1 :]):
+            raise ValueError("reverse cursor has a non-pending suffix")
         with self._conn:
             self._conn.execute(
                 """

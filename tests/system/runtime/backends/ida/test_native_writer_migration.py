@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -547,6 +548,136 @@ def test_tigress_canonical_31_target_gateway_round_trip(
             assert metadata.read_state(NativeMetadataActionKind.RECREATE_ITEM, ea) == token
     finally:
         native_journal.close()
+
+
+def test_real_phase_inverse_reopens_after_del_items_interrupt(
+    copy_of_idb, setup_libobfuscated_funcs, tmp_path
+) -> None:
+    """A crash after IDA deletes the carrier resumes with recreation only."""
+    function_ea = int(idc.get_name_ea_simple("tigress_flatten_indirect"))
+    discovered = discover_indirect_jump_table(function_ea)
+    assert discovered is not None
+    target_eas = tuple(dict.fromkeys(int(ea) for ea in discovered.target_eas))
+    request = IndirectLabelPlanRequest(
+        function_ea=function_ea,
+        label_start=int(discovered.label_start),
+        label_end=int(discovered.label_end),
+        table_address=int(discovered.table_address),
+        table_count=int(discovered.table_count),
+        target_eas=target_eas,
+        dispatch_jump_ea=int(discovered.dispatch_jump_ea),
+        switch_start_ea=None,
+        install_switch_info=False,
+        state_base=int(discovered.initial_state or 0),
+        state_var_stkoff=discovered.state_var_stkoff,
+    )
+    plan = build_indirect_label_metadata_plan(
+        request,
+        authorizing_attempt_id=ExecutionAttemptId(DecompilationSessionId.new(), 1),
+    )
+    metadata = IdaMetadataActionExecutor()
+    phase_payload = json.loads(
+        plan.analysis_phase_witness.removeprefix("analysis-phase:v4:")
+    )
+    eligible_groups = [
+        group
+        for group in phase_payload["groups"]
+        if group["origin_extent"] == group["destruction_extent"]
+    ]
+    assert eligible_groups, "Tigress fixture has no exact origin/destroy carrier"
+    crash_origin = json.loads(
+        min(
+            eligible_groups,
+            key=lambda group: group["origin_extent"][1] - group["origin_extent"][0],
+        )["origin_data_state"].removeprefix("data:v2:")
+    )
+    crash_head = int(crash_origin["head_ea"])
+    before = {
+        int(ea): metadata.read_state(NativeMetadataActionKind.RECREATE_ITEM, int(ea))
+        for ea in target_eas
+    }
+    native_path = tmp_path / "tigress-interrupted-inverse.sqlite"
+    native_journal = SQLiteNativePatchJournal(native_path)
+    certificate_store = SQLiteOptimizationStorage(":memory:")
+
+    def build_gateway(journal, executor):
+        identity = resolve_native_preanalysis_identity(function_ea, profile_config={})
+        database_uuid = identity.identity_resolution.database_uuid
+        assert database_uuid is not None
+        return NativePatchGateway(
+            journal=journal,
+            reader=IdaLiveDatabaseReader(),
+            writer=IdaNativeByteWriter(),
+            decode_replacement=lambda _ea, _data: (_ for _ in ()).throw(
+                RuntimeError("metadata-only plan attempted byte decoding")
+            ),
+            reanalyzer=IdaFunctionReanalyzer(),
+            extent_restorer=IdaFunctionExtentRestorer(),
+            flow_restorer=IdaFunctionFlowRestorer(),
+            metadata_executor=executor,
+            cache_invalidator=IdaCfuncCacheInvalidator(),
+            caller_discovery=IdaCallerDiscovery(),
+            redo_decompiler=IdaControlledRedoDecompiler(),
+            certificate_store=certificate_store,
+            issuer_registry=NativePatchIssuerRegistry((indirect_label_materializer_issuer(),)),
+            current_database_identity=database_uuid,
+            d810_version="tigress-interrupted-inverse-system-test",
+        )
+
+    class CrashAfterDeleteExecutor(IdaMetadataActionExecutor):
+        delete_count = 0
+        crashed = False
+
+        def _restore_data_snapshot(self, ea, target_state, target_data, *, validate_witness=True):
+            if not self.crashed and int(target_data["head_ea"]) == crash_head:
+                assert ida_bytes.del_items(
+                    int(target_data["head_ea"]), ida_bytes.DELIT_SIMPLE,
+                    int(target_data["size"]),
+                )
+                self.delete_count += 1
+                self.crashed = True
+                raise KeyboardInterrupt("injected crash after del_items")
+            return super()._restore_data_snapshot(
+                ea, target_state, target_data, validate_witness=validate_witness
+            )
+
+    try:
+        receipt = build_gateway(native_journal, metadata).apply(plan)
+        assert receipt.ok, receipt.rejection_reasons
+        crashing = CrashAfterDeleteExecutor()
+        crashing_gateway = build_gateway(native_journal, crashing)
+        with pytest.raises(KeyboardInterrupt, match="after del_items"):
+            crashing_gateway.restore(receipt.transaction_id)
+        phase_after_crash = crashing_gateway._phase_witness_for_transaction(
+            receipt.transaction_id
+        )
+        assert phase_after_crash is not None
+        intent_row = next(
+            row
+            for row in native_journal.analysis_reverse_steps(receipt.transaction_id)
+            if row["status"] == "intent"
+        )
+        intent_step = phase_after_crash.reverse_schedule[int(intent_row["step_index"])]
+        live_after_crash = crashing_gateway._live_phase_global_state(phase_after_crash)
+        assert live_after_crash == intent_step.cleared_state
+        native_journal.close()
+
+        reopened_journal = SQLiteNativePatchJournal(native_path)
+        try:
+            reopened_gateway = build_gateway(reopened_journal, IdaMetadataActionExecutor())
+            reopened_gateway.recover(receipt.transaction_id)
+            restored_record = reopened_journal.get(receipt.transaction_id)
+            assert restored_record.state.value == "RESTORED"
+            assert crashing.delete_count == 1
+            restored_metadata = IdaMetadataActionExecutor()
+            for ea, token in before.items():
+                assert restored_metadata.read_state(
+                    NativeMetadataActionKind.RECREATE_ITEM, ea
+                ) == token
+        finally:
+            reopened_journal.close()
+    finally:
+        certificate_store.close()
 
 
 def test_tigress_boundary_flow_projects_after_adjacent_source(
