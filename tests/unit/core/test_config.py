@@ -77,14 +77,7 @@ class TestConfiguration(unittest.TestCase):
         self.dummy_project_file = Path("./project.json")
         self.dummy_project_content = {
             "description": "My Test Project",
-            "ins_rules": [
-                {
-                    "name": "check_string_format",
-                    "is_activated": True,
-                    "config": {"min_len": 5},
-                }
-            ],
-            "blk_rules": [],
+            "additional_configuration": {},
         }
         with self.dummy_project_file.open("w") as f:
             json.dump(self.dummy_project_content, f, indent=2)
@@ -118,14 +111,13 @@ class TestConfiguration(unittest.TestCase):
 
     def test_project_configuration(self):
         """Test ProjectConfiguration loading, modification, and saving."""
-        with load_conf_classes() as (_, ProjectConfiguration, RuleConfiguration):
+        with load_conf_classes() as (_, ProjectConfiguration, _):
             project_config = ProjectConfiguration.from_file(self.dummy_project_file)
             self.assertEqual(project_config.description, "My Test Project")
 
             # Modify and save
-            new_rule = RuleConfiguration(name="check_buffer_size", is_activated=False)
-            project_config.ins_rules.append(new_rule)
             project_config.description = "My updated test project"
+            project_config.additional_configuration["future"] = {"keep": True}
             project_config.save()
 
             # Reload and verify changes
@@ -135,7 +127,10 @@ class TestConfiguration(unittest.TestCase):
             self.assertEqual(
                 project_config_reloaded.description, "My updated test project"
             )
-            self.assertIn(new_rule, project_config_reloaded.ins_rules)
+            self.assertEqual(
+                project_config_reloaded.additional_configuration["future"],
+                {"keep": True},
+            )
 
     def test_get_and_set_methods(self):
         """Test get() and set() methods of D810Configuration."""
@@ -155,8 +150,6 @@ class TestConfiguration(unittest.TestCase):
             project_path = Path("./project_additional.json")
             project_data = {
                 "description": "Test additional_configuration",
-                "ins_rules": [],
-                "blk_rules": [],
                 "additional_configuration": {
                     "enable_pass_pipeline": False,
                     "enable_analysis_pipeline": True,
@@ -257,7 +250,9 @@ class TestConfiguration(unittest.TestCase):
                 self.assertIn("hodur_flag2.json", saved_configs)
 
     def test_eid_config_requires_recovered_transitions_before_lowering(self):
-        config_path = Path(__file__).parents[3] / "src/d810/conf/eidolon_v3_const_solve.json"
+        config_path = (
+            Path(__file__).parents[3] / "src/d810/conf/eidolon_v3_const_solve.json"
+        )
         config = json.loads(config_path.read_text())
         pipeline = config["additional_configuration"]["pipeline_v2"]
         pass_ids = [entry["pass_id"] for entry in pipeline]
@@ -307,18 +302,14 @@ def test_every_bundled_config_v2_lowering_declares_recovered_transitions(
     assert recover_index < pass_ids.index("lower_state_machine")
     assert "recover_state_transitions" in lower["analyses"]["required"]
     assert "recover_state_transitions" in lower["contract"]["requires"]["analyses"]
-    assert (
-        PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS
-        in lower["analyses"]["required"]
-    )
+    assert PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS in lower["analyses"]["required"]
     assert (
         PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS
         in lower["contract"]["requires"]["analyses"]
     )
     recover = pipeline[recover_index]
     assert (
-        PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS
-        in recover["analyses"]["provided"]
+        PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS in recover["analyses"]["provided"]
     )
 
 

@@ -48,11 +48,8 @@ def write_project_document_atomically(
         validated = ProjectConfiguration.from_file(temp_path)
         if validator is not None:
             validator(validated)
-        # Re-serialize through the typed project model after validation.  This
-        # is where config-v2 documents lose transitional legacy arrays and the
-        # compatibility mode marker while unknown non-rule fields remain in
-        # the complete document.  Legacy/malformed documents retain their raw
-        # shape so the offline migration tool can still inspect them.
+        # Re-serialize through the config-v2-only typed project model after
+        # validation while preserving unknown forward-compatible fields.
         canonical_document = validated.to_document()
         with temp_path.open("w", encoding="utf-8") as fp:
             json.dump(

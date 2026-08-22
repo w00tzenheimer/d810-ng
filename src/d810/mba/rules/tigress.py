@@ -1,8 +1,8 @@
 """MBA simplification rules for residual Tigress-indirect obfuscated forms.
 
 These rules fold the five obfuscated expression families that survive the
-standard OLLVM ``ins_rules`` set on the ``tigress_flatten_indirect`` recovery
-output (ticket llr-m9r4). Every rule below is GENERAL: the literal constants
+standard OLLVM MBA-simplification portfolio on the ``tigress_flatten_indirect``
+recovery output (ticket llr-m9r4). Every rule below is GENERAL: the literal constants
 are parameterized as pattern leaf-constants (``Const("c_1")`` etc.) and the
 clean replacement constant is derived via a declarative defining constraint,
 never hardcoded to the specific Tigress values.

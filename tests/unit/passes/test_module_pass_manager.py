@@ -121,11 +121,12 @@ def _project_document(
     if pipeline is not None:
         config["pipeline_v2"] = [{"pass_id": pass_id} for pass_id in pipeline]
     config.update(additional or {})
-    return {
-        "ins_rules": list(ins_rules or ()),
-        "blk_rules": list(blk_rules or ()),
-        "additional_configuration": config,
-    }
+    document: dict[str, object] = {"additional_configuration": config}
+    if ins_rules is not None:
+        document["ins_rules"] = list(ins_rules)
+    if blk_rules is not None:
+        document["blk_rules"] = list(blk_rules)
+    return document
 
 
 def _invalid_project_documents() -> tuple[dict[str, object], ...]:
@@ -242,8 +243,6 @@ def test_run_function_uses_isolated_function_manager_state():
     family = _MatchingFamily((PassSpec("record", _Record, no_caps, default),))
     manager = ModulePassManager()
     project_config = {
-        "ins_rules": [],
-        "blk_rules": [],
         "additional_configuration": {
             "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
         },
@@ -276,8 +275,6 @@ def test_run_function_rejects_empty_compiled_specs_before_manager_creation():
     spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
     manager = ModulePassManager()
     project_config = {
-        "ins_rules": [],
-        "blk_rules": [],
         "additional_configuration": {
             "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
         },
@@ -307,8 +304,6 @@ def test_run_function_executes_explicit_compiled_specs():
         family=_MatchingFamily((spec,)),
         backend=_Backend(),
         project_config={
-            "ins_rules": [],
-            "blk_rules": [],
             "additional_configuration": {
                 "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
             },
@@ -323,10 +318,15 @@ def test_run_function_executes_explicit_compiled_specs():
 def test_run_function_derives_specs_from_canonical_pipeline():
     calls: list[str] = []
     spec = PassSpec(
-        "recover_dispatcher", _recording_pass("recover_dispatcher", calls), no_caps, default
+        "recover_dispatcher",
+        _recording_pass("recover_dispatcher", calls),
+        no_caps,
+        default,
     )
     registry = PassRegistry()
-    registry.register("recover_dispatcher", _recording_pass("recover_dispatcher", calls))
+    registry.register(
+        "recover_dispatcher", _recording_pass("recover_dispatcher", calls)
+    )
     manager = ModulePassManager(pass_registries={"state_machine_cff": registry})
 
     manager.run_function(
@@ -334,8 +334,6 @@ def test_run_function_derives_specs_from_canonical_pipeline():
         family=_MatchingFamily((spec,)),
         backend=_Backend(),
         project_config={
-            "ins_rules": [],
-            "blk_rules": [],
             "additional_configuration": {
                 "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
             },

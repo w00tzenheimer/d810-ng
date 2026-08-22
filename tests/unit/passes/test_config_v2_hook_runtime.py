@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.core.config import ProjectConfiguration
 from d810.passes.cleanup_family_adapter import (
     SIMPLE_FLATTENING_CLEANUP_PASS_ID,
     SIMPLE_FLATTENING_CLEANUP_RULE,
@@ -36,29 +36,6 @@ def _v2_project(*entries: dict[str, object]) -> ProjectConfiguration:
     return ProjectConfiguration(
         path=Path("runtime-config-v2.json"),
         additional_configuration={"pipeline_v2": list(entries)},
-    )
-
-
-def _project_with_unrelated_legacy_rules(name: str) -> ProjectConfiguration:
-    canonical = _project(f"{name}.json")
-    return ProjectConfiguration(
-        path=Path(f"{name}.runtime-config-v2.json"),
-        description=canonical.description,
-        ins_rules=[
-            RuleConfiguration(
-                name="UnrelatedInstructionRule",
-                is_activated=False,
-                config={"must_not": "leak"},
-            )
-        ],
-        blk_rules=[
-            RuleConfiguration(
-                name="UnrelatedBlockRule",
-                is_activated=False,
-                config={"must_not": "leak"},
-            )
-        ],
-        additional_configuration=dict(canonical.additional_configuration),
     )
 
 
@@ -245,7 +222,7 @@ def test_constant_bundle_rejects_unknown_rule_selection_field() -> None:
 
 def test_instruction_only_schedule_derives_bindings_from_pass_ids() -> None:
     schedule = compile_config_v2_hook_schedule(
-        _project_with_unrelated_legacy_rules("default_instruction_only")
+        _project("default_instruction_only.json")
     )
 
     assert schedule.configured_pass_ids == (
@@ -273,9 +250,7 @@ def test_instruction_only_schedule_derives_bindings_from_pass_ids() -> None:
 
 
 def test_hodur_schedule_derives_private_runtime_host_and_jump_fixer() -> None:
-    schedule = compile_config_v2_hook_schedule(
-        _project_with_unrelated_legacy_rules("hodur_flag2")
-    )
+    schedule = compile_config_v2_hook_schedule(_project("hodur_flag2.json"))
 
     assert schedule.configured_pass_ids == (
         *STATE_MACHINE_NATIVE_PASS_IDS,
@@ -375,7 +350,7 @@ def test_state_machine_schedule_rejects_disagreeing_typed_thresholds() -> None:
 
 def test_ollvm_schedule_omits_retired_materialized_goto_island_pass() -> None:
     schedule = compile_config_v2_hook_schedule(
-        _project_with_unrelated_legacy_rules("default_unflattening_ollvm")
+        _project("default_unflattening_ollvm.json")
     )
 
     assert "materialized-computed-goto-island" not in schedule.configured_pass_ids
@@ -386,9 +361,7 @@ def test_ollvm_schedule_omits_retired_materialized_goto_island_pass() -> None:
 
 
 def test_identity_call_schedule_derives_explicit_opt_in_rule_config() -> None:
-    schedule = compile_config_v2_hook_schedule(
-        _project_with_unrelated_legacy_rules("identity_call")
-    )
+    schedule = compile_config_v2_hook_schedule(_project("identity_call.json"))
 
     assert schedule.configured_pass_ids == ("identity-call-resolver",)
     assert schedule.native_state_machine_pass_ids == ()
@@ -405,7 +378,7 @@ def test_identity_call_schedule_derives_explicit_opt_in_rule_config() -> None:
 
 def test_indirect_branch_call_schedule_derives_explicit_flow_rules() -> None:
     schedule = compile_config_v2_hook_schedule(
-        _project_with_unrelated_legacy_rules("default_indirect_resolution")
+        _project("default_indirect_resolution.json")
     )
 
     assert schedule.configured_pass_ids == (
@@ -426,7 +399,7 @@ def test_indirect_branch_call_schedule_derives_explicit_flow_rules() -> None:
 
 def test_cleanup_family_schedule_derives_explicit_cleanup_rule() -> None:
     schedule = compile_config_v2_hook_schedule(
-        _project_with_unrelated_legacy_rules("example_libobfuscated_no_fixprecedessor")
+        _project("example_libobfuscated_no_fixprecedessor.json")
     )
 
     assert schedule.configured_pass_ids == (

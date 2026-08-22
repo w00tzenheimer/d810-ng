@@ -2,10 +2,9 @@
 
 The project-facing input is the typed ``pipeline_v2`` pass sequence.  This
 module owns the unavoidable adapter boundary between those portable pass
-declarations and Hex-Rays' instruction/block callback registrations.  It does
-not inspect execution modes or legacy rule arrays: a project either contains a
-non-empty v2 pipeline and produces one schedule, or fails before runtime state
-is changed.
+declarations and Hex-Rays' instruction/block callback registrations. A project
+either contains a non-empty v2 pipeline and produces one schedule, or fails
+before runtime state is changed.
 """
 
 from __future__ import annotations
@@ -74,7 +73,9 @@ class ConfigV2HookSchedule:
     block_bindings: tuple[RuleConfiguration, ...] = ()
     native_state_machine_pass_ids: tuple[str, ...] = ()
     global_const_persistence_enabled: bool = False
-    constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = None
+    constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = (
+        None
+    )
 
     @property
     def instruction_rules(self) -> tuple[RuleConfiguration, ...]:
@@ -220,12 +221,8 @@ def _mba_egraph_options(config: PipelineConfig) -> dict[str, object]:
         "max_eclasses": adapter.max_eclasses,
         "max_enodes": adapter.max_enodes,
         "max_rule_firings": adapter.max_rule_firings,
-        "cross_block_constant_preparation": (
-            adapter.cross_block_constant_preparation
-        ),
-        "cross_block_def_use_preparation": (
-            adapter.cross_block_def_use_preparation
-        ),
+        "cross_block_constant_preparation": (adapter.cross_block_constant_preparation),
+        "cross_block_def_use_preparation": (adapter.cross_block_def_use_preparation),
         "learned_replay_enabled": adapter.learned_replay_enabled,
         "learned_replay_max_entries": adapter.learned_replay_max_entries,
         "learned_replay_max_bytes": adapter.learned_replay_max_bytes,

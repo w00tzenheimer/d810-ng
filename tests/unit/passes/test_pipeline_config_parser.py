@@ -174,8 +174,6 @@ def test_require_config_v2_project_rejects_malformed_loaded_rule_objects(rule):
 
 def test_require_config_v2_project_rejects_explicit_non_mapping_additional_configuration():
     document = {
-        "ins_rules": [],
-        "blk_rules": [],
         "additional_configuration": [],
         # This must not be treated as a bare additional-configuration mapping.
         "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
@@ -203,8 +201,6 @@ def test_require_config_v2_project_rejects_null_legacy_rule_arrays(field):
 def test_require_config_v2_project_wraps_malformed_project_like_additional_configuration():
     project = SimpleNamespace(
         path=Path("/tmp/malformed-project-like.json"),
-        ins_rules=[],
-        blk_rules=[],
         additional_configuration=[],
     )
 
@@ -219,8 +215,6 @@ def test_require_config_v2_project_does_not_accept_bare_additional_mapping():
 
 def test_require_config_v2_project_rejects_unknown_pass_ids():
     document = {
-        "ins_rules": [],
-        "blk_rules": [],
         "additional_configuration": {
             "pipeline_v2": [{"pass_id": "not-a-registered-pass"}]
         },
@@ -230,7 +224,7 @@ def test_require_config_v2_project_rejects_unknown_pass_ids():
         require_config_v2_project(document)
 
 
-def test_require_config_v2_project_tolerates_empty_legacy_arrays_when_pipeline_exists():
+def test_require_config_v2_project_rejects_empty_legacy_arrays_when_pipeline_exists():
     project = {
         "ins_rules": [],
         "blk_rules": [],
@@ -245,9 +239,8 @@ def test_require_config_v2_project_tolerates_empty_legacy_arrays_when_pipeline_e
         },
     }
 
-    configs = require_config_v2_project(project)
-
-    assert tuple(config.pass_id for config in configs) == ("recover_dispatcher",)
+    with pytest.raises(PipelineConfigError, match="removed legacy field"):
+        require_config_v2_project(project)
 
 
 @pytest.mark.parametrize(
@@ -389,8 +382,8 @@ def test_default_instruction_only_bundled_project_is_canonical_v2():
         _CONF_DIR / "default_instruction_only.json"
     )
 
-    assert project.ins_rules == []
-    assert project.blk_rules == []
+    assert not hasattr(project, "ins_rules")
+    assert not hasattr(project, "blk_rules")
     assert [
         config.pass_id for config in pipeline_configs_from_project_config(project)
     ] == [
@@ -403,8 +396,8 @@ def test_default_instruction_only_bundled_project_is_canonical_v2():
 def test_example_libobfuscated_bundled_project_is_canonical_v2():
     project = ProjectConfiguration.from_file(_CONF_DIR / "example_libobfuscated.json")
 
-    assert project.ins_rules == []
-    assert project.blk_rules == []
+    assert not hasattr(project, "ins_rules")
+    assert not hasattr(project, "blk_rules")
     assert project.additional_configuration["enable_pass_pipeline"] is True
     assert [
         config.pass_id for config in pipeline_configs_from_project_config(project)
@@ -427,8 +420,8 @@ def test_example_libobfuscated_bundled_project_is_canonical_v2():
 def test_hodur_bundled_projects_are_canonical_v2(config_name):
     project = ProjectConfiguration.from_file(_config_path(config_name))
 
-    assert project.ins_rules == []
-    assert project.blk_rules == []
+    assert not hasattr(project, "ins_rules")
+    assert not hasattr(project, "blk_rules")
     assert [
         config.pass_id for config in pipeline_configs_from_project_config(project)
     ] == [
@@ -442,8 +435,8 @@ def test_hodur_config_v2_project_is_operational():
 
     project_configs = pipeline_configs_from_project_config(project)
 
-    assert project.ins_rules == []
-    assert project.blk_rules == []
+    assert not hasattr(project, "ins_rules")
+    assert not hasattr(project, "blk_rules")
     assert "canary" not in project.description.lower()
     assert "pipeline_v2_" + "mode" not in project.additional_configuration
     assert not any(
@@ -487,8 +480,8 @@ def test_hodur_config_v2_project_is_operational():
 def test_tigress_bundled_projects_are_canonical_v2(config_name):
     project = ProjectConfiguration.from_file(_config_path(config_name))
 
-    assert project.ins_rules == []
-    assert project.blk_rules == []
+    assert not hasattr(project, "ins_rules")
+    assert not hasattr(project, "blk_rules")
     assert pipeline_configs_from_project_config(project)
 
 
@@ -498,8 +491,8 @@ def test_tigress_bundled_projects_are_canonical_v2(config_name):
 def test_remaining_bundled_projects_are_canonical_v2(config_name, expected_pass_ids):
     project = ProjectConfiguration.from_file(_config_path(config_name))
 
-    assert project.ins_rules == []
-    assert project.blk_rules == []
+    assert not hasattr(project, "ins_rules")
+    assert not hasattr(project, "blk_rules")
     assert (
         tuple(
             config.pass_id for config in pipeline_configs_from_project_config(project)

@@ -8,8 +8,9 @@ There are two different version numbers involved:
 - **D810 1.0.0** is the plugin release.
 - **Config v2** is the project JSON format used by D810 1.0.0.
 
-D810 1.0.0 does not execute legacy `ins_rules` and `blk_rules` projects. The
-runtime accepts only projects with a non-empty
+D810 1.0.0 does not execute legacy `ins_rules` and `blk_rules` projects. Their
+presence is rejected even when the arrays are empty. The runtime accepts only
+projects with a non-empty
 `additional_configuration.pipeline_v2`. Migration is deliberately offline and
 fail-closed: D810 will not rewrite a project during startup and the migration
 tool will not silently discard an unsupported rule or option.

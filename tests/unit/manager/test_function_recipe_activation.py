@@ -28,8 +28,6 @@ def _base_project() -> ProjectConfiguration:
     return ProjectConfiguration(
         path=pathlib.Path("/configs/runtime.json"),
         description="Runtime",
-        ins_rules=[],
-        blk_rules=[],
         additional_configuration={
             "unknown_nested": {"keep": [1, 2]},
             "pipeline_v2": [
@@ -56,8 +54,8 @@ def test_recipe_runtime_project_is_in_memory_lossless_and_config_v2() -> None:
     assert project.path == pathlib.Path("/configs/.runtime.function-recipe-401000.json")
     assert project.path.exists() is False
     assert project.description == "Runtime [function recipe 0x401000]"
-    assert project.ins_rules is not base.ins_rules
-    assert project.blk_rules is not base.blk_rules
+    assert not hasattr(project, "ins_rules")
+    assert not hasattr(project, "blk_rules")
     assert project.additional_configuration["unknown_nested"] == {"keep": [1, 2]}
     assert (
         project.additional_configuration["unknown_nested"]

@@ -94,7 +94,9 @@ def bundled_runtime_projects() -> tuple[Path, ...]:
     """
 
     excluded = EXCLUDED_NON_PROJECT_JSON
-    actual = frozenset(path.name for path in CONF_DIR.glob("*.json") if path.name not in excluded)
+    actual = frozenset(
+        path.name for path in CONF_DIR.glob("*.json") if path.name not in excluded
+    )
     assert actual == CANONICAL_BUNDLED_PROJECTS, (
         "bundled conf inventory changed; classify every top-level JSON file "
         f"explicitly (missing={sorted(CANONICAL_BUNDLED_PROJECTS - actual)}, "
@@ -112,8 +114,8 @@ def test_bundled_runtime_projects_are_canonical_v2() -> None:
             marker in description
             for marker in ("canary", "shadow", "legacy source", "alternate runtime")
         )
-        assert not document.get("ins_rules")
-        assert not document.get("blk_rules")
+        assert "ins_rules" not in document
+        assert "blk_rules" not in document
         additional = document.get("additional_configuration")
         assert isinstance(additional, dict)
         assert "pipeline_v2_mode" not in additional
@@ -124,4 +126,6 @@ def test_bundled_runtime_projects_are_canonical_v2() -> None:
         configs = require_config_v2_project(project)
         assert configs
         schedule = compile_config_v2_hook_schedule(project)
-        assert schedule.configured_pass_ids == tuple(config.pass_id for config in configs)
+        assert schedule.configured_pass_ids == tuple(
+            config.pass_id for config in configs
+        )

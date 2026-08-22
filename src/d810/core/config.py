@@ -74,13 +74,11 @@ class RuleConfiguration:
 @dataclasses.dataclass(slots=True, repr=False)
 class ProjectConfiguration:
     """
-    Holds project-specific settings, including analysis rules.
+    Holds one canonical config-v2 project.
     """
 
     path: pathlib.Path
     description: str = ""
-    ins_rules: list[RuleConfiguration] = dataclasses.field(default_factory=list)
-    blk_rules: list[RuleConfiguration] = dataclasses.field(default_factory=list)
     additional_configuration: dict[str, typing.Any] = dataclasses.field(
         default_factory=dict
     )
@@ -89,30 +87,6 @@ class ProjectConfiguration:
     # intentionally not part of the public constructor or equality contract.
     _unknown_top_level: dict[str, typing.Any] = dataclasses.field(
         default_factory=dict,
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _config_v2_validation_succeeded: bool = dataclasses.field(
-        default=False,
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _config_v2_validation_fingerprint: str | None = dataclasses.field(
-        default=None,
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _ins_rules_present: bool = dataclasses.field(
-        default=True,
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _blk_rules_present: bool = dataclasses.field(
-        default=True,
         init=False,
         repr=False,
         compare=False,
@@ -129,7 +103,7 @@ class ProjectConfiguration:
         return {"pre_hexrays": self.additional_configuration.get("pre_hexrays", {})}
 
     def __repr__(self) -> str:
-        return f"ProjectConfiguration(path={self.path}, description={self.description}, ins_rules={len(self.ins_rules)}, blk_rules={len(self.blk_rules)}, additional_configuration={len(self.additional_configuration)})"
+        return f"ProjectConfiguration(path={self.path}, description={self.description}, additional_configuration={len(self.additional_configuration)})"
 
     @classmethod
     def from_file(cls, path: pathlib.Path | str) -> "ProjectConfiguration":
@@ -161,10 +135,18 @@ class ProjectConfiguration:
         if not isinstance(data, dict):
             raise ValueError("project configuration document must be an object")
 
+        retired_fields = sorted({"ins_rules", "blk_rules"}.intersection(data))
+        if retired_fields:
+            joined = ", ".join(retired_fields)
+            raise ValueError(
+                f"project configuration contains removed legacy field(s): {joined}; "
+                "migrate it with: python "
+                "tools/migrations/migrate_project_config_v2.py "
+                f"{config_path} --in-place"
+            )
+
         known_fields = {
             "description",
-            "ins_rules",
-            "blk_rules",
             "additional_configuration",
         }
         unknown_top_level = {
@@ -173,102 +155,25 @@ class ProjectConfiguration:
             if key not in known_fields
         }
 
-        def load_rule_array(field_name: str) -> list[RuleConfiguration]:
-            if field_name not in data:
-                return []
-            raw_rules = data[field_name]
-            if not isinstance(raw_rules, list):
-                raise ValueError(
-                    f"{field_name} must be an array; migrate it with: "
-                    "python tools/migrations/migrate_project_config_v2.py "
-                    f"{config_path} --in-place"
-                )
-            rules: list[RuleConfiguration] = []
-            for index, raw_rule in enumerate(raw_rules):
-                if not isinstance(raw_rule, dict):
-                    raise ValueError(
-                        f"{field_name}[{index}] must be an object; migrate it "
-                        "with: python tools/migrations/migrate_project_config_v2.py "
-                        f"{config_path} --in-place"
-                    )
-                try:
-                    rules.append(RuleConfiguration.from_dict(raw_rule))
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(
-                        f"{field_name}[{index}] is malformed ({exc}); migrate it "
-                        "with: python tools/migrations/migrate_project_config_v2.py "
-                        f"{config_path} --in-place"
-                    ) from exc
-            return rules
-
         project = cls(
             path=config_path,
             description=data.get("description", ""),
-            ins_rules=load_rule_array("ins_rules"),
-            blk_rules=load_rule_array("blk_rules"),
             additional_configuration=data.get("additional_configuration", {}),
         )
         project._unknown_top_level = unknown_top_level
-        project._ins_rules_present = "ins_rules" in data
-        project._blk_rules_present = "blk_rules" in data
         return project
-
-    def _config_v2_validation_snapshot(self) -> str | None:
-        try:
-            return json.dumps(
-                {
-                    "ins_rules": [rule.to_dict() for rule in self.ins_rules],
-                    "blk_rules": [rule.to_dict() for rule in self.blk_rules],
-                    "additional_configuration": self.additional_configuration,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-            )
-        except (TypeError, ValueError):
-            return None
-
-    def _mark_config_v2_validation_succeeded(self) -> None:
-        """Record an explicit strict-parser decision for canonical save."""
-        self._config_v2_validation_succeeded = True
-        self._config_v2_validation_fingerprint = self._config_v2_validation_snapshot()
-
-    def _is_canonical_v2_project(self) -> bool:
-        """Return true only after an external strict validator approved v2."""
-        return bool(
-            self._config_v2_validation_succeeded
-            and self._config_v2_validation_fingerprint is not None
-            and self._config_v2_validation_fingerprint
-            == self._config_v2_validation_snapshot()
-        )
 
     def to_document(self) -> dict[str, typing.Any]:
         """Return a deterministic JSON document for the current project.
 
-        A project is serialized canonically only after the strict parser and
-        operational pass registry explicitly approve it.  This keeps the core
-        persistence layer independent of ``d810.passes`` while ensuring direct
-        save/persistence callers cannot turn an unknown or malformed pipeline
-        into a canonical-looking document.  Legacy or malformed documents
-        remain representable for the offline migration tool and diagnostics.
+        The runtime model represents only config v2. Legacy documents must pass
+        through the offline migration tool before this serializer can load them.
         """
         project_data = copy.deepcopy(self._unknown_top_level)
         project_data["description"] = self.description
-        additional = copy.deepcopy(self.additional_configuration)
-        if self._is_canonical_v2_project():
-            project_data["additional_configuration"] = additional
-        elif not self.ins_rules and not self.blk_rules:
-            # Preserve an already-canonical file's absence without pretending
-            # that a migration-era v2 document was registry-validated.
-            if self._ins_rules_present:
-                project_data["ins_rules"] = []
-            if self._blk_rules_present:
-                project_data["blk_rules"] = []
-            project_data["additional_configuration"] = additional
-        else:
-            project_data["ins_rules"] = [rule.to_dict() for rule in self.ins_rules]
-            project_data["blk_rules"] = [rule.to_dict() for rule in self.blk_rules]
-            project_data["additional_configuration"] = additional
+        project_data["additional_configuration"] = copy.deepcopy(
+            self.additional_configuration
+        )
         return project_data
 
     def save(self) -> None:

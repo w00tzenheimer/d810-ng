@@ -42,7 +42,7 @@ from d810.core.project_config_persistence import (
     write_project_document_atomically,
 )
 from d810.core import typing
-from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.core.config import ProjectConfiguration
 from tools.migrations.legacy_project_config import (
     LegacyMigrationError,
     is_canonical_v2_document,
@@ -144,7 +144,9 @@ def _parser() -> argparse.ArgumentParser:
             "without involving IDA."
         )
     )
-    parser.add_argument("input", type=Path, help="project JSON file or --check directory")
+    parser.add_argument(
+        "input", type=Path, help="project JSON file or --check directory"
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -164,7 +166,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _validate_arguments(
-    parser: argparse.ArgumentParser, *, input_path: Path, output: Path | None, in_place: bool, check: bool
+    parser: argparse.ArgumentParser,
+    *,
+    input_path: Path,
+    output: Path | None,
+    in_place: bool,
+    check: bool,
 ) -> os.stat_result:
     if output is not None and in_place:
         parser.error("--output cannot be combined with --in-place")
@@ -225,7 +232,9 @@ def _open_single_file_descriptor(path: Path) -> int:
     try:
         before = path.lstat()
     except FileNotFoundError as exc:
-        raise MigrationCliError(f"{path}: input path disappeared before reading") from exc
+        raise MigrationCliError(
+            f"{path}: input path disappeared before reading"
+        ) from exc
     except OSError as exc:
         raise MigrationCliError(f"{path}: could not inspect input path: {exc}") from exc
     error = _regular_file_error(path, before)
@@ -249,7 +258,9 @@ def _open_single_file_descriptor(path: Path) -> int:
         descriptor = os.open(path, flags)
     except OSError as exc:
         if no_follow and exc.errno == errno.ELOOP:
-            raise MigrationCliError(f"{path}: input path must not be a symlink") from exc
+            raise MigrationCliError(
+                f"{path}: input path must not be a symlink"
+            ) from exc
         raise MigrationCliError(f"{path}: could not open input: {exc}") from exc
 
     owner = _DescriptorOwner(descriptor, f"{path}: input")
@@ -259,7 +270,9 @@ def _open_single_file_descriptor(path: Path) -> int:
         if error is not None:
             raise MigrationCliError(error)
         after = path.lstat()
-        if _file_identity(before) != _file_identity(opened) or _file_identity(opened) != _file_identity(after):
+        if _file_identity(before) != _file_identity(opened) or _file_identity(
+            opened
+        ) != _file_identity(after):
             if stat.S_ISLNK(after.st_mode):
                 raise MigrationCliError(f"{path}: input path must not be a symlink")
             raise MigrationCliError(f"{path}: input path changed during read")
@@ -288,7 +301,9 @@ def _read_json_from_descriptor(descriptor: int, path: Path) -> dict[str, object]
     except UnicodeDecodeError as exc:
         _raise_with_close(MigrationCliError(f"{path}: invalid UTF-8: {exc}"), owner)
     except (OSError, ValueError) as exc:
-        _raise_with_close(MigrationCliError(f"{path}: could not read project: {exc}"), owner)
+        _raise_with_close(
+            MigrationCliError(f"{path}: could not read project: {exc}"), owner
+        )
     if not isinstance(value, dict):
         _raise_with_close(
             MigrationCliError(f"{path}: project JSON root must be an object"), owner
@@ -319,8 +334,12 @@ def _open_directory_child_descriptor(
         descriptor = os.open(name, flags, dir_fd=directory_descriptor)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
-            raise MigrationCliError(f"{name}: symlink or path changed during directory check") from exc
-        raise MigrationCliError(f"{name}: could not open during directory check: {exc}") from exc
+            raise MigrationCliError(
+                f"{name}: symlink or path changed during directory check"
+            ) from exc
+        raise MigrationCliError(
+            f"{name}: could not open during directory check: {exc}"
+        ) from exc
     owner = _DescriptorOwner(descriptor, f"{name}: directory child")
     try:
         opened = os.fstat(owner.descriptor)
@@ -333,7 +352,9 @@ def _open_directory_child_descriptor(
         _raise_with_close(exc, owner)
     except OSError as exc:
         _raise_with_close(
-            MigrationCliError(f"{name}: could not verify during directory check: {exc}"),
+            MigrationCliError(
+                f"{name}: could not verify during directory check: {exc}"
+            ),
             owner,
         )
     return owner.release()
@@ -349,7 +370,9 @@ def _read_json(
 ) -> dict[str, object]:
     if directory_descriptor is None:
         if entry_name is not None or expected_stat is not None:
-            raise MigrationCliError("directory entry descriptor arguments require a directory")
+            raise MigrationCliError(
+                "directory entry descriptor arguments require a directory"
+            )
         descriptor = _open_single_file_descriptor(path)
         owner = _DescriptorOwner(descriptor, f"{path}: input")
         if expected_path_stat is not None:
@@ -366,7 +389,9 @@ def _read_json(
         descriptor = owner.release()
     else:
         if entry_name is None or expected_stat is None:
-            raise MigrationCliError("directory entry descriptor arguments are incomplete")
+            raise MigrationCliError(
+                "directory entry descriptor arguments are incomplete"
+            )
         descriptor = _open_directory_child_descriptor(
             directory_descriptor, entry_name, expected_stat
         )
@@ -406,14 +431,12 @@ def _validate_project_document_in_memory(
     """Construct the typed project object without reopening a staged path."""
 
     try:
-        ins_rules = [
-            RuleConfiguration.from_dict(rule)
-            for rule in document.get("ins_rules", [])  # type: ignore[arg-type]
-        ]
-        blk_rules = [
-            RuleConfiguration.from_dict(rule)
-            for rule in document.get("blk_rules", [])  # type: ignore[arg-type]
-        ]
+        retired_fields = sorted({"ins_rules", "blk_rules"}.intersection(document))
+        if retired_fields:
+            raise TypeError(
+                "staged canonical output contains removed legacy field(s): "
+                + ", ".join(retired_fields)
+            )
         additional = document.get("additional_configuration", {})
         if not isinstance(additional, dict):
             raise TypeError("additional_configuration must be an object")
@@ -423,12 +446,12 @@ def _validate_project_document_in_memory(
         return ProjectConfiguration(
             path=path,
             description=description,
-            ins_rules=ins_rules,
-            blk_rules=blk_rules,
             additional_configuration=additional,
         )
     except Exception as exc:
-        raise MigrationCliError(f"{path}: staged output validation failed: {exc}") from exc
+        raise MigrationCliError(
+            f"{path}: staged output validation failed: {exc}"
+        ) from exc
 
 
 def _read_owned_descriptor_bytes(owner: _DescriptorOwner, path: Path) -> bytes:
@@ -462,9 +485,7 @@ def _write_atomically(
         raise MigrationCliError(f"{destination}: atomic write failed: {exc}") from exc
 
 
-def _write_new_no_clobber(
-    destination: Path, document: dict[str, object]
-) -> str | None:
+def _write_new_no_clobber(destination: Path, document: dict[str, object]) -> str | None:
     """Publish a new destination without ever replacing a directory entry.
 
     The staged file is written and validated in the destination directory.  A
@@ -614,16 +635,20 @@ def _open_directory_handle(directory: Path) -> int:
     try:
         before = directory.lstat()
     except FileNotFoundError as exc:
-        raise MigrationCliError(f"{directory}: input path disappeared before checking") from exc
+        raise MigrationCliError(
+            f"{directory}: input path disappeared before checking"
+        ) from exc
     except OSError as exc:
-        raise MigrationCliError(f"{directory}: could not inspect directory: {exc}") from exc
+        raise MigrationCliError(
+            f"{directory}: could not inspect directory: {exc}"
+        ) from exc
     if stat.S_ISLNK(before.st_mode):
         raise MigrationCliError(f"{directory}: input path must not be a symlink")
     if not stat.S_ISDIR(before.st_mode):
         raise MigrationCliError(f"{directory}: input path is not a directory")
-    if not before.st_mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH) or not before.st_mode & (
-        stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-    ):
+    if not before.st_mode & (
+        stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
+    ) or not before.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
         raise MigrationCliError(
             f"{directory}: directory has no read/search permission bits"
         )
@@ -634,7 +659,9 @@ def _open_directory_handle(directory: Path) -> int:
     try:
         descriptor = os.open(directory, flags)
     except OSError as exc:
-        raise MigrationCliError(f"{directory}: could not open directory: {exc}") from exc
+        raise MigrationCliError(
+            f"{directory}: could not open directory: {exc}"
+        ) from exc
     owner = _DescriptorOwner(descriptor, f"{directory}: directory")
     try:
         directory_stat = os.fstat(owner.descriptor)
@@ -642,14 +669,14 @@ def _open_directory_handle(directory: Path) -> int:
             raise MigrationCliError(f"{directory}: input path is not a directory")
         if not directory_stat.st_mode & (
             stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
-        ) or not directory_stat.st_mode & (
-            stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-        ):
+        ) or not directory_stat.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
             raise MigrationCliError(
                 f"{directory}: directory has no read/search permission bits"
             )
         if _file_identity(before) != _file_identity(directory_stat):
-            raise MigrationCliError(f"{directory}: input path changed during directory check")
+            raise MigrationCliError(
+                f"{directory}: input path changed during directory check"
+            )
     except MigrationCliError as exc:
         _raise_with_close(exc, owner)
     except OSError as exc:
@@ -706,7 +733,9 @@ def _check_directory(
         except OSError as exc:
             failure = f"{directory}: could not verify directory: {exc}"
         else:
-            if _file_identity(expected_path_stat) != _file_identity(opened_directory_stat):
+            if _file_identity(expected_path_stat) != _file_identity(
+                opened_directory_stat
+            ):
                 failure = f"{directory}: input path changed during directory check"
 
     if failure is None:
@@ -723,7 +752,9 @@ def _check_directory(
                         "migration command is not applicable"
                     )
                     continue
-                if stat.S_ISLNK(entry_stat.st_mode) or not stat.S_ISREG(entry_stat.st_mode):
+                if stat.S_ISLNK(entry_stat.st_mode) or not stat.S_ISREG(
+                    entry_stat.st_mode
+                ):
                     findings.append(
                         f"{path}: special/non-regular JSON directory entry; "
                         "migration command is not applicable"

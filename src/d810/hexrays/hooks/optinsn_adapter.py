@@ -299,10 +299,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             "Z3Optimizer"
         )
 
-        # PatternOptimizer: Rules are added via add_rule() from D810Manager based on
-        # project configuration. This ensures only rules enabled in the project's
-        # ins_rules (with is_activated: true) are loaded.
-        # Previously this loaded ALL VerifiableRules, bypassing project config.
+        # PatternOptimizer bindings are compiled from the typed config-v2 pass
+        # schedule and installed by D810Manager. Previously this loaded every
+        # VerifiableRule and bypassed project configuration.
         self.add_optimizer(
             PatternOptimizer(
                 DEFAULT_OPTIMIZATION_PATTERN_MATURITIES,
@@ -393,9 +392,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
         pattern_storage_present = hasattr(optimizer, "pattern_storage")
         indexed_storage_present = hasattr(optimizer, "_indexed_storage")
-        allowed_root_opcodes_store = getattr(
-            optimizer, "_allowed_root_opcodes", None
-        )
+        allowed_root_opcodes_store = getattr(optimizer, "_allowed_root_opcodes", None)
         if allowed_root_opcodes_store is not None and not isinstance(
             allowed_root_opcodes_store, set
         ):
@@ -417,9 +414,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 (int(opcode), tuple(rules))
                 for opcode, rules in structural_rules_store.items()
             )
-        has_patternless_rule = getattr(
-            optimizer, "_has_patternless_rule", None
-        )
+        has_patternless_rule = getattr(optimizer, "_has_patternless_rule", None)
         if has_patternless_rule is not None and not isinstance(
             has_patternless_rule, bool
         ):
@@ -428,9 +423,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             )
         generation = getattr(optimizer, "_generation", None)
         if generation is not None and not isinstance(generation, int):
-            raise TypeError(
-                "instruction optimizer generation has an unsupported type"
-            )
+            raise TypeError("instruction optimizer generation has an unsupported type")
         return _InstructionChildRuntimeState(
             optimizer=optimizer,
             rules_store=rules_store,
@@ -492,12 +485,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 for maturity, rule_names in active_rule_names_store.items()
             },
             residual_admission_cache_key=self._residual_admission_cache_key,
-            residual_admission_cache_value=bool(
-                self._residual_admission_cache_value
-            ),
-            scheduled_stage_identities=frozenset(
-                self._scheduled_stage_identities
-            ),
+            residual_admission_cache_value=bool(self._residual_admission_cache_value),
+            scheduled_stage_identities=frozenset(self._scheduled_stage_identities),
             scheduled_implementation_names=frozenset(
                 self._scheduled_implementation_names
             ),

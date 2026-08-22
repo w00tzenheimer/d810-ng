@@ -20,8 +20,6 @@ def _write_source(path: Path) -> ProjectConfiguration:
         json.dumps(
             {
                 "description": "source",
-                "ins_rules": [],
-                "blk_rules": [],
                 "future_top_level": {"retain": [1, 2, 3]},
                 "additional_configuration": {
                     "recon_fact_profile_modules": ["example.profile"],
@@ -60,7 +58,9 @@ def test_clone_changes_only_path_and_description_and_preserves_nested_v2_payload
     assert duplicate.additional_configuration == source.additional_configuration
 
 
-def test_clone_without_validator_preserves_legacy_document_shape(tmp_path: Path) -> None:
+def test_clone_rejects_legacy_document_before_runtime_model_construction(
+    tmp_path: Path,
+) -> None:
     source_path = tmp_path / "legacy-source.json"
     source_path.write_text(
         json.dumps(
@@ -75,18 +75,8 @@ def test_clone_without_validator_preserves_legacy_document_shape(tmp_path: Path)
         ),
         encoding="utf-8",
     )
-    source = ProjectConfiguration.from_file(source_path)
-    destination = tmp_path / "legacy-copy.json"
-
-    clone_project_configuration(
-        source=source,
-        destination=destination,
-        description="copy",
-    )
-
-    actual = json.loads(destination.read_text(encoding="utf-8"))
-    assert actual["ins_rules"][0]["name"] == "legacy-rule"
-    assert actual["blk_rules"] == []
+    with pytest.raises(ValueError, match="migrate_project_config_v2.py"):
+        ProjectConfiguration.from_file(source_path)
 
 
 def test_atomic_reload_failure_leaves_existing_destination_unchanged(
@@ -151,8 +141,6 @@ def test_full_validator_runs_on_temporary_reload_before_atomic_replace(
             destination,
             {
                 "description": "candidate",
-                "ins_rules": [],
-                "blk_rules": [],
                 "additional_configuration": {},
             },
             validator=reject,
@@ -168,8 +156,6 @@ def test_strict_atomic_v2_result_remains_canonical_on_second_save(
 ):
     document = {
         "description": "migration-era v2",
-        "ins_rules": [],
-        "blk_rules": [],
         "additional_configuration": {
             "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
         },
@@ -196,8 +182,6 @@ def test_v2_atomic_write_without_validator_preserves_pipeline_metadata(
 ):
     document = {
         "description": "migration-era v2",
-        "ins_rules": [],
-        "blk_rules": [],
         "additional_configuration": {
             "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
         },
@@ -207,8 +191,8 @@ def test_v2_atomic_write_without_validator_preserves_pipeline_metadata(
     write_project_document_atomically(destination, document)
     actual = json.loads(destination.read_text(encoding="utf-8"))
 
-    assert actual["ins_rules"] == []
-    assert actual["blk_rules"] == []
+    assert "ins_rules" not in actual
+    assert "blk_rules" not in actual
     assert actual["additional_configuration"]["pipeline_v2"] == [
         {"pass_id": "recover_dispatcher"}
     ]

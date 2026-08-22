@@ -71,8 +71,6 @@ def build_recipe_runtime_project(
         description=(
             f"{base_project.description} [function recipe 0x{int(function_ea):X}]"
         ),
-        ins_rules=copy.deepcopy(base_project.ins_rules),
-        blk_rules=copy.deepcopy(base_project.blk_rules),
         additional_configuration=additional_configuration,
     )
 

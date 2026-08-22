@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.registry import PassRegistry
 
+
 def _project_additional_config(project_config) -> Mapping:
     return _project_additional_config_for(project_config, strict=False)
 
@@ -15,9 +16,7 @@ def _project_additional_config_for(project_config, *, strict: bool) -> Mapping:
         if "additional_configuration" in project_config:
             nested = project_config["additional_configuration"]
             if not isinstance(nested, Mapping):
-                raise PipelineConfigError(
-                    "additional_configuration must be a mapping"
-                )
+                raise PipelineConfigError("additional_configuration must be a mapping")
             config = nested
         elif strict:
             raise PipelineConfigError(
@@ -37,55 +36,14 @@ def _project_additional_config_for(project_config, *, strict: bool) -> Mapping:
     return config
 
 
-def _project_legacy_rules(project_config) -> tuple[object, ...]:
-    """Return both legacy rule arrays without interpreting their rule names."""
-    if isinstance(project_config, Mapping):
-        ins_rules = project_config.get("ins_rules", ())
-        blk_rules = project_config.get("blk_rules", ())
-    else:
-        ins_rules = getattr(project_config, "ins_rules", ())
-        blk_rules = getattr(project_config, "blk_rules", ())
-    if isinstance(ins_rules, (str, bytes)) or not isinstance(ins_rules, (list, tuple)):
-        raise PipelineConfigError("ins_rules must be a sequence")
-    if isinstance(blk_rules, (str, bytes)) or not isinstance(blk_rules, (list, tuple)):
-        raise PipelineConfigError("blk_rules must be a sequence")
-    return tuple(ins_rules) + tuple(blk_rules)
-
-
-_LEGACY_RULE_FIELDS = frozenset({"name", "is_activated", "config"})
-
-
-def _validated_legacy_rule(rule: object, *, section: str, index: int) -> bool:
-    """Validate one legacy rule before consulting its activation bit."""
-    prefix = f"{section}[{index}]"
-    if isinstance(rule, Mapping):
-        unknown = sorted(set(rule).difference(_LEGACY_RULE_FIELDS))
-        if unknown:
-            raise PipelineConfigError(
-                f"{prefix} has unknown fields: {', '.join(unknown)}"
-            )
-        name = rule.get("name")
-        if not isinstance(name, str) or not name:
-            raise PipelineConfigError(f"{prefix}.name must be a non-empty string")
-        activated = rule.get("is_activated")
-        if not isinstance(activated, bool):
-            raise PipelineConfigError(f"{prefix}.is_activated must be a boolean")
-        config = rule.get("config", {})
-    else:
-        name = getattr(rule, "name", None)
-        if not isinstance(name, str) or not name:
-            raise PipelineConfigError(f"{prefix}.name must be a non-empty string")
-        activated = getattr(rule, "is_activated", None)
-        if not isinstance(activated, bool):
-            raise PipelineConfigError(f"{prefix}.is_activated must be a boolean")
-        config = getattr(rule, "config", None)
-    if not isinstance(config, Mapping):
-        raise PipelineConfigError(f"{prefix}.config must be a mapping")
-    return activated
-
-
-def _rule_is_active(rule: object, *, section: str, index: int) -> bool:
-    return _validated_legacy_rule(rule, section=section, index=index)
+def _reject_legacy_rule_fields(project_config) -> None:
+    for field_name in ("ins_rules", "blk_rules"):
+        if isinstance(project_config, Mapping):
+            present = field_name in project_config
+        else:
+            present = hasattr(project_config, field_name)
+        if present:
+            raise PipelineConfigError(f"removed legacy field {field_name} is present")
 
 
 def _project_path(project_config) -> object:
@@ -155,9 +113,7 @@ def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig
                 )
 
                 canonical = parsed.to_dict()
-                canonical["options"] = canonical_constant_simplification_options(
-                    parsed
-                )
+                canonical["options"] = canonical_constant_simplification_options(parsed)
                 parsed = PipelineConfig.from_dict(canonical)
             configs.append(parsed)
         except PipelineConfigError as exc:
@@ -173,31 +129,12 @@ def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
     This is the single strict parser entry point. The permissive
     ``pipeline_configs_from_project_config`` function remains available to
     offline migration readers; runtime activation must use this function.
-    Empty legacy arrays are accepted as inert migration-era metadata, but an
-    active legacy rule, missing/empty/malformed ``pipeline_v2``, or retired
-    mode/shadow metadata is a hard error with a copyable offline migration
-    command.
+    Legacy rule-array fields, missing/empty/malformed ``pipeline_v2``, and
+    retired mode/shadow metadata are hard errors with a copyable offline
+    migration command.
     """
     try:
-        if isinstance(project_config, Mapping):
-            ins_rules = project_config.get("ins_rules", ())
-        else:
-            ins_rules = getattr(project_config, "ins_rules", ())
-        legacy_rules = _project_legacy_rules(project_config)
-        ins_count = len(ins_rules or ())
-        validated_ins = tuple(
-            _rule_is_active(rule, section="ins_rules", index=index)
-            for index, rule in enumerate(legacy_rules[:ins_count])
-        )
-        validated_blk = tuple(
-            _rule_is_active(rule, section="blk_rules", index=index)
-            for index, rule in enumerate(legacy_rules[ins_count:])
-        )
-        if any(validated_ins):
-            raise PipelineConfigError("active legacy rule arrays are present")
-        if any(validated_blk):
-            raise PipelineConfigError("active legacy rule arrays are present")
-
+        _reject_legacy_rule_fields(project_config)
         _validate_retired_runtime_metadata(project_config)
         configs = pipeline_configs_from_project_config(project_config)
         if not configs:
@@ -216,15 +153,8 @@ def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
         registry = operational_config_v2_pass_registry()
         for config in configs:
             registry.build_spec(config)
-        mark_validated = getattr(
-            project_config, "_mark_config_v2_validation_succeeded", None
-        )
-        if callable(mark_validated):
-            mark_validated()
     except Exception as exc:
-        raise PipelineConfigError(
-            _migration_message(project_config, str(exc))
-        ) from exc
+        raise PipelineConfigError(_migration_message(project_config, str(exc))) from exc
     return configs
 
 
