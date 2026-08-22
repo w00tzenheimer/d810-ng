@@ -13,6 +13,7 @@ import idaapi
 import idc
 
 from d810.core.execution_journal import ExecutionAttemptStatus
+from d810.manager.native_normalization import NativeNormalizationOutcome
 
 
 def _get_default_binary() -> str:
@@ -163,24 +164,61 @@ class TestTigressIndirectSemanticOracle:
                     # Seed the durable database identity before manager startup;
                     # the destructive gateway deliberately refuses to install
                     # without it.  Doing this afterwards would create no writer
-                    # and a broad xfail could mislabel that lifecycle failure as
-                    # a safe plan abstention.
+                    # and a broad exception could mislabel that lifecycle failure
+                    # as a safe plan abstention.
                     identity = resolve_native_preanalysis_identity(
                         func_ea, profile_config={}
                     )
                     assert identity.native_key is not None
                     state.start_d810()
-                    execution_journal = state.manager._native_patch_execution_journal
-                    assert execution_journal is not None
                     was_opted_in = state.manager.is_native_patch_opted_in(func_ea)
                     state.manager.set_native_patch_opted_in(
                         function_addr=func_ea,
                         enabled=True,
                     )
                     try:
-                        cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+                        with state.manager.arm_native_materialization_certificate_reuse(
+                            func_ea
+                        ):
+                            cfunc = idaapi.decompile(
+                                func_ea, flags=idaapi.DECOMP_NO_CACHE
+                            )
                         assert cfunc is not None, (
                             f"Decompilation of {func_name} with d810 (unflatten) failed"
+                        )
+                        materialization_receipt = (
+                            state.manager.inspect_native_materialization_receipt(func_ea)
+                        )
+                        assert len(materialization_receipt.attempts) == 2
+                        first_receipt, second_receipt = materialization_receipt.attempts
+                        first_attempt = first_receipt.attempt
+                        first_normalization = first_receipt.normalization
+                        first_certificate = materialization_receipt.certificate
+                        assert first_attempt.status is ExecutionAttemptStatus.COMPLETED
+                        assert first_normalization.apply_receipt is not None
+                        assert first_normalization.apply_receipt.ok
+                        assert first_certificate is not None
+                        assert first_certificate.schema_version == 4
+
+                        second_attempt = second_receipt.attempt
+                        second_normalization = second_receipt.normalization
+                        second_certificate = second_normalization.certificate
+                        assert second_attempt.status is ExecutionAttemptStatus.ABSTAINED
+                        assert second_normalization.outcome is NativeNormalizationOutcome.ALREADY_NORMALIZED
+                        assert second_normalization.apply_receipt is None
+                        assert second_certificate is not None
+                        assert second_certificate.schema_version == 4
+                        assert second_certificate.certificate_id == (
+                            first_certificate.certificate_id
+                        )
+                        assert first_normalization.apply_receipt.transaction_id
+                        assert second_attempt.parent_attempt_id == first_attempt.parent_attempt_id
+                        assert materialization_receipt.plan_hash == first_certificate.native_plan_hash
+                        assert materialization_receipt.semantic_plan_hash == (
+                            first_certificate.semantic_plan_hash
+                        )
+                        assert materialization_receipt.metadata_target_fingerprint == (
+                            first_certificate.metadata_target_fingerprint
                         )
                         code_after = pseudocode_to_string(cfunc.get_pseudocode())
                         block_rules_fired = {
@@ -188,17 +226,83 @@ class TestTigressIndirectSemanticOracle:
                             for name, counts in state.stats.cfg_rule_usages.items()
                             if any(count > 0 for count in counts)
                         }
-                        live_session_id = execution_journal.latest_session_for_function(
-                            func_ea
-                        )
-                        assert live_session_id is not None
                         native_materialization_attempts = tuple(
-                            attempt
-                            for attempt in execution_journal.attempts_for_session(
-                                live_session_id
+                            receipt.attempt for receipt in materialization_receipt.attempts
+                        )
+                        attempt_diagnostics = tuple(
+                            {
+                                "status": attempt.status.value,
+                                "reason_code": attempt.reason_code,
+                                "details": dict(attempt.details),
+                                "effects": tuple(
+                                    {
+                                        "kind": effect.kind,
+                                        "ref_id": effect.ref_id,
+                                    }
+                                    for effect in attempt.effect_refs
+                                ),
+                            }
+                            for attempt in native_materialization_attempts
+                        )
+                        assert native_materialization_attempts, (
+                            "current-session native materialization attempt is missing; "
+                            f"attempts={attempt_diagnostics!r}"
+                        )
+                        assert first_attempt.status is ExecutionAttemptStatus.COMPLETED, (
+                            "current-session native materialization did not complete; "
+                            f"attempts={attempt_diagnostics!r}"
+                        )
+                        first_effects = {
+                            effect.kind: effect.ref_id
+                            for effect in first_attempt.effect_refs
+                        }
+                        second_effects = {
+                            effect.kind: effect.ref_id
+                            for effect in second_attempt.effect_refs
+                        }
+                        assert {
+                            "native_patch_transaction",
+                            "native_patch_certificate",
+                        } <= first_effects.keys(), (
+                            "current-session materialization was not APPLIED through "
+                            f"the canonical gateway; attempts={attempt_diagnostics!r}"
+                        )
+                        assert first_effects["native_patch_transaction"] == (
+                            first_normalization.apply_receipt.transaction_id.value
+                        )
+                        assert second_normalization.reason == (
+                            "native_plan_hash matches an existing applied certificate"
+                        )
+                        assert second_effects.get("native_patch_certificate") == (
+                            first_certificate.certificate_id
+                        )
+                        assert sum(
+                            "native_patch_transaction" in {
+                                effect.kind for effect in attempt.effect_refs
+                            }
+                            for attempt in native_materialization_attempts
+                        ) == 1
+                        assert sum(
+                            "native_patch_reanalysis" in {
+                                effect.kind for effect in attempt.effect_refs
+                            }
+                            for attempt in native_materialization_attempts
+                        ) == 1
+                        assert "native_patch_transaction" not in second_effects
+                        assert "native_patch_reanalysis" not in second_effects
+
+                        certificate_payload = first_certificate
+                        materialized_item_eas = {
+                            int(ea)
+                            for kind, ea, expected_after in (
+                                certificate_payload.metadata_postconditions
                             )
-                            if attempt.stage_id
-                            == "indirect_label_native_materialization"
+                            if kind == "recreate_item"
+                            and str(expected_after).startswith("item-xrefs:v2:")
+                        }
+                        assert len(materialized_item_eas) == 31, (
+                            "canonical certificate does not prove all 31 unique "
+                            f"materialized label items: {sorted(materialized_item_eas)!r}"
                         )
                     finally:
                         if not was_opted_in:
@@ -231,45 +335,10 @@ class TestTigressIndirectSemanticOracle:
         # synchronous emulated engine). The deferred-safe "did unflatten unflatten"
         # signal is the REDIRECT_EDGE provenance it writes to the diag DB.
         applied_redirects = _applied_redirect_edges(diag_conn)
-        if not applied_redirects:
-            assert native_materialization_attempts, (
-                "no REDIRECT_EDGE and no native-materialization attempt from "
-                "this decompilation; this is a pipeline/lifecycle regression, "
-                "not a safe native abstention"
-            )
-            assert all(
-                attempt.status is ExecutionAttemptStatus.ABSTAINED
-                for attempt in native_materialization_attempts
-            ), (
-                "no REDIRECT_EDGE after a non-abstaining native attempt: "
-                f"{native_materialization_attempts}"
-            )
-            for attempt in native_materialization_attempts:
-                details = dict(attempt.details)
-                assert details.get("kind") == "native_plan_unavailable", details
-                assert details.get("error_type") == "IndirectLabelPlanBuildError", (
-                    details
-                )
-                assert details.get("reason") == (
-                    "lossless_item_recreation_unsupported"
-                ), details
-                assert details.get("ea") == 0x1800173A5, details
-                assert details.get("before_shape") == "data:1400", details
-                assert details.get("after_shape") == "code:4", details
-                assert details.get("message") == (
-                    "cannot losslessly recreate 'data:1400' as 'code:4' "
-                    "at 0x1800173a5"
-                ), details
-            pytest.xfail(
-                "verified native materialization abstention(s): "
-                + "; ".join(
-                    str(attempt.details["message"])
-                    for attempt in native_materialization_attempts
-                )
-            )
         assert applied_redirects, (
-            "unflatten applied no REDIRECT_EDGE provenance (pipeline did not unflatten); "
-            f"cfg_rule_usages fired={sorted(block_rules_fired)}"
+            "unflatten applied no REDIRECT_EDGE provenance (pipeline did not "
+            "unflatten); canonical native materialization diagnostics="
+            f"{attempt_diagnostics!r}; cfg_rule_usages fired={sorted(block_rules_fired)}"
         )
         db_path = _diag_db_path(diag_conn, func_ea=func_ea)
         report = extract_transfer_map(db_path)
@@ -305,23 +374,22 @@ class TestTigressIndirectSemanticOracle:
         print(f"\n=== tigress unflatten ORACLE ===\n{oracle_report}")
         print(f"=== tigress unflatten repaired_handoffs: {repaired_handoffs} ===")
 
-        failed_checks = {check.name for check in result.checks if not check.passed}
-        known_downstream_gap = {
+        checks_by_name = {check.name: check for check in result.checks}
+        required_checks = {
             "terminal_states",
             "conditional_states",
-            "final_output_xor_present",
-            "password_zeroing_present",
-            "password_check_present",
-            "failure_zero_write_present",
-            "no_raw_indirect_jump",
             "state_0x11_handoff_target",
             "state_0x16_handoff_target",
             "table_invariant_proved",
             "no_unresolved_states",
+            "no_raw_indirect_jump",
         }
-        if failed_checks == known_downstream_gap:
-            pytest.xfail(
-                "known Tigress downstream gap after safe native materialization: "
-                "label-item normalization and terminal output lowering remain open"
-            )
+        assert required_checks <= checks_by_name.keys(), (
+            "semantic oracle omitted required Tigress checks: "
+            f"missing={sorted(required_checks - checks_by_name.keys())!r}; "
+            f"report={oracle_report}"
+        )
+        assert all(
+            checks_by_name[name].passed for name in required_checks
+        ), oracle_report
         assert result.passed, oracle_report

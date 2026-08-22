@@ -770,6 +770,11 @@ class D810Manager:
         init=False,
         repr=False,
     )
+    _native_materialization_executor: typing.Any = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _preparation_scripts: tuple[typing.Any, ...] = dataclasses.field(
         default=(), init=False, repr=False
     )
@@ -859,6 +864,27 @@ class D810Manager:
         """Whether a failed live activation forced this manager safe-invalid."""
 
         return self._runtime_invalidated
+
+    @contextlib.contextmanager
+    def arm_native_materialization_certificate_reuse(self, function_ea: int):
+        """Scope one invocation-local certificate reuse verification."""
+
+        executor = self._native_materialization_executor
+        if executor is None:
+            raise RuntimeError("native materialization executor is not installed")
+        executor.arm_certificate_reuse_verification(int(function_ea))
+        try:
+            yield
+        finally:
+            executor.disarm_certificate_reuse_verification()
+
+    def inspect_native_materialization_receipt(self, function_ea: int):
+        """Return read-only evidence from the latest materialization call."""
+
+        executor = self._native_materialization_executor
+        if executor is None:
+            raise RuntimeError("native materialization executor is not installed")
+        return executor.inspect_last_receipt(function_ea=int(function_ea))
 
     def capture_started_optimizer_runtime_state(self) -> dict[str, object]:
         """Capture both live optimizer adapters before a project switch.
@@ -3016,18 +3042,19 @@ class D810Manager:
 
         enabled = bool(self.config.get("native_patch_enabled", False))
         if not enabled:
+            self._native_materialization_executor = ManagerOwnedNativePatchRequestExecutor(
+                gateway=gateway,
+                user_enabled=lambda _request: False,
+                execution_journal=self._native_patch_execution_journal,
+                parent_attempt_for_request=lambda _request: (_ for _ in ()).throw(
+                    RuntimeError("disabled native patch executor has no parent")
+                ),
+                build_plan=lambda _request, _attempt: (_ for _ in ()).throw(
+                    RuntimeError("disabled native patch executor cannot lower")
+                ),
+            )
             set_indirect_materialization_default_executor(
-                ManagerOwnedNativePatchRequestExecutor(
-                    gateway=gateway,
-                    user_enabled=lambda _request: False,
-                    execution_journal=self._native_patch_execution_journal,
-                    parent_attempt_for_request=lambda _request: (_ for _ in ()).throw(
-                        RuntimeError("disabled native patch executor has no parent")
-                    ),
-                    build_plan=lambda _request, _attempt: (_ for _ in ()).throw(
-                        RuntimeError("disabled native patch executor cannot lower")
-                    ),
-                )
+                self._native_materialization_executor
             )
             return
 
@@ -3173,22 +3200,17 @@ class D810Manager:
 
             return PreparedNativePatchRequest(plan=plan, observe_result=_observe)
 
-        set_indirect_materialization_default_executor(
-            ManagerOwnedNativePatchRequestExecutor(
-                gateway=gateway,
-                user_enabled=lambda request: native_patch_function_is_authorized(
-                    globally_available=bool(
-                        self.config.get("native_patch_enabled", False)
-                    ),
-                    function_tags=self.get_function_tags(
-                        request.materialization.function_ea
-                    ),
-                ),
-                execution_journal=self._native_patch_execution_journal,
-                parent_attempt_for_request=_parent_attempt,
-                build_plan=_build,
-            )
+        self._native_materialization_executor = ManagerOwnedNativePatchRequestExecutor(
+            gateway=gateway,
+            user_enabled=lambda request: native_patch_function_is_authorized(
+                globally_available=bool(self.config.get("native_patch_enabled", False)),
+                function_tags=self.get_function_tags(request.materialization.function_ea),
+            ),
+            execution_journal=self._native_patch_execution_journal,
+            parent_attempt_for_request=_parent_attempt,
+            build_plan=_build,
         )
+        set_indirect_materialization_default_executor(self._native_materialization_executor)
 
         @contextlib.contextmanager
         def _dead_edge_parent_scope(function_ea: int):
@@ -4668,6 +4690,12 @@ class D810Manager:
             "executor.clear",
             _clear_indirect_materialization_executor,
         )
+        native_materialization_executor = self._native_materialization_executor
+        if native_materialization_executor is not None:
+            self._safe_lifecycle_step(
+                "native.materialization.clear",
+                native_materialization_executor.clear_lifecycle_state,
+            )
         native_patch_journal = getattr(self, "_native_patch_journal", None)
         if native_patch_journal is not None:
             self._safe_lifecycle_step(
@@ -4676,6 +4704,7 @@ class D810Manager:
             )
             self._native_patch_journal = None
         self._native_patch_gateway = None
+        self._native_materialization_executor = None
         self._dead_edge_normalizer = None
         preparation_journal = self._idb_preparation_journal
         if preparation_journal is not None:

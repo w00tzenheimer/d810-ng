@@ -17,6 +17,7 @@ from d810.backends.ida.native_patch.indirect_label_plan import (
     IndirectLabelPlanBuildError,
 )
 from d810.core.execution_journal import (
+    ExecutionAttempt,
     ExecutionAttemptId,
     ExecutionAttemptStatus,
     ExecutionDomain,
@@ -38,11 +39,13 @@ from d810.manager.native_patch_policy import (
     NATIVE_PATCH_FUNCTION_OPT_IN_TAG,
     native_patch_function_is_authorized,
 )
-from d810.transforms.native_patch_plan import NativePatchPlan
+from d810.transforms.native_patch_plan import NativeCertificate, NativePatchPlan
 
 __all__ = [
     "ManagerOwnedDeadEdgeNormalizer",
     "ManagerOwnedNativePatchRequestExecutor",
+    "NativeMaterializationAttemptReceipt",
+    "NativeMaterializationReceipt",
     "NATIVE_PATCH_FUNCTION_OPT_IN_TAG",
     "PreparedNativePatchRequest",
     "native_patch_function_is_authorized",
@@ -96,6 +99,34 @@ class PreparedNativePatchRequest:
 
     plan: NativePatchPlan
     observe_result: Callable[[], IndirectLabelMaterializationResult]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeMaterializationAttemptReceipt:
+    """Read-only evidence for one manager-owned materialization attempt."""
+
+    attempt: ExecutionAttempt
+    normalization: NativeNormalizationResult
+    result: IndirectLabelMaterializationResult
+
+
+@dataclass(frozen=True, slots=True)
+class NativeMaterializationReceipt:
+    """Read-only evidence retained after one executor invocation."""
+
+    function_ea: int
+    plan_id: str
+    plan_hash: str
+    semantic_plan_hash: str
+    metadata_target_fingerprint: str
+    attempts: tuple[NativeMaterializationAttemptReceipt, ...]
+
+    @property
+    def certificate(self) -> NativeCertificate | None:
+        for attempt in reversed(self.attempts):
+            if attempt.normalization.certificate is not None:
+                return attempt.normalization.certificate
+        return None
 
 
 class ManagerOwnedDeadEdgeNormalizer:
@@ -277,14 +308,96 @@ class ManagerOwnedNativePatchRequestExecutor:
         self._execution_journal = execution_journal
         self._parent_attempt_for_request = parent_attempt_for_request
         self._build_plan = build_plan
+        self._reuse_verification_function_ea: int | None = None
+        self._last_receipt: NativeMaterializationReceipt | None = None
+
+    def arm_certificate_reuse_verification(self, function_ea: int) -> None:
+        """Arm one invocation-local verification for *function_ea*.
+
+        The arm stores no request, plan, parent, or session.  It is consumed
+        by the next matching request and cannot authorize a later replay.
+        """
+        self._reuse_verification_function_ea = int(function_ea)
+        self._last_receipt = None
+
+    def clear_lifecycle_state(self) -> None:
+        """Drop pending verification and retained read-only evidence."""
+        self._reuse_verification_function_ea = None
+        self._last_receipt = None
+
+    def disarm_certificate_reuse_verification(self) -> None:
+        """Cancel a not-yet-consumed invocation-local verification arm."""
+        self._reuse_verification_function_ea = None
 
     def __call__(
         self, request: NativePatchPlanRequest
     ) -> IndirectLabelMaterializationResult:
-        if not self._user_enabled(request):
-            return _compatibility_result(request, "native_patch_policy_disabled")
+        armed_function_ea = self._reuse_verification_function_ea
+        self._reuse_verification_function_ea = None
+        self._last_receipt = None
+        try:
+            if not self._user_enabled(request):
+                return _compatibility_result(request, "native_patch_policy_disabled")
 
-        parent_attempt_id = self._parent_attempt_for_request(request)
+            parent_attempt_id = self._parent_attempt_for_request(request)
+            prepared, first_receipt = self._execute_request(request, parent_attempt_id)
+            if prepared is None or first_receipt is None:
+                return _compatibility_result(request, "native_plan_unavailable")
+
+            receipts = [first_receipt]
+            if (
+                armed_function_ea == int(request.materialization.function_ea)
+                and first_receipt.normalization.outcome
+                is NativeNormalizationOutcome.APPLIED
+                and self._user_enabled(request)
+            ):
+                second_receipt = self._execute_prepared_request(
+                    request,
+                    prepared,
+                    parent_attempt_id,
+                )
+                if (
+                    second_receipt.normalization.outcome
+                    is not NativeNormalizationOutcome.ALREADY_NORMALIZED
+                ):
+                    raise RuntimeError(
+                        "certificate reuse verification did not return "
+                        f"ALREADY_NORMALIZED: {second_receipt.normalization.reason}"
+                    )
+                receipts.append(second_receipt)
+
+            plan = prepared.plan
+            self._last_receipt = NativeMaterializationReceipt(
+                function_ea=int(request.materialization.function_ea),
+                plan_id=plan.plan_id,
+                plan_hash=plan.plan_hash,
+                semantic_plan_hash=plan.proof_hash,
+                metadata_target_fingerprint=plan.metadata_target_fingerprint,
+                attempts=tuple(receipts),
+            )
+            return first_receipt.result
+        except Exception:
+            self._last_receipt = None
+            raise
+        finally:
+            self._reuse_verification_function_ea = None
+
+    def inspect_last_receipt(
+        self, *, function_ea: int | None = None
+    ) -> NativeMaterializationReceipt:
+        """Return read-only evidence from the latest completed invocation."""
+        receipt = self._last_receipt
+        if receipt is None:
+            raise RuntimeError("no native materialization receipt is available")
+        if function_ea is not None and int(function_ea) != receipt.function_ea:
+            raise ValueError("latest native materialization receipt targets another function")
+        return receipt
+
+    def _execute_request(
+        self,
+        request: NativePatchPlanRequest,
+        parent_attempt_id: ExecutionAttemptId,
+    ) -> tuple[PreparedNativePatchRequest | None, NativeMaterializationAttemptReceipt | None]:
         attempt = self._execution_journal.begin_attempt(
             parent_attempt_id.session,
             parent_attempt_id=parent_attempt_id,
@@ -293,13 +406,6 @@ class ManagerOwnedNativePatchRequestExecutor:
         )
         try:
             prepared = self._build_plan(request, attempt.attempt_id)
-            diagnostic_snapshot_id = self._gateway.record_diagnostic_snapshot(
-                prepared.plan
-            )
-            outcome = authorize_and_apply(
-                NativeNormalizationRequest(plan=prepared.plan, user_enabled=True),
-                gateway=self._gateway,
-            )
         except IndirectLabelPlanBuildError as error:
             self._execution_journal.advance(
                 attempt,
@@ -315,7 +421,45 @@ class ManagerOwnedNativePatchRequestExecutor:
                     "message": str(error),
                 },
             )
-            return _compatibility_result(request, f"native_plan_unavailable:{error}")
+            return None, None
+        except Exception:
+            self._execution_journal.advance(
+                attempt,
+                status=ExecutionAttemptStatus.FAILED,
+                reason_code="NATIVE_PLAN_OR_APPLY_FAILED",
+            )
+            raise
+
+        return prepared, self._finish_attempt(request, prepared, attempt)
+
+    def _execute_prepared_request(
+        self,
+        request: NativePatchPlanRequest,
+        prepared: PreparedNativePatchRequest,
+        parent_attempt_id: ExecutionAttemptId,
+    ) -> NativeMaterializationAttemptReceipt:
+        attempt = self._execution_journal.begin_attempt(
+            parent_attempt_id.session,
+            parent_attempt_id=parent_attempt_id,
+            stage_id="indirect_label_native_materialization",
+            domain=ExecutionDomain.NATIVE_NORMALIZATION,
+        )
+        return self._finish_attempt(request, prepared, attempt)
+
+    def _finish_attempt(
+        self,
+        request: NativePatchPlanRequest,
+        prepared: PreparedNativePatchRequest,
+        attempt: ExecutionAttempt,
+    ) -> NativeMaterializationAttemptReceipt:
+        try:
+            diagnostic_snapshot_id = self._gateway.record_diagnostic_snapshot(
+                prepared.plan
+            )
+            outcome = authorize_and_apply(
+                NativeNormalizationRequest(plan=prepared.plan, user_enabled=True),
+                gateway=self._gateway,
+            )
         except Exception:
             self._execution_journal.advance(
                 attempt,
@@ -365,7 +509,7 @@ class ManagerOwnedNativePatchRequestExecutor:
                     ref_id=outcome.certificate.certificate_id,
                 )
             )
-        self._execution_journal.advance(
+        terminal_attempt = self._execution_journal.advance(
             attempt,
             status=(
                 ExecutionAttemptStatus.COMPLETED
@@ -379,10 +523,16 @@ class ManagerOwnedNativePatchRequestExecutor:
             NativeNormalizationOutcome.APPLIED,
             NativeNormalizationOutcome.ALREADY_NORMALIZED,
         }:
-            return prepared.observe_result()
-        return _compatibility_result(
-            request,
-            f"native_patch_{outcome.outcome.value}:{outcome.reason or 'unknown'}",
+            result = prepared.observe_result()
+        else:
+            result = _compatibility_result(
+                request,
+                f"native_patch_{outcome.outcome.value}:{outcome.reason or 'unknown'}",
+            )
+        return NativeMaterializationAttemptReceipt(
+            attempt=terminal_attempt,
+            normalization=outcome,
+            result=result,
         )
 
 

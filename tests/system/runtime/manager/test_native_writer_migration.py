@@ -13,11 +13,20 @@ from d810.core.execution_journal import (
     ExecutionDomain,
 )
 from d810.core.execution_journal_store import ExecutionJournalStore
+from d810.hexrays.preanalysis.indirect_jump_labels import (
+    IndirectLabelMaterializationPlan,
+    NativePatchPlanRequest,
+)
+from d810.manager import native_writer_migration
 from d810.manager.native_normalization import (
     NativeNormalizationOutcome,
     NativeNormalizationResult,
 )
-from d810.manager.native_writer_migration import ManagerOwnedDeadEdgeNormalizer
+from d810.manager.native_writer_migration import (
+    ManagerOwnedDeadEdgeNormalizer,
+    ManagerOwnedNativePatchRequestExecutor,
+    PreparedNativePatchRequest,
+)
 
 
 @contextmanager
@@ -55,6 +64,286 @@ def test_dead_edge_normalizer_checks_user_policy_before_discovery(tmp_path) -> N
     assert outcome.outcome is NativeNormalizationOutcome.NOT_AUTHORIZED
     assert outcome.reason == "USER_NOT_OPTED_IN"
     assert calls == []
+    journal.close()
+
+
+def _native_request(function_ea: int = 0x1000) -> NativePatchPlanRequest:
+    return NativePatchPlanRequest(
+        materialization=IndirectLabelMaterializationPlan(
+            function_ea=function_ea,
+            label_start=0x1010,
+            label_end=0x1020,
+            table_address=0x2000,
+            table_count=1,
+            target_eas=(0x1010,),
+        ),
+        dispatch_jump_ea=0x1008,
+        switch_start_ea=None,
+        install_switch_info=False,
+        state_base=1,
+        state_var_stkoff=None,
+    )
+
+
+def _native_executor(
+    journal,
+    parent,
+    built_requests,
+    *,
+    user_enabled=lambda _request: True,
+    build_plan=None,
+):
+    plan = SimpleNamespace(
+        plan_id="plan-1",
+        plan_hash="hash-1",
+        proof_hash="semantic-hash-1",
+        metadata_target_fingerprint="metadata-hash-1",
+    )
+    result = SimpleNamespace(success=True)
+    build_plan = build_plan or (
+        lambda proposal, _attempt: (
+            built_requests.append(proposal)
+            or PreparedNativePatchRequest(plan=plan, observe_result=lambda: result)
+        )
+    )
+    return ManagerOwnedNativePatchRequestExecutor(
+        gateway=SimpleNamespace(
+            record_diagnostic_snapshot=lambda _plan: "snapshot-1",
+            record_certificate_validation_receipt=lambda _plan, _certificate: (
+                "preflight-2"
+            ),
+        ),
+        user_enabled=user_enabled,
+        execution_journal=journal,
+        parent_attempt_for_request=lambda _request: parent.attempt_id,
+        build_plan=build_plan,
+    ), plan, result
+
+
+def _native_outcomes():
+    return iter(
+        (
+            NativeNormalizationResult(
+                outcome=NativeNormalizationOutcome.APPLIED,
+                apply_receipt=SimpleNamespace(
+                    transaction_id=SimpleNamespace(value="tx-1"),
+                    preflight_receipt_id="preflight-1",
+                    ok=True,
+                ),
+                certificate=SimpleNamespace(
+                    certificate_id="certificate-1",
+                    schema_version=4,
+                    native_plan_hash="hash-1",
+                    semantic_plan_hash="semantic-hash-1",
+                    metadata_target_fingerprint="metadata-hash-1",
+                ),
+                reason=None,
+            ),
+            NativeNormalizationResult(
+                outcome=NativeNormalizationOutcome.ALREADY_NORMALIZED,
+                apply_receipt=None,
+                certificate=SimpleNamespace(
+                    certificate_id="certificate-1",
+                    schema_version=4,
+                    native_plan_hash="hash-1",
+                    semantic_plan_hash="semantic-hash-1",
+                    metadata_target_fingerprint="metadata-hash-1",
+                ),
+                reason="native_plan_hash matches an existing applied certificate",
+            ),
+        )
+    )
+
+
+def test_native_materialization_arms_one_shot_reuse_under_same_parent(
+    tmp_path, monkeypatch
+) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    request = _native_request()
+    built_requests = []
+    executor, plan, result = _native_executor(
+        journal, parent, built_requests
+    )
+    # The exact prepared plan is applied twice, but the builder runs once.
+    outcomes = _native_outcomes()
+    monkeypatch.setattr(
+        native_writer_migration,
+        "authorize_and_apply",
+        lambda _request, *, gateway: next(outcomes),
+    )
+    executor.arm_certificate_reuse_verification(0x1000)
+    assert executor(request) is result
+    receipt = executor.inspect_last_receipt(function_ea=0x1000)
+    assert receipt.plan_id == plan.plan_id
+    assert receipt.plan_hash == plan.plan_hash
+    assert len(receipt.attempts) == 2
+    first, second = receipt.attempts
+    assert first.attempt.status is ExecutionAttemptStatus.COMPLETED
+    assert first.normalization.outcome is NativeNormalizationOutcome.APPLIED
+    assert second.attempt.status is ExecutionAttemptStatus.ABSTAINED
+    assert second.normalization.outcome is NativeNormalizationOutcome.ALREADY_NORMALIZED
+    assert second.attempt.parent_attempt_id == first.attempt.parent_attempt_id
+    assert second.normalization.certificate.certificate_id == (
+        first.normalization.certificate.certificate_id
+    )
+    assert second.normalization.apply_receipt is None
+    assert len(built_requests) == 1
+    assert sum(
+        "native_patch_transaction" in {effect.kind for effect in item.attempt.effect_refs}
+        for item in receipt.attempts
+    ) == 1
+    journal.close()
+
+
+def test_native_materialization_policy_opt_out_consumes_arm_without_leakage(
+    tmp_path, monkeypatch
+) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session, stage_id="hexrays_preanalysis", domain=ExecutionDomain.HOOK
+    )
+    enabled = iter((False, True))
+    outcomes = _native_outcomes()
+    monkeypatch.setattr(
+        native_writer_migration,
+        "authorize_and_apply",
+        lambda _request, *, gateway: next(outcomes),
+    )
+    built_requests = []
+    executor, _plan, _result = _native_executor(
+        journal,
+        parent,
+        built_requests,
+        user_enabled=lambda _request: next(enabled),
+    )
+    executor.arm_certificate_reuse_verification(0x1000)
+    assert executor(_native_request()).reason == "native_patch_policy_disabled"
+    assert executor(_native_request()).success
+    assert len(executor.inspect_last_receipt().attempts) == 1
+    journal.close()
+
+
+def test_native_materialization_different_function_does_not_reuse_or_leak(
+    tmp_path, monkeypatch
+) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session, stage_id="hexrays_preanalysis", domain=ExecutionDomain.HOOK
+    )
+    outcomes = iter(
+        (
+            NativeNormalizationResult(
+                outcome=NativeNormalizationOutcome.APPLIED,
+                apply_receipt=None,
+                certificate=None,
+                reason=None,
+            ),
+            NativeNormalizationResult(
+                outcome=NativeNormalizationOutcome.APPLIED,
+                apply_receipt=None,
+                certificate=None,
+                reason=None,
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        native_writer_migration,
+        "authorize_and_apply",
+        lambda _request, *, gateway: next(outcomes),
+    )
+    built_requests = []
+    executor, _plan, _result = _native_executor(
+        journal, parent, built_requests
+    )
+    executor.arm_certificate_reuse_verification(0x1000)
+    executor(_native_request(0x2000))
+    assert len(executor.inspect_last_receipt().attempts) == 1
+    executor(_native_request(0x1000))
+    assert len(executor.inspect_last_receipt().attempts) == 1
+    journal.close()
+
+
+def test_native_materialization_exception_clears_one_shot_arm(tmp_path, monkeypatch) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session, stage_id="hexrays_preanalysis", domain=ExecutionDomain.HOOK
+    )
+    build_calls = [True]
+    built_requests = []
+
+    def build_plan(proposal, _attempt):
+        if build_calls:
+            build_calls.pop()
+            raise RuntimeError("boom")
+        return PreparedNativePatchRequest(
+            plan=SimpleNamespace(
+                plan_id="plan-1",
+                plan_hash="hash-1",
+                proof_hash="semantic-hash-1",
+                metadata_target_fingerprint="metadata-hash-1",
+            ),
+            observe_result=lambda: SimpleNamespace(success=True),
+        )
+
+    executor, _plan, _result = _native_executor(
+        journal,
+        parent,
+        built_requests,
+        build_plan=build_plan,
+    )
+    executor.arm_certificate_reuse_verification(0x1000)
+    with pytest.raises(RuntimeError, match="boom"):
+        executor(_native_request())
+    monkeypatch.setattr(
+        native_writer_migration,
+        "authorize_and_apply",
+        lambda _request, *, gateway: NativeNormalizationResult(
+            outcome=NativeNormalizationOutcome.APPLIED,
+            apply_receipt=None,
+            certificate=None,
+            reason=None,
+        ),
+    )
+    executor(_native_request())
+    assert len(executor.inspect_last_receipt().attempts) == 1
+    journal.close()
+
+
+def test_native_materialization_clear_drops_receipt_for_stop_and_reload(
+    tmp_path, monkeypatch
+) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session, stage_id="hexrays_preanalysis", domain=ExecutionDomain.HOOK
+    )
+    monkeypatch.setattr(
+        native_writer_migration,
+        "authorize_and_apply",
+        lambda _request, *, gateway: NativeNormalizationResult(
+            outcome=NativeNormalizationOutcome.APPLIED,
+            apply_receipt=None,
+            certificate=None,
+            reason=None,
+        ),
+    )
+    executor, _plan, _result = _native_executor(
+        journal, parent, []
+    )
+    executor(_native_request())
+    executor.arm_certificate_reuse_verification(0x1000)
+    executor.clear_lifecycle_state()
+    with pytest.raises(RuntimeError, match="no native materialization receipt"):
+        executor.inspect_last_receipt()
     journal.close()
 
 
