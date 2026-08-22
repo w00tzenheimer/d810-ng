@@ -76,26 +76,12 @@ def test_committed_windows_fixture_exports_required_system_cases():
     assert missing == []
 
 
-def test_committed_hodur_egglog_probe_is_isolated_from_comprehensive_fixture():
-    """The focused native proof probe must not perturb shared fixture layout."""
-    comprehensive = (REPO / "samples/bins/libobfuscated.dll").read_bytes()
-    probe = (REPO / "samples/bins/hodur_egglog_probe.dll").read_bytes()
-    export = b"Hodur_ComplementMaskResidual\0"
-
-    assert export not in comprehensive
-    assert export in probe
-
-
-def test_masm_builder_supports_masm_only_probe_source_directory():
-    """A dedicated probe build links only its explicitly scoped MASM corpus."""
+def test_masm_builder_supports_scoped_masm_only_corpus():
+    """The generic builder can link an explicitly scoped MASM corpus."""
     build_script = (REPO / "samples/scripts/build_masm.sh").read_text()
-    makefile = (REPO / "samples/Makefile").read_text()
 
     assert "MASM_SOURCE_DIR" in build_script
     assert "MASM_INCLUDE_C" in build_script
-    assert "hodur-egglog-probe:" in makefile
-    assert "MASM_SOURCE_DIR=src/masm_probes" in makefile
-    assert "MASM_INCLUDE_C=0" in makefile
     assert "-DD810_FREESTANDING_FIXTURE=1" in build_script
 
 

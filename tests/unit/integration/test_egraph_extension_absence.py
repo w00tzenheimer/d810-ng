@@ -64,6 +64,31 @@ _EGRAPH_OPTIONS = {
 }
 
 
+def test_egglog_runtime_evidence_is_owned_by_the_extension_repository():
+    """Core retains only provider-neutral hosts and extension contracts."""
+
+    repository = Path(__file__).resolve().parents[3]
+    provider_owned_paths = (
+        repository / "samples/bins/hodur_egglog_probe.dll",
+        repository
+        / "samples/src/masm_probes/Hodur_ComplementMaskResidual.asm",
+        repository / "tools/scripts/run_egglog_native_performance_ci.sh",
+    )
+
+    assert [
+        path.relative_to(repository).as_posix()
+        for path in provider_owned_paths
+        if path.exists()
+    ] == []
+
+    assert "hodur-egglog-probe" not in (
+        repository / "samples/Makefile"
+    ).read_text(encoding="utf-8")
+    assert "Hodur Egglog probe" not in (
+        repository / "samples/src/masm/README.md"
+    ).read_text(encoding="utf-8")
+
+
 def _project(pass_id: str, options: dict[str, object]) -> ProjectConfiguration:
     return ProjectConfiguration(
         path=Path(f"task16-{pass_id}.json"),
