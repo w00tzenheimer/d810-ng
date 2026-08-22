@@ -8,7 +8,7 @@ the same closed canonical wire format used by authority records.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 import hashlib
 
@@ -198,7 +198,7 @@ legacy_canonical_decode = decode_legacy_canonical_payload
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyShadowPlanView:
+class LegacyShadowPlanView(Mapping[str, object]):
     """A read-only replay view; it is never a second ``PatchPlan``."""
 
     plan: PatchPlan
@@ -229,6 +229,47 @@ class LegacyShadowPlanView:
 
     def metadata_dict(self) -> dict[str, object]:
         return dict(normalized_metadata_items(self.metadata))
+
+    def __getitem__(self, key: str) -> object:
+        return self.metadata_dict()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.metadata_dict())
+
+    def __len__(self) -> int:
+        return len(self.metadata_dict())
+
+    def canonical_payload(self, key: str) -> bytes:
+        """Return the exact captured bytes for one replayed legacy key."""
+
+        shadow = self.plan.legacy_unflatten_shadow
+        if shadow is None:
+            raise KeyError(key)
+        for entry in shadow.entries:
+            if entry.key == key:
+                return entry.canonical_payload
+        raise KeyError(key)
+
+    def payload_sha256(self, key: str) -> str:
+        """Return the integrity digest paired with ``canonical_payload``."""
+
+        shadow = self.plan.legacy_unflatten_shadow
+        if shadow is None:
+            raise KeyError(key)
+        for entry in shadow.entries:
+            if entry.key == key:
+                return entry.payload_sha256
+        raise KeyError(key)
+
+    def assert_payload(self, key: str, canonical_payload: bytes, payload_sha256: str) -> None:
+        """Validate the exact bytes/digest pair before a legacy decision."""
+
+        if type(canonical_payload) is not bytes or type(payload_sha256) is not str:
+            raise TypeError("legacy payload contract requires exact bytes and digest")
+        expected = self.canonical_payload(key)
+        digest = self.payload_sha256(key)
+        if expected != canonical_payload or digest != payload_sha256:
+            raise ValueError(f"legacy payload contract mismatch for {key}")
 
     def metadata_value(self, key: str, default: object = None) -> object:
         if type(key) is not str:

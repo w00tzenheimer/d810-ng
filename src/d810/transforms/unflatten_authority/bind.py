@@ -486,6 +486,79 @@ def bind_projected_subjects(
     return tuple(sorted(result, key=lambda item: item.subject.subject_id))
 
 
+def bind_inventory_subjects(
+    subjects: Sequence[model.SemanticSubjectRef],
+    *,
+    catalog: model.SourceIdentityCatalog,
+    phase: model.UnflattenAuthorityPhase,
+    graph_fingerprint: str,
+    generation: int,
+    serial_by_ref: Mapping[object, int],
+    effects: Sequence[model.InventoryEffectSite],
+    terminals: Sequence[model.InventoryTerminalSite],
+    reachable_serials: Sequence[int],
+    native_instruction_eas_by_ref: Mapping[object, Sequence[int]] | None = None,
+) -> tuple[model.PhaseSubjectBinding, ...]:
+    """Bind an inventory using the inventory's exact reachable site rows.
+
+    Block ownership is not sufficient evidence for an effect or terminal
+    subject.  This is the canonical site-level binding operation used by the
+    projected and observed inventory builders; every downstream gate consumes
+    the resulting binding status rather than reconstructing site presence.
+    """
+    if type(subjects) is not tuple:
+        raise TypeError("subjects must be an exact tuple")
+    if type(effects) is not tuple:
+        raise TypeError("effects must be an exact tuple")
+    if type(terminals) is not tuple:
+        raise TypeError("terminals must be an exact tuple")
+    if any(type(row) is not model.InventoryEffectSite for row in effects):
+        raise TypeError("effects must contain exact InventoryEffectSite rows")
+    if any(type(row) is not model.InventoryTerminalSite for row in terminals):
+        raise TypeError("terminals must contain exact InventoryTerminalSite rows")
+    if type(reachable_serials) is not tuple:
+        raise TypeError("reachable_serials must be an exact tuple")
+    if reachable_serials != tuple(sorted(set(reachable_serials))) or any(
+        type(serial) is not int or serial < 0 for serial in reachable_serials
+    ):
+        raise ValueError("reachable_serials must be sorted exact non-negative integers")
+    # Validate all closed row inputs before binding any subject.  The model
+    # resolver is the shared owner of site identity and status semantics.
+    for row in (*effects, *terminals):
+        row.__post_init__()
+        if row.owner_serial not in reachable_serials:
+            raise ValueError("inventory site row is outside reachable_serials")
+    base = bind_projected_subjects(
+        subjects,
+        catalog=catalog,
+        phase=phase,
+        graph_fingerprint=graph_fingerprint,
+        generation=generation,
+        serial_by_ref=serial_by_ref,
+        native_instruction_eas_by_ref=native_instruction_eas_by_ref,
+    )
+    rebound: list[model.PhaseSubjectBinding] = []
+    for binding in base:
+        if binding.subject.role in (
+            model.SemanticSubjectRole.EFFECT_SITE,
+            model.SemanticSubjectRole.TERMINAL_SITE,
+        ) and type(binding.subject.locator) in (
+            model.EffectSubjectLocator,
+            model.TerminalSubjectLocator,
+        ):
+            rebound.append(model.resolve_inventory_site_binding(
+                binding.subject,
+                binding,
+                effects=effects,
+                terminals=terminals,
+                reachable_serials=reachable_serials,
+                serial_by_ref=dict(serial_by_ref),
+            ))
+        else:
+            rebound.append(binding)
+    return tuple(sorted(rebound, key=lambda item: item.subject.subject_id))
+
+
 def _graph_bind_exact_effect_claim(
     *,
     source: FlowGraph,

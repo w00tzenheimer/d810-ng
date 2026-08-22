@@ -47,7 +47,8 @@ from d810.ir.block_identity import (
     RebindStatus,
     StableBlockIdentity,
 )
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+from d810.ir.expressions import ValueOpKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.passes.analysis_manager import AnalysisManager
@@ -145,6 +146,24 @@ def _graph_and_bound_evidence():
         },
         entry_serial=10,
         func_ea=0x1000,
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            20: replace(
+                graph.blocks[20],
+                insn_snapshots=(InsnSnapshot(
+                    opcode=0,
+                    ea=0x1100,
+                    operands=(),
+                    l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0x11),
+                    d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+                    kind=InsnKind.MOV,
+                    value_op_kind=ValueOpKind.MOVE,
+                ),),
+            ),
+        },
     )
     source_identity = _identity(0x1100)
     evidence = CanonicalSemanticEvidence(

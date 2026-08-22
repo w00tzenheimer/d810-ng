@@ -20,6 +20,7 @@ from d810.ir.flowgraph import (
 )
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
+from d810.transforms.cfg_transaction import TransactionAttemptId
 
 _PREFIX = b"d810-unflatten-authority\0"
 SUBJECT_SCHEMA = "unflatten.subject.v1"
@@ -31,6 +32,7 @@ RECEIPT_SCHEMA = "unflatten.preparation-receipt.v1"
 AUTHORITY_SCHEMA = "unflatten.authority.v1"
 BINDING_SCHEMA = "unflatten.binding.v1"
 SEMANTIC_GRAPH_SCHEMA = "unflatten.semantic-flowgraph.v1"
+SEMANTIC_GRAPH_INVENTORY_SCHEMA = "unflatten.semantic-graph-inventory.v1"
 DIGEST_FIXTURE_SCHEMA = "digest-fixture.v1"
 _REGISTRIES_READY = False
 _ENUM_TYPES: set[type[Enum]] = set()
@@ -217,7 +219,7 @@ def _validate_canonical_value(value: object, seen: set[int] | None = None) -> No
         try:
             for name in _RECORD_FIELDS.get(type(value), _EXTERNAL_FIELDS.get(type(value), ())):
                 item = type(value).SCHEMA_VERSION if type(value).__name__ == "NativePreanalysisKey" and name == "schema_version" else getattr(value, name)
-                if type(value).__name__ == "PreparationBuildMetrics" and name == "inventory_ms":
+                if type(value).__name__ in {"PreparationBuildMetrics", "PhaseBuildMetrics"} and name == "inventory_ms":
                     if type(item) not in (int, float) or not math.isfinite(float(item)):
                         raise ValueError("invalid preparation metric")
                 else:
@@ -385,6 +387,7 @@ def _ensure_registries() -> None:
         model.StructuralDisposition, model.EffectSiteKind, model.TerminalKind,
         model.GenericCfgGateKind, model.AuthorityEvidenceKind, model.UnflattenJustificationRule,
         model.UnflattenAuthorityReason, model.UnflattenPlanRoute, model.UnflattenPlanShape,
+        model.TopologyIncidenceKind,
     })
     _ENUM_TYPES.update({
         ValueOpKind, CallKind, ControlTransferKind, PredicateKind, SemanticEdgeRole,
@@ -412,6 +415,10 @@ def _ensure_registries() -> None:
         model.ObligationKey, model.AuthorityJustification, model.ObligationEvidenceCell,
         model.ObligationEvidenceIndex, model.FailedObligation, model.PreparationBuildMetrics,
         model.SemanticPhaseMetrics,
+        model.PhaseBuildMetrics, model.InventoryInstructionObservation,
+        model.InventoryBlockObservation,
+        model.InventoryEffectSite, model.InventoryTerminalSite,
+        model.InventoryTopologyIncidence, model.SemanticGraphInventory,
         model.DerivedUnflattenPreparationInputs, model.SemanticSafetyCase,
         model.UnflattenAuthorityVerdict,
     )
@@ -473,16 +480,24 @@ def _ensure_registries() -> None:
         model.ObligationEvidenceIndex: ("cells",),
         model.FailedObligation: ("key", "state"),
         model.PreparationBuildMetrics: ("source_inventory_builds", "candidate_inventory_builds", "inventory_ms"),
-        model.SemanticPhaseMetrics: ("preparation_metrics", "source_inventory_builds", "candidate_inventory_builds", "index_folds", "view_graph_traversals"),
+            model.SemanticPhaseMetrics: ("preparation_metrics", "source_inventory_builds", "candidate_inventory_builds", "index_folds", "view_graph_traversals", "phase", "phase_build_metrics"),
+        model.PhaseBuildMetrics: ("phase", "source_inventory_builds", "candidate_inventory_builds", "inventory_ms"),
+        model.InventoryInstructionObservation: ("ordinal", "instruction_ea", "opcode", "width", "instruction_kind", "control_transfer_kind", "is_call", "call_kind"),
+        model.InventoryBlockObservation: ("serial", "block_ref", "anchor_ea", "native_instruction_eas", "predecessor_serials", "successor_serials", "transfer_ea", "instruction_observations", "block_kind", "graph_start_ea"),
+        model.InventoryEffectSite: ("owner_serial", "owner_ref", "owner_anchor_ea", "instruction_ordinal", "instruction_ea", "effect_kind", "opcode", "width"),
+        model.InventoryTerminalSite: ("owner_serial", "owner_ref", "owner_anchor_ea", "instruction_ordinal", "instruction_ea", "terminal_kind"),
+        model.InventoryTopologyIncidence: ("kind", "owner_serial", "peer_serial", "source_transfer_ea"),
+            model.SemanticGraphInventory: ("phase", "graph_fingerprint", "generation", "blocks", "subjects", "bindings", "effects", "terminals", "topology", "inventory_digest", "reachable_serials", "entry_serial", "source_subject_ids"),
         model.ConditionalSubjectRelation: ("source_subject_id", "target_subject_id", "dimension", "provenance_id"),
         model.PreparationAuthorityReceipt: ("receipt_id", "proposal_id", "plan_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "source_inventory_digest", "candidate_inventory_digest", "source_binding_digest", "candidate_binding_digest", "route_expansion_digest", "effect_catalog_digest", "terminal_catalog_digest", "plan_input_digest", "dispatcher_member_digest", "planned_helper_digest", "patch_step_digest", "conditional_relation_digest", "metrics"),
-        model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_subjects", "candidate_subjects", "source_bindings", "candidate_bindings", "conditional_relations", "lineage_evidence", "patch_step_evidence", "generic_gates", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "preparation_metrics"),
+        model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_subjects", "candidate_subjects", "source_bindings", "candidate_bindings", "conditional_relations", "lineage_evidence", "patch_step_evidence", "generic_gates", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "preparation_metrics", "source_inventory", "candidate_inventory", "phase_build_metrics"),
         model.SemanticSafetyCase: ("case_id", "authority_id", "preparation_receipt_id", "phase", "candidate_fingerprint", "candidate_generation", "claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications", "obligation_index", "phase_metrics"),
         model.UnflattenAuthorityVerdict: ("accepted", "phase", "reason", "authority_id", "binding_id", "case_id", "candidate_fingerprint", "safety_case", "failed_obligations"),
     })
     _EXTERNAL_TYPES.update({
         NativePreanalysisKey, NativeEaInterval, NativeEaIntervalSet, StorageIdentity,
         StableBlockIdentity, LogicalBlockRef, NativeBlockRef, PlanBlockRef,
+        TransactionAttemptId,
         route.SemanticCorridorPoint, route.SemanticPredicateProof, route.SemanticCarrierProof,
         route.SemanticRouteDestination, route.SemanticStateWriteProof, route.SemanticRouteProof,
         route.CanonicalSemanticEvidence, TerminalReturnCarrierEvidence,
@@ -490,6 +505,7 @@ def _ensure_registries() -> None:
     })
     _EXTERNAL_FIELDS.update({
         NativePreanalysisKey: ("schema_version", "input_identity", "processor", "bitness", "function_rva", "function_fingerprint", "profile_fingerprint", "sdk_fingerprint"),
+        TransactionAttemptId: ("plan_id", "session_id", "generation", "attempt_id"),
         NativeEaInterval: ("start_ea", "end_ea"),
         NativeEaIntervalSet: ("intervals",),
         StorageIdentity: ("kind", "offset"),
@@ -570,7 +586,7 @@ def _wire(value: object) -> object:
         pairs = []
         for name in names:
             field_value = getattr(value, name)
-            if type(value).__name__ == "PreparationBuildMetrics" and name == "inventory_ms":
+            if type(value).__name__ in {"PreparationBuildMetrics", "PhaseBuildMetrics"} and name == "inventory_ms":
                 if type(field_value) not in (int, float) or not math.isfinite(float(field_value)):
                     raise ValueError("invalid preparation metric")
                 encoded = {"t": "decimal", "v": float(field_value).hex()}
@@ -837,6 +853,25 @@ def binding_id(value: object) -> str:
     return content_id(BINDING_SCHEMA, value)
 
 
+def semantic_graph_inventory_digest(*fields: object) -> str:
+    """Digest the complete inventory payload, excluding its digest field."""
+    if len(fields) != 12:
+        raise TypeError("semantic graph inventory digest requires twelve fields")
+    return content_id(SEMANTIC_GRAPH_INVENTORY_SCHEMA, tuple(fields))
+
+
+def bound_unflatten_binding_id(prepared: object, patch_binding: object) -> str:
+    """Compute the one canonical ID for a prepared live bound plan."""
+    return binding_id((
+        prepared.authority_id,
+        patch_binding.bindings,
+        patch_binding.attempt_id,
+        patch_binding.maturity.dumps(),
+        patch_binding.session_id,
+        patch_binding.generation,
+    ))
+
+
 def _subject_id_from_record(value: object) -> str:
     _ensure_registries()
     if type(value) is not _SUBJECT_TYPE:
@@ -1025,13 +1060,14 @@ def _validate_operand_manifest(insn: InsnSnapshot) -> None:
         raise ValueError("operand slots must exactly match typed l/r/d operands")
 
 
-def _graph_projection(graph: object) -> object:
+def _graph_projection(graph: object, *, blocks: Mapping[int, BlockSnapshot] | None = None) -> object:
     if type(graph) is not FlowGraph:
         raise TypeError("semantic graph requires FlowGraph")
-    block_ids = set(graph.blocks)
-    if graph.blocks and graph.entry_serial not in block_ids:
+    snapshot_blocks = graph.blocks if blocks is None else blocks
+    block_ids = set(snapshot_blocks)
+    if snapshot_blocks and graph.entry_serial not in block_ids:
         raise ValueError("graph entry is not present")
-    for serial, block in graph.blocks.items():
+    for serial, block in snapshot_blocks.items():
         if type(block) is not BlockSnapshot or block.serial != serial:
             raise ValueError("graph block mapping key must equal BlockSnapshot.serial")
         if len(set(block.succs)) != len(block.succs) or len(set(block.preds)) != len(block.preds):
@@ -1039,17 +1075,17 @@ def _graph_projection(graph: object) -> object:
         if any(target not in block_ids for target in (*block.succs, *block.preds)):
             raise ValueError("graph topology references an unknown block")
         for target in block.succs:
-            if serial not in graph.blocks[target].preds:
+            if serial not in snapshot_blocks[target].preds:
                 raise ValueError("graph topology must be reciprocal")
         for source in block.preds:
-            if serial not in graph.blocks[source].succs:
+            if serial not in snapshot_blocks[source].succs:
                 raise ValueError("graph topology must be reciprocal")
         for insn in block.insn_snapshots:
             if type(insn) is not InsnSnapshot:
                 raise TypeError("semantic graph requires InsnSnapshot instructions")
             _validate_operand_manifest(insn)
     blocks = []
-    for serial, block in sorted(graph.blocks.items()):
+    for serial, block in sorted(snapshot_blocks.items()):
         if type(block) is not BlockSnapshot:
             raise TypeError("semantic graph requires BlockSnapshot blocks")
         blocks.append(BlockRecord(
@@ -1065,10 +1101,21 @@ def semantic_graph_fingerprint(graph: FlowGraph) -> str:
     return content_id(SEMANTIC_GRAPH_SCHEMA, _graph_projection(graph))
 
 
+def semantic_graph_fingerprint_cached(
+    graph: FlowGraph, blocks: Mapping[int, BlockSnapshot],
+) -> str:
+    """Fingerprint one already-materialized graph block snapshot."""
+    if type(blocks) is not dict:
+        raise TypeError("cached graph blocks must be an exact dict")
+    return content_id(SEMANTIC_GRAPH_SCHEMA, _graph_projection(graph, blocks=blocks))
+
+
 __all__ = [
     "BlockRecord", "CLAIM_SCHEMA", "DigestFixture", "DIGEST_FIXTURE_SCHEMA",
     "EVIDENCE_SCHEMA", "GraphRecord", "InsnRecord", "MopRecord", "SEMANTIC_GRAPH_SCHEMA",
     "SUBJECT_SCHEMA", "canonical_bytes", "canonical_decode", "validate_canonical_roundtrip", "claim_id", "content_id",
     "evidence_id", "justification_id", "case_id", "authority_id", "binding_id",
-    "semantic_graph_fingerprint", "subject_id",
+    "bound_unflatten_binding_id",
+    "semantic_graph_fingerprint", "semantic_graph_fingerprint_cached",
+    "semantic_graph_inventory_digest", "subject_id",
 ]

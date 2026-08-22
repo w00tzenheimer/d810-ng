@@ -23,12 +23,13 @@ from d810.analyses.control_flow.effect_branch_exclusion import (
     ExactStateBranchEffectExclusion,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
-from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind
-from d810.ir.semantics import ControlTransferKind
+from d810.ir.expressions import ValueOpKind
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity
 from d810.ir.block_identity import StableBlockIdentity
-from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
+from d810.transforms.cfg_transaction import CfgBlockRef, LogicalBlockRef, NativeBlockRef, PlanBlockRef
 from d810.transforms.use_def_redirect_filter import UseDefSeveranceAudit
 
 from .model import (
@@ -51,12 +52,197 @@ from .model import (
     SemanticSubjectRef,
     SemanticSubjectRole,
     UnflattenClaimKind,
+    InventoryEffectSite,
+    InventoryInstructionObservation,
+    validate_inventory_control_transfer,
+    InventoryTerminalSite,
+    resolve_inventory_block_sites,
 )
+from . import model
 from .ids import _claim_factory, _subject_factory, validate_canonical_roundtrip
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
 AuthorityBlockRef = NativeBlockRef | LogicalBlockRef
+
+
+def _validate_classifier_operand(operand: object, label: str) -> None:
+    if operand is None:
+        return
+    if type(operand) is not MopSnapshot:
+        raise TypeError(f"{label} must be an exact MopSnapshot")
+    if type(operand.t) is not int or type(operand.size) is not int or operand.size < 0:
+        raise TypeError(f"{label} scalar fields must be exact ints")
+    if type(operand.kind) is not OperandKind:
+        raise TypeError(f"{label}.kind must be OperandKind")
+    if type(operand.args) is not tuple:
+        raise TypeError(f"{label}.args must be an exact tuple")
+    for index, child in enumerate(operand.args):
+        _validate_classifier_operand(child, f"{label}.args[{index}]")
+    _validate_classifier_operand(operand.sub_l, f"{label}.sub_l")
+    _validate_classifier_operand(operand.sub_r, f"{label}.sub_r")
+
+
+def _validate_classifier_instruction(insn: object) -> None:
+    if type(insn) is not InsnSnapshot:
+        raise TypeError("block instructions must be exact InsnSnapshot values")
+    if type(insn.opcode) is not int or type(insn.ea) is not int:
+        raise TypeError("instruction opcode and EA must be exact ints")
+    if type(insn.operands) is not tuple or type(insn.operand_slots) is not tuple:
+        raise TypeError("instruction operand collections must be exact tuples")
+    if type(insn.kind) is not InsnKind:
+        raise TypeError("instruction kind must be exact InsnKind")
+    for name, value, enum_type in (
+        ("value_op_kind", insn.value_op_kind, ValueOpKind),
+        ("control_transfer_kind", insn.control_transfer_kind, ControlTransferKind),
+        ("call_kind", insn.call_kind, CallKind),
+        ("predicate_kind", insn.predicate_kind, PredicateKind),
+        ("branch_predicate", insn.branch_predicate, PredicateKind),
+    ):
+        if value is not None and type(value) is not enum_type:
+            raise TypeError(f"instruction {name} must be exact {enum_type.__name__}")
+    validate_inventory_control_transfer(insn.kind, insn.control_transfer_kind)
+    for name, value in (
+        ("is_conditional_jump", insn.is_conditional_jump),
+        ("is_unconditional_jump", insn.is_unconditional_jump),
+        ("is_call", insn.is_call),
+    ):
+        if type(value) is not bool:
+            raise TypeError(f"instruction {name} must be an exact bool")
+    for name, value in (
+        ("raw_opcode", insn.raw_opcode),
+        ("compare_width", insn.compare_width),
+        ("native_ea", insn.native_ea),
+    ):
+        if value is not None and type(value) is not int:
+            raise TypeError(f"instruction {name} must be an exact int or None")
+    if type(insn.display_text) is not str or not isinstance(insn.opcode_attrs, Mapping):
+        raise TypeError("instruction text and opcode attributes are malformed")
+    _validate_classifier_operand(insn.l, "instruction.l")
+    _validate_classifier_operand(insn.r, "instruction.r")
+    _validate_classifier_operand(insn.d, "instruction.d")
+
+
+def _classifier_ea(value: object) -> bool:
+    return type(value) is int and 0 <= value < _BADADDR
+
+
+def _graph_start_ea(value: object) -> bool:
+    return type(value) is int and 0 <= value <= _BADADDR
+
+
+def _validate_classifier_block(block: BlockSnapshot) -> None:
+    if type(block) is not BlockSnapshot:
+        raise TypeError("block must be an exact BlockSnapshot")
+    if type(block.serial) is not int or type(block.insn_snapshots) is not tuple:
+        raise TypeError("block serial and instructions must be exact")
+    if block.serial < 0:
+        raise ValueError("block serial must be nonnegative")
+    if type(block.block_type) is not int or block.block_type < 0 or type(block.flags) is not int or block.flags < 0 or not _graph_start_ea(block.start_ea):
+        raise TypeError("block scalar fields must be exact ints")
+    if block.native_start_ea is not None and not _classifier_ea(block.native_start_ea):
+        raise TypeError("block native_start_ea must be an exact int or None")
+    if block.tail_opcode is not None and type(block.tail_opcode) is not int:
+        raise TypeError("block tail_opcode must be an exact int or None")
+    if block.raw_block_type is not None and type(block.raw_block_type) is not int:
+        raise TypeError("block raw_block_type must be an exact int or None")
+    if block.raw_tail_opcode is not None and type(block.raw_tail_opcode) is not int:
+        raise TypeError("block raw_tail_opcode must be an exact int or None")
+    if block.tail_kind is not None and type(block.tail_kind) is not InsnKind:
+        raise TypeError("block tail_kind must be exact InsnKind or None")
+    if type(block.kind) is not BlockKind:
+        raise TypeError("block kind must be exact BlockKind")
+    if type(block.succs) is not tuple or type(block.preds) is not tuple:
+        raise TypeError("block topology collections must be exact tuples")
+    if any(type(serial) is not int or serial < 0 for serial in (*block.succs, *block.preds)):
+        raise TypeError("block topology serials must be exact nonnegative ints")
+    for instruction in block.insn_snapshots:
+        _validate_classifier_instruction(instruction)
+
+
+def _inventory_instruction_rows(
+    block: BlockSnapshot,
+) -> tuple[InventoryInstructionObservation, ...]:
+    _validate_classifier_block(block)
+    rows: list[InventoryInstructionObservation] = []
+    for ordinal, insn in enumerate(block.insn_snapshots):
+        raw_native_ea = insn.native_ea if _classifier_ea(insn.native_ea) else insn.ea
+        instruction_ea = int(raw_native_ea) if _classifier_ea(raw_native_ea) else None
+        if type(insn.opcode) is not int:
+            raise TypeError("opcode must be an exact int")
+        sizes: list[int] = []
+        for name, operand in (("l", insn.l), ("r", insn.r), ("d", insn.d)):
+            if operand is None:
+                continue
+            if type(operand) is not MopSnapshot:
+                raise TypeError(f"{name} must be an exact MopSnapshot")
+            if type(operand.size) is not int or isinstance(operand.size, bool) or operand.size < 0:
+                raise ValueError("operand size must be a nonnegative exact int")
+            sizes.append(operand.size)
+        rows.append(InventoryInstructionObservation(
+            ordinal, instruction_ea, insn.opcode, max(sizes, default=0),
+            insn.kind, insn.control_transfer_kind, insn.is_call, insn.call_kind,
+        ))
+    return tuple(rows)
+
+
+def observe_inventory_block(
+    block: BlockSnapshot,
+    *,
+    owner_ref: CfgBlockRef | None,
+    owner_anchor_ea: int | None,
+) -> model.InventoryBlockObservation:
+    """Adapt one exact block snapshot into the closed inventory vocabulary."""
+
+    rows = _inventory_instruction_rows(block)
+    if owner_ref is not None and type(owner_ref) not in (NativeBlockRef, LogicalBlockRef, PlanBlockRef):
+        raise TypeError("owner_ref must be a CfgBlockRef or None")
+    if owner_anchor_ea is not None and not _classifier_ea(owner_anchor_ea):
+        raise ValueError("owner_anchor_ea must be a valid native EA or None")
+    anchor_ea = owner_anchor_ea
+    if anchor_ea is None:
+        if _classifier_ea(block.native_start_ea):
+            anchor_ea = block.native_start_ea
+        elif _classifier_ea(block.start_ea):
+            anchor_ea = block.start_ea
+    transfer_ea = None
+    if rows and rows[-1].control_transfer_kind is not None:
+        transfer_ea = rows[-1].instruction_ea
+    return model.InventoryBlockObservation(
+        serial=block.serial,
+        block_ref=owner_ref,
+        anchor_ea=anchor_ea,
+        native_instruction_eas=tuple(sorted({
+            row.instruction_ea for row in rows if row.instruction_ea is not None
+        })),
+        predecessor_serials=tuple(sorted(block.preds)),
+        successor_serials=tuple(sorted(block.succs)),
+        transfer_ea=transfer_ea,
+        instruction_observations=rows,
+        block_kind=block.kind,
+        graph_start_ea=block.start_ea,
+    )
+
+
+def classify_block_effects_and_terminals(
+    block: BlockSnapshot,
+    *,
+    owner_ref: CfgBlockRef | None,
+    owner_anchor_ea: int,
+) -> tuple[tuple[InventoryEffectSite, ...], tuple[InventoryTerminalSite, ...]]:
+    """Classify one immutable block through the closed inventory adapter."""
+
+    observed = observe_inventory_block(
+        block, owner_ref=owner_ref, owner_anchor_ea=owner_anchor_ea,
+    )
+    return resolve_inventory_block_sites(
+        serial=observed.serial,
+        owner_ref=observed.block_ref,
+        owner_anchor_ea=observed.anchor_ea if observed.anchor_ea is not None else 0,
+        block_kind=observed.block_kind,
+        successor_serials=observed.successor_serials,
+        instruction_observations=observed.instruction_observations,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,7 +434,12 @@ def _resolve_exact_effect_semantics(
             continue
         if proof.source_owner_anchor_ea is not None and proof.source_owner_anchor_ea != source_locator.anchor_ea:
             continue
-        if proof.predicate.origin.identity != predicate_locator.block_ref.identity or proof.predicate.origin.anchor_ea != exclusion.predicate_branch_ea or proof.predicate.consumer.identity != proof.source_identity or proof.predicate.consumer.anchor_ea != proof.source_anchor_ea:
+        if (
+            proof.predicate.origin.identity != predicate_locator.block_ref.identity
+            or proof.predicate.origin.anchor_ea != exclusion.predicate_branch_ea
+            or proof.predicate.consumer.identity != proof.source_identity
+            or proof.predicate.consumer.anchor_ea != exclusion.predicate_branch_ea
+        ):
             continue
         write = proof.state_write
         predicate = proof.predicate
@@ -669,51 +860,27 @@ def discover_reachable_effects_and_terminals(
     for serial in reachable:
         block = source.blocks[serial]
         witness = _witness_for_serial(source, source_catalog, block_refs_by_serial, serial)
-        tail_terminal_produced = False
-        for ordinal, insn in enumerate(block.insn_snapshots):
-            native_ea = getattr(insn, "native_ea", None)
-            native_ea = native_ea if _valid_ea(native_ea) else getattr(insn, "ea", None)
-            kind = getattr(insn, "kind", InsnKind.UNKNOWN)
-            transfer = getattr(insn, "control_transfer_kind", None)
-            is_call = kind is InsnKind.CALL or bool(getattr(insn, "is_call", False)) or getattr(insn, "call_kind", None) is not None
-            is_return = kind is InsnKind.RET or transfer is ControlTransferKind.RETURN
-            is_trap = kind is InsnKind.TRAP
-            is_store = kind is InsnKind.STORE
-            matching = sum((bool(is_store), bool(is_trap), bool(is_return), bool(is_call)))
-            if matching > 1:
-                raise ValueError("InsnSnapshot effect semantics overlap")
-            if matching == 0:
-                continue
-            if not _valid_ea(native_ea):
-                raise ValueError("required effect has no valid native instruction EA")
-            instruction_ea = int(native_ea)
-            effect_kind = (EffectSiteKind.STORE if is_store else EffectSiteKind.TRAP if is_trap else EffectSiteKind.RETURN if is_return else EffectSiteKind.CALL)
-            effect_key = (witness.block_ref, instruction_ea, effect_kind)
+        pure_effects, pure_terminals = classify_block_effects_and_terminals(
+            block, owner_ref=witness.block_ref, owner_anchor_ea=witness.anchor_ea,
+        )
+        for site in pure_effects:
+            effect_key = (witness.block_ref, site.instruction_ea, site.effect_kind)
             if effect_key in effect_keys:
                 raise ValueError("duplicate reachable effect site")
             effect_keys.add(effect_key)
-            effects.append(DiscoveredEffect(resolve_effect_locator(source, source_catalog, block_refs_by_serial, serial, instruction_ea, effect_kind)))
-            terminal_kind: TerminalKind | None = None
-            if is_trap:
-                terminal_kind = TerminalKind.TRAP
-            elif is_return:
-                terminal_kind = TerminalKind.RETURN
-            elif is_call and ordinal == len(block.insn_snapshots) - 1 and not block.succs:
-                terminal_kind = TerminalKind.NORETURN_CALL
-            if terminal_kind is not None:
-                if ordinal == len(block.insn_snapshots) - 1:
-                    tail_terminal_produced = True
-                terminal_key = (witness.block_ref, instruction_ea, terminal_kind)
-                if terminal_key in terminal_keys:
-                    raise ValueError("duplicate reachable terminal site")
-                terminal_keys.add(terminal_key)
-                terminals.append(DiscoveredTerminal(resolve_terminal_locator(source, source_catalog, block_refs_by_serial, serial, instruction_ea, terminal_kind)))
-        if block.kind is BlockKind.STOP and not tail_terminal_produced:
-            terminal_key = (witness.block_ref, witness.anchor_ea, TerminalKind.STOP)
+            effects.append(DiscoveredEffect(resolve_effect_locator(
+                source, source_catalog, block_refs_by_serial, serial,
+                site.instruction_ea, site.effect_kind,
+            )))
+        for site in pure_terminals:
+            terminal_key = (witness.block_ref, site.instruction_ea, site.terminal_kind)
             if terminal_key in terminal_keys:
-                raise ValueError("duplicate reachable STOP terminal site")
+                raise ValueError("duplicate reachable terminal site")
             terminal_keys.add(terminal_key)
-            terminals.append(DiscoveredTerminal(resolve_terminal_locator(source, source_catalog, block_refs_by_serial, serial, witness.anchor_ea, TerminalKind.STOP)))
+            terminals.append(DiscoveredTerminal(resolve_terminal_locator(
+                source, source_catalog, block_refs_by_serial, serial,
+                site.instruction_ea, site.terminal_kind,
+            )))
     return SourceEffectTerminalCatalog(tuple(effects), tuple(terminals))
 
 
@@ -778,28 +945,23 @@ def _exact_effect_claim(
         discarded_block = source.blocks[exclusion.discarded_effect_serial]
     except (KeyError, TypeError) as exc:
         raise ValueError("discarded effect serial is absent from source catalog") from exc
-    discarded_sites: list[tuple[int, EffectSiteKind]] = []
-    for insn in discarded_block.insn_snapshots:
-        if getattr(insn, "kind", None) is InsnKind.STORE:
-            effect_kind = EffectSiteKind.STORE
-        elif (
-            getattr(insn, "kind", None) is InsnKind.CALL
-            or getattr(insn, "is_call", False)
-        ):
-            effect_kind = EffectSiteKind.CALL
-        else:
-            effect_kind = None
-        if effect_kind is None:
-            continue
-        raw_ea = getattr(insn, "native_ea", None)
-        if not _valid_ea(raw_ea):
-            raw_ea = getattr(insn, "ea", None)
-        if not _valid_ea(raw_ea):
-            raise ValueError("discarded effect has no native EA")
-        discarded_sites.append((int(raw_ea), effect_kind))
-    if len(discarded_sites) != 1:
+    witness = _witness_for_serial(
+        source, source_catalog, block_refs_by_serial,
+        exclusion.discarded_effect_serial,
+    )
+    discarded_effects, _ = classify_block_effects_and_terminals(
+        discarded_block,
+        owner_ref=witness.block_ref,
+        owner_anchor_ea=witness.anchor_ea,
+    )
+    discarded_sites = tuple(
+        site for site in discarded_effects
+        if site.effect_kind in {EffectSiteKind.STORE, EffectSiteKind.CALL}
+    )
+    if len(discarded_sites) != 1 or discarded_sites[0].instruction_ea != exclusion.discarded_effect_ea:
         raise ValueError("discarded effect EA does not resolve to one effect kind")
-    discarded_effect_ea, discarded_kind = discarded_sites[0]
+    discarded_effect_ea = discarded_sites[0].instruction_ea
+    discarded_kind = discarded_sites[0].effect_kind
     discarded = resolve_effect_locator(
         source, source_catalog, block_refs_by_serial,
         exclusion.discarded_effect_serial, discarded_effect_ea,
@@ -949,6 +1111,7 @@ __all__ = [
     "DiscoveredEffect",
     "DiscoveredTerminal",
     "SourceEffectTerminalCatalog",
+    "classify_block_effects_and_terminals",
     "build_source_identity_catalog",
     "build_unflatten_plan_input_catalog",
     "build_use_def_fragment_witness",

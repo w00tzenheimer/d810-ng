@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 
 from d810.hexrays.ir.mba_identity_index import (
     MbaBlockIdentityIndex,
@@ -16,69 +16,33 @@ from d810.transforms.cfg_transaction import (
     PlanBlockRef,
     TransactionAttemptId,
 )
+from d810.transforms.patch_binding import (
+    BoundPatchPlan,
+    PatchBindingRejected,
+    iter_refs,
+    realize_value,
+)
 from d810.transforms.plan import PatchPlan
 
 
-class PatchBindingRejected(ValueError):
-    """The immutable plan does not belong to the active live authority."""
-
-
 @dataclass(frozen=True, slots=True)
-class BoundPatchPlan:
-    """Attempt-local serial bindings; never portable plan state."""
+class PatchBindingResult:
+    """Hex-Rays binding wrapper; reservations stay outside portable authority."""
 
-    plan: PatchPlan
-    attempt_id: TransactionAttemptId
-    session_id: str
-    generation: int
-    maturity: int
-    bindings: tuple[tuple[CfgBlockRef, int], ...]
+    bound_plan: BoundPatchPlan
     reservations: tuple[PlanBlockReservation, ...]
 
-    def serial_for(self, ref: CfgBlockRef | None) -> int | None:
-        if ref is None:
-            return None
-        matches = tuple(
-            serial for candidate, serial in self.bindings if candidate == ref
-        )
-        if len(matches) != 1:
-            raise PatchBindingRejected(
-                f"typed block reference has {len(matches)} live bindings"
-            )
-        return int(matches[0])
+    def __post_init__(self) -> None:
+        if type(self.bound_plan) is not BoundPatchPlan:
+            raise TypeError("binding result requires the exact BoundPatchPlan")
+        if type(self.reservations) is not tuple:
+            raise TypeError("binding reservations must be an exact tuple")
+        if any(type(item) is not PlanBlockReservation for item in self.reservations):
+            raise TypeError("binding reservations must be exact PlanBlockReservation values")
 
-    def realize_value(self, value: object) -> object:
-        """Resolve references recursively at the final backend call boundary."""
-        # Exit-path sites are the one nested operation payload consumed by the
-        # legacy IDA queue API.  Rebuild that boundary DTO with attempt-local
-        # coordinates instead of allowing typed refs to leak into the backend.
-        from d810.transforms.graph_modification import ExitPathLoweringSite
-        from d810.transforms.plan import PatchExitPathLoweringSite
-
-        if isinstance(value, (NativeBlockRef, LogicalBlockRef, PlanBlockRef)):
-            return self.serial_for(value)
-        if isinstance(value, PatchExitPathLoweringSite):
-            return ExitPathLoweringSite(
-                anchor_serial=int(self.serial_for(value.anchor_serial)),
-                kind=value.kind,
-                const_value=value.const_value,
-                source_stkoff=value.source_stkoff,
-                source_mreg=value.source_mreg,
-                materializer_serials=tuple(
-                    int(self.serial_for(ref)) for ref in value.materializer_serials
-                ),
-                skip_terminal_control_tail=value.skip_terminal_control_tail,
-            )
-        if isinstance(value, tuple):
-            return tuple(self.realize_value(item) for item in value)
-        if isinstance(value, list):
-            return [self.realize_value(item) for item in value]
-        if isinstance(value, dict):
-            return {
-                self.realize_value(key): self.realize_value(item)
-                for key, item in value.items()
-            }
-        return value
+    @property
+    def bindings(self):
+        return self.bound_plan.bindings
 
 
 class BoundModifier:
@@ -95,9 +59,9 @@ class BoundModifier:
 
         def queue_bound(*args, **kwargs):
             return target(
-                *(self._bound_plan.realize_value(arg) for arg in args),
+                *(realize_value(self._bound_plan, arg) for arg in args),
                 **{
-                    key: self._bound_plan.realize_value(value)
+                    key: realize_value(self._bound_plan, value)
                     for key, value in kwargs.items()
                 },
             )
@@ -105,30 +69,11 @@ class BoundModifier:
         return queue_bound
 
 
-def _iter_refs(value: object):
-    if isinstance(value, (NativeBlockRef, LogicalBlockRef, PlanBlockRef)):
-        yield value
-        return
-    if isinstance(value, tuple):
-        for item in value:
-            yield from _iter_refs(item)
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            yield from _iter_refs(key)
-            yield from _iter_refs(item)
-        return
-    if hasattr(value, "__dataclass_fields__"):
-        for item in fields(value):
-            if not item.name.startswith("_"):
-                yield from _iter_refs(getattr(value, item.name))
-
-
 def bind_patch_plan(
     plan: PatchPlan,
     identity_index: MbaBlockIdentityIndex,
     transaction_attempt: TransactionAttemptId,
-) -> BoundPatchPlan:
+) -> PatchBindingResult:
     """Resolve one plan under an already-active typed transaction attempt."""
     if not isinstance(plan, PatchPlan):
         raise TypeError("patch binding requires a PatchPlan")
@@ -153,7 +98,7 @@ def bind_patch_plan(
         raise PatchBindingRejected("source maturity authority differs")
 
     refs = tuple(
-        dict.fromkeys(_iter_refs((plan.steps, plan.new_blocks, plan.relocation_map)))
+        dict.fromkeys(iter_refs((plan.steps, plan.new_blocks, plan.relocation_map)))
     )
     planned_refs = tuple(spec.block_id for spec in plan.new_blocks)
     if len(set(planned_refs)) != len(planned_refs):
@@ -215,20 +160,37 @@ def bind_patch_plan(
         reservations.append(identity_index.reserve_plan_block(transaction_attempt, ref))
         bindings.append((ref, planned_coordinates[ref]))
 
-    return BoundPatchPlan(
+    try:
+        from d810.hexrays.ir_maturity import hexrays_maturity_envelope
+    except ModuleNotFoundError as exc:
+        if exc.name != "ida_hexrays":
+            raise
+        # Portable unit tests do not load the vendor module; retain the exact
+        # provider stage while leaving semantic IR mapping to the live adapter.
+        from d810.ir.maturity import MaturityEnvelope
+
+        maturity = MaturityEnvelope(
+            ir=None, provider="hexrays", provider_id=int(identity_index.maturity)
+        )
+    else:
+        maturity = hexrays_maturity_envelope(int(identity_index.maturity))
+    if plan.source_maturity is not None and plan.source_maturity.provider_id != maturity.provider_id:
+        raise PatchBindingRejected("source maturity provider stage differs from live binder")
+    bound_plan = BoundPatchPlan(
         plan=plan,
         attempt_id=transaction_attempt,
         session_id=identity_index.session_id,
         generation=identity_index.generation,
-        maturity=int(identity_index.maturity),
+        maturity=maturity,
         bindings=tuple(bindings),
-        reservations=tuple(reservations),
     )
+    return PatchBindingResult(bound_plan=bound_plan, reservations=tuple(reservations))
 
 
 __all__ = [
     "BoundModifier",
     "BoundPatchPlan",
+    "PatchBindingResult",
     "PatchBindingRejected",
     "bind_patch_plan",
 ]

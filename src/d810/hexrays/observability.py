@@ -17,6 +17,8 @@ See:
 
 from __future__ import annotations
 
+from d810.core import logging
+
 from d810.core.observability import (
     SnapshotRef,
     emit as _emit,
@@ -35,6 +37,11 @@ from d810.core.observability_models import (
     BlockSnapshot as BlockSnapshot,
     InstructionSnapshot as InstructionSnapshot,
 )
+from d810.hexrays.mba_serializer import (
+    mba_to_block_snapshots as mba_to_block_snapshots,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -125,13 +132,40 @@ def observe_optblock_callback_exception(
     )
 
 
-# `mba_to_block_snapshots` lives in `d810.hexrays.mba_serializer`
-# (same layer); the facade re-export is for callers that already
-# import from hexrays.observability and don't want to pull from
-# two modules.
-from d810.hexrays.mba_serializer import (
-    mba_to_block_snapshots as mba_to_block_snapshots,
-)
+def observe_unflatten_authority_phase(
+    *,
+    mba: object,
+    verdict: object,
+    observations=(),
+    observation_factory=None,
+) -> None:
+    """Publish one canonical authority-phase observation when subscribed."""
+    if not diagnostics_enabled():
+        return
+    try:
+        if observation_factory is not None:
+            if not callable(observation_factory):
+                raise TypeError("observation_factory must be callable")
+            observations = tuple(observation_factory())
+        phase = getattr(getattr(verdict, "phase", None), "value", "unknown")
+        phase_label = "post_apply" if phase == "observed_post_apply" else "unknown"
+        blocks = mba_to_block_snapshots(mba)
+        maturity = getattr(mba, "maturity", getattr(mba, "maturity_id", "UNKNOWN"))
+        snapshot = request_capture_mba_snapshot(
+            blocks=blocks,
+            label=f"unflatten_authority_{phase}",
+            func_ea=int(getattr(mba, "func_ea", 0)),
+            maturity=str(maturity),
+            maturity_id=(int(maturity) if isinstance(maturity, int) else None),
+            phase=phase_label,
+        )
+        if snapshot is None:
+            return
+        from d810.core.observability_preanalysis import observe_fact_observation
+
+        observe_fact_observation(snapshot, int(getattr(mba, "func_ea", 0)), tuple(observations))
+    except Exception:
+        _LOGGER.exception("unflatten authority diagnostics failed")
 
 
 __all__ = [
@@ -141,6 +175,7 @@ __all__ = [
     # Request/response command API
     "diagnostics_enabled",
     "observe_optblock_callback_exception",
+    "observe_unflatten_authority_phase",
     "request_capture_mba_snapshot",
     # Neutral models (kept here for callers that construct them)
     "BlockSnapshot",

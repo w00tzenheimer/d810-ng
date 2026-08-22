@@ -539,14 +539,14 @@ def test_producer_exact_effect_claim_correlates_all_canonical_dimensions() -> No
         refs[serial] = NativeBlockRef(identity)
     source_point = SemanticCorridorPoint(refs[0].identity, 0x1000)
     predicate_point = SemanticCorridorPoint(refs[1].identity, 0x2001)
-    predicate_consumer = SemanticCorridorPoint(refs[1].identity, 0x2000)
+    predicate_consumer = predicate_point
     state_write = SemanticStateWriteProof(
         refs[0].identity, 0x1000, state, 4, 7, (0x1000, 0x2000), None, (),
         SemanticStateWriteDeliveryKind.CONDITIONAL,
     )
     predicate = SemanticPredicateProof(
         SemanticPredicateKind.STORAGE_EQUALS, predicate_point, predicate_consumer,
-        (predicate_point, predicate_consumer), state, 4, 7, None, (),
+        (predicate_point,), state, 4, 7, None, (),
     )
     carrier = SemanticCarrierProof(
         authority_id("carrier"), source_point, (predicate_consumer,),

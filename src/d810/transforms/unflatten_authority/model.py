@@ -18,10 +18,14 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     BoundCanonicalSemanticEvidence,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.ir.block_identity import NativeEaInterval, NativeEaIntervalSet, StableBlockIdentity
 from d810.core.typing import Literal, Protocol, TypeAlias, runtime_checkable
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.flowgraph import BlockKind, InsnKind
+from d810.ir.semantics import CallKind, ControlTransferKind
 from d810.ir.maturity import MaturityEnvelope
 from d810.ir.storage_identity import StorageIdentity
+from d810.transforms.patch_binding import BoundPatchPlan, validate_bound_patch_plan
 from d810.transforms.cfg_transaction import (
     CfgBlockRef,
     LogicalBlockRef,
@@ -33,11 +37,15 @@ from .ids import (
     _subject_id_from_record,
     _validate_id,
     authority_id,
+    bound_unflatten_binding_id,
+    canonical_bytes,
+    validate_canonical_roundtrip,
     case_id,
     claim_id,
     evidence_id,
     justification_id,
     receipt_id,
+    semantic_graph_inventory_digest,
 )
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
 from .legacy_wire import decode_legacy_value
@@ -45,7 +53,6 @@ from .legacy_wire import decode_legacy_value
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
 _OBLIGATION_INDEX_TOKEN = object()
-_PREPARATION_RECEIPT_TOKEN = object()
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 _CFG_REF_TYPES = (NativeBlockRef, LogicalBlockRef, PlanBlockRef)
 _AUTHORITY_REF_TYPES = (NativeBlockRef, LogicalBlockRef)
@@ -281,6 +288,11 @@ class TerminalKind(str, Enum):
     TRAP = "trap"
     NORETURN_CALL = "noreturn_call"
     STOP = "stop"
+
+
+class TopologyIncidenceKind(str, Enum):
+    PREDECESSOR = "predecessor"
+    SUCCESSOR = "successor"
 
 
 class GenericCfgGateKind(str, Enum):
@@ -633,6 +645,598 @@ class PhaseBindingEvidencePayload:
             raise TypeError("binding must be a PhaseSubjectBinding")
 
 
+def _inventory_nonnegative(value: object, label: str) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{label} must be an exact int")
+    if value < 0:
+        raise ValueError(f"{label} must not be negative")
+    return value
+
+
+def _inventory_ea(value: object, label: str) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{label} must be an exact int")
+    if not 0 <= value < _BADADDR:
+        raise ValueError(f"{label} must be a native EA")
+    return value
+
+
+def _validate_native_identity_primitives(identity: object, label: str) -> None:
+    """Check native identity scalars before any normalizing post-init runs.
+
+    ``StableBlockIdentity`` and its interval/key children historically coerce
+    values (notably ``int(True)`` and interval iterables) in ``__post_init__``.
+    Inventory records are an authority boundary, so a caller-owned frozen
+    evidence graph must be rejected in its corrupted form rather than
+    normalized in place before it is inspected.
+    """
+
+    if type(identity) is not StableBlockIdentity:
+        raise TypeError(f"{label}.identity must be a StableBlockIdentity")
+    key = identity.native_key
+    if type(key) is not NativePreanalysisKey:
+        raise TypeError(f"{label}.identity.native_key must be a NativePreanalysisKey")
+    for field_name in (
+        "input_identity",
+        "processor",
+        "function_fingerprint",
+        "profile_fingerprint",
+        "sdk_fingerprint",
+    ):
+        value = getattr(key, field_name)
+        if type(value) is not str:
+            raise TypeError(f"{label}.{field_name} must be an exact string")
+        if not value.strip() or value != value.strip():
+            raise ValueError(f"{label}.{field_name} must be canonical and non-blank")
+    for field_name in ("bitness", "function_rva"):
+        value = getattr(key, field_name)
+        if type(value) is not int:
+            raise TypeError(f"{label}.{field_name} must be an exact int")
+    if key.bitness not in {16, 32, 64}:
+        raise ValueError(f"{label}.bitness must be one of 16, 32, or 64")
+    if key.function_rva < 0:
+        raise ValueError(f"{label}.function_rva must not be negative")
+    ranges = identity.native_ranges
+    if type(ranges) is not NativeEaIntervalSet:
+        raise TypeError(f"{label}.native_ranges must be a NativeEaIntervalSet")
+    if type(ranges.intervals) is not tuple:
+        raise TypeError(f"{label}.native_ranges.intervals must be an exact tuple")
+    previous: NativeEaInterval | None = None
+    for index, interval in enumerate(ranges.intervals):
+        interval_label = f"{label}.native_ranges.intervals[{index}]"
+        if type(interval) is not NativeEaInterval:
+            raise TypeError(f"{interval_label} must be a NativeEaInterval")
+        if type(interval.start_ea) is not int or type(interval.end_ea) is not int:
+            raise TypeError(f"{interval_label} endpoints must be exact ints")
+        if (
+            interval.start_ea < 0
+            or interval.start_ea >= _BADADDR
+            or interval.end_ea <= interval.start_ea
+            or interval.end_ea > _BADADDR
+        ):
+            raise ValueError(f"{interval_label} must be a bounded native range")
+        if previous is not None and interval.start_ea <= previous.end_ea:
+            raise ValueError(f"{label}.native_ranges must be canonical and disjoint")
+        previous = interval
+    if not ranges.intervals:
+        raise ValueError(f"{label}.native_ranges must not be empty")
+
+    exact_eas = identity.exact_instruction_eas
+    if type(exact_eas) is not frozenset:
+        raise TypeError(f"{label}.exact_instruction_eas must be an exact frozenset")
+    for index, ea in enumerate(exact_eas):
+        _inventory_ea(ea, f"{label}.exact_instruction_eas[{index}]")
+        if not ranges.contains(ea):
+            raise ValueError(f"{label}.exact_instruction_eas must belong to native ranges")
+
+    # Every primitive in the nested graph is now known to be exact and
+    # canonical, so rerunning the normal validators cannot coerce or mutate a
+    # caller-owned corrupted value before it has been rejected.
+    key.__post_init__()
+
+
+def _validate_inventory_refs(value: object, *, producer: bool, label: str) -> None:
+    if type(value) in _CFG_REF_TYPES:
+        if producer and type(value) is PlanBlockRef:
+            raise TypeError(f"{label} may not use PlanBlockRef in producer phase")
+        if type(value) is NativeBlockRef:
+            _validate_native_identity_primitives(value.identity, f"{label}.identity")
+        value.__post_init__()
+        validate_canonical_roundtrip(value, type(value))
+        return
+    if type(value) is tuple:
+        for index, item in enumerate(value):
+            _validate_inventory_refs(item, producer=producer, label=f"{label}[{index}]")
+        return
+    if is_dataclass(value) and not isinstance(value, type):
+        for item in fields(value):
+            if item.name.startswith("_"):
+                continue
+            _validate_inventory_refs(
+                getattr(value, item.name), producer=producer,
+                label=f"{label}.{item.name}",
+            )
+        post_init = getattr(value, "__post_init__", None)
+        if post_init is not None:
+            post_init()
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryInstructionObservation:
+    ordinal: int
+    instruction_ea: int | None
+    opcode: int
+    width: int
+    instruction_kind: InsnKind
+    control_transfer_kind: ControlTransferKind | None
+    is_call: bool
+    call_kind: CallKind | None
+
+    def __post_init__(self) -> None:
+        _inventory_nonnegative(self.ordinal, "ordinal")
+        if self.instruction_ea is not None:
+            _inventory_ea(self.instruction_ea, "instruction_ea")
+        if type(self.opcode) is not int:
+            raise TypeError("opcode must be an exact int")
+        _inventory_nonnegative(self.width, "width")
+        if type(self.instruction_kind) is not InsnKind:
+            raise TypeError("instruction_kind must be InsnKind")
+        if self.control_transfer_kind is not None and type(self.control_transfer_kind) is not ControlTransferKind:
+            raise TypeError("control_transfer_kind must be ControlTransferKind or None")
+        if type(self.is_call) is not bool:
+            raise TypeError("is_call must be an exact bool")
+        if self.call_kind is not None and type(self.call_kind) is not CallKind:
+            raise TypeError("call_kind must be CallKind or None")
+
+
+def required_inventory_control_transfer(
+    instruction_kind: InsnKind,
+) -> ControlTransferKind | None:
+    """Return the transfer marker required by a raw instruction kind.
+
+    ``InsnSnapshot.__post_init__`` normally fills these markers.  Inventory
+    observations and producer snapshots can nevertheless be corrupted after
+    construction, so the authority resolver must validate the correlation
+    rather than trusting a possibly erased derived field.  UNKNOWN remains
+    intentionally open because recovery adapters may supply a semantic marker
+    without a recognized raw kind.
+    """
+
+    if type(instruction_kind) is not InsnKind:
+        raise TypeError("instruction_kind must be InsnKind")
+    return {
+        InsnKind.GOTO: ControlTransferKind.GOTO,
+        InsnKind.COND_JUMP: ControlTransferKind.CONDITIONAL_BRANCH,
+        InsnKind.EQUALITY_JUMP: ControlTransferKind.CONDITIONAL_BRANCH,
+        InsnKind.TABLE_JUMP: ControlTransferKind.TABLE_BRANCH,
+        InsnKind.INDIRECT_JUMP: ControlTransferKind.INDIRECT_BRANCH,
+        InsnKind.RET: ControlTransferKind.RETURN,
+    }.get(instruction_kind)
+
+
+def validate_inventory_control_transfer(
+    instruction_kind: InsnKind,
+    control_transfer_kind: ControlTransferKind | None,
+) -> None:
+    """Enforce the closed raw-kind/control-marker correlation.
+
+    UNKNOWN is the sole recovery escape hatch: adapters may retain a semantic
+    transfer marker when the raw kind is unavailable. Every other known kind is
+    either a transfer family requiring its exact marker or a non-control kind
+    requiring no marker at all.
+    """
+
+    if type(instruction_kind) is not InsnKind:
+        raise TypeError("instruction_kind must be InsnKind")
+    if control_transfer_kind is not None and type(control_transfer_kind) is not ControlTransferKind:
+        raise TypeError("control_transfer_kind must be ControlTransferKind or None")
+    if instruction_kind is InsnKind.UNKNOWN:
+        return
+    required_transfer = required_inventory_control_transfer(instruction_kind)
+    if required_transfer is not None:
+        if control_transfer_kind is not required_transfer:
+            raise ValueError(
+                f"{instruction_kind.value} requires control transfer "
+                f"{required_transfer.value}"
+            )
+        return
+    if control_transfer_kind is not None:
+        raise ValueError(
+            f"{instruction_kind.value} must not carry control transfer "
+            f"{control_transfer_kind.value}"
+        )
+
+
+def resolve_inventory_instruction(
+    observation: InventoryInstructionObservation,
+    *,
+    is_tail: bool,
+    has_successors: bool,
+) -> tuple[EffectSiteKind | None, TerminalKind | None]:
+    """Resolve one raw instruction observation into its semantic catalogs."""
+    if type(observation) is not InventoryInstructionObservation:
+        raise TypeError("instruction observation must be nominal")
+    observation.__post_init__()
+    if type(is_tail) is not bool or type(has_successors) is not bool:
+        raise TypeError("resolver context booleans must be exact bools")
+    validate_inventory_control_transfer(
+        observation.instruction_kind, observation.control_transfer_kind,
+    )
+    is_store = observation.instruction_kind is InsnKind.STORE
+    is_trap = observation.instruction_kind is InsnKind.TRAP
+    is_return = (
+        observation.instruction_kind is InsnKind.RET
+        or observation.control_transfer_kind is ControlTransferKind.RETURN
+    )
+    is_call = (
+        observation.instruction_kind is InsnKind.CALL
+        or observation.is_call
+        or observation.call_kind is not None
+    )
+    matches = sum((is_store, is_trap, is_return, is_call))
+    if matches > 1:
+        raise ValueError("instruction effect semantics overlap")
+    if matches == 0:
+        return None, None
+    if observation.instruction_ea is None:
+        raise ValueError("required effect has no valid native instruction EA")
+    effect_kind = (
+        EffectSiteKind.STORE if is_store else
+        EffectSiteKind.TRAP if is_trap else
+        EffectSiteKind.RETURN if is_return else EffectSiteKind.CALL
+    )
+    terminal_kind = (
+        TerminalKind.TRAP if is_trap else
+        TerminalKind.RETURN if is_return else
+        TerminalKind.NORETURN_CALL if is_call and is_tail and not has_successors else None
+    )
+    return effect_kind, terminal_kind
+
+
+def resolve_inventory_block_sites(
+    *,
+    serial: int,
+    owner_ref: CfgBlockRef | None,
+    owner_anchor_ea: int,
+    block_kind: BlockKind,
+    successor_serials: tuple[int, ...],
+    instruction_observations: tuple[InventoryInstructionObservation, ...],
+) -> tuple[tuple[InventoryEffectSite, ...], tuple[InventoryTerminalSite, ...]]:
+    """Resolve one block's raw rows into exact effect and terminal sites."""
+    _inventory_nonnegative(serial, "serial")
+    _inventory_ea(owner_anchor_ea, "owner_anchor_ea")
+    if owner_ref is not None and type(owner_ref) not in _CFG_REF_TYPES:
+        raise TypeError("owner_ref must be an exact CfgBlockRef or None")
+    if owner_ref is not None:
+        _validate_inventory_refs(owner_ref, producer=False, label="owner_ref")
+    if type(block_kind) is not BlockKind or type(successor_serials) is not tuple:
+        raise TypeError("block resolver context is malformed")
+    if len(set(successor_serials)) != len(successor_serials) or successor_serials != tuple(sorted(successor_serials)):
+        raise ValueError("successor serials must be sorted and unique")
+    for successor in successor_serials:
+        _inventory_nonnegative(successor, "successor serial")
+    if type(instruction_observations) is not tuple:
+        raise TypeError("instruction observations must be an exact tuple")
+    for observation in instruction_observations:
+        if type(observation) is not InventoryInstructionObservation:
+            raise TypeError("instruction observations must be nominal")
+        observation.__post_init__()
+    effects: list[InventoryEffectSite] = []
+    terminals: list[InventoryTerminalSite] = []
+    effect_keys: set[tuple[object, ...]] = set()
+    terminal_keys: set[tuple[object, ...]] = set()
+    for ordinal, observation in enumerate(instruction_observations):
+        if observation.ordinal != ordinal:
+            raise ValueError("instruction observations must be contiguous ordinal order")
+        if observation.control_transfer_kind is not None and ordinal != len(instruction_observations) - 1:
+            raise ValueError("control-transfer observations must be the block tail")
+        effect_kind, terminal_kind = resolve_inventory_instruction(
+            observation,
+            is_tail=ordinal == len(instruction_observations) - 1,
+            has_successors=bool(successor_serials),
+        )
+        if effect_kind is not None:
+            effect = InventoryEffectSite(
+                serial, owner_ref, owner_anchor_ea, ordinal, observation.instruction_ea,
+                effect_kind, observation.opcode, observation.width,
+            )
+            key = (effect.owner_serial, effect.instruction_ea, effect.effect_kind)
+            if key in effect_keys:
+                raise ValueError("duplicate effect site")
+            effect_keys.add(key)
+            effects.append(effect)
+        if terminal_kind is not None:
+            terminal = InventoryTerminalSite(
+                serial, owner_ref, owner_anchor_ea, ordinal, observation.instruction_ea,
+                terminal_kind,
+            )
+            key = (terminal.owner_serial, terminal.instruction_ea, terminal.terminal_kind)
+            if key in terminal_keys:
+                raise ValueError("duplicate terminal site")
+            terminal_keys.add(key)
+            terminals.append(terminal)
+    tail_terminal = bool(terminals and terminals[-1].instruction_ordinal == len(instruction_observations) - 1)
+    if block_kind is BlockKind.STOP and not tail_terminal:
+        terminal = InventoryTerminalSite(
+            serial, owner_ref, owner_anchor_ea, None, owner_anchor_ea, TerminalKind.STOP,
+        )
+        key = (terminal.owner_serial, terminal.instruction_ea, terminal.terminal_kind)
+        if key in terminal_keys:
+            raise ValueError("duplicate terminal site")
+        terminals.append(terminal)
+    return tuple(effects), tuple(terminals)
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryBlockObservation:
+    serial: int
+    block_ref: CfgBlockRef | None
+    anchor_ea: int | None
+    native_instruction_eas: tuple[int, ...]
+    predecessor_serials: tuple[int, ...]
+    successor_serials: tuple[int, ...]
+    transfer_ea: int | None
+    instruction_observations: tuple[InventoryInstructionObservation, ...] = ()
+    block_kind: BlockKind = BlockKind.UNKNOWN
+    graph_start_ea: int = _BADADDR
+
+    def __post_init__(self) -> None:
+        _inventory_nonnegative(self.serial, "serial")
+        if self.block_ref is not None:
+            _cfg_ref(self.block_ref)
+        if type(self.block_kind) is not BlockKind:
+            raise TypeError("block_kind must be BlockKind")
+        if type(self.graph_start_ea) is not int:
+            raise TypeError("graph_start_ea must be an exact int")
+        if not 0 <= self.graph_start_ea <= _BADADDR:
+            raise ValueError("graph_start_ea must be a graph coordinate or BADADDR")
+        if self.block_kind is BlockKind.STOP and self.anchor_ea is None:
+            raise ValueError("STOP observations require a resolved anchor EA")
+        if self.anchor_ea is not None:
+            _inventory_ea(self.anchor_ea, "anchor_ea")
+        for name in ("native_instruction_eas", "predecessor_serials", "successor_serials"):
+            values = getattr(self, name)
+            if type(values) is not tuple:
+                raise TypeError(f"{name} must be an exact tuple")
+            if len(set(values)) != len(values):
+                raise ValueError(f"{name} must be unique")
+            if values != tuple(sorted(values)):
+                raise ValueError(f"{name} must be sorted")
+            for value in values:
+                if name == "native_instruction_eas":
+                    _inventory_ea(value, f"{name} item")
+                else:
+                    _inventory_nonnegative(value, f"{name} item")
+            object.__setattr__(self, name, values)
+        if self.transfer_ea is not None:
+            _inventory_ea(self.transfer_ea, "transfer_ea")
+        if type(self.instruction_observations) is not tuple:
+            raise TypeError("instruction_observations must be an exact tuple")
+        if any(type(item) is not InventoryInstructionObservation for item in self.instruction_observations):
+            raise TypeError("instruction_observations must contain exact rows")
+        if tuple(item.ordinal for item in self.instruction_observations) != tuple(range(len(self.instruction_observations))):
+            raise ValueError("instruction observations must be contiguous ordinal order")
+        observed_eas = {item.instruction_ea for item in self.instruction_observations if item.instruction_ea is not None}
+        if self.native_instruction_eas and not self.instruction_observations:
+            raise ValueError("native instruction origins require ordered instruction observations")
+        if self.instruction_observations and observed_eas != set(self.native_instruction_eas):
+            raise ValueError("native_instruction_eas must equal resolved instruction observation EAs")
+        if self.transfer_ea is not None:
+            transfer_rows = [
+                item for item in self.instruction_observations
+                if item.instruction_ea == self.transfer_ea
+            ]
+            if len(transfer_rows) != 1 or transfer_rows[0].ordinal != len(self.instruction_observations) - 1:
+                raise ValueError("transfer_ea must identify the tail instruction")
+            if transfer_rows[0].control_transfer_kind is None:
+                raise ValueError("transfer_ea must identify a control-transfer instruction")
+        if self.instruction_observations:
+            tail = self.instruction_observations[-1]
+            if tail.control_transfer_kind is not None:
+                if tail.instruction_ea is not None and self.transfer_ea != tail.instruction_ea:
+                    raise ValueError("tail control transfer requires its transfer EA")
+        resolve_inventory_block_sites(
+            serial=self.serial,
+            owner_ref=self.block_ref,
+            owner_anchor_ea=self.anchor_ea if self.anchor_ea is not None else 0,
+            block_kind=self.block_kind,
+            successor_serials=self.successor_serials,
+            instruction_observations=self.instruction_observations,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryEffectSite:
+    owner_serial: int
+    owner_ref: CfgBlockRef | None
+    owner_anchor_ea: int
+    instruction_ordinal: int
+    instruction_ea: int
+    effect_kind: EffectSiteKind
+    opcode: int
+    width: int
+
+    def __post_init__(self) -> None:
+        _inventory_nonnegative(self.owner_serial, "owner_serial")
+        if self.owner_ref is not None:
+            _cfg_ref(self.owner_ref, "owner_ref")
+        _inventory_ea(self.owner_anchor_ea, "owner_anchor_ea")
+        _inventory_nonnegative(self.instruction_ordinal, "instruction_ordinal")
+        _inventory_ea(self.instruction_ea, "instruction_ea")
+        if type(self.effect_kind) is not EffectSiteKind:
+            raise TypeError("effect_kind must be EffectSiteKind")
+        if type(self.opcode) is not int:
+            raise TypeError("opcode must be an exact int")
+        _inventory_nonnegative(self.width, "width")
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryTerminalSite:
+    owner_serial: int
+    owner_ref: CfgBlockRef | None
+    owner_anchor_ea: int
+    instruction_ordinal: int | None
+    instruction_ea: int
+    terminal_kind: TerminalKind
+
+    def __post_init__(self) -> None:
+        _inventory_nonnegative(self.owner_serial, "owner_serial")
+        if self.owner_ref is not None:
+            _cfg_ref(self.owner_ref, "owner_ref")
+        _inventory_ea(self.owner_anchor_ea, "owner_anchor_ea")
+        if type(self.terminal_kind) is not TerminalKind:
+            raise TypeError("terminal_kind must be TerminalKind")
+        if self.instruction_ordinal is None:
+            if self.terminal_kind is not TerminalKind.STOP:
+                raise ValueError("only synthesized STOP terminals may omit ordinal")
+        else:
+            _inventory_nonnegative(self.instruction_ordinal, "instruction_ordinal")
+            if self.terminal_kind is TerminalKind.STOP:
+                raise ValueError("STOP terminals must be synthesized")
+        _inventory_ea(self.instruction_ea, "instruction_ea")
+
+
+def resolve_inventory_site_binding(
+    subject: SemanticSubjectRef,
+    base_binding: PhaseSubjectBinding,
+    *,
+    effects: tuple[InventoryEffectSite, ...],
+    terminals: tuple[InventoryTerminalSite, ...],
+    reachable_serials: tuple[int, ...],
+    serial_by_ref: dict[CfgBlockRef, int],
+) -> PhaseSubjectBinding:
+    """Replay one exact effect/terminal binding from closed inventory rows.
+
+    This pure model operation is deliberately independent of the binding
+    facade.  It is used both when candidate bindings are created and when an
+    inventory is revalidated, so a forged binding cannot make the inventory
+    self-consistent merely by changing its digest.
+    """
+    if type(subject) is not SemanticSubjectRef:
+        raise TypeError("site subject must be SemanticSubjectRef")
+    subject.__post_init__()
+    if type(base_binding) is not PhaseSubjectBinding:
+        raise TypeError("base_binding must be PhaseSubjectBinding")
+    base_binding.__post_init__()
+    if base_binding.subject != subject:
+        raise ValueError("base binding subject does not match site subject")
+    if type(effects) is not tuple:
+        raise TypeError("effects must be an exact tuple")
+    if type(terminals) is not tuple:
+        raise TypeError("terminals must be an exact tuple")
+    if any(type(row) is not InventoryEffectSite for row in effects):
+        raise TypeError("effects must contain exact InventoryEffectSite rows")
+    if any(type(row) is not InventoryTerminalSite for row in terminals):
+        raise TypeError("terminals must contain exact InventoryTerminalSite rows")
+    if type(reachable_serials) is not tuple:
+        raise TypeError("reachable_serials must be an exact tuple")
+    if reachable_serials != tuple(sorted(set(reachable_serials))):
+        raise ValueError("reachable_serials must be sorted and unique")
+    if any(type(serial) is not int or serial < 0 for serial in reachable_serials):
+        raise TypeError("reachable_serials must contain exact non-negative ints")
+    if type(serial_by_ref) is not dict:
+        raise TypeError("serial_by_ref must be an exact dict")
+    if any(
+        type(ref) not in _CFG_REF_TYPES
+        or type(serial) is not int
+        or serial < 0
+        for ref, serial in serial_by_ref.items()
+    ):
+        raise ValueError("serial_by_ref contains a non-canonical row")
+    if len(set(serial_by_ref.values())) != len(serial_by_ref):
+        raise ValueError("serial_by_ref serials must be unique")
+    for row in (*effects, *terminals):
+        row.__post_init__()
+        if row.owner_serial not in reachable_serials:
+            raise ValueError("inventory site row is outside reachable_serials")
+        if row.owner_ref is not None:
+            owner_serial = serial_by_ref.get(row.owner_ref)
+            if owner_serial is None:
+                raise ValueError("inventory site owner is foreign to serial_by_ref")
+            if row.owner_serial != owner_serial:
+                raise ValueError("inventory site owner serial disagrees with serial_by_ref")
+    if subject.role is SemanticSubjectRole.EFFECT_SITE:
+        if type(subject.locator) is not EffectSubjectLocator:
+            raise TypeError("effect site subject requires EffectSubjectLocator")
+        locator = subject.locator
+        matches = tuple(
+            row for row in effects
+            if row.owner_ref == locator.owner_ref
+            and row.owner_anchor_ea == locator.owner_anchor_ea
+            and row.instruction_ea == locator.instruction_ea
+            and row.effect_kind is locator.effect_kind
+            and row.owner_serial in reachable_serials
+        )
+        owner_ref = locator.owner_ref
+        owner_serial = serial_by_ref.get(owner_ref)
+        owner_present = (
+            owner_serial is not None
+            and base_binding.status is SubjectBindingStatus.UNIQUE
+            and base_binding.block_ref == owner_ref
+            and base_binding.serial == owner_serial
+            and base_binding.anchor_ea == locator.owner_anchor_ea
+            and locator.instruction_ea in base_binding.native_instruction_eas
+        )
+    elif subject.role is SemanticSubjectRole.TERMINAL_SITE:
+        if type(subject.locator) is not TerminalSubjectLocator:
+            raise TypeError("terminal site subject requires TerminalSubjectLocator")
+        locator = subject.locator
+        matches = tuple(
+            row for row in terminals
+            if row.owner_ref == locator.block_ref
+            and row.owner_anchor_ea == locator.anchor_ea
+            and row.instruction_ea == locator.instruction_ea
+            and row.terminal_kind is locator.terminal_kind
+            and row.owner_serial in reachable_serials
+        )
+        owner_ref = locator.block_ref
+        owner_serial = serial_by_ref.get(owner_ref)
+        owner_present = (
+            owner_serial is not None
+            and base_binding.status is SubjectBindingStatus.UNIQUE
+            and base_binding.block_ref == owner_ref
+            and base_binding.serial == owner_serial
+            and base_binding.anchor_ea == locator.anchor_ea
+            and locator.instruction_ea in base_binding.native_instruction_eas
+        )
+    else:
+        raise ValueError("site resolver requires EFFECT_SITE or TERMINAL_SITE")
+    if len(matches) > 1:
+        raise ValueError("inventory site locator is ambiguous")
+    if matches:
+        if not owner_present:
+            raise ValueError("site binding owner does not match present inventory site")
+        return base_binding
+    return PhaseSubjectBinding(
+        subject=subject,
+        phase=base_binding.phase,
+        block_ref=None,
+        graph_fingerprint=base_binding.graph_fingerprint,
+        generation=base_binding.generation,
+        status=SubjectBindingStatus.MISSING,
+        serial=None,
+        anchor_ea=None,
+        native_instruction_eas=(),
+        role=subject.role,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryTopologyIncidence:
+    kind: TopologyIncidenceKind
+    owner_serial: int
+    peer_serial: int
+    source_transfer_ea: int | None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not TopologyIncidenceKind:
+            raise TypeError("kind must be TopologyIncidenceKind")
+        _inventory_nonnegative(self.owner_serial, "owner_serial")
+        _inventory_nonnegative(self.peer_serial, "peer_serial")
+        if self.source_transfer_ea is not None:
+            _inventory_ea(self.source_transfer_ea, "source_transfer_ea")
+
+
 @dataclass(frozen=True, slots=True)
 class TopologyEdgeRelation:
     """One directed, native-anchored edge in a prepared topology witness."""
@@ -739,7 +1343,10 @@ class SemanticRouteEvidencePayload:
         for name in ("route_subject_id", "atomic_group_id", "source_subject_id"):
             _id(getattr(self, name), name)
         for name in ("proof_ids", "destination_subject_ids"):
-            values = _tuple(getattr(self, name), name, sort=True)
+            # Proof IDs are an unordered scope. Destination IDs are not:
+            # they are the projection of RouteSubjectLocator's canonical
+            # (ref, EA) pairs and must retain that paired order.
+            values = _tuple(getattr(self, name), name, sort=name == "proof_ids")
             for value in values:
                 _id(value, f"{name} item")
             object.__setattr__(self, name, values)
@@ -1703,18 +2310,486 @@ class FailedObligation:
 
 
 @dataclass(frozen=True, slots=True)
+class PhaseBuildMetrics:
+    phase: UnflattenAuthorityPhase
+    source_inventory_builds: int
+    candidate_inventory_builds: int
+    inventory_ms: float
+
+    def __post_init__(self) -> None:
+        if type(self.phase) is not UnflattenAuthorityPhase:
+            raise TypeError("phase must be UnflattenAuthorityPhase")
+        _inventory_nonnegative(self.source_inventory_builds, "source_inventory_builds")
+        _inventory_nonnegative(self.candidate_inventory_builds, "candidate_inventory_builds")
+        expected = {
+            UnflattenAuthorityPhase.PROJECTED_PREFLIGHT: (1, 1),
+            UnflattenAuthorityPhase.OBSERVED_POST_APPLY: (0, 1),
+        }.get(self.phase)
+        if expected is None or (self.source_inventory_builds, self.candidate_inventory_builds) != expected:
+            raise ValueError("phase inventory build counts are not exact")
+        if type(self.inventory_ms) not in (int, float) or isinstance(self.inventory_ms, bool):
+            raise TypeError("inventory_ms must be a finite nonnegative number")
+        if not math.isfinite(float(self.inventory_ms)) or self.inventory_ms < 0:
+            raise ValueError("inventory_ms must be a finite nonnegative number")
+
+
+def validate_phase_build_metrics(value: object) -> PhaseBuildMetrics:
+    """Revalidate one phase metric record without rebuilding it."""
+
+    if type(value) is not PhaseBuildMetrics:
+        raise TypeError("phase_build_metrics must be PhaseBuildMetrics")
+    value.__post_init__()
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticGraphInventory:
+    phase: UnflattenAuthorityPhase
+    graph_fingerprint: str
+    generation: int
+    blocks: tuple[InventoryBlockObservation, ...]
+    subjects: tuple[SemanticSubjectRef, ...]
+    bindings: tuple[PhaseSubjectBinding, ...]
+    effects: tuple[InventoryEffectSite, ...]
+    terminals: tuple[InventoryTerminalSite, ...]
+    topology: tuple[InventoryTopologyIncidence, ...]
+    inventory_digest: str
+    reachable_serials: tuple[int, ...]
+    entry_serial: int
+    source_subject_ids: tuple[str, ...]
+
+    @property
+    def serial_by_ref(self) -> dict[CfgBlockRef, int]:
+        """Project the closed block rows into the source-ref index."""
+
+        return {
+            block.block_ref: block.serial
+            for block in self.blocks
+            if block.block_ref is not None
+        }
+
+    @property
+    def recognized_terminal_serials(self) -> frozenset[int]:
+        """Return the graph-checks-compatible terminal block subset."""
+
+        recognized: set[int] = set()
+        for block in self.blocks:
+            if block.serial not in self.reachable_serials:
+                continue
+            if block.block_kind is BlockKind.STOP:
+                recognized.add(block.serial)
+                continue
+            if block.graph_start_ea == _BADADDR and not block.successor_serials:
+                recognized.add(block.serial)
+                continue
+            if block.instruction_observations and block.instruction_observations[-1].instruction_kind is InsnKind.RET:
+                recognized.add(block.serial)
+        return frozenset(recognized)
+
+    def __post_init__(self) -> None:
+        if type(self.phase) is not UnflattenAuthorityPhase:
+            raise TypeError("phase must be UnflattenAuthorityPhase")
+        if type(self.graph_fingerprint) is not str:
+            raise TypeError("graph_fingerprint must be an exact string")
+        _id(self.graph_fingerprint, "graph_fingerprint")
+        _inventory_nonnegative(self.generation, "generation")
+        _inventory_nonnegative(self.entry_serial, "entry_serial")
+        for name, cls in (
+            ("blocks", InventoryBlockObservation),
+            ("subjects", SemanticSubjectRef),
+            ("bindings", PhaseSubjectBinding),
+            ("effects", InventoryEffectSite),
+            ("terminals", InventoryTerminalSite),
+            ("topology", InventoryTopologyIncidence),
+        ):
+            values = getattr(self, name)
+            if type(values) is not tuple:
+                raise TypeError(f"{name} must be an exact tuple")
+            if any(type(value) is not cls for value in values):
+                raise TypeError(f"{name} contains a non-nominal record")
+            for value in values:
+                _validate_inventory_refs(
+                    value,
+                    producer=self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST,
+                    label=name,
+                )
+            for value in values:
+                value.__post_init__()
+            object.__setattr__(self, name, values)
+        if tuple(item.serial for item in self.blocks) != tuple(sorted(item.serial for item in self.blocks)):
+            raise ValueError("blocks must be in canonical serial order")
+        if len({item.serial for item in self.blocks}) != len(self.blocks):
+            raise ValueError("blocks must have unique serials")
+        reachable_serials = self.reachable_serials
+        if type(reachable_serials) is not tuple:
+            raise TypeError("reachable_serials must be an exact tuple")
+        if any(type(serial) is not int or serial < 0 for serial in reachable_serials):
+            raise TypeError("reachable_serials must contain exact non-negative ints")
+        if reachable_serials != tuple(sorted(set(reachable_serials))):
+            raise ValueError("reachable_serials must be sorted and unique")
+        block_serials = {item.serial for item in self.blocks}
+        if self.blocks and self.entry_serial not in block_serials:
+            raise ValueError("entry_serial must refer to an inventory block")
+        if not self.blocks and self.entry_serial != 0:
+            raise ValueError("empty inventories require entry_serial 0")
+        if not set(reachable_serials) <= block_serials:
+            raise ValueError("reachable_serials must refer to inventory blocks")
+        if self.blocks and not reachable_serials:
+            raise ValueError("reachable_serials must be nonempty when blocks exist")
+        expected_reachable: set[int] = set()
+        if self.blocks:
+            blocks_by_serial = {item.serial: item for item in self.blocks}
+            pending = [self.entry_serial]
+            while pending:
+                serial = pending.pop()
+                if serial in expected_reachable:
+                    continue
+                block = blocks_by_serial.get(serial)
+                if block is None:
+                    raise ValueError("reachable successor is absent from inventory blocks")
+                expected_reachable.add(serial)
+                pending.extend(reversed(block.successor_serials))
+        if tuple(sorted(expected_reachable)) != reachable_serials:
+            raise ValueError("reachable_serials must equal the raw successor closure")
+        source_subject_ids = self.source_subject_ids
+        if type(source_subject_ids) is not tuple:
+            raise TypeError("source_subject_ids must be an exact tuple")
+        if any(type(item) is not str for item in source_subject_ids):
+            raise TypeError("source_subject_ids must contain exact strings")
+        if source_subject_ids != tuple(sorted(set(source_subject_ids))):
+            raise ValueError("source_subject_ids must be sorted and unique")
+        if tuple(item.subject_id for item in self.subjects) != tuple(sorted(item.subject_id for item in self.subjects)):
+            raise ValueError("subjects must be in canonical subject-id order")
+        if len({item.subject_id for item in self.subjects}) != len(self.subjects):
+            raise ValueError("subjects must have unique subject IDs")
+        if tuple(item.subject.subject_id for item in self.bindings) != tuple(sorted(item.subject.subject_id for item in self.bindings)):
+            raise ValueError("bindings must be in canonical subject-id order")
+        if len({item.subject.subject_id for item in self.bindings}) != len(self.bindings):
+            raise ValueError("bindings must have unique subject IDs")
+        subjects_by_id = {item.subject_id: item for item in self.subjects}
+        for binding in self.bindings:
+            canonical_subject = subjects_by_id.get(binding.subject.subject_id)
+            if canonical_subject is None:
+                raise ValueError("binding subject is absent from subjects")
+            if (
+                binding.subject != canonical_subject
+                or canonical_bytes(binding.subject) != canonical_bytes(canonical_subject)
+            ):
+                raise ValueError("binding subject does not match canonical subject content")
+        effects = tuple(sorted(self.effects, key=lambda item: (item.owner_serial, item.instruction_ordinal, item.instruction_ea, item.effect_kind.value)))
+        terminals = tuple(sorted(self.terminals, key=lambda item: (item.owner_serial, item.instruction_ordinal is None, item.instruction_ordinal if item.instruction_ordinal is not None else -1, item.instruction_ea, item.terminal_kind.value)))
+        topology = tuple(sorted(self.topology, key=lambda item: (item.kind.value, item.owner_serial, item.peer_serial, item.source_transfer_ea if item.source_transfer_ea is not None else -1)))
+        if effects != self.effects or terminals != self.terminals or topology != self.topology:
+            raise ValueError("inventory rows must be in canonical order")
+        if len({(item.owner_serial, item.instruction_ea, item.effect_kind) for item in self.effects}) != len(self.effects):
+            raise ValueError("effects must have unique site keys")
+        if len({(item.owner_serial, item.instruction_ea, item.terminal_kind) for item in self.terminals}) != len(self.terminals):
+            raise ValueError("terminals must have unique site keys")
+        mapped_block_refs = tuple(
+            item.block_ref for item in self.blocks if item.block_ref is not None
+        )
+        if len(set(mapped_block_refs)) != len(mapped_block_refs):
+            raise ValueError("duplicate block reference in inventory rows")
+        blocks = {item.serial: item for item in self.blocks}
+        serial_by_ref = {
+            item.block_ref: item.serial
+            for item in self.blocks
+            if item.block_ref is not None
+        }
+        if self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST and any(
+            item.block_ref is None or item.anchor_ea is None for item in self.blocks
+        ):
+            raise ValueError("producer observations require mapped block identities and anchors")
+        if self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST and any(
+            item.anchor_ea not in item.native_instruction_eas for item in self.blocks
+        ):
+            raise ValueError("producer anchors must belong to native instruction origins")
+        for block in self.blocks:
+            if type(block.block_ref) is NativeBlockRef:
+                identity = block.block_ref.identity
+                if identity.exact_instruction_eas != frozenset(block.native_instruction_eas):
+                    raise ValueError("native identity instruction EAs do not match block row")
+                if block.anchor_ea is None or not identity.native_ranges.contains(block.anchor_ea):
+                    raise ValueError("native identity ranges do not contain block anchor")
+        subject_ids = {item.subject_id for item in self.subjects}
+        if not set(source_subject_ids) <= subject_ids:
+            raise ValueError("source_subject_ids must refer to inventory subjects")
+        if self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST and set(source_subject_ids) != subject_ids:
+            raise ValueError("producer source subject partition must cover all subjects")
+        if {item.subject.subject_id for item in self.bindings} != subject_ids:
+            raise ValueError("inventory bindings must cover subjects exactly")
+        for binding in self.bindings:
+            if binding.subject.subject_id not in subject_ids:
+                raise ValueError("binding subject is absent from subjects")
+            if binding.phase is not self.phase:
+                raise ValueError("binding phase does not match inventory phase")
+            if binding.graph_fingerprint != self.graph_fingerprint or binding.generation != self.generation:
+                raise ValueError("binding graph authority does not match inventory")
+            if binding.status is SubjectBindingStatus.UNIQUE:
+                block = blocks.get(binding.serial)
+                if block is None:
+                    raise ValueError("unique binding serial is absent from blocks")
+                if (
+                    binding.block_ref != block.block_ref
+                    or binding.anchor_ea != block.anchor_ea
+                    or binding.native_instruction_eas != block.native_instruction_eas
+                ):
+                    raise ValueError("unique binding does not match its block observation")
+        for binding in self.bindings:
+            if binding.subject.role in (
+                SemanticSubjectRole.EFFECT_SITE,
+                SemanticSubjectRole.TERMINAL_SITE,
+            ) and type(binding.subject.locator) in (
+                EffectSubjectLocator,
+                TerminalSubjectLocator,
+            ):
+                expected_binding = resolve_inventory_site_binding(
+                    binding.subject,
+                    binding,
+                    effects=tuple(
+                        row for row in self.effects
+                        if row.owner_serial in self.reachable_serials
+                    ),
+                    terminals=tuple(
+                        row for row in self.terminals
+                        if row.owner_serial in self.reachable_serials
+                    ),
+                    reachable_serials=self.reachable_serials,
+                    serial_by_ref=serial_by_ref,
+                )
+                if binding != expected_binding:
+                    raise ValueError("site binding disagrees with exact inventory resolver")
+        resolved_effects_by_serial: dict[int, tuple[InventoryEffectSite, ...]] = {}
+        resolved_terminals_by_serial: dict[int, tuple[InventoryTerminalSite, ...]] = {}
+        for block in self.blocks:
+            resolved_effects_by_serial[block.serial], resolved_terminals_by_serial[block.serial] = resolve_inventory_block_sites(
+                serial=block.serial,
+                owner_ref=block.block_ref,
+                owner_anchor_ea=block.anchor_ea if block.anchor_ea is not None else 0,
+                block_kind=block.block_kind,
+                successor_serials=block.successor_serials,
+                instruction_observations=block.instruction_observations,
+            )
+        for item in (*self.effects, *self.terminals):
+            block = blocks.get(item.owner_serial)
+            if block is None:
+                raise ValueError("inventory site owner is absent from blocks")
+            if item.owner_ref != block.block_ref or item.owner_anchor_ea != block.anchor_ea:
+                raise ValueError("inventory site owner does not match block row")
+            derived = (
+                resolved_effects_by_serial[item.owner_serial]
+                if isinstance(item, InventoryEffectSite)
+                else resolved_terminals_by_serial[item.owner_serial]
+            )
+            if item not in derived:
+                raise ValueError("inventory site disagrees with raw instruction resolver")
+        expected_effect_keys = {
+            (item.owner_serial, item.instruction_ea, item.effect_kind)
+            for values in resolved_effects_by_serial.values()
+            for item in values
+        }
+        actual_effect_keys = {
+            (item.owner_serial, item.instruction_ea, item.effect_kind) for item in self.effects
+        }
+        if expected_effect_keys != actual_effect_keys:
+            raise ValueError("inventory effects are incomplete or contain foreign rows")
+        expected_terminal_keys = {
+            (item.owner_serial, item.instruction_ea, item.terminal_kind)
+            for values in resolved_terminals_by_serial.values()
+            for item in values
+        }
+        for block in self.blocks:
+            if block.block_kind is not BlockKind.STOP and any(
+                item.owner_serial == block.serial and item.terminal_kind is TerminalKind.STOP
+                for item in self.terminals
+            ):
+                raise ValueError("STOP terminal requires a STOP block")
+        actual_terminal_keys = {
+            (item.owner_serial, item.instruction_ea, item.terminal_kind) for item in self.terminals
+        }
+        if expected_terminal_keys != actual_terminal_keys:
+            raise ValueError("inventory terminals are incomplete or contain foreign rows")
+        source_subject_set = set(source_subject_ids)
+        reachable_effect_keys = {
+            (item.owner_ref, item.owner_anchor_ea, item.instruction_ea, item.effect_kind)
+            for item in self.effects
+            if item.owner_serial in self.reachable_serials
+        }
+        reachable_terminal_keys = {
+            (item.owner_ref, item.owner_anchor_ea, item.instruction_ea, item.terminal_kind)
+            for item in self.terminals
+            if item.owner_serial in self.reachable_serials
+        }
+        all_effect_subject_keys = {
+            (
+                item.locator.owner_ref,
+                item.locator.owner_anchor_ea,
+                item.locator.instruction_ea,
+                item.locator.effect_kind,
+            )
+            for item in self.subjects
+            if item.role is SemanticSubjectRole.EFFECT_SITE
+            and type(item.locator) is EffectSubjectLocator
+        }
+        all_terminal_subject_keys = {
+            (
+                item.locator.block_ref,
+                item.locator.anchor_ea,
+                item.locator.instruction_ea,
+                item.locator.terminal_kind,
+            )
+            for item in self.subjects
+            if item.role is SemanticSubjectRole.TERMINAL_SITE
+            and type(item.locator) is TerminalSubjectLocator
+        }
+        effect_subject_keys = {
+            key for item, key in (
+                (
+                    item,
+                    (
+                        item.locator.owner_ref,
+                        item.locator.owner_anchor_ea,
+                        item.locator.instruction_ea,
+                        item.locator.effect_kind,
+                    ),
+                )
+                for item in self.subjects
+                if item.role is SemanticSubjectRole.EFFECT_SITE
+                and type(item.locator) is EffectSubjectLocator
+            )
+            if item.subject_id not in source_subject_set
+        }
+        terminal_subject_keys = {
+            key for item, key in (
+                (
+                    item,
+                    (
+                        item.locator.block_ref,
+                        item.locator.anchor_ea,
+                        item.locator.instruction_ea,
+                        item.locator.terminal_kind,
+                    ),
+                )
+                for item in self.subjects
+                if item.role is SemanticSubjectRole.TERMINAL_SITE
+                and type(item.locator) is TerminalSubjectLocator
+            )
+            if item.subject_id not in source_subject_set
+        }
+        if self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST:
+            if all_effect_subject_keys != reachable_effect_keys:
+                raise ValueError("producer effect subjects must equal reachable raw effects")
+            if all_terminal_subject_keys != reachable_terminal_keys:
+                raise ValueError("producer terminal subjects must equal reachable raw terminals")
+        if not effect_subject_keys <= reachable_effect_keys:
+            raise ValueError("candidate effect subjects must own reachable raw effects")
+        if not terminal_subject_keys <= reachable_terminal_keys:
+            raise ValueError("candidate terminal subjects must own reachable raw terminals")
+        if self.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST and self.subjects:
+            expected_candidate_effects = reachable_effect_keys - {
+                (
+                    item.locator.owner_ref,
+                    item.locator.owner_anchor_ea,
+                    item.locator.instruction_ea,
+                    item.locator.effect_kind,
+                )
+                for item in self.subjects
+                if item.role is SemanticSubjectRole.EFFECT_SITE
+                and type(item.locator) is EffectSubjectLocator
+                and item.subject_id in source_subject_set
+            }
+            if expected_candidate_effects - effect_subject_keys:
+                raise ValueError("candidate reachable effects are missing subjects")
+            expected_candidate_terminals = reachable_terminal_keys - {
+                (
+                    item.locator.block_ref,
+                    item.locator.anchor_ea,
+                    item.locator.instruction_ea,
+                    item.locator.terminal_kind,
+                )
+                for item in self.subjects
+                if item.role is SemanticSubjectRole.TERMINAL_SITE
+                and type(item.locator) is TerminalSubjectLocator
+                and item.subject_id in source_subject_set
+            }
+            if expected_candidate_terminals - terminal_subject_keys:
+                raise ValueError("candidate reachable terminals are missing subjects")
+        for block in self.blocks:
+            if block.transfer_ea is not None and block.transfer_ea not in block.native_instruction_eas:
+                raise ValueError("block transfer EA is outside instruction rows")
+        for item in self.topology:
+            if item.owner_serial not in blocks:
+                raise ValueError("topology incidence owner is absent from blocks")
+            owner = blocks[item.owner_serial]
+            if item.kind is TopologyIncidenceKind.SUCCESSOR:
+                if item.source_transfer_ea != owner.transfer_ea:
+                    raise ValueError("successor transfer does not match owner block")
+            else:
+                peer = blocks.get(item.peer_serial)
+                if item.source_transfer_ea != (peer.transfer_ea if peer is not None else None):
+                    raise ValueError("predecessor transfer does not match peer block")
+        topology_keys = {(item.kind, item.owner_serial, item.peer_serial) for item in self.topology}
+        if len(topology_keys) != len(self.topology):
+            raise ValueError("topology incidence must be unique")
+        expected_topology = {
+            (TopologyIncidenceKind.PREDECESSOR, block.serial, peer)
+            for block in self.blocks for peer in block.predecessor_serials
+        } | {
+            (TopologyIncidenceKind.SUCCESSOR, block.serial, peer)
+            for block in self.blocks for peer in block.successor_serials
+        }
+        if topology_keys != expected_topology:
+            raise ValueError("topology incidence does not match block topology")
+        # Check the digest last.  All semantic invariants, including replay of
+        # typed site bindings, must be checked against the live rows before a
+        # self-consistent (but forged) digest can make the inventory appear
+        # valid.
+        if type(self.inventory_digest) is not str:
+            raise TypeError("inventory_digest must be an exact string")
+        _id(self.inventory_digest, "inventory_digest")
+        expected = semantic_graph_inventory_digest(
+            self.phase, self.graph_fingerprint, self.generation, self.blocks,
+            self.subjects, self.bindings, self.effects, self.terminals, self.topology,
+            self.reachable_serials,
+            self.entry_serial, self.source_subject_ids,
+        )
+        if self.inventory_digest != expected:
+            raise ValueError("inventory_digest does not match inventory content")
+
+
+def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
+    """Revalidate a live inventory object before every authority consumption."""
+
+    if type(value) is not SemanticGraphInventory:
+        raise TypeError("inventory must be SemanticGraphInventory")
+    value.__post_init__()
+    return value
+
+
+@dataclass(frozen=True, slots=True)
 class PreparationBuildMetrics:
     source_inventory_builds: int
     candidate_inventory_builds: int
     inventory_ms: float
 
     def __post_init__(self) -> None:
+        if type(self.source_inventory_builds) is not int or type(self.candidate_inventory_builds) is not int:
+            raise TypeError("preparation inventory build counts must be exact ints")
         if self.source_inventory_builds != 1 or self.candidate_inventory_builds != 1:
             raise ValueError("preparation must build each inventory exactly once")
         if type(self.inventory_ms) not in (int, float) or isinstance(self.inventory_ms, bool):
             raise TypeError("inventory_ms must be a finite nonnegative number")
         if not math.isfinite(float(self.inventory_ms)) or self.inventory_ms < 0:
             raise ValueError("inventory_ms must be a finite nonnegative number")
+
+
+def validate_preparation_build_metrics(value: object) -> PreparationBuildMetrics:
+    """Revalidate projected receipt provenance before consumption."""
+
+    if type(value) is not PreparationBuildMetrics:
+        raise TypeError("preparation_metrics must be PreparationBuildMetrics")
+    value.__post_init__()
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -1753,11 +2828,18 @@ class PreparationAuthorityReceipt:
     patch_step_digest: str
     conditional_relation_digest: str
     metrics: PreparationBuildMetrics
-    _token: object = dataclass_field(init=False, repr=False, compare=False)
+    # The receipt remains constructor-closed.  The transaction package uses
+    # ``mint`` below after it has completed both inventory walks; callers
+    # cannot provide either an ID or an authority token.
+    _minted: bool = dataclass_field(init=False, repr=False, compare=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("preparation receipts are transaction-owned")
 
     def __post_init__(self) -> None:
-        if getattr(self, "_token", None) is not _PREPARATION_RECEIPT_TOKEN:
-            raise TypeError("preparation receipts are evaluator-owned")
+        if getattr(self, "_minted", None) is not True:
+            raise TypeError("preparation receipts are transaction-owned")
         for name in (
             "receipt_id", "proposal_id", "plan_id", "source_fingerprint",
             "candidate_fingerprint", "source_inventory_digest",
@@ -1773,8 +2855,44 @@ class PreparationAuthorityReceipt:
         _generation(self.candidate_generation, "candidate_generation")
         if type(self.metrics) is not PreparationBuildMetrics:
             raise TypeError("metrics must be PreparationBuildMetrics")
+        validate_preparation_build_metrics(self.metrics)
         if self.receipt_id != receipt_id(self):
             raise ValueError("receipt_id does not match canonical receipt content")
+
+    @classmethod
+    def mint(cls, **values: object) -> "PreparationAuthorityReceipt":
+        """Create one receipt from the transaction-owned complete inputs.
+
+        This is intentionally the only model-level construction hook.  The
+        transaction facade is the sole production caller and supplies the
+        complete digest set; ``receipt_id`` and the construction seal are
+        computed here rather than accepted from a caller.
+        """
+        if "receipt_id" in values or "_minted" in values:
+            raise TypeError("receipt ID and construction seal are not caller inputs")
+        required = {
+            name for name in (
+                "proposal_id", "plan_id", "source_fingerprint",
+                "candidate_fingerprint", "source_generation",
+                "candidate_generation", "source_inventory_digest",
+                "candidate_inventory_digest", "source_binding_digest",
+                "candidate_binding_digest", "route_expansion_digest",
+                "effect_catalog_digest", "terminal_catalog_digest",
+                "plan_input_digest", "dispatcher_member_digest",
+                "planned_helper_digest", "patch_step_digest",
+                "conditional_relation_digest", "metrics",
+            )
+        }
+        if set(values) != required:
+            raise TypeError("mint requires the complete preparation receipt inputs")
+        instance = cls.__new__(cls)
+        for name, value in values.items():
+            object.__setattr__(instance, name, value)
+        object.__setattr__(instance, "receipt_id", "sha256:" + "0" * 64)
+        object.__setattr__(instance, "_minted", True)
+        object.__setattr__(instance, "receipt_id", receipt_id(instance))
+        cls.__post_init__(instance)
+        return instance
 
 
 @dataclass(frozen=True, slots=True)
@@ -1784,17 +2902,109 @@ class SemanticPhaseMetrics:
     candidate_inventory_builds: int
     index_folds: int
     view_graph_traversals: int
+    phase: UnflattenAuthorityPhase
+    phase_build_metrics: PhaseBuildMetrics
 
     def __post_init__(self) -> None:
         if type(self.preparation_metrics) is not PreparationBuildMetrics:
             raise TypeError("preparation_metrics must be PreparationBuildMetrics")
+        validate_preparation_build_metrics(self.preparation_metrics)
+        if type(self.phase) is not UnflattenAuthorityPhase:
+            raise TypeError("phase must be UnflattenAuthorityPhase")
+        for name in (
+            "source_inventory_builds", "candidate_inventory_builds",
+            "index_folds", "view_graph_traversals",
+        ):
+            if type(getattr(self, name)) is not int:
+                raise TypeError(f"{name} must be an exact int")
+        expected = {
+            UnflattenAuthorityPhase.PRODUCER_FORECAST: (1, 1),
+            UnflattenAuthorityPhase.PROJECTED_PREFLIGHT: (1, 1),
+            UnflattenAuthorityPhase.OBSERVED_POST_APPLY: (0, 1),
+        }[self.phase]
         if (
             self.source_inventory_builds,
             self.candidate_inventory_builds,
             self.index_folds,
             self.view_graph_traversals,
-        ) != (1, 1, 1, 0):
-            raise ValueError("evaluator metrics must be exactly (1, 1, 1, 0)")
+        ) != (*expected, 1, 0):
+            raise ValueError("evaluator metrics do not match the authority phase")
+        if type(self.phase_build_metrics) is not PhaseBuildMetrics:
+            raise TypeError("phase_build_metrics must be PhaseBuildMetrics")
+        validate_phase_build_metrics(self.phase_build_metrics)
+        if self.phase_build_metrics.phase is not self.phase:
+            raise ValueError("phase build metrics phase does not match semantic phase")
+        if (
+            self.phase_build_metrics.source_inventory_builds,
+            self.phase_build_metrics.candidate_inventory_builds,
+        ) != (self.source_inventory_builds, self.candidate_inventory_builds):
+            raise ValueError("phase build metrics counts do not match semantic phase")
+
+    @property
+    def build_metrics(self) -> PhaseBuildMetrics:
+        return self.phase_build_metrics
+
+
+@dataclass(frozen=True, slots=True)
+class UnflattenPhaseDiagnosticContext:
+    """Complete typed context for one phase observation.
+
+    Diagnostics consume this value as a projection only; it is never an
+    authority input and contains no live SDK object or duck-typed payload.
+    """
+
+    plan_id: str
+    attempt_id: TransactionAttemptId | None
+    rule_set_version: int
+    schema_version: int
+    snapshot_id: str
+    maturity: str
+    source_fingerprint: str | None
+    candidate_fingerprint: str | None
+    authority_id: str | None
+    binding_id: str | None
+    case_id: str | None
+    phase: UnflattenAuthorityPhase
+    obligation_states: tuple[ObligationEvidenceCell, ...]
+    loss_rows: tuple[tuple[str, int, int | None], ...]
+    handler_summary: tuple[str, ...]
+    terminal_summary: tuple[str, ...]
+    coverage_summary: tuple[str, ...]
+    phase_metrics: SemanticPhaseMetrics | None
+
+    def __post_init__(self) -> None:
+        _text(self.plan_id, "plan_id")
+        if self.attempt_id is not None and type(self.attempt_id) is not TransactionAttemptId:
+            raise TypeError("attempt_id must be TransactionAttemptId or None")
+        if type(self.rule_set_version) is not int or self.rule_set_version < 1:
+            raise ValueError("rule_set_version must be positive")
+        if type(self.schema_version) is not int or self.schema_version < 1:
+            raise ValueError("schema_version must be positive")
+        _text(self.snapshot_id, "snapshot_id")
+        _text(self.maturity, "maturity")
+        for name in ("source_fingerprint", "candidate_fingerprint", "authority_id", "binding_id", "case_id"):
+            value = getattr(self, name)
+            if value is not None:
+                _id(value, name)
+        _enum(self.phase, UnflattenAuthorityPhase, "phase")
+        states = _tuple(self.obligation_states, "obligation_states")
+        if any(type(value) is not ObligationEvidenceCell for value in states):
+            raise TypeError("obligation_states must contain ObligationEvidenceCell values")
+        object.__setattr__(self, "obligation_states", states)
+        rows = _tuple(self.loss_rows, "loss_rows")
+        for row in rows:
+            if type(row) is not tuple or len(row) != 3 or type(row[0]) is not str or type(row[1]) is not int:
+                raise TypeError("loss_rows must contain (label, serial, ea) rows")
+            if row[1] < 0 or (row[2] is not None and (type(row[2]) is not int or row[2] < 0)):
+                raise ValueError("loss row coordinates must be non-negative")
+        object.__setattr__(self, "loss_rows", rows)
+        for name in ("handler_summary", "terminal_summary", "coverage_summary"):
+            values = _tuple(getattr(self, name), name, sort=True)
+            if any(type(value) is not str for value in values):
+                raise TypeError(f"{name} must contain strings")
+            object.__setattr__(self, name, values)
+        if self.phase_metrics is not None and type(self.phase_metrics) is not SemanticPhaseMetrics:
+            raise TypeError("phase_metrics must be SemanticPhaseMetrics or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1815,6 +3025,9 @@ class DerivedUnflattenPreparationInputs:
     source_generation: int
     candidate_generation: int
     preparation_metrics: PreparationBuildMetrics
+    source_inventory: SemanticGraphInventory
+    candidate_inventory: SemanticGraphInventory
+    phase_build_metrics: PhaseBuildMetrics
 
     def __post_init__(self) -> None:
         if type(self.proposal) is not ProposedUnflattenContract:
@@ -1863,6 +3076,45 @@ class DerivedUnflattenPreparationInputs:
         _generation(self.candidate_generation, "candidate_generation")
         if type(self.preparation_metrics) is not PreparationBuildMetrics:
             raise TypeError("preparation_metrics must be PreparationBuildMetrics")
+        if type(self.source_inventory) is not SemanticGraphInventory:
+            raise TypeError("source_inventory must be SemanticGraphInventory")
+        if type(self.candidate_inventory) is not SemanticGraphInventory:
+            raise TypeError("candidate_inventory must be SemanticGraphInventory")
+        if type(self.phase_build_metrics) is not PhaseBuildMetrics:
+            raise TypeError("phase_build_metrics must be PhaseBuildMetrics")
+        validate_preparation_build_metrics(self.preparation_metrics)
+        validate_phase_build_metrics(self.phase_build_metrics)
+        validate_semantic_graph_inventory(self.source_inventory)
+        validate_semantic_graph_inventory(self.candidate_inventory)
+        PreparationAuthorityReceipt.__post_init__(self.preparation_receipt)
+        if self.source_inventory.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST:
+            raise ValueError("source inventory must be producer forecast")
+        if self.candidate_inventory.phase is not self.phase_build_metrics.phase:
+            raise ValueError("candidate inventory phase does not match phase metrics")
+        if self.source_inventory.graph_fingerprint != self.source_fingerprint:
+            raise ValueError("source inventory fingerprint does not match inputs")
+        if self.candidate_inventory.graph_fingerprint != self.candidate_fingerprint:
+            raise ValueError("candidate inventory fingerprint does not match inputs")
+        if self.source_inventory.generation != self.source_generation:
+            raise ValueError("source inventory generation does not match inputs")
+        if self.candidate_inventory.generation != self.candidate_generation:
+            raise ValueError("candidate inventory generation does not match inputs")
+        expected_candidate_subjects = tuple(sorted(
+            {*self.source_subjects, *self.candidate_subjects},
+            key=lambda item: item.subject_id,
+        ))
+        if self.source_inventory.subjects != self.source_subjects or self.candidate_inventory.subjects != expected_candidate_subjects:
+            raise ValueError("inventory subjects do not match inputs")
+        if self.source_inventory.source_subject_ids != tuple(item.subject_id for item in self.source_subjects):
+            raise ValueError("source inventory subject partition does not match inputs")
+        if self.candidate_inventory.source_subject_ids != tuple(item.subject_id for item in self.source_subjects):
+            raise ValueError("candidate inventory source subject partition does not match inputs")
+        if self.source_inventory.bindings != self.source_bindings or self.candidate_inventory.bindings != self.candidate_bindings:
+            raise ValueError("inventory bindings do not match inputs")
+        if self.preparation_receipt.source_inventory_digest != self.source_inventory.inventory_digest:
+            raise ValueError("receipt source inventory digest does not match inventory")
+        if self.preparation_receipt.candidate_inventory_digest != self.candidate_inventory.inventory_digest:
+            raise ValueError("receipt candidate inventory digest does not match inventory")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2044,16 +3296,6 @@ class PatchPlanAuthority(Protocol):
     source_coordinates: tuple[tuple[NativeBlockRef | LogicalBlockRef, int], ...]
 
 
-@runtime_checkable
-class BoundPatchPlanAuthority(Protocol):
-    plan: PatchPlanAuthority
-    attempt_id: TransactionAttemptId
-    session_id: str
-    generation: int
-    maturity: int
-    bindings: tuple[tuple[CfgBlockRef, int], ...]
-
-
 @dataclass(frozen=True, slots=True)
 class PreparedUnflattenAuthority:
     authority_id: str
@@ -2072,6 +3314,16 @@ class PreparedUnflattenAuthority:
     source_bindings: tuple[PhaseSubjectBinding, ...]
     projected_bindings: tuple[PhaseSubjectBinding, ...]
     projected_case: SemanticSafetyCase
+    source_inventory: SemanticGraphInventory
+    source_inputs: DerivedUnflattenPreparationInputs | None = None
+    preparation_attempt_id: TransactionAttemptId | None = None
+    legacy_unflatten_shadow: LegacyUnflattenShadowEnvelope | None = None
+
+    @property
+    def attempt_id(self) -> TransactionAttemptId | None:
+        """Exact attempt that produced this preparation, if supplied."""
+
+        return self.preparation_attempt_id
 
     def __post_init__(self) -> None:
         _id(self.authority_id, "authority_id")
@@ -2095,8 +3347,49 @@ class PreparedUnflattenAuthority:
             object.__setattr__(self, name, values)
         if type(self.projected_case) is not SemanticSafetyCase:
             raise TypeError("projected_case must be SemanticSafetyCase")
+        if type(self.source_inventory) is not SemanticGraphInventory:
+            raise TypeError("source_inventory must be SemanticGraphInventory")
+        validate_semantic_graph_inventory(self.source_inventory)
+        if self.source_inventory.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST:
+            raise ValueError("prepared source inventory must be producer forecast")
+        if self.source_inputs is not None and type(self.source_inputs) is not DerivedUnflattenPreparationInputs:
+            raise TypeError("source_inputs must be DerivedUnflattenPreparationInputs or None")
+        if self.source_inputs is not None:
+            DerivedUnflattenPreparationInputs.__post_init__(self.source_inputs)
+        if self.source_inputs is not None and self.source_inventory is not self.source_inputs.source_inventory:
+            raise ValueError("prepared source inventory must be the exact source input object")
+        if self.source_inputs is not None:
+            if (
+                self.source_fingerprint != self.source_inputs.source_fingerprint
+                or self.projected_fingerprint != self.source_inputs.candidate_fingerprint
+                or self.source_generation != self.source_inputs.source_generation
+                or self.projected_generation != self.source_inputs.candidate_generation
+                or self.source_bindings != self.source_inputs.source_bindings
+                or self.projected_bindings != self.source_inputs.candidate_bindings
+            ):
+                raise ValueError("prepared source bindings/fingerprints do not match source inputs")
+        if self.preparation_attempt_id is not None and type(self.preparation_attempt_id) is not TransactionAttemptId:
+            raise TypeError("preparation_attempt_id must be TransactionAttemptId or None")
+        owning_shadow = getattr(self.owning_plan, "legacy_unflatten_shadow", None)
+        if self.legacy_unflatten_shadow is not owning_shadow:
+            raise ValueError("prepared shadow must be the owning plan shadow object")
+        if self.legacy_unflatten_shadow is not None:
+            if type(self.legacy_unflatten_shadow) is not LegacyUnflattenShadowEnvelope:
+                raise TypeError("legacy_unflatten_shadow must be LegacyUnflattenShadowEnvelope or None")
+            LegacyUnflattenShadowEnvelope.__post_init__(self.legacy_unflatten_shadow)
+            if self.legacy_unflatten_shadow.plan_id != self.owning_plan.plan_id:
+                raise ValueError("prepared shadow plan does not match owning plan")
+            if self.legacy_unflatten_shadow.snapshot_id != self.owning_plan.snapshot_id:
+                raise ValueError("prepared shadow snapshot does not match owning plan")
+            if self.owning_plan.source_generation is not None and self.legacy_unflatten_shadow.source_generation != self.owning_plan.source_generation:
+                raise ValueError("prepared shadow generation does not match owning plan")
         if self.owning_plan.plan_id != self.proposal.plan_id:
             raise ValueError("owning plan does not match proposal")
+        if self.preparation_attempt_id is not None:
+            if self.preparation_attempt_id.plan_id != self.proposal.plan_id:
+                raise ValueError("preparation attempt does not match proposal")
+            if self.preparation_attempt_id.session_id == "":
+                raise ValueError("preparation attempt session must not be blank")
         if self.owning_plan.snapshot_id != self.snapshot_id:
             raise ValueError("snapshot does not match owning plan")
         if self.projected_case.authority_id != self.authority_id:
@@ -2115,8 +3408,12 @@ class PreparedUnflattenAuthority:
             raise ValueError("source maturity does not match owning plan")
         def coordinate_key(item: tuple[object, int]) -> tuple[str, int]:
             return repr(item[0]), item[1]
+        # PatchPlan.source_coordinates are always authoritative ref -> source
+        # serial rows. The catalog anchor is a separate native identity
+        # witness and must never be compared to the graph serial.
+        plan_coordinates = dict(self.owning_plan.source_coordinates)
         expected_coordinates = tuple(sorted(
-            ((block.block_ref, block.anchor_ea)
+            ((block.block_ref, plan_coordinates[block.block_ref])
              for block in self.proposal.source_identity_catalog.blocks),
             key=coordinate_key,
         ))
@@ -2125,18 +3422,15 @@ class PreparedUnflattenAuthority:
         if self.source_coordinate_digest != authority_id(expected_coordinates):
             raise ValueError("source coordinate digest does not match the proposal catalog")
         source_binding_coordinates = tuple(sorted(
-            ((binding.block_ref, binding.anchor_ea)
+            ((binding.block_ref, binding.serial)
              for binding in self.source_bindings
              if binding.status is SubjectBindingStatus.UNIQUE
-             and binding.block_ref is not None and binding.anchor_ea is not None),
+             and binding.block_ref is not None and binding.serial is not None),
             key=coordinate_key,
         ))
         if frozenset(source_binding_coordinates) != frozenset(expected_coordinates):
             raise ValueError("source bindings do not cover the proposal catalog")
-        source_subjects = tuple(
-            subject for subject in self.projected_case.subjects
-            if subject.role is not SemanticSubjectRole.PLANNED_HELPER
-        )
+        source_subjects = tuple(self.projected_case.subjects)
         if {binding.subject.subject_id for binding in self.source_bindings} != {
             subject.subject_id for subject in source_subjects
         }:
@@ -2196,6 +3490,7 @@ class BoundUnflattenAuthority:
     generation: int
     live_maturity: MaturityEnvelope
     live_bindings: tuple[tuple[CfgBlockRef, int], ...]
+    patch_binding: BoundPatchPlan
 
     def __post_init__(self) -> None:
         _id(self.binding_id, "binding_id")
@@ -2213,7 +3508,34 @@ class BoundUnflattenAuthority:
             raise ValueError("attempt plan does not match prepared proposal")
         if type(self.live_maturity) is not MaturityEnvelope:
             raise TypeError("live_maturity must be MaturityEnvelope")
+        if type(self.patch_binding) is not BoundPatchPlan:
+            raise TypeError("patch_binding must be BoundPatchPlan")
+        validate_bound_patch_plan(self.patch_binding)
+        if self.patch_binding.plan is not self.prepared.owning_plan:
+            raise ValueError("patch binding plan does not match prepared authority")
+        if self.patch_binding.plan.unflatten_proposal is not self.prepared.proposal:
+            raise ValueError("patch binding proposal does not match prepared authority")
+        if (
+            self.patch_binding.plan.legacy_unflatten_shadow
+            is not self.prepared.legacy_unflatten_shadow
+        ):
+            raise ValueError("patch binding shadow does not match prepared authority")
+        if self.patch_binding.attempt_id is not self.attempt_id:
+            raise ValueError("patch binding attempt does not match authority")
+        if (
+            self.patch_binding.session_id != self.session_id
+            or self.patch_binding.generation != self.generation
+        ):
+            raise ValueError("patch binding session/generation does not match authority")
+        if self.patch_binding.maturity is not self.live_maturity:
+            raise ValueError("patch binding maturity does not match authority")
+        if self.binding_id != bound_unflatten_binding_id(
+            self.prepared, self.patch_binding
+        ):
+            raise ValueError("binding_id does not match exact bound authority")
         values = _tuple(self.live_bindings, "live_bindings")
+        if self.patch_binding.bindings != values:
+            raise ValueError("patch binding rows do not match authority rows")
         for ref, serial in values:
             _cfg_ref(ref)
             _nonnegative(serial, "live binding serial")

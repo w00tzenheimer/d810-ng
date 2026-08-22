@@ -12,11 +12,18 @@ from d810.ir.block_identity import (
     stable_block_identities_refine_at_anchor,
     stable_block_identity_from_snapshot,
 )
-from d810.ir.flowgraph import FlowGraph
+from d810.ir.flowgraph import FlowGraph, OperandKind
+from d810.ir.flowgraph import InsnKind
+from d810.ir.insn_projection import InstructionProjection
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import ControlTransferKind, PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+from d810.ir.varnode import Space, varnode_from_mop_snapshot
+from d810.ir.storage_identity import storage_identity_from_varnode
+from d810.ir.expressions import ValueOpKind
 from d810.analyses.control_flow.terminal_return_carrier_evidence import (
     TerminalReturnCarrierEvidence,
+    TerminalReturnCarrierSourceKind,
 )
 
 
@@ -574,9 +581,9 @@ class SemanticRouteProof:
                 self.source_identity,
                 source_anchor_ea,
             )
-            if predicate.consumer != source_point:
+            if predicate.consumer.identity != source_point.identity:
                 raise SemanticRouteEvidenceRejected(
-                    "conditional predicate consumer must be the route source"
+                    "conditional predicate consumer must be in the route source block"
                 )
             if len({item.target_anchor_ea for item in destinations}) != 2:
                 raise SemanticRouteEvidenceRejected(
@@ -588,9 +595,12 @@ class SemanticRouteProof:
                         "storage predicate requires one carrier proof"
                     )
                 carrier = carriers[0]
-                if source_point not in carrier.consumers:
+                if not any(
+                    consumer.identity == source_point.identity
+                    for consumer in carrier.consumers
+                ):
                     raise SemanticRouteEvidenceRejected(
-                        "storage predicate carrier must reach the route source"
+                        "storage predicate carrier must reach the route source block"
                     )
                 destination_states = {
                     int(destination.state_constant) for destination in destinations
@@ -944,6 +954,562 @@ def _bound_corridor_point(
     )
 
 
+def _unique_anchor_block(
+    graph: FlowGraph,
+    anchor_ea: int,
+    *,
+    native_key: NativePreanalysisKey,
+) -> BoundSemanticBlock | None:
+    matches = tuple(
+        block
+        for block in graph.blocks.values()
+        if int(block.start_ea) == int(anchor_ea)
+        or any(int(instruction.ea) == int(anchor_ea) for instruction in block.insn_snapshots)
+    )
+    if len(matches) != 1:
+        return None
+    block = matches[0]
+    identity = stable_block_identity_from_snapshot(
+        block,
+        native_key=native_key,
+    )
+    return BoundSemanticBlock(
+        serial=int(block.serial),
+        identity=identity,
+        anchor_ea=int(anchor_ea),
+    )
+
+
+def _instruction_at(block, anchor_ea: int):
+    """Return the one portable instruction projected at an exact anchor."""
+    matches = tuple(
+        instruction
+        for instruction in InstructionProjection.from_block(block)
+        if int(instruction.attrs.get("ea", -1)) == int(anchor_ea)
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def _snapshot_at(block, anchor_ea: int):
+    matches = tuple(
+        instruction
+        for instruction in block.insn_snapshots
+        if int(instruction.ea) == int(anchor_ea)
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def _topology_path(graph: FlowGraph, points: tuple[BoundSemanticBlock, ...]) -> bool:
+    """Require a directed, reciprocal edge for each distinct corridor step."""
+    for left, right in zip(points, points[1:]):
+        if left.serial == right.serial:
+            continue
+        left_block = graph.get_block(left.serial)
+        right_block = graph.get_block(right.serial)
+        if left_block is None or right_block is None:
+            return False
+        if right.serial not in left_block.succs or left.serial not in right_block.preds:
+            return False
+    return True
+
+
+def _validate_state_write(
+    graph: FlowGraph,
+    proof: SemanticRouteProof,
+    state_write_block: BoundSemanticBlock,
+) -> bool:
+    state_write = proof.state_write
+    if state_write is None:
+        return True
+    block = graph.get_block(state_write_block.serial)
+    if block is None:
+        return False
+    snapshot = _snapshot_at(block, state_write.instruction_ea)
+    instruction = _instruction_at(block, state_write.instruction_ea)
+    if (
+        snapshot is None
+        or instruction is None
+        or snapshot.kind is not InsnKind.MOV
+        or instruction.operation is not ValueOpKind.MOVE
+        or instruction.result is None
+        or storage_identity_from_varnode(instruction.result) != state_write.state_variable
+        or int(instruction.result.size) != int(state_write.width)
+        or len(instruction.inputs) != 1
+        or instruction.inputs[0].space is not Space.CONST
+        or int(instruction.inputs[0].size) != int(state_write.width)
+        or (int(instruction.inputs[0].offset) & ((1 << (8 * int(state_write.width))) - 1))
+        != int(state_write.state_constant)
+    ):
+        return False
+    return True
+
+
+def _validate_carrier(
+    graph: FlowGraph,
+    carrier: BoundSemanticCarrier,
+) -> bool:
+    """Replay the carrier's definition and every live corridor writer."""
+    evidence = carrier.evidence
+    block = graph.get_block(carrier.definition.serial)
+    if block is None:
+        return False
+    corridor_serials = {point.serial for point in carrier.corridor}
+    permitted = evidence.permitted_write_eas
+
+    def valid_writer(ea: int, instruction) -> bool:
+        return (
+            instruction.operation is ValueOpKind.MOVE
+            and instruction.result is not None
+            and storage_identity_from_varnode(instruction.result)
+            == evidence.storage_identity
+            and int(instruction.result.size) == int(evidence.width)
+            and len(instruction.inputs) == 1
+            and instruction.inputs[0].space is Space.CONST
+            and int(instruction.inputs[0].size) == int(evidence.width)
+            and int(instruction.inputs[0].offset) in evidence.state_values
+            and int(ea) in permitted
+        )
+
+    for serial in corridor_serials:
+        corridor_block = graph.get_block(serial)
+        if corridor_block is None:
+            return False
+        for snapshot in corridor_block.insn_snapshots:
+            instruction = _instruction_at(corridor_block, snapshot.ea)
+            if instruction is None:
+                return False
+            if instruction.result is None:
+                continue
+            if storage_identity_from_varnode(instruction.result) != evidence.storage_identity:
+                continue
+            if snapshot.kind is not InsnKind.MOV or not valid_writer(snapshot.ea, instruction):
+                return False
+
+    for permitted_ea in permitted:
+        permitted_block = _unique_anchor_block(
+            graph,
+            permitted_ea,
+            native_key=evidence.native_key,
+        )
+        if permitted_block is None:
+            return False
+        permitted_instruction = _instruction_at(
+            graph.get_block(permitted_block.serial),
+            permitted_ea,
+        )
+        if permitted_instruction is None:
+            return False
+        permitted_snapshot = _snapshot_at(
+            graph.get_block(permitted_block.serial),
+            permitted_ea,
+        )
+        if (
+            permitted_snapshot is None
+            or permitted_snapshot.kind is not InsnKind.MOV
+            or not valid_writer(permitted_ea, permitted_instruction)
+        ):
+            return False
+    for consumer in carrier.consumers:
+        consumer_block = graph.get_block(consumer.serial)
+        if consumer_block is None:
+            return False
+        snapshot = _snapshot_at(consumer_block, consumer.anchor_ea)
+        instruction = _instruction_at(consumer_block, consumer.anchor_ea)
+        if (
+            snapshot is None
+            or instruction is None
+            or not any(
+                storage_identity_from_varnode(item) == evidence.storage_identity
+                and int(item.size) == int(evidence.width)
+                for item in instruction.inputs
+            )
+        ):
+            return False
+    return True
+
+
+def _validate_direct_route(
+    graph: FlowGraph,
+    proof: SemanticRouteProof,
+    source: BoundSemanticBlock,
+    destinations: tuple[BoundSemanticRouteDestination, ...],
+) -> bool:
+    """Replay delivery topology where the producer proved a direct edge."""
+    if proof.shape is not SemanticRouteShape.DIRECT:
+        return True
+    state_write = proof.state_write
+    if state_write is None:
+        return False
+    if (
+        proof.proof_kind is not SemanticRouteProofKind.STATE_ASSIGNMENT
+        or state_write.delivery_kind is not SemanticStateWriteDeliveryKind.DIRECT
+    ):
+        # Indirect and terminal-return deliveries have no canonical source ->
+        # target edge to replay here; terminal carrier evidence owns that
+        # materialization boundary.
+        return True
+    if len(destinations) != 1:
+        return False
+    source_block = graph.get_block(source.serial)
+    target_serial = destinations[0].block.serial
+    target_block = graph.get_block(target_serial)
+    return bool(
+        source_block is not None
+        and target_block is not None
+        and tuple(source_block.succs) == (target_serial,)
+        and source.serial in target_block.preds
+    )
+
+
+def _validate_predicate_writes(
+    graph: FlowGraph,
+    predicate: BoundSemanticPredicate,
+    state_write: SemanticStateWriteProof | None,
+) -> bool:
+    """Replay predicate-storage writers independently of carrier storage."""
+    evidence = predicate.evidence
+    corridor_serials = {point.serial for point in predicate.corridor}
+    permitted = set(evidence.permitted_write_eas)
+    if state_write is not None and state_write.state_variable == evidence.storage_identity:
+        permitted.add(int(state_write.instruction_ea))
+
+    def valid_writer(ea: int, instruction) -> bool:
+        return (
+            instruction.operation is ValueOpKind.MOVE
+            and instruction.result is not None
+            and storage_identity_from_varnode(instruction.result) == evidence.storage_identity
+            and int(instruction.result.size) == int(evidence.width)
+            and len(instruction.inputs) == 1
+            and instruction.inputs[0].space is Space.CONST
+            and int(instruction.inputs[0].size) == int(evidence.width)
+            and int(ea) in permitted
+        )
+
+    for serial in corridor_serials:
+        block = graph.get_block(serial)
+        if block is None:
+            return False
+        for snapshot in block.insn_snapshots:
+            instruction = _instruction_at(block, snapshot.ea)
+            if instruction is None:
+                return False
+            if instruction.result is None:
+                continue
+            if storage_identity_from_varnode(instruction.result) != evidence.storage_identity:
+                continue
+            if snapshot.kind is not InsnKind.MOV or not valid_writer(snapshot.ea, instruction):
+                return False
+    for permitted_ea in permitted:
+        block = _unique_anchor_block(graph, permitted_ea, native_key=evidence.native_key)
+        if block is None:
+            return False
+        snapshot = _snapshot_at(graph.get_block(block.serial), permitted_ea)
+        instruction = _instruction_at(graph.get_block(block.serial), permitted_ea)
+        if (
+            snapshot is None
+            or instruction is None
+            or snapshot.kind is not InsnKind.MOV
+            or not valid_writer(permitted_ea, instruction)
+        ):
+            return False
+    return True
+
+
+def _validate_state_write_corridor(
+    graph: FlowGraph,
+    proof: SemanticRouteProof,
+    state_write_block: BoundSemanticBlock,
+) -> bool:
+    """Replay every anchored write-to-delivery instruction owned by the proof."""
+    state_write = proof.state_write
+    if state_write is None:
+        return True
+    state_block = graph.get_block(state_write_block.serial)
+    points = tuple(
+        state_write_block
+        if state_block is not None
+        and any(int(snapshot.ea) == int(ea) for snapshot in state_block.insn_snapshots)
+        else _unique_anchor_block(graph, ea, native_key=proof.native_key)
+        for ea in state_write.corridor_instruction_eas
+    )
+    if any(point is None for point in points) or not _topology_path(
+        graph,
+        tuple(point for point in points if point is not None),
+    ):
+        return False
+    if points[0] is None or points[0].serial != state_write_block.serial:
+        return False
+    for call_ea in state_write.preserved_call_instruction_eas:
+        block = _unique_anchor_block(graph, call_ea, native_key=proof.native_key)
+        if block is None:
+            return False
+        snapshot = _snapshot_at(graph.get_block(block.serial), call_ea)
+        instruction = _instruction_at(graph.get_block(block.serial), call_ea)
+        if (
+            snapshot is None
+            or instruction is None
+            or snapshot.kind is not InsnKind.CALL
+            or instruction.control is None
+            or instruction.control.call_kind is None
+        ):
+            return False
+    if state_write.authority_transfer_ea is not None:
+        block = _unique_anchor_block(
+            graph,
+            state_write.authority_transfer_ea,
+            native_key=proof.native_key,
+        )
+        if block is None:
+            return False
+        instruction = _instruction_at(graph.get_block(block.serial), state_write.authority_transfer_ea)
+        expected_transfer = {
+            SemanticStateWriteDeliveryKind.DIRECT: ControlTransferKind.GOTO,
+            SemanticStateWriteDeliveryKind.INDIRECT: ControlTransferKind.INDIRECT_BRANCH,
+            SemanticStateWriteDeliveryKind.CONDITIONAL: ControlTransferKind.CONDITIONAL_BRANCH,
+        }[state_write.delivery_kind]
+        if (
+            instruction is None
+            or instruction.control is None
+            or instruction.control.transfer is not expected_transfer
+        ):
+            return False
+    return True
+
+
+def _validate_terminal_return_carrier(
+    graph: FlowGraph,
+    proof: SemanticRouteProof,
+    destinations: tuple[BoundSemanticRouteDestination, ...],
+) -> bool:
+    carrier = proof.terminal_return_carrier
+    if carrier is None or len(destinations) != 1:
+        return False
+    capture = _unique_bound_block(
+        graph,
+        carrier.capture_identity,
+        carrier.request.source_handler_ea,
+    )
+    terminal = _unique_bound_block(
+        graph,
+        carrier.terminal_identity,
+        carrier.request.terminal_target_ea,
+    )
+    if capture is None or terminal is None:
+        return False
+    capture_block = graph.get_block(capture.serial)
+    terminal_block = graph.get_block(terminal.serial)
+    carrier_snapshot = _snapshot_at(capture_block, carrier.carrier_ea)
+    carrier_instruction = _instruction_at(capture_block, carrier.carrier_ea)
+    if (
+        carrier_snapshot is None
+        or carrier_instruction is None
+        or carrier_snapshot.kind not in {InsnKind.MOV, InsnKind.XDU, InsnKind.XDS}
+        or carrier_instruction.operation is not carrier.operation
+        or carrier_instruction.result is None
+        or int(carrier_instruction.result.size) != int(carrier.return_width)
+    ):
+        return False
+    source = carrier.source
+    source_matches = tuple()
+    if source.kind is TerminalReturnCarrierSourceKind.STORAGE_VALUE:
+        source_matches = tuple(
+            item
+            for item in carrier_instruction.inputs
+            if storage_identity_from_varnode(item) == source.storage_identity
+        )
+    elif source.kind is TerminalReturnCarrierSourceKind.ADDRESS_OF_STORAGE:
+        address_operand = carrier_snapshot.l
+        if address_operand is not None and address_operand.kind is OperandKind.ADDRESS:
+            addressed = varnode_from_mop_snapshot(address_operand.sub_l)
+            if storage_identity_from_varnode(addressed) == source.storage_identity:
+                source_matches = (addressed,)
+    elif source.kind is TerminalReturnCarrierSourceKind.CONSTANT:
+        source_matches = tuple(
+            item
+            for item in carrier_instruction.inputs
+            if item.space is Space.CONST
+            and source.constant is not None
+            and int(item.offset) == int(source.constant)
+        )
+    if not source_matches or int(source_matches[0].size) != int(source.width):
+        return False
+    return_snapshot = _snapshot_at(terminal_block, carrier.terminal_return_ea)
+    return_instruction = _instruction_at(terminal_block, carrier.terminal_return_ea)
+    corridor_points = tuple(
+        _unique_anchor_block(graph, ea, native_key=proof.native_key)
+        for ea in carrier.corridor_instruction_eas
+    )
+    if any(point is None for point in corridor_points):
+        return False
+    return bool(
+        return_snapshot is not None
+        and return_instruction is not None
+        and return_snapshot.kind is InsnKind.RET
+        and return_instruction.control is not None
+        and return_instruction.control.transfer is ControlTransferKind.RETURN
+        and _topology_path(
+            graph,
+            tuple(point for point in corridor_points if point is not None),
+        )
+    )
+
+
+def _validate_conditional_route(
+    graph: FlowGraph,
+    proof: SemanticRouteProof,
+    source: BoundSemanticBlock,
+    destinations: tuple[BoundSemanticRouteDestination, ...],
+    predicate: BoundSemanticPredicate,
+    state_write_block: BoundSemanticBlock | None,
+    source_owner: BoundSemanticBlock | None,
+    carriers: tuple[BoundSemanticCarrier, ...],
+) -> bool:
+    """Replay the canonical proof against the current portable instruction graph."""
+    if proof.shape is not SemanticRouteShape.CONDITIONAL:
+        return True
+    source_block = graph.get_block(source.serial)
+    if source_block is None or len(source_block.succs) != 2:
+        return False
+    destination_by_role = {item.evidence.role: item for item in destinations}
+    if set(destination_by_role) != {
+        SemanticEdgeRole.CONDITIONAL_TAKEN,
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+    }:
+        return False
+    destination_serials = {item.block.serial for item in destinations}
+    if set(source_block.succs) != destination_serials:
+        return False
+    for destination in destinations:
+        target_block = graph.get_block(destination.block.serial)
+        if target_block is None or source.serial not in target_block.preds:
+            return False
+
+    origin_block = graph.get_block(predicate.origin.serial)
+    consumer_block = graph.get_block(predicate.consumer.serial)
+    if origin_block is None or consumer_block is None:
+        return False
+    # The producer origin identifies where the predicate proof began, but the
+    # consumer is the live route-control instruction that owns target and
+    # polarity.  Binding those facts from the origin would splice stale
+    # producer semantics onto unrelated source topology.
+    branch_snapshot = _snapshot_at(consumer_block, predicate.evidence.consumer.anchor_ea)
+    branch = _instruction_at(consumer_block, predicate.evidence.consumer.anchor_ea)
+    if (
+        branch_snapshot is None
+        or branch is None
+        or branch_snapshot.kind not in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+        or branch.control is None
+        or branch.control.transfer is not ControlTransferKind.CONDITIONAL_BRANCH
+        or branch.control.target is None
+        or int(branch.control.target) not in destination_serials
+        or branch.control.predicate is None
+    ):
+        return False
+
+    predicate_proof = predicate.evidence
+    if predicate_proof.kind is SemanticPredicateKind.STORAGE_EQUALS:
+        if branch.control.predicate not in {PredicateKind.EQ, PredicateKind.NE}:
+            return False
+        if predicate_proof.storage_identity is None or predicate_proof.compare_constant is None:
+            return False
+        if len(branch.inputs) != 2:
+            return False
+        identities = tuple(
+            item for item in branch.inputs if storage_identity_from_varnode(item) is not None
+        )
+        constants = tuple(item for item in branch.inputs if item.space is Space.CONST)
+        if len(identities) != 1 or len(constants) != 1:
+            return False
+        storage_operand = identities[0]
+        constant_operand = constants[0]
+        if (
+            storage_identity_from_varnode(storage_operand) != predicate_proof.storage_identity
+            or int(storage_operand.size) != int(predicate_proof.width)
+            or int(constant_operand.size) != int(predicate_proof.width)
+            or int(constant_operand.offset)
+            != int(predicate_proof.compare_constant)
+        ):
+            return False
+        expected_target_role = (
+            SemanticEdgeRole.CONDITIONAL_TAKEN
+            if branch.control.predicate is PredicateKind.EQ
+            else SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+        )
+        if destination_by_role[expected_target_role].block.serial != int(branch.control.target):
+            return False
+    elif predicate_proof.kind is SemanticPredicateKind.PRESERVE_LIVE:
+        if predicate_proof.true_is_taken is None:
+            return False
+        expected_role = (
+            SemanticEdgeRole.CONDITIONAL_TAKEN
+            if predicate_proof.true_is_taken
+            else SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+        )
+        expected_destination = destination_by_role[expected_role]
+        if expected_destination.block.serial != int(branch.control.target):
+            return False
+    else:
+        return False
+
+    if predicate.origin.serial != predicate.consumer.serial:
+        # A producer-origin branch may be distinct from the route source, but
+        # the live source must still carry the same conditional transfer. This
+        # prevents splicing an origin's predicate onto unrelated source edges.
+        source_branch_matches = False
+        source_block = graph.get_block(source.serial)
+        if source_block is None:
+            return False
+        for snapshot in source_block.insn_snapshots:
+            source_branch = _instruction_at(source_block, snapshot.ea)
+            if source_branch is None:
+                return False
+            if (
+                source_branch.control is not None
+                and source_branch.control.transfer is ControlTransferKind.CONDITIONAL_BRANCH
+                and source_branch.control.target == branch.control.target
+            ):
+                source_branch_matches = True
+                break
+        if not source_branch_matches:
+            return False
+
+    if predicate.consumer.serial != source.serial:
+        return False
+    if not _topology_path(graph, predicate.corridor):
+        return False
+    if not _validate_predicate_writes(graph, predicate, proof.state_write):
+        return False
+    if state_write_block is not None and not _validate_state_write(
+        graph,
+        proof,
+        state_write_block,
+    ):
+        return False
+    if source_owner is not None and state_write_block is not None and source_owner.serial != state_write_block.serial:
+        return False
+    if any(
+        not _validate_carrier(graph, carrier)
+        or not _topology_path(graph, carrier.corridor)
+        for carrier in carriers
+    ):
+        return False
+    if state_write_block is not None and proof.state_write is not None:
+        state_corridor = tuple(
+            _unique_anchor_block(
+                graph,
+                ea,
+                native_key=proof.native_key,
+            )
+            for ea in proof.state_write.corridor_instruction_eas
+        )
+        if any(item is None for item in state_corridor) or not _topology_path(
+            graph,
+            tuple(item for item in state_corridor if item is not None),
+        ):
+            return False
+    return True
+
+
 def bind_canonical_semantic_evidence(
     graph: FlowGraph,
     evidence: CanonicalSemanticEvidence,
@@ -1047,17 +1613,41 @@ def bind_canonical_semantic_evidence(
                     corridor=tuple(carrier_corridor),
                 )
             )
-        routes.append(
-            BoundSemanticRoute(
-                evidence=proof,
-                source=source,
-                destinations=tuple(destinations),
-                source_owner=source_owner,
-                state_write_block=state_write_block,
-                predicate=bound_predicate,
-                carriers=tuple(bound_carriers),
-            )
+        bound_route = BoundSemanticRoute(
+            evidence=proof,
+            source=source,
+            destinations=tuple(destinations),
+            source_owner=source_owner,
+            state_write_block=state_write_block,
+            predicate=bound_predicate,
+            carriers=tuple(bound_carriers),
         )
+        if proof.shape is SemanticRouteShape.CONDITIONAL:
+            if bound_predicate is None or not _validate_conditional_route(
+                graph,
+                proof,
+                source,
+                tuple(destinations),
+                bound_predicate,
+                state_write_block,
+                source_owner,
+                tuple(bound_carriers),
+            ):
+                return None
+        elif state_write_block is not None and (
+            not _validate_state_write(graph, proof, state_write_block)
+            or not _validate_state_write_corridor(graph, proof, state_write_block)
+        ):
+            return None
+        if not _validate_direct_route(graph, proof, source, tuple(destinations)):
+            return None
+        if proof.proof_kind is SemanticRouteProofKind.TERMINAL_RETURN and not _validate_terminal_return_carrier(
+            graph,
+            proof,
+            tuple(destinations),
+        ):
+            return None
+        routes.append(bound_route)
     return BoundCanonicalSemanticEvidence(
         evidence=evidence,
         routes=tuple(routes),

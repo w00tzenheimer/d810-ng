@@ -2,7 +2,37 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from time import perf_counter
+
 from d810.transforms.plan import PatchPlan
+from d810.analyses.control_flow.semantic_route_evidence import (
+    BoundCanonicalSemanticEvidence,
+    bind_canonical_semantic_evidence,
+)
+from d810.ir.flowgraph import FlowGraph
+from d810.transforms.cfg_transaction import CfgProjection, TransactionAttemptId
+from d810.transforms.patch_binding import (
+    BoundPatchPlan,
+    validate_bound_patch_plan,
+)
+from d810.transforms.unflatten_authority import bind as authority_bind
+from d810.transforms.unflatten_authority import model
+from d810.transforms.unflatten_authority import producer_api
+from d810.transforms.unflatten_authority.evaluate import build_semantic_case, evaluate_case
+from d810.transforms.unflatten_authority.gates import (
+    GenericCfgGateBundle,
+    validate_generic_cfg_gate_bundle,
+)
+from d810.transforms.unflatten_authority.ids import (
+    _evidence_factory,
+    _subject_factory,
+    authority_id,
+    bound_unflatten_binding_id,
+    content_id,
+    semantic_graph_fingerprint_cached,
+    semantic_graph_inventory_digest,
+)
 
 from .model import (
     UnflattenAuthorityNotApplicable,
@@ -21,6 +51,1183 @@ from .proposal import (
     validate_proposal,
     validate_shadow_for_plan,
 )
+
+
+def _subject(kind, role, locator):
+    owner = getattr(locator, "block_ref", None)
+    if owner is None:
+        owner = getattr(locator, "owner_ref", None)
+    if owner is None:
+        owner = getattr(locator, "source_ref", None)
+    if owner is None:
+        owner = getattr(locator, "entry_ref", None)
+    anchor = getattr(locator, "anchor_ea", None)
+    if anchor is None:
+        anchor = getattr(locator, "owner_anchor_ea", None)
+    if anchor is None:
+        anchor = getattr(locator, "source_anchor_ea", None)
+    if anchor is None:
+        anchor = getattr(locator, "entry_anchor_ea", None)
+    return _subject_factory(
+        model.SemanticSubjectRef,
+        kind=kind,
+        role=role,
+        block_ref=owner,
+        anchor_ea=anchor,
+        locator=locator,
+    )
+
+
+def _unavailable_candidate_fingerprint(plan_id: str) -> str:
+    return authority_id(("candidate-fingerprint-unavailable", plan_id))
+
+
+def _live_binding_failed_verdict() -> model.UnflattenAuthorityVerdict:
+    """Return a total rejection without dereferencing an untrusted carrier."""
+    return model.UnflattenAuthorityVerdict(
+        False,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+        None,
+        None,
+        None,
+        _unavailable_candidate_fingerprint("observed-live-binding"),
+        None,
+        (),
+    )
+
+
+def _claim_subjects(claim):
+    if type(claim) is model.RetiredDispatcherInfrastructureClaim:
+        return (claim.infrastructure_subject, claim.corridor_subject, *claim.member_subjects)
+    if type(claim) is model.EquivalentSemanticRouteClaim:
+        return (claim.retired_route_subject, claim.replacement_route_subject, claim.source_subject, *claim.destination_subjects)
+    if type(claim) is model.ExactInfeasibleEffectClaim:
+        return (claim.effect_subject, claim.source_subject, claim.predicate_subject, claim.selected_target_subject, claim.discarded_effect_subject)
+    if type(claim) is model.LocalAliasEffectScalarizationClaim:
+        return (claim.owner_subject,)
+    if type(claim) is model.TerminalCycleBreakClaim:
+        return (claim.cycle_subject, claim.cleanup_source_subject, claim.terminal_subject)
+    raise TypeError("unsupported closed claim")
+
+
+def _catalog_serials(source: FlowGraph, proposal, plan: PatchPlan, *, blocks=None) -> dict[object, int]:
+    block_map = source.blocks if blocks is None else blocks
+    rows = tuple(plan.source_coordinates)
+    if len(rows) != len(proposal.source_identity_catalog.blocks):
+        raise ValueError("plan source coordinates do not cover the source catalog")
+    by_ref = {ref: int(serial) for ref, serial in rows}
+    expected = {item.block_ref for item in proposal.source_identity_catalog.blocks}
+    if set(by_ref) != expected or set(by_ref.values()) != set(block_map):
+        raise ValueError("plan source coordinates differ from the source catalog")
+    if any(serial not in block_map for serial in by_ref.values()):
+        raise ValueError("plan source coordinate points outside the source graph")
+    return by_ref
+
+
+def _projected_serials(graph: FlowGraph, proposal, *, blocks=None) -> dict[object, int]:
+    result: dict[object, int] = {}
+    for witness in proposal.source_identity_catalog.blocks:
+        def _anchor(block):
+            native = getattr(block, "native_start_ea", None)
+            start = getattr(block, "start_ea", None)
+            return native if native is not None else start
+        matches = tuple(
+            block.serial
+            for block in (graph.blocks if blocks is None else blocks).values()
+            if _anchor(block) == witness.anchor_ea
+        )
+        if len(matches) == 1:
+            result[witness.block_ref] = int(matches[0])
+    if len(set(result.values())) != len(result):
+        raise ValueError("projected inventory has duplicate source identities")
+    return result
+
+
+def _block_subjects(proposal, serials, *, include_corridor=True):
+    catalog = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+    subjects = []
+    def add(role, ref):
+        witness = catalog[ref]
+        subjects.append(_subject(model.SemanticSubjectKind.BLOCK, role, model.BlockSubjectLocator(ref, witness.anchor_ea)))
+    inputs = proposal.plan_inputs
+    add(model.SemanticSubjectRole.SOURCE_ENTRY, inputs.source_entry_ref)
+    add(model.SemanticSubjectRole.DISPATCHER_ENTRY, inputs.dispatcher_entry_ref)
+    for ref in inputs.dispatcher_member_refs:
+        add(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, ref)
+    for handler in inputs.authoritative_handlers:
+        subjects.append(_subject(model.SemanticSubjectKind.HANDLER, model.SemanticSubjectRole.AUTHORITATIVE_HANDLER, model.HandlerSubjectLocator(handler.block_ref, handler.anchor_ea, handler.normalized_states)))
+    if include_corridor:
+        refs = inputs.dispatcher_member_refs
+        subjects.append(_subject(model.SemanticSubjectKind.CORRIDOR, model.SemanticSubjectRole.DISPATCHER_CORRIDOR, model.CorridorSubjectLocator(
+            content_id("unflatten.corridor.v1", refs), inputs.dispatcher_entry_ref,
+            catalog[inputs.dispatcher_entry_ref].anchor_ea, refs,
+            tuple(catalog[ref].anchor_ea for ref in refs),
+        )))
+    return subjects
+
+
+def _inventory_subjects(proposal, source_serials, effects=(), terminals=()):
+    subjects = _block_subjects(proposal, source_serials)
+    by_id = {subject.subject_id: subject for subject in subjects}
+    # The fragment-wide value-flow subject is always present, even for an
+    # exact-effect-only proposal.
+    witness = proposal.use_def_witness
+    value_flow = _subject(model.SemanticSubjectKind.VALUE_FLOW, model.SemanticSubjectRole.NON_STATE_VALUE_FLOW, model.ValueFlowSubjectLocator(
+        witness.fragment_id, witness.state_identity, witness.redirect_owner_refs,
+    ))
+    by_id[value_flow.subject_id] = value_flow
+    for claim in proposal.claims:
+        for subject in _claim_subjects(claim):
+            by_id[subject.subject_id] = subject
+    route_evidence = proposal.route_evidence
+    for proof in route_evidence.route_proofs:
+        catalog = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+        source_ref = next(ref for ref, witness_item in catalog.items() if proof.source_anchor_ea in witness_item.native_instruction_eas)
+        source_anchor = proof.source_anchor_ea
+        destination_pairs = tuple(
+            (
+                next(
+                    ref for ref, witness_item in catalog.items()
+                    if destination.target_anchor_ea in witness_item.native_instruction_eas
+                ),
+                next(
+                    witness_item.anchor_ea for ref, witness_item in catalog.items()
+                    if destination.target_anchor_ea in witness_item.native_instruction_eas
+                ),
+            )
+            for destination in proof.destinations
+        )
+        # RouteSubjectLocator canonicalizes these paired ref/EA rows. Never
+        # sort the projected subject IDs independently: their order must be
+        # the exact order of the locator pairs.
+        destination_pairs = tuple(
+            sorted(destination_pairs, key=lambda item: model._structural_key(item[0]))
+        )
+        destinations = tuple(item[0] for item in destination_pairs)
+        route = _subject(model.SemanticSubjectKind.ROUTE, model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, model.RouteSubjectLocator(
+            proof.proof_id, proof.atomic_group_id, source_ref, source_anchor,
+            destinations, tuple(item[1] for item in destination_pairs),
+        ))
+        by_id[route.subject_id] = route
+        by_id.setdefault(_subject(model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, model.BlockSubjectLocator(source_ref, catalog[source_ref].anchor_ea)).subject_id,
+                         _subject(model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, model.BlockSubjectLocator(source_ref, catalog[source_ref].anchor_ea)))
+        for ref, _anchor in destination_pairs:
+            item = _subject(
+                model.SemanticSubjectKind.BLOCK,
+                model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+                model.BlockSubjectLocator(ref, catalog[ref].anchor_ea),
+            )
+            by_id[item.subject_id] = item
+    for item in effects:
+        if item.owner_ref is None:
+            continue
+        locator = model.EffectSubjectLocator(
+            item.owner_ref, item.owner_anchor_ea, item.instruction_ea, item.effect_kind,
+        )
+        subject = _subject(model.SemanticSubjectKind.EFFECT, model.SemanticSubjectRole.EFFECT_SITE, locator)
+        by_id[subject.subject_id] = subject
+    for item in terminals:
+        if item.owner_ref is None:
+            continue
+        locator = model.TerminalSubjectLocator(
+            item.owner_ref, item.owner_anchor_ea, item.terminal_kind, item.instruction_ea,
+        )
+        subject = _subject(model.SemanticSubjectKind.TERMINAL, model.SemanticSubjectRole.TERMINAL_SITE, locator)
+        by_id[subject.subject_id] = subject
+    represented = {subject.block_ref for subject in by_id.values() if subject.block_ref is not None}
+    for ref, witness in ((item.block_ref, item) for item in proposal.source_identity_catalog.blocks):
+        if ref not in represented:
+            subject = _subject(
+                model.SemanticSubjectKind.BLOCK,
+                model.SemanticSubjectRole.PLANNED_HELPER,
+                model.BlockSubjectLocator(ref, witness.anchor_ea),
+            )
+            by_id[subject.subject_id] = subject
+    return tuple(sorted(by_id.values(), key=lambda item: item.subject_id))
+
+
+def _reachable_serials_from_blocks(blocks, entry_serial: int) -> frozenset[int]:
+    if type(entry_serial) is not int or entry_serial < 0:
+        raise ValueError("entry_serial must be an exact non-negative integer")
+    if not blocks:
+        if entry_serial != 0:
+            raise ValueError("an empty graph must use entry_serial 0")
+        return frozenset()
+    if entry_serial not in blocks:
+        raise ValueError("entry_serial is absent from graph blocks")
+    seen: set[int] = set()
+    pending = [entry_serial]
+    while pending:
+        serial = pending.pop()
+        if serial in seen:
+            continue
+        block = blocks.get(serial)
+        if block is None:
+            raise ValueError("reachable graph successor is absent")
+        seen.add(serial)
+        pending.extend(sorted(block.succs, reverse=True))
+    return frozenset(seen)
+
+
+def _build_semantic_graph_inventory(
+    graph: FlowGraph,
+    proposal: model.ProposedUnflattenContract,
+    plan: PatchPlan,
+    *,
+    source: bool,
+    phase: model.UnflattenAuthorityPhase,
+    source_subjects: tuple[model.SemanticSubjectRef, ...] = (),
+) -> model.SemanticGraphInventory:
+    """Build one complete source or candidate inventory.
+
+    This is the sole owner of serial projection, reachability, effect/terminal
+    discovery, subject construction, and topology materialization.
+    """
+
+    blocks_by_serial = dict(graph.blocks)
+    reachable = _reachable_serials_from_blocks(blocks_by_serial, graph.entry_serial)
+    serial_by_ref = (
+        _catalog_serials(graph, proposal, plan, blocks=blocks_by_serial)
+        if source else _projected_serials(graph, proposal, blocks=blocks_by_serial)
+    )
+    fingerprint = semantic_graph_fingerprint_cached(graph, blocks_by_serial)
+    block_rows = []
+    effects = []
+    terminals = []
+    # Inventory every cached block once.  Reachability remains an explicit
+    # closure field used by gates/evidence; it is not the row set itself.
+    for serial in sorted(blocks_by_serial):
+        block = blocks_by_serial[serial]
+        owner_ref = next((ref for ref, value in serial_by_ref.items() if value == serial), None)
+        owner_anchor = None
+        if owner_ref is not None:
+            owner_anchor = next(
+                item.anchor_ea for item in proposal.source_identity_catalog.blocks
+                if item.block_ref == owner_ref
+            )
+        observed = producer_api.observe_inventory_block(
+            block, owner_ref=owner_ref, owner_anchor_ea=owner_anchor,
+        )
+        block_rows.append(observed)
+        block_effects, block_terminals = model.resolve_inventory_block_sites(
+            serial=observed.serial, owner_ref=observed.block_ref,
+            owner_anchor_ea=observed.anchor_ea if observed.anchor_ea is not None else 0,
+            block_kind=observed.block_kind,
+            successor_serials=observed.successor_serials,
+            instruction_observations=observed.instruction_observations,
+        )
+        effects.extend(block_effects)
+        terminals.extend(block_terminals)
+    effects = tuple(sorted(effects, key=lambda item: (
+        item.owner_serial, item.instruction_ordinal, item.instruction_ea,
+        item.effect_kind.value,
+    )))
+    terminals = tuple(sorted(terminals, key=lambda item: (
+        item.owner_serial, item.instruction_ordinal is None,
+        item.instruction_ordinal if item.instruction_ordinal is not None else -1,
+        item.instruction_ea, item.terminal_kind.value,
+    )))
+    discovered_subjects = _inventory_subjects(
+        proposal,
+        serial_by_ref,
+        tuple(item for item in effects if item.owner_serial in reachable),
+        tuple(item for item in terminals if item.owner_serial in reachable),
+    )
+    if source:
+        subjects = discovered_subjects
+        source_subject_ids = tuple(item.subject_id for item in subjects)
+    else:
+        if type(source_subjects) is not tuple or any(type(item) is not model.SemanticSubjectRef for item in source_subjects):
+            raise TypeError("source_subjects must be exact semantic subjects")
+        subjects = tuple(sorted({item.subject_id: item for item in (*source_subjects, *discovered_subjects)}.values(), key=lambda item: item.subject_id))
+        source_subject_ids = tuple(sorted(item.subject_id for item in source_subjects))
+    bindings = (
+        authority_bind.bind_subjects(
+            subjects, catalog=proposal.source_identity_catalog,
+            phase=phase, graph_fingerprint=fingerprint,
+            generation=proposal.source_identity_catalog.generation,
+            serial_by_ref=serial_by_ref,
+        ) if source else authority_bind.bind_inventory_subjects(
+            subjects, catalog=proposal.source_identity_catalog,
+            phase=phase, graph_fingerprint=fingerprint,
+            generation=proposal.source_identity_catalog.generation,
+            serial_by_ref=serial_by_ref,
+            effects=tuple(item for item in effects if item.owner_serial in reachable),
+            terminals=tuple(item for item in terminals if item.owner_serial in reachable),
+            reachable_serials=tuple(sorted(reachable)),
+        )
+    )
+    topology = []
+    for row in block_rows:
+        for peer in row.successor_serials:
+            topology.append(model.InventoryTopologyIncidence(
+                model.TopologyIncidenceKind.SUCCESSOR, row.serial, peer,
+                row.transfer_ea,
+            ))
+        for peer in row.predecessor_serials:
+            peer_row = next((item for item in block_rows if item.serial == peer), None)
+            topology.append(model.InventoryTopologyIncidence(
+                model.TopologyIncidenceKind.PREDECESSOR, row.serial, peer,
+                None if peer_row is None else peer_row.transfer_ea,
+            ))
+    topology = tuple(sorted(topology, key=lambda item: (
+        item.kind.value, item.owner_serial, item.peer_serial,
+        item.source_transfer_ea if item.source_transfer_ea is not None else -1,
+    )))
+    reachable_tuple = tuple(sorted(reachable))
+    digest = semantic_graph_inventory_digest(
+        phase, fingerprint, proposal.source_identity_catalog.generation,
+        tuple(block_rows), subjects, bindings, effects, terminals, topology,
+        reachable_tuple, graph.entry_serial, source_subject_ids,
+    )
+    return model.SemanticGraphInventory(
+        phase, fingerprint, proposal.source_identity_catalog.generation,
+        tuple(block_rows), subjects, bindings, effects, terminals, topology, digest,
+        reachable_tuple,
+        graph.entry_serial,
+        source_subject_ids,
+    )
+
+
+def _generic_gates(bundle, source_inventory, candidate_inventory, subjects, proposal):
+    """Map one exact source/candidate gate bundle to inventoried subjects."""
+    if type(bundle) is not GenericCfgGateBundle:
+        raise TypeError("generic_gates must be one exact GenericCfgGateBundle")
+    validate_generic_cfg_gate_bundle(bundle)
+    entry_subjects = tuple(
+        item for item in subjects
+        if item.role is model.SemanticSubjectRole.SOURCE_ENTRY
+    )
+    if len(entry_subjects) != 1:
+        raise ValueError("generic gate inventory must have exactly one source entry")
+
+    effect_subjects = tuple(
+        item for item in subjects
+        if item.role is model.SemanticSubjectRole.EFFECT_SITE
+        and type(item.locator) is model.EffectSubjectLocator
+        and item.locator.effect_kind in {
+            model.EffectSiteKind.CALL,
+            model.EffectSiteKind.STORE,
+        }
+    )
+    source_effects = tuple(
+        item for item in source_inventory.effects
+        if item.owner_serial in source_inventory.reachable_serials
+        and item.effect_kind in {
+            model.EffectSiteKind.CALL,
+            model.EffectSiteKind.STORE,
+        }
+    )
+    recognized_source_effect_serials = {
+        effect.owner_ref and source_inventory.serial_by_ref.get(effect.owner_ref)
+        for effect in source_effects
+        if effect.effect_kind in {
+            model.EffectSiteKind.CALL,
+            model.EffectSiteKind.STORE,
+        }
+    }
+    if None in recognized_source_effect_serials or recognized_source_effect_serials != set(
+        bundle.effectful_raw.pre_effectful_block_serials
+    ):
+        raise ValueError("raw effect pre set does not exactly match recognized effect owners")
+    discovered_effect_ids = set()
+    effect_supported: list[str] = []
+    effect_refuted: list[str] = []
+    candidate_binding_by_id = {
+        item.subject.subject_id: item for item in candidate_inventory.bindings
+    }
+    exact_claim_subject_ids = {
+        claim.discarded_effect_subject.subject_id
+        for claim in proposal.claims
+        if type(claim) is model.ExactInfeasibleEffectClaim
+    }
+    for effect in source_effects:
+        subject = next(
+            (item for item in effect_subjects if item.locator == model.EffectSubjectLocator(
+                effect.owner_ref, effect.owner_anchor_ea, effect.instruction_ea,
+                effect.effect_kind,
+            )),
+            None,
+        )
+        if subject is None:
+            raise ValueError("discovered source effect is absent from inventory")
+        discovered_effect_ids.add(subject.subject_id)
+        serial = source_inventory.serial_by_ref.get(effect.owner_ref)
+        if type(serial) is not int or serial not in bundle.effectful_raw.pre_effectful_block_serials:
+            raise ValueError("discovered recognized effect owner is absent from raw effect pre set")
+        candidate_binding = candidate_binding_by_id.get(subject.subject_id)
+        candidate_present = (
+            candidate_binding is not None
+            and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+        )
+        receipt_support = (
+            serial in bundle.allowed_effect_exclusions
+            and subject.subject_id in exact_claim_subject_ids
+        )
+        if serial in bundle.effectful_raw.lost_block_serials:
+            if receipt_support or candidate_present:
+                effect_supported.append(subject.subject_id)
+            else:
+                effect_refuted.append(subject.subject_id)
+        elif serial in bundle.effectful_effective.post_reachable_effectful_block_serials:
+            if candidate_present:
+                effect_supported.append(subject.subject_id)
+            else:
+                effect_refuted.append(subject.subject_id)
+        elif serial in bundle.effectful_effective.lost_block_serials:
+            effect_refuted.append(subject.subject_id)
+        else:
+            raise ValueError("effect serial is absent from effective post/lost sets")
+    if discovered_effect_ids != {item.subject_id for item in effect_subjects}:
+        raise ValueError("effect gate inventory is incomplete")
+    if bundle.allowed_effect_exclusions:
+        for serial in bundle.allowed_effect_exclusions:
+            owners = tuple(
+                item for item in source_effects
+                if source_inventory.serial_by_ref.get(item.owner_ref) == serial
+            )
+            owned_claims = tuple(
+                item for item in owners
+                if next(
+                    (subject.subject_id for subject in effect_subjects if subject.locator == model.EffectSubjectLocator(
+                        item.owner_ref, item.owner_anchor_ea, item.instruction_ea, item.effect_kind,
+                    )),
+                    None,
+                ) in exact_claim_subject_ids
+            )
+            if len(owned_claims) != 1:
+                raise ValueError("excluded effect serial must map to one receipt-owned effect")
+
+    # The graph-check result is the generic gate's domain authority.  The
+    # inventory binding still supplies exact site presence; this gate does not
+    # broaden the domain to TRAP/NORETURN or other semantic terminal rows.
+    recognized_source_terminal_serials = frozenset(bundle.terminal.pre_reachable_terminals)
+    terminal_subjects = tuple(
+        item for item in subjects
+        if item.role is model.SemanticSubjectRole.TERMINAL_SITE
+        and type(item.locator) is model.TerminalSubjectLocator
+        and item.locator.terminal_kind in {
+            model.TerminalKind.RETURN,
+            model.TerminalKind.STOP,
+        }
+        and source_inventory.serial_by_ref.get(item.locator.block_ref)
+        in recognized_source_terminal_serials
+    )
+    terminal_supported: list[str] = []
+    terminal_refuted: list[str] = []
+    for subject in terminal_subjects:
+        source_serial = source_inventory.serial_by_ref.get(subject.locator.block_ref)
+        candidate_binding = candidate_binding_by_id.get(subject.subject_id)
+        candidate_serial = (
+            None
+            if candidate_binding is None
+            or candidate_binding.status is not model.SubjectBindingStatus.UNIQUE
+            else candidate_binding.serial
+        )
+        source_reachable = source_serial in source_inventory.reachable_serials
+        candidate_reachable = candidate_serial in candidate_inventory.reachable_serials
+        if source_reachable and candidate_reachable:
+            terminal_supported.append(subject.subject_id)
+        else:
+            terminal_refuted.append(subject.subject_id)
+    if set(terminal_supported) & set(terminal_refuted):
+        raise ValueError("terminal support/refutation overlap")
+
+    rows = (
+        model.GenericCfgGateResult(
+            model.GenericCfgGateKind.ENTRY_REACHABILITY,
+            bundle.entry.passed,
+            (entry_subjects[0].subject_id,) if bundle.entry.passed else (),
+            () if bundle.entry.passed else (entry_subjects[0].subject_id,),
+            bundle.entry.reason or "entry_reachability",
+        ),
+        model.GenericCfgGateResult(
+            model.GenericCfgGateKind.EFFECTFUL_REACHABILITY,
+            bundle.effectful_effective.passed,
+            tuple(effect_supported), tuple(effect_refuted),
+            bundle.effectful_effective.reason or "effectful_reachability",
+        ),
+        model.GenericCfgGateResult(
+            model.GenericCfgGateKind.TERMINAL_REACHABILITY,
+            bundle.terminal.passed,
+            tuple(terminal_supported), tuple(terminal_refuted),
+            bundle.terminal.reason or "terminal_reachability",
+        ),
+    )
+    return rows
+
+
+def _receipt(
+    inputs, proposal, source_fp, candidate_fp, source_generation,
+    candidate_generation, metrics, *, source_inventory, candidate_inventory,
+):
+    if type(source_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("source_inventory must be SemanticGraphInventory")
+    if type(candidate_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("candidate_inventory must be SemanticGraphInventory")
+    model.validate_semantic_graph_inventory(source_inventory)
+    model.validate_semantic_graph_inventory(candidate_inventory)
+    model.validate_preparation_build_metrics(metrics)
+    values = {
+        "proposal_id": authority_id(proposal), "plan_id": proposal.plan_id,
+        "source_fingerprint": source_fp, "candidate_fingerprint": candidate_fp,
+        "source_generation": source_generation, "candidate_generation": candidate_generation,
+        "source_inventory_digest": source_inventory.inventory_digest,
+        "candidate_inventory_digest": candidate_inventory.inventory_digest,
+        "source_binding_digest": authority_id(tuple(sorted(inputs[2], key=lambda item: item.subject.subject_id))), "candidate_binding_digest": authority_id(tuple(sorted(inputs[3], key=lambda item: item.subject.subject_id))),
+        "route_expansion_digest": authority_id(tuple(item for item in inputs[0] if item.role in (model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION))),
+        "effect_catalog_digest": authority_id(inputs[4]), "terminal_catalog_digest": authority_id(inputs[5]),
+        "plan_input_digest": authority_id(tuple(item.subject_id for item in inputs[0] if item.role in {model.SemanticSubjectRole.SOURCE_ENTRY, model.SemanticSubjectRole.DISPATCHER_ENTRY, model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, model.SemanticSubjectRole.AUTHORITATIVE_HANDLER})), "dispatcher_member_digest": authority_id(tuple(item.subject_id for item in inputs[0] if item.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE)),
+        "planned_helper_digest": authority_id(tuple(item.subject_id for item in inputs[0] if item.role is model.SemanticSubjectRole.PLANNED_HELPER)), "patch_step_digest": authority_id(()),
+        "conditional_relation_digest": authority_id(()), "metrics": metrics,
+    }
+    return model.PreparationAuthorityReceipt.mint(**values)
+
+
+def _derive_inputs(
+    source_inventory, candidate_inventory, plan, proposal, generic_gates, *,
+    phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    candidate_generation=None,
+    phase_build_metrics,
+    preparation_metrics,
+):
+    if type(source_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("source_inventory must be SemanticGraphInventory")
+    if type(candidate_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("candidate_inventory must be SemanticGraphInventory")
+    model.validate_semantic_graph_inventory(source_inventory)
+    model.validate_semantic_graph_inventory(candidate_inventory)
+    source_serials = source_inventory.serial_by_ref
+    source_fp = source_inventory.graph_fingerprint
+    candidate_fp = candidate_inventory.graph_fingerprint
+    source_subjects = source_inventory.subjects
+    candidate_subjects = candidate_inventory.subjects
+    source_bindings = source_inventory.bindings
+    candidate_bindings = candidate_inventory.bindings
+    if type(phase_build_metrics) is not model.PhaseBuildMetrics:
+        raise TypeError("phase_build_metrics must be PhaseBuildMetrics")
+    model.validate_phase_build_metrics(phase_build_metrics)
+    phase_metrics = phase_build_metrics
+    if type(preparation_metrics) is not model.PreparationBuildMetrics:
+        raise TypeError("preparation_metrics must be PreparationBuildMetrics")
+    model.validate_preparation_build_metrics(preparation_metrics)
+    metrics = preparation_metrics
+    subjects = source_subjects
+    gates = _generic_gates(
+        generic_gates,
+        source_inventory,
+        candidate_inventory,
+        subjects,
+        proposal,
+    )
+    # Structural and topology rows are derived in this one preparation walk;
+    # T4 only folds these closed rows into the assurance case.
+    lineage = []
+    topology = []
+    source_by_ref = {item.subject.block_ref: item for item in source_bindings if item.subject.block_ref is not None}
+    candidate_binding_by_id = {item.subject.subject_id: item for item in candidate_bindings}
+    expected_topology = _topology_relations_from_inventory(source_inventory, subjects)
+    candidate_topology = _topology_relations_from_inventory(candidate_inventory, candidate_subjects)
+    for subject in subjects:
+        if subject.block_ref is None:
+            continue
+        source_binding = source_by_ref.get(subject.block_ref)
+        candidate_binding = candidate_binding_by_id.get(subject.subject_id)
+        if candidate_binding is None:
+            raise ValueError("candidate inventory binding coverage is incomplete")
+        if source_binding is None:
+            continue
+        source_ids = tuple(source_binding.native_instruction_eas)
+        candidate_ids = tuple(candidate_binding.native_instruction_eas)
+        disposition = model.StructuralDisposition.PRESERVED if candidate_binding.status is model.SubjectBindingStatus.UNIQUE else model.StructuralDisposition.UNACCOUNTED_LOSS
+        lineage.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, subject, phase, model.StructuralLineageEvidencePayload(
+            subject.subject_id, (subject.subject_id,) if candidate_ids else (), disposition,
+            tuple(sorted(set(source_ids))), None, (subject.subject_id,),
+        )))
+        expected_incident = tuple(
+            relation for relation in expected_topology
+            if subject.subject_id in (relation.source_subject_id, relation.target_subject_id)
+        )
+        candidate_incident = tuple(
+            relation for relation in candidate_topology
+            if subject.subject_id in (relation.source_subject_id, relation.target_subject_id)
+        )
+        expected_predecessors = tuple(sorted(
+            relation.source_subject_id for relation in expected_incident
+            if relation.target_subject_id == subject.subject_id
+        ))
+        expected_successors = tuple(sorted(
+            relation.target_subject_id for relation in expected_incident
+            if relation.source_subject_id == subject.subject_id
+        ))
+        topology.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.TOPOLOGY, subject, phase, model.TopologyEvidencePayload(
+            subject.subject_id, expected_predecessors, expected_successors,
+            True, authority_id(expected_incident), authority_id(candidate_incident),
+            expected_incident, candidate_incident,
+        )))
+    effects_by_subject = {subject.subject_id: subject for subject in subjects if subject.role is model.SemanticSubjectRole.EFFECT_SITE}
+    exact_by_ea = {
+        claim.discarded_effect_ea: claim for claim in proposal.claims
+        if type(claim) is model.ExactInfeasibleEffectClaim
+    }
+    effect_rows = []
+    for effect in source_inventory.effects:
+        if effect.owner_serial not in source_inventory.reachable_serials:
+            continue
+        locator = model.EffectSubjectLocator(
+            effect.owner_ref, effect.owner_anchor_ea, effect.instruction_ea,
+            effect.effect_kind,
+        )
+        subject = next(item for item in effects_by_subject.values() if item.locator == locator)
+        claim = exact_by_ea.get(subject.locator.instruction_ea)
+        candidate_site_binding = candidate_binding_by_id.get(subject.subject_id)
+        preserved = (
+            claim is None
+            and candidate_site_binding is not None
+            and candidate_site_binding.status is model.SubjectBindingStatus.UNIQUE
+        )
+        payload = model.EffectSiteEvidencePayload(
+            subject.subject_id, subject.locator.effect_kind, subject.locator.instruction_ea,
+            effect.opcode,
+            claim.width if claim is not None else effect.width,
+            None if claim is None else claim.state_identity,
+            None if claim is None else claim.normalized_state,
+            model.ProviderConsensusMode.NOT_APPLICABLE, (), preserved,
+        )
+        effect_rows.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.EFFECT_SITE, subject, phase, payload))
+    route_rows = []
+    route_subjects = {subject.subject_id: subject for subject in subjects if subject.kind is model.SemanticSubjectKind.ROUTE}
+    for claim in proposal.claims:
+        if type(claim) is model.ExactInfeasibleEffectClaim:
+            proof_ids = tuple(sorted(claim.route_proof_ids))
+            matching_routes = tuple(
+                subject for subject in route_subjects.values()
+                if subject.locator.proof_id in proof_ids
+            )
+            if len(matching_routes) != len(proof_ids):
+                raise ValueError("exact-effect claim route evidence is not inventoried")
+            route_subject = matching_routes[0]
+            destination_subject_ids = tuple(
+                next(
+                    item.subject_id for item in subjects
+                    if item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
+                    and item.block_ref == ref
+                    and item.anchor_ea == anchor
+                )
+                for ref, anchor in zip(
+                    route_subject.locator.destination_refs,
+                    route_subject.locator.destination_anchor_eas,
+                )
+            )
+            route_rows.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.SEMANTIC_ROUTE, route_subject, phase, model.SemanticRouteEvidencePayload(
+                route_subject.subject_id, proof_ids, proposal.route_evidence.atomic_group_id,
+                claim.predicate_subject.subject_id,
+                destination_subject_ids, True,
+            )))
+        elif type(claim) is model.EquivalentSemanticRouteClaim:
+            locator = claim.retired_route_subject.locator
+            destination_subject_ids = tuple(
+                next(
+                    item.subject_id for item in subjects
+                    if item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
+                    and item.block_ref == ref
+                    and item.anchor_ea == anchor
+                )
+                for ref, anchor in zip(
+                    locator.destination_refs, locator.destination_anchor_eas,
+                )
+            )
+            route_rows.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.SEMANTIC_ROUTE, claim.retired_route_subject, phase, model.SemanticRouteEvidencePayload(
+                claim.retired_route_subject.subject_id, claim.route_proof_ids, claim.atomic_group_id,
+                claim.source_subject.subject_id, destination_subject_ids, True,
+            )))
+    reach_rows = []
+    source_reachable = source_inventory.reachable_serials
+    candidate_reachable = candidate_inventory.reachable_serials
+    source_entry_subject = next(
+        item for item in subjects
+        if item.role is model.SemanticSubjectRole.SOURCE_ENTRY
+    )
+    for subject in subjects:
+        if subject.role in (model.SemanticSubjectRole.SOURCE_ENTRY, model.SemanticSubjectRole.DISPATCHER_ENTRY, model.SemanticSubjectRole.AUTHORITATIVE_HANDLER, model.SemanticSubjectRole.TERMINAL_SITE) and subject.block_ref is not None:
+            serial = source_serials[subject.block_ref]
+            candidate_binding = candidate_binding_by_id.get(subject.subject_id)
+            candidate_serial = None if candidate_binding is None else candidate_binding.serial
+            reachable = (
+                serial in source_reachable
+                and candidate_serial is not None
+                and candidate_serial in candidate_reachable
+            )
+            reach_rows.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.REACHABILITY, subject, phase, model.ReachabilityEvidencePayload(
+                source_entry_subject.subject_id, subject.subject_id, reachable,
+                (
+                    (source_entry_subject.subject_id, subject.subject_id)
+                    if reachable and subject.subject_id != source_entry_subject.subject_id
+                    else (source_entry_subject.subject_id,)
+                ),
+            )))
+    corridor = next(item for item in subjects if item.role is model.SemanticSubjectRole.DISPATCHER_CORRIDOR)
+    members = tuple(item.subject_id for item in subjects if item.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE)
+    corridor_row = _evidence_factory(
+        model.AuthorityEvidence,
+        model.AuthorityEvidenceKind.CORRIDOR_COVERAGE,
+        corridor,
+        phase,
+        model.CorridorCoverageEvidencePayload(
+            corridor.subject_id,
+            members,
+            members if all(
+                candidate_binding_by_id.get(item) is not None
+                and candidate_binding_by_id[item].status is model.SubjectBindingStatus.UNIQUE
+                for item in members
+            ) else (),
+            (),
+        ),
+    )
+    all_lineage = tuple(sorted((*lineage, *topology, *effect_rows, *route_rows, *reach_rows, corridor_row), key=lambda item: item.evidence_id))
+    receipt = _receipt(
+        (
+            source_subjects, candidate_subjects, source_bindings,
+            candidate_bindings,
+            tuple(item.subject_id for item in effects_by_subject.values()),
+            tuple(item.subject_id for item in subjects
+                  if item.role is model.SemanticSubjectRole.TERMINAL_SITE),
+        ),
+        proposal, source_fp, candidate_fp,
+        proposal.source_identity_catalog.generation,
+        candidate_generation if candidate_generation is not None
+        else proposal.source_identity_catalog.generation,
+        metrics,
+        source_inventory=source_inventory,
+        candidate_inventory=candidate_inventory,
+    )
+    return model.DerivedUnflattenPreparationInputs(
+        proposal=proposal, claims=proposal.claims, preparation_receipt=receipt,
+        source_subjects=source_subjects, candidate_subjects=candidate_subjects,
+        source_bindings=source_bindings, candidate_bindings=candidate_bindings,
+        conditional_relations=(), lineage_evidence=all_lineage, patch_step_evidence=(),
+        generic_gates=gates, source_fingerprint=source_fp, candidate_fingerprint=candidate_fp,
+        source_generation=proposal.source_identity_catalog.generation,
+        candidate_generation=candidate_generation if candidate_generation is not None else proposal.source_identity_catalog.generation,
+        preparation_metrics=metrics,
+        source_inventory=source_inventory,
+        candidate_inventory=candidate_inventory,
+        phase_build_metrics=phase_metrics,
+    )
+
+
+def _topology_relations_from_inventory(inventory, subjects):
+    """Project raw topology incidence into typed subject relations."""
+    if type(inventory) is not model.SemanticGraphInventory:
+        raise TypeError("inventory must be SemanticGraphInventory")
+    model.validate_semantic_graph_inventory(inventory)
+
+    block_subjects: dict[object, tuple[model.SemanticSubjectRef, ...]] = {}
+    for subject in subjects:
+        if subject.kind is not model.SemanticSubjectKind.BLOCK:
+            continue
+        if subject.block_ref is not None:
+            block_subjects[subject.block_ref] = tuple(sorted(
+                (*block_subjects.get(subject.block_ref, ()), subject),
+                key=lambda item: item.subject_id,
+            ))
+    serial_to_subject = {}
+    for ref, serial in inventory.serial_by_ref.items():
+        subjects_for_ref = block_subjects.get(ref, ())
+        if subjects_for_ref:
+            serial_to_subject[int(serial)] = subjects_for_ref
+    relations = set()
+    edge_rows: dict[tuple[int, int], dict[model.TopologyIncidenceKind, model.InventoryTopologyIncidence]] = {}
+    for incidence in inventory.topology:
+        if incidence.kind is model.TopologyIncidenceKind.SUCCESSOR:
+            key = (incidence.owner_serial, incidence.peer_serial)
+        else:
+            key = (incidence.peer_serial, incidence.owner_serial)
+        edge_rows.setdefault(key, {})[incidence.kind] = incidence
+    block_by_serial = {item.serial: item for item in inventory.blocks}
+    for (source_serial, target_serial), incidences in edge_rows.items():
+        successor = incidences.get(model.TopologyIncidenceKind.SUCCESSOR)
+        predecessor = incidences.get(model.TopologyIncidenceKind.PREDECESSOR)
+        if successor is None or predecessor is None:
+            continue
+        if successor.source_transfer_ea != predecessor.source_transfer_ea:
+            continue
+        edge_anchor = successor.source_transfer_ea
+        if edge_anchor is None:
+            source_block = block_by_serial.get(source_serial)
+            if source_block is None:
+                continue
+            source_tail_eas = tuple(
+                item.instruction_ea for item in source_block.instruction_observations
+                if item.instruction_ea is not None
+            )
+            if source_tail_eas:
+                edge_anchor = source_tail_eas[-1]
+            elif source_block.anchor_ea is not None:
+                edge_anchor = source_block.anchor_ea
+            else:
+                continue
+        owner_subjects = serial_to_subject.get(source_serial)
+        peer_subjects = serial_to_subject.get(target_serial)
+        if not owner_subjects or not peer_subjects:
+            continue
+        for owner in owner_subjects:
+            peer_by_role = {item.role: item for item in peer_subjects}
+            peer = peer_by_role.get(owner.role, peer_subjects[0])
+            source_id, target_id = owner.subject_id, peer.subject_id
+            relations.add(model.TopologyEdgeRelation(
+                model.SemanticEdgeRole.DIRECT, source_id, target_id,
+                edge_anchor,
+            ))
+            relations.add(model.TopologyEdgeRelation(
+                model.SemanticEdgeRole.DIRECT, target_id, source_id,
+                edge_anchor,
+            ))
+    return tuple(sorted(relations, key=lambda item: (
+        item.source_subject_id, item.target_subject_id,
+        item.role.value, item.native_edge_anchor_ea,
+    )))
+
+
+def derive_unflatten_preparation_inputs(
+    source, projection, plan, proposal, generic_results
+):
+    """Build the closed source/candidate inventory consumed by T4."""
+    if type(projection) is not CfgProjection:
+        raise TypeError("projection must be CfgProjection")
+    build_started = perf_counter()
+    source_inventory = _build_semantic_graph_inventory(
+        source, proposal, plan, source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+    candidate_inventory = _build_semantic_graph_inventory(
+        projection.graph, proposal, plan, source=False,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_subjects=source_inventory.subjects,
+    )
+    phase_build_metrics = model.PhaseBuildMetrics(
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, 1, 1,
+        max(0.0, perf_counter() - build_started) * 1000.0,
+    )
+    preparation_metrics = model.PreparationBuildMetrics(
+        1, 1, phase_build_metrics.inventory_ms,
+    )
+    return _derive_inputs(
+        source_inventory,
+        candidate_inventory,
+        plan,
+        proposal,
+        generic_results,
+        candidate_generation=proposal.source_identity_catalog.generation,
+        phase_build_metrics=phase_build_metrics,
+        preparation_metrics=preparation_metrics,
+    )
+
+
+def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates):
+    """Prepare one immutable projected authority case before mutation."""
+    from .model import (
+        UnflattenAuthorityPreparationAccepted,
+        UnflattenAuthorityPreparationRejected,
+    )
+    if type(source) is not FlowGraph or type(projection) is not CfgProjection:
+        raise TypeError("unflatten preparation requires a FlowGraph and CfgProjection")
+    if not isinstance(plan, PatchPlan):
+        raise TypeError("unflatten preparation requires PatchPlan")
+    if projection.plan_id != plan.plan_id or projection.snapshot_id != plan.snapshot_id:
+        raise ValueError("projection authority differs from PatchPlan")
+    if type(attempt_id) is not TransactionAttemptId:
+        raise TypeError("unflatten preparation requires TransactionAttemptId")
+    if attempt_id.plan_id != plan.plan_id:
+        raise ValueError("preparation attempt belongs to a foreign plan")
+    if plan.source_generation is not None and attempt_id.generation != plan.source_generation:
+        raise ValueError("preparation attempt generation differs from source plan")
+    route = select_plan_route(plan)
+    if isinstance(route, UnflattenAuthorityNotApplicable):
+        return route
+    if not isinstance(route, TypedProposalRoute):
+        verdict = model.UnflattenAuthorityVerdict(
+            False, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                route.reason, None, None, None,
+                _unavailable_candidate_fingerprint(plan.plan_id), None, (),
+        )
+        return UnflattenAuthorityPreparationRejected(verdict)
+    proposal = route.proposal
+    candidate_fingerprint = None
+    try:
+        build_started = perf_counter()
+        source_inventory = _build_semantic_graph_inventory(
+            source, proposal, plan, source=True,
+            phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        )
+        candidate_inventory = _build_semantic_graph_inventory(
+            projection.graph, proposal, plan, source=False,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            source_subjects=source_inventory.subjects,
+        )
+        candidate_fingerprint = candidate_inventory.graph_fingerprint
+        phase_build_metrics = model.PhaseBuildMetrics(
+            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, 1, 1,
+            max(0.0, perf_counter() - build_started) * 1000.0,
+        )
+        preparation_metrics = model.PreparationBuildMetrics(
+            1, 1, phase_build_metrics.inventory_ms,
+        )
+        inputs = _derive_inputs(
+            source_inventory, candidate_inventory,
+            plan, proposal, generic_gates,
+            candidate_generation=attempt_id.generation,
+            phase_build_metrics=phase_build_metrics,
+            preparation_metrics=preparation_metrics,
+        )
+        bound_routes = bind_canonical_semantic_evidence(source, proposal.route_evidence)
+        if not isinstance(bound_routes, BoundCanonicalSemanticEvidence):
+            raise ValueError("canonical route evidence is not bound to the source graph")
+        projected_bound_routes = bind_canonical_semantic_evidence(
+            projection.graph,
+            proposal.route_evidence,
+        )
+        if not isinstance(projected_bound_routes, BoundCanonicalSemanticEvidence):
+            raise ValueError(
+                "canonical route evidence is not bound to the projected graph"
+            )
+        prepared_authority_id = authority_id((proposal, inputs.source_fingerprint, inputs.candidate_fingerprint, inputs.source_generation, inputs.candidate_generation, inputs.source_bindings, inputs.candidate_bindings))
+        case = build_semantic_case(
+            authority_id=prepared_authority_id,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            inputs=inputs,
+        )
+        verdict = evaluate_case(case)
+        if verdict.accepted:
+            prepared = model.PreparedUnflattenAuthority(
+                authority_id=prepared_authority_id, route=route.route,
+                owning_plan=plan, proposal=proposal, claims=inputs.claims,
+                bound_routes=bound_routes, snapshot_id=plan.snapshot_id,
+                source_maturity=plan.source_maturity,
+                source_coordinate_digest=authority_id(
+                    tuple(sorted(plan.source_coordinates, key=lambda item: repr(item)))
+                ),
+                source_fingerprint=inputs.source_fingerprint,
+                projected_fingerprint=inputs.candidate_fingerprint,
+                source_generation=inputs.source_generation,
+                projected_generation=inputs.candidate_generation,
+                source_bindings=inputs.source_bindings,
+                projected_bindings=inputs.candidate_bindings,
+                projected_case=case,
+                source_inputs=inputs,
+                source_inventory=source_inventory,
+                preparation_attempt_id=attempt_id,
+                legacy_unflatten_shadow=plan.legacy_unflatten_shadow,
+            )
+            return UnflattenAuthorityPreparationAccepted(prepared, verdict)
+        return UnflattenAuthorityPreparationRejected(verdict)
+    except (TypeError, ValueError):
+        verdict = model.UnflattenAuthorityVerdict(
+            False, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+            authority_id(proposal), None, None,
+            candidate_fingerprint or _unavailable_candidate_fingerprint(plan.plan_id), None, (),
+        )
+        return UnflattenAuthorityPreparationRejected(verdict)
+
+
+def revalidate_bound_patch_plan_against_prepared(
+    prepared, bound_plan,
+) -> BoundPatchPlan:
+    """Recheck live plan authority before bind and observed consumption."""
+    if type(prepared) is not model.PreparedUnflattenAuthority:
+        raise TypeError("prepared must be PreparedUnflattenAuthority")
+    if type(bound_plan) is not BoundPatchPlan:
+        raise TypeError("bound_plan must be BoundPatchPlan")
+    validate_bound_patch_plan(bound_plan)
+    model.validate_semantic_graph_inventory(prepared.source_inventory)
+    if prepared.source_inputs is None:
+        raise ValueError("prepared authority lacks source inputs")
+    model.DerivedUnflattenPreparationInputs.__post_init__(prepared.source_inputs)
+    if bound_plan.plan is not prepared.owning_plan:
+        raise ValueError("bound patch plan belongs to a foreign plan")
+    if bound_plan.plan.legacy_unflatten_shadow is not prepared.legacy_unflatten_shadow:
+        raise ValueError("bound patch plan shadow differs from prepared authority")
+    proposal_validation = validate_proposal(
+        bound_plan.plan, bound_plan.plan.unflatten_proposal
+    )
+    if not isinstance(proposal_validation, ProposalAccepted):
+        raise ValueError("bound patch plan proposal authority is no longer valid")
+    if proposal_validation.proposal is not prepared.proposal:
+        raise ValueError("bound patch plan proposal is not the prepared authority object")
+    if bound_plan.plan.legacy_unflatten_shadow is not None:
+        shadow_validation = validate_shadow_for_plan(
+            bound_plan.plan, bound_plan.plan.legacy_unflatten_shadow
+        )
+        if not isinstance(shadow_validation, ShadowValidationAccepted):
+            raise ValueError("bound patch plan shadow authority is no longer valid")
+    if prepared.preparation_attempt_id is None:
+        raise ValueError("prepared authority has no exact preparation attempt")
+    if bound_plan.attempt_id != prepared.preparation_attempt_id:
+        raise ValueError("bound patch plan is from a different preparation attempt")
+    if bound_plan.attempt_id.plan_id != prepared.proposal.plan_id:
+        raise ValueError("bound patch plan attempt belongs to a foreign plan")
+    if (
+        bound_plan.session_id != bound_plan.attempt_id.session_id
+        or bound_plan.generation != bound_plan.attempt_id.generation
+    ):
+        raise ValueError("bound patch plan session/generation differs from attempt")
+    if (
+        prepared.source_maturity is not None
+        and prepared.source_maturity.provider_id is not None
+        and bound_plan.maturity.provider_id != prepared.source_maturity.provider_id
+    ):
+        raise ValueError("bound patch plan maturity differs from source maturity")
+    expected = dict(prepared.owning_plan.source_coordinates)
+    supplied_refs = {ref for ref, _serial in bound_plan.bindings}
+    required_refs = {
+        item.block_ref
+        for item in prepared.projected_bindings
+        if item.status is model.SubjectBindingStatus.UNIQUE
+        and item.block_ref is not None
+    }
+    if supplied_refs != required_refs:
+        raise ValueError("bound patch plan does not exactly cover required source references")
+    expected_order = tuple(
+        ref for ref, _serial in prepared.owning_plan.source_coordinates
+        if ref in required_refs
+    )
+    if tuple(ref for ref, _serial in bound_plan.bindings) != expected_order:
+        raise ValueError("bound patch plan source tuple order differs from plan")
+    for ref, serial in bound_plan.bindings:
+        if ref not in expected:
+            raise ValueError("bound patch plan contains a foreign source reference")
+        if int(expected[ref]) != int(serial):
+            raise ValueError("bound patch plan source tuple differs from plan")
+    return bound_plan
+
+
+def bind_prepared_unflatten_authority(*, prepared, patch_binding):
+    """Bind prepared authority to the exact result of ``bind_patch_plan``."""
+    from .model import UnflattenAuthorityBindingAccepted, UnflattenAuthorityBindingRejected
+    if type(prepared) is not model.PreparedUnflattenAuthority:
+        raise TypeError("prepared must be PreparedUnflattenAuthority")
+    try:
+        if type(patch_binding) is not BoundPatchPlan:
+            raise TypeError("patch_binding must be BoundPatchPlan")
+        revalidate_bound_patch_plan_against_prepared(prepared, patch_binding)
+        ident = bound_unflatten_binding_id(prepared, patch_binding)
+        authority = model.BoundUnflattenAuthority(
+            binding_id=ident, prepared=prepared, attempt_id=patch_binding.attempt_id,
+            session_id=patch_binding.session_id, generation=patch_binding.generation,
+            live_maturity=patch_binding.maturity, live_bindings=patch_binding.bindings,
+            patch_binding=patch_binding,
+        )
+        return UnflattenAuthorityBindingAccepted(authority)
+    except (TypeError, ValueError):
+        verdict = model.UnflattenAuthorityVerdict(
+            False, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+            prepared.authority_id, None, None, prepared.projected_fingerprint, None, (),
+        )
+        return UnflattenAuthorityBindingRejected(verdict)
+
+
+def revalidate_observed_unflatten_authority(
+    *, authority, observed, observed_generation, generic_gates,
+):
+    """Revalidate a bound authority against the observed graph identity."""
+    if type(authority) is not model.BoundUnflattenAuthority:
+        return _live_binding_failed_verdict()
+    if type(observed) is not FlowGraph:
+        raise TypeError("observed must be FlowGraph")
+    if type(observed_generation) is not int or observed_generation < 0:
+        return model.UnflattenAuthorityVerdict(
+            False,
+            model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            model.UnflattenAuthorityReason.GRAPH_GENERATION_MISMATCH,
+            None,
+            None,
+            None,
+            _unavailable_candidate_fingerprint("observed-generation"),
+            None,
+            (),
+        )
+    try:
+        model.BoundUnflattenAuthority.__post_init__(authority)
+        model.PreparedUnflattenAuthority.__post_init__(authority.prepared)
+        revalidate_bound_patch_plan_against_prepared(
+            authority.prepared, authority.patch_binding
+        )
+    except (TypeError, ValueError, AttributeError):
+        return _live_binding_failed_verdict()
+    validated_prepared = authority.prepared
+    validated_generation = authority.generation
+    if observed_generation != validated_generation:
+        return model.UnflattenAuthorityVerdict(
+            False,
+            model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            model.UnflattenAuthorityReason.GRAPH_GENERATION_MISMATCH,
+            validated_prepared.authority_id,
+            authority.binding_id,
+            None,
+            _unavailable_candidate_fingerprint("observed-generation-mismatch"),
+            None,
+            (),
+        )
+    build_started = perf_counter()
+    try:
+        candidate_inventory = _build_semantic_graph_inventory(
+            observed, validated_prepared.proposal, validated_prepared.owning_plan,
+            source=False, phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            source_subjects=validated_prepared.source_inventory.subjects,
+        )
+    except (TypeError, ValueError):
+        return model.UnflattenAuthorityVerdict(
+            False,
+            model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+            validated_prepared.authority_id,
+            authority.binding_id,
+            None,
+            _unavailable_candidate_fingerprint("observed-inventory"),
+            None,
+            (),
+        )
+    phase_build_metrics = model.PhaseBuildMetrics(
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY, 0, 1,
+        max(0.0, perf_counter() - build_started) * 1000.0,
+    )
+    observed_fingerprint = candidate_inventory.graph_fingerprint
+    prepared_inputs = validated_prepared.source_inputs
+    if prepared_inputs is None:
+        raise ValueError("prepared authority lacks its closed source inventory")
+    if validated_prepared.source_inventory is not prepared_inputs.source_inventory:
+        raise ValueError("prepared source inventory identity changed")
+    try:
+        inputs = _derive_inputs(
+            prepared_inputs.source_inventory, candidate_inventory,
+            validated_prepared.owning_plan, validated_prepared.proposal, generic_gates,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            candidate_generation=observed_generation,
+            phase_build_metrics=phase_build_metrics,
+            preparation_metrics=prepared_inputs.preparation_metrics,
+        )
+    except (TypeError, ValueError):
+        return model.UnflattenAuthorityVerdict(
+            False,
+            model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+            validated_prepared.authority_id,
+            authority.binding_id,
+            None,
+            observed_fingerprint,
+            None,
+            (),
+        )
+    observed_case = build_semantic_case(
+        authority_id=validated_prepared.authority_id,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        inputs=inputs,
+    )
+    verdict = evaluate_case(observed_case)
+    return replace(verdict, binding_id=authority.binding_id)
 
 
 def select_plan_route(plan: PatchPlan) -> PlanRouteResult:
@@ -88,4 +1295,8 @@ def select_plan_route(plan: PatchPlan) -> PlanRouteResult:
     return UnflattenAuthorityNotApplicable(UnflattenPlanRoute.ORDINARY)
 
 
-__all__ = ["select_plan_route"]
+__all__ = [
+    "select_plan_route", "derive_unflatten_preparation_inputs",
+    "prepare_unflatten_authority",
+    "bind_prepared_unflatten_authority", "revalidate_observed_unflatten_authority",
+]

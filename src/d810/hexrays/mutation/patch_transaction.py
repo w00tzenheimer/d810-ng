@@ -42,7 +42,12 @@ from d810.transforms.plan import (
     PatchRedirectGoto,
     PatchScalarizeLocalAliasAccess,
 )
-from d810.hexrays.mutation.patch_binding import BoundPatchPlan, bind_patch_plan
+from d810.hexrays.mutation.patch_binding import bind_patch_plan
+from d810.transforms.patch_binding import (
+    BoundPatchPlan,
+    validate_bound_patch_plan,
+)
+from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
 from d810.hexrays.mutation.semantic_ownership import (
     find_patch_plan_semantic_ownership_overlap,
     format_patch_plan_semantic_ownership_overlap,
@@ -299,7 +304,7 @@ def _publish_patch_plan_observation(
     )
 def _has_dispatcher_removal_obligation(plan_metadata: object) -> bool:
     """Whether a plan claims exact full dispatcher-corridor retirement."""
-    if not isinstance(plan_metadata, dict):
+    if not isinstance(plan_metadata, Mapping):
         return False
     from d810.transforms.dispatcher_corridor_coverage import (
         DISPATCHER_CORRIDOR_COVERAGE_METADATA,
@@ -634,6 +639,7 @@ class PatchTransactionPreflightRejected(RuntimeError):
         *,
         projected_dispatcher_removal_validation: object | None = None,
         projected_dispatcher_coverage_validation: object | None = None,
+        unflatten_verdict: object | None = None,
     ) -> None:
         super().__init__(message)
         self.projected_dispatcher_removal_validation = (
@@ -642,6 +648,7 @@ class PatchTransactionPreflightRejected(RuntimeError):
         self.projected_dispatcher_coverage_validation = (
             projected_dispatcher_coverage_validation
         )
+        self.unflatten_verdict = unflatten_verdict
 
 
 class PatchTransactionPostObservationRejected(RuntimeError):
@@ -653,6 +660,7 @@ class PatchTransactionPostObservationRejected(RuntimeError):
         *,
         observed_dispatcher_removal_validation: object | None = None,
         observed_dispatcher_coverage_validation: object | None = None,
+        unflatten_verdict: object | None = None,
     ) -> None:
         super().__init__(message)
         self.observed_dispatcher_removal_validation = (
@@ -661,6 +669,7 @@ class PatchTransactionPostObservationRejected(RuntimeError):
         self.observed_dispatcher_coverage_validation = (
             observed_dispatcher_coverage_validation
         )
+        self.unflatten_verdict = unflatten_verdict
 
 
 class PatchTransactionPoisoned(CfgGenerationPoisoned):
@@ -672,6 +681,7 @@ class PatchTransactionPoisoned(CfgGenerationPoisoned):
         *,
         observed_dispatcher_removal_validation: object | None = None,
         observed_dispatcher_coverage_validation: object | None = None,
+        unflatten_verdict: object | None = None,
     ) -> None:
         super().__init__(failure)
         self.observed_dispatcher_removal_validation = (
@@ -680,6 +690,21 @@ class PatchTransactionPoisoned(CfgGenerationPoisoned):
         self.observed_dispatcher_coverage_validation = (
             observed_dispatcher_coverage_validation
         )
+        self.unflatten_verdict = unflatten_verdict
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PreparedPatchCfgTransaction(PreparedCfgTransaction):
+    """Prepared generic transaction carrying optional semantic authority."""
+
+    plan: PatchPlan
+    unflatten_authority: object | None = None
+    projected_unflatten_verdict: object | None = None
+
+    def __post_init__(self) -> None:
+        PreparedCfgTransaction.__post_init__(self)
+        if not isinstance(self.plan, PatchPlan):
+            raise TypeError("prepared patch transaction requires a PatchPlan")
 
 
 @dataclass(frozen=True, slots=True)
@@ -694,6 +719,8 @@ class PatchTransactionExecution(PatchPlanExecutionResult):
     projected_dispatcher_coverage_validation: object | None = None
     observed_dispatcher_removal_validation: object | None = None
     observed_dispatcher_coverage_validation: object | None = None
+    projected_unflatten_verdict: object | None = None
+    observed_unflatten_verdict: object | None = None
 
     def __post_init__(self) -> None:
         PatchPlanExecutionResult.__post_init__(self)
@@ -707,13 +734,15 @@ class BoundPatchCfgTransaction(BoundCfgTransaction):
 
     plan: PatchPlan | None = None
     patch_binding: BoundPatchPlan | None = None
+    unflatten_authority: object | None = None
 
     def __post_init__(self) -> None:
         BoundCfgTransaction.__post_init__(self)
         if not isinstance(self.plan, PatchPlan):
             raise TypeError("bound patch transaction requires a PatchPlan")
-        if not isinstance(self.patch_binding, BoundPatchPlan):
+        if type(self.patch_binding) is not BoundPatchPlan:
             raise TypeError("bound patch transaction requires final live binding")
+        validate_bound_patch_plan(self.patch_binding)
         if (
             self.patch_binding.plan is not self.plan
             or self.patch_binding.attempt_id != self.prepared.attempt_id
@@ -738,7 +767,7 @@ class HexRaysPatchTransactionParticipant:
     attempt_id: TransactionAttemptId = field(init=False)
     _projection: CfgProjection | None = field(default=None, init=False, repr=False)
     _snapshot: FlowGraph | None = field(default=None, init=False, repr=False)
-    _prepared: PreparedCfgTransaction | None = field(
+    _prepared: PreparedPatchCfgTransaction | None = field(
         default=None,
         init=False,
         repr=False,
@@ -774,6 +803,9 @@ class HexRaysPatchTransactionParticipant:
         init=False,
         repr=False,
     )
+    _unflatten_authority: object | None = field(default=None, init=False, repr=False)
+    _projected_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
+    _observed_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, PatchPlan):
@@ -861,11 +893,11 @@ class HexRaysPatchTransactionParticipant:
         if snapshot is None:
             raise RuntimeError("patch preflight lacks immutable source snapshot")
         self._reject_committed_semantic_overlap()
-        plan_metadata = self.plan.metadata_dict()
+        legacy_view = _legacy_plan_view(self.plan)
         validated_effect_exclusions = _validated_exact_effect_exclusions(
             snapshot,
             projection.graph,
-            plan_metadata,
+            legacy_view,
         )
         validated_alias_effect_exclusions = (
             _validated_local_alias_effect_exclusions(
@@ -889,12 +921,12 @@ class HexRaysPatchTransactionParticipant:
             snapshot,
             post_adj=projection.graph.as_adjacency_dict(),
         )
-        effectful_reachability = check_effectful_reachability_preserved(
+        effectful_reachability_raw = check_effectful_reachability_preserved(
             snapshot,
             post_adj=projection.graph.as_adjacency_dict(),
         )
         effectful_reachability = _apply_exact_effect_exclusions(
-            effectful_reachability,
+            effectful_reachability_raw,
             validated_effect_exclusions,
         )
         entry_reachability = check_entry_reachability_not_collapsed(
@@ -905,7 +937,7 @@ class HexRaysPatchTransactionParticipant:
         entry_allowance_reason: str | None = None
         entry_allowance = None
         projected_coverage_validation = None
-        if _has_dispatcher_coverage_metadata(plan_metadata):
+        if _has_dispatcher_coverage_metadata(legacy_view):
             from d810.transforms.dispatcher_corridor_coverage import (
                 has_unreachable_cyclic_switch_dispatcher_residue,
                 validate_dispatcher_corridor_coverage_metadata,
@@ -917,7 +949,7 @@ class HexRaysPatchTransactionParticipant:
                 validate_dispatcher_corridor_coverage_metadata(
                     snapshot,
                     post_graph=projection.graph,
-                    plan_metadata=plan_metadata,
+                    plan_metadata=legacy_view,
                 )
             )
             self._projected_dispatcher_coverage_validation = (
@@ -927,24 +959,24 @@ class HexRaysPatchTransactionParticipant:
                 has_unreachable_cyclic_switch_dispatcher_residue(
                     snapshot,
                     post_graph=projection.graph,
-                    plan_metadata=plan_metadata,
+                    plan_metadata=legacy_view,
                 )
             )
         else:
             projected_switch_cycle_hazard = False
         dispatcher_removal_obligation = _has_dispatcher_removal_obligation(
-            plan_metadata
+            legacy_view
         )
         has_dispatcher_removal_proof = _has_dispatcher_removal_proof_metadata(
-            plan_metadata
+            legacy_view
         )
-        if _has_dispatcher_coverage_metadata(plan_metadata) and (
+        if _has_dispatcher_coverage_metadata(legacy_view) and (
             not entry_reachability.passed or has_dispatcher_removal_proof
         ):
             candidate_allowance = validate_dispatcher_removal_preflight_proof(
                 snapshot,
                 post_graph=projection.graph,
-                plan_metadata=plan_metadata,
+                plan_metadata=legacy_view,
                 validated_exact_effect_exclusion_serials=(
                     validated_effect_exclusions
                 ),
@@ -1049,10 +1081,77 @@ class HexRaysPatchTransactionParticipant:
             contract.verify_projection(projection, scope="full")
             contract.verify(self.mba, projection=projection, phase="pre")
             obligations = ("cfg_projection", "live_pre_check")
-        prepared = PreparedCfgTransaction(
+        from d810.transforms.unflatten_authority import transaction_api
+        from d810.transforms.unflatten_authority.model import (
+            UnflattenAuthorityPreparationAccepted,
+            UnflattenAuthorityNotApplicable,
+        )
+
+        semantic_gates = GenericCfgGateBundle(
+            entry_reachability,
+            effectful_reachability_raw,
+            effectful_reachability,
+            terminal_reachability,
+        )
+
+        semantic_result = (
+            transaction_api.prepare_unflatten_authority(
+                source=snapshot,
+                projection=projection,
+                plan=self.plan,
+                attempt_id=self.attempt_id,
+                generic_gates=semantic_gates,
+            )
+            if self.plan.unflatten_proposal is not None
+            or self.plan.legacy_unflatten_shadow is not None
+            else UnflattenAuthorityNotApplicable(
+                route=transaction_api.UnflattenPlanRoute.ORDINARY
+            )
+        )
+        if isinstance(semantic_result, UnflattenAuthorityNotApplicable):
+            semantic_authority = None
+            semantic_verdict = None
+        elif isinstance(semantic_result, UnflattenAuthorityPreparationAccepted):
+            semantic_authority = semantic_result.prepared
+            semantic_verdict = semantic_result.verdict
+        else:
+            semantic_verdict = semantic_result.verdict
+            semantic_authority = None
+        if semantic_verdict is not None:
+            from d810.hexrays.observability import observe_unflatten_authority_phase
+            from d810.transforms.unflatten_authority.diagnostics import phase_observation
+
+            observe_unflatten_authority_phase(
+                mba=self.mba,
+                verdict=semantic_verdict,
+                observation_factory=lambda: (phase_observation(
+                    semantic_verdict,
+                    maturity=str(self.plan.source_maturity),
+                    source_ea=int(snapshot.func_ea),
+                ),),
+            )
+        if not isinstance(semantic_result, UnflattenAuthorityPreparationAccepted) and not isinstance(
+            semantic_result, UnflattenAuthorityNotApplicable
+        ):
+            raise PatchTransactionPreflightRejected(
+                "projected unflatten authority rejected",
+                unflatten_verdict=semantic_verdict,
+            )
+        self._projected_unflatten_verdict = semantic_verdict
+        self._unflatten_authority = semantic_authority
+        semantic_obligations = ()
+        if semantic_verdict is not None and semantic_verdict.safety_case is not None:
+            semantic_obligations = tuple(
+                f"{item.subject.subject_id}:{item.dimension.value}"
+                for item in semantic_verdict.safety_case.required_obligations
+            )
+        prepared = PreparedPatchCfgTransaction(
             attempt_id=self.attempt_id,
             projection=projection,
-            obligation_ids=obligations,
+            obligation_ids=tuple(obligations) + semantic_obligations,
+            plan=self.plan,
+            unflatten_authority=semantic_authority,
+            projected_unflatten_verdict=semantic_verdict,
         )
         self.gateway._record_cfg_preflighted()
         self._prepared = prepared
@@ -1060,7 +1159,7 @@ class HexRaysPatchTransactionParticipant:
 
     def bind(
         self,
-        prepared: PreparedCfgTransaction,
+        prepared: PreparedPatchCfgTransaction,
         identity_index: object,
     ) -> BoundCfgTransaction:
         if prepared is not self._prepared:
@@ -1080,15 +1179,32 @@ class HexRaysPatchTransactionParticipant:
             identity_index,
             prepared.attempt_id,
         )
+        bound_plan = patch_binding.bound_plan
+        bound_authority = None
+        if prepared.unflatten_authority is not None:
+            from d810.transforms.unflatten_authority import transaction_api
+            from d810.transforms.unflatten_authority.model import UnflattenAuthorityBindingAccepted
+
+            bind_result = transaction_api.bind_prepared_unflatten_authority(
+                prepared=prepared.unflatten_authority,
+                patch_binding=bound_plan,
+            )
+            if not isinstance(bind_result, UnflattenAuthorityBindingAccepted):
+                raise PatchTransactionPreflightRejected(
+                    "bound unflatten authority rejected",
+                    unflatten_verdict=bind_result.verdict,
+                )
+            bound_authority = bind_result.authority
         self.gateway.register_patch_plan_reservations(patch_binding.reservations)
         self.gateway._record_cfg_bound()
         bound = BoundPatchCfgTransaction(
             prepared=prepared,
             session_id=prepared.attempt_id.session_id,
             generation=prepared.attempt_id.generation,
-            bindings=patch_binding.bindings,
+            bindings=bound_plan.bindings,
             plan=self.plan,
-            patch_binding=patch_binding,
+            patch_binding=bound_plan,
+            unflatten_authority=bound_authority,
         )
         self._bound = bound
         return bound
@@ -1131,7 +1247,7 @@ class HexRaysPatchTransactionParticipant:
 
 
 def _first_failure(error: Exception, phase: str) -> tuple[str, str]:
-    reason = str(error) or type(error).__name__
+    reason = str(error) or "runtime failure"
     return reason, f"runtime:{phase}"
 
 
@@ -1143,6 +1259,22 @@ def _request_poison_restart(gateway: object, failure: object) -> None:
     if not callable(request):
         raise TypeError("CFG lifecycle authority lacks poisoned restart control")
     request(failure.attempt_id, failure)
+
+
+def _legacy_plan_view(plan: PatchPlan) -> Mapping[str, object]:
+    """Replay one immutable legacy view for the complete validation phase.
+
+    The replay is deliberately performed once.  Every still-decisive legacy
+    validator in that phase receives this same Mapping view, preserving the
+    captured canonical payloads instead of decoding a separate metadata dict.
+    """
+    if plan.legacy_unflatten_shadow is not None:
+        from d810.transforms.unflatten_authority.legacy_codec import (
+            replay_legacy_unflatten_shadow,
+        )
+
+        return replay_legacy_unflatten_shadow(plan)
+    return plan.metadata_dict()
 
 
 @dataclass(slots=True)
@@ -1184,14 +1316,28 @@ class _PatchTransactionLifecycle:
         if source is None:
             raise RuntimeError("patch validation lacks immutable source authority")
         observed_validation_graph = observed
-        plan_metadata = self.plan.metadata_dict()
+        if self.bound.unflatten_authority is not None:
+            from d810.transforms.unflatten_authority.transaction_api import (
+                revalidate_bound_patch_plan_against_prepared,
+            )
+
+            try:
+                revalidate_bound_patch_plan_against_prepared(
+                    self.bound.unflatten_authority.prepared,
+                    self.bound.patch_binding,
+                )
+            except (TypeError, ValueError) as error:
+                raise PatchTransactionPostObservationRejected(
+                    "observed bound authority changed before legacy replay"
+                ) from error
+        legacy_view = _legacy_plan_view(self.plan)
         projection = self.participant._projection
         if projection is None:
             raise RuntimeError("patch validation lacks immutable projection authority")
         validated_effect_exclusions = _validated_exact_effect_exclusions(
             source,
             projection.graph,
-            plan_metadata,
+            legacy_view,
         )
         if _requires_observed_identity_canonicalization(self.plan):
             from d810.transforms.dispatcher_corridor_coverage import (
@@ -1212,7 +1358,7 @@ class _PatchTransactionLifecycle:
                         reason="dispatcher_corridor_coverage_identity_drift",
                         function_ea=int(source.func_ea),
                     )
-                    if _has_dispatcher_coverage_metadata(plan_metadata)
+                    if _has_dispatcher_coverage_metadata(legacy_view)
                     else None
                 )
                 self.participant._observed_dispatcher_coverage_validation = (
@@ -1252,12 +1398,12 @@ class _PatchTransactionLifecycle:
             source,
             post_cfg=observed_validation_graph,
         )
-        effectful_reachability = check_effectful_reachability_preserved(
+        effectful_reachability_raw = check_effectful_reachability_preserved(
             source,
             post_cfg=observed_validation_graph,
         )
         effectful_reachability = _apply_exact_effect_exclusions(
-            effectful_reachability,
+            effectful_reachability_raw,
             validated_effect_exclusions,
         )
         entry_reachability = check_entry_reachability_not_collapsed(
@@ -1267,7 +1413,7 @@ class _PatchTransactionLifecycle:
         entry_allowance_passed = False
         observed_validation = None
         observed_coverage_validation = None
-        if _has_dispatcher_coverage_metadata(plan_metadata):
+        if _has_dispatcher_coverage_metadata(legacy_view):
             from d810.transforms.dispatcher_corridor_coverage import (
                 has_unreachable_cyclic_switch_dispatcher_residue,
                 validate_dispatcher_corridor_coverage_metadata,
@@ -1279,7 +1425,7 @@ class _PatchTransactionLifecycle:
                 validate_dispatcher_corridor_coverage_metadata(
                     source,
                     post_graph=observed_validation_graph,
-                    plan_metadata=plan_metadata,
+                    plan_metadata=legacy_view,
                 )
             )
             self.participant._observed_dispatcher_coverage_validation = (
@@ -1289,24 +1435,24 @@ class _PatchTransactionLifecycle:
                 has_unreachable_cyclic_switch_dispatcher_residue(
                     source,
                     post_graph=observed_validation_graph,
-                    plan_metadata=plan_metadata,
+                    plan_metadata=legacy_view,
                 )
             )
         else:
             observed_switch_cycle_hazard = False
         dispatcher_removal_obligation = _has_dispatcher_removal_obligation(
-            plan_metadata
+            legacy_view
         )
         has_dispatcher_removal_proof = _has_dispatcher_removal_proof_metadata(
-            plan_metadata
+            legacy_view
         )
-        if _has_dispatcher_coverage_metadata(plan_metadata) and (
+        if _has_dispatcher_coverage_metadata(legacy_view) and (
             not entry_reachability.passed or has_dispatcher_removal_proof
         ):
             candidate_validation = validate_dispatcher_removal_preflight_proof(
                 source,
                 post_graph=observed_validation_graph,
-                plan_metadata=plan_metadata,
+                plan_metadata=legacy_view,
                 validated_exact_effect_exclusion_serials=(
                     validated_effect_exclusions
                 ),
@@ -1407,6 +1553,39 @@ class _PatchTransactionLifecycle:
                     observed_coverage_validation
                 ),
             )
+        if self.bound.unflatten_authority is not None:
+            from d810.transforms.unflatten_authority import transaction_api
+            semantic_gates = GenericCfgGateBundle(
+                entry_reachability,
+                effectful_reachability_raw,
+                effectful_reachability,
+                terminal_reachability,
+            )
+
+            semantic_verdict = transaction_api.revalidate_observed_unflatten_authority(
+                authority=self.bound.unflatten_authority,
+                observed=observed_validation_graph,
+                observed_generation=int(self.gateway.generation),
+                generic_gates=semantic_gates,
+            )
+            self.participant._observed_unflatten_verdict = semantic_verdict
+            from d810.hexrays.observability import observe_unflatten_authority_phase
+            from d810.transforms.unflatten_authority.diagnostics import phase_observation
+
+            observe_unflatten_authority_phase(
+                mba=self.participant.mba,
+                verdict=semantic_verdict,
+                observation_factory=lambda: (phase_observation(
+                    semantic_verdict,
+                    maturity=str(self.plan.source_maturity),
+                    source_ea=int(observed.func_ea),
+                ),),
+            )
+            if not semantic_verdict.accepted:
+                raise PatchTransactionPostObservationRejected(
+                    "observed unflatten authority rejected",
+                    unflatten_verdict=semantic_verdict,
+                )
         post_projection = CfgProjection(
             plan_id=self.prepared.projection.plan_id,
             snapshot_id=self.prepared.projection.snapshot_id,
@@ -1447,6 +1626,8 @@ class _PatchTransactionLifecycle:
             observed_dispatcher_coverage_validation=(
                 self.participant._observed_dispatcher_coverage_validation
             ),
+            projected_unflatten_verdict=self.participant._projected_unflatten_verdict,
+            observed_unflatten_verdict=self.participant._observed_unflatten_verdict,
         )
 
     def fail(self, patch_plan: PatchPlan, error: Exception, phase: str) -> None:
@@ -1472,6 +1653,7 @@ class _PatchTransactionLifecycle:
                 observed_dispatcher_coverage_validation=(
                     self.participant._observed_dispatcher_coverage_validation
                 ),
+                unflatten_verdict=self.participant._observed_unflatten_verdict,
             ) from error
         if self.gateway.transaction_failure is None:
             self.gateway._record_clean_cfg_failure(
@@ -1549,6 +1731,7 @@ def execute_patch_transaction(
 __all__ = [
     "BoundPatchCfgTransaction",
     "HexRaysPatchTransactionParticipant",
+    "PreparedPatchCfgTransaction",
     "PatchTransactionExecution",
     "PatchTransactionPoisoned",
     "PatchTransactionPostObservationRejected",

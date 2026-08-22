@@ -17,12 +17,15 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteProof,
     SemanticRouteProofKind,
     SemanticRouteShape,
+    SemanticStateWriteDeliveryKind,
     SemanticStateWriteProof,
     bind_canonical_semantic_evidence,
 )
 from d810.capabilities.semantic_routes import CanonicalSemanticEvidenceCapability
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import InsnKind, MopSnapshot, OperandKind
+from d810.ir.expressions import ValueOpKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from tests.native_preanalysis import make_native_key
@@ -166,11 +169,44 @@ def _block(
 def _graph(*, include_target: bool = True) -> FlowGraph:
     blocks = {
         0: _block(0, 0x1000, succs=(1,), preds=()),
-        1: _block(1, 0x1100, succs=(0,), preds=(0,)),
+        1: BlockSnapshot(
+            serial=1,
+            block_type=1,
+            succs=(0,),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1100,
+            insn_snapshots=(
+                InsnSnapshot(
+                    opcode=0,
+                    ea=0x1100,
+                    operands=(),
+                    l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0xAABBCCDD),
+                    d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+                    kind=InsnKind.MOV,
+                    value_op_kind=ValueOpKind.MOVE,
+                ),
+            ),
+        ),
     }
     if include_target:
         blocks[2] = _block(2, 0x1200, succs=(), preds=())
     return FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
+
+
+def _direct_graph(*, reciprocal: bool = True) -> FlowGraph:
+    graph = _graph()
+    target = graph.blocks[2]
+    source = graph.blocks[1]
+    return FlowGraph(
+        blocks={
+            **graph.blocks,
+            1: replace(source, succs=(2,)),
+            2: replace(target, preds=(1,) if reciprocal else ()),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
 
 
 def test_direct_assignment_proof_requires_matching_state_write() -> None:
@@ -194,6 +230,137 @@ def test_direct_assignment_proof_requires_matching_state_write() -> None:
                 ),
             ),
         )
+
+
+def test_direct_state_assignment_replays_delivery_edge() -> None:
+    proof = replace(
+        _proof(),
+        state_write=replace(
+            _proof().state_write,
+            delivery_kind=SemanticStateWriteDeliveryKind.DIRECT,
+        ),
+    )
+
+    bound = bind_canonical_semantic_evidence(_direct_graph(), _evidence(proof))
+    assert bound is not None
+
+
+@pytest.mark.parametrize("reciprocal", (False,))
+def test_direct_state_assignment_rejects_delivery_edge_drift(reciprocal: bool) -> None:
+    proof = replace(
+        _proof(),
+        state_write=replace(
+            _proof().state_write,
+            delivery_kind=SemanticStateWriteDeliveryKind.DIRECT,
+        ),
+    )
+
+    assert bind_canonical_semantic_evidence(
+        _direct_graph(reciprocal=reciprocal), _evidence(proof)
+    ) is None
+
+
+def test_direct_state_assignment_accepts_extra_target_predecessor() -> None:
+    proof = replace(
+        _proof(),
+        state_write=replace(
+            _proof().state_write,
+            delivery_kind=SemanticStateWriteDeliveryKind.DIRECT,
+        ),
+    )
+    graph = _direct_graph()
+    target = graph.blocks[2]
+    graph = replace(graph, blocks={**graph.blocks, 2: replace(target, preds=(1, 0))})
+
+    assert bind_canonical_semantic_evidence(graph, _evidence(proof)) is not None
+
+
+def test_direct_state_assignment_rejects_extra_source_successor() -> None:
+    proof = replace(
+        _proof(),
+        state_write=replace(
+            _proof().state_write,
+            delivery_kind=SemanticStateWriteDeliveryKind.DIRECT,
+        ),
+    )
+    graph = _direct_graph()
+    source = graph.blocks[1]
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            1: replace(source, succs=(2, 0)),
+        },
+    )
+
+    assert bind_canonical_semantic_evidence(graph, _evidence(proof)) is None
+
+
+@pytest.mark.parametrize("transfer_kind", ("goto", "nop"))
+def test_direct_state_assignment_replays_authority_transfer(transfer_kind: str) -> None:
+    from d810.ir.semantics import CallKind
+
+    source_identity = StableBlockIdentity.from_instruction_eas(
+        (0x1100, 0x1101, 0x1102, 0x1103),
+        native_key=NATIVE_KEY,
+    )
+    baseline = _proof()
+    state_write = replace(
+        baseline.state_write,
+        identity=source_identity,
+        delivery_kind=SemanticStateWriteDeliveryKind.DIRECT,
+        corridor_instruction_eas=(0x1100, 0x1101, 0x1102),
+        preserved_call_instruction_eas=(0x1101,),
+        authority_transfer_ea=0x1103,
+    )
+    proof = replace(
+        baseline,
+        source_identity=source_identity,
+        source_anchor_ea=0x1102,
+        delivery_region=NativeEaInterval(0x1100, 0x1104),
+        state_write=state_write,
+    )
+    graph = _direct_graph()
+    source = graph.blocks[1]
+    transfer = (
+        InsnSnapshot(
+            opcode=0,
+            ea=0x1103,
+            operands=(),
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+            kind=InsnKind.GOTO,
+        )
+        if transfer_kind == "goto"
+        else InsnSnapshot(opcode=0, ea=0x1103, operands=(), kind=InsnKind.NOP)
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            1: replace(
+                source,
+                insn_snapshots=(
+                    source.insn_snapshots[0],
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=0x1101,
+                        operands=(),
+                        kind=InsnKind.CALL,
+                        call_kind=CallKind.DIRECT,
+                        is_call=True,
+                    ),
+                    InsnSnapshot(opcode=0, ea=0x1102, operands=(), kind=InsnKind.NOP),
+                    transfer,
+                ),
+            ),
+        },
+    )
+
+    bound = bind_canonical_semantic_evidence(graph, _evidence(proof))
+    if transfer_kind == "goto":
+        assert bound is not None
+    else:
+        assert bound is None
 
 
 def test_direct_proof_separates_anchor_identity_from_delivery_region() -> None:
@@ -372,12 +539,34 @@ def test_binding_uses_exact_identity_when_branch_ea_has_a_helper_owner() -> None
     graph = FlowGraph(
         blocks={
             0: _block(0, 0x1000, succs=(1,), preds=()),
-            1: _block(
-                1,
-                0x1100,
-                succs=(3, 5),
-                preds=(0,),
-                insn_eas=(0x1100, 0x1105),
+            1: replace(
+                _block(
+                    1,
+                    0x1100,
+                    succs=(3, 5),
+                    preds=(0,),
+                    insn_eas=(0x1100, 0x1105),
+                ),
+                insn_snapshots=(
+                    InsnSnapshot(
+                        0,
+                        0x1100,
+                        (),
+                        l=MopSnapshot(
+                            kind=OperandKind.NUMBER,
+                            size=4,
+                            value=0xAABBCCDD,
+                        ),
+                        d=MopSnapshot(
+                            kind=OperandKind.REGISTER,
+                            size=4,
+                            reg=20,
+                        ),
+                        kind=InsnKind.MOV,
+                        value_op_kind=ValueOpKind.MOVE,
+                    ),
+                    InsnSnapshot(0, 0x1105, (), kind=InsnKind.NOP),
+                ),
             ),
             2: _block(2, 0x1200, succs=(), preds=(3, 5)),
             3: _block(3, 0x1105, succs=(2,), preds=(1,)),
@@ -425,15 +614,7 @@ def test_conditional_corridors_bind_all_or_abstain() -> None:
         _evidence(proof),
     )
 
-    assert bound is not None
-    assert bound.routes[0].predicate is not None
-    assert tuple(
-        (block.serial, block.anchor_ea) for block in bound.routes[0].predicate.corridor
-    ) == ((1, 0x1080), (2, 0x1100))
-    assert tuple(
-        (block.serial, block.anchor_ea)
-        for block in bound.routes[0].carriers[0].corridor
-    ) == ((1, 0x1088), (2, 0x1100))
+    assert bound is None
 
     graph_without_producer = FlowGraph(
         blocks={

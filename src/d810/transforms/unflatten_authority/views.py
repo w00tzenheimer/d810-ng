@@ -19,6 +19,7 @@ class ViewMetrics:
     index_folds: int
     view_graph_traversals: int
     preparation_metrics: model.PreparationBuildMetrics | None = None
+    phase_build_metrics: model.PhaseBuildMetrics | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +93,7 @@ def view_metrics(case: model.SemanticSafetyCase, preparation_metrics: model.Prep
         index_folds=case.phase_metrics.index_folds,
         view_graph_traversals=case.phase_metrics.view_graph_traversals,
         preparation_metrics=case.phase_metrics.preparation_metrics,
+        phase_build_metrics=case.phase_metrics.phase_build_metrics,
     )
 
 

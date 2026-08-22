@@ -114,6 +114,29 @@ def _subject_key(subject: model.SemanticSubjectRef) -> str:
     return subject.subject_id
 
 
+def _route_destination_ids(
+    route: model.SemanticSubjectRef,
+    subjects: tuple[model.SemanticSubjectRef, ...],
+) -> tuple[str, ...]:
+    """Project destination IDs in the route locator's paired order."""
+
+    if type(route.locator) is not model.RouteSubjectLocator:
+        raise ValueError("route subject must carry a RouteSubjectLocator")
+    return tuple(
+        next(
+            subject.subject_id
+            for subject in subjects
+            if subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
+            and subject.block_ref == ref
+            and subject.anchor_ea == anchor
+        )
+        for ref, anchor in zip(
+            route.locator.destination_refs,
+            route.locator.destination_anchor_eas,
+        )
+    )
+
+
 def _claim_subjects(claim: model.UnflattenClaim) -> tuple[model.SemanticSubjectRef, ...]:
     """Return the closed subject inventory owned by one typed claim."""
 
@@ -454,7 +477,19 @@ def _validate_justification_graph(
                     and by_evidence_id[premise].subject.subject_id == target
                 ) or (
                     type(payload) is model.CorridorCoverageEvidencePayload
-                    and payload.corridor_subject_id == target
+                    and (
+                        payload.corridor_subject_id == target
+                        or target in payload.member_subject_ids
+                        or any(
+                            subject.subject_id == target
+                            and any(
+                                member.subject_id in payload.member_subject_ids
+                                and member.block_ref == subject.block_ref
+                                for member in subjects
+                            )
+                            for subject in subjects
+                        )
+                    )
                 ) or (
                     type(payload) is model.PatchStepEvidencePayload
                     and by_evidence_id[premise].subject.subject_id == target
@@ -470,7 +505,10 @@ def _validate_justification_graph(
                 raise ValueError("justification claim is outside claim inventory")
             allowed = {
                 model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN: type(claim) is model.RetiredDispatcherInfrastructureClaim,
-                model.UnflattenJustificationRule.EQUIVALENT_ROUTE_PROVEN: type(claim) is model.EquivalentSemanticRouteClaim,
+                model.UnflattenJustificationRule.EQUIVALENT_ROUTE_PROVEN: type(claim) in {
+                    model.EquivalentSemanticRouteClaim,
+                    model.ExactInfeasibleEffectClaim,
+                },
                 model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN: type(claim) is model.ExactInfeasibleEffectClaim,
                 model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN: type(claim) is model.LocalAliasEffectScalarizationClaim,
                 model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN: type(claim) is model.TerminalCycleBreakClaim,
@@ -487,6 +525,12 @@ def _validate_justification_graph(
                     if relation.source_subject_id == claim.owner_subject.subject_id
                     and relation.dimension is model.SafetyDimension.EFFECT_PRESERVATION
                 )
+            elif type(claim) is model.ExactInfeasibleEffectClaim:
+                for premise in item.premise_ids:
+                    payload = by_evidence_id[premise].payload
+                    if type(payload) is model.SemanticRouteEvidencePayload:
+                        claim_targets.add(payload.route_subject_id)
+                        claim_targets.update(payload.destination_subject_ids)
             if item.conclusion.subject.subject_id not in claim_targets:
                 raise ValueError("claim justification concludes outside claim scope")
             for premise in item.premise_ids:
@@ -505,7 +549,7 @@ def _validate_justification_graph(
                         type(payload) is model.SemanticRouteEvidencePayload
                         and payload.route_subject_id == claim.retired_route_subject.subject_id
                         and payload.source_subject_id == claim.source_subject.subject_id
-                        and payload.destination_subject_ids == tuple(sorted(subject.subject_id for subject in claim.destination_subjects))
+                        and payload.destination_subject_ids == _route_destination_ids(claim.retired_route_subject, subjects)
                     )
                 elif type(claim) is model.ExactInfeasibleEffectClaim:
                     correlated = (
@@ -513,7 +557,7 @@ def _validate_justification_graph(
                         and payload.effect_subject_id == claim.discarded_effect_subject.subject_id
                     ) or (
                         type(payload) is model.SemanticRouteEvidencePayload
-                        and payload.source_subject_id == claim.source_subject.subject_id
+                        and payload.source_subject_id == claim.predicate_subject.subject_id
                         and payload.proof_ids == tuple(sorted(claim.route_proof_ids))
                     )
                 elif type(claim) is model.LocalAliasEffectScalarizationClaim:
@@ -686,8 +730,8 @@ def _validate_receipt(
         if item.role is model.SemanticSubjectRole.PLANNED_HELPER
     )
     expected = {
-        "source_inventory_digest": _receipt_digest(source_subjects),
-        "candidate_inventory_digest": _receipt_digest(candidate_subjects),
+        "source_inventory_digest": inputs.source_inventory.inventory_digest,
+        "candidate_inventory_digest": inputs.candidate_inventory.inventory_digest,
         "source_binding_digest": _receipt_digest(source_bindings),
         "candidate_binding_digest": _receipt_digest(candidate_bindings),
         "route_expansion_digest": _receipt_digest(route_subjects),
@@ -778,6 +822,7 @@ def build_semantic_case(
 ) -> model.SemanticSafetyCase:
     if type(inputs) is not model.DerivedUnflattenPreparationInputs:
         raise TypeError("inputs must be DerivedUnflattenPreparationInputs")
+    model.DerivedUnflattenPreparationInputs.__post_init__(inputs)
     model._id(authority_id, "authority_id")
     if type(phase) is not model.UnflattenAuthorityPhase:
         raise TypeError("phase must be UnflattenAuthorityPhase")
@@ -1079,7 +1124,7 @@ def build_semantic_case(
         )
         and any(
             payload.proof_ids == tuple(sorted(claim.route_proof_ids))
-            and payload.source_subject_id == claim.source_subject.subject_id
+            and payload.source_subject_id == claim.predicate_subject.subject_id
             and claim.selected_target_subject.subject_id in payload.destination_subject_ids
             and payload.matched
             for payload in supplied_route_evidence
@@ -1113,31 +1158,50 @@ def build_semantic_case(
             source, phase, missing_lineage,
         ))
     for gate in inputs.generic_gates:
-        expected_role = {
+            expected_role = {
             model.GenericCfgGateKind.ENTRY_REACHABILITY: model.SemanticSubjectRole.SOURCE_ENTRY,
             model.GenericCfgGateKind.EFFECTFUL_REACHABILITY: model.SemanticSubjectRole.EFFECT_SITE,
             model.GenericCfgGateKind.TERMINAL_REACHABILITY: model.SemanticSubjectRole.TERMINAL_SITE,
-        }[gate.gate]
-        scoped_ids = {
-            subject.subject_id for subject in subjects if subject.role is expected_role
-        }
-        affected_ids = set(gate.supported_subject_ids) | set(gate.refuted_subject_ids)
-        if gate.gate is model.GenericCfgGateKind.ENTRY_REACHABILITY and len(scoped_ids) != 1:
-            raise ValueError("entry gate requires exactly one SOURCE_ENTRY subject")
-        if affected_ids != scoped_ids:
-            raise ValueError("generic gate scope is incomplete or contains unrelated subjects")
-        gate_targets = tuple((item, True) for item in gate.supported_subject_ids) + tuple(
-            (item, False) for item in gate.refuted_subject_ids
-        )
-        for affected, passed in gate_targets:
-            subject = next((item for item in subjects if item.subject_id == affected), None)
-            if subject is None:
-                raise ValueError("generic gate targets a foreign subject")
-            if subject.role is not expected_role:
-                raise ValueError("generic gate target has an incompatible subject role")
-            payload = model.GenericCfgGateEvidencePayload(gate.gate, passed, (affected,), gate.reason_code)
-            evidence_item = _evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.GENERIC_CFG_GATE, subject, phase, payload)
-            evidence_rows.append(evidence_item)
+            }[gate.gate]
+            scoped_subjects = tuple(
+                subject for subject in subjects if subject.role is expected_role
+            )
+            if gate.gate is model.GenericCfgGateKind.EFFECTFUL_REACHABILITY:
+                scoped_subjects = tuple(
+                    subject for subject in scoped_subjects
+                    if type(subject.locator) is model.EffectSubjectLocator
+                    and subject.locator.effect_kind in {
+                        model.EffectSiteKind.CALL,
+                        model.EffectSiteKind.STORE,
+                    }
+                )
+            elif gate.gate is model.GenericCfgGateKind.TERMINAL_REACHABILITY:
+                scoped_subjects = tuple(
+                    subject for subject in scoped_subjects
+                    if type(subject.locator) is model.TerminalSubjectLocator
+                    and subject.locator.terminal_kind in {
+                        model.TerminalKind.RETURN,
+                        model.TerminalKind.STOP,
+                    }
+                )
+            scoped_ids = {subject.subject_id for subject in scoped_subjects}
+            affected_ids = set(gate.supported_subject_ids) | set(gate.refuted_subject_ids)
+            if gate.gate is model.GenericCfgGateKind.ENTRY_REACHABILITY and len(scoped_ids) != 1:
+                raise ValueError("entry gate requires exactly one SOURCE_ENTRY subject")
+            if affected_ids != scoped_ids:
+                raise ValueError("generic gate scope is incomplete or contains unrelated subjects")
+            gate_targets = tuple((item, True) for item in gate.supported_subject_ids) + tuple(
+                (item, False) for item in gate.refuted_subject_ids
+            )
+            for affected, passed in gate_targets:
+                subject = next((item for item in subjects if item.subject_id == affected), None)
+                if subject is None:
+                    raise ValueError("generic gate targets a foreign subject")
+                if subject.role is not expected_role:
+                    raise ValueError("generic gate target has an incompatible subject role")
+                payload = model.GenericCfgGateEvidencePayload(gate.gate, passed, (affected,), gate.reason_code)
+                evidence_item = _evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.GENERIC_CFG_GATE, subject, phase, payload)
+                evidence_rows.append(evidence_item)
     for key in required:
         if key.dimension is not model.SafetyDimension.IDENTITY_BINDING:
             continue
@@ -1191,13 +1255,23 @@ def build_semantic_case(
     if len(topology_rows) != len(topology_items):
         raise ValueError("topology evidence must contain one row per subject")
     candidate_drift_ids: set[str] = set()
+    # A changed relation set is a shared edge-owner drift: both endpoints
+    # lose topology authority, even when the peer row happens to retain its
+    # own reverse relation.
+    for item in topology_items:
+        payload = item.payload
+        if set(payload.candidate_edge_relations) != set(payload.expected_edge_relations):
+            candidate_drift_ids.update(
+                relation.source_subject_id
+                for relation in (*payload.expected_edge_relations, *payload.candidate_edge_relations)
+            )
+            candidate_drift_ids.update(
+                relation.target_subject_id
+                for relation in (*payload.expected_edge_relations, *payload.candidate_edge_relations)
+            )
     for item in topology_items:
         payload = item.payload
         for relation in payload.candidate_edge_relations:
-            if relation.source_subject_id != payload.subject_id:
-                candidate_drift_ids.update(
-                    (payload.subject_id, relation.source_subject_id, relation.target_subject_id)
-                )
             peer = topology_rows.get(relation.target_subject_id)
             peer_relations = () if peer is None else peer.candidate_edge_relations
             if not any(
@@ -1233,6 +1307,15 @@ def build_semantic_case(
                 raise ValueError("topology digest does not match canonical edge relations")
             expected_relations = set(payload.expected_edge_relations)
             candidate_relations = set(payload.candidate_edge_relations)
+            if candidate_relations != expected_relations:
+                candidate_drift_ids.update(
+                    relation.source_subject_id
+                    for relation in (*payload.expected_edge_relations, *payload.candidate_edge_relations)
+                )
+                candidate_drift_ids.update(
+                    relation.target_subject_id
+                    for relation in (*payload.expected_edge_relations, *payload.candidate_edge_relations)
+                )
             expected_predecessors = {
                 relation.source_subject_id for relation in payload.expected_edge_relations
                 if relation.target_subject_id == payload.subject_id
@@ -1264,10 +1347,6 @@ def build_semantic_case(
             ):
                 raise ValueError("candidate topology relation references a foreign or non-incident subject")
             for relation in payload.candidate_edge_relations:
-                if relation.source_subject_id != payload.subject_id:
-                    candidate_drift_ids.update(
-                        (payload.subject_id, relation.source_subject_id, relation.target_subject_id)
-                    )
                 peer = topology_rows.get(relation.target_subject_id)
                 peer_relations = () if peer is None else peer.candidate_edge_relations
                 if not any(
@@ -1322,7 +1401,7 @@ def build_semantic_case(
                     claim for claim in inputs.claims
                     if type(claim) is model.ExactInfeasibleEffectClaim
                     and payload.proof_ids == tuple(sorted(claim.route_proof_ids))
-                    and payload.source_subject_id == claim.source_subject.subject_id
+                    and payload.source_subject_id == claim.predicate_subject.subject_id
                     and claim.selected_target_subject.subject_id in payload.destination_subject_ids
                 ),
                 None,
@@ -1334,26 +1413,27 @@ def build_semantic_case(
                 or payload.atomic_group_id != route_claim.atomic_group_id
                 or payload.source_subject_id != route_claim.source_subject.subject_id
                 or payload.destination_subject_ids != tuple(
-                    sorted(subject.subject_id for subject in route_claim.destination_subjects)
+                    _route_destination_ids(route_claim.retired_route_subject, subjects)
                 )
             ):
                 raise ValueError("route evidence target is outside the claimed route scope")
             if exact_effect_claim is not None:
-                canonical_destinations = tuple(sorted(
-                    subject.subject_id
-                    for subject in subjects
-                    if subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
-                    and any(
-                        subject.block_ref == block.block_ref
-                        and subject.anchor_ea == destination.target_anchor_ea
-                        for proof in proposal.route_evidence.route_proofs
-                        if proof.proof_id in exact_effect_claim.route_proof_ids
-                        for destination in proof.destinations
-                        for block in proposal.source_identity_catalog.blocks
-                        if block.anchor_ea == destination.target_anchor_ea
-                        or destination.target_anchor_ea in block.native_instruction_eas
+                route_subject = known_subjects.get(payload.route_subject_id)
+                if route_subject is None or type(route_subject.locator) is not model.RouteSubjectLocator:
+                    raise ValueError("route evidence target is not a derived route subject")
+                canonical_destinations = tuple(
+                    next(
+                        subject.subject_id
+                        for subject in subjects
+                        if subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
+                        and subject.block_ref == ref
+                        and subject.anchor_ea == anchor
                     )
-                ))
+                    for ref, anchor in zip(
+                        route_subject.locator.destination_refs,
+                        route_subject.locator.destination_anchor_eas,
+                    )
+                )
                 if payload.destination_subject_ids != canonical_destinations:
                     raise ValueError("exact-effect route evidence must cover the canonical destinations exactly")
             if any(target not in known_subject_ids for target in payload.destination_subject_ids):
@@ -1365,7 +1445,7 @@ def build_semantic_case(
             if (
                 locator.proof_id not in payload.proof_ids
                 or locator.atomic_group_id != payload.atomic_group_id
-                or locator.source_ref != known_subjects.get(payload.source_subject_id, route_subject).block_ref
+                or locator.source_ref != known_subjects[payload.source_subject_id].block_ref
                 or tuple(locator.destination_refs) != tuple(
                     known_subjects[target].block_ref
                     for target in payload.destination_subject_ids
@@ -1576,7 +1656,7 @@ def build_semantic_case(
                 and any(
                     type(route_item.payload) is model.SemanticRouteEvidencePayload
                     and route_item.payload.proof_ids == tuple(sorted(claim.route_proof_ids))
-                    and route_item.payload.source_subject_id == claim.source_subject.subject_id
+                    and route_item.payload.source_subject_id == claim.predicate_subject.subject_id
                     and claim.selected_target_subject.subject_id in route_item.payload.destination_subject_ids
                     and route_item.payload.matched
                     for route_item in evidence
@@ -1631,7 +1711,16 @@ def build_semantic_case(
                 targets = ((target.subject_id, model.SafetyDimension.USE_DEF_INTEGRITY, clean, rule),)
         elif type(payload) is model.CorridorCoverageEvidencePayload:
             complete = not payload.residual_subject_ids and set(payload.member_subject_ids) == set(payload.covered_subject_ids)
-            targets = ((payload.corridor_subject_id, model.SafetyDimension.CORRIDOR_COVERAGE, complete, model.UnflattenJustificationRule.CORRIDOR_FULLY_COVERED if complete else model.UnflattenJustificationRule.CORRIDOR_RESIDUAL_UNACCOUNTED),)
+            target_ids = (payload.corridor_subject_id, *payload.member_subject_ids)
+            target_ids += tuple(
+                subject.subject_id
+                for subject in subjects
+                if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+            )
+            targets = tuple(
+                (target, model.SafetyDimension.CORRIDOR_COVERAGE, complete, model.UnflattenJustificationRule.CORRIDOR_FULLY_COVERED if complete else model.UnflattenJustificationRule.CORRIDOR_RESIDUAL_UNACCOUNTED)
+                for target in dict.fromkeys(target_ids)
+            )
         elif type(payload) is model.PatchStepEvidencePayload:
             if payload.plan_id != proposal.plan_id:
                 raise ValueError("patch-step evidence belongs to a different plan")
@@ -1710,7 +1799,7 @@ def build_semantic_case(
                 if type(item.payload) is model.SemanticRouteEvidencePayload
                 and item.payload.route_subject_id == claim.retired_route_subject.subject_id
                 and item.payload.source_subject_id == claim.source_subject.subject_id
-                and item.payload.destination_subject_ids == tuple(sorted(item.subject_id for item in claim.destination_subjects))
+                and item.payload.destination_subject_ids == _route_destination_ids(claim.retired_route_subject, inputs.source_subjects)
                 and item.payload.atomic_group_id == claim.atomic_group_id
                 and item.payload.matched
             )
@@ -1736,13 +1825,37 @@ def build_semantic_case(
                 if type(item.payload) is model.SemanticRouteEvidencePayload
                 and item.payload.proof_ids == tuple(sorted(claim.route_proof_ids))
                 and item.payload.atomic_group_id == proposal.route_evidence.atomic_group_id
-                and item.payload.source_subject_id == claim.source_subject.subject_id
+                and item.payload.source_subject_id == claim.predicate_subject.subject_id
                 and claim.selected_target_subject.subject_id in item.payload.destination_subject_ids
                 and item.payload.matched
             )
             if matching_effect and matching_route:
                 claim_evidence = tuple(item.evidence_id for item in (*matching_effect, *matching_route))
                 targets = ((claim.discarded_effect_subject, model.SafetyDimension.EFFECT_PRESERVATION), (claim.discarded_effect_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING))
+                route_subject = next(
+                    subject for subject in subjects
+                    if subject.kind is model.SemanticSubjectKind.ROUTE
+                    and subject.subject_id == matching_route[0].payload.route_subject_id
+                )
+                route_targets = (
+                    route_subject,
+                    claim.source_subject,
+                    claim.predicate_subject,
+                    claim.selected_target_subject,
+                    *tuple(
+                        subject for subject in subjects
+                        if subject.subject_id in matching_route[0].payload.destination_subject_ids
+                    ),
+                )
+                for route_target in dict.fromkeys(route_targets):
+                    route_key = model.ObligationKey(route_target, model.SafetyDimension.ROUTE_EQUIVALENCE)
+                    if route_key in required:
+                        _add_justification(
+                            justifications, route_key,
+                            model.UnflattenJustificationRule.EQUIVALENT_ROUTE_PROVEN,
+                            model.EvidencePolarity.SUPPORTS, phase,
+                            (matching_route[0].evidence_id,), claim.claim_id,
+                        )
             rule = model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN
         elif type(claim) is model.LocalAliasEffectScalarizationClaim:
             alias_relations = tuple(
@@ -1857,7 +1970,15 @@ def build_semantic_case(
         "bindings": bindings, "conditional_relations": inputs.conditional_relations,
         "required_obligations": required, "evidence": evidence,
         "justifications": justifications_tuple, "obligation_index": index,
-        "phase_metrics": model.SemanticPhaseMetrics(inputs.preparation_metrics, 1, 1, 1, 0),
+        "phase_metrics": model.SemanticPhaseMetrics(
+            inputs.preparation_metrics,
+            inputs.phase_build_metrics.source_inventory_builds,
+            inputs.phase_build_metrics.candidate_inventory_builds,
+            1,
+            0,
+            inputs.phase_build_metrics.phase,
+            inputs.phase_build_metrics,
+        ),
     }
     return _case_factory(model.SemanticSafetyCase, **values)
 

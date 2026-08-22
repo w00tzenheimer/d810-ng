@@ -40,9 +40,17 @@ from d810.ir.block_identity import (
     stable_block_identity_token,
 )
 from d810.ir.expressions import ValueOpKind
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.ir.semantic_edge import SemanticEdgeRole
-from d810.ir.semantics import PredicateKind
+from d810.ir.semantics import ControlTransferKind, PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms import canonical_semantic_fragment as canonical_fragment
 from d810.transforms.canonical_semantic_fragment import (
@@ -116,6 +124,18 @@ def _block(
     )
 
 
+def _mov_snapshot(ea: int, value: int, *, reg: int = 20) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=value),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=reg),
+        kind=InsnKind.MOV,
+        value_op_kind=ValueOpKind.MOVE,
+    )
+
+
 def _current_identity_authority(
     graph: FlowGraph,
 ) -> dict[int, StableBlockIdentity]:
@@ -140,6 +160,24 @@ def _direct_bound_evidence() -> tuple[FlowGraph, object]:
         },
         entry_serial=10,
         func_ea=0x1000,
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            20: replace(
+                graph.blocks[20],
+                insn_snapshots=(InsnSnapshot(
+                    opcode=0,
+                    ea=0x1100,
+                    operands=(),
+                    l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0xAABBCCDD),
+                    d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+                    kind=InsnKind.MOV,
+                    value_op_kind=ValueOpKind.MOVE,
+                ),),
+            ),
+        },
     )
     source_identity = _identity(0x1100)
     evidence = CanonicalSemanticEvidence(
@@ -5120,21 +5158,69 @@ def test_partial_bound_atomic_group_is_rejected() -> None:
 
 def test_storage_conditional_keeps_both_arms_and_data_flow_in_one_plan() -> None:
     producer_identity = _wide_identity(0x1080, 0x1090)
-    source_identity = _identity(0x1100)
+    source_identity = _wide_identity(0x1100, 0x1102)
     graph = FlowGraph(
         blocks={
             10: _block(10, 0x1000, succs=(15,), preds=()),
-            15: _block(
-                15,
-                0x1080,
-                succs=(20,),
-                preds=(10,),
-                insn_eas=(0x1080, 0x1088),
-            ),
-            20: _block(20, 0x1100, succs=(30,), preds=(15,)),
+                15: replace(
+                    _block(
+                        15,
+                        0x1080,
+                        succs=(20,),
+                        preds=(10,),
+                        insn_eas=(0x1080, 0x1088),
+                    ),
+                    insn_snapshots=(
+                        InsnSnapshot(
+                            opcode=0,
+                            ea=0x1080,
+                            operands=(),
+                            l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=0x40, stack_refs=(0x40,)),
+                            r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0),
+                            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=40),
+                            kind=InsnKind.COND_JUMP,
+                            branch_predicate=PredicateKind.EQ,
+                            is_conditional_jump=True,
+                        ),
+                        InsnSnapshot(
+                            opcode=0,
+                            ea=0x1088,
+                            operands=(),
+                            l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0xAABBCCDD),
+                            d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=0x48, stack_refs=(0x48,)),
+                            kind=InsnKind.MOV,
+                            value_op_kind=ValueOpKind.MOVE,
+                        ),
+                    ),
+                ),
+                20: replace(
+                    _block(20, 0x1100, succs=(40, 50), preds=(15,)),
+                    insn_snapshots=(
+                        InsnSnapshot(
+                            opcode=0,
+                            ea=0x1100,
+                            operands=(),
+                            l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=0x40, stack_refs=(0x40,)),
+                            r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=0),
+                            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=40),
+                            kind=InsnKind.COND_JUMP,
+                            branch_predicate=PredicateKind.EQ,
+                            is_conditional_jump=True,
+                        ),
+                        InsnSnapshot(
+                            opcode=0,
+                            ea=0x1101,
+                            operands=(),
+                            r=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=0x48, stack_refs=(0x48,)),
+                            d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+                            kind=InsnKind.LOAD,
+                            value_op_kind=ValueOpKind.LOAD,
+                        ),
+                    ),
+                ),
             30: _block(30, 0x1400, succs=(20,), preds=(20,)),
-            40: _block(40, 0x1200, succs=(), preds=()),
-            50: _block(50, 0x1300, succs=(), preds=()),
+                40: _block(40, 0x1200, succs=(), preds=(20,)),
+                50: _block(50, 0x1300, succs=(), preds=(20,)),
         },
         entry_serial=10,
         func_ea=0x1000,
@@ -5164,11 +5250,11 @@ def test_storage_conditional_keeps_both_arms_and_data_flow_in_one_plan() -> None
         ),
         predicate=SemanticPredicateProof(
             kind=SemanticPredicateKind.STORAGE_EQUALS,
-            origin=SemanticCorridorPoint(producer_identity, 0x1080),
-            consumer=SemanticCorridorPoint(source_identity, 0x1100),
-            corridor=(
-                SemanticCorridorPoint(producer_identity, 0x1080),
-                SemanticCorridorPoint(source_identity, 0x1100),
+                origin=SemanticCorridorPoint(producer_identity, 0x1080),
+                consumer=SemanticCorridorPoint(source_identity, 0x1100),
+                corridor=(
+                    SemanticCorridorPoint(producer_identity, 0x1080),
+                    SemanticCorridorPoint(source_identity, 0x1100),
             ),
             storage_identity=predicate_storage,
             width=4,
@@ -5178,12 +5264,12 @@ def test_storage_conditional_keeps_both_arms_and_data_flow_in_one_plan() -> None
             SemanticCarrierProof(
                 carrier_id="entry-state-choice",
                 definition=SemanticCorridorPoint(producer_identity, 0x1088),
-                consumers=(SemanticCorridorPoint(source_identity, 0x1100),),
+                consumers=(SemanticCorridorPoint(source_identity, 0x1101),),
                 corridor=(
                     SemanticCorridorPoint(producer_identity, 0x1088),
-                    SemanticCorridorPoint(source_identity, 0x1100),
+                    SemanticCorridorPoint(source_identity, 0x1101),
                 ),
-                storage_identity=carrier_storage,
+                    storage_identity=carrier_storage,
                 width=4,
                 state_values=(0xAABBCCDD, 0x11223344),
                 permitted_write_eas=frozenset({0x1088}),
@@ -5232,7 +5318,7 @@ def test_storage_conditional_keeps_both_arms_and_data_flow_in_one_plan() -> None
     )
     assert carrier.definition.storage_identity == carrier_storage
     assert carrier.definition.instruction_ea == 0x1088
-    assert carrier.uses[0].instruction_ea == 0x1100
+    assert carrier.uses[0].instruction_ea == 0x1101
 
 
 def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
@@ -5249,24 +5335,58 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
     graph = FlowGraph(
         blocks={
             10: _block(10, 0x1000, succs=(20,), preds=()),
-            20: _block(
+                20: _block(
                 20,
                 0x1100,
                 succs=(30,),
                 preds=(10,),
-                insn_eas=(0x1100, 0x1105),
-            ),
+                    insn_eas=(0x1100, 0x1105),
+                ),
             30: _block(30, 0x1400, succs=(20, 40), preds=(20,)),
-            40: _block(
+                40: _block(
                 40,
                 0x1200,
                 succs=(),
                 preds=(30,),
-                insn_eas=(0x1200, 0x1208),
-            ),
+                    insn_eas=(0x1200, 0x1208),
+                ),
         },
         entry_serial=10,
         func_ea=0x1000,
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            20: replace(
+                graph.blocks[20],
+                insn_snapshots=(
+                    _mov_snapshot(0x1100, state_constant),
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=0x1105,
+                        operands=(),
+                        l=MopSnapshot(kind=OperandKind.GLOBAL, size=4, gaddr=0x48B8A4),
+                        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+                        kind=InsnKind.MOV,
+                        value_op_kind=ValueOpKind.MOVE,
+                    ),
+                ),
+            ),
+            40: replace(
+                graph.blocks[40],
+                insn_snapshots=(
+                    InsnSnapshot(opcode=0, ea=0x1200, operands=()),
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=0x1208,
+                        operands=(),
+                        kind=InsnKind.RET,
+                        control_transfer_kind=ControlTransferKind.RETURN,
+                    ),
+                ),
+            ),
+        },
     )
     carrier = TerminalReturnCarrierEvidence(
         request=TerminalReturnCarrierRequest(
@@ -5350,6 +5470,56 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
     assert plan.terminal_routes[0].operation_id == plan.operations[0].operation_id
     assert len(plan.owned_originals) == 2
 
+    address_source = replace(
+        carrier.source,
+        kind=TerminalReturnCarrierSourceKind.ADDRESS_OF_STORAGE,
+    )
+    address_carrier = replace(carrier, source=address_source)
+    address_block = replace(
+        graph.blocks[20],
+        insn_snapshots=(
+            _mov_snapshot(0x1100, state_constant),
+            InsnSnapshot(
+                opcode=0,
+                ea=0x1105,
+                operands=(),
+                l=MopSnapshot(
+                    kind=OperandKind.ADDRESS,
+                    size=4,
+                    sub_l=MopSnapshot(kind=OperandKind.GLOBAL, size=4, gaddr=0x48B8A4),
+                ),
+                d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+                kind=InsnKind.MOV,
+                value_op_kind=ValueOpKind.MOVE,
+            ),
+        ),
+    )
+    address_graph = replace(graph, blocks={**graph.blocks, 20: address_block})
+    address_evidence = replace(
+        evidence,
+        route_proofs=(replace(proof, terminal_return_carrier=address_carrier),),
+    )
+    assert bind_canonical_semantic_evidence(address_graph, address_evidence) is not None
+
+    wrong_address_block = replace(
+        address_block,
+        insn_snapshots=(
+            address_block.insn_snapshots[0],
+            replace(
+                address_block.insn_snapshots[1],
+                l=MopSnapshot(
+                    kind=OperandKind.ADDRESS,
+                    size=4,
+                    sub_l=MopSnapshot(kind=OperandKind.GLOBAL, size=4, gaddr=0x48B8A5),
+                ),
+            ),
+        ),
+    )
+    assert bind_canonical_semantic_evidence(
+        replace(address_graph, blocks={**address_graph.blocks, 20: wrong_address_block}),
+        address_evidence,
+    ) is None
+
 
 def test_terminal_routes_share_one_owned_return_block_atomically() -> None:
     terminal_identity = _identity(0x1200)
@@ -5375,6 +5545,52 @@ def test_terminal_routes_share_one_owned_return_block_atomically() -> None:
         },
         entry_serial=10,
         func_ea=0x1000,
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            20: replace(
+                graph.blocks[20],
+                insn_snapshots=(
+                    _mov_snapshot(0x1100, 0x11),
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=0x1105,
+                        operands=(),
+                        l=MopSnapshot(kind=OperandKind.GLOBAL, size=4, gaddr=0x48B8A4),
+                        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+                        kind=InsnKind.MOV,
+                        value_op_kind=ValueOpKind.MOVE,
+                    ),
+                ),
+            ),
+            25: replace(
+                graph.blocks[25],
+                insn_snapshots=(
+                    _mov_snapshot(0x1150, 0x22),
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=0x1155,
+                        operands=(),
+                        l=MopSnapshot(kind=OperandKind.GLOBAL, size=4, gaddr=0x48B8A4),
+                        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=0),
+                        kind=InsnKind.MOV,
+                        value_op_kind=ValueOpKind.MOVE,
+                    ),
+                ),
+            ),
+            40: replace(
+                graph.blocks[40],
+                insn_snapshots=(InsnSnapshot(
+                    opcode=0,
+                    ea=0x1200,
+                    operands=(),
+                    kind=InsnKind.RET,
+                    control_transfer_kind=ControlTransferKind.RETURN,
+                ),),
+            ),
+        },
     )
 
     def terminal_proof(
@@ -5520,6 +5736,14 @@ def test_dispatcher_fed_semantic_target_remains_internal_not_a_root() -> None:
         entry_serial=10,
         func_ea=0x1000,
     )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            20: replace(graph.blocks[20], insn_snapshots=(_mov_snapshot(0x1100, 0x11),)),
+            30: replace(graph.blocks[30], insn_snapshots=(_mov_snapshot(0x1200, 0x22),)),
+        },
+    )
     evidence = CanonicalSemanticEvidence(
         native_key=NATIVE_KEY,
         generation=6,
@@ -5600,6 +5824,14 @@ def test_shared_external_target_rejects_bound_identity_drift() -> None:
         },
         entry_serial=10,
         func_ea=0x1000,
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            20: replace(graph.blocks[20], insn_snapshots=(_mov_snapshot(0x1100, 0x11),)),
+            30: replace(graph.blocks[30], insn_snapshots=(_mov_snapshot(0x1200, 0x22),)),
+        },
     )
     evidence = CanonicalSemanticEvidence(
         native_key=NATIVE_KEY,

@@ -17,7 +17,9 @@ from d810.transforms.unflatten_authority import model
 from d810.transforms.unflatten_authority.evaluate import build_semantic_case
 from d810.transforms.unflatten_authority.evaluate import evaluate_case
 from d810.transforms.unflatten_authority.evaluate import REQUIRED_DIMENSIONS
-from d810.transforms.unflatten_authority.ids import _claim_factory, _evidence_factory, _justification_factory, _subject_factory, authority_id as canonical_authority_id, canonical_bytes, canonical_decode, content_id, receipt_id
+from d810.transforms.patch_binding import BoundPatchPlan
+from d810.transforms.plan import PatchPlan
+from d810.transforms.unflatten_authority.ids import _claim_factory, _evidence_factory, _justification_factory, _subject_factory, authority_id as canonical_authority_id, bound_unflatten_binding_id, canonical_bytes, canonical_decode, content_id, receipt_id, semantic_graph_inventory_digest
 from .helpers import authority_id, block_ref, edge_role, state_identity
 from .test_model import _valid_proposal
 
@@ -51,29 +53,60 @@ def _role_subject(role: model.SemanticSubjectRole, token: str) -> model.Semantic
     )
 
 
+def test_route_payload_projects_destination_ids_in_locator_pair_order() -> None:
+    """Destination IDs follow paired ref/EA order, not their hash order."""
+
+    source = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "1")
+    first = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "0")
+    second = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
+    locator = model.RouteSubjectLocator(
+        authority_id("route-order-proof"), authority_id("route-order-group"),
+        source.block_ref, source.anchor_ea,
+        (second.block_ref, first.block_ref),
+        (second.anchor_ea, first.anchor_ea),
+    )
+    route = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.ROUTE,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=locator.source_ref,
+        anchor_ea=locator.source_anchor_ea,
+        locator=locator,
+    )
+    by_pair = {
+        (first.block_ref, first.anchor_ea): first.subject_id,
+        (second.block_ref, second.anchor_ea): second.subject_id,
+    }
+    payload = model.SemanticRouteEvidencePayload(
+        route.subject_id,
+        (locator.proof_id,),
+        locator.atomic_group_id,
+        source.subject_id,
+        tuple(by_pair[pair] for pair in zip(locator.destination_refs, locator.destination_anchor_eas)),
+        True,
+    )
+    assert payload.destination_subject_ids != tuple(sorted(by_pair.values()))
+    assert canonical_decode(canonical_bytes(payload)) == payload
+
+
 def _digest(value: object) -> str:
     return content_id("unflatten.authority.v1", value)
 
 
 def _receipt_fixture(**kwargs: object) -> model.PreparationAuthorityReceipt:
-    """Test-only opaque receipt fixture; production has no mint callable."""
-    raw = object.__new__(model.PreparationAuthorityReceipt)
-    for name, value in kwargs.items():
-        object.__setattr__(raw, name, value)
-    object.__setattr__(raw, "_token", model._PREPARATION_RECEIPT_TOKEN)
-    object.__setattr__(raw, "receipt_id", "sha256:" + "0" * 64)
-    object.__setattr__(raw, "receipt_id", receipt_id(raw))
-    model.PreparationAuthorityReceipt.__post_init__(raw)
-    return raw
+    """Construct a complete receipt through the closed mint API."""
+    return model.PreparationAuthorityReceipt.mint(**kwargs)
 
 
 def _binding(subject: model.SemanticSubjectRef, phase: model.UnflattenAuthorityPhase, generation: int = 3, *, status: model.SubjectBindingStatus = model.SubjectBindingStatus.UNIQUE, fingerprint: str | None = None) -> model.PhaseSubjectBinding:
     if subject.block_ref is None:
         status = model.SubjectBindingStatus.MISSING
+    serial_by_proxy = {"b0": 0, "b1": 1, "b2": 2}
+    serial = serial_by_proxy.get(getattr(subject.block_ref, "proxy_token", ""), 0)
     return model.PhaseSubjectBinding(
         subject=subject, phase=phase, block_ref=subject.block_ref if status is model.SubjectBindingStatus.UNIQUE else None,
         graph_fingerprint=fingerprint or authority_id(f"graph-{phase.value}"), generation=generation, status=status,
-        serial=1 if status is model.SubjectBindingStatus.UNIQUE else None,
+        serial=serial if status is model.SubjectBindingStatus.UNIQUE else None,
         anchor_ea=subject.anchor_ea if status is model.SubjectBindingStatus.UNIQUE else None,
         native_instruction_eas=(subject.anchor_ea,) if status is model.SubjectBindingStatus.UNIQUE and subject.anchor_ea is not None else (), role=subject.role,
     )
@@ -101,6 +134,35 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
             for subject in subjects
         )
     source_subjects = normalize_value_flow(source_subjects)
+    terminal_effect_subjects = []
+    for subject in source_subjects:
+        if (
+            subject.role is not model.SemanticSubjectRole.TERMINAL_SITE
+            or type(subject.locator) is not model.TerminalSubjectLocator
+        ):
+            continue
+        effect_kind = {
+            model.TerminalKind.RETURN: model.EffectSiteKind.RETURN,
+            model.TerminalKind.TRAP: model.EffectSiteKind.TRAP,
+            model.TerminalKind.NORETURN_CALL: model.EffectSiteKind.CALL,
+        }.get(subject.locator.terminal_kind)
+        if effect_kind is not None:
+            terminal_effect_subjects.append(_subject_factory(
+                model.SemanticSubjectRef,
+                kind=model.SemanticSubjectKind.EFFECT,
+                role=model.SemanticSubjectRole.EFFECT_SITE,
+                block_ref=subject.block_ref,
+                anchor_ea=subject.anchor_ea,
+                locator=model.EffectSubjectLocator(
+                    subject.locator.block_ref,
+                    subject.locator.anchor_ea,
+                    subject.locator.instruction_ea,
+                    effect_kind,
+                ),
+            ))
+    source_subjects = tuple({
+        item.subject_id: item for item in (*source_subjects, *terminal_effect_subjects)
+    }.values())
     if source_subjects and not any(item.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW for item in source_subjects):
         source_subjects = (*source_subjects, _subject_factory(
             model.SemanticSubjectRef,
@@ -144,12 +206,36 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         model.GenericCfgGateKind.EFFECTFUL_REACHABILITY: model.SemanticSubjectRole.EFFECT_SITE,
         model.GenericCfgGateKind.TERMINAL_REACHABILITY: model.SemanticSubjectRole.TERMINAL_SITE,
     }
+    def default_gate_subject_ids(gate: model.GenericCfgGateKind) -> tuple[str, ...]:
+        scoped = tuple(
+            subject for subject in source_subjects
+            if subject.role is gate_roles[gate]
+        )
+        if gate is model.GenericCfgGateKind.EFFECTFUL_REACHABILITY:
+            scoped = tuple(
+                subject for subject in scoped
+                if type(subject.locator) is model.EffectSubjectLocator
+                and subject.locator.effect_kind in {
+                    model.EffectSiteKind.CALL,
+                    model.EffectSiteKind.STORE,
+                }
+            )
+        elif gate is model.GenericCfgGateKind.TERMINAL_REACHABILITY:
+            scoped = tuple(
+                subject for subject in scoped
+                if type(subject.locator) is model.TerminalSubjectLocator
+                and subject.locator.terminal_kind in {
+                    model.TerminalKind.RETURN,
+                    model.TerminalKind.STOP,
+                }
+            )
+        return tuple(subject.subject_id for subject in scoped)
     gates = tuple(
         supplied_gates.get(
             item,
             model.GenericCfgGateResult(
                 item, True,
-                tuple(subject.subject_id for subject in source_subjects if subject.role is gate_roles[item]),
+                default_gate_subject_ids(item),
                 (), "not-applicable",
             ),
         )
@@ -259,6 +345,252 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         patch_step_digest=_digest(tuple(sorted(patch_payloads, key=lambda item: (item.plan_id, item.step_index))),),
         conditional_relation_digest=_digest(relations), metrics=metrics,
     )
+    def fixture_inventory(
+        phase_value: model.UnflattenAuthorityPhase,
+        fingerprint: str,
+        generation: int,
+        bindings: tuple[model.PhaseSubjectBinding, ...],
+        subjects: tuple[model.SemanticSubjectRef, ...],
+        source_partition: tuple[model.SemanticSubjectRef, ...] | None = None,
+        site_subjects: tuple[model.SemanticSubjectRef, ...] | None = None,
+    ) -> model.SemanticGraphInventory:
+        # This helper models a closed inventory: typed site subjects become
+        # raw instruction rows and their bindings are widened to include
+        # those exact native EAs.
+        unique = {
+            binding.block_ref: binding
+            for binding in bindings
+            if binding.status is model.SubjectBindingStatus.UNIQUE
+            and binding.block_ref is not None
+        }
+        effects_by_owner = {}
+        terminals_by_owner = {}
+        for subject in subjects if site_subjects is None else site_subjects:
+            if subject.block_ref is None:
+                continue
+            if (
+                subject.role is model.SemanticSubjectRole.EFFECT_SITE
+                and type(subject.locator) is model.EffectSubjectLocator
+            ):
+                effects_by_owner.setdefault(subject.block_ref, []).append(subject.locator)
+            if (
+                subject.role is model.SemanticSubjectRole.TERMINAL_SITE
+                and type(subject.locator) is model.TerminalSubjectLocator
+            ):
+                terminals_by_owner.setdefault(subject.block_ref, []).append(subject.locator)
+        widened_bindings = []
+        for binding in bindings:
+            if binding.status is not model.SubjectBindingStatus.UNIQUE or binding.block_ref is None:
+                widened_bindings.append(binding)
+                continue
+            eas = {binding.anchor_ea, *binding.native_instruction_eas}
+            eas.update(locator.instruction_ea for locator in effects_by_owner.get(binding.block_ref, ()))
+            eas.update(locator.instruction_ea for locator in terminals_by_owner.get(binding.block_ref, ()))
+            return_eas = {
+                locator.instruction_ea
+                for locator in effects_by_owner.get(binding.block_ref, ())
+                if locator.effect_kind is model.EffectSiteKind.RETURN
+            }
+            return_eas.update(
+                locator.instruction_ea
+                for locator in terminals_by_owner.get(binding.block_ref, ())
+                if locator.terminal_kind is model.TerminalKind.RETURN
+            )
+            widened_bindings.append(replace(
+                binding,
+                native_instruction_eas=tuple(sorted(eas, key=lambda ea: (ea not in return_eas, ea))),
+            ))
+        bindings = tuple(widened_bindings)
+        unique = {
+            binding.block_ref: binding
+            for binding in bindings
+            if binding.status is model.SubjectBindingStatus.UNIQUE
+            and binding.block_ref is not None
+        }
+        serials = tuple(binding.serial for binding in sorted(unique.values(), key=lambda item: item.serial))
+        blocks = tuple(
+            model.InventoryBlockObservation(
+                binding.serial,
+                binding.block_ref,
+                binding.anchor_ea,
+                binding.native_instruction_eas,
+                (serials[index - 1],) if index else (),
+                (serials[index + 1],) if index + 1 < len(serials) else (),
+                next(
+                    (
+                        ea for ea in reversed(binding.native_instruction_eas)
+                        if any(
+                            locator.instruction_ea == ea
+                            and locator.effect_kind is model.EffectSiteKind.RETURN
+                            for locator in effects_by_owner.get(binding.block_ref, ())
+                        ) or any(
+                            locator.instruction_ea == ea
+                            and locator.terminal_kind is model.TerminalKind.RETURN
+                            for locator in terminals_by_owner.get(binding.block_ref, ())
+                        )
+                    ),
+                    None,
+                ),
+                tuple(
+                    model.InventoryInstructionObservation(
+                        ordinal,
+                        ea,
+                        0,
+                        0,
+                        next(
+                            (
+                                model.InsnKind.STORE
+                                if locator.effect_kind is model.EffectSiteKind.STORE
+                                else model.InsnKind.CALL
+                                if locator.effect_kind is model.EffectSiteKind.CALL
+                                else model.InsnKind.TRAP
+                                if locator.effect_kind is model.EffectSiteKind.TRAP
+                                else model.InsnKind.RET
+                                for locator in effects_by_owner.get(binding.block_ref, ())
+                                if locator.instruction_ea == ea
+                            ),
+                            next(
+                                (
+                                    model.InsnKind.RET
+                                    if locator.terminal_kind is model.TerminalKind.RETURN
+                                    else model.InsnKind.TRAP
+                                    if locator.terminal_kind is model.TerminalKind.TRAP
+                                    else model.InsnKind.CALL
+                                    if locator.terminal_kind is model.TerminalKind.NORETURN_CALL
+                                    else model.InsnKind.NOP
+                                    for locator in terminals_by_owner.get(binding.block_ref, ())
+                                    if locator.instruction_ea == ea
+                                ),
+                                model.InsnKind.NOP,
+                            ),
+                        ),
+                        model.ControlTransferKind.RETURN
+                        if any(
+                            locator.instruction_ea == ea
+                            and locator.effect_kind is model.EffectSiteKind.RETURN
+                            for locator in effects_by_owner.get(binding.block_ref, ())
+                        ) or any(
+                            locator.instruction_ea == ea
+                            and locator.terminal_kind is model.TerminalKind.RETURN
+                            for locator in terminals_by_owner.get(binding.block_ref, ())
+                        ) else None,
+                        any(
+                            locator.instruction_ea == ea
+                            and locator.effect_kind is model.EffectSiteKind.CALL
+                            for locator in effects_by_owner.get(binding.block_ref, ())
+                        ),
+                        None,
+                    )
+                    for ordinal, ea in enumerate(binding.native_instruction_eas)
+                ),
+                model.BlockKind.STOP
+                if any(
+                    locator.terminal_kind is model.TerminalKind.STOP
+                    for locator in terminals_by_owner.get(binding.block_ref, ())
+                ) else model.BlockKind.UNKNOWN,
+                binding.anchor_ea,
+            )
+            for index, binding in enumerate(sorted(unique.values(), key=lambda item: item.serial))
+        )
+        effects = tuple(
+            item
+            for block in blocks
+            for item in model.resolve_inventory_block_sites(
+                serial=block.serial,
+                owner_ref=block.block_ref,
+                owner_anchor_ea=block.anchor_ea if block.anchor_ea is not None else 0,
+                block_kind=block.block_kind,
+                successor_serials=block.successor_serials,
+                instruction_observations=block.instruction_observations,
+            )[0]
+        )
+        terminals = tuple(
+            item
+            for block in blocks
+            for item in model.resolve_inventory_block_sites(
+                serial=block.serial,
+                owner_ref=block.block_ref,
+                owner_anchor_ea=block.anchor_ea if block.anchor_ea is not None else 0,
+                block_kind=block.block_kind,
+                successor_serials=block.successor_serials,
+                instruction_observations=block.instruction_observations,
+            )[1]
+        )
+        topology = tuple(
+            incidence
+            for block in blocks
+            if block.successor_serials
+            for incidence in (
+                model.InventoryTopologyIncidence(
+                    model.TopologyIncidenceKind.SUCCESSOR,
+                    block.serial,
+                    block.successor_serials[0],
+                    block.transfer_ea,
+                ),
+                model.InventoryTopologyIncidence(
+                    model.TopologyIncidenceKind.PREDECESSOR,
+                    block.successor_serials[0],
+                    block.serial,
+                    block.transfer_ea,
+                ),
+            )
+        )
+        effects = tuple(sorted(effects, key=lambda item: (item.owner_serial, item.instruction_ordinal, item.instruction_ea, item.effect_kind.value)))
+        terminals = tuple(sorted(terminals, key=lambda item: (item.owner_serial, item.instruction_ordinal is None, item.instruction_ordinal if item.instruction_ordinal is not None else -1, item.instruction_ea, item.terminal_kind.value)))
+        topology = tuple(sorted(topology, key=lambda item: (item.kind.value, item.owner_serial, item.peer_serial, -1)))
+        closure = serials
+        partition = subjects if source_partition is None else source_partition
+        digest = semantic_graph_inventory_digest(
+            phase_value, fingerprint, generation, blocks, subjects, bindings,
+            effects, terminals, topology, closure,
+            blocks[0].serial if blocks else 0,
+            tuple(item.subject_id for item in partition),
+        )
+        return model.SemanticGraphInventory(
+            phase_value, fingerprint, generation, blocks, subjects, bindings,
+            effects, terminals, topology, digest, closure,
+            blocks[0].serial if blocks else 0,
+            tuple(item.subject_id for item in partition),
+        )
+
+    source_inventory = fixture_inventory(
+        model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        authority_id("source-fp"), 3,
+        tuple(sorted(source_bindings, key=lambda item: item.subject.subject_id)),
+        source_subjects,
+    )
+    source_bindings = source_inventory.bindings
+    candidate_inventory = fixture_inventory(
+        phase, authority_id("candidate-fp"), 4,
+        tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id)),
+        tuple(sorted({item.subject_id: item for item in (*source_subjects, *candidate_subjects)}.values(), key=lambda item: item.subject_id)),
+        source_subjects,
+        candidate_subjects,
+    )
+    candidate_bindings = candidate_inventory.bindings
+    object.__setattr__(
+        receipt,
+        "source_binding_digest",
+        _digest(tuple(sorted(source_bindings, key=lambda item: item.subject.subject_id))),
+    )
+    object.__setattr__(
+        receipt,
+        "candidate_binding_digest",
+        _digest(tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id))),
+    )
+    object.__setattr__(
+        receipt,
+        "effect_catalog_digest",
+        _digest(tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.EFFECT_SITE)),
+    )
+    object.__setattr__(
+        receipt,
+        "terminal_catalog_digest",
+        _digest(tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.TERMINAL_SITE)),
+    )
+    object.__setattr__(receipt, "source_inventory_digest", source_inventory.inventory_digest)
+    object.__setattr__(receipt, "candidate_inventory_digest", candidate_inventory.inventory_digest)
+    object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
     return model.DerivedUnflattenPreparationInputs(
         proposal=proposal, claims=claims, source_subjects=source_subjects,
         preparation_receipt=receipt,
@@ -270,6 +602,9 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         source_fingerprint=authority_id("source-fp"), candidate_fingerprint=authority_id("candidate-fp"),
         source_generation=3, candidate_generation=4,
         preparation_metrics=metrics,
+        source_inventory=source_inventory,
+        candidate_inventory=candidate_inventory,
+        phase_build_metrics=model.PhaseBuildMetrics(phase, 1, 1, 1.25),
     )
 
 
@@ -336,27 +671,28 @@ def test_prepared_authority_accepts_canonical_bound_route_endpoints() -> None:
         (BoundSemanticRoute(proof, source, destinations),),
     )
 
-    class Plan:
-        plan_id = proposal.plan_id
-        snapshot_id = authority_id("prepared-snapshot")
-        source_generation = inputs.source_generation
-        source_maturity = None
-        source_coordinates = tuple(
-            (block.block_ref, block.anchor_ea)
-            for block in proposal.source_identity_catalog.blocks
-        )
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=authority_id("prepared-snapshot"),
+        source_generation=inputs.source_generation,
+        source_coordinates=tuple(
+            (block.block_ref, serial)
+            for serial, block in enumerate(proposal.source_identity_catalog.blocks)
+        ),
+        unflatten_proposal=proposal,
+    )
 
     expected_coordinates = tuple(
-        sorted(Plan.source_coordinates, key=lambda item: (repr(item[0]), item[1]))
+        sorted(plan.source_coordinates, key=lambda item: (repr(item[0]), item[1]))
     )
     prepared = model.PreparedUnflattenAuthority(
         authority_id=authority,
         route=model.UnflattenPlanRoute.ORDINARY,
-        owning_plan=Plan(),
+        owning_plan=plan,
         proposal=proposal,
         claims=case.claims,
         bound_routes=bound_routes,
-        snapshot_id=Plan.snapshot_id,
+        snapshot_id=plan.snapshot_id,
         source_maturity=None,
         source_coordinate_digest=canonical_authority_id(expected_coordinates),
         source_fingerprint=inputs.source_fingerprint,
@@ -366,6 +702,8 @@ def test_prepared_authority_accepts_canonical_bound_route_endpoints() -> None:
         source_bindings=inputs.source_bindings,
         projected_bindings=case.bindings,
         projected_case=case,
+        source_inventory=inputs.source_inventory,
+        source_inputs=inputs,
     )
     assert prepared.bound_routes.routes[0].destinations[0].evidence.role is proof.destinations[0].role
     with pytest.raises(ValueError, match="source bindings"):
@@ -384,19 +722,31 @@ def test_prepared_authority_accepts_canonical_bound_route_endpoints() -> None:
         plan_id=proposal.plan_id, session_id="prepared-session",
         generation=inputs.candidate_generation, attempt_id="prepared-attempt",
     )
+    live_maturity = MaturityEnvelope(ir=None, provider="test", provider_id=0)
+    patch_binding = BoundPatchPlan(
+        plan=plan,
+        attempt_id=attempt,
+        session_id=attempt.session_id,
+        generation=attempt.generation,
+        maturity=live_maturity,
+        bindings=(),
+    )
     with pytest.raises(TypeError, match="live_maturity"):
         model.BoundUnflattenAuthority(
             binding_id=authority_id("prepared-binding"), prepared=prepared,
             attempt_id=attempt, session_id=attempt.session_id,
             generation=attempt.generation, live_maturity=4, live_bindings=(),
+            patch_binding=patch_binding,
         )
     bound = model.BoundUnflattenAuthority(
-        binding_id=authority_id("prepared-binding-envelope"), prepared=prepared,
+        binding_id=bound_unflatten_binding_id(prepared, patch_binding), prepared=prepared,
         attempt_id=attempt, session_id=attempt.session_id,
         generation=attempt.generation,
-        live_maturity=MaturityEnvelope(ir=None, provider="test"), live_bindings=(),
+        live_maturity=live_maturity, live_bindings=(), patch_binding=patch_binding,
     )
     assert isinstance(bound.live_maturity, MaturityEnvelope)
+    with pytest.raises(ValueError, match="binding_id"):
+        replace(bound, binding_id=authority_id("unrelated-valid-digest"))
 
 
 def test_fragment_wide_value_flow_identity_and_use_def_are_total() -> None:
@@ -490,18 +840,72 @@ def test_value_flow_identity_is_conjunctive_over_every_owner_binding() -> None:
             _digest(tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id))),
         )
         object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
-        case = build_semantic_case(
-            authority_id=authority_id(f"owner-conjunction-bad-{index}"),
-            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-            inputs=replace(inputs, candidate_bindings=candidate_bindings),
+        object.__setattr__(
+            inputs.candidate_inventory, "bindings",
+            tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id)),
         )
-        cell = next(
-            cell for cell in case.obligation_index.cells
-            if cell.key.subject == value_flow
-            and cell.key.dimension is model.SafetyDimension.IDENTITY_BINDING
+        object.__setattr__(
+            inputs.candidate_inventory, "inventory_digest",
+            semantic_graph_inventory_digest(
+                inputs.candidate_inventory.phase,
+                inputs.candidate_inventory.graph_fingerprint,
+                inputs.candidate_inventory.generation,
+                inputs.candidate_inventory.blocks,
+                inputs.candidate_inventory.subjects,
+                inputs.candidate_inventory.bindings,
+                inputs.candidate_inventory.effects,
+                inputs.candidate_inventory.terminals,
+                inputs.candidate_inventory.topology,
+                inputs.candidate_inventory.reachable_serials,
+                inputs.candidate_inventory.entry_serial,
+                inputs.candidate_inventory.source_subject_ids,
+            ),
         )
-        assert not cell.supporting_justification_ids
-        assert cell.refuting_justification_ids
+        object.__setattr__(
+            receipt, "candidate_inventory_digest",
+            inputs.candidate_inventory.inventory_digest,
+        )
+        object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
+        if index == 0:
+            case = build_semantic_case(
+                authority_id=authority_id("owner-conjunction-missing"),
+                phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                inputs=replace(inputs, candidate_bindings=candidate_bindings),
+            )
+            cell = next(
+                cell for cell in case.obligation_index.cells
+                if cell.key.subject == value_flow
+                and cell.key.dimension is model.SafetyDimension.IDENTITY_BINDING
+            )
+            assert not cell.supporting_justification_ids
+            assert cell.refuting_justification_ids
+        else:
+            with pytest.raises(ValueError, match="binding|inventory"):
+                replace(inputs, candidate_bindings=candidate_bindings)
+
+    object.__setattr__(
+        inputs.candidate_inventory, "bindings", inputs.candidate_bindings,
+    )
+    object.__setattr__(
+        inputs.candidate_inventory, "inventory_digest",
+        semantic_graph_inventory_digest(
+            inputs.candidate_inventory.phase,
+            inputs.candidate_inventory.graph_fingerprint,
+            inputs.candidate_inventory.generation,
+            inputs.candidate_inventory.blocks,
+            inputs.candidate_inventory.subjects,
+            inputs.candidate_inventory.bindings,
+            inputs.candidate_inventory.effects,
+            inputs.candidate_inventory.terminals,
+            inputs.candidate_inventory.topology,
+            inputs.candidate_inventory.reachable_serials,
+            inputs.candidate_inventory.entry_serial,
+            inputs.candidate_inventory.source_subject_ids,
+        ),
+    )
+    object.__setattr__(receipt, "candidate_binding_digest", _digest(inputs.candidate_bindings))
+    object.__setattr__(receipt, "candidate_inventory_digest", inputs.candidate_inventory.inventory_digest)
+    object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
 
     unrelated = next(
         binding for binding in inputs.candidate_bindings
@@ -521,6 +925,29 @@ def test_value_flow_identity_is_conjunctive_over_every_owner_binding() -> None:
         receipt, "candidate_binding_digest",
         _digest(tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id))),
     )
+    object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
+    object.__setattr__(
+        inputs.candidate_inventory, "bindings",
+        tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id)),
+    )
+    object.__setattr__(
+        inputs.candidate_inventory, "inventory_digest",
+        semantic_graph_inventory_digest(
+            inputs.candidate_inventory.phase,
+            inputs.candidate_inventory.graph_fingerprint,
+            inputs.candidate_inventory.generation,
+            inputs.candidate_inventory.blocks,
+            inputs.candidate_inventory.subjects,
+            inputs.candidate_inventory.bindings,
+            inputs.candidate_inventory.effects,
+            inputs.candidate_inventory.terminals,
+            inputs.candidate_inventory.topology,
+            inputs.candidate_inventory.reachable_serials,
+            inputs.candidate_inventory.entry_serial,
+            inputs.candidate_inventory.source_subject_ids,
+        ),
+    )
+    object.__setattr__(receipt, "candidate_inventory_digest", inputs.candidate_inventory.inventory_digest)
     object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
     case = build_semantic_case(
         authority_id=authority_id("owner-conjunction-unrelated"),
@@ -737,7 +1164,7 @@ def test_severed_use_def_rule_requires_complete_actionable_audit() -> None:
 def test_preparation_receipt_cannot_be_minted_by_callers() -> None:
     import d810.transforms.unflatten_authority.ids as authority_ids
     assert not hasattr(authority_ids, "_receipt_factory")
-    with pytest.raises(TypeError, match="takes no arguments"):
+    with pytest.raises(TypeError, match="transaction-owned"):
         model.PreparationAuthorityReceipt(
             receipt_id=authority_id("receipt"), proposal_id=authority_id("proposal"),
             plan_id=authority_id("plan"), source_fingerprint=authority_id("source"),
@@ -1186,7 +1613,7 @@ def test_preparation_receipt_is_hashed_and_closed() -> None:
     base = _complete_inputs(source_subjects=(entry,))
     with pytest.raises(ValueError, match="invalid record|receipt|token"):
         canonical_decode(canonical_bytes(base.preparation_receipt))
-    values = {name: getattr(base.preparation_receipt, name) for name in base.preparation_receipt.__dataclass_fields__ if name not in {"receipt_id", "_token"}}
+    values = {name: getattr(base.preparation_receipt, name) for name in base.preparation_receipt.__dataclass_fields__ if name not in {"receipt_id", "_token", "_minted"}}
     values["plan_input_digest"] = authority_id("omitted-plan-input")
     incomplete = replace(base, preparation_receipt=_receipt_fixture(**values))
     with pytest.raises(ValueError, match="receipt|plan input"):
@@ -1228,7 +1655,7 @@ def test_patch_step_evidence_must_match_closed_step_inventory() -> None:
         model.AuthorityEvidence, model.AuthorityEvidenceKind.PATCH_STEP,
         helper, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, payload,
     )
-    values = {name: getattr(_complete_inputs(source_subjects=(entry,), candidate_subjects=(entry, helper), patch=(evidence,), proposal=proposal).preparation_receipt, name) for name in model.PreparationAuthorityReceipt.__dataclass_fields__ if name not in {"receipt_id", "_token"}}
+    values = {name: getattr(_complete_inputs(source_subjects=(entry,), candidate_subjects=(entry, helper), patch=(evidence,), proposal=proposal).preparation_receipt, name) for name in model.PreparationAuthorityReceipt.__dataclass_fields__ if name not in {"receipt_id", "_token", "_minted"}}
     values["patch_step_digest"] = authority_id("forged-step-copy")
     with pytest.raises(ValueError, match="receipt|patch"):
         build_semantic_case(
@@ -1383,19 +1810,27 @@ def test_stale_candidate_generation_precedes_obligation_reason() -> None:
         ),
     )
     candidate_subjects = (entry, flow)
+    inputs = _complete_inputs(
+        source_subjects=(entry,), candidate_subjects=candidate_subjects,
+        proposal=proposal,
+    )
     stale_bindings = tuple(
-        _binding(item, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, fingerprint=authority_id("stale-fingerprint"))
-        for item in candidate_subjects
+        _binding(item.subject, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                 fingerprint=authority_id("stale-fingerprint"))
+        for item in inputs.candidate_bindings
     )
-    case = build_semantic_case(
-        authority_id=authority_id("stale-generation"),
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=_complete_inputs(
-            source_subjects=(entry,), candidate_subjects=candidate_subjects,
-            candidate_bindings=stale_bindings, proposal=proposal,
-        ),
+    object.__setattr__(inputs, "candidate_bindings", stale_bindings)
+    object.__setattr__(
+        inputs.preparation_receipt, "candidate_binding_digest",
+        _digest(tuple(sorted(stale_bindings, key=lambda item: item.subject.subject_id))),
     )
-    assert evaluate_case(case).reason is model.UnflattenAuthorityReason.GRAPH_GENERATION_MISMATCH
+    object.__setattr__(inputs.preparation_receipt, "receipt_id", receipt_id(inputs.preparation_receipt))
+    with pytest.raises(ValueError, match="binding|inventory"):
+        build_semantic_case(
+            authority_id=authority_id("stale-generation"),
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            inputs=inputs,
+        )
 
 
 def test_producer_forecast_uses_source_fingerprint_and_source_binding_reason() -> None:
@@ -1702,20 +2137,60 @@ def test_fold_lineage_partitions_disjoint_source_origins_and_supports_each_membe
         model.AuthorityEvidence, model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,
         first, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, fold,
     )
-    case = build_semantic_case(
-        authority_id=authority_id("valid-fold-group"),
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=_complete_inputs(
-            source_subjects=(entry, first, second), candidate_subjects=(entry, first, second, helper),
-            candidate_bindings=candidate_bindings, lineage=(fold_evidence,),
+    inputs = _complete_inputs(
+        source_subjects=(entry, first, second),
+        candidate_subjects=(entry, first, second, helper),
+    )
+    helper_block = next(
+        block for block in inputs.candidate_inventory.blocks
+        if block.serial == helper_binding.serial
+    )
+    helper_instructions = tuple(
+        model.InventoryInstructionObservation(
+            ordinal, ea, 0, 0, model.InsnKind.NOP, None, False, None,
+        )
+        for ordinal, ea in enumerate(helper_binding.native_instruction_eas)
+    )
+    object.__setattr__(
+        inputs.candidate_inventory, "blocks",
+        tuple(
+            replace(
+                block,
+                native_instruction_eas=helper_binding.native_instruction_eas,
+                instruction_observations=helper_instructions,
+            ) if block is helper_block else block
+            for block in inputs.candidate_inventory.blocks
         ),
     )
-    for source in (first, second):
-        cell = next(
-            cell for cell in case.obligation_index.cells
-            if cell.key == model.ObligationKey(source, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+    object.__setattr__(inputs, "candidate_bindings", candidate_bindings)
+    object.__setattr__(inputs.candidate_inventory, "bindings", candidate_bindings)
+    object.__setattr__(inputs.preparation_receipt, "candidate_binding_digest", _digest(tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id))))
+    object.__setattr__(
+        inputs.candidate_inventory, "inventory_digest",
+        semantic_graph_inventory_digest(
+            inputs.candidate_inventory.phase,
+            inputs.candidate_inventory.graph_fingerprint,
+            inputs.candidate_inventory.generation,
+            inputs.candidate_inventory.blocks,
+            inputs.candidate_inventory.subjects,
+            inputs.candidate_inventory.bindings,
+            inputs.candidate_inventory.effects,
+            inputs.candidate_inventory.terminals,
+            inputs.candidate_inventory.topology,
+            inputs.candidate_inventory.reachable_serials,
+            inputs.candidate_inventory.entry_serial,
+            inputs.candidate_inventory.source_subject_ids,
+        ),
+    )
+    object.__setattr__(inputs.preparation_receipt, "candidate_inventory_digest", inputs.candidate_inventory.inventory_digest)
+    object.__setattr__(inputs.preparation_receipt, "receipt_id", receipt_id(inputs.preparation_receipt))
+    object.__setattr__(inputs, "lineage_evidence", (fold_evidence,))
+    with pytest.raises(ValueError, match="binding|inventory"):
+        build_semantic_case(
+            authority_id=authority_id("valid-fold-group"),
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            inputs=inputs,
         )
-        assert cell.state is model.ObligationState.SATISFIED
 def test_effect_topology_is_conditional_on_exact_owner_survival() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "effect-entry")
     effect = _role_subject(model.SemanticSubjectRole.EFFECT_SITE, "1")
@@ -1800,7 +2275,7 @@ def test_local_alias_support_targets_exact_store_effect_relation() -> None:
     receipt_values = {
         name: getattr(inputs.preparation_receipt, name)
         for name in inputs.preparation_receipt.__dataclass_fields__
-        if name != "receipt_id"
+            if name not in {"receipt_id", "_minted"}
     }
     receipt_values["conditional_relation_digest"] = _digest((relation,))
     inputs = replace(
@@ -1842,7 +2317,7 @@ def test_local_alias_support_targets_exact_store_effect_relation() -> None:
     wrong_receipt_values = {
         name: getattr(wrong_inputs.preparation_receipt, name)
         for name in wrong_inputs.preparation_receipt.__dataclass_fields__
-        if name != "receipt_id"
+            if name not in {"receipt_id", "_minted"}
     }
     wrong_receipt_values["conditional_relation_digest"] = _digest((wrong_relation,))
     wrong_inputs = replace(
@@ -1914,7 +2389,7 @@ def test_local_alias_requires_endpoint_bearing_reachability_path() -> None:
     receipt_values = {
         name: getattr(inputs.preparation_receipt, name)
         for name in inputs.preparation_receipt.__dataclass_fields__
-        if name != "receipt_id"
+        if name not in {"receipt_id", "_minted"}
     }
     receipt_values["conditional_relation_digest"] = _digest((relation,))
     bad_reach = _evidence_factory(
@@ -2120,7 +2595,7 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
     b0, b2 = block_ref("b0"), block_ref("b2")
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0")
     source = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "0")
-    predicate = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "1")
+    predicate = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "0")
     selected = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
     discarded_locator = model.EffectSubjectLocator(b0, 0x1000, 0x1008, model.EffectSiteKind.STORE)
     discarded = _subject_factory(
@@ -2149,7 +2624,7 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
     route = _subject_factory(
         model.SemanticSubjectRef, kind=model.SemanticSubjectKind.ROUTE,
         role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
-        block_ref=b0, anchor_ea=0x1000, locator=route_locator,
+            block_ref=b0, anchor_ea=0x1000, locator=route_locator,
     )
     effect_payload = model.EffectSiteEvidencePayload(
         discarded.subject_id, model.EffectSiteKind.STORE, 0x1008, 0x90, 4,
@@ -2161,7 +2636,7 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
     )
     route_payload = model.SemanticRouteEvidencePayload(
         route.subject_id, (authority_id("proof"),), authority_id("group"),
-        source.subject_id, (selected.subject_id,), True,
+            predicate.subject_id, (selected.subject_id,), True,
     )
     route_evidence = _evidence_factory(
         model.AuthorityEvidence, model.AuthorityEvidenceKind.SEMANTIC_ROUTE,
@@ -2172,8 +2647,8 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
     proposal_values["source_identity_catalog"] = replace(
         catalog,
         blocks=(
-            replace(catalog.blocks[0], native_instruction_eas=(0x1000, 0x1004, 0x1008)),
-            replace(catalog.blocks[1], native_instruction_eas=(0x1006, 0x1300)),
+                replace(catalog.blocks[0], native_instruction_eas=(0x1000, 0x1004, 0x1006, 0x1008)),
+                replace(catalog.blocks[1], native_instruction_eas=(0x1300,)),
             catalog.blocks[2],
         ),
     )

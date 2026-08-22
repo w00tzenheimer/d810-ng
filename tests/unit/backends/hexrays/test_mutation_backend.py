@@ -2641,7 +2641,8 @@ def test_backend_accepts_only_replayed_exact_infeasible_effect_loss() -> None:
         0x1201,
     )
     assert (proof.selected_target_serial, proof.selected_target_ea) == (3, 0x1003)
-    assert (proof.discarded_effect_serial, proof.discarded_effect_ea) == (4, 0x1004)
+    # The proof carries the discarded instruction EA, not its block anchor.
+    assert (proof.discarded_effect_serial, proof.discarded_effect_ea) == (4, 0x1401)
     plan = plan.with_metadata(
         **{
             EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA: (
