@@ -90,7 +90,7 @@ def test_dump_help_recommends_full_diagnostics_recipe() -> None:
         )
     else:
         assert "default: current root checkout" in normalized_stdout
-    assert "short name" in result.stdout
+    assert "short name" in normalized_stdout
     assert "Unflattening debug recipe" in result.stdout
     assert "--dump-microcode-maturity LOCOPT,CALLS,GLBOPT1" in result.stdout
     assert "--dump-condition-chain-maturity CALLS,GLBOPT1,GLBOPT2" in result.stdout
