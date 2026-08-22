@@ -281,7 +281,9 @@ class BackendManifest:
     #: d810 could then host exactly one solver, forever.
     #:
     #: The extension knows what it implements; d810 asks.
-    implements: Mapping[str, str] = types.MappingProxyType({})
+    implements: Mapping[str, str] = field(
+        default_factory=lambda: types.MappingProxyType({})
+    )
 
 
 _MANIFEST_FIELDS = ("name", "api_version", "provides")

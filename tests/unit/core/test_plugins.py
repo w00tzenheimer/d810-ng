@@ -229,6 +229,16 @@ class TestManifest(unittest.TestCase):
     supporting both costs one coercion function.
     """
 
+    def test_default_implementation_maps_are_immutable_and_instance_local(self):
+        first = BackendManifest("first", PLUGIN_API_VERSION, "pkg:first")
+        second = BackendManifest("second", PLUGIN_API_VERSION, "pkg:second")
+
+        self.assertEqual(first.implements, {})
+        self.assertEqual(second.implements, {})
+        self.assertIsNot(first.implements, second.implements)
+        with self.assertRaises(TypeError):
+            first.implements["mba-egraph"] = "EgglogOptimizer"  # type: ignore[index]
+
     def test_plain_dict_is_a_valid_manifest(self):
         got = manifest_of({"name": "acme", "api_version": 1, "provides": "pkg:obj"})
         self.assertEqual((got.name, got.api_version, got.provides),
