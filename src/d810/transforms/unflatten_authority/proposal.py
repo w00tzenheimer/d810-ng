@@ -18,6 +18,8 @@ from .model import (
     UnflattenAuthorityReason,
     UnflattenPlanRoute,
 )
+from .producer_api import build_unflatten_plan_input_catalog
+from .ids import validate_canonical_roundtrip
 
 if TYPE_CHECKING:
     from d810.transforms.plan import PatchPlan
@@ -135,8 +137,9 @@ def validate_proposal(
             "proposal_type_is_not_closed",
         )
     try:
+        validate_canonical_roundtrip(proposal, ProposedUnflattenContract)
         ProposedUnflattenContract.__post_init__(proposal)
-    except (TypeError, ValueError):
+    except Exception:
         return ProposalRejected(
             UnflattenAuthorityReason.MALFORMED_PROPOSAL,
             "proposal_invariants_invalid",
@@ -235,6 +238,7 @@ def validate_shadow_for_plan(
 
 
 __all__ = [
+    "build_unflatten_plan_input_catalog",
     "LEGACY_UNFLATTEN_KEYS",
     "PlanRouteResult",
     "ProposalAccepted",

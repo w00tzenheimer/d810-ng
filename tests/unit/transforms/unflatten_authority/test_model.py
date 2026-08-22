@@ -302,6 +302,31 @@ def test_source_catalog_rejects_duplicate_refs() -> None:
         model.SourceIdentityCatalog(key, 0, (witness, witness))
 
 
+def test_source_block_witness_anchor_must_be_one_of_native_origins() -> None:
+    model = import_authority_model()
+    with pytest.raises(ValueError, match="anchor_ea"):
+        model.SourceBlockIdentityWitness(block_ref("b0"), 0x2000, (0x1000,))
+
+
+def test_use_def_fragment_witness_rejects_ids_without_actionable_severance() -> None:
+    model = import_authority_model()
+    with pytest.raises(ValueError, match="violation"):
+        model.UseDefFragmentWitness(
+            authority_id("fragment-invalid"), state_identity(), (),
+            authority_id("redirect"), True, True, 0,
+            (authority_id("violation"),),
+        )
+
+
+def test_proposed_contract_revalidates_low_level_use_def_mutation() -> None:
+    model = import_authority_model()
+    valid = _valid_proposal(model)
+    witness = valid["use_def_witness"]
+    object.__setattr__(witness, "violation_ids", (authority_id("violation"),))
+    with pytest.raises(ValueError, match="use-def"):
+        model.ProposedUnflattenContract(**valid)
+
+
 def test_plan_input_catalog_and_handler_rows_are_closed() -> None:
     model = import_authority_model()
     b0 = block_ref("b0")
@@ -704,16 +729,8 @@ def test_catalog_binds_exact_anchors_and_native_keys() -> None:
     model = import_authority_model()
     valid = _valid_proposal(model)
     blocks = list(valid["source_identity_catalog"].blocks)
-    blocks[0] = model.SourceBlockIdentityWitness(blocks[0].block_ref, 0x9999, (0x1000,))
     with pytest.raises(ValueError):
-        model.ProposedUnflattenContract(**{
-            **valid,
-            "source_identity_catalog": model.SourceIdentityCatalog(
-                valid["source_identity_catalog"].native_key,
-                valid["source_identity_catalog"].generation,
-                tuple(blocks),
-            ),
-        })
+        model.SourceBlockIdentityWitness(blocks[0].block_ref, 0x9999, (0x1000,))
 
     foreign_key = _native_key(model, fingerprint="foreign-native")
     foreign_identity = StableBlockIdentity.from_instruction_eas(

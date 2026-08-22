@@ -769,6 +769,18 @@ def canonical_decode(encoded: bytes) -> object:
     return result
 
 
+def validate_canonical_roundtrip(value: object, expected_type: type[object]) -> object:
+    """Require the exact persistence decode and canonical representation."""
+
+    encoded = canonical_bytes(value)
+    decoded = canonical_decode(encoded)
+    if type(decoded) is not expected_type or decoded != value:
+        raise ValueError("canonical roundtrip changed the authority value")
+    if canonical_bytes(decoded) != encoded:
+        raise ValueError("canonical roundtrip is not stable")
+    return decoded
+
+
 def content_id(schema: str, value: object) -> str:
     if not isinstance(schema, str) or not schema.isascii() or not schema.strip():
         raise ValueError("schema must be non-empty ASCII")
@@ -1056,7 +1068,7 @@ def semantic_graph_fingerprint(graph: FlowGraph) -> str:
 __all__ = [
     "BlockRecord", "CLAIM_SCHEMA", "DigestFixture", "DIGEST_FIXTURE_SCHEMA",
     "EVIDENCE_SCHEMA", "GraphRecord", "InsnRecord", "MopRecord", "SEMANTIC_GRAPH_SCHEMA",
-    "SUBJECT_SCHEMA", "canonical_bytes", "canonical_decode", "claim_id", "content_id",
+    "SUBJECT_SCHEMA", "canonical_bytes", "canonical_decode", "validate_canonical_roundtrip", "claim_id", "content_id",
     "evidence_id", "justification_id", "case_id", "authority_id", "binding_id",
     "semantic_graph_fingerprint", "subject_id",
 ]

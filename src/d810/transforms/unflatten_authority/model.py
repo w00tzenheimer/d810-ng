@@ -1302,6 +1302,8 @@ class UseDefFragmentWitness:
         violations = _tuple(self.violation_ids, "violation_ids", sort=True)
         for value in violations:
             _id(value, "violation_ids item")
+        if self.actionable_non_state_severance_count == 0 and violations:
+            raise ValueError("violation_ids require actionable non-state severance")
         object.__setattr__(self, "violation_ids", violations)
 
 
@@ -1319,6 +1321,8 @@ class SourceBlockIdentityWitness:
             raise ValueError("native_instruction_eas must not be empty")
         for ea in eas:
             _ea(ea, "native_instruction_eas item")
+        if self.anchor_ea not in eas:
+            raise ValueError("anchor_ea must belong to native_instruction_eas")
         object.__setattr__(self, "native_instruction_eas", eas)
 
 
@@ -1475,7 +1479,12 @@ class ProposedUnflattenContract:
     plan_inputs: UnflattenPlanInputCatalog
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1 or self.rule_set_version != 1:
+        if (
+            type(self.schema_version) is not int
+            or type(self.rule_set_version) is not int
+            or self.schema_version != 1
+            or self.rule_set_version != 1
+        ):
             raise ValueError("unsupported proposal schema or rule-set version")
         _id(self.plan_id, "plan_id")
         if type(self.route_evidence) is not CanonicalSemanticEvidence:
@@ -1486,7 +1495,12 @@ class ProposedUnflattenContract:
             raise TypeError("use_def_witness must be UseDefFragmentWitness")
         if type(self.plan_inputs) is not UnflattenPlanInputCatalog:
             raise TypeError("plan_inputs must be UnflattenPlanInputCatalog")
-        if not self.use_def_witness.executed or not self.use_def_witness.fragment_atomic or self.use_def_witness.actionable_non_state_severance_count:
+        if (
+            not self.use_def_witness.executed
+            or not self.use_def_witness.fragment_atomic
+            or self.use_def_witness.actionable_non_state_severance_count
+            or self.use_def_witness.violation_ids
+        ):
             raise ValueError("proposal requires a clean executed use-def witness")
         claims = _tuple(self.claims, "claims", sort=True)
         if not claims:

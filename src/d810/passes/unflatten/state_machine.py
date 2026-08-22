@@ -3282,6 +3282,9 @@ class LowerStateMachine(PipelinePass):
                     else current_block_identity_index.native_key
                 ),
                 native_cfg_persistence=self.native_cfg_persistence,
+                canonical_route_evidence=_analysis(
+                    context, CANONICAL_SEMANTIC_EVIDENCE
+                ),
             )
             plan_metadata = plan.metadata_dict()
             corridor_observations = (

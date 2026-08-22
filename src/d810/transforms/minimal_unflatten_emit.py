@@ -84,6 +84,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     build_current_u32_decision_forest,
 )
 from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
+from d810.analyses.control_flow.semantic_route_evidence import CanonicalSemanticEvidence
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
@@ -9262,6 +9263,7 @@ def emit_minimal_unflatten(
     ) = None,
     native_key: NativePreanalysisKey | None = None,
     native_cfg_persistence: bool = False,
+    canonical_route_evidence: CanonicalSemanticEvidence | None = None,
 ) -> PatchPlan:
     """Recover back-edge transitions and emit the dispatcher-bypass ``PatchPlan``.
 

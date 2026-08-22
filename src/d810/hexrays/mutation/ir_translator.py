@@ -133,48 +133,58 @@ def _compare_width_from_operands(*operands: object) -> int | None:
     return max(widths) if widths else None
 
 
-def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
+def classify_backend_opcode(
+    opcode: int,
+    backend: object,
+    *,
+    predicate_classifier: Callable[[int], object | None] | None = None,
+) -> InsnKind:
+    """Classify supported backend constants without inventing trap opcodes."""
+
     opcode = int(opcode)
-    if opcode == int(ida_hexrays.m_nop):
-        return InsnKind.NOP
-    if opcode == int(ida_hexrays.m_mov):
-        return InsnKind.MOV
-    if opcode == int(ida_hexrays.m_ldx):
-        return InsnKind.LOAD
-    if opcode == int(ida_hexrays.m_xdu):
-        return InsnKind.XDU
-    if opcode == int(ida_hexrays.m_xds):
-        return InsnKind.XDS
-    if opcode == int(ida_hexrays.m_add):
-        return InsnKind.ADD
-    if opcode == int(ida_hexrays.m_sub):
-        return InsnKind.SUB
-    if opcode == int(ida_hexrays.m_and):
-        return InsnKind.AND
-    if opcode == int(ida_hexrays.m_stx):
-        return InsnKind.STORE
-    if opcode == int(ida_hexrays.m_goto):
-        return InsnKind.GOTO
-    if is_hexrays_opcode(opcode, "m_call") or is_hexrays_opcode(opcode, "m_icall"):
+
+    def matches(name: str) -> bool:
+        value = getattr(backend, name, None)
+        try:
+            return value is not None and opcode == int(value)
+        except (TypeError, ValueError):
+            return False
+
+    for name, kind in (
+        ("m_nop", InsnKind.NOP),
+        ("m_mov", InsnKind.MOV),
+        ("m_ldx", InsnKind.LOAD),
+        ("m_xdu", InsnKind.XDU),
+        ("m_xds", InsnKind.XDS),
+        ("m_add", InsnKind.ADD),
+        ("m_sub", InsnKind.SUB),
+        ("m_and", InsnKind.AND),
+        ("m_stx", InsnKind.STORE),
+        ("m_goto", InsnKind.GOTO),
+    ):
+        if matches(name):
+            return kind
+    if matches("m_call") or matches("m_icall"):
         return InsnKind.CALL
-    if is_hexrays_opcode(opcode, "m_ret"):
+    if matches("m_ret"):
         return InsnKind.RET
-    # E3-prep: ``m_jtbl`` is a multi-target jump-table tail.  Map
-    # BEFORE the binary-conditional fallback so it lands in the
-    # portable ``TABLE_JUMP`` kind rather than being swept into
-    # ``COND_JUMP`` if the predicate helper grows to cover it.
-    if is_hexrays_opcode(opcode, "m_jtbl"):
+    if matches("m_jtbl"):
         return InsnKind.TABLE_JUMP
-    # ``m_ijmp`` is a single-target indirect jump (no branch predicate).
-    # Map BEFORE the conditional fallback so it lands in the portable
-    # ``INDIRECT_JUMP`` kind instead of ``UNKNOWN``.
-    if is_hexrays_opcode(opcode, "m_ijmp"):
+    if matches("m_ijmp"):
         return InsnKind.INDIRECT_JUMP
-    if opcode in (int(ida_hexrays.m_jnz), int(ida_hexrays.m_jz)):
+    if matches("m_jnz") or matches("m_jz"):
         return InsnKind.EQUALITY_JUMP
-    if _branch_predicate_only_from_hexrays(opcode) is not None:
+    if predicate_classifier is not None and predicate_classifier(opcode) is not None:
         return InsnKind.COND_JUMP
     return InsnKind.UNKNOWN
+
+
+def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
+    return classify_backend_opcode(
+        opcode,
+        ida_hexrays,
+        predicate_classifier=_branch_predicate_only_from_hexrays,
+    )
 
 
 def _operand_kind_from_hexrays(operand_type: int) -> OperandKind:

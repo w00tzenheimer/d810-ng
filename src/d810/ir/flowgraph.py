@@ -67,6 +67,7 @@ class InsnKind(Enum):
     INDIRECT_JUMP = "indirect_jump"
     CALL = "call"
     RET = "ret"
+    TRAP = "trap"
 
 
 # ``BranchPredicate`` retired here (llr-lxas): the single portable predicate

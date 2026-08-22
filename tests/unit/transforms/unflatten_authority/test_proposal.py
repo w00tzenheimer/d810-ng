@@ -10,6 +10,218 @@ import pytest
 from d810.transforms.plan import PatchPlan
 
 
+def _discovery_fixture(block_specs):
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+    from d810.transforms.cfg_transaction import NativeBlockRef
+
+    key = NativePreanalysisKey("input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64)
+    blocks = {}
+    refs = {}
+    for serial, succs, kind, instructions in block_specs:
+        ea_values = tuple(instruction.ea for instruction in instructions)
+        block = BlockSnapshot(
+            serial=serial, block_type=0, succs=tuple(succs), preds=(), flags=0,
+            start_ea=ea_values[0], insn_snapshots=tuple(instructions), kind=kind,
+        )
+        blocks[serial] = block
+        identity = StableBlockIdentity.from_intervals(
+            tuple(NativeEaInterval(ea, ea + 1) for ea in ea_values),
+            native_key=key, exact_instruction_eas=ea_values,
+        )
+        refs[serial] = NativeBlockRef(identity)
+    source = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
+    return source, refs, key
+
+
+def _snapshot(ea, kind):
+    from d810.ir.flowgraph import InsnSnapshot
+    return InsnSnapshot(0, ea, (), kind=kind, native_ea=ea)
+
+
+def test_reachable_stop_terminal_is_based_on_block_tail() -> None:
+    from d810.ir.flowgraph import BlockKind, InsnKind
+    from d810.transforms.unflatten_authority import producer_api
+
+    cases = [
+        ((0, (), BlockKind.STOP, (_snapshot(0x1000, InsnKind.RET),)),),
+        ((0, (), BlockKind.STOP, (_snapshot(0x1000, InsnKind.TRAP),)),),
+        ((0, (), BlockKind.STOP, (_snapshot(0x1000, InsnKind.TRAP), _snapshot(0x1001, InsnKind.STORE))),),
+    ]
+    for specs in cases:
+        source, refs, key = _discovery_fixture(specs)
+        catalog = producer_api.build_source_identity_catalog(
+            source, refs, native_key=key, source_generation=1,
+        )
+        discovered = producer_api.discover_reachable_effects_and_terminals(
+            source, catalog, refs,
+        )
+        kinds = tuple(terminal.terminal_kind for terminal in discovered.terminals)
+        if specs[0][3][-1].kind in (InsnKind.RET, InsnKind.TRAP):
+            assert kinds == (producer_api.TerminalKind.RETURN if specs[0][3][-1].kind is InsnKind.RET else producer_api.TerminalKind.TRAP,)
+        else:
+            assert kinds == (producer_api.TerminalKind.TRAP, producer_api.TerminalKind.STOP)
+
+
+def test_reachable_stop_terminals_include_each_stop_block() -> None:
+    from d810.ir.flowgraph import BlockKind, InsnKind
+    from d810.transforms.unflatten_authority import producer_api
+
+    specs = (
+        (0, (1, 2), BlockKind.TWO_WAY, (_snapshot(0x1000, InsnKind.GOTO),)),
+        (1, (), BlockKind.STOP, (_snapshot(0x1010, InsnKind.STORE),)),
+        (2, (), BlockKind.STOP, (_snapshot(0x1020, InsnKind.STORE),)),
+    )
+    source, refs, key = _discovery_fixture(specs)
+    catalog = producer_api.build_source_identity_catalog(
+        source, refs, native_key=key, source_generation=1,
+    )
+    discovered = producer_api.discover_reachable_effects_and_terminals(
+        source, catalog, refs,
+    )
+    assert tuple(terminal.terminal_kind for terminal in discovered.terminals) == (
+        producer_api.TerminalKind.STOP,
+        producer_api.TerminalKind.STOP,
+    )
+
+
+def test_source_catalog_rejects_block_serial_mismatch() -> None:
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.unflatten_authority import producer_api
+
+    key = NativePreanalysisKey("input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64)
+    source = FlowGraph({0: BlockSnapshot(1, 0, (), (), 0, 0x1000, (InsnSnapshot(0, 0x1000, (), kind=InsnKind.STORE),), kind=BlockKind.STOP)}, 0, 0x1000)
+    identity = StableBlockIdentity.from_intervals((NativeEaInterval(0x1000, 0x1001),), native_key=key, exact_instruction_eas=(0x1000,))
+    with pytest.raises(ValueError, match="serial"):
+        producer_api.build_source_identity_catalog(
+            source, {0: NativeBlockRef(identity)}, native_key=key, source_generation=1,
+        )
+
+
+def test_clean_use_def_conversion_rejects_contradictory_violation_rows() -> None:
+    from d810.transforms.unflatten_authority import producer_api
+    from d810.transforms.use_def_redirect_filter import (
+        UseDefBlockAnchor, UseDefSeveranceAudit, UseDefSeveranceEvidence,
+    )
+    from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+    anchor = UseDefBlockAnchor(0, 0x1000)
+    violation = UseDefSeveranceEvidence(anchor, anchor, anchor, 1, 4, anchor, 0x1000)
+    audit = UseDefSeveranceAudit(True, 0, violations=(violation,))
+    assert producer_api.build_use_def_fragment_witness(
+        audit, fragment_id="sha256:" + "1" * 64,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+    ) is None
+
+
+def test_plan_input_catalog_lifts_only_explicit_authoritative_handlers() -> None:
+    """The producer must not promote an unlisted route destination to a handler."""
+
+    from d810.transforms.unflatten_authority import producer_api
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        CanonicalSemanticEvidence,
+    )
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+    from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+    from d810.transforms.cfg_transaction import NativeBlockRef
+
+    key = NativePreanalysisKey("input", "x86", 64, 0, "fn", "profile", "sdk")
+    def identity(ea: int) -> StableBlockIdentity:
+        return StableBlockIdentity.from_intervals(
+            (NativeEaInterval(ea, ea + 1),),
+            native_key=key,
+            exact_instruction_eas=(ea,),
+        )
+    source = FlowGraph(
+        blocks={
+            serial: BlockSnapshot(
+                serial=serial,
+                block_type=0,
+                succs=succs,
+                preds=preds,
+                flags=0,
+                start_ea=ea,
+                insn_snapshots=(InsnSnapshot(1, ea, (), kind=InsnKind.RET),),
+                kind=kind,
+            )
+            for serial, succs, preds, ea, kind in (
+                (0, (1,), (), 0x1000, BlockKind.ONE_WAY),
+                (1, (), (0,), 0x1010, BlockKind.STOP),
+            )
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    refs = {serial: NativeBlockRef(identity(0x1000 + serial * 0x10)) for serial in (0, 1)}
+    catalog = producer_api.build_source_identity_catalog(
+        source, refs, native_key=key, source_generation=1
+    )
+    evidence = object.__new__(CanonicalSemanticEvidence)
+    object.__setattr__(evidence, "native_key", key)
+    object.__setattr__(evidence, "generation", 1)
+    object.__setattr__(evidence, "atomic_group_id", "group")
+    destination = type("Destination", (), {
+        "target_identity": identity(0x1010),
+        "target_anchor_ea": 0x1010,
+        "state_constant": 7,
+    })()
+    destination9 = type("Destination", (), {
+        "target_identity": identity(0x1010),
+        "target_anchor_ea": 0x1010,
+        "state_constant": 9,
+    })()
+    proof = type("Proof", (), {"destinations": (destination, destination9)})()
+    object.__setattr__(evidence, "route_proofs", (proof,))
+
+    exact_states = producer_api.build_unflatten_plan_input_catalog(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        canonical_route_evidence=evidence,
+        source_entry_serial=0,
+        dispatcher_entry_serial=0,
+        dispatcher_member_serials=(0,),
+        authoritative_handler_serials=(1,),
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+        shape="partial_rewrite",
+    )
+    assert exact_states.authoritative_handlers[0].normalized_states == (7, 9)
+
+    destination.state_constant = 0x100000001
+    exact_width = producer_api.build_unflatten_plan_input_catalog(
+        source=source,
+        source_catalog=catalog,
+        block_refs_by_serial=refs,
+        canonical_route_evidence=evidence,
+        source_entry_serial=0,
+        dispatcher_entry_serial=0,
+        dispatcher_member_serials=(0,),
+        authoritative_handler_serials=(1,),
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+        shape="partial_rewrite",
+    )
+    assert exact_width.authoritative_handlers[0].normalized_states == (9, 0x100000001)
+
+    with pytest.raises(ValueError, match="authoritative_handler_serials"):
+        producer_api.build_unflatten_plan_input_catalog(
+            source=source,
+            source_catalog=catalog,
+            block_refs_by_serial=refs,
+            canonical_route_evidence=evidence,
+            source_entry_serial=0,
+            dispatcher_entry_serial=0,
+            dispatcher_member_serials=(0,),
+            authoritative_handler_serials=(2,),
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+            shape="partial_rewrite",
+        )
+
+
 def _proposal_and_plan_ids():
     from .helpers import import_authority_model
     from .test_model import _valid_proposal
@@ -179,6 +391,112 @@ def test_mutated_proposal_is_revalidated_at_route_boundary() -> None:
     result = select_plan_route(plan)
     assert result.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
     assert result.detail_code == "proposal_plan_id_mismatch"
+
+
+def test_proposal_versions_require_exact_int_one() -> None:
+    from d810.transforms.unflatten_authority.model import UnflattenAuthorityReason
+    from d810.transforms.unflatten_authority.transaction_api import select_plan_route
+
+    class IntSubclass(int):
+        pass
+
+    invalid_values = (True, False, IntSubclass(1), 1.0, "1")
+    for field in ("schema_version", "rule_set_version"):
+        for value in invalid_values:
+            proposal, plan_id = _proposal_and_plan_ids()
+            object.__setattr__(proposal, field, value)
+            result = select_plan_route(PatchPlan(
+                plan_id=plan_id,
+                snapshot_id="snapshot-1",
+                source_generation=3,
+                unflatten_proposal=proposal,
+            ))
+            assert getattr(result, "reason", None) is UnflattenAuthorityReason.MALFORMED_PROPOSAL, (field, value)
+            assert getattr(result, "detail_code", None) == "proposal_invariants_invalid", (field, value)
+
+    proposal, plan_id = _proposal_and_plan_ids()
+    selected = select_plan_route(PatchPlan(
+        plan_id=plan_id,
+        snapshot_id="snapshot-1",
+        source_generation=3,
+        unflatten_proposal=proposal,
+    ))
+    assert selected.route.value == "typed_proposal"
+
+
+def test_typed_route_revalidates_deep_canonical_proposal_mutations() -> None:
+    from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+    from d810.transforms.unflatten_authority.model import UnflattenAuthorityReason
+    from d810.transforms.unflatten_authority.transaction_api import select_plan_route
+    from .helpers import import_authority_model
+    from .test_model import _native_key
+
+    mutations = (
+        ("anchor", lambda proposal: object.__setattr__(
+            proposal.source_identity_catalog.blocks[0], "anchor_ea", 0xDEAD,
+        )),
+        ("empty_route_proofs", lambda proposal: object.__setattr__(
+            proposal.route_evidence, "route_proofs", (),
+        )),
+        ("negative_handler_state", lambda proposal: object.__setattr__(
+            proposal.plan_inputs.authoritative_handlers[0], "normalized_states", (-1,),
+        )),
+        ("string_shape", lambda proposal: object.__setattr__(
+            proposal.plan_inputs, "shape", "partial_rewrite",
+        )),
+        ("duplicate_catalog_block", lambda proposal: object.__setattr__(
+            proposal.source_identity_catalog, "blocks",
+            (proposal.source_identity_catalog.blocks[0],) * 2
+            + proposal.source_identity_catalog.blocks[2:],
+        )),
+        ("wrong_native_key", lambda proposal: object.__setattr__(
+            proposal.route_evidence, "native_key", _native_key(
+                import_authority_model(), fingerprint="wrong-route-key",
+            ),
+        )),
+        ("wrong_generation", lambda proposal: object.__setattr__(
+            proposal.route_evidence, "generation", 99,
+        )),
+        ("wrong_state_identity", lambda proposal: object.__setattr__(
+            proposal.plan_inputs, "state_identity",
+            StorageIdentity(StorageIdentityKind.REGISTER, 1),
+        )),
+        ("wrong_claim_child", lambda proposal: object.__setattr__(
+            proposal.claims[0], "route_proof_ids", (),
+        )),
+    )
+    for label, mutate in mutations:
+        proposal, plan_id = _proposal_and_plan_ids()
+        mutate(proposal)
+        plan = PatchPlan(
+            plan_id=plan_id,
+            snapshot_id="snapshot-1",
+            source_generation=3,
+            unflatten_proposal=proposal,
+        )
+        result = select_plan_route(plan)
+        assert getattr(result, "reason", None) is UnflattenAuthorityReason.MALFORMED_PROPOSAL, label
+        assert getattr(result, "detail_code", None) == "proposal_invariants_invalid", label
+
+
+def test_valid_proposal_has_stable_canonical_roundtrip_and_typed_route() -> None:
+    from d810.transforms.unflatten_authority.ids import canonical_bytes, canonical_decode
+    from d810.transforms.unflatten_authority.proposal import TypedProposalRoute
+    from d810.transforms.unflatten_authority.transaction_api import select_plan_route
+
+    proposal, plan_id = _proposal_and_plan_ids()
+    encoded = canonical_bytes(proposal)
+    decoded = canonical_decode(encoded)
+    assert type(decoded) is type(proposal)
+    assert decoded == proposal
+    assert canonical_bytes(decoded) == encoded
+    selected = select_plan_route(PatchPlan(
+        plan_id=plan_id,
+        snapshot_id="snapshot-1",
+        source_generation=3,
+        unflatten_proposal=proposal,
+    ))
+    assert isinstance(selected, TypedProposalRoute)
 
 
 def test_mutated_shadow_is_revalidated_at_route_boundary() -> None:
