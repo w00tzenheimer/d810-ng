@@ -33,13 +33,14 @@ from .ids import (
     _subject_id_from_record,
     _validate_id,
     authority_id,
-    canonical_decode,
     case_id,
     claim_id,
     evidence_id,
     justification_id,
     receipt_id,
 )
+from .legacy_keys import LEGACY_UNFLATTEN_KEYS
+from .legacy_wire import decode_legacy_value
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
@@ -50,34 +51,6 @@ _CFG_REF_TYPES = (NativeBlockRef, LogicalBlockRef, PlanBlockRef)
 _AUTHORITY_REF_TYPES = (NativeBlockRef, LogicalBlockRef)
 
 
-def _legacy_unflatten_keys() -> frozenset[str]:
-    """Return the reserved-key set owned by the current producer modules."""
-
-    from d810.transforms.dispatcher_corridor_coverage import (
-        DISPATCHER_CORRIDOR_COVERAGE_METADATA,
-        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-        FULL_UNFLATTENING_CLAIM_METADATA,
-        USE_DEF_SEVERANCE_AUDIT_METADATA,
-        UNFLATTEN_COMPLETION_STATUS_METADATA,
-    )
-    from d810.transforms.minimal_unflatten_emit import (
-        CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
-        EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
-        NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
-    )
-
-    return frozenset(
-        {
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA,
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-            UNFLATTEN_COMPLETION_STATUS_METADATA,
-            FULL_UNFLATTENING_CLAIM_METADATA,
-            USE_DEF_SEVERANCE_AUDIT_METADATA,
-            EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
-            CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
-            NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
-        }
-    )
 
 
 def _id(value: object, label: str) -> str:
@@ -1420,17 +1393,18 @@ class LegacyShadowEntry:
     payload_sha256: str
 
     def __post_init__(self) -> None:
-        _text(self.key, "key")
-        if self.key not in _legacy_unflatten_keys():
+        if type(self.key) is not str or not self.key.strip():
+            raise TypeError("key must be a non-empty exact str")
+        if self.key not in LEGACY_UNFLATTEN_KEYS:
             raise ValueError("key is not a reserved unflatten metadata key")
-        if not isinstance(self.canonical_payload, bytes) or not self.canonical_payload:
-            raise TypeError("canonical_payload must be non-empty bytes")
+        if type(self.canonical_payload) is not bytes or not self.canonical_payload:
+            raise TypeError("canonical_payload must be non-empty exact bytes")
         try:
-            canonical_decode(self.canonical_payload)
-        except (TypeError, ValueError) as exc:
+            decode_legacy_value(self.canonical_payload)
+        except Exception as exc:
             raise ValueError("canonical_payload must be canonical bytes") from exc
         if (
-            not isinstance(self.payload_sha256, str)
+            type(self.payload_sha256) is not str
             or len(self.payload_sha256) != 64
             or any(char not in "0123456789abcdef" for char in self.payload_sha256)
         ):
@@ -1451,13 +1425,16 @@ class LegacyUnflattenShadowEnvelope:
     entries: tuple[LegacyShadowEntry, ...]
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if type(self.schema_version) is not int or self.schema_version != 1:
             raise ValueError("unsupported legacy shadow schema")
-        _text(self.plan_id, "plan_id")
-        _text(self.snapshot_id, "snapshot_id")
-        _generation(self.source_generation, "source_generation")
-        if not isinstance(self.entries, tuple):
-            raise TypeError("entries must be a tuple")
+        if type(self.plan_id) is not str or not self.plan_id.strip():
+            raise TypeError("plan_id must be a non-empty exact str")
+        if type(self.snapshot_id) is not str or not self.snapshot_id.strip():
+            raise TypeError("snapshot_id must be a non-empty exact str")
+        if type(self.source_generation) is not int or self.source_generation < 0:
+            raise TypeError("source_generation must be a non-negative exact int")
+        if type(self.entries) is not tuple:
+            raise TypeError("entries must be an exact tuple")
         if not self.entries:
             raise ValueError("legacy shadow envelope must not be empty")
         if any(type(entry) is not LegacyShadowEntry for entry in self.entries):

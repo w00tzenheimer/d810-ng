@@ -346,9 +346,9 @@ def test_legacy_shadow_transport_has_exact_closed_schema() -> None:
     model = import_authority_model()
     from hashlib import sha256
 
-    from d810.transforms.unflatten_authority.ids import canonical_bytes
+    from d810.transforms.unflatten_authority.legacy_wire import encode_legacy_value
 
-    payload = canonical_bytes({"legacy": [1, 2]})
+    payload = encode_legacy_value({"legacy": [1, 2]})
     entry = model.LegacyShadowEntry(
         "dispatcher_corridor_coverage", payload, sha256(payload).hexdigest()
     )

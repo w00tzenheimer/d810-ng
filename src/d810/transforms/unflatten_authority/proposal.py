@@ -26,6 +26,7 @@ from .model import (
 )
 from .producer_api import build_unflatten_plan_input_catalog
 from .ids import content_id, validate_canonical_roundtrip
+from .legacy_keys import LEGACY_UNFLATTEN_KEYS
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,41 +130,8 @@ def canonical_redirect_manifest(plan: PatchPlan) -> RedirectStepManifest:
     )
 
 
-def _current_reserved_keys() -> frozenset[str]:
-    """Build the guard from the constants exported by their owning modules."""
-
-    from d810.analyses.control_flow.effect_branch_exclusion import (
-        EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
-    )
-    from d810.transforms.dispatcher_corridor_coverage import (
-        DISPATCHER_CORRIDOR_COVERAGE_METADATA,
-        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-        FULL_UNFLATTENING_CLAIM_METADATA,
-        USE_DEF_SEVERANCE_AUDIT_METADATA,
-        UNFLATTEN_COMPLETION_STATUS_METADATA,
-    )
-    from d810.transforms.minimal_unflatten_emit import (
-        CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
-        NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
-    )
-
-    return frozenset(
-        {
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA,
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-            UNFLATTEN_COMPLETION_STATUS_METADATA,
-            FULL_UNFLATTENING_CLAIM_METADATA,
-            USE_DEF_SEVERANCE_AUDIT_METADATA,
-            EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
-            CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
-            NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
-        }
-    )
-
-
 # Public for the codec/router seam and tests.  It is assembled from the
 # current owners above, so this backstop cannot drift by omission.
-LEGACY_UNFLATTEN_KEYS = _current_reserved_keys()
 
 
 class MetadataKeyTypeError(ValueError):
@@ -344,6 +312,20 @@ def validate_shadow_for_plan(
 ) -> ShadowValidationResult:
     """Return a typed rejection for malformed or stale shadow transport."""
 
+    if type(plan) is not PatchPlan:
+        return RejectedPlanRoute(
+            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+            "plan_type_is_not_closed",
+        )
+    if (
+        type(plan.plan_id) is not str
+        or type(plan.snapshot_id) is not str
+        or type(plan.source_generation) is not int
+    ):
+        return RejectedPlanRoute(
+            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+            "shadow_plan_identity_invalid",
+        )
     if type(shadow) is not LegacyUnflattenShadowEnvelope:
         return RejectedPlanRoute(
             UnflattenAuthorityReason.MALFORMED_PROPOSAL,
@@ -351,7 +333,13 @@ def validate_shadow_for_plan(
         )
     try:
         LegacyUnflattenShadowEnvelope.__post_init__(shadow)
-    except (TypeError, ValueError):
+        from .legacy_wire import decode_legacy_value, encode_legacy_value
+
+        for entry in shadow.entries:
+            decoded = decode_legacy_value(entry.canonical_payload)
+            if encode_legacy_value(decoded) != entry.canonical_payload:
+                raise ValueError("legacy shadow payload is not byte-canonical")
+    except Exception:
         return RejectedPlanRoute(
             UnflattenAuthorityReason.MALFORMED_PROPOSAL,
             "shadow_invariants_invalid",

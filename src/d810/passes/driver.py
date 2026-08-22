@@ -57,16 +57,11 @@ from d810.transforms.native_cfg_normalization import (
     ObservedEdgeStateContract,
 )
 from d810.transforms.plan import PatchPlan
-
-logger = getLogger("d810.passes.driver")
-
-# Keep this key aligned with the transform-owned plan metadata.  The driver
-# consumes it only after the backend reports a changed graph; plan membership
-# alone is never an applied-route receipt.
-NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA = (
-    "native_bound_transition_route_receipts"
+from d810.transforms.unflatten_authority.legacy_keys import (
+    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
 )
 
+logger = getLogger("d810.passes.driver")
 
 class CapabilityError(RuntimeError):
     """A pass requires a backend capability the backend does not advertise."""

@@ -49,7 +49,6 @@ from d810.analyses.control_flow.graph_checks import (
     check_effectful_reachability_preserved,
 )
 from d810.analyses.control_flow.effect_branch_exclusion import (
-    EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
     ExactStateBranchEffectExclusion,
     build_exact_state_branch_effect_exclusion,
 )
@@ -166,12 +165,7 @@ from d810.transforms.exit_path_effect_emission import (
     plan_state_exit_path_effect_lowerings,
 )
 from d810.transforms.dispatcher_corridor_coverage import (
-    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
     DETACHED_DEAD_HANDLER_COMPONENT_METADATA,
-    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-    FULL_UNFLATTENING_CLAIM_METADATA,
-    USE_DEF_SEVERANCE_AUDIT_METADATA,
-    UNFLATTEN_COMPLETION_STATUS_METADATA,
     analyze_dispatcher_corridor_coverage,
     build_dispatcher_removal_preflight_proof,
     build_detached_dead_handler_component_proof,
@@ -180,15 +174,21 @@ from d810.transforms.use_def_redirect_filter import (
     audit_use_def_severances,
     severance_bail_enabled,
 )
+from d810.transforms.unflatten_authority.legacy_keys import (
+    CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
+    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+    EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+    FULL_UNFLATTENING_CLAIM_METADATA,
+    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
+    UNFLATTEN_COMPLETION_STATUS_METADATA,
+    USE_DEF_SEVERANCE_AUDIT_METADATA,
+)
 
 logger = logging.getLogger("d810.transforms.minimal_unflatten_emit")
 
 TERMINAL_CARRIER_CONVERGENCE_METADATA = "terminal_carrier_convergence"
 TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA = "terminal_carrier_convergence_reason"
-NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA = (
-    "native_bound_transition_route_receipts"
-)
-CONCRETE_STATE_ROUTE_PROVENANCE_METADATA = "concrete_state_route_provenance"
 
 __all__ = [
     "ConditionalStateTransitionCandidate",

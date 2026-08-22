@@ -27,11 +27,10 @@ from d810.ir.storage_identity import (
     storage_identity_from_varnode,
 )
 from d810.ir.varnode import Space
-
-
-EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA = (
-    "exact_state_branch_effect_exclusions"
+from d810.core.legacy_keys import (
+    EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
 )
+
 
 _ROUTE_OP_FOR_PREDICATE = {
     PredicateKind.EQ: "jz",

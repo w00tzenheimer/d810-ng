@@ -260,13 +260,13 @@ def _typed_plan(proposal, *, legacy_shadow=None):
 
 
 def _shadow(plan_id: str, snapshot_id: str = "snapshot-1"):
-    from d810.transforms.unflatten_authority.ids import canonical_bytes
+    from d810.transforms.unflatten_authority.legacy_wire import encode_legacy_value
     from d810.transforms.unflatten_authority.model import (
         LegacyShadowEntry,
         LegacyUnflattenShadowEnvelope,
     )
 
-    payload = canonical_bytes({"legacy": True})
+    payload = encode_legacy_value({"legacy": True})
     entry = LegacyShadowEntry(
         "dispatcher_corridor_coverage",
         payload,
@@ -446,16 +446,16 @@ def test_ordinary_and_legacy_only_plans_are_not_typed_authority() -> None:
 
 
 def test_shadow_records_are_closed_sorted_and_digest_bound() -> None:
-    from d810.transforms.unflatten_authority.ids import canonical_bytes
+    from d810.transforms.unflatten_authority.legacy_wire import encode_legacy_value
     from d810.transforms.unflatten_authority.model import (
         LegacyShadowEntry,
         LegacyUnflattenShadowEnvelope,
     )
 
-    payload = canonical_bytes({"value": [1, 2]})
+    payload = encode_legacy_value({"value": [1, 2]})
     digest = hashlib.sha256(payload).hexdigest()
     first = LegacyShadowEntry("dispatcher_corridor_coverage", payload, digest)
-    second_payload = canonical_bytes({"value": 2})
+    second_payload = encode_legacy_value({"value": 2})
     second = LegacyShadowEntry(
         "use_def_severance_audit",
         second_payload,
@@ -640,10 +640,10 @@ def test_mutated_shadow_is_revalidated_at_route_boundary() -> None:
     object.__setattr__(plan.legacy_unflatten_shadow.entries[0], "payload_sha256", hashlib.sha256(
         plan.legacy_unflatten_shadow.entries[0].canonical_payload
     ).hexdigest())
-    from d810.transforms.unflatten_authority.ids import canonical_bytes
+    from d810.transforms.unflatten_authority.legacy_wire import encode_legacy_value
     from d810.transforms.unflatten_authority.model import LegacyShadowEntry
 
-    payload = canonical_bytes({"legacy": 2})
+    payload = encode_legacy_value({"legacy": 2})
     second = LegacyShadowEntry(
         "use_def_severance_audit", payload, hashlib.sha256(payload).hexdigest()
     )

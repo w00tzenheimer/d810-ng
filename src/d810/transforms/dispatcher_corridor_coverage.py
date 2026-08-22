@@ -77,12 +77,14 @@ from d810.transforms.plan import (
     PatchRedirectBranch,
     PatchRedirectGoto,
 )
+from d810.transforms.unflatten_authority.legacy_keys import (
+    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+    FULL_UNFLATTENING_CLAIM_METADATA,
+    UNFLATTEN_COMPLETION_STATUS_METADATA,
+    USE_DEF_SEVERANCE_AUDIT_METADATA,
+)
 
-DISPATCHER_CORRIDOR_COVERAGE_METADATA = "dispatcher_corridor_coverage"
-DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA = "dispatcher_removal_preflight_proof"
-UNFLATTEN_COMPLETION_STATUS_METADATA = "unflatten_completion_status"
-FULL_UNFLATTENING_CLAIM_METADATA = "full_unflattening_claim"
-USE_DEF_SEVERANCE_AUDIT_METADATA = "use_def_severance_audit"
 DETACHED_DEAD_HANDLER_COMPONENT_METADATA = "detached_dead_handler_component"
 
 _MAX_CORRIDOR_DEPTH = 64
