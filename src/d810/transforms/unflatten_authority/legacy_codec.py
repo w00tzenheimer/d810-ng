@@ -19,8 +19,11 @@ from d810.core.typing import Any, Literal, TypeAlias
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.plan import PatchPlan, normalized_metadata_items
+from d810.ir.storage_identity import storage_identity_from_record
+from d810.analyses.control_flow.effect_branch_exclusion import ExactStateBranchEffectExclusion
 
 from .legacy_keys import (
+    EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
     LEGACY_FAMILY_DETAIL_CODES,
     LEGACY_UNFLATTEN_KEYS,
     USE_DEF_SEVERANCE_AUDIT_METADATA,
@@ -32,10 +35,77 @@ from .model import (
     ProposedUnflattenContract,
     UnflattenAuthorityReason,
     UnflattenPlanRoute,
+    UnflattenPlanInputCatalog,
+    UseDefFragmentWitness,
 )
 # Keep one owner for this set.  In particular, the exact-effect spelling is
 # imported through proposal.py from its producer rather than copied here.
 LEGACY_RESERVED_KEYS = LEGACY_UNFLATTEN_KEYS
+
+
+def exact_state_branch_effect_exclusion_from_metadata(
+    payload: object,
+) -> ExactStateBranchEffectExclusion | None:
+    """Parse the exact legacy record without coercing any raw values."""
+
+    if type(payload) is not dict:
+        return None
+    if set(payload) != {
+        "normalized_state", "source", "predicate", "selected_target",
+        "discarded_effect", "state_identity",
+    }:
+        return None
+
+    def exact_int(value: object) -> int:
+        if type(value) is not int:
+            raise TypeError("exact-effect fields require built-in int values")
+        return value
+
+    def anchor(name: str, *fields: str) -> tuple[int, ...] | None:
+        value = payload.get(name)
+        if type(value) is not dict or set(value) != set(fields):
+            return None
+        try:
+            return tuple(exact_int(value[field]) for field in fields)
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    source = anchor("source", "serial", "ea", "write_ea")
+    predicate = anchor("predicate", "serial", "ea", "branch_ea")
+    selected = anchor("selected_target", "serial", "ea")
+    discarded = anchor("discarded_effect", "serial", "ea")
+    identity_payload = payload.get("state_identity")
+    if any(item is None for item in (source, predicate, selected, discarded)) or type(identity_payload) is not dict:
+        return None
+    try:
+        if set(identity_payload) != {"kind", "prefix", "offset", "key"}:
+            return None
+        if (
+            type(identity_payload["kind"]) is not str
+            or type(identity_payload["prefix"]) is not str
+            or type(identity_payload["offset"]) is not int
+            or type(identity_payload["key"]) is not str
+        ):
+            return None
+        state = exact_int(payload["normalized_state"])
+        identity = storage_identity_from_record(identity_payload)
+        if identity.to_record() != identity_payload:
+            return None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if not 0 <= state <= 0xFFFFFFFF:
+        return None
+    try:
+        return ExactStateBranchEffectExclusion(
+            normalized_state=state,
+            source_serial=source[0], source_ea=source[1], source_write_ea=source[2],
+            predicate_serial=predicate[0], predicate_ea=predicate[1], predicate_branch_ea=predicate[2],
+            selected_target_serial=selected[0], selected_target_ea=selected[1],
+            discarded_effect_serial=discarded[0], discarded_effect_ea=discarded[1],
+            state_identity=identity,
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _exact_text(value: object, label: str) -> None:
@@ -230,6 +300,8 @@ class LegacyUnflattenDecodeContext:
         tuple[int, NativeBlockRef | LogicalBlockRef], ...
     ]
     canonical_route_evidence: CanonicalSemanticEvidence | None
+    plan_inputs: UnflattenPlanInputCatalog | None = None
+    use_def_witness: UseDefFragmentWitness | None = None
 
     def __post_init__(self) -> None:
         _exact_text(self.plan_id, "plan_id")
@@ -321,6 +393,28 @@ class LegacyUnflattenDecodeContext:
             self.canonical_route_evidence
         ) is not CanonicalSemanticEvidence:
             raise TypeError("canonical_route_evidence must be closed")
+        if self.plan_inputs is not None:
+            if type(self.plan_inputs) is not UnflattenPlanInputCatalog:
+                raise TypeError("plan_inputs must be closed")
+            from .ids import validate_canonical_roundtrip
+            validate_canonical_roundtrip(self.plan_inputs, UnflattenPlanInputCatalog)
+            plan_refs = {
+                self.plan_inputs.source_entry_ref,
+                self.plan_inputs.dispatcher_entry_ref,
+                *self.plan_inputs.dispatcher_member_refs,
+                *(handler.block_ref for handler in self.plan_inputs.authoritative_handlers),
+            }
+            if any(ref not in refs for ref in plan_refs):
+                raise ValueError("exact legacy plan inputs contain a foreign ref")
+            if self.use_def_witness is None or type(self.use_def_witness) is not UseDefFragmentWitness:
+                raise TypeError("exact legacy adaptation requires an owned use-def witness")
+            validate_canonical_roundtrip(self.use_def_witness, UseDefFragmentWitness)
+            if any(ref not in refs for ref in self.use_def_witness.redirect_owner_refs):
+                raise ValueError("exact legacy use-def witness contains a foreign ref")
+            if self.canonical_route_evidence is None:
+                raise ValueError("exact legacy adaptation requires canonical route evidence")
+        elif self.use_def_witness is not None:
+            raise ValueError("exact legacy producer inputs are incomplete")
 
 
 @dataclass(frozen=True, slots=True)
@@ -570,6 +664,76 @@ def decode_legacy_unflatten_contract(
             return LegacyUnflattenRejected(
                 UnflattenAuthorityReason.MALFORMED_PROPOSAL, key, detail
             )
+
+    if EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA in reserved:
+        if len(reserved) != 1:
+            return LegacyUnflattenRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+                "legacy_exact_effect_mixed_reserved_families",
+            )
+        if context.plan_inputs is None or context.use_def_witness is None:
+            return LegacyUnflattenRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+                "legacy_exact_effect_not_enabled",
+            )
+        try:
+            exact_values = [
+                value for key, value in items
+                if key == EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA
+            ]
+            if len(exact_values) != 1 or type(exact_values[0]) not in (tuple, list):
+                raise ValueError("exact-effect legacy payload must be one sequence")
+            exclusions = tuple(
+                exact_state_branch_effect_exclusion_from_metadata(payload)
+                for payload in exact_values[0]
+            )
+            if not exclusions or any(exclusion is None for exclusion in exclusions):
+                raise ValueError("exact-effect legacy payload contains an invalid exclusion")
+            typed_exclusions = tuple(exclusion for exclusion in exclusions if exclusion is not None)
+            state_identity = typed_exclusions[0].state_identity
+            if any(exclusion.state_identity != state_identity for exclusion in typed_exclusions):
+                raise ValueError("exact-effect legacy payload has mixed state identities")
+            if context.use_def_witness.state_identity != state_identity:
+                raise ValueError("exact-effect legacy use-def state identity mismatch")
+            from .producer_api import build_proposal
+            refs_by_serial = dict(context.block_refs_by_serial)
+            serial_by_ref = {ref: serial for serial, ref in refs_by_serial.items()}
+            plan_inputs = context.plan_inputs
+            dispatcher_entry_serial = serial_by_ref[plan_inputs.dispatcher_entry_ref]
+            dispatcher_member_serials = tuple(
+                sorted(serial_by_ref[ref] for ref in plan_inputs.dispatcher_member_refs)
+            )
+            authoritative_handler_serials = tuple(
+                sorted(serial_by_ref[handler.block_ref] for handler in plan_inputs.authoritative_handlers)
+            )
+
+            proposal = build_proposal(
+                plan_id=context.plan_id,
+                source=context.source,
+                block_refs_by_serial=refs_by_serial,
+                source_generation=context.source_generation,
+                canonical_route_evidence=context.canonical_route_evidence,
+                exact_state_effect_exclusions=typed_exclusions,
+                dispatcher_entry_serial=dispatcher_entry_serial,
+                dispatcher_member_serials=dispatcher_member_serials,
+                authoritative_handler_serials=authoritative_handler_serials,
+                state_identity=state_identity,
+                use_def_witness=context.use_def_witness,
+            )
+            if (
+                proposal.plan_inputs != context.plan_inputs
+                or proposal.use_def_witness != context.use_def_witness
+            ):
+                raise ValueError("exact legacy typed inputs were normalized or substituted")
+        except Exception:
+            return LegacyUnflattenRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+                "legacy_exact_effect_payload_invalid",
+            )
+        return LegacyUnflattenDecoded(UnflattenPlanRoute.LEGACY_ADAPTED, proposal)
 
     # Family adapters are intentionally owned by later vertical tasks.
     detail_code = _family_detail(reserved[0])

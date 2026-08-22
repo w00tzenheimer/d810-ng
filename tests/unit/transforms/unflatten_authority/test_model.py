@@ -482,8 +482,8 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
         ),
         _claim_factory(model.ExactInfeasibleEffectClaim,
             model.UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT,
-            effect, source, predicate, destination, discarded, 1, state_identity(), 4,
-            0x1004, 0x1008, 0x100C, model.SemanticEdgeRole.DIRECT,
+                discarded, source, predicate, destination, discarded, 1, state_identity(), 4,
+                0x1004, 0x1008, 0x1008, model.SemanticEdgeRole.DIRECT,
             (authority_id("exact-proof"),),
             model.ProviderConsensusWitness(model.ProviderConsensusMode.NOT_APPLICABLE, ()), 0,
         ),
@@ -518,6 +518,26 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
         _claim_factory(model.TerminalCycleBreakClaim,
             model.UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
             corridor, source, terminal, (authority_id("proof"),), 0,
+        )
+
+
+def test_exact_claim_rejects_provider_consensus_and_ambiguous_route_proofs() -> None:
+    from .test_bind import _exact_fixture
+
+    model = import_authority_model()
+    claim = _exact_fixture()[1].claims[0]
+    with pytest.raises(ValueError, match="provider consensus"):
+        _reissued_claim(
+            claim,
+            consensus=model.ProviderConsensusWitness(
+                model.ProviderConsensusMode.SINGLE_PROVIDER,
+                (authority_id("provider"),),
+            ),
+        )
+    with pytest.raises(ValueError, match="exactly one route proof"):
+        _reissued_claim(
+            claim,
+            route_proof_ids=(authority_id("proof-a"), authority_id("proof-b")),
         )
 
 

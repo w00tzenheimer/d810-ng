@@ -611,8 +611,17 @@ class PhaseSubjectBinding:
                 raise ValueError("unique binding requires block_ref")
             if self.serial is None or self.anchor_ea is None or not eas:
                 raise ValueError("unique binding requires serial, anchor, and native EAs")
-        elif self.serial is not None or self.anchor_ea is not None:
-            raise ValueError("non-unique binding requires no serial or anchor")
+            if self.anchor_ea != self.subject.anchor_ea:
+                raise ValueError("unique binding anchor must equal subject anchor")
+            if self.anchor_ea not in eas:
+                raise ValueError("unique binding anchor must belong to native EAs")
+        elif (
+            self.block_ref is not None
+            or self.serial is not None
+            or self.anchor_ea is not None
+            or eas
+        ):
+            raise ValueError("non-unique binding requires no block, serial, anchor, or native EAs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1165,6 +1174,8 @@ class ExactInfeasibleEffectClaim:
         _claim_common(self.claim_id, self.kind, UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT, self.source_generation)
         for name in ("effect_subject", "discarded_effect_subject"):
             _claim_subject(getattr(self, name), SemanticSubjectKind.EFFECT, SemanticSubjectRole.EFFECT_SITE, EffectSubjectLocator, name)
+        if self.effect_subject != self.discarded_effect_subject:
+            raise ValueError("exact effect subject must equal discarded effect subject")
         for name in ("source_subject", "predicate_subject"):
             _claim_subject(getattr(self, name), SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, BlockSubjectLocator, name)
         _claim_subject(self.selected_target_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, BlockSubjectLocator, "selected_target_subject")
@@ -1176,13 +1187,26 @@ class ExactInfeasibleEffectClaim:
         _nonnegative(self.width, "width")
         for name in ("source_write_ea", "predicate_branch_ea", "discarded_effect_ea"):
             object.__setattr__(self, name, _ea(getattr(self, name), name))
+        effect_locator = self.discarded_effect_subject.locator
+        if (
+            effect_locator.instruction_ea != self.discarded_effect_ea
+            or effect_locator.effect_kind not in {EffectSiteKind.CALL, EffectSiteKind.STORE}
+        ):
+            raise ValueError("exact effect locator does not match discarded effect site")
         _enum(self.selected_edge_role, SemanticEdgeRole, "selected_edge_role")
         proofs = _tuple(self.route_proof_ids, "route_proof_ids", sort=True)
+        if len(proofs) != 1:
+            raise ValueError("exact-effect claims require exactly one route proof")
         for proof in proofs:
             _id(proof, "route_proof_ids item")
         object.__setattr__(self, "route_proof_ids", proofs)
         if type(self.consensus) is not ProviderConsensusWitness:
             raise TypeError("consensus must be a ProviderConsensusWitness")
+        if (
+            self.consensus.mode is not ProviderConsensusMode.NOT_APPLICABLE
+            or self.consensus.provider_ids
+        ):
+            raise ValueError("exact-effect claims do not admit provider consensus")
         if self.claim_id != claim_id(self):
             raise ValueError("claim_id does not match canonical claim content")
 
@@ -1519,6 +1543,16 @@ class ProposedUnflattenContract:
                         raise ValueError("proposal subject reference is absent from source catalog")
                     if anchor is not None and witness.anchor_ea != anchor:
                         raise ValueError("proposal subject anchor disagrees with source catalog")
+            if type(claim) is ExactInfeasibleEffectClaim:
+                exact_sites = (
+                    (claim.source_subject.block_ref, claim.source_write_ea),
+                    (claim.predicate_subject.block_ref, claim.predicate_branch_ea),
+                    (claim.discarded_effect_subject.block_ref, claim.discarded_effect_ea),
+                )
+                for ref, ea in exact_sites:
+                    witness = catalog_by_ref.get(ref)
+                    if witness is None or ea not in witness.native_instruction_eas:
+                        raise ValueError("exact claim instruction EA is absent from source witness")
         if any(ref not in catalog_refs for ref in self.use_def_witness.redirect_owner_refs):
             raise ValueError("proposal use-def reference is absent from source catalog")
         plan_refs = (

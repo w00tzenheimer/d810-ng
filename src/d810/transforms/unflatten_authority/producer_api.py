@@ -15,11 +15,19 @@ import hashlib
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    SemanticRouteDestination,
+    SemanticRouteProof,
+    SemanticRouteProofKind,
+)
+from d810.analyses.control_flow.effect_branch_exclusion import (
+    ExactStateBranchEffectExclusion,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind
 from d810.ir.semantics import ControlTransferKind
+from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity
+from d810.ir.block_identity import StableBlockIdentity
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.use_def_redirect_filter import UseDefSeveranceAudit
 
@@ -35,7 +43,16 @@ from .model import (
     UnflattenPlanShape,
     UseDefFragmentWitness,
     BlockSubjectLocator,
+    ExactInfeasibleEffectClaim,
+    ProposedUnflattenContract,
+    ProviderConsensusMode,
+    ProviderConsensusWitness,
+    SemanticSubjectKind,
+    SemanticSubjectRef,
+    SemanticSubjectRole,
+    UnflattenClaimKind,
 )
+from .ids import _claim_factory, _subject_factory, validate_canonical_roundtrip
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
@@ -74,6 +91,264 @@ class SourceEffectTerminalCatalog:
     def __iter__(self):
         yield self.effects
         yield self.terminals
+
+
+@dataclass(frozen=True, slots=True)
+class _ExactEffectSemanticCorrelation:
+    """The producer-owned portable correlation for one exact effect claim."""
+
+    proof: SemanticRouteProof
+    selected_destination: SemanticRouteDestination
+    discarded_destination: SemanticRouteDestination
+    exclusion: ExactStateBranchEffectExclusion
+    effect_locator: EffectSubjectLocator
+    normalized_state: int
+    state_identity: StorageIdentity
+    source_write_ea: int
+    predicate_branch_ea: int
+    discarded_effect_ea: int
+    source_identity: StableBlockIdentity
+    predicate_identity: StableBlockIdentity
+    selected_identity: StableBlockIdentity
+    discarded_identity: StableBlockIdentity
+    width: int
+
+    def __post_init__(self) -> None:
+        if type(self.proof) is not SemanticRouteProof:
+            raise TypeError("correlation proof must be SemanticRouteProof")
+        if type(self.selected_destination) is not SemanticRouteDestination or type(self.discarded_destination) is not SemanticRouteDestination:
+            raise TypeError("correlation destinations must be SemanticRouteDestination")
+        if type(self.exclusion) is not ExactStateBranchEffectExclusion:
+            raise TypeError("correlation exclusion must be ExactStateBranchEffectExclusion")
+        if type(self.effect_locator) is not EffectSubjectLocator:
+            raise TypeError("correlation effect locator must be EffectSubjectLocator")
+        if type(self.effect_locator.owner_ref) is not NativeBlockRef:
+            raise TypeError("correlation effect locator must use NativeBlockRef")
+        self.exclusion.__post_init__()
+        self.effect_locator.__post_init__()
+        if type(self.state_identity) is not StorageIdentity:
+            raise TypeError("correlation state identity must be StorageIdentity")
+        for value, label in (
+            (self.normalized_state, "normalized_state"),
+            (self.source_write_ea, "source_write_ea"),
+            (self.predicate_branch_ea, "predicate_branch_ea"),
+            (self.discarded_effect_ea, "discarded_effect_ea"),
+            (self.width, "width"),
+        ):
+            if type(value) is not int:
+                raise TypeError(f"correlation {label} must be a built-in int")
+        if not 0 <= self.normalized_state <= 0xFFFFFFFF or not 1 <= self.width <= 8:
+            raise ValueError("correlation scalar is outside its canonical range")
+        if any(value <= 0 or value >= _BADADDR for value in (self.source_write_ea, self.predicate_branch_ea, self.discarded_effect_ea)):
+            raise ValueError("correlation EA is not a native address")
+        if (
+            self.normalized_state != self.exclusion.normalized_state
+            or self.state_identity != self.exclusion.state_identity
+            or self.source_write_ea != self.exclusion.source_write_ea
+            or self.predicate_branch_ea != self.exclusion.predicate_branch_ea
+            or self.discarded_effect_ea != self.exclusion.discarded_effect_ea
+            or self.effect_locator.instruction_ea != self.discarded_effect_ea
+            or self.effect_locator.effect_kind not in {EffectSiteKind.CALL, EffectSiteKind.STORE}
+        ):
+            raise ValueError("correlation scalar disagrees with canonical exclusion/effect locator")
+        if not all(type(identity) is StableBlockIdentity for identity in (self.source_identity, self.predicate_identity, self.selected_identity, self.discarded_identity)):
+            raise TypeError("correlation identities must be StableBlockIdentity")
+        if self.proof.proof_kind is not SemanticRouteProofKind.STATE_CHOICE or self.proof.state_write is None or self.proof.predicate is None:
+            raise ValueError("correlation proof is not a complete state choice")
+        if self.proof.native_key != self.selected_destination.target_identity.native_key:
+            raise ValueError("correlation proof and destination keys disagree")
+        write = self.proof.state_write
+        predicate = self.proof.predicate
+        if (
+            self.proof.source_identity != self.predicate_identity
+            or self.proof.predicate.origin.identity != self.predicate_identity
+            or self.proof.predicate.consumer.identity != self.proof.source_identity
+            or write.identity != self.source_identity
+            or write.state_variable != self.state_identity
+            or write.width != self.width
+            or write.state_constant != self.normalized_state
+            or write.instruction_ea != self.source_write_ea
+            or predicate.origin.anchor_ea != self.predicate_branch_ea
+            or predicate.storage_identity != self.state_identity
+            or predicate.width != self.width
+        ):
+            raise ValueError("correlation proof fields disagree")
+        if self.selected_destination not in self.proof.destinations or self.discarded_destination not in self.proof.destinations:
+            raise ValueError("correlation destinations are not proof-owned")
+        if self.selected_destination.target_identity != self.selected_identity or self.discarded_destination.target_identity != self.discarded_identity:
+            raise ValueError("correlation destination identities disagree")
+        if self.selected_destination.state_constant != self.normalized_state:
+            raise ValueError("correlation selected state disagrees")
+        if self.discarded_destination.state_constant == self.selected_destination.state_constant:
+            raise ValueError("correlation destinations must represent distinct state arms")
+        if (
+            self.effect_locator.owner_ref.identity != self.discarded_identity
+            or self.effect_locator.owner_anchor_ea != self.discarded_destination.target_anchor_ea
+            or self.effect_locator.owner_ref.identity.native_key != self.proof.native_key
+        ):
+            raise ValueError("correlation effect locator does not match discarded route destination")
+        if self.selected_destination.role is self.discarded_destination.role:
+            raise ValueError("correlation destination roles must differ")
+
+
+def _resolve_exact_effect_semantics(
+    *,
+    exclusion: ExactStateBranchEffectExclusion,
+    source_catalog: SourceIdentityCatalog,
+    route_evidence: CanonicalSemanticEvidence,
+    state_identity: StorageIdentity,
+    source_locator: BlockSubjectLocator,
+    predicate_locator: BlockSubjectLocator,
+    selected_locator: BlockSubjectLocator,
+    effect_locator: EffectSubjectLocator,
+    source_serial_by_ref: dict[object, int],
+    expected_route_proof_id: str | None = None,
+    expected_selected_edge_role: SemanticEdgeRole | None = None,
+    expected_width: int | None = None,
+) -> _ExactEffectSemanticCorrelation:
+    """Resolve the sole canonical route proof and all exact-effect fields."""
+
+    if type(exclusion) is not ExactStateBranchEffectExclusion or type(source_catalog) is not SourceIdentityCatalog or type(route_evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("exact semantic inputs are not closed")
+    if type(state_identity) is not StorageIdentity or any(type(locator) is not BlockSubjectLocator for locator in (source_locator, predicate_locator, selected_locator)) or type(effect_locator) is not EffectSubjectLocator:
+        raise TypeError("exact semantic locators are not closed")
+    if any(type(locator.block_ref) is not NativeBlockRef for locator in (source_locator, predicate_locator, selected_locator)) or type(effect_locator.owner_ref) is not NativeBlockRef:
+        raise ValueError("exact semantic locators require native identities")
+    if exclusion.state_identity != state_identity or source_locator.anchor_ea != exclusion.source_ea or predicate_locator.anchor_ea != exclusion.predicate_ea or selected_locator.anchor_ea != exclusion.selected_target_ea or effect_locator.instruction_ea != exclusion.discarded_effect_ea:
+        raise ValueError("exact semantic locator fields disagree with exclusion")
+    subjects = (
+        (exclusion.source_serial, source_locator.block_ref),
+        (exclusion.predicate_serial, predicate_locator.block_ref),
+        (exclusion.selected_target_serial, selected_locator.block_ref),
+        (exclusion.discarded_effect_serial, effect_locator.owner_ref),
+    )
+    if any(source_serial_by_ref.get(ref) != serial for serial, ref in subjects):
+        raise ValueError("exact semantic serials do not resolve to locators")
+    if expected_route_proof_id is not None and type(expected_route_proof_id) is not str:
+        raise TypeError("expected route proof id must be a string")
+    if expected_selected_edge_role is not None and type(expected_selected_edge_role) is not SemanticEdgeRole:
+        raise TypeError("expected selected edge role must be SemanticEdgeRole")
+    if expected_width is not None and (type(expected_width) is not int or expected_width <= 0):
+        raise ValueError("expected width must be a positive built-in int")
+    matches = []
+    for proof in route_evidence.route_proofs:
+        if proof.native_key != route_evidence.native_key or proof.proof_kind is not SemanticRouteProofKind.STATE_CHOICE or proof.state_write is None or proof.predicate is None:
+            continue
+        destinations = tuple(destination for destination in proof.destinations if destination.target_identity == selected_locator.block_ref.identity and destination.target_anchor_ea == selected_locator.anchor_ea and destination.state_constant == exclusion.normalized_state)
+        if len(destinations) != 1 or len(proof.destinations) != 2:
+            continue
+        if expected_route_proof_id is not None and proof.proof_id != expected_route_proof_id:
+            continue
+        destination = destinations[0]
+        if expected_selected_edge_role is not None and destination.role is not expected_selected_edge_role:
+            continue
+        if proof.source_identity != predicate_locator.block_ref.identity or proof.source_anchor_ea != predicate_locator.anchor_ea:
+            continue
+        if proof.source_owner_identity is not None and proof.source_owner_identity != source_locator.block_ref.identity:
+            continue
+        if proof.source_owner_anchor_ea is not None and proof.source_owner_anchor_ea != source_locator.anchor_ea:
+            continue
+        if proof.predicate.origin.identity != predicate_locator.block_ref.identity or proof.predicate.origin.anchor_ea != exclusion.predicate_branch_ea or proof.predicate.consumer.identity != proof.source_identity or proof.predicate.consumer.anchor_ea != proof.source_anchor_ea:
+            continue
+        write = proof.state_write
+        predicate = proof.predicate
+        if write.identity != source_locator.block_ref.identity or write.state_variable != state_identity or write.instruction_ea != exclusion.source_write_ea or write.state_constant != exclusion.normalized_state or predicate.storage_identity != state_identity or predicate.width != write.width or write.width <= 0 or (expected_width is not None and write.width != expected_width):
+            continue
+        opposite = tuple(item for item in proof.destinations if item is not destination)
+        if len(opposite) != 1 or opposite[0].target_identity != effect_locator.owner_ref.identity or opposite[0].target_anchor_ea != effect_locator.owner_anchor_ea or opposite[0].role is destination.role:
+            continue
+        matches.append((proof, destination, opposite[0], write.width))
+    if len(matches) != 1:
+        raise ValueError("exact semantic route proof is missing or ambiguous")
+    proof, selected_destination, discarded_destination, width = matches[0]
+    return _ExactEffectSemanticCorrelation(
+        proof, selected_destination, discarded_destination,
+        exclusion, effect_locator, exclusion.normalized_state, state_identity, exclusion.source_write_ea,
+        exclusion.predicate_branch_ea, exclusion.discarded_effect_ea,
+        source_locator.block_ref.identity, predicate_locator.block_ref.identity,
+        selected_locator.block_ref.identity, effect_locator.owner_ref.identity,
+        width,
+    )
+
+
+def validate_exact_effect_semantics(
+    *,
+    proposal: ProposedUnflattenContract | None,
+    exclusion: ExactStateBranchEffectExclusion,
+    claim: ExactInfeasibleEffectClaim,
+    source_catalog: SourceIdentityCatalog,
+    route_evidence: CanonicalSemanticEvidence,
+    source_serial_by_ref: dict[object, int],
+) -> None:
+    """Validate the one shared portable proposal/exclusion/claim relationship."""
+
+    if type(exclusion) is not ExactStateBranchEffectExclusion:
+        raise TypeError("exact effect exclusion must be closed")
+    if type(claim) is not ExactInfeasibleEffectClaim:
+        raise TypeError("exact effect claim must be closed")
+    if type(source_catalog) is not SourceIdentityCatalog:
+        raise TypeError("exact effect source catalog must be closed")
+    if type(route_evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("exact effect route evidence must be canonical")
+    if proposal is not None:
+        if type(proposal) is not ProposedUnflattenContract:
+            raise TypeError("exact effect proposal must be closed")
+        validate_canonical_roundtrip(proposal, ProposedUnflattenContract)
+        if proposal.source_identity_catalog != source_catalog:
+            raise ValueError("proposal and correlation catalogs disagree")
+        if proposal.route_evidence != route_evidence:
+            raise ValueError("proposal and correlation route evidence disagree")
+        matching_claims = tuple(item for item in proposal.claims if item.claim_id == claim.claim_id)
+        if len(matching_claims) != 1 or matching_claims[0] != claim:
+            raise ValueError("claim is not the exact proposal claim")
+    exclusion.__post_init__()
+    claim.__post_init__()
+    if claim.effect_subject != claim.discarded_effect_subject:
+        raise ValueError("exact claim effect subjects disagree")
+    if (
+        claim.state_identity != exclusion.state_identity
+        or claim.normalized_state != exclusion.normalized_state
+        or claim.source_write_ea != exclusion.source_write_ea
+        or claim.predicate_branch_ea != exclusion.predicate_branch_ea
+        or claim.discarded_effect_ea != exclusion.discarded_effect_ea
+    ):
+        raise ValueError("exact claim scalar is not exclusion-bound")
+    subjects = {
+        "source_serial": claim.source_subject,
+        "predicate_serial": claim.predicate_subject,
+        "selected_target_serial": claim.selected_target_subject,
+        "discarded_effect_serial": claim.discarded_effect_subject,
+    }
+    if any(type(subject.locator) is not BlockSubjectLocator for name, subject in subjects.items() if name != "discarded_effect_serial"):
+        raise ValueError("exact claim block locators are not canonical")
+    if type(claim.discarded_effect_subject.locator) is not EffectSubjectLocator:
+        raise ValueError("exact claim effect locator is not canonical")
+    effect_locator = claim.discarded_effect_subject.locator
+    if effect_locator.instruction_ea != claim.discarded_effect_ea:
+        raise ValueError("claim effect locator EA disagrees with claim")
+    for name, subject in subjects.items():
+        if source_serial_by_ref.get(subject.block_ref) != getattr(exclusion, name):
+            raise ValueError("exclusion serial does not resolve to the claim reference")
+    source_locator = claim.source_subject.locator
+    predicate_locator = claim.predicate_subject.locator
+    selected_locator = claim.selected_target_subject.locator
+    if not all(type(locator.block_ref) is NativeBlockRef for locator in (source_locator, predicate_locator, selected_locator)) or type(effect_locator.owner_ref) is not NativeBlockRef:
+        raise ValueError("exact claim route refs are not native identities")
+    _resolve_exact_effect_semantics(
+        exclusion=exclusion,
+        source_catalog=source_catalog,
+        route_evidence=route_evidence,
+        state_identity=claim.state_identity,
+        source_locator=source_locator,
+        predicate_locator=predicate_locator,
+        selected_locator=selected_locator,
+        effect_locator=effect_locator,
+        source_serial_by_ref=source_serial_by_ref,
+        expected_route_proof_id=claim.route_proof_ids[0],
+        expected_selected_edge_role=claim.selected_edge_role,
+        expected_width=claim.width,
+    )
+    return None
 
 
 def _valid_ea(value: object) -> bool:
@@ -473,6 +748,203 @@ def build_use_def_fragment_witness(
     )
 
 
+def _subject(kind, role, locator):
+    return _subject_factory(
+        SemanticSubjectRef,
+        kind=kind,
+        role=role,
+        block_ref=getattr(locator, "block_ref", getattr(locator, "owner_ref", None)),
+        anchor_ea=getattr(locator, "anchor_ea", getattr(locator, "owner_anchor_ea", None)),
+        locator=locator,
+    )
+
+
+def _exact_effect_claim(
+    *,
+    exclusion: object,
+    source: FlowGraph,
+    source_catalog: SourceIdentityCatalog,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+    canonical_route_evidence: CanonicalSemanticEvidence,
+    state_identity: StorageIdentity,
+) -> ExactInfeasibleEffectClaim:
+    """Adapt one legacy exclusion only through canonical source identities."""
+
+    if type(exclusion) is not ExactStateBranchEffectExclusion:
+        raise TypeError("exact effect exclusions must be closed producer records")
+    if exclusion.state_identity != state_identity:
+        raise ValueError("exact effect exclusion state identity is stale")
+    try:
+        discarded_block = source.blocks[exclusion.discarded_effect_serial]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("discarded effect serial is absent from source catalog") from exc
+    discarded_sites: list[tuple[int, EffectSiteKind]] = []
+    for insn in discarded_block.insn_snapshots:
+        if getattr(insn, "kind", None) is InsnKind.STORE:
+            effect_kind = EffectSiteKind.STORE
+        elif (
+            getattr(insn, "kind", None) is InsnKind.CALL
+            or getattr(insn, "is_call", False)
+        ):
+            effect_kind = EffectSiteKind.CALL
+        else:
+            effect_kind = None
+        if effect_kind is None:
+            continue
+        raw_ea = getattr(insn, "native_ea", None)
+        if not _valid_ea(raw_ea):
+            raw_ea = getattr(insn, "ea", None)
+        if not _valid_ea(raw_ea):
+            raise ValueError("discarded effect has no native EA")
+        discarded_sites.append((int(raw_ea), effect_kind))
+    if len(discarded_sites) != 1:
+        raise ValueError("discarded effect EA does not resolve to one effect kind")
+    discarded_effect_ea, discarded_kind = discarded_sites[0]
+    discarded = resolve_effect_locator(
+        source, source_catalog, block_refs_by_serial,
+        exclusion.discarded_effect_serial, discarded_effect_ea,
+        discarded_kind,
+    )
+    source_locator = resolve_block_locator(
+        source, source_catalog, block_refs_by_serial,
+        exclusion.source_serial, exclusion.source_ea,
+    )
+    predicate_locator = resolve_block_locator(
+        source, source_catalog, block_refs_by_serial,
+        exclusion.predicate_serial, exclusion.predicate_ea,
+    )
+    selected_locator = resolve_block_locator(
+        source, source_catalog, block_refs_by_serial,
+        exclusion.selected_target_serial, exclusion.selected_target_ea,
+    )
+    correlation = _resolve_exact_effect_semantics(
+        exclusion=exclusion,
+        source_catalog=source_catalog,
+        route_evidence=canonical_route_evidence,
+        state_identity=state_identity,
+        source_locator=source_locator,
+        predicate_locator=predicate_locator,
+        selected_locator=selected_locator,
+        effect_locator=discarded,
+        source_serial_by_ref={ref: serial for serial, ref in block_refs_by_serial.items()},
+    )
+    proof = correlation.proof
+    destination = correlation.selected_destination
+    source_subject = _subject(
+        SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        source_locator,
+    )
+    predicate_subject = _subject(
+        SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        predicate_locator,
+    )
+    selected_subject = _subject(
+        SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        selected_locator,
+    )
+    discarded_subject = _subject(
+        SemanticSubjectKind.EFFECT, SemanticSubjectRole.EFFECT_SITE, discarded,
+    )
+    claim = _claim_factory(
+        ExactInfeasibleEffectClaim,
+        kind=UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT,
+        effect_subject=discarded_subject,
+        source_subject=source_subject,
+        predicate_subject=predicate_subject,
+        selected_target_subject=selected_subject,
+        discarded_effect_subject=discarded_subject,
+        normalized_state=correlation.normalized_state,
+        state_identity=correlation.state_identity,
+        width=correlation.width,
+        source_write_ea=correlation.source_write_ea,
+        predicate_branch_ea=correlation.predicate_branch_ea,
+        discarded_effect_ea=correlation.discarded_effect_ea,
+        selected_edge_role=destination.role,
+        route_proof_ids=(proof.proof_id,),
+        consensus=ProviderConsensusWitness(ProviderConsensusMode.NOT_APPLICABLE, ()),
+        source_generation=source_catalog.generation,
+    )
+    return claim
+
+
+def build_proposal(
+    *,
+    plan_id: str,
+    source: FlowGraph,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+    source_generation: int,
+    canonical_route_evidence: CanonicalSemanticEvidence,
+    exact_state_effect_exclusions: Iterable[object],
+    dispatcher_entry_serial: int,
+    dispatcher_member_serials: Iterable[int],
+    authoritative_handler_serials: Iterable[int],
+    state_identity: StorageIdentity,
+    use_def_witness: UseDefFragmentWitness,
+) -> ProposedUnflattenContract:
+    """Build the complete typed producer proposal, including exact effects."""
+
+    source_catalog = build_source_identity_catalog(
+        source, block_refs_by_serial,
+        source_generation=source_generation,
+        canonical_route_evidence=canonical_route_evidence,
+    )
+    exclusions = tuple(exact_state_effect_exclusions)
+    if not exclusions:
+        raise ValueError("typed proposal requires an exact effect claim")
+    claims = tuple(
+        _exact_effect_claim(
+            exclusion=item, source=source, source_catalog=source_catalog,
+            block_refs_by_serial=block_refs_by_serial,
+            canonical_route_evidence=canonical_route_evidence,
+            state_identity=state_identity,
+        )
+        for item in exclusions
+    )
+    plan_inputs = build_unflatten_plan_input_catalog(
+        source=source,
+        source_catalog=source_catalog,
+        block_refs_by_serial=block_refs_by_serial,
+        canonical_route_evidence=canonical_route_evidence,
+        source_entry_serial=source.entry_serial,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        dispatcher_member_serials=dispatcher_member_serials,
+        authoritative_handler_serials=authoritative_handler_serials,
+        state_identity=state_identity,
+        shape=UnflattenPlanShape.EXACT_EFFECT_ONLY,
+    )
+    return ProposedUnflattenContract(
+        schema_version=1,
+        rule_set_version=1,
+        plan_id=plan_id,
+        route_evidence=canonical_route_evidence,
+        source_identity_catalog=source_catalog,
+        use_def_witness=use_def_witness,
+        claims=claims,
+        plan_inputs=plan_inputs,
+    )
+
+
+def build_exact_effect_claim(
+    *,
+    exclusion: ExactStateBranchEffectExclusion,
+    source: FlowGraph,
+    source_catalog: SourceIdentityCatalog,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+    canonical_route_evidence: CanonicalSemanticEvidence,
+    state_identity: StorageIdentity,
+) -> ExactInfeasibleEffectClaim:
+    """Recompute one exact claim for binding-time semantic correlation."""
+
+    return _exact_effect_claim(
+        exclusion=exclusion,
+        source=source,
+        source_catalog=source_catalog,
+        block_refs_by_serial=block_refs_by_serial,
+        canonical_route_evidence=canonical_route_evidence,
+        state_identity=state_identity,
+    )
+
+
 __all__ = [
     "DiscoveredEffect",
     "DiscoveredTerminal",
@@ -484,4 +956,7 @@ __all__ = [
     "resolve_block_locator",
     "resolve_effect_locator",
     "resolve_terminal_locator",
+    "build_proposal",
+    "build_exact_effect_claim",
+    "validate_exact_effect_semantics",
 ]

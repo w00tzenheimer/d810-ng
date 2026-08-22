@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import inspect
 
 import pytest
 
@@ -16,6 +17,7 @@ from d810.transforms.unflatten_authority.model import (
     UnflattenPlanRoute,
 )
 from d810.transforms.unflatten_authority.proposal import LEGACY_UNFLATTEN_KEYS
+from d810.transforms.unflatten_authority.legacy_keys import EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA
 
 
 def _codec():
@@ -239,6 +241,149 @@ def test_decode_rejects_strict_shape_failures_and_defers_known_families() -> Non
     )
     assert deferred.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
     assert deferred.detail_code == "legacy_exact_effect_not_enabled"
+
+
+def test_exact_decode_context_accepts_only_owned_typed_inputs() -> None:
+    codec = _codec()
+    fields = set(inspect.signature(codec.LegacyUnflattenDecodeContext).parameters)
+    assert {"plan_inputs", "use_def_witness"} <= fields
+    assert not {
+        "dispatcher_entry_serial", "dispatcher_member_serials",
+        "authoritative_handler_serials", "redirect_digest",
+    } & fields
+    with pytest.raises(TypeError):
+        codec.LegacyUnflattenDecodeContext(
+            "plan", _decode_context(codec).source, 3,
+            ((0, LogicalBlockRef("legacy", "b0", 1)),), None,
+            dispatcher_entry_serial=0,
+        )
+
+
+def test_exact_legacy_decode_roundtrips_through_the_producer_builder() -> None:
+    from dataclasses import replace
+    from .test_bind import _exact_fixture
+    source, proposal, exclusion, refs = _exact_fixture()
+    context = _codec().LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+        proposal.route_evidence, proposal.plan_inputs, proposal.use_def_witness,
+    )
+    payload = ((EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA, (exclusion.to_metadata(),)),)
+    decoded = _codec().decode_legacy_unflatten_contract(payload, context=context)
+    assert decoded.route is UnflattenPlanRoute.LEGACY_ADAPTED
+    assert decoded.proposal is not None
+    assert decoded.proposal.claims == proposal.claims
+    assert decoded.proposal.plan_inputs == proposal.plan_inputs
+    assert _codec().decode_legacy_value(_codec().encode_legacy_value(payload)) == payload
+    foreign_ref = LogicalBlockRef("foreign", "b9", 9)
+    foreign = replace(
+        proposal.plan_inputs, dispatcher_entry_ref=foreign_ref,
+        dispatcher_member_refs=(foreign_ref, *proposal.plan_inputs.dispatcher_member_refs[1:]),
+    )
+    with pytest.raises(ValueError, match="foreign ref"):
+        _codec().LegacyUnflattenDecodeContext(
+            proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+            proposal.route_evidence, foreign, proposal.use_def_witness,
+        )
+    substituted_handler = replace(
+        proposal.plan_inputs,
+        authoritative_handlers=(replace(
+            proposal.plan_inputs.authoritative_handlers[0], block_ref=foreign_ref,
+        ),),
+    )
+    with pytest.raises(ValueError, match="foreign ref"):
+        _codec().LegacyUnflattenDecodeContext(
+            proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+            proposal.route_evidence, substituted_handler, proposal.use_def_witness,
+        )
+    with pytest.raises(TypeError, match="use-def witness"):
+        _codec().LegacyUnflattenDecodeContext(
+            proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+            proposal.route_evidence, proposal.plan_inputs, None,
+        )
+    with pytest.raises(ValueError, match="incomplete"):
+        _codec().LegacyUnflattenDecodeContext(
+            proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+            proposal.route_evidence, None, proposal.use_def_witness,
+        )
+    foreign_owner = replace(
+        proposal.use_def_witness,
+        redirect_owner_refs=(LogicalBlockRef("foreign", "owner", 11),),
+    )
+    with pytest.raises(ValueError, match="foreign ref"):
+        _codec().LegacyUnflattenDecodeContext(
+            proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+            proposal.route_evidence, proposal.plan_inputs, foreign_owner,
+        )
+    mutated = replace(
+        proposal.use_def_witness,
+        state_identity=type(proposal.plan_inputs.state_identity)(
+            proposal.plan_inputs.state_identity.kind,
+            proposal.plan_inputs.state_identity.offset + 1,
+        ),
+    )
+    mutated_context = _codec().LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+        proposal.route_evidence, proposal.plan_inputs, mutated,
+    )
+    rejected = _codec().decode_legacy_unflatten_contract(payload, context=mutated_context)
+    assert rejected.detail_code == "legacy_exact_effect_payload_invalid"
+    from d810.transforms.unflatten_authority import model
+    shape_context = _codec().LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+        proposal.route_evidence, replace(
+            proposal.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
+        ), proposal.use_def_witness,
+    )
+    assert _codec().decode_legacy_unflatten_contract(
+        payload, context=shape_context,
+    ).detail_code == "legacy_exact_effect_payload_invalid"
+    handler = proposal.plan_inputs.authoritative_handlers[0]
+    handler_context = _codec().LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+        proposal.route_evidence, replace(
+            proposal.plan_inputs,
+            authoritative_handlers=(replace(handler, normalized_states=(99,)),),
+        ), proposal.use_def_witness,
+    )
+    assert _codec().decode_legacy_unflatten_contract(
+        payload, context=handler_context,
+    ).detail_code == "legacy_exact_effect_payload_invalid"
+
+
+def test_exact_raw_codec_rejects_lossy_scalar_and_shape_coercions() -> None:
+    from .test_bind import _exact_fixture
+
+    codec = _codec()
+    _source, _proposal, exclusion, _refs = _exact_fixture()
+    base = exclusion.to_metadata()
+
+    class IntSubclass(int):
+        pass
+
+    for value in (0.9, +0.9, True, "7", IntSubclass(7)):
+        payload = dict(base)
+        payload["normalized_state"] = value
+        assert codec.exact_state_branch_effect_exclusion_from_metadata(payload) is None
+
+    nested = dict(base)
+    nested["source"] = list(base["source"].items())
+    assert codec.exact_state_branch_effect_exclusion_from_metadata(nested) is None
+
+
+def test_exact_legacy_decode_rejects_mixed_reserved_families() -> None:
+    from .test_bind import _exact_fixture
+
+    source, proposal, exclusion, refs = _exact_fixture()
+    context = _codec().LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+        proposal.route_evidence, proposal.plan_inputs, proposal.use_def_witness,
+    )
+    payload = (
+        (EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA, (exclusion.to_metadata(),)),
+        ("dispatcher_corridor_coverage", {"serial": 1, "ea": 0x1000}),
+    )
+    rejected = _codec().decode_legacy_unflatten_contract(payload, context=context)
+    assert rejected.detail_code == "legacy_exact_effect_mixed_reserved_families"
 
 
 def test_r2_requires_dedicated_lossless_wire_and_neutral_key_owner() -> None:

@@ -1,6 +1,7 @@
 """Exact semantic exclusions for structurally reachable effect branches."""
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 from d810.analyses.control_flow.effect_branch_exclusion import (
     build_exact_state_branch_effect_exclusion,
@@ -165,7 +166,7 @@ def test_exact_ingress_state_certifies_private_infeasible_effect_arm() -> None:
     assert proof.source_write_ea == 0x18002A9E6
     assert proof.predicate_ea == 0x180016411
     assert proof.predicate_branch_ea == 0x180016416
-    assert proof.discarded_effect_ea == 0x18002CF19
+    assert proof.discarded_effect_ea == 0x18002CF2E
     assert validate_exact_state_branch_effect_exclusion(graph, graph, proof)
 
 
@@ -200,6 +201,84 @@ def test_exact_effect_exclusion_replays_source_state_and_predicate() -> None:
     assert not validate_exact_state_branch_effect_exclusion(forged, forged, proof)
 
 
+def test_exact_effect_exclusion_rejects_scalar_and_identity_mutations() -> None:
+    graph = _fixture()
+    proof = _proof(graph)
+    assert proof is not None
+    object.__setattr__(proof, "normalized_state", 0.9)
+    assert not validate_exact_state_branch_effect_exclusion(graph, graph, proof)
+    proof = _proof(graph)
+    assert proof is not None
+    object.__setattr__(proof, "source_serial", True)
+    assert not validate_exact_state_branch_effect_exclusion(graph, graph, proof)
+    proof = _proof(graph)
+    assert proof is not None
+    forged_identity = replace(proof.state_identity, offset=0.9)
+    object.__setattr__(proof, "state_identity", forged_identity)
+    assert not validate_exact_state_branch_effect_exclusion(graph, graph, proof)
+
+
+def test_exact_effect_exclusion_rejects_a_second_effect_site_anywhere_in_discarded_block() -> None:
+    graph = _fixture()
+    proof = _proof(graph)
+    assert proof is not None
+    original = graph.blocks[546].insn_snapshots[0]
+    extra = replace(original, ea=original.ea + 1, native_ea=original.native_ea + 1)
+    altered_block = replace(graph.blocks[546], insn_snapshots=(original, extra))
+    altered = replace(graph, blocks={**graph.blocks, 546: altered_block})
+    assert not validate_exact_state_branch_effect_exclusion(altered, altered, proof)
+
+
+def test_exact_effect_exclusion_rejects_lossy_graph_eas_at_every_receipt_site() -> None:
+    graph = _fixture()
+    proof = _proof(graph)
+    assert proof is not None
+    source_write = graph.blocks[452].insn_snapshots[0]
+    write_native_float = replace(source_write, native_ea=source_write.native_ea + 0.9)
+    object.__setattr__(write_native_float, "native_ea", source_write.native_ea + 0.9)
+    altered = replace(graph, blocks={
+        **graph.blocks,
+        452: replace(graph.blocks[452], insn_snapshots=(write_native_float, *graph.blocks[452].insn_snapshots[1:])),
+    })
+    assert build_exact_state_branch_effect_exclusion(
+        altered, altered, normalized_state=STATE, source_serial=452,
+        predicate_serial=78, selected_target_serial=79,
+        discarded_effect_serial=546,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, STATE_OFFSET),
+    ) is None
+    write_attrs_float = replace(
+        source_write,
+        opcode_attrs={**source_write.opcode_attrs, "ea": source_write.ea + 0.9},
+    )
+    altered = replace(graph, blocks={
+        **graph.blocks,
+        452: replace(graph.blocks[452], insn_snapshots=(write_attrs_float, *graph.blocks[452].insn_snapshots[1:])),
+    })
+    assert not validate_exact_state_branch_effect_exclusion(altered, altered, proof)
+    branch = graph.blocks[78].insn_snapshots[0]
+    branch_native_float = replace(branch, native_ea=branch.native_ea)
+    object.__setattr__(branch_native_float, "native_ea", branch.native_ea + 0.9)
+    altered = replace(graph, blocks={
+        **graph.blocks,
+        78: replace(graph.blocks[78], insn_snapshots=(branch_native_float,)),
+    })
+    assert not validate_exact_state_branch_effect_exclusion(altered, altered, proof)
+    effect = graph.blocks[546].insn_snapshots[0]
+    effect_native_float = replace(effect, native_ea=effect.native_ea)
+    object.__setattr__(effect_native_float, "native_ea", float(effect.native_ea))
+    altered = replace(graph, blocks={
+        **graph.blocks,
+        546: replace(graph.blocks[546], insn_snapshots=(effect_native_float,)),
+    })
+    assert not validate_exact_state_branch_effect_exclusion(altered, altered, proof)
+    altered = replace(graph, blocks={
+        **graph.blocks,
+        452: replace(graph.blocks[452], native_start_ea=graph.blocks[452].native_start_ea),
+    })
+    object.__setattr__(altered.blocks[452], "native_start_ea", float(graph.blocks[452].native_start_ea))
+    assert not validate_exact_state_branch_effect_exclusion(altered, altered, proof)
+
+
 def test_exact_effect_exclusion_is_limited_to_immediate_private_effect_block() -> None:
     graph = _fixture()
     proof = _proof(graph)
@@ -212,3 +291,65 @@ def test_exact_effect_exclusion_is_limited_to_immediate_private_effect_block() -
         malformed,
         proof,
     )
+
+
+def test_exact_effect_exclusion_rejects_non_call_store_and_ambiguous_sites() -> None:
+    graph = _fixture()
+    for kind in (InsnKind.TRAP, InsnKind.RET):
+        block = replace(
+            graph.blocks[546],
+            insn_snapshots=(replace(graph.blocks[546].insn_snapshots[0], kind=kind, is_call=False),),
+        )
+        altered = replace(graph, blocks={**graph.blocks, 546: block})
+        assert build_exact_state_branch_effect_exclusion(
+            altered, altered,
+            normalized_state=STATE,
+            source_serial=452,
+            predicate_serial=78,
+            selected_target_serial=79,
+            discarded_effect_serial=546,
+            state_identity=StorageIdentity(StorageIdentityKind.STACK, STATE_OFFSET),
+        ) is None
+    first = graph.blocks[546].insn_snapshots[0]
+    ambiguous = replace(
+        graph.blocks[546],
+        insn_snapshots=(first, replace(first, ea=first.ea, native_ea=first.native_ea)),
+    )
+    altered = replace(graph, blocks={**graph.blocks, 546: ambiguous})
+    assert build_exact_state_branch_effect_exclusion(
+        altered, altered,
+        normalized_state=STATE,
+        source_serial=452,
+        predicate_serial=78,
+        selected_target_serial=79,
+        discarded_effect_serial=546,
+        state_identity=StorageIdentity(StorageIdentityKind.STACK, STATE_OFFSET),
+    ) is None
+
+
+def test_exact_effect_exclusion_rejects_duck_typed_proxy_in_source_or_projected() -> None:
+    graph = _fixture()
+    proof = _proof(graph)
+    assert proof is not None
+    effect = graph.blocks[546].insn_snapshots[0]
+    proxy = SimpleNamespace(
+        ea=effect.ea,
+        native_ea=effect.native_ea,
+        opcode_attrs=effect.opcode_attrs,
+        kind=effect.kind,
+        is_call=effect.is_call,
+    )
+    altered = replace(graph, blocks={
+        **graph.blocks,
+        546: replace(graph.blocks[546], insn_snapshots=(proxy,)),
+    })
+    assert not validate_exact_state_branch_effect_exclusion(altered, graph, proof)
+    assert not validate_exact_state_branch_effect_exclusion(graph, altered, proof)
+
+
+def test_exact_effect_exclusion_rejects_block_anchor_before_effect_site() -> None:
+    graph = _fixture()
+    proof = _proof(graph)
+    assert proof is not None
+    forged = replace(proof, discarded_effect_ea=graph.blocks[546].native_start_ea)
+    assert not validate_exact_state_branch_effect_exclusion(graph, graph, forged)

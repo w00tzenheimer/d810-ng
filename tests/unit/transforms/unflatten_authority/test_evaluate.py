@@ -1218,7 +1218,7 @@ def test_topology_support_requires_named_reciprocal_peer_rows() -> None:
 
 def test_patch_step_evidence_must_match_closed_step_inventory() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "patch-inventory")
-    helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "1")
+    helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")
     proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
     payload = model.PatchStepEvidencePayload(
         proposal.plan_id, 0, "PatchResegmentBlock", helper.block_ref,
@@ -1683,7 +1683,7 @@ def test_fold_lineage_partitions_disjoint_source_origins_and_supports_each_membe
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0")
     first = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "0")
     second = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
-    helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "1")
+    helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")
     baseline = _complete_inputs(source_subjects=(entry, first, second), candidate_subjects=(entry, first, second, helper))
     helper_binding = replace(
         next(item for item in baseline.candidate_bindings if item.subject == helper),
@@ -2122,18 +2122,13 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
     source = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "0")
     predicate = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "1")
     selected = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
-    effect_locator = model.EffectSubjectLocator(b0, 0x1000, 0x1004, model.EffectSiteKind.STORE)
     discarded_locator = model.EffectSubjectLocator(b0, 0x1000, 0x1008, model.EffectSiteKind.STORE)
-    effect = _subject_factory(
-        model.SemanticSubjectRef, kind=model.SemanticSubjectKind.EFFECT,
-        role=model.SemanticSubjectRole.EFFECT_SITE, block_ref=b0, anchor_ea=0x1000,
-        locator=effect_locator,
-    )
     discarded = _subject_factory(
         model.SemanticSubjectRef, kind=model.SemanticSubjectKind.EFFECT,
         role=model.SemanticSubjectRole.EFFECT_SITE, block_ref=b0, anchor_ea=0x1000,
         locator=discarded_locator,
     )
+    effect = discarded
     claim = _claim_factory(
         model.ExactInfeasibleEffectClaim,
         kind=model.UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT,
@@ -2173,6 +2168,15 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
         route, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, route_payload,
     )
     proposal_values = _valid_proposal(model)
+    catalog = proposal_values["source_identity_catalog"]
+    proposal_values["source_identity_catalog"] = replace(
+        catalog,
+        blocks=(
+            replace(catalog.blocks[0], native_instruction_eas=(0x1000, 0x1004, 0x1008)),
+            replace(catalog.blocks[1], native_instruction_eas=(0x1006, 0x1300)),
+            catalog.blocks[2],
+        ),
+    )
     proposal_values["plan_inputs"] = replace(
         proposal_values["plan_inputs"], shape=model.UnflattenPlanShape.EXACT_EFFECT_ONLY,
     )
@@ -2200,7 +2204,7 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
         assert not cell.refuting_justification_ids
     failed_effect_gate = model.GenericCfgGateResult(
         model.GenericCfgGateKind.EFFECTFUL_REACHABILITY, False, (),
-        (effect.subject_id, discarded.subject_id), "classified-loss",
+        (discarded.subject_id,), "classified-loss",
     )
     failed_gate_case = build_semantic_case(
         authority_id=authority_id("exact-effect-failed-generic-gate"),
@@ -2223,6 +2227,41 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
         and discarded.subject_id in item.payload.affected_subject_ids
         for item in failed_gate_case.evidence
     )
+    assert sum(
+        item.rule is model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN
+        for item in failed_gate_case.justifications
+    ) == 2
+    assert not any(
+        item.rule is model.UnflattenJustificationRule.GENERIC_CFG_GATE_FAILED
+        and item.conclusion.subject.subject_id == discarded.subject_id
+        for item in failed_gate_case.justifications
+    )
+    from d810.transforms.unflatten_authority.views import exact_effect_loss_view
+    loss_view = exact_effect_loss_view(failed_gate_case, discarded.subject_id)
+    assert loss_view.evidence_ids
+    assert len(loss_view.justification_ids) == 2
+    exact_justifications = tuple(
+        item for item in failed_gate_case.justifications
+        if item.rule is model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN
+    )
+    assert {
+        item.conclusion.subject.subject_id for item in exact_justifications
+    } == {discarded.subject_id}
+    assert {
+        item.conclusion.dimension for item in exact_justifications
+    } == {
+        model.SafetyDimension.EFFECT_PRESERVATION,
+        model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+    }
+    forbidden_roles = {
+        model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+        model.SemanticSubjectRole.TERMINAL_SITE,
+        model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
+        model.SemanticSubjectRole.NON_STATE_VALUE_FLOW,
+    }
+    assert not any(item.conclusion.subject.role in forbidden_roles for item in exact_justifications)
     bad_effect = _evidence_factory(
         model.AuthorityEvidence, model.AuthorityEvidenceKind.EFFECT_SITE,
         discarded, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,

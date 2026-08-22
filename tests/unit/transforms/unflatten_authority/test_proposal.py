@@ -394,7 +394,7 @@ def test_redirect_manifest_rejects_subclasses_and_invalid_typed_targets() -> Non
 def test_explicit_shadow_envelope_is_the_only_dual_channel_exception() -> None:
     """A typed plan may carry only the exact temporary shadow transport."""
 
-    # This is the first RED assertion: the typed channel does not yet exist.
+    # Direct construction still exercises the independent dual-channel guard.
     assert "unflatten_proposal" in inspect.signature(PatchPlan).parameters
     assert "legacy_unflatten_shadow" in inspect.signature(PatchPlan).parameters
     from d810.transforms.unflatten_authority.transaction_api import select_plan_route
@@ -421,6 +421,223 @@ def test_explicit_shadow_envelope_is_the_only_dual_channel_exception() -> None:
             source_generation=3,
             unflatten_proposal=proposal,
             legacy_unflatten_shadow={"schema_version": 1},
+        )
+
+
+def test_first_typed_effect_plan_moves_all_legacy_keys_into_shadow() -> None:
+    """The first typed proposal must capture every legacy family once."""
+
+    from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
+    from d810.transforms.unflatten_authority.proposal import attach_typed_proposal
+    from d810.transforms.unflatten_authority.transaction_api import select_plan_route
+    from .helpers import import_authority_model
+    model = import_authority_model()
+    from .test_bind import _exact_fixture
+    source, proposal, exclusion, refs = _exact_fixture()
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+    plan_template = PatchPlan(
+        plan_id=proposal.plan_id, snapshot_id="snapshot-1", source_generation=1,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+    )
+    manifest = canonical_redirect_manifest(plan_template)
+    witness = replace(proposal.use_def_witness, redirect_owner_refs=manifest.owner_refs, redirect_digest=manifest.digest)
+    values = tuple((key, {"family": key}) for key in LEGACY_UNFLATTEN_KEYS)
+    plan = replace(plan_template, metadata=values, unflatten_proposal=None)
+    attached = attach_typed_proposal(
+        plan,
+        source=source, block_refs_by_serial=refs,
+        canonical_route_evidence=proposal.route_evidence,
+        exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+        state_identity=proposal.plan_inputs.state_identity, use_def_witness=witness,
+    )
+    selected = select_plan_route(attached)
+    assert getattr(selected, "route", None) is model.UnflattenPlanRoute.TYPED_PROPOSAL
+    assert attached.legacy_unflatten_shadow is not None
+    assert attached.metadata == ()
+    assert tuple(entry.key for entry in attached.legacy_unflatten_shadow.entries) == tuple(sorted(LEGACY_UNFLATTEN_KEYS))
+
+
+def test_typed_attachment_keeps_dispatcher_entry_when_not_a_redirect_owner() -> None:
+    from .helpers import import_authority_model
+    from .test_bind import _exact_fixture
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import attach_typed_proposal, canonical_redirect_manifest
+    from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
+    from d810.transforms.unflatten_authority.transaction_api import select_plan_route
+
+    model = import_authority_model()
+    source, proposal, exclusion, refs = _exact_fixture()
+    steps = (PatchRedirectGoto(refs[0], refs[2], refs[1]),)
+    plan = PatchPlan(
+        plan_id=proposal.plan_id, snapshot_id="snapshot-1",
+        source_generation=1,
+        steps=steps,
+        metadata=tuple((key, {"family": key}) for key in LEGACY_UNFLATTEN_KEYS),
+    )
+    manifest = canonical_redirect_manifest(plan)
+    witness = replace(proposal.use_def_witness, redirect_owner_refs=manifest.owner_refs, redirect_digest=manifest.digest)
+    attached = attach_typed_proposal(
+        plan,
+        source=source, block_refs_by_serial=refs,
+        canonical_route_evidence=proposal.route_evidence,
+        exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+        state_identity=proposal.plan_inputs.state_identity, use_def_witness=witness,
+    )
+    assert select_plan_route(attached).route is model.UnflattenPlanRoute.TYPED_PROPOSAL
+
+
+def test_producer_exact_effect_claim_correlates_all_canonical_dimensions() -> None:
+    from d810.analyses.control_flow.effect_branch_exclusion import ExactStateBranchEffectExclusion
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        CanonicalSemanticEvidence,
+        SemanticCarrierProof,
+        SemanticCorridorPoint,
+        SemanticPredicateKind,
+        SemanticPredicateProof,
+        SemanticRouteDestination,
+        SemanticRouteProof,
+        SemanticRouteProofKind,
+        SemanticRouteShape,
+        SemanticStateWriteDeliveryKind,
+        SemanticStateWriteProof,
+    )
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import StableBlockIdentity
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+    from d810.ir.semantic_edge import SemanticEdgeRole
+    from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.unflatten_authority import producer_api
+    from d810.transforms.unflatten_authority.ids import authority_id
+    from d810.transforms.unflatten_authority.model import UseDefFragmentWitness
+
+    key = NativePreanalysisKey("input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64)
+    state = StorageIdentity(StorageIdentityKind.STACK, 4)
+    specs = (
+        (0, (1,), (), 0x1000, (InsnSnapshot(0, 0x1000, (), kind=InsnKind.MOV),)),
+        (1, (2, 3), (0,), 0x2000, (InsnSnapshot(0, 0x2000, (), kind=InsnKind.NOP), InsnSnapshot(0, 0x2001, (), kind=InsnKind.COND_JUMP))),
+        (2, (), (1,), 0x3000, (InsnSnapshot(0, 0x3000, (), kind=InsnKind.NOP),)),
+        (3, (), (1,), 0x4000, (InsnSnapshot(0, 0x4000, (), kind=InsnKind.CALL, is_call=True),)),
+    )
+    blocks = {
+        serial: BlockSnapshot(
+            serial=serial, block_type=0, succs=succs, preds=preds, flags=0,
+            start_ea=ea, native_start_ea=ea, insn_snapshots=insns,
+            kind=BlockKind.TWO_WAY if len(succs) == 2 else BlockKind.ONE_WAY if succs else BlockKind.ZERO_WAY,
+        )
+        for serial, succs, preds, ea, insns in specs
+    }
+    source = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x5000)
+    refs = {}
+    for serial, _succs, _preds, ea, insns in specs:
+        identity = StableBlockIdentity.from_instruction_eas(
+            [instruction.ea for instruction in insns], native_key=key,
+        )
+        refs[serial] = NativeBlockRef(identity)
+    source_point = SemanticCorridorPoint(refs[0].identity, 0x1000)
+    predicate_point = SemanticCorridorPoint(refs[1].identity, 0x2001)
+    predicate_consumer = SemanticCorridorPoint(refs[1].identity, 0x2000)
+    state_write = SemanticStateWriteProof(
+        refs[0].identity, 0x1000, state, 4, 7, (0x1000, 0x2000), None, (),
+        SemanticStateWriteDeliveryKind.CONDITIONAL,
+    )
+    predicate = SemanticPredicateProof(
+        SemanticPredicateKind.STORAGE_EQUALS, predicate_point, predicate_consumer,
+        (predicate_point, predicate_consumer), state, 4, 7, None, (),
+    )
+    carrier = SemanticCarrierProof(
+        authority_id("carrier"), source_point, (predicate_consumer,),
+        (source_point, predicate_consumer), state, 4, (7, 8), (0x1000,),
+    )
+    route = SemanticRouteProof(
+        authority_id("route"), authority_id("group"), SemanticRouteProofKind.STATE_CHOICE,
+        SemanticRouteShape.CONDITIONAL, refs[1].identity, 0x2000,
+        (
+            SemanticRouteDestination(SemanticEdgeRole.CONDITIONAL_TAKEN, 7, refs[2].identity, 0x3000),
+            SemanticRouteDestination(SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, 8, refs[3].identity, 0x4000),
+        ), source_owner_identity=refs[0].identity, source_owner_anchor_ea=0x1000,
+        state_write=state_write, predicate=predicate, carriers=(carrier,),
+        diagnostic_provenance=(("provider_proof_kind", "state_choice"),),
+    )
+    evidence = CanonicalSemanticEvidence(key, 1, authority_id("group"), (route,))
+    catalog_refs = {serial: ref for serial, ref in refs.items()}
+    exclusion = ExactStateBranchEffectExclusion(
+        7, 0, 0x1000, 0x1000, 1, 0x2000, 0x2001, 2, 0x3000, 3, 0x4000, state,
+    )
+    witness = UseDefFragmentWitness(
+        authority_id("fragment"), state, (refs[0],), authority_id("redirect"),
+        True, True, 0, (),
+    )
+    proposal = producer_api.build_proposal(
+        plan_id=authority_id("plan"), source=source, block_refs_by_serial=catalog_refs,
+        source_generation=1, canonical_route_evidence=evidence,
+        exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+        state_identity=state, use_def_witness=witness,
+    )
+    claim = proposal.claims[0]
+    assert claim.width == 4
+    assert claim.source_write_ea == 0x1000
+    assert claim.predicate_branch_ea == 0x2001
+    assert claim.selected_target_subject.block_ref == refs[2]
+    assert claim.discarded_effect_subject.block_ref == refs[3]
+    assert claim.source_generation == 1
+    from d810.transforms.unflatten_authority.model import ProviderConsensusMode
+    assert claim.consensus.mode is ProviderConsensusMode.NOT_APPLICABLE
+    assert claim.consensus.provider_ids == ()
+
+    with pytest.raises(ValueError, match="state identity"):
+        producer_api.build_proposal(
+            plan_id=authority_id("plan"), source=source, block_refs_by_serial=catalog_refs,
+            source_generation=1, canonical_route_evidence=evidence,
+            exact_state_effect_exclusions=(replace(exclusion, state_identity=StorageIdentity(StorageIdentityKind.STACK, 8)),),
+            dispatcher_entry_serial=1, dispatcher_member_serials=(0, 1),
+            authoritative_handler_serials=(2,), state_identity=state, use_def_witness=witness,
+        )
+    for field in (
+        "source_serial", "predicate_serial", "selected_target_serial",
+        "discarded_effect_serial",
+    ):
+        with pytest.raises(ValueError):
+            producer_api.build_proposal(
+                plan_id=authority_id("plan"), source=source, block_refs_by_serial=catalog_refs,
+                source_generation=1, canonical_route_evidence=evidence,
+                exact_state_effect_exclusions=(replace(exclusion, **{field: 99}),),
+                dispatcher_entry_serial=1, dispatcher_member_serials=(0, 1),
+                authoritative_handler_serials=(2,), state_identity=state, use_def_witness=witness,
+            )
+
+
+@pytest.mark.parametrize("kind_name", ["TRAP", "RET"])
+def test_producer_exact_effect_claim_rejects_non_call_store_sites(kind_name) -> None:
+    from dataclasses import replace
+    from d810.ir.flowgraph import InsnKind
+    from d810.transforms.unflatten_authority import producer_api
+    from .test_bind import _exact_fixture
+    kind = getattr(InsnKind, kind_name)
+    source, proposal, exclusion, refs = _exact_fixture()
+    discarded = source.blocks[exclusion.discarded_effect_serial]
+    source = replace(
+        source,
+        blocks={
+            **source.blocks,
+            exclusion.discarded_effect_serial: replace(
+                discarded,
+                insn_snapshots=(replace(discarded.insn_snapshots[0], kind=kind, is_call=False),),
+            ),
+        },
+    )
+    with pytest.raises(ValueError, match="effect"):
+        producer_api.build_proposal(
+            plan_id=proposal.plan_id, source=source, block_refs_by_serial=refs,
+            source_generation=1, canonical_route_evidence=proposal.route_evidence,
+            exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
+            dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+            state_identity=proposal.plan_inputs.state_identity,
+            use_def_witness=proposal.use_def_witness,
         )
 
 

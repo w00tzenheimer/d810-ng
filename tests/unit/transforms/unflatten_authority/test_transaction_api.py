@@ -116,6 +116,54 @@ def test_shadow_plan_snapshot_and_generation_drift_rejects() -> None:
     assert result.detail_code == "shadow_source_generation_mismatch"
 
 
+def test_shadow_is_the_single_legacy_transport_at_transaction_boundary() -> None:
+    typed = _typed_plan()
+    shadow = _shadow(typed.plan_id)
+    object.__setattr__(typed, "legacy_unflatten_shadow", shadow)
+    assert typed.metadata == ()
+    selected = select_plan_route(typed)
+    assert selected.route is UnflattenPlanRoute.TYPED_PROPOSAL
+    assert selected.proposal is not None
+    assert selected.proposal.plan_id == typed.plan_id
+
+
+def test_exact_effect_shadow_preserves_payload_and_typed_route() -> None:
+    from dataclasses import replace
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.legacy_keys import EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA
+    from d810.transforms.unflatten_authority.legacy_codec import replay_legacy_unflatten_shadow
+    from d810.transforms.unflatten_authority.proposal import attach_typed_proposal, canonical_redirect_manifest
+    from .test_bind import _exact_fixture
+
+    source, proposal, exclusion, refs = _exact_fixture()
+    plan = PatchPlan(
+        plan_id=proposal.plan_id, snapshot_id="snapshot-exact", source_generation=1,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+        metadata=((EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA, (exclusion.to_metadata(),)),),
+    )
+    manifest = canonical_redirect_manifest(plan)
+    proposal = replace(proposal, use_def_witness=replace(
+        proposal.use_def_witness, redirect_owner_refs=manifest.owner_refs,
+        redirect_digest=manifest.digest,
+    ))
+    attached = attach_typed_proposal(
+        plan, source=source, block_refs_by_serial=refs,
+        canonical_route_evidence=proposal.route_evidence,
+        exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+        state_identity=proposal.plan_inputs.state_identity,
+        use_def_witness=proposal.use_def_witness,
+    )
+    selected = select_plan_route(attached)
+    assert selected.route is UnflattenPlanRoute.TYPED_PROPOSAL
+    assert selected.proposal == proposal
+    replayed = replay_legacy_unflatten_shadow(attached)
+    assert attached.metadata == ()
+    assert replayed.metadata_value(EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA) == (
+        exclusion.to_metadata(),
+    )
+
+
 def test_mapping_proposal_is_rejected_without_truthy_authority() -> None:
     plan = _typed_plan()
     object.__setattr__(plan, "unflatten_proposal", {"plan_id": plan.plan_id})

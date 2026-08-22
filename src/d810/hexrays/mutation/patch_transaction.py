@@ -14,8 +14,10 @@ from d810.analyses.control_flow.graph_checks import (
 )
 from d810.analyses.control_flow.effect_branch_exclusion import (
     EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
-    exact_state_branch_effect_exclusion_from_metadata,
     validate_exact_state_branch_effect_exclusion,
+)
+from d810.transforms.unflatten_authority.legacy_codec import (
+    exact_state_branch_effect_exclusion_from_metadata,
 )
 from d810.ir.flowgraph import FlowGraph, InsnKind
 from d810.transforms.cfg_transaction import (

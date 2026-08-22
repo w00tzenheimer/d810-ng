@@ -132,6 +132,7 @@ from d810.ir.flowgraph import BlockKind, InsnKind, OperandKind
 from d810.ir.maturity import MaturityEnvelope
 from d810.ir.insn_projection import operand_kinds, operand_storages
 from d810.ir.semantics import PredicateKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.exit_path_liveness_policy import (
     exit_path_blocks_live_violations,
     evaluate_exit_path_shortcut,
@@ -183,6 +184,14 @@ from d810.transforms.unflatten_authority.legacy_keys import (
     NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
     UNFLATTEN_COMPLETION_STATUS_METADATA,
     USE_DEF_SEVERANCE_AUDIT_METADATA,
+)
+from d810.transforms.unflatten_authority.ids import content_id
+from d810.transforms.unflatten_authority.producer_api import (
+    build_use_def_fragment_witness,
+)
+from d810.transforms.unflatten_authority.proposal import (
+    attach_typed_proposal,
+    canonical_redirect_manifest,
 )
 
 logger = logging.getLogger("d810.transforms.minimal_unflatten_emit")
@@ -9418,9 +9427,21 @@ def emit_minimal_unflatten(
         )
 
     def compile_modifications(modifications) -> PatchPlan:
+        authority_plan_id = None
+        if canonical_route_evidence is not None:
+            authority_plan_id = content_id(
+                "unflatten.patch-plan.v1",
+                (
+                    int(flow_graph.func_ea),
+                    snapshot_id,
+                    source_generation,
+                    tuple(sorted(int(serial) for serial in dispatcher_region_serials)),
+                ),
+            )
         return compile_patch_plan(
             modifications,
             flow_graph,
+            plan_id=authority_plan_id,
             snapshot_id=snapshot_id,
             source_generation=source_generation,
             source_maturity=source_maturity,
@@ -11069,6 +11090,65 @@ def emit_minimal_unflatten(
                 ),
             }
         )
+    if typed_authority and exact_state_effect_exclusions:
+        if not block_refs_by_serial:
+            return compile_with_dispatcher_coverage(()).with_metadata(
+                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
+            )
+        dispatcher_member_serials = tuple(
+            sorted(int(serial) for serial in dispatcher_region_serials)
+        )
+        if int(dispatcher_entry_serial) not in dispatcher_member_serials:
+            return compile_with_dispatcher_coverage(()).with_metadata(
+                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
+            )
+        state_identity = (
+            StorageIdentity(StorageIdentityKind.STACK, int(state_var_stkoff))
+            if state_var_stkoff is not None
+            else StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
+            if state_var_reg is not None
+            else None
+        )
+        if state_identity is None:
+            return compile_with_dispatcher_coverage(()).with_metadata(
+                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
+            )
+        try:
+            manifest = canonical_redirect_manifest(plan)
+            fragment_id = content_id(
+                "unflatten.use-def.fragment.v1",
+                (plan.plan_id, state_identity, manifest.digest),
+            )
+            use_def_witness = build_use_def_fragment_witness(
+                use_def_audit,
+                fragment_id=fragment_id,
+                state_identity=state_identity,
+                redirect_owner_refs=manifest.owner_refs,
+                redirect_digest=manifest.digest,
+            )
+        except (TypeError, ValueError):
+            use_def_witness = None
+        if use_def_witness is None:
+            return compile_with_dispatcher_coverage(()).with_metadata(
+                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
+            )
+        try:
+            plan = attach_typed_proposal(
+                plan,
+                source=flow_graph,
+                block_refs_by_serial=block_refs_by_serial,
+                canonical_route_evidence=canonical_route_evidence,
+                exact_state_effect_exclusions=exact_state_effect_exclusions,
+                dispatcher_entry_serial=int(dispatcher_entry_serial),
+                dispatcher_member_serials=dispatcher_member_serials,
+                authoritative_handler_serials=authoritative_handler_serials,
+                state_identity=state_identity,
+                use_def_witness=use_def_witness,
+            )
+        except (TypeError, ValueError):
+            return compile_with_dispatcher_coverage(()).with_metadata(
+                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
+            )
     return plan
 
 

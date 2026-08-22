@@ -7,7 +7,7 @@ transport only and is never converted into authority here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from d810.core.typing import Literal, TypeAlias
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef
 from d810.transforms.plan import (
@@ -25,6 +25,7 @@ from .model import (
     UnflattenPlanRoute,
 )
 from .producer_api import build_unflatten_plan_input_catalog
+from . import producer_api
 from .ids import content_id, validate_canonical_roundtrip
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
 
@@ -246,10 +247,8 @@ def _validate_use_def_locator(
     witness = proposal.use_def_witness
     if tuple(witness.redirect_owner_refs) != manifest.owner_refs:
         raise ValueError("use-def redirect owners do not match the redirect manifest")
-    if tuple(witness.redirect_owner_refs) != tuple(
-        proposal.plan_inputs.dispatcher_member_refs
-    ):
-        raise ValueError("use-def redirect owners must be exact dispatcher members")
+    if not set(witness.redirect_owner_refs) <= set(proposal.plan_inputs.dispatcher_member_refs):
+        raise ValueError("use-def redirect owners must be dispatcher members")
     if witness.redirect_digest != manifest.digest:
         raise ValueError("use-def redirect digest does not match the redirect manifest")
     catalog_refs = {item.block_ref for item in catalog.blocks}
@@ -362,6 +361,56 @@ def validate_shadow_for_plan(
     return ShadowValidationAccepted()
 
 
+def attach_typed_proposal(
+    plan: PatchPlan,
+    *,
+    source,
+    block_refs_by_serial,
+    canonical_route_evidence,
+    exact_state_effect_exclusions,
+    dispatcher_entry_serial,
+    dispatcher_member_serials,
+    authoritative_handler_serials,
+    state_identity,
+    use_def_witness,
+) -> PatchPlan:
+    """Attach one typed proposal and capture all legacy metadata exactly once."""
+
+    if type(plan) is not PatchPlan:
+        raise TypeError("typed proposal attachment requires a PatchPlan")
+    if plan.unflatten_proposal is not None or plan.legacy_unflatten_shadow is not None:
+        raise ValueError("typed proposal attachment may run only once")
+    proposal = producer_api.build_proposal(
+        plan_id=plan.plan_id,
+        source=source,
+        block_refs_by_serial=block_refs_by_serial,
+        source_generation=plan.source_generation,
+        canonical_route_evidence=canonical_route_evidence,
+        exact_state_effect_exclusions=exact_state_effect_exclusions,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        dispatcher_member_serials=dispatcher_member_serials,
+        authoritative_handler_serials=authoritative_handler_serials,
+        state_identity=state_identity,
+        use_def_witness=use_def_witness,
+    )
+    from .legacy_codec import capture_legacy_unflatten_shadow
+
+    cleaned, shadow = capture_legacy_unflatten_shadow(
+        plan_id=plan.plan_id,
+        snapshot_id=plan.snapshot_id,
+        source_generation=plan.source_generation,
+        metadata=plan.metadata,
+    )
+    if shadow is None:
+        raise ValueError("typed proposal attachment requires legacy shadow capture")
+    return replace(
+        plan,
+        metadata=cleaned,
+        unflatten_proposal=proposal,
+        legacy_unflatten_shadow=shadow,
+    )
+
+
 __all__ = [
     "build_unflatten_plan_input_catalog",
     "RedirectStepManifest",
@@ -378,4 +427,5 @@ __all__ = [
     "reserved_metadata_keys",
     "validate_proposal",
     "validate_shadow_for_plan",
+    "attach_typed_proposal",
 ]
