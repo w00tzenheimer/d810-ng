@@ -531,6 +531,11 @@ python tools/migrations/migrate_project_config_v2.py INPUT --output OUTPUT
 The migrator is fail-closed: it refuses unsupported rule ownership or lossy
 options rather than selecting a different runtime project.
 
+Read [migrate_v1_to_v2.md](migrate_v1_to_v2.md) before modifying an active
+user project. It covers discovery, external backups, dry-run auditing,
+per-project preview, stock overrides, atomic replacement, runtime validation,
+and rollback on macOS, Linux, and Windows.
+
 ### Config-v2 validation
 
 Config-v2 is the only runtime path for bundled configs. User-provided projects
