@@ -543,6 +543,227 @@ must contain a non-empty `additional_configuration.pipeline_v2` sequence of
 stable pass IDs and typed options; older projects must be converted with the
 offline migration command above.
 
+### Adding a config-v2 pass with GUI support
+
+The config-v2 editor is generated from portable metadata owned by each pass.
+Pass authors do not create Qt dialogs or add pass-specific branches to the UI.
+Instead, every public pass registers one `PassEditorSpec`; the shared Project
+Editor and pass Inspector render that fixed contract.
+
+This metadata is mandatory, not optional presentation polish:
+
+> Every public config-v2 option and selectable rule or transform must be
+> represented by the owning pass's `PassEditorSpec`.
+
+`PassRegistry.register_configured()` rejects a public pass when its editor is
+missing, an option is not editor-visible, a typed value is invalid, or an
+editor default differs from the pass's runtime-effective `PipelineConfig`
+default. Runtime construction remains the final semantic validator, but the
+registry prevents the GUI and runtime schemas from silently diverging.
+
+#### The fixed editor vocabulary
+
+Use the contracts from `d810.core.pass_editor_spec`:
+
+| Contract | Responsibility |
+| --- | --- |
+| `PassEditorSpec` | Selects the one pass-level renderer and contains all editor metadata. |
+| `FieldEditorSpec` | Declares one typed pass option: stable ID, label, config path, control, bounds, choices, default, description, and advisories. |
+| `PassEditorSectionSpec` | Groups pass-level fields. At most one section is `PRIMARY`; secondary sections remain compact. A Boolean controller can enable or disable a section. |
+| `TransformEditorSpec` | Declares one selectable transform, including family/subfamily, verification, cost, warning, default selection, and transform-specific `option_fields`. |
+| `RuleEditorSpec` | Declares one selectable rule and its family/subfamily metadata. |
+
+`PassEditorSpec` supports four fixed renderers:
+
+- `summary()` for a public pass with no configurable options;
+- `fields_editor(...)` for typed pass-level options;
+- `transform_catalog(...)` for a filterable, grouped transform catalogue;
+- `rule_catalog(...)` for a filterable, grouped rule catalogue.
+
+`FieldControlKind` deliberately exposes a small, inflexible widget set:
+
+| Control | Config value | Shared GUI control |
+| --- | --- | --- |
+| `BOOLEAN` | `bool` | Check box |
+| `INTEGER` | `int` | Bounded integer control using `minimum` and `maximum` |
+| `ENUM` | `str` | Drop-down constrained to `choices` |
+| `TEXT` | `str` | Text field |
+| `STRING_LIST` | `list[str]` | Scrollable check-box list when `choices` are declared; otherwise a textual list |
+
+Use `experimental=True` with `experimental_reason` for an option that should
+remain available with a warning. Use `advisory` and `advisory_reason` for
+operator guidance or danger. Do not hide a public option behind an internal
+flag or implement a custom Qt widget for it.
+
+#### Example: a simple typed fields pass
+
+The editor path is relative to that pass's `options` object. Every field must
+declare its runtime-effective default, and the same value must appear in the
+registered `PipelineConfig` template.
+
+```python
+from d810.core.pass_editor_spec import (
+    FieldControlKind,
+    FieldEditorSpec,
+    PassEditorSectionPresentation,
+    PassEditorSectionSpec,
+    PassEditorSpec,
+)
+from d810.passes.pass_pipeline import PipelineConfig
+
+editor_spec = PassEditorSpec.fields_editor(
+    (
+        FieldEditorSpec(
+            field_id="enabled",
+            label="Enable analysis",
+            path=("enabled",),
+            control=FieldControlKind.BOOLEAN,
+            default=True,
+        ),
+        FieldEditorSpec(
+            field_id="strategy",
+            label="Strategy",
+            path=("strategy",),
+            control=FieldControlKind.ENUM,
+            choices=("strict", "aggressive"),
+            default="strict",
+        ),
+    ),
+    sections=(
+        PassEditorSectionSpec(
+            section_id="analysis",
+            label="Analysis",
+            field_ids=("enabled", "strategy"),
+            controller_field_id="enabled",
+            presentation=PassEditorSectionPresentation.PRIMARY,
+        ),
+    ),
+)
+
+registry.register_configured(
+    "example-pass",
+    build_example_pass,
+    config_template=PipelineConfig(
+        pass_id="example-pass",
+        options={"enabled": True, "strategy": "strict"},
+    ),
+    editor_spec=editor_spec,
+)
+```
+
+#### Example: a sectioned stage editor
+
+One logical pass can expose several runtime stages without exposing their
+private implementation classes. `constant-simplification` uses nested typed
+paths such as:
+
+```python
+FieldEditorSpec(
+    field_id="stages.fold-readonly-data.memory_policy",
+    label="Memory policy",
+    path=("stages", "fold-readonly-data", "memory_policy"),
+    control=FieldControlKind.ENUM,
+    choices=("strict", "aggressive_no_direct_writes"),
+    default="strict",
+)
+```
+
+Its `PassEditorSpec` groups preparation, read-only-data folding,
+constant-subtree folding, and forward constants into explicit
+`PassEditorSectionSpec` values. The dominant read-only-data section is
+`PRIMARY`; the others are `SECONDARY`. Each stage's Boolean `enabled` field is
+its section controller. The shared GUI uses this metadata to render typed
+controls and allocate space; it does not infer the schedule from option names.
+
+See `src/d810/passes/constant_simplification.py` for the complete registration.
+
+#### Example: transform-specific options
+
+A transform does not register another top-level `PassEditorSpec`. The owning
+pass registers one transform-catalog editor containing a
+`TransformEditorSpec` for every selectable transform. Fields in
+`TransformEditorSpec.option_fields` are relative to that transform's
+`transform_options.<transform-id>` object.
+
+For example, the generic Z3 transforms in `mba-simplify` each declare their own
+bounded proof controls:
+
+```python
+TransformEditorSpec(
+    transform_id="z-3-setz-generic",
+    # family, description, verification, cost, and advisory metadata omitted
+    # here for brevity; they are required by the real constructor.
+    option_fields=(
+        FieldEditorSpec(
+            field_id="max_expression_nodes",
+            label="Maximum expression nodes",
+            path=("max_expression_nodes",),
+            control=FieldControlKind.INTEGER,
+            minimum=1,
+            maximum=4096,
+            default=256,
+        ),
+        FieldEditorSpec(
+            field_id="proof_timeout_ms",
+            label="Proof timeout (ms)",
+            path=("proof_timeout_ms",),
+            control=FieldControlKind.INTEGER,
+            minimum=1,
+            maximum=5000,
+            default=50,
+        ),
+    ),
+)
+```
+
+The resulting config-v2 shape is explicit and transform-scoped:
+
+```json
+{
+  "pass": "mba-simplify",
+  "options": {
+    "transforms": ["z-3-setz-generic"],
+    "transform_options": {
+      "z-3-setz-generic": {
+        "max_expression_nodes": 256,
+        "proof_timeout_ms": 50
+      }
+    }
+  }
+}
+```
+
+The Inspector shows those controls only for the selected transform. Metadata
+such as `family_id`, `subfamily_id`, `verification`, `cost`, `advisory`, and
+`default_selected` drives grouping, selection defaults, and warnings. For
+example, a mathematically sound rule whose proof is intentionally skipped may
+remain selectable while displaying `PROOF_EXPENSIVE` and `SKIPPED`; that is
+different from exposing a timeout for a transform that actually invokes Z3.
+
+See `src/d810/passes/mba_transform_catalog.py` and
+`src/d810/passes/mba_transform_options.py` for the complete catalogue.
+
+#### Author checklist
+
+Before registering a public config-v2 pass:
+
+1. Give the pass, fields, sections, rules, transforms, families, and
+   subfamilies stable IDs. Do not expose Python class names as project IDs.
+2. Declare every public option path in the owning `PassEditorSpec`.
+3. Give every editable field a typed control and runtime-effective default.
+4. Keep the `PipelineConfig` template, editor defaults, and runtime parser in
+   exact agreement.
+5. Put per-transform options in `TransformEditorSpec.option_fields`, not in a
+   pass-specific Qt panel.
+6. Declare explicit family and subfamily metadata for rules and transforms; do
+   not infer it from names.
+7. Add registry-contract, projection, round-trip, and validation tests. When a
+   control uses Qt behavior, also cover it with the IDA 9.4 Docker GUI tests.
+
+The architecture tests intentionally fail when a public config-v2 option is
+not editor-visible. Treat that failure as a missing product surface, not as a
+request for an ignore.
+
 When you want to disable deobfuscation, just click on the `Stop` button or use the context menus:
 
 !["Disassembly context menu"](./resources/assets/disasmview_context_menu.png "Disassembly context menu")
