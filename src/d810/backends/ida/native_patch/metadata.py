@@ -564,6 +564,45 @@ def _predict_decoded_code_xrefs(
     return tuple(sorted(effects))
 
 
+def _predict_decoded_lea_data_xrefs(
+    ea: int,
+    *,
+    processor: int,
+    x86_processor: int,
+    mnemonic: int,
+    lea_mnemonic: int,
+    operand_type: int,
+    mem_operand: int,
+    operand_segment: int,
+    cs_register: int,
+    operand_offb: int,
+    mapped_data_ea: int,
+    mapped_data_loaded: bool,
+    badaddr: int,
+    dr_o: int,
+) -> tuple[tuple[int, int, int, bool, bool], ...]:
+    """Predict the one proven x86 ``lea`` direct-data effect.
+
+    IDA's x86 decoder marks the RIP-relative source of the supported ``lea``
+    shape as ``o_mem`` with the code-segment register and a non-zero operand
+    offset.  Every other shape is deliberately abstaining: in particular,
+    this does not infer read/write data references from generic instruction
+    feature bits.
+    """
+
+    if (
+        int(processor) != int(x86_processor)
+        or int(mnemonic) != int(lea_mnemonic)
+        or int(operand_type) != int(mem_operand)
+        or int(operand_segment) != int(cs_register)
+        or int(operand_offb) == 0
+        or int(mapped_data_ea) == int(badaddr)
+        or not bool(mapped_data_loaded)
+    ):
+        return ()
+    return ((int(ea), int(mapped_data_ea), int(dr_o), False, False),)
+
+
 class IdaMetadataActionExecutor:
     """:class:`MetadataActionExecutor` over the live IDA database.
 
@@ -791,6 +830,10 @@ class IdaMetadataActionExecutor:
         """Decode instruction effects without changing the IDA database."""
 
         import idaapi
+        import ida_allins
+        import ida_bytes
+        import ida_idp
+        import ida_segregs
         import ida_ua
         import ida_xref
 
@@ -808,7 +851,7 @@ class IdaMetadataActionExecutor:
         far = int(getattr(idaapi, "o_far", -1))
         operand = instruction.ops[0]
         operand_type = int(getattr(operand, "type", -1))
-        return size, _predict_decoded_code_xrefs(
+        code_effects = _predict_decoded_code_xrefs(
             int(ea),
             size,
             feature,
@@ -826,6 +869,29 @@ class IdaMetadataActionExecutor:
             fl_jn=int(ida_xref.fl_JN),
             fl_jf=int(ida_xref.fl_JF),
         )
+        data_operand = instruction.ops[1]
+        mapped_data_ea = int(
+            ida_ua.map_data_ea(
+                instruction, int(getattr(data_operand, "addr", idaapi.BADADDR)), 1
+            )
+        )
+        data_effects = _predict_decoded_lea_data_xrefs(
+            int(ea),
+            processor=int(ida_idp.ph_get_id()),
+            x86_processor=int(ida_idp.PLFM_386),
+            mnemonic=int(getattr(instruction, "itype", -1)),
+            lea_mnemonic=int(ida_allins.NN_lea),
+            operand_type=int(getattr(data_operand, "type", -1)),
+            mem_operand=int(ida_ua.o_mem),
+            operand_segment=int(getattr(data_operand, "specval", 0)) >> 16,
+            cs_register=int(ida_segregs.R_cs),
+            operand_offb=int(getattr(data_operand, "offb", 0)),
+            mapped_data_ea=mapped_data_ea,
+            mapped_data_loaded=bool(ida_bytes.is_loaded(mapped_data_ea)),
+            badaddr=int(idaapi.BADADDR),
+            dr_o=int(ida_xref.dr_O),
+        )
+        return size, tuple(sorted(set(code_effects) | set(data_effects)))
 
     @staticmethod
     def _require_derived_xref_delta(

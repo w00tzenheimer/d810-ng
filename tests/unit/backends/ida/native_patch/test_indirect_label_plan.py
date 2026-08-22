@@ -12,6 +12,7 @@ from d810.backends.ida.native_patch.indirect_label_plan import (
 from d810.backends.ida.native_patch.metadata import (
     _parse_scoped_item_state,
     _predict_decoded_code_xrefs,
+    _predict_decoded_lea_data_xrefs,
     is_reversible_data_item_state,
     reversible_data_item_head,
 )
@@ -414,6 +415,60 @@ def test_decoded_code_xref_effect_matrix(
         fl_jn=0x17,
         fl_jf=0x18,
     ) == expected
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda values: values.update(processor=2),
+        lambda values: values.update(mnemonic=2),
+        lambda values: values.update(operand_type=3),  # o_displ
+        lambda values: values.update(operand_type=4),  # o_phrase
+        lambda values: values.update(operand_type=5),  # o_imm
+        lambda values: values.update(operand_segment=4),
+        lambda values: values.update(operand_offb=0),
+        lambda values: values.update(mapped_data_ea=-1),
+        lambda values: values.update(mapped_data_loaded=False),
+    ),
+)
+def test_decoded_lea_data_effect_fails_closed_for_unproved_shapes(mutate) -> None:
+    values = {
+        "processor": 1,
+        "x86_processor": 1,
+        "mnemonic": 92,
+        "lea_mnemonic": 92,
+        "operand_type": 2,
+        "mem_operand": 2,
+        "operand_segment": 30,
+        "cs_register": 30,
+        "operand_offb": 3,
+        "mapped_data_ea": 0x180061E6E,
+        "mapped_data_loaded": True,
+        "badaddr": -1,
+        "dr_o": 1,
+    }
+    mutate(values)
+
+    assert _predict_decoded_lea_data_xrefs(0x180016E6A, **values) == ()
+
+
+def test_decoded_lea_data_effect_predicts_only_proven_auto_data_row() -> None:
+    assert _predict_decoded_lea_data_xrefs(
+        0x180016E6A,
+        processor=1,
+        x86_processor=1,
+        mnemonic=92,
+        lea_mnemonic=92,
+        operand_type=2,
+        mem_operand=2,
+        operand_segment=30,
+        cs_register=30,
+        operand_offb=3,
+        mapped_data_ea=0x180061E6E,
+        mapped_data_loaded=True,
+        badaddr=-1,
+        dr_o=1,
+    ) == ((0x180016E6A, 0x180061E6E, 1, False, False),)
 
 
 def test_shared_data_item_groups_later_targets_as_unknown() -> None:
