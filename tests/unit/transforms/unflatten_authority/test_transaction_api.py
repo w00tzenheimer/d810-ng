@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from d810.transforms.plan import PatchPlan
 from d810.transforms.unflatten_authority.model import (
     UnflattenAuthorityReason,
@@ -18,12 +20,29 @@ from .test_proposal import _shadow
 def _typed_plan() -> PatchPlan:
     model = import_authority_model()
     proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
-    return PatchPlan(
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+
+    refs = tuple(block.block_ref for block in proposal.source_identity_catalog.blocks)
+    plan = PatchPlan(
         plan_id=proposal.plan_id,
         snapshot_id="snapshot-1",
         source_generation=3,
-        unflatten_proposal=proposal,
+        steps=(
+            PatchRedirectGoto(refs[0], refs[1], refs[2]),
+            PatchRedirectGoto(refs[1], refs[2], refs[0]),
+        ),
     )
+    manifest = canonical_redirect_manifest(plan)
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    return replace(plan, unflatten_proposal=proposal)
 
 
 def test_select_plan_route_is_total_and_has_disjoint_result_shapes() -> None:

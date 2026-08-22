@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+from dataclasses import replace
 
 import pytest
 
@@ -231,6 +232,33 @@ def _proposal_and_plan_ids():
     return proposal, proposal.plan_id
 
 
+def _typed_plan(proposal, *, legacy_shadow=None):
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+
+    refs = tuple(block.block_ref for block in proposal.source_identity_catalog.blocks)
+    steps = (
+        PatchRedirectGoto(refs[0], refs[1], refs[2]),
+        PatchRedirectGoto(refs[1], refs[2], refs[0]),
+    )
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id="snapshot-1",
+        source_generation=proposal.source_identity_catalog.generation,
+        steps=steps,
+    )
+    manifest = canonical_redirect_manifest(plan)
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    return replace(plan, unflatten_proposal=proposal, legacy_unflatten_shadow=legacy_shadow), proposal
+
+
 def _shadow(plan_id: str, snapshot_id: str = "snapshot-1"):
     from d810.transforms.unflatten_authority.ids import canonical_bytes
     from d810.transforms.unflatten_authority.model import (
@@ -249,6 +277,120 @@ def _shadow(plan_id: str, snapshot_id: str = "snapshot-1"):
     )
 
 
+def test_redirect_manifest_is_canonical_and_plan_bound() -> None:
+    """The typed witness must be derived from the complete PatchPlan redirects."""
+
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+
+    proposal, plan_id = _proposal_and_plan_ids()
+    ref0 = proposal.source_identity_catalog.blocks[0].block_ref
+    ref1 = proposal.source_identity_catalog.blocks[1].block_ref
+    plan = PatchPlan(
+        plan_id=plan_id,
+        snapshot_id="snapshot-1",
+        source_generation=3,
+        steps=(
+            __import__("d810.transforms.plan", fromlist=["PatchRedirectGoto"]).PatchRedirectGoto(ref0, ref1, ref0),
+        ),
+    )
+    manifest = canonical_redirect_manifest(plan)
+    assert manifest.owner_refs == (ref0,)
+    assert manifest.digest.startswith("sha256:")
+
+
+def test_proposal_validation_requires_the_exact_redirect_manifest() -> None:
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.cfg_transaction import PlanBlockRef
+    from d810.transforms.unflatten_authority.proposal import (
+        ProposalAccepted, canonical_redirect_manifest, validate_proposal,
+    )
+
+    proposal, plan_id = _proposal_and_plan_ids()
+    refs = tuple(block.block_ref for block in proposal.source_identity_catalog.blocks)
+    steps = (
+        PatchRedirectGoto(refs[1], refs[2], refs[0]),
+        PatchRedirectGoto(refs[0], refs[1], refs[2]),
+    )
+    plan = PatchPlan(
+        plan_id=plan_id, snapshot_id="snapshot-1", source_generation=3, steps=steps,
+    )
+    manifest = canonical_redirect_manifest(plan)
+    witness = replace(
+        proposal.use_def_witness,
+        redirect_owner_refs=manifest.owner_refs,
+        redirect_digest=manifest.digest,
+    )
+    proposal = replace(proposal, use_def_witness=witness)
+    assert isinstance(validate_proposal(plan, proposal), ProposalAccepted)
+
+    reordered = PatchPlan(
+        plan_id=plan_id, snapshot_id="snapshot-1", source_generation=3,
+        steps=tuple(reversed(steps)),
+    )
+    assert canonical_redirect_manifest(reordered).digest != manifest.digest
+
+    with pytest.raises(ValueError, match="duplicates"):
+        replace(
+            witness,
+            redirect_owner_refs=(manifest.owner_refs[0], manifest.owner_refs[0]),
+        )
+    with pytest.raises(ValueError, match="absent from source catalog"):
+        replace(
+            proposal,
+            use_def_witness=replace(
+                witness, redirect_owner_refs=(PlanBlockRef(plan_id, "helper"),)
+            ),
+        )
+
+    mutations = (
+        ("zero", PatchPlan(plan_id=plan_id, snapshot_id="snapshot-1", source_generation=3), witness),
+        ("omit", plan, replace(witness, redirect_owner_refs=manifest.owner_refs[:-1])),
+        ("extra", plan, replace(witness, redirect_owner_refs=(*manifest.owner_refs, refs[2]))),
+        ("substitute", plan, replace(witness, redirect_owner_refs=(refs[2],))),
+        ("unrelated digest", plan, replace(witness, redirect_digest="sha256:" + "f" * 64)),
+        ("source generation", replace(plan, source_generation=999), witness),
+    )
+    for label, candidate_plan, candidate_witness in mutations:
+        candidate = replace(proposal, use_def_witness=candidate_witness)
+        assert not isinstance(validate_proposal(candidate_plan, candidate), ProposalAccepted), label
+
+
+def test_redirect_manifest_rejects_subclasses_and_invalid_typed_targets() -> None:
+    from d810.transforms.cfg_transaction import PlanBlockRef
+    from d810.transforms.plan import PatchRedirectBranch, PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+
+    proposal, plan_id = _proposal_and_plan_ids()
+    refs = tuple(block.block_ref for block in proposal.source_identity_catalog.blocks)
+    local = PlanBlockRef(plan_id, "helper")
+    foreign = PlanBlockRef("foreign-plan", "helper")
+
+    class RedirectSubclass(PatchRedirectGoto):
+        pass
+
+    invalid_steps = (
+        RedirectSubclass(refs[0], refs[1], refs[2]),
+        PatchRedirectBranch(refs[0], refs[1], refs[2], refs[1]),
+    )
+    for step in invalid_steps:
+        plan = PatchPlan(
+            plan_id=plan_id, snapshot_id="snapshot-1", source_generation=3,
+            steps=(step,),
+        )
+        with pytest.raises((TypeError, ValueError), match="redirect|typed|plan|helper|manifest"):
+            canonical_redirect_manifest(plan)
+    with pytest.raises(ValueError, match="PlanBlockRef"):
+        PatchPlan(
+            plan_id=plan_id, snapshot_id="snapshot-1", source_generation=3,
+            steps=(PatchRedirectGoto(refs[0], foreign, refs[1]),),
+        )
+    valid = PatchPlan(
+        plan_id=plan_id, snapshot_id="snapshot-1", source_generation=3,
+        steps=(PatchRedirectGoto(refs[0], local, refs[1]),),
+    )
+    assert canonical_redirect_manifest(valid).owner_refs == (refs[0],)
+
+
 def test_explicit_shadow_envelope_is_the_only_dual_channel_exception() -> None:
     """A typed plan may carry only the exact temporary shadow transport."""
 
@@ -259,14 +401,7 @@ def test_explicit_shadow_envelope_is_the_only_dual_channel_exception() -> None:
 
     proposal, plan_id = _proposal_and_plan_ids()
     envelope = _shadow(plan_id)
-
-    typed = PatchPlan(
-        plan_id=plan_id,
-        snapshot_id="snapshot-1",
-        source_generation=3,
-        unflatten_proposal=proposal,
-        legacy_unflatten_shadow=envelope,
-    )
+    typed, proposal = _typed_plan(proposal, legacy_shadow=envelope)
     selected = select_plan_route(typed)
     from d810.transforms.unflatten_authority.model import (
         UnflattenAuthorityReason,
@@ -275,13 +410,7 @@ def test_explicit_shadow_envelope_is_the_only_dual_channel_exception() -> None:
 
     assert selected.route is UnflattenPlanRoute.TYPED_PROPOSAL
 
-    dual = PatchPlan(
-        plan_id=plan_id,
-        snapshot_id="snapshot-1",
-        source_generation=3,
-        metadata=(("dispatcher_corridor_coverage", {"legacy": True}),),
-        unflatten_proposal=proposal,
-    )
+    dual = replace(typed, metadata=(("dispatcher_corridor_coverage", {"legacy": True}),))
     rejected = select_plan_route(dual)
     assert rejected.reason is UnflattenAuthorityReason.DUAL_AUTHORITY_CHANNEL
 
@@ -415,12 +544,8 @@ def test_proposal_versions_require_exact_int_one() -> None:
             assert getattr(result, "detail_code", None) == "proposal_invariants_invalid", (field, value)
 
     proposal, plan_id = _proposal_and_plan_ids()
-    selected = select_plan_route(PatchPlan(
-        plan_id=plan_id,
-        snapshot_id="snapshot-1",
-        source_generation=3,
-        unflatten_proposal=proposal,
-    ))
+    typed, _ = _typed_plan(proposal)
+    selected = select_plan_route(typed)
     assert selected.route.value == "typed_proposal"
 
 
@@ -490,12 +615,8 @@ def test_valid_proposal_has_stable_canonical_roundtrip_and_typed_route() -> None
     assert type(decoded) is type(proposal)
     assert decoded == proposal
     assert canonical_bytes(decoded) == encoded
-    selected = select_plan_route(PatchPlan(
-        plan_id=plan_id,
-        snapshot_id="snapshot-1",
-        source_generation=3,
-        unflatten_proposal=proposal,
-    ))
+    typed, _ = _typed_plan(proposal)
+    selected = select_plan_route(typed)
     assert isinstance(selected, TypedProposalRoute)
 
 
@@ -504,13 +625,7 @@ def test_mutated_shadow_is_revalidated_at_route_boundary() -> None:
     from d810.transforms.unflatten_authority.transaction_api import select_plan_route
 
     proposal, plan_id = _proposal_and_plan_ids()
-    plan = PatchPlan(
-        plan_id=plan_id,
-        snapshot_id="snapshot-1",
-        source_generation=3,
-        unflatten_proposal=proposal,
-        legacy_unflatten_shadow=_shadow(plan_id),
-    )
+    plan, _ = _typed_plan(proposal, legacy_shadow=_shadow(plan_id))
     object.__setattr__(plan.legacy_unflatten_shadow, "schema_version", 2)
     result = select_plan_route(plan)
     assert result.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL

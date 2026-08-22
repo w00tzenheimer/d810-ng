@@ -844,6 +844,8 @@ class UseDefAuditEvidencePayload:
         for value in violations:
             _id(value, "violation_ids item")
         object.__setattr__(self, "violation_ids", violations)
+        if self.executed and self.fragment_atomic and len(violations) != self.actionable_non_state_severance_count:
+            raise ValueError("executed atomic use-def audit count must equal violation IDs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1305,6 +1307,8 @@ class UseDefFragmentWitness:
         if self.actionable_non_state_severance_count == 0 and violations:
             raise ValueError("violation_ids require actionable non-state severance")
         object.__setattr__(self, "violation_ids", violations)
+        if self.executed and self.fragment_atomic and len(violations) != self.actionable_non_state_severance_count:
+            raise ValueError("executed atomic use-def witness count must equal violation IDs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1917,6 +1921,16 @@ class SemanticSafetyCase:
             raise ValueError("obligation index must exactly cover required obligations")
         if self.case_id != case_id(self):
             raise ValueError("case_id does not match canonical case content")
+        # Reuse the evaluator's contextual rule validator at the canonical
+        # decode/model boundary so forged IDs cannot bypass premise semantics.
+        from .evaluate import _validate_justification_graph
+        _validate_justification_graph(
+            self.justifications, self.required_obligations, self.evidence,
+            self.phase, self.claims, self.conditional_relations,
+            candidate_fingerprint=self.candidate_fingerprint,
+            candidate_generation=self.candidate_generation,
+            bindings=self.bindings, subjects=self.subjects,
+        )
 
 
 @dataclass(frozen=True, slots=True)

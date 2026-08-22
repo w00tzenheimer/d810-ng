@@ -10984,6 +10984,8 @@ def emit_minimal_unflatten(
         enforce=True if legacy_severance_bail else None,
     )
     dispatcher_removal_safety = {
+        # This legacy preflight flag denotes a clean removal allowance, not
+        # merely that the query loop reached the end of the batch.
         "fragment_atomic": use_def_audit.clean,
         "non_state_use_def_veto": use_def_audit.clean,
         "non_state_use_def_checked": use_def_audit.executed,
@@ -11000,7 +11002,15 @@ def emit_minimal_unflatten(
         dispatcher_entry_serial=dispatcher_entry_serial,
         semantic_exclusions=candidate_prefix_alternate_corridor_proofs,
     )
-    if _must_reject_fragment_for_use_def_audit(
+    # Once canonical route evidence is supplied, this is the typed authority
+    # path.  Its fragment-wide witness is decisive: an unavailable audit and
+    # an actionable non-state severance both reject the complete fragment,
+    # regardless of the legacy environment toggles.  Plans without typed
+    # route evidence retain the historical shadow/ordinary behavior.
+    typed_authority = canonical_route_evidence is not None
+    if (
+        typed_authority and not use_def_audit.clean
+    ) or _must_reject_fragment_for_use_def_audit(
         use_def_audit,
         legacy_bail=legacy_severance_bail,
     ):

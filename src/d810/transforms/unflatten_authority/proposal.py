@@ -8,8 +8,14 @@ transport only and is never converted into authority here.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from d810.core.typing import TYPE_CHECKING, Literal, TypeAlias
-from d810.transforms.plan import normalized_metadata_items
+from d810.core.typing import Literal, TypeAlias
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef
+from d810.transforms.plan import (
+    PatchPlan,
+    PatchRedirectBranch,
+    PatchRedirectGoto,
+    normalized_metadata_items,
+)
 
 from .model import (
     LegacyUnflattenShadowEnvelope,
@@ -19,10 +25,108 @@ from .model import (
     UnflattenPlanRoute,
 )
 from .producer_api import build_unflatten_plan_input_catalog
-from .ids import validate_canonical_roundtrip
+from .ids import content_id, validate_canonical_roundtrip
 
-if TYPE_CHECKING:
-    from d810.transforms.plan import PatchPlan
+
+@dataclass(frozen=True, slots=True)
+class RedirectStepManifest:
+    """Canonical, typed redirect steps owned by one finalized PatchPlan."""
+
+    steps: tuple[dict[str, object], ...]
+    owner_refs: tuple[NativeBlockRef | LogicalBlockRef, ...]
+    digest: str
+
+
+def _redirect_owner_sort_key(
+    ref: NativeBlockRef | LogicalBlockRef,
+) -> tuple[object, ...]:
+    if type(ref) is LogicalBlockRef:
+        return ("logical", ref.session_id, ref.proxy_token, ref.version)
+    identity = ref.identity
+    return (
+        "native",
+        identity.native_key.to_json(),
+        tuple(sorted(identity.exact_instruction_eas)),
+        tuple((item.start_ea, item.end_ea) for item in identity.native_ranges.intervals),
+    )
+
+
+def _validate_redirect_ref(
+    plan: PatchPlan, value: object, field_name: str, *, source_owner: bool = False,
+) -> None:
+    allowed = (NativeBlockRef, LogicalBlockRef, PlanBlockRef)
+    if type(value) not in allowed:
+        raise TypeError(f"redirect {field_name} must be an exact typed block reference")
+    if source_owner and type(value) is PlanBlockRef:
+        raise ValueError("redirect source owner must be a source block reference")
+    if type(value) is PlanBlockRef and value.plan_id != plan.plan_id:
+        raise ValueError("redirect plan-owned reference belongs to a foreign plan")
+
+
+def _validate_redirect_step(plan: PatchPlan, step: object) -> None:
+    if type(step) not in (PatchRedirectGoto, PatchRedirectBranch):
+        if isinstance(step, PatchRedirectGoto):
+            raise TypeError("redirect step subclasses are unsupported")
+        return
+    _validate_redirect_ref(plan, step.from_serial, "source owner", source_owner=True)
+    _validate_redirect_ref(plan, step.old_target, "old target")
+    _validate_redirect_ref(plan, step.new_target, "new target")
+    if type(step) is PatchRedirectBranch:
+        helper = step.fallthrough_helper_block_id
+        if helper is not None and type(helper) is not PlanBlockRef:
+            raise TypeError("branch fallthrough helper must be an exact PlanBlockRef")
+        if helper is not None and helper.plan_id != plan.plan_id:
+            raise ValueError("branch fallthrough helper belongs to a foreign plan")
+
+
+def canonical_redirect_manifest(plan: PatchPlan) -> RedirectStepManifest:
+    """Return the one canonical redirect manifest used by proposal validation.
+
+    The manifest includes every redirect step in plan order and all of its
+    typed fields.  Source owners are the typed ``from_serial`` references,
+    never backend serials or plan-local helper references.
+    """
+
+    if type(plan) is not PatchPlan:
+        raise TypeError("redirect manifest requires a PatchPlan")
+    rows: list[dict[str, object]] = []
+    owners: list[NativeBlockRef | LogicalBlockRef] = []
+    for index, step in enumerate(plan.steps):
+        _validate_redirect_step(plan, step)
+        if type(step) not in (PatchRedirectGoto, PatchRedirectBranch):
+            continue
+        if type(step) is PatchRedirectBranch:
+            row = {
+                "index": index,
+                "step_type": "PatchRedirectBranch",
+                "from_ref": step.from_serial,
+                "old_target": step.old_target,
+                "new_target": step.new_target,
+                "fallthrough_helper_block_id": step.fallthrough_helper_block_id,
+            }
+        elif type(step) is PatchRedirectGoto:
+            row = {
+                "index": index,
+                "step_type": "PatchRedirectGoto",
+                "from_ref": step.from_serial,
+                "old_target": step.old_target,
+                "new_target": step.new_target,
+            }
+        else:
+            continue
+        rows.append(row)
+        owners.append(step.from_serial)
+    if not rows:
+        raise ValueError("typed proposal requires a non-empty redirect manifest")
+    owner_refs = tuple(sorted(set(owners), key=_redirect_owner_sort_key))
+    manifest_rows = tuple(rows)
+    return RedirectStepManifest(
+        steps=manifest_rows,
+        owner_refs=owner_refs,
+        digest=content_id(
+            "unflatten.use-def.redirect-manifest.v1", manifest_rows
+        ),
+    )
 
 
 def _current_reserved_keys() -> frozenset[str]:
@@ -136,20 +240,53 @@ def validate_proposal(
             UnflattenAuthorityReason.MALFORMED_PROPOSAL,
             "proposal_type_is_not_closed",
         )
-    try:
-        validate_canonical_roundtrip(proposal, ProposedUnflattenContract)
-        ProposedUnflattenContract.__post_init__(proposal)
-    except Exception:
-        return ProposalRejected(
-            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
-            "proposal_invariants_invalid",
-        )
     if proposal.plan_id != plan.plan_id:
         return ProposalRejected(
             UnflattenAuthorityReason.MALFORMED_PROPOSAL,
             "proposal_plan_id_mismatch",
         )
+    try:
+        validate_canonical_roundtrip(proposal, ProposedUnflattenContract)
+        ProposedUnflattenContract.__post_init__(proposal)
+        _validate_use_def_locator(plan, proposal)
+    except Exception:
+        return ProposalRejected(
+            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+            "proposal_invariants_invalid",
+        )
     return ProposalAccepted(proposal)
+
+
+def _validate_use_def_locator(
+    plan: PatchPlan, proposal: ProposedUnflattenContract
+) -> None:
+    """Validate the fragment-wide locator against the source catalog.
+
+    The value-flow subject is an aggregate, so it has no block serial or
+    primary owner.  Its owner references must nevertheless be an exact,
+    non-empty set of source-catalog references; otherwise a producer could
+    omit or substitute redirect owners while retaining a superficially valid
+    typed proposal.
+    """
+
+    if type(plan.source_generation) is not int:
+        raise TypeError("typed proposal requires an exact integer source generation")
+    catalog = proposal.source_identity_catalog
+    if type(catalog.generation) is not int or plan.source_generation != catalog.generation:
+        raise ValueError("proposal source generation does not match PatchPlan")
+    manifest = canonical_redirect_manifest(plan)
+    witness = proposal.use_def_witness
+    if tuple(witness.redirect_owner_refs) != manifest.owner_refs:
+        raise ValueError("use-def redirect owners do not match the redirect manifest")
+    if tuple(witness.redirect_owner_refs) != tuple(
+        proposal.plan_inputs.dispatcher_member_refs
+    ):
+        raise ValueError("use-def redirect owners must be exact dispatcher members")
+    if witness.redirect_digest != manifest.digest:
+        raise ValueError("use-def redirect digest does not match the redirect manifest")
+    catalog_refs = {item.block_ref for item in catalog.blocks}
+    if not set(manifest.owner_refs) <= catalog_refs:
+        raise ValueError("use-def redirect owner is outside the source catalog")
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +376,8 @@ def validate_shadow_for_plan(
 
 __all__ = [
     "build_unflatten_plan_input_catalog",
+    "RedirectStepManifest",
+    "canonical_redirect_manifest",
     "LEGACY_UNFLATTEN_KEYS",
     "PlanRouteResult",
     "ProposalAccepted",

@@ -92,7 +92,22 @@ class UseDefSeveranceAudit:
 
     @property
     def clean(self) -> bool:
-        return self.executed and self.severance_count == 0
+        # ``executed`` means the complete redirect batch was queried: a query
+        # exception returns before the batch is complete and is therefore not
+        # fragment-atomic authority.  A zero count with retained violation
+        # rows is contradictory evidence, not a clean audit.
+        return (
+            self.executed
+            and self.fragment_atomic
+            and self.severance_count == 0
+            and not self.violations
+        )
+
+    @property
+    def fragment_atomic(self) -> bool:
+        """Whether the audit covered the complete final redirect fragment."""
+
+        return bool(self.executed)
 
     @property
     def enforcement_enabled(self) -> bool:
@@ -111,6 +126,7 @@ class UseDefSeveranceAudit:
     def to_metadata(self, *, function_ea: int | None = None) -> dict[str, object]:
         metadata: dict[str, object] = {
             "executed": bool(self.executed),
+            "fragment_atomic": bool(self.fragment_atomic),
             "clean": bool(self.clean),
             "severance_count": int(self.severance_count),
             "failure_reason": self.failure_reason,

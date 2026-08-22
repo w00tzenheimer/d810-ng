@@ -81,10 +81,38 @@ def _binding(subject: model.SemanticSubjectRef, phase: model.UnflattenAuthorityP
 
 def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], candidate_subjects: tuple[model.SemanticSubjectRef, ...] | None = None, source_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None, candidate_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None, lineage: tuple[model.AuthorityEvidence, ...] = (), patch: tuple[model.AuthorityEvidence, ...] = (), gates: tuple[model.GenericCfgGateResult, ...] = (), claims: tuple[model.UnflattenClaim, ...] | None = None, proposal: model.ProposedUnflattenContract | None = None) -> model.DerivedUnflattenPreparationInputs:
     proposal = model.ProposedUnflattenContract(**_valid_proposal(model)) if proposal is None else proposal
+    if tuple(proposal.use_def_witness.redirect_owner_refs) != tuple(proposal.plan_inputs.dispatcher_member_refs):
+        object.__setattr__(proposal.use_def_witness, "redirect_owner_refs", proposal.plan_inputs.dispatcher_member_refs)
     claims = proposal.claims if claims is None else claims
     phase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+    def normalize_value_flow(subjects: tuple[model.SemanticSubjectRef, ...]) -> tuple[model.SemanticSubjectRef, ...]:
+        return tuple(
+            _subject_factory(
+                model.SemanticSubjectRef,
+                kind=model.SemanticSubjectKind.VALUE_FLOW,
+                role=model.SemanticSubjectRole.NON_STATE_VALUE_FLOW,
+                block_ref=None, anchor_ea=None,
+                locator=model.ValueFlowSubjectLocator(
+                    proposal.use_def_witness.fragment_id,
+                    proposal.use_def_witness.state_identity,
+                    proposal.use_def_witness.redirect_owner_refs,
+                ),
+            ) if subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW else subject
+            for subject in subjects
+        )
+    source_subjects = normalize_value_flow(source_subjects)
     if source_subjects and not any(item.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW for item in source_subjects):
-        source_subjects = (*source_subjects, _role_subject(model.SemanticSubjectRole.NON_STATE_VALUE_FLOW, "derived-value-flow"))
+        source_subjects = (*source_subjects, _subject_factory(
+            model.SemanticSubjectRef,
+            kind=model.SemanticSubjectKind.VALUE_FLOW,
+            role=model.SemanticSubjectRole.NON_STATE_VALUE_FLOW,
+            block_ref=None, anchor_ea=None,
+            locator=model.ValueFlowSubjectLocator(
+                proposal.use_def_witness.fragment_id,
+                proposal.use_def_witness.state_identity,
+                proposal.use_def_witness.redirect_owner_refs,
+            ),
+        ))
     # This fixture is deliberately proposal-complete: every plan-input and
     # producer-claim subject is explicit before bindings are built.
     required_subjects = (
@@ -109,6 +137,7 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
     by_id = {subject.subject_id: subject for subject in (*source_subjects, *required_subjects)}
     source_subjects = tuple(by_id.values())
     candidate_subjects = source_subjects if candidate_subjects is None else candidate_subjects
+    candidate_subjects = normalize_value_flow(candidate_subjects)
     supplied_gates = {item.gate: item for item in gates}
     gate_roles = {
         model.GenericCfgGateKind.ENTRY_REACHABILITY: model.SemanticSubjectRole.SOURCE_ENTRY,
@@ -368,6 +397,341 @@ def test_prepared_authority_accepts_canonical_bound_route_endpoints() -> None:
         live_maturity=MaturityEnvelope(ir=None, provider="test"), live_bindings=(),
     )
     assert isinstance(bound.live_maturity, MaturityEnvelope)
+
+
+def test_fragment_wide_value_flow_identity_and_use_def_are_total() -> None:
+    """The use-def witness owns one fragment-wide, fully classified cell pair."""
+
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "value-flow-total")
+    case = build_semantic_case(
+        authority_id=authority_id("value-flow-total"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(source_subjects=(source_entry,)),
+    )
+
+    value_flow = next(
+        subject for subject in case.subjects
+        if subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+    )
+    cells = {
+        cell.key.dimension: cell
+        for cell in case.obligation_index.cells
+        if cell.key.subject == value_flow
+    }
+    assert set(cells) == {
+        model.SafetyDimension.IDENTITY_BINDING,
+        model.SafetyDimension.USE_DEF_INTEGRITY,
+    }
+    assert cells[model.SafetyDimension.IDENTITY_BINDING].state is model.ObligationState.SATISFIED
+    assert cells[model.SafetyDimension.USE_DEF_INTEGRITY].state is model.ObligationState.SATISFIED
+
+
+def test_use_def_audit_evidence_is_evaluator_owned() -> None:
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "audit-injection")
+    inputs = _complete_inputs(source_subjects=(source_entry,))
+    value_flow = next(
+        subject for subject in inputs.source_subjects
+        if subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+    )
+    payload = model.UseDefAuditEvidencePayload(
+        value_flow.locator.fragment_id, value_flow.locator.state_identity,
+        True, True, 0, (),
+    )
+    injected = _evidence_factory(
+        model.AuthorityEvidence, model.AuthorityEvidenceKind.USE_DEF_AUDIT,
+        value_flow, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, payload,
+    )
+    with pytest.raises(ValueError, match="evaluator-owned"):
+        build_semantic_case(
+            authority_id=authority_id("audit-injection"),
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            inputs=replace(inputs, lineage_evidence=(injected,)),
+        )
+
+
+def test_value_flow_identity_is_conjunctive_over_every_owner_binding() -> None:
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "owner-conjunction")
+    inputs = _complete_inputs(source_subjects=(source_entry,))
+    good = build_semantic_case(
+        authority_id=authority_id("owner-conjunction-good"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    value_flow = next(
+        subject for subject in good.subjects
+        if subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+    )
+    good_cell = next(
+        cell for cell in good.obligation_index.cells
+        if cell.key.subject == value_flow
+        and cell.key.dimension is model.SafetyDimension.IDENTITY_BINDING
+    )
+    assert good_cell.supporting_justification_ids
+    owner_binding = next(
+        binding for binding in inputs.candidate_bindings
+        if binding.subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+        and binding.subject.block_ref in value_flow.locator.redirect_owner_refs
+    )
+    mutations = (
+        replace(
+            owner_binding, status=model.SubjectBindingStatus.MISSING,
+            block_ref=None, serial=None, anchor_ea=None, native_instruction_eas=(),
+        ),
+        replace(owner_binding, generation=999),
+    )
+    for index, mutated in enumerate(mutations):
+        candidate_bindings = tuple(
+            mutated if binding is owner_binding else binding
+            for binding in inputs.candidate_bindings
+        )
+        receipt = inputs.preparation_receipt
+        object.__setattr__(
+            receipt, "candidate_binding_digest",
+            _digest(tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id))),
+        )
+        object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
+        case = build_semantic_case(
+            authority_id=authority_id(f"owner-conjunction-bad-{index}"),
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            inputs=replace(inputs, candidate_bindings=candidate_bindings),
+        )
+        cell = next(
+            cell for cell in case.obligation_index.cells
+            if cell.key.subject == value_flow
+            and cell.key.dimension is model.SafetyDimension.IDENTITY_BINDING
+        )
+        assert not cell.supporting_justification_ids
+        assert cell.refuting_justification_ids
+
+    unrelated = next(
+        binding for binding in inputs.candidate_bindings
+        if binding.subject.role is model.SemanticSubjectRole.SOURCE_ENTRY
+        and binding.subject.block_ref in value_flow.locator.redirect_owner_refs
+    )
+    unrelated_bad = replace(
+        unrelated, status=model.SubjectBindingStatus.MISSING,
+        block_ref=None, serial=None, anchor_ea=None, native_instruction_eas=(),
+    )
+    candidate_bindings = tuple(
+        unrelated_bad if binding is unrelated else binding
+        for binding in inputs.candidate_bindings
+    )
+    receipt = inputs.preparation_receipt
+    object.__setattr__(
+        receipt, "candidate_binding_digest",
+        _digest(tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id))),
+    )
+    object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
+    case = build_semantic_case(
+        authority_id=authority_id("owner-conjunction-unrelated"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=replace(inputs, candidate_bindings=candidate_bindings),
+    )
+    cell = next(
+        cell for cell in case.obligation_index.cells
+        if cell.key.subject == value_flow
+        and cell.key.dimension is model.SafetyDimension.IDENTITY_BINDING
+    )
+    assert cell.supporting_justification_ids
+
+
+def test_contextual_justification_validation_rejects_forged_stale_support() -> None:
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "contextual-forge")
+    case = build_semantic_case(
+        authority_id=authority_id("contextual-forge"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(source_subjects=(source_entry,)),
+    )
+    from d810.transforms.unflatten_authority.evaluate import _validate_justification_graph
+    with pytest.raises(ValueError, match="binding|context"):
+        _validate_justification_graph(
+            case.justifications, case.required_obligations, case.evidence, case.phase,
+            case.claims, case.conditional_relations,
+            candidate_fingerprint=authority_id("forged-candidate-fingerprint"),
+            candidate_generation=case.candidate_generation,
+            bindings=case.bindings, subjects=case.subjects,
+        )
+
+
+def test_contextual_justification_validation_rejects_forged_clean_audit() -> None:
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "clean-audit-forge")
+    case = build_semantic_case(
+        authority_id=authority_id("clean-audit-forge"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(source_subjects=(source_entry,)),
+    )
+    audit_justification = next(
+        item for item in case.justifications
+        if item.rule is model.UnflattenJustificationRule.USE_DEF_AUDIT_CLEAN
+    )
+    audit_evidence = next(
+        item for item in case.evidence
+        if item.kind is model.AuthorityEvidenceKind.USE_DEF_AUDIT
+    )
+    forged_payload = replace(audit_evidence.payload, executed=False)
+    forged_evidence = _evidence_factory(
+        model.AuthorityEvidence, model.AuthorityEvidenceKind.USE_DEF_AUDIT,
+        audit_evidence.subject, case.phase, forged_payload,
+    )
+    forged_justification = _justification_factory(
+        model.AuthorityJustification,
+        rule=audit_justification.rule,
+        premise_ids=(forged_evidence.evidence_id,),
+        conclusion=audit_justification.conclusion,
+        polarity=audit_justification.polarity,
+        phase=audit_justification.phase,
+        claim_id=None,
+    )
+    evidence = tuple(
+        forged_evidence if item.evidence_id == audit_evidence.evidence_id else item
+        for item in case.evidence
+    )
+    justifications = tuple(
+        forged_justification if item.justification_id == audit_justification.justification_id else item
+        for item in case.justifications
+    )
+    from d810.transforms.unflatten_authority.evaluate import _validate_justification_graph
+    with pytest.raises(ValueError, match="clean use-def|contradictory"):
+        _validate_justification_graph(
+            justifications, case.required_obligations, evidence, case.phase,
+            case.claims, case.conditional_relations,
+            candidate_fingerprint=case.candidate_fingerprint,
+            candidate_generation=case.candidate_generation,
+            bindings=case.bindings, subjects=case.subjects,
+        )
+
+
+def test_value_flow_unique_binding_requires_exact_owner_premise_set() -> None:
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "owner-premise-set")
+    case = build_semantic_case(
+        authority_id=authority_id("owner-premise-set"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(source_subjects=(source_entry,)),
+    )
+    justification = next(
+        item for item in case.justifications
+        if item.conclusion.subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+        and item.rule is model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING
+    )
+    assert len(justification.premise_ids) == 2
+    for premise_ids in (
+        justification.premise_ids[:-1],
+        (*justification.premise_ids, justification.premise_ids[0]),
+    ):
+        values = {
+            name: getattr(justification, name)
+            for name in justification.__dataclass_fields__
+            if name != "justification_id"
+        }
+        values["premise_ids"] = premise_ids
+        if len(set(premise_ids)) != len(premise_ids):
+            with pytest.raises(ValueError, match="duplicate"):
+                _justification_factory(model.AuthorityJustification, **values)
+            continue
+        forged = _justification_factory(model.AuthorityJustification, **values)
+        from d810.transforms.unflatten_authority.evaluate import _validate_justification_graph
+        with pytest.raises(ValueError, match="owner|premise|duplicate"):
+            _validate_justification_graph(
+                tuple(forged if item is justification else item for item in case.justifications),
+                case.required_obligations, case.evidence, case.phase,
+                case.claims, case.conditional_relations,
+                candidate_fingerprint=case.candidate_fingerprint,
+                candidate_generation=case.candidate_generation,
+                bindings=case.bindings, subjects=case.subjects,
+            )
+    wire = json.loads(canonical_bytes(case).decode("ascii"))
+    def omit_owner_premise(value: object) -> bool:
+        if isinstance(value, dict) and value.get("t") == "record" and value.get("n") == "AuthorityJustification":
+            for name, encoded in value["v"]:
+                if name == "premise_ids" and len(encoded.get("v", ())) == 2:
+                    encoded["v"] = encoded["v"][:-1]
+                    return True
+        if isinstance(value, dict):
+            return any(omit_owner_premise(item) for item in value.values())
+        if isinstance(value, list):
+            return any(omit_owner_premise(item) for item in value)
+        return False
+    assert omit_owner_premise(wire)
+    with pytest.raises(ValueError, match="premise|record|case"):
+        canonical_decode(json.dumps(wire, sort_keys=True, separators=(",", ":")).encode("ascii"))
+    omitted_owner = next(
+        subject for subject in case.subjects
+        if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+        and subject.block_ref == justification.conclusion.subject.locator.redirect_owner_refs[-1]
+    )
+    from d810.transforms.unflatten_authority.evaluate import _validate_justification_graph
+    with pytest.raises(ValueError, match="owner|subject|premise"):
+        _validate_justification_graph(
+            case.justifications, case.required_obligations, case.evidence, case.phase,
+            case.claims, case.conditional_relations,
+            candidate_fingerprint=case.candidate_fingerprint,
+            candidate_generation=case.candidate_generation,
+            bindings=tuple(item for item in case.bindings if item.subject.subject_id != omitted_owner.subject_id),
+            subjects=tuple(item for item in case.subjects if item.subject_id != omitted_owner.subject_id),
+        )
+
+
+def test_severed_use_def_rule_requires_complete_actionable_audit() -> None:
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "severed-audit-forge")
+    case = build_semantic_case(
+        authority_id=authority_id("severed-audit-forge"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(source_subjects=(source_entry,)),
+    )
+    value_flow = next(
+        item for item in case.subjects
+        if item.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+    )
+    with pytest.raises(ValueError, match="count"):
+        model.UseDefAuditEvidencePayload(
+            value_flow.locator.fragment_id, value_flow.locator.state_identity,
+            True, True, 2, (authority_id("only-one"),),
+        )
+    payloads = (
+        model.UseDefAuditEvidencePayload(
+            value_flow.locator.fragment_id, value_flow.locator.state_identity,
+            False, True, 1, (authority_id("unavailable"),),
+        ),
+        model.UseDefAuditEvidencePayload(
+            value_flow.locator.fragment_id, value_flow.locator.state_identity,
+            True, False, 1, (authority_id("partial"),),
+        ),
+    )
+    severed = next(
+        item for item in case.justifications
+        if item.rule is model.UnflattenJustificationRule.USE_DEF_AUDIT_CLEAN
+    )
+    from d810.transforms.unflatten_authority.evaluate import _validate_justification_graph
+    for payload in payloads:
+        evidence_item = _evidence_factory(
+            model.AuthorityEvidence, model.AuthorityEvidenceKind.USE_DEF_AUDIT,
+            value_flow, case.phase, payload,
+        )
+        forged = _justification_factory(
+            model.AuthorityJustification,
+            rule=model.UnflattenJustificationRule.NON_STATE_USE_DEF_SEVERED,
+            premise_ids=(evidence_item.evidence_id,),
+            conclusion=severed.conclusion,
+            polarity=model.EvidencePolarity.REFUTES,
+            phase=case.phase,
+            claim_id=None,
+        )
+        evidence = tuple(
+            evidence_item if item.kind is model.AuthorityEvidenceKind.USE_DEF_AUDIT else item
+            for item in case.evidence
+        )
+        justifications = tuple(
+            forged if item.justification_id == severed.justification_id else item
+            for item in case.justifications
+        )
+        with pytest.raises(ValueError, match="severance|actionable|unavailable|audit"):
+            _validate_justification_graph(
+                justifications, case.required_obligations, evidence, case.phase,
+                case.claims, case.conditional_relations,
+                candidate_fingerprint=case.candidate_fingerprint,
+                candidate_generation=case.candidate_generation,
+                bindings=case.bindings, subjects=case.subjects,
+            )
 
 
 def test_preparation_receipt_cannot_be_minted_by_callers() -> None:
@@ -674,6 +1038,11 @@ def test_role_inventory_is_exact_and_has_no_unrelated_cells() -> None:
         inputs=_complete_inputs(source_subjects=subjects),
     )
     for subject in subjects:
+        if subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW:
+            subject = next(
+                item for item in case.subjects
+                if item.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+            )
         actual = {key.dimension for key in case.required_obligations if key.subject == subject}
         expected = set(REQUIRED_DIMENSIONS[subject.role])
         if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY:
@@ -1001,7 +1370,19 @@ def test_planned_helper_without_receipt_relation_gets_no_route_authority() -> No
 
 def test_stale_candidate_generation_precedes_obligation_reason() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "stale-generation")
-    candidate_subjects = (entry, _role_subject(model.SemanticSubjectRole.NON_STATE_VALUE_FLOW, "stale-flow"))
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    flow = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.VALUE_FLOW,
+        role=model.SemanticSubjectRole.NON_STATE_VALUE_FLOW,
+        block_ref=None, anchor_ea=None,
+        locator=model.ValueFlowSubjectLocator(
+            proposal.use_def_witness.fragment_id,
+            proposal.use_def_witness.state_identity,
+            proposal.plan_inputs.dispatcher_member_refs,
+        ),
+    )
+    candidate_subjects = (entry, flow)
     stale_bindings = tuple(
         _binding(item, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, fingerprint=authority_id("stale-fingerprint"))
         for item in candidate_subjects
@@ -1011,7 +1392,7 @@ def test_stale_candidate_generation_precedes_obligation_reason() -> None:
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         inputs=_complete_inputs(
             source_subjects=(entry,), candidate_subjects=candidate_subjects,
-            candidate_bindings=stale_bindings,
+            candidate_bindings=stale_bindings, proposal=proposal,
         ),
     )
     assert evaluate_case(case).reason is model.UnflattenAuthorityReason.GRAPH_GENERATION_MISMATCH

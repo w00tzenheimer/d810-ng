@@ -77,8 +77,11 @@ def _rule(
 
 
 _JUSTIFICATION_RULE_SPECS: dict[model.UnflattenJustificationRule, _JustificationRuleSpec] = {
-    model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING: _rule(model.SafetyDimension.IDENTITY_BINDING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.PHASE_BINDING,)),
-    model.UnflattenJustificationRule.NONUNIQUE_PHASE_BINDING: _rule(model.SafetyDimension.IDENTITY_BINDING, polarity=model.EvidencePolarity.REFUTES, evidence=(model.AuthorityEvidenceKind.PHASE_BINDING,)),
+    # A value-flow subject is an aggregate over every redirect owner.  Its
+    # identity proof therefore carries one exact phase-binding premise per
+    # owner, while ordinary subjects remain single-binding proofs.
+    model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING: _rule(model.SafetyDimension.IDENTITY_BINDING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.PHASE_BINDING,), max_premises=None),
+    model.UnflattenJustificationRule.NONUNIQUE_PHASE_BINDING: _rule(model.SafetyDimension.IDENTITY_BINDING, polarity=model.EvidencePolarity.REFUTES, evidence=(model.AuthorityEvidenceKind.PHASE_BINDING,), max_premises=None),
     model.UnflattenJustificationRule.TOPOLOGY_PRESERVED: _rule(model.SafetyDimension.TOPOLOGY_INTEGRITY, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.TOPOLOGY,)),
     model.UnflattenJustificationRule.TOPOLOGY_DRIFTED: _rule(model.SafetyDimension.TOPOLOGY_INTEGRITY, polarity=model.EvidencePolarity.REFUTES, evidence=(model.AuthorityEvidenceKind.TOPOLOGY,)),
     model.UnflattenJustificationRule.SOURCE_PRESERVED: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,)),
@@ -224,6 +227,10 @@ def _validate_justification_graph(
     phase: model.UnflattenAuthorityPhase,
     claims: tuple[model.UnflattenClaim, ...] = (),
     conditional_relations: tuple[model.ConditionalSubjectRelation, ...] = (),
+    *, candidate_fingerprint: str | None = None,
+    candidate_generation: int | None = None,
+    bindings: tuple[model.PhaseSubjectBinding, ...] = (),
+    subjects: tuple[model.SemanticSubjectRef, ...] = (),
 ) -> None:
     required_set = set(required)
     ids = {item.justification_id for item in justifications}
@@ -261,12 +268,126 @@ def _validate_justification_graph(
             spec.max_premises is not None and len(item.premise_ids) > spec.max_premises
         ):
             raise ValueError("justification premise cardinality mismatch")
+        if item.rule in {
+            model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING,
+            model.UnflattenJustificationRule.NONUNIQUE_PHASE_BINDING,
+        } and item.conclusion.subject.role is not model.SemanticSubjectRole.NON_STATE_VALUE_FLOW and len(item.premise_ids) != 1:
+            raise ValueError("ordinary identity binding requires one premise")
+        if item.conclusion.subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW and item.rule in {
+            model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING,
+            model.UnflattenJustificationRule.NONUNIQUE_PHASE_BINDING,
+        } and len(set(item.premise_ids)) != len(item.premise_ids):
+            raise ValueError("value-flow identity premises must be unique")
         if any(premise not in evidence_ids for premise in item.premise_ids):
             raise ValueError("foreign justification premise")
         by_evidence_id = {item.evidence_id: item for item in evidence}
         premise_kinds = tuple(by_evidence_id[premise].kind for premise in item.premise_ids)
         if any(kind not in spec.evidence_kinds for kind in premise_kinds):
             raise ValueError("justification evidence kind mismatch")
+        if candidate_fingerprint is not None or candidate_generation is not None:
+            if candidate_fingerprint is None or candidate_generation is None:
+                raise ValueError("contextual binding validation requires fingerprint and generation")
+            if item.rule in {
+                model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING,
+                model.UnflattenJustificationRule.NONUNIQUE_PHASE_BINDING,
+            }:
+                binding_rows = tuple(
+                    by_evidence_id[premise].payload.binding
+                    for premise in item.premise_ids
+                    if type(by_evidence_id[premise].payload) is model.PhaseBindingEvidencePayload
+                )
+                if len(binding_rows) != len(item.premise_ids):
+                    raise ValueError("identity justification requires phase-binding payloads")
+                target = item.conclusion.subject
+                if target.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW:
+                    owner_refs = set(target.locator.redirect_owner_refs)
+                    allowed = {
+                        subject.subject_id for subject in subjects
+                        if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+                        and subject.block_ref in owner_refs
+                    }
+                else:
+                    allowed = {target.subject_id}
+                if any(binding.subject.subject_id not in allowed for binding in binding_rows):
+                    raise ValueError("identity premise is outside exact subject owner scope")
+                valid_rows = tuple(
+                    binding for binding in binding_rows
+                    if binding.phase is phase
+                    and binding.status is model.SubjectBindingStatus.UNIQUE
+                    and binding.graph_fingerprint == candidate_fingerprint
+                    and binding.generation == candidate_generation
+                    and (
+                        target.role is not model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+                        or (
+                            binding.block_ref == binding.subject.block_ref
+                            and binding.anchor_ea == binding.subject.anchor_ea
+                            and binding.subject.anchor_ea in binding.native_instruction_eas
+                        )
+                    )
+                )
+                if item.rule is model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING:
+                    if target.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW:
+                        required_owner_ids = {
+                            subject.subject_id for subject in subjects
+                            if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+                            and subject.block_ref in target.locator.redirect_owner_refs
+                        }
+                        if (
+                            len(required_owner_ids) != len(target.locator.redirect_owner_refs)
+                            or
+                            len(binding_rows) != len(required_owner_ids)
+                            or {binding.subject.subject_id for binding in binding_rows}
+                            != required_owner_ids
+                        ):
+                            raise ValueError("unique value-flow identity requires the exact owner premise set")
+                    if len(valid_rows) != len(binding_rows):
+                        raise ValueError("unique identity support has stale or non-unique binding")
+                elif (
+                    len(valid_rows) == len(binding_rows)
+                    and len(binding_rows) == (
+                        len(target.locator.redirect_owner_refs)
+                        if target.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+                        else 1
+                    )
+                ):
+                    raise ValueError("nonunique identity refutation lacks a mismatch condition")
+            if item.rule in {
+                model.UnflattenJustificationRule.USE_DEF_AUDIT_CLEAN,
+                model.UnflattenJustificationRule.USE_DEF_AUDIT_UNAVAILABLE,
+                model.UnflattenJustificationRule.NON_STATE_USE_DEF_SEVERED,
+            }:
+                if len(item.premise_ids) != 1:
+                    raise ValueError("use-def justification requires one audit premise")
+                audit_item = by_evidence_id[item.premise_ids[0]]
+                payload = audit_item.payload
+                target = item.conclusion.subject
+                if (
+                    type(payload) is not model.UseDefAuditEvidencePayload
+                    or target.role is not model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+                    or payload.fragment_id != target.locator.fragment_id
+                    or payload.state_identity != target.locator.state_identity
+                ):
+                    raise ValueError("use-def audit premise is outside exact value-flow scope")
+                if item.rule is model.UnflattenJustificationRule.USE_DEF_AUDIT_CLEAN:
+                    if not (
+                        payload.executed
+                        and payload.fragment_atomic
+                        and payload.actionable_non_state_severance_count == 0
+                        and not payload.violation_ids
+                    ):
+                        raise ValueError("clean use-def support has contradictory audit payload")
+                elif item.rule is model.UnflattenJustificationRule.USE_DEF_AUDIT_UNAVAILABLE:
+                    if payload.executed and payload.fragment_atomic:
+                        raise ValueError("unavailable use-def refutation has an executed atomic audit")
+                elif (
+                    not payload.executed
+                    or not payload.fragment_atomic
+                    or payload.actionable_non_state_severance_count <= 0
+                    or not payload.violation_ids
+                    or len(set(payload.violation_ids)) != len(payload.violation_ids)
+                    or payload.actionable_non_state_severance_count != len(payload.violation_ids)
+                ):
+                    raise ValueError("use-def severance refutation lacks complete actionable violations")
         if item.rule in {
             model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN,
         } and not {
@@ -297,7 +418,14 @@ def _validate_justification_graph(
                 target = item.conclusion.subject.subject_id
                 correlated = (
                     type(payload) is model.PhaseBindingEvidencePayload
-                    and payload.binding.subject.subject_id == target
+                    and (
+                        payload.binding.subject.subject_id == target
+                        or (
+                            item.conclusion.subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
+                            and payload.binding.subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+                            and payload.binding.subject.block_ref in item.conclusion.subject.locator.redirect_owner_refs
+                        )
+                    )
                 ) or (
                     type(payload) is model.TopologyEvidencePayload
                     and payload.subject_id == target
@@ -456,7 +584,38 @@ def _identity_support(
     if type(locator) is model.BlockSubjectLocator:
         return any(binding.subject == subject for binding in valid)
     if type(locator) is model.ValueFlowSubjectLocator:
-        return exact_subject_binding and bool(locator.redirect_owner_refs) and all(owner(ref) for ref in locator.redirect_owner_refs)
+        refs = tuple(locator.redirect_owner_refs)
+        if not refs or len(set(refs)) != len(refs):
+            return False
+        owner_subjects = tuple(
+            candidate for candidate in inventory
+            if candidate.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+            and candidate.block_ref in refs
+        )
+        if (
+            len(owner_subjects) != len(refs)
+            or {candidate.block_ref for candidate in owner_subjects} != set(refs)
+        ):
+            return False
+        owner_bindings = tuple(
+            binding for binding in bindings
+            if binding.subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+            and binding.subject.block_ref in refs
+        )
+        if {
+            binding.subject.block_ref for binding in owner_bindings
+        } != set(refs) or len(owner_bindings) != len(owner_subjects):
+            return False
+        return all(
+            binding.phase is phase
+            and binding.status is model.SubjectBindingStatus.UNIQUE
+            and binding.graph_fingerprint == fingerprint
+            and binding.generation == generation
+            and binding.block_ref == binding.subject.block_ref
+            and binding.anchor_ea == binding.subject.anchor_ea
+            and binding.subject.anchor_ea in binding.native_instruction_eas
+            for binding in owner_bindings
+        )
     if type(locator) is model.RouteSubjectLocator:
         return exact_subject_binding and owner(locator.source_ref, locator.source_anchor_ea) and all(
             owner(ref, anchor)
@@ -623,8 +782,12 @@ def build_semantic_case(
     if type(phase) is not model.UnflattenAuthorityPhase:
         raise TypeError("phase must be UnflattenAuthorityPhase")
     proposal = inputs.proposal
-    if any(item.kind in (model.AuthorityEvidenceKind.PHASE_BINDING, model.AuthorityEvidenceKind.GENERIC_CFG_GATE) for item in (*inputs.lineage_evidence, *inputs.patch_step_evidence)):
-        raise ValueError("binding and generic-gate evidence are evaluator-owned typed rows")
+    if any(item.kind in (
+        model.AuthorityEvidenceKind.PHASE_BINDING,
+        model.AuthorityEvidenceKind.GENERIC_CFG_GATE,
+        model.AuthorityEvidenceKind.USE_DEF_AUDIT,
+    ) for item in (*inputs.lineage_evidence, *inputs.patch_step_evidence)):
+        raise ValueError("binding, generic-gate, and use-def evidence are evaluator-owned typed rows")
     proposal_claim_ids = {claim.claim_id for claim in proposal.claims}
     input_claim_ids = {claim.claim_id for claim in inputs.claims}
     if not proposal_claim_ids <= input_claim_ids or any(
@@ -806,6 +969,21 @@ def build_semantic_case(
     expected_value_flow = model.ValueFlowSubjectLocator(
         use_def.fragment_id, use_def.state_identity, use_def.redirect_owner_refs,
     )
+    if tuple(use_def.redirect_owner_refs) != tuple(
+        proposal.plan_inputs.dispatcher_member_refs
+    ):
+        raise ValueError("use-def owners must be exact dispatcher member refs")
+    if (
+        not expected_value_flow.redirect_owner_refs
+        or len(set(expected_value_flow.redirect_owner_refs))
+        != len(expected_value_flow.redirect_owner_refs)
+    ):
+        raise ValueError("use-def value-flow owner refs must be nonempty and unique")
+    if (
+        len(set(use_def.violation_ids)) != len(use_def.violation_ids)
+        or len(use_def.violation_ids) != use_def.actionable_non_state_severance_count
+    ):
+        raise ValueError("use-def violation IDs must be unique and total")
     if len(value_flows) != 1 or value_flows[0].locator != expected_value_flow:
         raise ValueError("source inventory must contain the exact use-def value-flow subject")
     value_flow = value_flows[0]
@@ -972,11 +1150,32 @@ def build_semantic_case(
             inputs.source_subjects if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST else inputs.candidate_subjects,
             bindings, phase, expected_fingerprint, expected_generation,
         )
+        if type(key.subject.locator) is model.ValueFlowSubjectLocator:
+            # Value-flow identity is the conjunction of the exact owner
+            # bindings.  The aggregate has no live block of its own and must
+            # never be authorized by its synthetic MISSING binding row.
+            premises = tuple(
+                binding_evidence[owner.subject_id]
+                for owner in (
+                    binding.subject
+                    for binding in sorted(
+                        candidate_bindings_tuple
+                        if phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+                        else inputs.source_bindings,
+                        key=lambda item: item.subject.subject_id,
+                    )
+                    if binding.subject.block_ref in key.subject.locator.redirect_owner_refs
+                    and binding.subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+                    and binding.subject.subject_id in binding_evidence
+                )
+            )
+        else:
+            premises = (binding_evidence[subject_id_],) if subject_id_ in binding_evidence else ()
         _add_justification(
             justifications, key,
             model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING if supports else model.UnflattenJustificationRule.NONUNIQUE_PHASE_BINDING,
             model.EvidencePolarity.SUPPORTS if supports else model.EvidencePolarity.REFUTES, phase,
-            (binding_evidence[subject_id_],) if subject_id_ in binding_evidence else (),
+            premises,
         )
     evidence = tuple(sorted((*evidence_rows, *inputs.lineage_evidence, *inputs.patch_step_evidence), key=lambda item: item.evidence_id))
     known_subjects = {subject.subject_id: subject for subject in subjects}
@@ -1417,8 +1616,19 @@ def build_semantic_case(
                 None,
             )
             if target is not None:
-                clean = payload.executed and payload.fragment_atomic and payload.actionable_non_state_severance_count == 0
-                targets = ((target.subject_id, model.SafetyDimension.USE_DEF_INTEGRITY, clean, model.UnflattenJustificationRule.USE_DEF_AUDIT_CLEAN if clean else model.UnflattenJustificationRule.NON_STATE_USE_DEF_SEVERED),)
+                clean = (
+                    payload.executed
+                    and payload.fragment_atomic
+                    and payload.actionable_non_state_severance_count == 0
+                    and not payload.violation_ids
+                )
+                if clean:
+                    rule = model.UnflattenJustificationRule.USE_DEF_AUDIT_CLEAN
+                elif not payload.executed or not payload.fragment_atomic:
+                    rule = model.UnflattenJustificationRule.USE_DEF_AUDIT_UNAVAILABLE
+                else:
+                    rule = model.UnflattenJustificationRule.NON_STATE_USE_DEF_SEVERED
+                targets = ((target.subject_id, model.SafetyDimension.USE_DEF_INTEGRITY, clean, rule),)
         elif type(payload) is model.CorridorCoverageEvidencePayload:
             complete = not payload.residual_subject_ids and set(payload.member_subject_ids) == set(payload.covered_subject_ids)
             targets = ((payload.corridor_subject_id, model.SafetyDimension.CORRIDOR_COVERAGE, complete, model.UnflattenJustificationRule.CORRIDOR_FULLY_COVERED if complete else model.UnflattenJustificationRule.CORRIDOR_RESIDUAL_UNACCOUNTED),)
@@ -1616,6 +1826,18 @@ def build_semantic_case(
     _validate_justification_graph(
         justifications_tuple, required, evidence, phase, inputs.claims,
         inputs.conditional_relations,
+        candidate_fingerprint=(
+            inputs.source_fingerprint
+            if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+            else inputs.candidate_fingerprint
+        ),
+        candidate_generation=(
+            inputs.source_generation
+            if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+            else inputs.candidate_generation
+        ),
+        bindings=bindings,
+        subjects=subjects,
     )
     index = _build_obligation_index(required, justifications_tuple, phase)
     values = {
