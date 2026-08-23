@@ -289,6 +289,38 @@ def test_full_corridor_public_lifecycle_uses_sealed_nonempty_forecast(monkeypatc
     assert observed_phase.full
 
 
+def test_timed_prepare_and_prepared_shadow_adapter_mint_one_receipt() -> None:
+    """The owner facade times preparation and adapts the exact prepared shadow."""
+
+    from d810.transforms.unflatten_authority import transaction_api
+
+    source, plan, projected, gates = _full_corridor_fixture()
+    attempt = TransactionAttemptId(
+        plan.plan_id, authority_id("timed-shadow-session"), 1,
+        authority_id("timed-shadow-attempt"),
+    )
+    timed = transaction_api.prepare_unflatten_authority_timed(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=attempt,
+        generic_gates=gates,
+    )
+    assert isinstance(timed, transaction_api.TimedUnflattenAuthorityResult)
+    assert timed.timings.inventory_ms is not None
+    assert timed.timings.binding_ms is not None
+    assert timed.timings.evaluation_ms is not None
+    assert timed.timings.total_authority_ms is None
+    assert timed.result.prepared is not None
+    receipt = transaction_api.adapt_plan_legacy_shadow(
+        source=source, prepared=timed.result.prepared,
+    )
+    assert receipt is not None
+    assert receipt.consumed_keys == tuple(
+        entry.key for entry in plan.legacy_unflatten_shadow.entries
+    )
+
+
 def test_public_prepare_rejects_reminted_forecast_function_ea_drift() -> None:
     """A validly reminted forecast cannot change the source function identity."""
 

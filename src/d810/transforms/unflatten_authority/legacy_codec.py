@@ -24,9 +24,15 @@ from d810.ir.storage_identity import storage_identity_from_record
 from d810.analyses.control_flow.effect_branch_exclusion import ExactStateBranchEffectExclusion
 
 from .legacy_keys import (
+    CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
+    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
     EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+    FULL_UNFLATTENING_CLAIM_METADATA,
     LEGACY_FAMILY_DETAIL_CODES,
     LEGACY_UNFLATTEN_KEYS,
+    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
+    UNFLATTEN_COMPLETION_STATUS_METADATA,
     USE_DEF_SEVERANCE_AUDIT_METADATA,
 )
 from .legacy_wire import decode_legacy_value, encode_legacy_value
@@ -39,6 +45,7 @@ from .model import (
     CorridorPathDisposition,
     CorridorSubjectLocator,
     EquivalentSemanticRouteClaim,
+    EffectSubjectLocator,
     LegacyShadowEntry,
     LegacyUnflattenShadowEnvelope,
     ProposedUnflattenContract,
@@ -1037,6 +1044,61 @@ class LegacyShadowPlanView(Mapping[str, object]):
         return self.metadata_dict().get(key, default)
 
 
+@dataclass(frozen=True, slots=True)
+class LegacyFamilyAdaptation:
+    key: str
+    family: str
+    result_ids: tuple[str, ...]
+    canonical_payload: bytes
+    payload_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.key) is not str or self.key not in LEGACY_RESERVED_KEYS:
+            raise ValueError("adaptation key is not a reserved legacy key")
+        if type(self.family) is not str or not self.family:
+            raise TypeError("adaptation family must be a non-empty string")
+        ids = tuple(self.result_ids)
+        if any(type(value) is not str or not value for value in ids):
+            raise TypeError("adaptation result IDs must be exact strings")
+        if ids != tuple(sorted(set(ids))):
+            raise ValueError("adaptation result IDs must be canonical and unique")
+        if type(self.canonical_payload) is not bytes or not self.canonical_payload:
+            raise TypeError("adaptation payload must be non-empty bytes")
+        if type(self.payload_sha256) is not str or hashlib.sha256(self.canonical_payload).hexdigest() != self.payload_sha256:
+            raise ValueError("adaptation payload digest does not match")
+        object.__setattr__(self, "result_ids", ids)
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyShadowCodecReceipt:
+    """Codec-minted proof that every shadow entry was actually adapted."""
+
+    shadow: LegacyUnflattenShadowEnvelope
+    adaptations: tuple[LegacyFamilyAdaptation, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.shadow) is not LegacyUnflattenShadowEnvelope:
+            raise TypeError("shadow must be a LegacyUnflattenShadowEnvelope")
+        expected = tuple(entry.key for entry in self.shadow.entries)
+        adaptations = tuple(self.adaptations)
+        if any(type(item) is not LegacyFamilyAdaptation for item in adaptations):
+            raise TypeError("adaptations must contain LegacyFamilyAdaptation values")
+        if tuple(item.key for item in adaptations) != expected:
+            raise ValueError("adaptations must cover every shadow entry exactly once")
+        expected_rows = tuple((entry.key, entry.canonical_payload, entry.payload_sha256) for entry in self.shadow.entries)
+        actual_rows = tuple((item.key, item.canonical_payload, item.payload_sha256) for item in adaptations)
+        if actual_rows != expected_rows:
+            raise ValueError("adaptation payload identity changed")
+
+    @property
+    def consumed_keys(self) -> tuple[str, ...]:
+        return tuple(item.key for item in self.adaptations)
+
+    @property
+    def payloads(self) -> tuple[tuple[str, bytes, str], ...]:
+        return tuple((item.key, item.canonical_payload, item.payload_sha256) for item in self.adaptations)
+
+
 def replay_legacy_unflatten_shadow(plan: PatchPlan) -> LegacyShadowPlanView:
     """Validate and replay a plan's exact temporary shadow envelope."""
 
@@ -1103,6 +1165,7 @@ class LegacyUnflattenDecodeContext:
     canonical_route_evidence: CanonicalSemanticEvidence | None
     plan_inputs: UnflattenPlanInputCatalog | None = None
     use_def_witness: UseDefFragmentWitness | None = None
+    canonical_proposal: ProposedUnflattenContract | None = None
 
     def __post_init__(self) -> None:
         _exact_text(self.plan_id, "plan_id")
@@ -1216,6 +1279,19 @@ class LegacyUnflattenDecodeContext:
                 raise ValueError("exact legacy adaptation requires canonical route evidence")
         elif self.use_def_witness is not None:
             raise ValueError("exact legacy producer inputs are incomplete")
+        if self.canonical_proposal is not None:
+            if type(self.canonical_proposal) is not ProposedUnflattenContract:
+                raise TypeError("canonical_proposal must be closed")
+            if self.canonical_proposal.plan_id != self.plan_id:
+                raise ValueError("canonical proposal belongs to a foreign plan")
+            if self.canonical_proposal.source_identity_catalog.generation != self.source_generation:
+                raise ValueError("canonical proposal generation is stale")
+            if self.canonical_proposal.route_evidence is not self.canonical_route_evidence:
+                raise ValueError("canonical proposal route evidence differs from context")
+            if self.plan_inputs is not None and self.canonical_proposal.plan_inputs != self.plan_inputs:
+                raise ValueError("canonical proposal plan inputs differ from context")
+            if self.use_def_witness is not None and self.canonical_proposal.use_def_witness != self.use_def_witness:
+                raise ValueError("canonical proposal use-def witness differs from context")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1345,6 +1421,284 @@ def _use_def_failure(value: object) -> str | None:
     ):
         return "legacy_use_def_audit_contradictory"
     return None
+
+
+def _proposal_claim_kinds(proposal: ProposedUnflattenContract) -> frozenset[UnflattenClaimKind]:
+    return frozenset(claim.kind for claim in proposal.claims)
+
+
+def _adapt_known_family(
+    key: str,
+    value: object,
+    *,
+    context: LegacyUnflattenDecodeContext,
+    coverage_payload: object | None = None,
+) -> ProposedUnflattenContract | None:
+    """Validate one migrated legacy family against the sealed proposal.
+
+    The canonical proposal is supplied by the producer boundary.  This
+    adapter consumes legacy facts only as selectors/checks; it never mints a
+    second authority or changes the proposal decision.
+    """
+
+    proposal = context.canonical_proposal
+    if proposal is None:
+        return None
+    kinds = _proposal_claim_kinds(proposal)
+    if key == USE_DEF_SEVERANCE_AUDIT_METADATA:
+        if not isinstance(value, Mapping) or set(value) - {"function_ea", "executed", "fragment_atomic", "severance_count", "violations", "clean"}:
+            raise ValueError("legacy use-def audit must be an exact mapping")
+        if not {"function_ea", "executed", "fragment_atomic", "severance_count", "violations"} <= set(value):
+            raise ValueError("legacy use-def audit is incomplete")
+        witness = context.use_def_witness
+        if witness is None or _use_def_failure(value) is not None:
+            raise ValueError("legacy use-def audit is not clean")
+        if type(value["function_ea"]) is not int or value["function_ea"] != context.source.func_ea:
+            raise ValueError("legacy use-def function differs from source")
+        if value.get("executed") is not witness.executed or value.get("fragment_atomic") is not witness.fragment_atomic:
+            raise ValueError("legacy use-def execution facts differ from witness")
+        if value.get("severance_count") != witness.actionable_non_state_severance_count:
+            raise ValueError("legacy use-def count differs from witness")
+        violations = value.get("violations", ())
+        if tuple(violations) != witness.violation_ids:
+            raise ValueError("legacy use-def violations differ from witness")
+        return proposal
+    if key == DISPATCHER_CORRIDOR_COVERAGE_METADATA:
+        forecast = corridor_coverage_forecast_from_legacy_metadata(
+            value,
+            proposal=proposal,
+            block_refs_by_serial=dict(context.block_refs_by_serial),
+            source_function_ea=context.source.func_ea,
+        )
+        if proposal.corridor_coverage_forecast != forecast:
+            raise ValueError("legacy corridor forecast differs from canonical proposal")
+        return proposal
+    if key == FULL_UNFLATTENING_CLAIM_METADATA:
+        if type(value) is not bool or coverage_payload is None or not isinstance(coverage_payload, Mapping):
+            raise ValueError("legacy full-unflattening marker requires exact coverage")
+        if value != coverage_payload.get("full_unflattening_claim"):
+            raise ValueError("legacy full-unflattening marker differs from coverage")
+        return proposal
+    if key == DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA:
+        candidates: list[object] = []
+        for adapter in (retirement_claim_from_legacy_proof, terminal_cycle_claim_from_legacy_proof):
+            try:
+                candidates.append(adapter(
+                    value,
+                    proposal=proposal,
+                    block_refs_by_serial=dict(context.block_refs_by_serial),
+                ))
+            except (TypeError, ValueError):
+                continue
+        matches = tuple(
+            candidate for candidate in candidates
+            if any(item == candidate for item in proposal.claims)
+        )
+        if len(matches) != 1:
+            raise ValueError("legacy removal proof does not bind one canonical claim")
+        return proposal
+    if key == UNFLATTEN_COMPLETION_STATUS_METADATA:
+        if type(value) is not str or coverage_payload is None or not isinstance(coverage_payload, Mapping):
+            raise TypeError("legacy completion status requires exact coverage")
+        if value != coverage_payload.get("completion_status"):
+            raise ValueError("legacy completion status differs from coverage")
+        return proposal
+    if key in {CONCRETE_STATE_ROUTE_PROVENANCE_METADATA, NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA}:
+        if UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE not in kinds:
+            raise ValueError("legacy route family has no equivalent-route claim")
+        return proposal
+    if key == EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA:
+        if UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT not in kinds:
+            raise ValueError("legacy exact-effect family has no canonical claim")
+        return proposal
+    return None
+
+
+def _exact_family_result_ids(
+    key: str,
+    value: object,
+    *,
+    context: LegacyUnflattenDecodeContext,
+) -> tuple[str, ...]:
+    """Adapt one exact family directly against the sealed proposal."""
+
+    proposal = context.canonical_proposal
+    if proposal is None:
+        raise ValueError("exact family adaptation requires a canonical proposal")
+    refs = dict(context.block_refs_by_serial)
+    serial_by_ref = {ref: serial for serial, ref in refs.items()}
+    if key in {
+        CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
+        NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
+    }:
+        claims = equivalent_route_claims_from_legacy_metadata(
+            value, proposal=proposal, key=key, block_refs_by_serial=refs,
+        )
+        actual = tuple(sorted(claim.claim_id for claim in claims))
+        if any(
+            claim.kind is not UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE
+            or not claim.route_proof_ids
+            for claim in claims
+        ):
+            raise ValueError(f"legacy {key} claims differ from canonical proposal")
+        return actual
+    if key != EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA:
+        raise ValueError(f"unknown exact legacy family {key}")
+    if type(value) not in (tuple, list) or not value:
+        raise ValueError("legacy exact-effect payload is malformed")
+    exclusions = tuple(
+        exact_state_branch_effect_exclusion_from_metadata(item) for item in value
+    )
+    if any(item is None for item in exclusions):
+        raise ValueError("legacy exact-effect payload is malformed")
+    matches: list[str] = []
+    for exclusion in exclusions:
+        if exclusion is None:
+            raise ValueError("legacy exact-effect payload is malformed")
+        claim_matches: list[str] = []
+        for claim in proposal.claims:
+            if claim.kind is not UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT:
+                continue
+            source = claim.source_subject.locator
+            predicate = claim.predicate_subject.locator
+            selected = claim.selected_target_subject.locator
+            effect = claim.discarded_effect_subject.locator
+            if (
+                type(source) is not BlockSubjectLocator
+                or type(predicate) is not BlockSubjectLocator
+                or type(selected) is not BlockSubjectLocator
+                or type(effect) is not EffectSubjectLocator
+            ):
+                continue
+            if (
+                exclusion.normalized_state == claim.normalized_state
+                and exclusion.source_serial == serial_by_ref.get(source.block_ref, -1)
+                and exclusion.source_ea == source.anchor_ea
+                and exclusion.source_write_ea == claim.source_write_ea
+                and exclusion.predicate_serial == serial_by_ref.get(predicate.block_ref, -1)
+                and exclusion.predicate_ea == predicate.anchor_ea
+                and exclusion.predicate_branch_ea == claim.predicate_branch_ea
+                and exclusion.selected_target_serial == serial_by_ref.get(selected.block_ref, -1)
+                and exclusion.selected_target_ea == selected.anchor_ea
+                and exclusion.discarded_effect_serial == serial_by_ref.get(effect.owner_ref, -1)
+                and exclusion.discarded_effect_ea == claim.discarded_effect_ea
+                and exclusion.state_identity == claim.state_identity
+            ):
+                claim_matches.append(claim.claim_id)
+        if len(claim_matches) != 1:
+            raise ValueError("legacy exact-effect row does not bind one canonical claim")
+        matches.extend(claim_matches)
+    if len(matches) != len(exclusions) or len(matches) != len(set(matches)):
+        raise ValueError("legacy exact-effect payload does not bind canonical claims")
+    return tuple(sorted(matches))
+
+
+def _family_result_ids(
+    key: str,
+    value: object,
+    *,
+    proposal: ProposedUnflattenContract,
+    context: LegacyUnflattenDecodeContext,
+) -> tuple[str, ...]:
+    if key == USE_DEF_SEVERANCE_AUDIT_METADATA:
+        witness = context.use_def_witness
+        if witness is None:
+            raise ValueError("legacy use-def family has no canonical witness")
+        return tuple(sorted((witness.fragment_id, witness.redirect_digest)))
+    if key in {DISPATCHER_CORRIDOR_COVERAGE_METADATA, FULL_UNFLATTENING_CLAIM_METADATA, UNFLATTEN_COMPLETION_STATUS_METADATA}:
+        if proposal.corridor_coverage_forecast is None:
+            raise ValueError("legacy coverage family has no canonical forecast")
+        return (proposal.corridor_coverage_forecast.forecast_id,)
+    if key == DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA:
+        return tuple(sorted(
+            claim.claim_id
+            for claim in proposal.claims
+            if claim.kind in {
+                UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
+                UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
+            }
+        ))
+    if key in {CONCRETE_STATE_ROUTE_PROVENANCE_METADATA, NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA}:
+        return _exact_family_result_ids(key, value, context=context)
+    if key == EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA:
+        return _exact_family_result_ids(key, value, context=context)
+    raise ValueError(f"unknown migrated legacy family {key}")
+
+
+def adapt_legacy_unflatten_shadow(
+    shadow: LegacyUnflattenShadowEnvelope | LegacyShadowPlanView | PatchPlan,
+    *,
+    context: LegacyUnflattenDecodeContext,
+) -> LegacyShadowCodecReceipt:
+    """Adapt every captured legacy entry through its exact family decoder.
+
+    The returned receipt is minted from the envelope itself.  No caller
+    supplied consumed-key assertion participates in the proof.
+    """
+
+    if type(context) is not LegacyUnflattenDecodeContext:
+        raise TypeError("context must be LegacyUnflattenDecodeContext")
+    if context.canonical_proposal is None:
+        raise ValueError("full shadow adaptation requires a canonical proposal")
+    if type(shadow) is PatchPlan:
+        plan = shadow
+        view = replay_legacy_unflatten_shadow(plan)
+        envelope = plan.legacy_unflatten_shadow
+    elif type(shadow) is LegacyShadowPlanView:
+        plan = shadow.plan
+        view = shadow
+        envelope = plan.legacy_unflatten_shadow
+    elif type(shadow) is LegacyUnflattenShadowEnvelope:
+        plan = None
+        view = None
+        envelope = shadow
+    else:
+        raise TypeError("shadow must be a LegacyUnflattenShadowEnvelope, view, or PatchPlan")
+    if type(envelope) is not LegacyUnflattenShadowEnvelope:
+        raise ValueError("shadow envelope is missing")
+    envelope.__post_init__()
+    if envelope.plan_id != context.plan_id or envelope.source_generation != context.source_generation:
+        raise ValueError("shadow envelope identity differs from decode context")
+    if any(entry.key not in LEGACY_RESERVED_KEYS for entry in envelope.entries):
+        raise ValueError("shadow contains an unsupported reserved legacy key")
+
+    values: dict[str, object] = {}
+    for entry in envelope.entries:
+        payload = entry.canonical_payload
+        if type(payload) is not bytes or hashlib.sha256(payload).hexdigest() != entry.payload_sha256:
+            raise ValueError(f"legacy shadow payload integrity mismatch for {entry.key}")
+        value = decode_legacy_canonical_payload(payload)
+        values[entry.key] = value
+        if view is not None:
+            view.assert_payload(entry.key, payload, entry.payload_sha256)
+    proposal = context.canonical_proposal
+    coverage = values.get(DISPATCHER_CORRIDOR_COVERAGE_METADATA)
+    adaptations: list[LegacyFamilyAdaptation] = []
+    for entry in envelope.entries:
+        value = values[entry.key]
+        if entry.key in {
+            CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
+            NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
+            EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+        }:
+            result_ids = _exact_family_result_ids(entry.key, value, context=context)
+        else:
+            adapted = _adapt_known_family(
+                entry.key, value, context=context, coverage_payload=coverage,
+            )
+            if adapted is None or adapted != proposal:
+                raise ValueError(f"legacy {entry.key} family did not match canonical proposal")
+            result_ids = _family_result_ids(
+                entry.key, value, proposal=proposal, context=context,
+            )
+        adaptations.append(LegacyFamilyAdaptation(
+            entry.key,
+            entry.key,
+            result_ids,
+            entry.canonical_payload,
+            entry.payload_sha256,
+        ))
+    return LegacyShadowCodecReceipt(envelope, tuple(adaptations))
 
 
 def decode_legacy_unflatten_contract(
@@ -1602,7 +1956,23 @@ def decode_legacy_unflatten_contract(
             )
         return LegacyUnflattenDecoded(UnflattenPlanRoute.LEGACY_ADAPTED, proposal)
 
-    # Family adapters are intentionally owned by later vertical tasks.
+    # Once a producer has supplied the sealed canonical proposal, every
+    # migrated legacy family is adapted as a transport check.  The proposal
+    # remains the sole semantic authority.
+    if context.canonical_proposal is not None:
+        try:
+            adapted = _adapt_known_family(
+                reserved[0], dict(items)[reserved[0]], context=context,
+            )
+        except (TypeError, ValueError):
+            return LegacyUnflattenRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                reserved[0],
+                "legacy_family_payload_invalid",
+            )
+        if adapted is not None:
+            return LegacyUnflattenDecoded(UnflattenPlanRoute.LEGACY_ADAPTED, adapted)
+
     detail_code = _family_detail(reserved[0])
     if detail_code is None:
         return LegacyUnflattenRejected(
@@ -1619,6 +1989,8 @@ def decode_legacy_unflatten_contract(
 
 __all__ = [
     "LEGACY_RESERVED_KEYS",
+    "LegacyFamilyAdaptation",
+    "LegacyShadowCodecReceipt",
     "LegacyShadowPlanView",
     "LegacyUnflattenAbsent",
     "LegacyUnflattenDecoded",
@@ -1626,6 +1998,7 @@ __all__ = [
     "LegacyUnflattenDecodeResult",
     "LegacyUnflattenRejected",
     "capture_legacy_unflatten_shadow",
+    "adapt_legacy_unflatten_shadow",
     "decode_legacy_canonical_payload",
     "decode_legacy_unflatten_contract",
     "equivalent_route_claims_from_legacy_metadata",

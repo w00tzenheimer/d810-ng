@@ -9,12 +9,90 @@ import pytest
 
 import tests.system.e2e.unflattening_effect_safety_oracle as safety_oracle
 from tests.system.e2e.unflattening_effect_safety_oracle import (
+    AuthorityOracleEvidence,
+    authority_oracle_marker_payload,
+    parse_authority_phase_payloads,
     reachable_call_eas,
     session_scoped_rows,
 )
 
 WORKTREE = Path(__file__).parents[2]
 MASM_DIR = WORKTREE / "samples" / "src" / "masm"
+
+
+def _authority_parity(*, authority_id: str = "authority-1", projected: str = "case-p", observed: str = "case-o") -> dict:
+    return {
+        "schema": "unflatten_authority_shadow_parity.v2",
+        "authority_id": authority_id,
+        "case_ids": {"projected": projected, "observed": observed},
+        "projected": {"accepted_equal": True, "reason_equal": True, "losses_equal": True},
+        "observed": {"accepted_equal": True, "reason_equal": True, "losses_equal": True},
+        "legacy_anchored_loss_labels": {"projected": [], "observed": []},
+        "counters": {"projected": [1, 1, 1, 0], "observed": [1, 1, 1, 0]},
+        "codec": {
+            "captured_keys": ["full_unflattening_claim"],
+            "adaptations": [{
+                "key": "full_unflattening_claim",
+                "family": "full_unflattening_claim",
+                "result_ids": ["result-1"],
+                "payload_sha256": "a" * 64,
+            }],
+            "all_adapted": True,
+        },
+        "parity_ok": True,
+    }
+
+
+def _authority_phase(
+    phase: str,
+    *,
+    authority_id: str = "authority-1",
+    case_id: str | None = None,
+    plan_id: str = "plan-1",
+    attempt_id: str = "attempt-1",
+    session_id: str = "session-1",
+) -> dict:
+    projected = phase == "projected_preflight"
+    case_id = case_id or ("case-p" if projected else "case-o")
+    return {
+        "schema": "unflatten_authority_phase.v1",
+        "phase": phase,
+        "authority_id": authority_id,
+        "plan_id": plan_id,
+        "attempt_id": attempt_id,
+        "session_id": session_id,
+        "binding_id": None if projected else "binding-1",
+        "case_id": case_id,
+        "accepted": True,
+        "reason": "accepted",
+        "source_fingerprint": "source-1",
+        "candidate_fingerprint": "candidate-1",
+        "generation": 1,
+        "bindings": [{"generation": 1}],
+        "codec": _authority_parity()["codec"],
+        "obligation_states": [{"state": "satisfied"}],
+        "loss_ledger": [],
+        "metrics": {
+            "source_inventory_builds": 1,
+            "candidate_inventory_builds": 1,
+            "index_folds": 1,
+            "view_graph_traversals": 0,
+        },
+        "timings": {
+            "inventory_ms": 1.0,
+            "binding_ms": 2.0,
+            "evaluation_ms": 3.0,
+            "views_ms": 4.0,
+            "total_authority_ms": 10.0,
+        },
+    }
+
+
+def _authority_payloads() -> list[dict]:
+    projected = _authority_phase("projected_preflight")
+    observed = _authority_phase("observed_post_apply")
+    observed["parity"] = _authority_parity()
+    return [projected, observed]
 
 
 def _fixture(name: str) -> str:
@@ -276,3 +354,155 @@ def test_exact_call_oracle_rejects_duplicate_native_marker_eas() -> None:
     )
     with pytest.raises(ValueError, match="distinct"):
         validator((0x180044A5A, 0x180044A5A, 0x180044AF7), expected_count=3)
+
+
+def test_authority_payload_aggregation_returns_valid_projected_observed_rows() -> None:
+    evidence = parse_authority_phase_payloads(_authority_payloads())
+    assert isinstance(evidence, AuthorityOracleEvidence)
+    assert evidence.projected.phase == "projected_preflight"
+    assert evidence.observed.phase == "observed_post_apply"
+    assert evidence.projected.case_id == "case-p"
+    assert evidence.observed.case_id == "case-o"
+    assert evidence.parity["authority_id"] == "authority-1"
+    assert evidence.session_id == "session-1"
+
+
+def test_production_authority_marker_preserves_plan_and_attempt_for_artifact_oracle(
+) -> None:
+    """The pure production marker payload satisfies the artifact contract."""
+    import tools.scripts.unflatten_authority_artifacts as artifacts
+
+    evidence = parse_authority_phase_payloads(_authority_payloads())
+    marker = authority_oracle_marker_payload(
+        target="A",
+        function="sub_7FF8569F0540",
+        function_ea=0x1234,
+        fixture_sha256="0" * 64,
+        session_id="session-1",
+        evidence=evidence,
+    )
+    artifacts._oracle(marker, "A", "0" * 64)
+
+
+@pytest.mark.parametrize(
+    "payloads, message",
+    [
+        (_authority_payloads()[:1], "exactly one"),
+        (_authority_payloads() + [_authority_payloads()[0]], "duplicate"),
+    ],
+)
+def test_authority_payload_aggregation_rejects_missing_or_duplicate_phase(
+    payloads: list[dict], message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        parse_authority_phase_payloads(payloads)
+
+
+def test_authority_payload_aggregation_forbids_projected_parity_and_requires_observed_parity() -> None:
+    payloads = _authority_payloads()
+    payloads[0]["parity"] = _authority_parity()
+    with pytest.raises(ValueError, match="projected.*parity"):
+        parse_authority_phase_payloads(payloads)
+
+
+@pytest.mark.parametrize("field", ["plan_id", "attempt_id", "session_id"])
+def test_authority_payload_aggregation_rejects_cross_phase_provenance_mismatch(field: str) -> None:
+    payloads = _authority_payloads()
+    payloads[1][field] = f"foreign-{field}"
+    with pytest.raises(ValueError, match=field):
+        parse_authority_phase_payloads(payloads)
+
+
+def test_authority_payload_aggregation_rejects_wrong_expected_session() -> None:
+    with pytest.raises(ValueError, match="session|exactly one"):
+        parse_authority_phase_payloads(_authority_payloads(), expected_session_id="stale-session")
+    payloads = _authority_payloads()
+    payloads[0]["session_id"] = "foreign-session"
+    with pytest.raises(ValueError, match="session|exactly one"):
+        parse_authority_phase_payloads(payloads, expected_session_id="session-1")
+
+
+def test_authority_payload_aggregation_rejects_unknown_obligation_state() -> None:
+    payloads = _authority_payloads()
+    payloads[0]["obligation_states"] = [{"state": "unsupported"}]
+    with pytest.raises(ValueError, match="obligation state"):
+        parse_authority_phase_payloads(payloads)
+    payloads = _authority_payloads()
+    del payloads[1]["parity"]
+    with pytest.raises(ValueError, match="observed.*parity"):
+        parse_authority_phase_payloads(payloads)
+
+
+@pytest.mark.parametrize(
+    "parity, message",
+    [
+        (_authority_parity(authority_id="wrong"), "authority"),
+        (_authority_parity(projected="wrong"), "case"),
+        (_authority_parity(), "counter"),
+    ],
+)
+def test_authority_payload_aggregation_cross_checks_parity_identity_and_counters(
+    parity: dict, message: str,
+) -> None:
+    payloads = _authority_payloads()
+    if message == "counter":
+        parity["counters"]["observed"] = [2, 1, 1, 0]
+    payloads[1]["parity"] = parity
+    with pytest.raises(ValueError, match=message):
+        parse_authority_phase_payloads(payloads)
+
+
+def test_authority_payload_aggregation_rejects_unanchored_loss() -> None:
+    payloads = _authority_payloads()
+    payloads[0]["loss_ledger"] = [{"anchor": "not-anchored"}]
+    with pytest.raises(ValueError, match="anchor"):
+        parse_authority_phase_payloads(payloads)
+
+
+def test_authority_payload_aggregation_rejects_canonical_loss_drift_even_when_parity_boolean_is_true() -> None:
+    payloads = _authority_payloads()
+    payloads[0]["loss_ledger"] = [{"anchor": "blk999@0xdeadbeef"}]
+    with pytest.raises(ValueError, match="loss"):
+        parse_authority_phase_payloads(payloads)
+
+
+def test_authority_payload_aggregation_requires_explicit_generation_matching_bindings() -> None:
+    payloads = _authority_payloads()
+    payloads[0]["generation"] = 2
+    with pytest.raises(ValueError, match="generation"):
+        parse_authority_phase_payloads(payloads)
+    payloads = _authority_payloads()
+    payloads[0]["bindings"][0]["generation"] = 2
+    with pytest.raises(ValueError, match="generation"):
+        parse_authority_phase_payloads(payloads)
+
+
+@pytest.mark.parametrize("field, value", [("inventory_ms", float("nan")), ("views_ms", float("inf")), ("total_authority_ms", 99.0)])
+def test_authority_payload_aggregation_rejects_nonfinite_or_inconsistent_timings(field: str, value: float) -> None:
+    payloads = _authority_payloads()
+    payloads[0]["timings"][field] = value
+    with pytest.raises(ValueError, match="timing"):
+        parse_authority_phase_payloads(payloads)
+
+
+def test_authority_payload_aggregation_rejects_incomplete_codec_or_digest_drift() -> None:
+    payloads = _authority_payloads()
+    del payloads[0]["codec"]
+    with pytest.raises(ValueError, match="codec"):
+        parse_authority_phase_payloads(payloads)
+    payloads = _authority_payloads()
+    payloads[0]["codec"]["adaptations"][0]["payload_sha256"] = "b" * 64
+    with pytest.raises(ValueError, match="codec"):
+        parse_authority_phase_payloads(payloads)
+    payloads = _authority_payloads()
+    payloads[1]["codec"]["adaptations"][0]["payload_sha256"] = "A" * 64
+    with pytest.raises(ValueError, match="digest"):
+        parse_authority_phase_payloads(payloads)
+    payloads = _authority_payloads()
+    del payloads[1]["parity"]["codec"]
+    with pytest.raises(ValueError, match="codec"):
+        parse_authority_phase_payloads(payloads)
+    payloads = _authority_payloads()
+    payloads[1]["parity"]["codec"]["adaptations"][0]["payload_sha256"] = "f" * 63
+    with pytest.raises(ValueError, match="digest"):
+        parse_authority_phase_payloads(payloads)

@@ -16,8 +16,23 @@ from d810.analyses.control_flow.effect_branch_exclusion import (
     EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
     validate_exact_state_branch_effect_exclusion,
 )
+from d810.transforms.dispatcher_corridor_coverage import (
+    DispatcherRemovalPreflightValidation,
+)
 from d810.transforms.unflatten_authority.legacy_codec import (
     exact_state_branch_effect_exclusion_from_metadata,
+    LegacyShadowCodecReceipt,
+)
+from d810.transforms.unflatten_authority.diagnostics import (
+    LegacyPhaseOutcome,
+    PhaseTimings,
+    ShadowParityPayload,
+    ShadowParityCounters,
+)
+from d810.transforms.unflatten_authority.model import (
+    SemanticGraphInventory,
+    UnflattenAuthorityPhase,
+    UnflattenAuthorityReason,
 )
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import (
@@ -478,6 +493,47 @@ def _requires_observed_identity_canonicalization(plan: PatchPlan) -> bool:
     return False
 
 
+def _legacy_phase_outcome(
+    phase: UnflattenAuthorityPhase,
+    source_inventory: SemanticGraphInventory,
+    effectful: EffectfulReachabilityResult,
+    removal_validation: DispatcherRemovalPreflightValidation | None,
+) -> LegacyPhaseOutcome:
+    """Capture already-computed legacy loss anchors at the decision boundary."""
+
+    inventory_by_serial = {row.serial: row for row in source_inventory.blocks}
+    serials = set(int(serial) for serial in effectful.lost_block_serials)
+    proof = None if removal_validation is None else removal_validation.proof
+    if proof is not None:
+        proof_serials = frozenset(int(serial) for serial in proof.lost_blocks)
+        proof_anchors = tuple(proof.lost_block_anchors)
+        if (
+            len(proof_anchors) != len(set(proof_anchors))
+            or frozenset(anchor.serial for anchor in proof_anchors) != proof_serials
+        ):
+            raise ValueError("legacy removal proof serial/anchor rows differ")
+        serials.update(proof_serials)
+        for anchor in proof_anchors:
+            row = inventory_by_serial.get(anchor.serial)
+            if row is None or row.anchor_ea != anchor.ea:
+                raise ValueError("legacy removal proof anchor differs from source inventory")
+    missing = tuple(sorted(serial for serial in serials if serial not in inventory_by_serial))
+    if missing:
+        raise ValueError(f"legacy loss anchor is absent from source inventory: {missing}")
+    if any(inventory_by_serial[serial].anchor_ea is None for serial in serials):
+        raise ValueError("legacy loss anchor is unresolved in source inventory")
+    anchors = tuple(sorted(
+        (serial, int(inventory_by_serial[serial].anchor_ea))
+        for serial in serials
+    ))
+    return LegacyPhaseOutcome(
+        phase=phase,
+        accepted=True,
+        reason_scope=UnflattenAuthorityReason.ACCEPTED,
+        anchored_losses=anchors,
+    )
+
+
 def _conditional_lowering_projection_failure(
     plan: PatchPlan,
     snapshot: FlowGraph,
@@ -585,6 +641,9 @@ class PreparedPatchCfgTransaction(PreparedCfgTransaction):
     plan: PatchPlan
     unflatten_authority: object | None = None
     projected_unflatten_verdict: object | None = None
+    projected_unflatten_timing: PhaseTimings | None = None
+    legacy_shadow_receipt: LegacyShadowCodecReceipt | None = None
+    legacy_shadow_codec_error: str | None = None
 
     def __post_init__(self) -> None:
         PreparedCfgTransaction.__post_init__(self)
@@ -606,6 +665,11 @@ class PatchTransactionExecution(PatchPlanExecutionResult):
     observed_dispatcher_coverage_validation: object | None = None
     projected_unflatten_verdict: object | None = None
     observed_unflatten_verdict: object | None = None
+    projected_unflatten_timing: PhaseTimings | None = None
+    observed_unflatten_timing: PhaseTimings | None = None
+    shadow_parity_payload: ShadowParityPayload | None = None
+    legacy_shadow_codec_error: str | None = None
+    shadow_parity_error: str | None = None
 
     def __post_init__(self) -> None:
         PatchPlanExecutionResult.__post_init__(self)
@@ -691,6 +755,14 @@ class HexRaysPatchTransactionParticipant:
     _unflatten_authority: object | None = field(default=None, init=False, repr=False)
     _projected_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
     _observed_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
+    _projected_unflatten_timing: PhaseTimings | None = field(default=None, init=False, repr=False)
+    _observed_unflatten_timing: PhaseTimings | None = field(default=None, init=False, repr=False)
+    _legacy_shadow_receipt: LegacyShadowCodecReceipt | None = field(default=None, init=False, repr=False)
+    _shadow_parity_payload: ShadowParityPayload | None = field(default=None, init=False, repr=False)
+    _projected_legacy_outcome: LegacyPhaseOutcome | None = field(default=None, init=False, repr=False)
+    _observed_legacy_outcome: LegacyPhaseOutcome | None = field(default=None, init=False, repr=False)
+    _legacy_shadow_codec_error: str | None = field(default=None, init=False, repr=False)
+    _shadow_parity_error: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, PatchPlan):
@@ -957,6 +1029,7 @@ class HexRaysPatchTransactionParticipant:
         from d810.transforms.unflatten_authority.model import (
             UnflattenAuthorityPreparationAccepted,
             UnflattenAuthorityNotApplicable,
+            UnflattenAuthorityPreparationRejected,
         )
 
         semantic_gates = GenericCfgGateBundle(
@@ -966,33 +1039,74 @@ class HexRaysPatchTransactionParticipant:
             terminal_reachability,
         )
 
-        semantic_result = (
-            transaction_api.prepare_unflatten_authority(
-                source=snapshot,
-                projection=projection,
-                plan=self.plan,
-                attempt_id=self.attempt_id,
-                generic_gates=semantic_gates,
+        try:
+            semantic_timed_result = (
+                transaction_api.prepare_unflatten_authority_timed(
+                    source=snapshot,
+                    projection=projection,
+                    plan=self.plan,
+                    attempt_id=self.attempt_id,
+                    generic_gates=semantic_gates,
+                )
+                if self.plan.unflatten_proposal is not None
+                or self.plan.legacy_unflatten_shadow is not None
+                else UnflattenAuthorityNotApplicable(
+                    route=transaction_api.UnflattenPlanRoute.ORDINARY
+                )
             )
-            if self.plan.unflatten_proposal is not None
-            or self.plan.legacy_unflatten_shadow is not None
-            else UnflattenAuthorityNotApplicable(
+            if isinstance(
+                semantic_timed_result, transaction_api.TimedUnflattenAuthorityResult
+            ):
+                semantic_result = semantic_timed_result.result
+                self._projected_unflatten_timing = semantic_timed_result.timings
+            else:
+                semantic_result = semantic_timed_result
+            if type(semantic_result) not in (
+                UnflattenAuthorityNotApplicable,
+                UnflattenAuthorityPreparationAccepted,
+                UnflattenAuthorityPreparationRejected,
+            ):
+                raise TypeError("canonical projected authority returned malformed outcome")
+        except Exception as error:
+            if self.plan.legacy_unflatten_shadow is None:
+                raise
+            self._shadow_parity_error = str(error) or type(error).__name__
+            semantic_result = UnflattenAuthorityNotApplicable(
                 route=transaction_api.UnflattenPlanRoute.ORDINARY
             )
-        )
+            self._projected_unflatten_timing = None
         if isinstance(semantic_result, UnflattenAuthorityNotApplicable):
             semantic_authority = None
             semantic_verdict = None
         elif isinstance(semantic_result, UnflattenAuthorityPreparationAccepted):
             semantic_authority = semantic_result.prepared
             semantic_verdict = semantic_result.verdict
+            if self.plan.legacy_unflatten_shadow is not None:
+                try:
+                    self._projected_legacy_outcome = _legacy_phase_outcome(
+                        UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                        semantic_authority.source_inventory,
+                        effectful_reachability_raw,
+                        entry_allowance,
+                    )
+                except (TypeError, ValueError) as error:
+                    self._shadow_parity_error = str(error)
+            if self.plan.legacy_unflatten_shadow is not None:
+                try:
+                    self._legacy_shadow_receipt = transaction_api.adapt_plan_legacy_shadow(
+                        source=snapshot, prepared=semantic_result.prepared,
+                    )
+                except (TypeError, ValueError):
+                    # Keep the legacy decision unchanged, but retain the
+                    # adaptation failure for the owner diagnostic boundary.
+                    self._legacy_shadow_receipt = None
+                    self._legacy_shadow_codec_error = "legacy shadow codec adaptation rejected"
         else:
             semantic_verdict = semantic_result.verdict
             semantic_authority = None
         if semantic_verdict is not None:
             from d810.hexrays.observability import observe_unflatten_authority_phase
             from d810.transforms.unflatten_authority.diagnostics import phase_observation
-
             observe_unflatten_authority_phase(
                 mba=self.mba,
                 verdict=semantic_verdict,
@@ -1000,11 +1114,22 @@ class HexRaysPatchTransactionParticipant:
                     semantic_verdict,
                     maturity=str(self.plan.source_maturity),
                     source_ea=int(snapshot.func_ea),
+                    timings=self._projected_unflatten_timing,
+                    codec_receipt=self._legacy_shadow_receipt,
+                    codec_error=self._legacy_shadow_codec_error,
+                    correlation=self.attempt_id,
+                    parity_error=self._shadow_parity_error,
                 ),),
             )
-        if not isinstance(semantic_result, UnflattenAuthorityPreparationAccepted) and not isinstance(
-            semantic_result, UnflattenAuthorityNotApplicable
-        ):
+        canonical_rejected = (
+            not isinstance(semantic_result, UnflattenAuthorityPreparationAccepted)
+            and not isinstance(semantic_result, UnflattenAuthorityNotApplicable)
+        )
+        if canonical_rejected and self.plan.legacy_unflatten_shadow is not None:
+            self._legacy_shadow_codec_error = (
+                "canonical projected authority rejected before shadow receipt"
+            )
+        if canonical_rejected and self.plan.legacy_unflatten_shadow is None:
             raise PatchTransactionPreflightRejected(
                 "projected unflatten authority rejected",
                 unflatten_verdict=semantic_verdict,
@@ -1024,6 +1149,9 @@ class HexRaysPatchTransactionParticipant:
             plan=self.plan,
             unflatten_authority=semantic_authority,
             projected_unflatten_verdict=semantic_verdict,
+            projected_unflatten_timing=self._projected_unflatten_timing,
+            legacy_shadow_receipt=self._legacy_shadow_receipt,
+            legacy_shadow_codec_error=self._legacy_shadow_codec_error,
         )
         self.gateway._record_cfg_preflighted()
         self._prepared = prepared
@@ -1055,18 +1183,40 @@ class HexRaysPatchTransactionParticipant:
         bound_authority = None
         if prepared.unflatten_authority is not None:
             from d810.transforms.unflatten_authority import transaction_api
-            from d810.transforms.unflatten_authority.model import UnflattenAuthorityBindingAccepted
-
-            bind_result = transaction_api.bind_prepared_unflatten_authority(
-                prepared=prepared.unflatten_authority,
-                patch_binding=bound_plan,
+            from d810.transforms.unflatten_authority.model import (
+                UnflattenAuthorityBindingAccepted,
+                UnflattenAuthorityBindingRejected,
             )
-            if not isinstance(bind_result, UnflattenAuthorityBindingAccepted):
-                raise PatchTransactionPreflightRejected(
-                    "bound unflatten authority rejected",
-                    unflatten_verdict=bind_result.verdict,
+
+            try:
+                bind_result = transaction_api.bind_prepared_unflatten_authority(
+                    prepared=prepared.unflatten_authority,
+                    patch_binding=bound_plan,
                 )
-            bound_authority = bind_result.authority
+                if type(bind_result) not in (
+                    UnflattenAuthorityBindingAccepted,
+                    UnflattenAuthorityBindingRejected,
+                ):
+                    raise TypeError("canonical bind returned malformed outcome")
+            except Exception as error:
+                if self.plan.legacy_unflatten_shadow is None:
+                    raise
+                self._shadow_parity_error = str(error) or type(error).__name__
+                bind_result = None
+            if bind_result is None:
+                bound_authority = None
+            elif not isinstance(bind_result, UnflattenAuthorityBindingAccepted):
+                if self.plan.legacy_unflatten_shadow is None:
+                    raise PatchTransactionPreflightRejected(
+                        "bound unflatten authority rejected",
+                        unflatten_verdict=bind_result.verdict,
+                    )
+                self._shadow_parity_error = (
+                    "bound unflatten authority rejected: "
+                    f"{bind_result.verdict.reason}"
+                )
+            else:
+                bound_authority = bind_result.authority
         self.gateway.register_patch_plan_reservations(patch_binding.reservations)
         self.gateway._record_cfg_bound()
         bound = BoundPatchCfgTransaction(
@@ -1188,20 +1338,24 @@ class _PatchTransactionLifecycle:
         if source is None:
             raise RuntimeError("patch validation lacks immutable source authority")
         observed_validation_graph = observed
-        if self.bound.unflatten_authority is not None:
+        active_unflatten_authority = self.bound.unflatten_authority
+        if active_unflatten_authority is not None:
             from d810.transforms.unflatten_authority.transaction_api import (
                 revalidate_bound_patch_plan_against_prepared,
             )
 
             try:
                 revalidate_bound_patch_plan_against_prepared(
-                    self.bound.unflatten_authority.prepared,
+                    active_unflatten_authority.prepared,
                     self.bound.patch_binding,
                 )
             except (TypeError, ValueError) as error:
-                raise PatchTransactionPostObservationRejected(
-                    "observed bound authority changed before legacy replay"
-                ) from error
+                if self.plan.legacy_unflatten_shadow is None:
+                    raise PatchTransactionPostObservationRejected(
+                        "observed bound authority changed before legacy replay"
+                    ) from error
+                self.participant._shadow_parity_error = str(error)
+                active_unflatten_authority = None
         legacy_view = _legacy_plan_view(self.plan)
         projection = self.participant._projection
         if projection is None:
@@ -1216,7 +1370,7 @@ class _PatchTransactionLifecycle:
         # the exact transaction-bound origins; ordinary legacy plans retain
         # the compatibility canonicalizer until their later migration slice.
         if (
-            self.bound.unflatten_authority is None
+            active_unflatten_authority is None
             and _requires_observed_identity_canonicalization(self.plan)
         ):
             from d810.transforms.dispatcher_corridor_coverage import (
@@ -1386,10 +1540,11 @@ class _PatchTransactionLifecycle:
         # evaluator then scopes the allowance to its exact STORE relation;
         # this is deliberately not a serial/EA exclusion set.
         bound_claims = ()
-        if self.bound.unflatten_authority is not None:
-            bound_claims = self.bound.unflatten_authority.prepared.claims
+        if active_unflatten_authority is not None:
+            bound_claims = active_unflatten_authority.prepared.claims
         from d810.transforms.unflatten_authority.model import (
             LocalAliasEffectScalarizationClaim,
+            UnflattenAuthorityVerdict,
         )
         has_local_alias_claim = any(
             type(claim) is LocalAliasEffectScalarizationClaim
@@ -1434,7 +1589,17 @@ class _PatchTransactionLifecycle:
                     observed_coverage_validation
                 ),
             )
-        if self.bound.unflatten_authority is not None:
+        if self.plan.legacy_unflatten_shadow is not None and active_unflatten_authority is not None:
+            try:
+                self.participant._observed_legacy_outcome = _legacy_phase_outcome(
+                    UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+                    active_unflatten_authority.prepared.source_inventory,
+                    effectful_reachability_raw,
+                    observed_validation,
+                )
+            except (TypeError, ValueError) as error:
+                self.participant._shadow_parity_error = str(error)
+        if active_unflatten_authority is not None:
             from d810.transforms.unflatten_authority import transaction_api
             semantic_gates = GenericCfgGateBundle(
                 entry_reachability,
@@ -1443,31 +1608,84 @@ class _PatchTransactionLifecycle:
                 terminal_reachability,
             )
 
-            semantic_verdict = transaction_api.revalidate_observed_unflatten_authority(
-                authority=self.bound.unflatten_authority,
-                observed=observed_validation_graph,
-                observed_generation=int(self.gateway.generation),
-                generic_gates=semantic_gates,
-            )
-            self.participant._observed_unflatten_verdict = semantic_verdict
-            from d810.hexrays.observability import observe_unflatten_authority_phase
-            from d810.transforms.unflatten_authority.diagnostics import phase_observation
-
-            observe_unflatten_authority_phase(
-                mba=self.participant.mba,
-                verdict=semantic_verdict,
-                observation_factory=lambda: (phase_observation(
-                    semantic_verdict,
-                    maturity=str(self.plan.source_maturity),
-                    source_ea=int(observed.func_ea),
-                    projected_case=self.bound.unflatten_authority.prepared.projected_case,
-                ),),
-            )
-            if not semantic_verdict.accepted:
-                raise PatchTransactionPostObservationRejected(
-                    "observed unflatten authority rejected",
-                    unflatten_verdict=semantic_verdict,
+            try:
+                semantic_timed_result = transaction_api.revalidate_observed_unflatten_authority_timed(
+                    authority=active_unflatten_authority,
+                    observed=observed_validation_graph,
+                    observed_generation=int(self.gateway.generation),
+                    generic_gates=semantic_gates,
                 )
+                if not isinstance(
+                    semantic_timed_result, transaction_api.TimedUnflattenAuthorityResult
+                ):
+                    raise TypeError("canonical observed authority returned malformed outcome")
+                semantic_verdict = semantic_timed_result.result
+                if type(semantic_verdict) is not UnflattenAuthorityVerdict:
+                    raise TypeError("canonical observed authority returned malformed verdict")
+                self.participant._observed_unflatten_timing = semantic_timed_result.timings
+                self.participant._observed_unflatten_verdict = semantic_verdict
+            except Exception as error:
+                if self.plan.legacy_unflatten_shadow is None:
+                    raise
+                self.participant._shadow_parity_error = str(error) or type(error).__name__
+                active_unflatten_authority = None
+                semantic_verdict = None
+            if active_unflatten_authority is not None:
+                self.participant._observed_unflatten_verdict = semantic_verdict
+                parity_payload = None
+            if active_unflatten_authority is not None and (
+                self.participant._legacy_shadow_receipt is not None
+                and self.participant._projected_legacy_outcome is not None
+                and self.participant._observed_legacy_outcome is not None
+                and self.participant._projected_unflatten_verdict is not None
+                and self.participant._projected_unflatten_verdict.safety_case is not None
+                and semantic_verdict is not None
+                and semantic_verdict.safety_case is not None
+            ):
+                from d810.transforms.unflatten_authority.diagnostics import (
+                    compare_shadow_parity,
+                )
+                try:
+                    parity_payload = compare_shadow_parity(
+                        self.participant._projected_legacy_outcome,
+                        self.participant._projected_unflatten_verdict,
+                        self.participant._observed_legacy_outcome,
+                        semantic_verdict,
+                        projected_counters=ShadowParityCounters.from_case(
+                            self.participant._projected_unflatten_verdict.safety_case,
+                        ),
+                        observed_counters=ShadowParityCounters.from_case(
+                            semantic_verdict.safety_case,
+                        ),
+                        codec_receipt=self.participant._legacy_shadow_receipt,
+                    )
+                    self.participant._shadow_parity_payload = parity_payload
+                except Exception as error:
+                    self.participant._shadow_parity_error = str(error)
+            if active_unflatten_authority is not None:
+                from d810.hexrays.observability import observe_unflatten_authority_phase
+                from d810.transforms.unflatten_authority.diagnostics import phase_observation
+                observe_unflatten_authority_phase(
+                    mba=self.participant.mba,
+                    verdict=semantic_verdict,
+                    observation_factory=lambda: (phase_observation(
+                        semantic_verdict,
+                        maturity=str(self.plan.source_maturity),
+                        source_ea=int(observed.func_ea),
+                        timings=self.participant._observed_unflatten_timing,
+                        codec_receipt=self.participant._legacy_shadow_receipt,
+                        codec_error=self.participant._legacy_shadow_codec_error,
+                        parity_payload=parity_payload,
+                        parity_error=self.participant._shadow_parity_error,
+                        correlation=active_unflatten_authority.attempt_id,
+                        projected_case=active_unflatten_authority.prepared.projected_case,
+                    ),),
+                )
+                if not semantic_verdict.accepted and self.plan.legacy_unflatten_shadow is None:
+                    raise PatchTransactionPostObservationRejected(
+                        "observed unflatten authority rejected",
+                        unflatten_verdict=semantic_verdict,
+                    )
         post_projection = CfgProjection(
             plan_id=self.prepared.projection.plan_id,
             snapshot_id=self.prepared.projection.snapshot_id,
@@ -1510,6 +1728,11 @@ class _PatchTransactionLifecycle:
             ),
             projected_unflatten_verdict=self.participant._projected_unflatten_verdict,
             observed_unflatten_verdict=self.participant._observed_unflatten_verdict,
+            projected_unflatten_timing=self.participant._projected_unflatten_timing,
+            observed_unflatten_timing=self.participant._observed_unflatten_timing,
+            shadow_parity_payload=self.participant._shadow_parity_payload,
+            legacy_shadow_codec_error=self.participant._legacy_shadow_codec_error,
+            shadow_parity_error=self.participant._shadow_parity_error,
         )
 
     def fail(self, patch_plan: PatchPlan, error: Exception, phase: str) -> None:

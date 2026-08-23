@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import fields, replace
+from dataclasses import dataclass, fields, replace
 from time import perf_counter
+from time import perf_counter_ns
 import hashlib
 import re
 
@@ -50,6 +51,15 @@ from d810.transforms.unflatten_authority.gates import (
     GenericCfgGateBundle,
     validate_generic_cfg_gate_bundle,
 )
+from d810.transforms.unflatten_authority.legacy_codec import LegacyShadowCodecReceipt
+from d810.transforms.unflatten_authority.diagnostics import (
+    LegacyPhaseOutcome,
+    PhaseTimings,
+    ShadowParityCounters,
+    ShadowParityPayload,
+)
+
+
 from d810.transforms.unflatten_authority.ids import (
     _claim_factory,
     _subject_factory,
@@ -76,6 +86,41 @@ from .proposal import (
     validate_proposal,
     validate_shadow_for_plan,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class TimedUnflattenAuthorityResult:
+    """Compatibility envelope for owner integrations needing phase timings."""
+
+    result: (
+        model.UnflattenAuthorityNotApplicable
+        | model.UnflattenAuthorityPreparationAccepted
+        | model.UnflattenAuthorityPreparationRejected
+        | model.UnflattenAuthorityVerdict
+    )
+    timings: PhaseTimings
+
+    def __post_init__(self) -> None:
+        if type(self.result) not in (
+            model.UnflattenAuthorityNotApplicable,
+            model.UnflattenAuthorityPreparationAccepted,
+            model.UnflattenAuthorityPreparationRejected,
+            model.UnflattenAuthorityVerdict,
+        ):
+            raise TypeError("timed result is not a closed authority result")
+        if type(self.timings) is not PhaseTimings:
+            raise TypeError("timings must be PhaseTimings")
+
+
+@dataclass(slots=True)
+class _AuthorityTimingRecorder:
+    inventory_ms: float | None = None
+    binding_ms: float | None = None
+    evaluation_ms: float | None = None
+
+
+def _elapsed_ms(start_ns: int, end_ns: int) -> float:
+    return (end_ns - start_ns) / 1_000_000.0
 
 
 def _subject(kind, role, locator):
@@ -1395,7 +1440,7 @@ def derive_unflatten_preparation_inputs(
     )
 
 
-def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates):
+def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates, _timings=None):
     """Prepare one immutable projected authority case before mutation."""
     from .model import (
         UnflattenAuthorityPreparationAccepted,
@@ -1426,7 +1471,7 @@ def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic
     proposal = route.proposal
     candidate_fingerprint = None
     try:
-        build_started = perf_counter()
+        inventory_started_ns = perf_counter_ns()
         source_materialization = CanonicalRouteMaterialization.capture(
             source,
             generation=proposal.source_identity_catalog.generation,
@@ -1448,14 +1493,18 @@ def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic
             source_subjects=source_inventory.subjects,
             materialization=projected_materialization,
         )
+        inventory_ms = _elapsed_ms(inventory_started_ns, perf_counter_ns())
+        if _timings is not None:
+            _timings.inventory_ms = inventory_ms
         candidate_fingerprint = candidate_inventory.graph_fingerprint
         phase_build_metrics = model.PhaseBuildMetrics(
             model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, 1, 1,
-            max(0.0, perf_counter() - build_started) * 1000.0,
+            inventory_ms,
         )
         preparation_metrics = model.PreparationBuildMetrics(
             1, 1, phase_build_metrics.inventory_ms,
         )
+        binding_started_ns = perf_counter_ns()
         source_route_assessment = assess_canonical_route(
             source_materialization,
             proposal.route_evidence,
@@ -1486,12 +1535,17 @@ def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic
             inputs.source_inventory.bindings,
             inputs.candidate_inventory.bindings,
         ))
+        if _timings is not None:
+            _timings.binding_ms = _elapsed_ms(binding_started_ns, perf_counter_ns())
+        evaluation_started_ns = perf_counter_ns()
         case = build_semantic_case(
             authority_id=prepared_authority_id,
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
             inputs=inputs,
         )
         verdict = evaluate_case(case)
+        if _timings is not None:
+            _timings.evaluation_ms = _elapsed_ms(evaluation_started_ns, perf_counter_ns())
         if verdict.accepted:
             prepared = model.PreparedUnflattenAuthority(
                 authority_id=prepared_authority_id, route=route.route,
@@ -1525,6 +1579,33 @@ def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic
             candidate_fingerprint or _unavailable_candidate_fingerprint(plan.plan_id), None, (),
         )
         return UnflattenAuthorityPreparationRejected(verdict)
+
+
+def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic_gates):
+    return _prepare_unflatten_authority(
+        source=source, projection=projection, plan=plan,
+        attempt_id=attempt_id, generic_gates=generic_gates,
+    )
+
+
+def prepare_unflatten_authority_timed(
+    *, source, projection, plan, attempt_id, generic_gates,
+) -> TimedUnflattenAuthorityResult:
+    recorder = _AuthorityTimingRecorder()
+    result = _prepare_unflatten_authority(
+        source=source, projection=projection, plan=plan,
+        attempt_id=attempt_id, generic_gates=generic_gates,
+        _timings=recorder,
+    )
+    return TimedUnflattenAuthorityResult(
+        result,
+        PhaseTimings(
+            inventory_ms=recorder.inventory_ms,
+            binding_ms=recorder.binding_ms,
+            evaluation_ms=recorder.evaluation_ms,
+            total_authority_ms=None,
+        ),
+    )
 
 
 def revalidate_bound_patch_plan_against_prepared(
@@ -1699,8 +1780,8 @@ def bind_prepared_unflatten_authority(*, prepared, patch_binding):
         return UnflattenAuthorityBindingRejected(verdict)
 
 
-def revalidate_observed_unflatten_authority(
-    *, authority, observed, observed_generation, generic_gates,
+def _revalidate_observed_unflatten_authority(
+    *, authority, observed, observed_generation, generic_gates, _timings=None,
 ):
     """Revalidate a bound authority against the observed graph identity."""
     if type(authority) is not model.BoundUnflattenAuthority:
@@ -1719,6 +1800,7 @@ def revalidate_observed_unflatten_authority(
             None,
             (),
         )
+    binding_started_ns = perf_counter_ns()
     try:
         model.BoundUnflattenAuthority.__post_init__(authority)
         model.PreparedUnflattenAuthority.__post_init__(authority.prepared)
@@ -1730,6 +1812,7 @@ def revalidate_observed_unflatten_authority(
         )
     except (TypeError, ValueError, AttributeError):
         return _live_binding_failed_verdict()
+    pre_inventory_binding_ms = _elapsed_ms(binding_started_ns, perf_counter_ns())
     validated_prepared = authority.prepared
     validated_generation = authority.generation
     if observed_generation != validated_generation:
@@ -1744,7 +1827,7 @@ def revalidate_observed_unflatten_authority(
             None,
             (),
         )
-    build_started = perf_counter()
+    inventory_started_ns = perf_counter_ns()
     try:
         observed_materialization = CanonicalRouteMaterialization.capture(
             observed,
@@ -1770,10 +1853,14 @@ def revalidate_observed_unflatten_authority(
             None,
             (),
         )
+    inventory_ms = _elapsed_ms(inventory_started_ns, perf_counter_ns())
     phase_build_metrics = model.PhaseBuildMetrics(
         model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY, 0, 1,
-        max(0.0, perf_counter() - build_started) * 1000.0,
+        inventory_ms,
     )
+    if _timings is not None:
+        _timings.inventory_ms = inventory_ms
+    post_inventory_binding_started_ns = perf_counter_ns()
     observed_fingerprint = candidate_inventory.graph_fingerprint
     prepared_inputs = validated_prepared.source_inputs
     if prepared_inputs is None:
@@ -1799,6 +1886,11 @@ def revalidate_observed_unflatten_authority(
             source_route_assessment=source_route_assessment,
             candidate_route_assessment=observed_route_assessment,
         )
+        if _timings is not None:
+            _timings.binding_ms = (
+                pre_inventory_binding_ms
+                + _elapsed_ms(post_inventory_binding_started_ns, perf_counter_ns())
+            )
     except (TypeError, ValueError):
         return model.UnflattenAuthorityVerdict(
             False,
@@ -1811,13 +1903,45 @@ def revalidate_observed_unflatten_authority(
             None,
             (),
         )
+    evaluation_started_ns = perf_counter_ns()
     observed_case = build_semantic_case(
         authority_id=validated_prepared.authority_id,
         phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
         inputs=inputs,
     )
     verdict = evaluate_case(observed_case)
+    if _timings is not None:
+        _timings.evaluation_ms = _elapsed_ms(evaluation_started_ns, perf_counter_ns())
     return replace(verdict, binding_id=authority.binding_id)
+
+
+def revalidate_observed_unflatten_authority(
+    *, authority, observed, observed_generation, generic_gates,
+):
+    return _revalidate_observed_unflatten_authority(
+        authority=authority, observed=observed,
+        observed_generation=observed_generation, generic_gates=generic_gates,
+    )
+
+
+def revalidate_observed_unflatten_authority_timed(
+    *, authority, observed, observed_generation, generic_gates,
+) -> TimedUnflattenAuthorityResult:
+    recorder = _AuthorityTimingRecorder()
+    result = _revalidate_observed_unflatten_authority(
+        authority=authority, observed=observed,
+        observed_generation=observed_generation, generic_gates=generic_gates,
+        _timings=recorder,
+    )
+    return TimedUnflattenAuthorityResult(
+        result,
+        PhaseTimings(
+            inventory_ms=recorder.inventory_ms,
+            binding_ms=recorder.binding_ms,
+            evaluation_ms=recorder.evaluation_ms,
+            total_authority_ms=None,
+        ),
+    )
 
 
 def select_plan_route(plan: PatchPlan) -> PlanRouteResult:
@@ -1885,8 +2009,68 @@ def select_plan_route(plan: PatchPlan) -> PlanRouteResult:
     return UnflattenAuthorityNotApplicable(UnflattenPlanRoute.ORDINARY)
 
 
+def project_shadow_parity(
+    projected_legacy: LegacyPhaseOutcome,
+    projected_canonical: model.UnflattenAuthorityVerdict,
+    observed_legacy: LegacyPhaseOutcome,
+    observed_canonical: model.UnflattenAuthorityVerdict,
+    *,
+    projected_counters: ShadowParityCounters,
+    observed_counters: ShadowParityCounters,
+    codec_receipt: LegacyShadowCodecReceipt,
+) -> ShadowParityPayload:
+    """Project parity facts without changing the transaction decision.
+
+    Legacy remains decisive for the shadow release.  This facade only routes
+    already validated facts to the pure diagnostic comparator.
+    """
+
+    from .diagnostics import compare_shadow_parity
+    if type(codec_receipt) is not LegacyShadowCodecReceipt:
+        raise TypeError("codec_receipt must be LegacyShadowCodecReceipt")
+    return compare_shadow_parity(
+        projected_legacy,
+        projected_canonical,
+        observed_legacy,
+        observed_canonical,
+        projected_counters=projected_counters,
+        observed_counters=observed_counters,
+        codec_receipt=codec_receipt,
+    )
+
+
+compare_shadow_parity = project_shadow_parity
+
+
+def adapt_plan_legacy_shadow(*, source, prepared):
+    """Mint one codec receipt from the exact prepared plan shadow."""
+
+    from .legacy_codec import (
+        LegacyUnflattenDecodeContext,
+        adapt_legacy_unflatten_shadow,
+    )
+    if type(source) is not FlowGraph or type(prepared) is not model.PreparedUnflattenAuthority:
+        raise TypeError("shadow adaptation requires exact source and prepared authority")
+    plan = prepared.owning_plan
+    proposal = prepared.proposal
+    if plan.unflatten_proposal is not proposal:
+        raise ValueError("prepared proposal is not the owning plan proposal")
+    if plan.source_generation != prepared.source_generation:
+        raise ValueError("prepared source generation is not the owning plan generation")
+    refs = dict((serial, ref) for ref, serial in plan.source_coordinates)
+    context = LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, plan.source_generation,
+        tuple(sorted(refs.items())), proposal.route_evidence,
+        proposal.plan_inputs, proposal.use_def_witness, proposal,
+    )
+    return adapt_legacy_unflatten_shadow(plan, context=context)
+
+
 __all__ = [
     "select_plan_route", "derive_unflatten_preparation_inputs",
     "prepare_unflatten_authority",
     "bind_prepared_unflatten_authority", "revalidate_observed_unflatten_authority",
+    "project_shadow_parity", "compare_shadow_parity",
+    "TimedUnflattenAuthorityResult", "prepare_unflatten_authority_timed",
+    "revalidate_observed_unflatten_authority_timed", "adapt_plan_legacy_shadow",
 ]

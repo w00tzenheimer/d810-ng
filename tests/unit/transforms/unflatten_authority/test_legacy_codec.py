@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import inspect
+import copy
 from dataclasses import replace
 
 import pytest
@@ -120,6 +121,106 @@ def _without(payload, key):
     result = dict(payload)
     result.pop(key)
     return result
+
+
+def _real_full_shadow_fixture():
+    """Build one analyzer-shaped envelope covering every migrated family."""
+
+    from .helpers import exact_fixture
+    from d810.transforms.unflatten_authority import producer_api
+
+    source, route_base, exclusion, refs = exact_fixture()
+    proof = replace(
+        route_base.route_evidence.route_proofs[0],
+        diagnostic_provenance=route_base.route_evidence.route_proofs[0].diagnostic_provenance + (
+            ("source_kinds", "legacy"), ("fact_id", "legacy-fact"),
+        ),
+    )
+    route_evidence = replace(route_base.route_evidence, route_proofs=(proof,))
+    proposal = producer_api.build_proposal(
+        plan_id=route_base.plan_id,
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=1,
+        canonical_route_evidence=route_evidence,
+        selected_route_proof_ids=(proof.proof_id,),
+        exact_state_effect_exclusions=(exclusion,),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=route_base.plan_inputs.state_identity,
+        use_def_witness=route_base.use_def_witness,
+    )
+    catalog = proposal.source_identity_catalog.blocks
+
+    def anchor(serial):
+        block = catalog[serial]
+        return {"serial": serial, "ea": block.anchor_ea, "label": f"blk{serial}@0x{block.anchor_ea:x}"}
+
+    path = [anchor(0), anchor(2), anchor(1)]
+    corridor_row = {
+        "source": dict(path[0]), "state_merge": dict(path[0]),
+        "dispatcher_feeder": dict(path[-2]), "dispatcher": dict(path[-1]),
+        "path": [dict(item) for item in path],
+        "label": " -> ".join(item["label"] for item in path),
+    }
+    corridor = {
+        "function_ea": source.func_ea, "dispatcher": dict(path[-1]),
+        "completion_status": "pending_patch_application",
+        "planned_completion_status": "planned_dispatcher_corridors_covered",
+        "application_status": "pending", "full_unflattening_claim": False,
+        "enumeration_complete": True, "covered_corridors": [corridor_row],
+        "residual_corridors": [], "semantic_exclusions": [],
+    }
+    forecast = _codec().corridor_coverage_forecast_from_legacy_metadata(
+        corridor, proposal=proposal, block_refs_by_serial=refs,
+        source_function_ea=source.func_ea,
+    )
+    proposal = replace(proposal, corridor_coverage_forecast=forecast)
+    removal = {
+        "retired_infrastructure": tuple(
+            {
+                "role": "comparison_dispatcher" if serial == 0 else "comparison_corridor",
+                "anchor": {"serial": serial, "ea": catalog[serial].anchor_ea},
+                "retired": serial == 0,
+            }
+            for serial in (0, 1)
+        ),
+    }
+    removal_claim = _codec().retirement_claim_from_legacy_proof(
+        removal, proposal=proposal, block_refs_by_serial=refs,
+    )
+    proposal = replace(
+        proposal,
+        claims=tuple(sorted((*proposal.claims, removal_claim), key=lambda claim: claim.claim_id)),
+        retirement_catalog=removal_claim.retirement_catalog,
+    )
+    metadata = {
+        "concrete_state_route_provenance": [{
+            "site": "entry", "normalized_state": 7,
+            "target_handler": 2, "source_kinds": ("legacy",),
+        }],
+        "native_bound_transition_route_receipts": [{
+            "fact_id": "legacy-fact", "native_ea": 0x1000,
+            "native_ea_hex": "0x1000", "current_block": "blk0@0x1000",
+            "state": 7, "target": 2, "target_block": "blk2@0x3000",
+        }],
+        "dispatcher_corridor_coverage": corridor,
+        "full_unflattening_claim": False,
+        "unflatten_completion_status": "pending_patch_application",
+        "use_def_severance_audit": {
+            "function_ea": source.func_ea, "executed": True,
+            "fragment_atomic": True, "severance_count": 0, "violations": (),
+        },
+        "exact_state_branch_effect_exclusions": (exclusion.to_metadata(),),
+        "dispatcher_removal_preflight_proof": removal,
+    }
+    context = _codec().LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+        proposal.route_evidence, proposal.plan_inputs,
+        proposal.use_def_witness, proposal,
+    )
+    return proposal, context, metadata
 
 
 def test_legacy_corridor_metadata_converts_exact_analyzer_shape_and_statuses() -> None:
@@ -450,6 +551,159 @@ def test_capture_pins_all_current_reserved_keys_and_preserves_ordinary_pairs() -
         entry.payload_sha256 == hashlib.sha256(entry.canonical_payload).hexdigest()
         for entry in shadow.entries
     )
+
+
+def test_shadow_codec_receipt_requires_each_reserved_key_exactly_once() -> None:
+    codec = _codec()
+    _cleaned, shadow = codec.capture_legacy_unflatten_shadow(
+        plan_id="plan", snapshot_id="snapshot", source_generation=3,
+        metadata=_metadata(),
+    )
+    assert shadow is not None
+    receipt = codec.LegacyShadowCodecReceipt(
+        shadow,
+        tuple(
+            codec.LegacyFamilyAdaptation(
+                entry.key, "fixture", (entry.key,),
+                entry.canonical_payload, entry.payload_sha256,
+            )
+            for entry in shadow.entries
+        ),
+    )
+    assert receipt.consumed_keys == tuple(sorted(LEGACY_UNFLATTEN_KEYS))
+    assert receipt.payloads[0][1] == shadow.entries[0].canonical_payload
+    with pytest.raises(ValueError, match="exactly once"):
+        codec.LegacyShadowCodecReceipt(
+            shadow,
+            tuple(
+                codec.LegacyFamilyAdaptation(
+                    entry.key, "fixture", (entry.key,),
+                    entry.canonical_payload, entry.payload_sha256,
+                )
+                for entry in shadow.entries[:-1]
+            ),
+        )
+
+
+def test_full_shadow_adapter_mints_receipt_for_all_eight_families_and_rejects_mutations() -> None:
+    codec = _codec()
+    proposal, context, metadata = _real_full_shadow_fixture()
+    _ordinary, shadow = codec.capture_legacy_unflatten_shadow(
+        plan_id=proposal.plan_id, snapshot_id="snapshot", source_generation=1,
+        metadata=tuple((key, copy.deepcopy(value)) for key, value in metadata.items()),
+    )
+    assert shadow is not None
+    receipt = codec.adapt_legacy_unflatten_shadow(shadow, context=context)
+    assert receipt.consumed_keys == tuple(sorted(LEGACY_UNFLATTEN_KEYS))
+    assert receipt.payloads == tuple(
+        (entry.key, entry.canonical_payload, entry.payload_sha256)
+        for entry in shadow.entries
+    )
+    subset = tuple(
+        (key, copy.deepcopy(metadata[key]))
+        for key in (
+            "dispatcher_corridor_coverage",
+            "dispatcher_removal_preflight_proof",
+        )
+    )
+    _ordinary, subset_shadow = codec.capture_legacy_unflatten_shadow(
+        plan_id=proposal.plan_id, snapshot_id="snapshot", source_generation=1,
+        metadata=subset,
+    )
+    assert subset_shadow is not None
+    subset_receipt = codec.adapt_legacy_unflatten_shadow(subset_shadow, context=context)
+    assert subset_receipt.consumed_keys == tuple(key for key, _value in subset)
+    exact_only = (
+        ("exact_state_branch_effect_exclusions", copy.deepcopy(metadata["exact_state_branch_effect_exclusions"])),
+    )
+    _ordinary, exact_shadow = codec.capture_legacy_unflatten_shadow(
+        plan_id=proposal.plan_id, snapshot_id="snapshot", source_generation=1,
+        metadata=exact_only,
+    )
+    assert exact_shadow is not None
+    exact_receipt = codec.adapt_legacy_unflatten_shadow(exact_shadow, context=context)
+    assert exact_receipt.consumed_keys == ("exact_state_branch_effect_exclusions",)
+
+    mutations = {
+        "concrete_state_route_provenance": lambda value: [{**value[0], "target_handler": 99}],
+        "native_bound_transition_route_receipts": lambda value: [{**value[0], "target": 99}],
+        "dispatcher_corridor_coverage": lambda value: {**value, "completion_status": "complete"},
+        "full_unflattening_claim": lambda _value: True,
+        "unflatten_completion_status": lambda _value: "complete",
+        "use_def_severance_audit": lambda value: {**value, "executed": False},
+        "exact_state_branch_effect_exclusions": lambda value: (
+            {**value[0], "normalized_state": value[0]["normalized_state"] + 1},
+        ),
+        "dispatcher_removal_preflight_proof": lambda value: {
+            **value,
+            "retired_infrastructure": tuple(
+                {**row, "retired": not row["retired"]}
+                for row in value["retired_infrastructure"]
+            ),
+        },
+    }
+    for key, mutate in mutations.items():
+        mutated = dict(metadata)
+        mutated[key] = mutate(mutated[key])
+        _ordinary, mutated_shadow = codec.capture_legacy_unflatten_shadow(
+            plan_id=proposal.plan_id, snapshot_id="snapshot", source_generation=1,
+            metadata=tuple((name, copy.deepcopy(value)) for name, value in mutated.items()),
+        )
+        assert mutated_shadow is not None
+        with pytest.raises((TypeError, ValueError), match="legacy|canonical|claim|coverage|proof|family"):
+            codec.adapt_legacy_unflatten_shadow(mutated_shadow, context=context)
+
+
+def test_full_shadow_adapter_uses_direct_sealed_family_adapters_once(monkeypatch) -> None:
+    codec = _codec()
+    proposal, context, metadata = _real_full_shadow_fixture()
+    _ordinary, shadow = codec.capture_legacy_unflatten_shadow(
+        plan_id=proposal.plan_id, snapshot_id="snapshot", source_generation=1,
+        metadata=tuple((key, copy.deepcopy(value)) for key, value in metadata.items()),
+    )
+    assert shadow is not None
+    from d810.transforms.unflatten_authority import legacy_codec
+    from d810.transforms.unflatten_authority import producer_api
+
+    monkeypatch.setattr(
+        producer_api, "build_proposal",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("shadow adaptation must not rebuild a proposal")
+        ),
+    )
+    route_calls = 0
+    exact_calls = 0
+    original_routes = legacy_codec.equivalent_route_claims_from_legacy_metadata
+    original_exact = legacy_codec.exact_state_branch_effect_exclusion_from_metadata
+
+    def wrapped_routes(*args, **kwargs):
+        nonlocal route_calls
+        route_calls += 1
+        return original_routes(*args, **kwargs)
+
+    def wrapped_exact(*args, **kwargs):
+        nonlocal exact_calls
+        exact_calls += 1
+        return original_exact(*args, **kwargs)
+
+    monkeypatch.setattr(
+        legacy_codec, "equivalent_route_claims_from_legacy_metadata", wrapped_routes,
+    )
+    monkeypatch.setattr(
+        legacy_codec, "exact_state_branch_effect_exclusion_from_metadata", wrapped_exact,
+    )
+    receipt = codec.adapt_legacy_unflatten_shadow(shadow, context=context)
+    route_entry_count = sum(
+        key in {
+            "concrete_state_route_provenance",
+            "native_bound_transition_route_receipts",
+        }
+        for key, _value in metadata.items()
+    )
+    exact_row_count = len(metadata["exact_state_branch_effect_exclusions"])
+    assert route_calls == route_entry_count
+    assert exact_calls == exact_row_count
+    assert receipt.consumed_keys == tuple(entry.key for entry in shadow.entries)
 
 
 def test_capture_rejects_duplicate_reserved_and_hostile_values() -> None:

@@ -3,11 +3,241 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
+import math
+from time import perf_counter_ns
 from d810.analyses.value_flow.observation import FactObservation
+from d810.transforms.cfg_transaction import TransactionAttemptId
 
 from . import model
+from .legacy_codec import LegacyShadowCodecReceipt
 from .views import ViewMetrics, observed_only_loss, semantic_loss_ledger
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowParityCounters:
+    source_inventory_builds: int
+    candidate_inventory_builds: int
+    index_folds: int
+    view_graph_traversals: int
+
+    def __post_init__(self) -> None:
+        for name in ("source_inventory_builds", "candidate_inventory_builds", "index_folds", "view_graph_traversals"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise TypeError(f"{name} must be a non-negative exact int")
+
+    @property
+    def tuple(self) -> tuple[int, int, int, int]:
+        return (self.source_inventory_builds, self.candidate_inventory_builds, self.index_folds, self.view_graph_traversals)
+
+    @classmethod
+    def from_case(cls, case: model.SemanticSafetyCase) -> "ShadowParityCounters":
+        if type(case) is not model.SemanticSafetyCase:
+            raise TypeError("case must be SemanticSafetyCase")
+        metrics = case.phase_metrics
+        # The source inventory is owned by preparation and reused by the
+        # observed phase.  The preparation receipt is the cumulative source
+        # build authority; phase-local metrics remain local work counters.
+        return cls(
+            metrics.preparation_metrics.source_inventory_builds,
+            metrics.candidate_inventory_builds,
+            metrics.index_folds,
+            metrics.view_graph_traversals,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyPhaseOutcome:
+    phase: model.UnflattenAuthorityPhase
+    accepted: bool
+    reason_scope: model.UnflattenAuthorityReason
+    anchored_losses: tuple[tuple[int, int], ...]
+
+    def __post_init__(self) -> None:
+        if type(self.phase) is not model.UnflattenAuthorityPhase:
+            raise TypeError("phase must be UnflattenAuthorityPhase")
+        if type(self.accepted) is not bool:
+            raise TypeError("accepted must be an exact bool")
+        if type(self.reason_scope) is not model.UnflattenAuthorityReason:
+            raise TypeError("reason_scope must be UnflattenAuthorityReason")
+        rows = tuple(self.anchored_losses)
+        if any(
+            type(row) is not tuple or len(row) != 2
+            or type(row[0]) is not int or type(row[1]) is not int
+            for row in rows
+        ):
+            raise TypeError("anchored_losses must contain (serial, ea) tuples")
+        if any(serial < 0 or ea < 0 for serial, ea in rows):
+            raise ValueError("anchored loss coordinates must be non-negative")
+        if rows != tuple(sorted(set(rows))):
+            raise ValueError("anchored_losses must be unique and canonical")
+        object.__setattr__(self, "anchored_losses", rows)
+
+    @property
+    def anchored_loss_labels(self) -> tuple[str, ...]:
+        return tuple(f"blk{serial}@0x{ea:x}" for serial, ea in self.anchored_losses)
+
+
+def _canonical_losses(verdict: model.UnflattenAuthorityVerdict) -> tuple[tuple[int, int], ...]:
+    case = verdict.safety_case
+    if case is None:
+        return ()
+    return tuple(sorted((row.source_serial, row.source_anchor_ea) for row in semantic_loss_ledger(case).rows))
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyCanonicalParityRow:
+    legacy: LegacyPhaseOutcome
+    canonical: model.UnflattenAuthorityVerdict
+    accepted_equal: bool
+    reason_equal: bool
+    losses_equal: bool
+
+    def __post_init__(self) -> None:
+        if type(self.legacy) is not LegacyPhaseOutcome or type(self.canonical) is not model.UnflattenAuthorityVerdict:
+            raise TypeError("parity row requires closed legacy and canonical outcomes")
+        if self.legacy.phase is not self.canonical.phase:
+            raise ValueError("legacy and canonical phases differ")
+        if (self.accepted_equal, self.reason_equal, self.losses_equal) != (
+            self.legacy.accepted == self.canonical.accepted,
+            self.legacy.reason_scope is self.canonical.reason,
+            self.legacy.anchored_losses == _canonical_losses(self.canonical),
+        ):
+            raise ValueError("parity row equality fields are not derived")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowParityPayload:
+    projected: LegacyCanonicalParityRow
+    observed: LegacyCanonicalParityRow
+    authority_id: str
+    projected_case_id: str | None
+    observed_case_id: str | None
+    projected_counters: ShadowParityCounters
+    observed_counters: ShadowParityCounters
+    codec_receipt: LegacyShadowCodecReceipt
+
+    def __post_init__(self) -> None:
+        if type(self.projected) is not LegacyCanonicalParityRow or type(self.observed) is not LegacyCanonicalParityRow:
+            raise TypeError("parity rows must be closed")
+        if type(self.authority_id) is not str or not self.authority_id:
+            raise TypeError("authority_id must be non-empty")
+        if self.projected.canonical.authority_id != self.authority_id or self.observed.canonical.authority_id != self.authority_id:
+            raise ValueError("parity authority IDs differ")
+        for row, case_id, label in (
+            (self.projected, self.projected_case_id, "projected"),
+            (self.observed, self.observed_case_id, "observed"),
+        ):
+            if row.canonical.accepted:
+                if type(case_id) is not str or not case_id:
+                    raise ValueError(f"accepted {label} parity requires a non-empty case ID")
+            elif case_id is not None and (type(case_id) is not str or not case_id):
+                raise ValueError(f"{label} case ID must be a non-empty string or None")
+            if row.canonical.case_id != case_id:
+                raise ValueError(f"{label} parity case ID is not canonical")
+        if (
+            self.projected_case_id is not None
+            and self.observed_case_id is not None
+            and self.projected_case_id == self.observed_case_id
+        ):
+            raise ValueError("projected and observed case IDs must be distinct")
+        if type(self.codec_receipt) is not LegacyShadowCodecReceipt:
+            raise TypeError("codec_receipt must be LegacyShadowCodecReceipt")
+        for name, counters in (("projected_counters", self.projected_counters), ("observed_counters", self.observed_counters)):
+            if type(counters) is not ShadowParityCounters:
+                raise TypeError(f"{name} must be ShadowParityCounters")
+
+    @property
+    def parity_ok(self) -> bool:
+        return (
+            self.projected.accepted_equal and self.projected.reason_equal
+            and self.projected.losses_equal and self.observed.accepted_equal
+            and self.observed.reason_equal and self.observed.losses_equal
+            and self.projected_counters.tuple == (1, 1, 1, 0)
+            and self.observed_counters.tuple == (1, 1, 1, 0)
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "schema": "unflatten_authority_shadow_parity.v2",
+            "authority_id": self.authority_id,
+            "case_ids": {"projected": self.projected_case_id, "observed": self.observed_case_id},
+            "projected": {"accepted_equal": self.projected.accepted_equal, "reason_equal": self.projected.reason_equal, "losses_equal": self.projected.losses_equal},
+            "observed": {"accepted_equal": self.observed.accepted_equal, "reason_equal": self.observed.reason_equal, "losses_equal": self.observed.losses_equal},
+            "legacy_anchored_loss_labels": {
+                "projected": self.projected.legacy.anchored_loss_labels,
+                "observed": self.observed.legacy.anchored_loss_labels,
+            },
+            "counters": {"projected": self.projected_counters.tuple, "observed": self.observed_counters.tuple},
+            "codec": {
+                "captured_keys": self.codec_receipt.consumed_keys,
+                "adaptations": tuple({
+                    "key": item.key,
+                    "family": item.family,
+                    "result_ids": item.result_ids,
+                    "payload_sha256": item.payload_sha256,
+                } for item in self.codec_receipt.adaptations),
+                "all_adapted": len(self.codec_receipt.adaptations) == len(self.codec_receipt.shadow.entries),
+            },
+            "parity_ok": self.parity_ok,
+        }
+
+
+def compare_shadow_parity(
+    projected_legacy: LegacyPhaseOutcome,
+    projected_canonical: model.UnflattenAuthorityVerdict,
+    observed_legacy: LegacyPhaseOutcome,
+    observed_canonical: model.UnflattenAuthorityVerdict,
+    *,
+    projected_counters: ShadowParityCounters,
+    observed_counters: ShadowParityCounters,
+    codec_receipt: LegacyShadowCodecReceipt,
+) -> ShadowParityPayload:
+    """Compare legacy and canonical facts independently for each phase."""
+
+    projected = LegacyCanonicalParityRow(
+        projected_legacy, projected_canonical,
+        projected_legacy.accepted == projected_canonical.accepted,
+        projected_legacy.reason_scope is projected_canonical.reason,
+        projected_legacy.anchored_losses == _canonical_losses(projected_canonical),
+    )
+    observed = LegacyCanonicalParityRow(
+        observed_legacy, observed_canonical,
+        observed_legacy.accepted == observed_canonical.accepted,
+        observed_legacy.reason_scope is observed_canonical.reason,
+        observed_legacy.anchored_losses == _canonical_losses(observed_canonical),
+    )
+    if projected_canonical.authority_id is None or observed_canonical.authority_id != projected_canonical.authority_id:
+        raise ValueError("parity authority IDs differ")
+    return ShadowParityPayload(
+        projected, observed, projected_canonical.authority_id,
+        projected_canonical.case_id, observed_canonical.case_id,
+        projected_counters, observed_counters, codec_receipt,
+    )
+
+
+project_shadow_parity = compare_shadow_parity
+parity_projection = compare_shadow_parity
+
+
+def require_shadow_parity(payload: ShadowParityPayload) -> None:
+    """Raise for a diagnostic mismatch at an explicit owner/test boundary."""
+
+    if type(payload) is not ShadowParityPayload:
+        raise TypeError("payload must be ShadowParityPayload")
+    for name, row in (("projected", payload.projected), ("observed", payload.observed)):
+        if not (row.accepted_equal and row.reason_equal and row.losses_equal):
+            raise ValueError(
+                f"{name} legacy/canonical parity mismatch: "
+                f"accepted={row.accepted_equal}, reason={row.reason_equal}, "
+                f"losses={row.losses_equal}"
+            )
+    if payload.projected_counters.tuple != (1, 1, 1, 0) or payload.observed_counters.tuple != (1, 1, 1, 0):
+        raise ValueError(
+            "shadow parity counter mismatch: "
+            f"projected={payload.projected_counters.tuple}, "
+            f"observed={payload.observed_counters.tuple}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,12 +245,21 @@ class PhaseTimings:
     """Closed timing values supplied by the transaction observer."""
 
     inventory_ms: float | None = None
+    binding_ms: float | None = None
+    evaluation_ms: float | None = None
+    views_ms: float | None = None
+    total_authority_ms: float | None = None
     observation_ms: float | None = None
 
     def __post_init__(self) -> None:
-        for name in ("inventory_ms", "observation_ms"):
+        for name in (
+            "inventory_ms", "binding_ms", "evaluation_ms", "views_ms",
+            "total_authority_ms", "observation_ms",
+        ):
             value = getattr(self, name)
-            if value is not None and (type(value) is not float or value < 0):
+            if value is not None and (
+                type(value) is not float or value < 0 or not math.isfinite(value)
+            ):
                 raise TypeError(f"{name} must be a non-negative float or None")
 
 
@@ -56,21 +295,11 @@ def _loss_row_payload(row: model.SemanticLossRow) -> dict[str, object]:
     }
 
 
-def build_phase_payload(
+def _phase_view_projection(
     verdict: model.UnflattenAuthorityVerdict,
-    views: ViewMetrics | None = None,
-    timings: PhaseTimings | None = None,
-    projected_case: model.SemanticSafetyCase | None = None,
-) -> dict[str, object]:
-    """Build one complete, typed payload from a canonical verdict."""
-
-    if type(verdict) is not model.UnflattenAuthorityVerdict:
-        raise TypeError("verdict must be UnflattenAuthorityVerdict")
+    projected_case: model.SemanticSafetyCase | None,
+) -> tuple[object, object, dict[str, str] | None]:
     case = verdict.safety_case
-    if projected_case is not None and type(projected_case) is not model.SemanticSafetyCase:
-        raise TypeError("projected_case must be SemanticSafetyCase or None")
-    if projected_case is not None and verdict.phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
-        raise ValueError("projected_case is only valid for observed diagnostics")
     ledger = None if case is None else semantic_loss_ledger(case)
     observed_delta = None
     observed_delta_rejection = None
@@ -81,6 +310,45 @@ def build_phase_payload(
             "code": "observed_case_missing",
             "reason": "observed_case_missing",
         }
+    return ledger, observed_delta, observed_delta_rejection
+
+
+def build_phase_payload(
+    verdict: model.UnflattenAuthorityVerdict,
+    views: ViewMetrics | None = None,
+    timings: PhaseTimings | None = None,
+    projected_case: model.SemanticSafetyCase | None = None,
+    codec_receipt: LegacyShadowCodecReceipt | None = None,
+    parity_payload: ShadowParityPayload | None = None,
+    codec_error: str | None = None,
+    parity_error: str | None = None,
+    correlation: TransactionAttemptId | None = None,
+    _view_projection: tuple[object, object, dict[str, str] | None] | None = None,
+) -> dict[str, object]:
+    """Build one complete, typed payload from a canonical verdict."""
+
+    if type(verdict) is not model.UnflattenAuthorityVerdict:
+        raise TypeError("verdict must be UnflattenAuthorityVerdict")
+    case = verdict.safety_case
+    if projected_case is not None and type(projected_case) is not model.SemanticSafetyCase:
+        raise TypeError("projected_case must be SemanticSafetyCase or None")
+    if projected_case is not None and verdict.phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        raise ValueError("projected_case is only valid for observed diagnostics")
+    if codec_receipt is not None and type(codec_receipt) is not LegacyShadowCodecReceipt:
+        raise TypeError("codec_receipt must be LegacyShadowCodecReceipt or None")
+    if codec_error is not None and (type(codec_error) is not str or not codec_error):
+        raise TypeError("codec_error must be a non-empty string or None")
+    if parity_error is not None and (type(parity_error) is not str or not parity_error):
+        raise TypeError("parity_error must be a non-empty string or None")
+    if parity_payload is not None and type(parity_payload) is not ShadowParityPayload:
+        raise TypeError("parity_payload must be ShadowParityPayload or None")
+    if correlation is not None and type(correlation) is not TransactionAttemptId:
+        raise TypeError("correlation must be TransactionAttemptId or None")
+    if parity_payload is not None and verdict.phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        raise ValueError("final parity is only valid for observed diagnostics")
+    if _view_projection is None:
+        _view_projection = _phase_view_projection(verdict, projected_case)
+    ledger, observed_delta, observed_delta_rejection = _view_projection
     states = () if case is None else tuple(
         {"subject": _subject_label(cell.key.subject), "dimension": cell.key.dimension.value, "state": cell.state.value}
         for cell in case.obligation_index.cells
@@ -90,6 +358,7 @@ def build_phase_payload(
         for binding in case.bindings
     )
     prep = None if case is None else case.phase_metrics.preparation_metrics
+    cumulative_counters = None if case is None else ShadowParityCounters.from_case(case)
     loss_ledger = () if ledger is None else tuple(_loss_row_payload(row) for row in ledger.rows)
     payload: dict[str, object] = {
         "schema": "unflatten_authority_phase.v1",
@@ -104,6 +373,7 @@ def build_phase_payload(
             else None if projected_case is None
             else projected_case.source_fingerprint
         ),
+        "generation": None if case is None else case.candidate_generation,
         "obligation_states": states,
         "failed_obligations": tuple({"subject": _subject_label(failed.key.subject), "dimension": failed.key.dimension.value, "state": failed.state.value} for failed in verdict.failed_obligations),
         "loss_ledger": loss_ledger,
@@ -115,7 +385,17 @@ def build_phase_payload(
         "coverage": () if case is None else tuple({"subject": item.key.subject.subject_id, "dimension": item.key.dimension.value, "state": item.state.value} for item in case.obligation_index.cells if item.key.dimension is model.SafetyDimension.CORRIDOR_COVERAGE),
         "evidence_ids": () if case is None else tuple(item.evidence_id for item in case.evidence),
         "justification_ids": () if case is None else tuple(item.justification_id for item in case.justifications),
-        "metrics": None if prep is None else {"source_inventory_builds": case.phase_metrics.phase_build_metrics.source_inventory_builds, "candidate_inventory_builds": case.phase_metrics.phase_build_metrics.candidate_inventory_builds, "inventory_ms": case.phase_metrics.phase_build_metrics.inventory_ms, "index_folds": case.phase_metrics.index_folds, "view_graph_traversals": case.phase_metrics.view_graph_traversals},
+        "metrics": None if prep is None else {
+            "source_inventory_builds": cumulative_counters.source_inventory_builds,
+            "candidate_inventory_builds": cumulative_counters.candidate_inventory_builds,
+            "inventory_ms": case.phase_metrics.phase_build_metrics.inventory_ms,
+            "index_folds": cumulative_counters.index_folds,
+            "view_graph_traversals": cumulative_counters.view_graph_traversals,
+            "local_phase_build": {
+                "source_inventory_builds": case.phase_metrics.phase_build_metrics.source_inventory_builds,
+                "candidate_inventory_builds": case.phase_metrics.phase_build_metrics.candidate_inventory_builds,
+            },
+        },
     }
     if views is not None:
         if type(views) is not ViewMetrics:
@@ -130,8 +410,36 @@ def build_phase_payload(
             raise TypeError("timings must be PhaseTimings")
         payload["timings"] = {
             "inventory_ms": timings.inventory_ms,
+            "binding_ms": timings.binding_ms,
+            "evaluation_ms": timings.evaluation_ms,
+            "views_ms": timings.views_ms,
+            "total_authority_ms": timings.total_authority_ms,
             "observation_ms": timings.observation_ms,
         }
+    if codec_receipt is not None:
+        payload["codec"] = {
+            "captured_keys": codec_receipt.consumed_keys,
+            "adaptations": tuple({
+                "key": item.key,
+                "family": item.family,
+                "result_ids": item.result_ids,
+                "payload_sha256": item.payload_sha256,
+            } for item in codec_receipt.adaptations),
+            "all_adapted": len(codec_receipt.adaptations) == len(codec_receipt.shadow.entries),
+        }
+    elif codec_error is not None:
+        payload["codec"] = {"all_adapted": False, "error": codec_error}
+    if parity_error is not None:
+        payload["parity_error"] = parity_error
+    if correlation is not None:
+        payload.update({
+            "plan_id": correlation.plan_id,
+            "attempt_id": correlation.attempt_id,
+            "session_id": correlation.session_id,
+            "generation": correlation.generation,
+        })
+    if parity_payload is not None:
+        payload["parity"] = parity_payload.to_payload()
     return payload
 
 
@@ -141,10 +449,49 @@ def phase_observation(
     timings: PhaseTimings | None = None,
     views: ViewMetrics | None = None,
     projected_case: model.SemanticSafetyCase | None = None,
+    codec_receipt: LegacyShadowCodecReceipt | None = None,
+    parity_payload: ShadowParityPayload | None = None,
+    codec_error: str | None = None,
+    parity_error: str | None = None,
+    correlation: TransactionAttemptId | None = None,
 ) -> FactObservation:
     """Build exactly one anchored observation for one authority phase."""
 
-    payload = build_phase_payload(verdict, views, timings, projected_case)
+    if parity_payload is not None and timings is None:
+        raise ValueError("final parity observation requires timings")
+    view_started_ns = perf_counter_ns()
+    view_projection = _phase_view_projection(verdict, projected_case)
+    views_ms = (perf_counter_ns() - view_started_ns) / 1_000_000.0
+    if timings is not None and timings.views_ms is None:
+        components = tuple(
+            value for value in (
+                timings.inventory_ms, timings.binding_ms,
+                timings.evaluation_ms, views_ms,
+            ) if value is not None
+        )
+        timings = PhaseTimings(
+            inventory_ms=timings.inventory_ms,
+            binding_ms=timings.binding_ms,
+            evaluation_ms=timings.evaluation_ms,
+            views_ms=views_ms,
+            total_authority_ms=sum(components),
+            observation_ms=timings.observation_ms,
+        )
+    payload_started_ns = perf_counter_ns()
+    payload = build_phase_payload(
+        verdict, views, timings, projected_case,
+        codec_receipt, parity_payload,
+        codec_error,
+        parity_error,
+        correlation,
+        _view_projection=view_projection,
+    )
+    if timings is not None and timings.observation_ms is None:
+        payload_timings = payload.get("timings")
+        if isinstance(payload_timings, dict):
+            payload_timings["observation_ms"] = (
+                perf_counter_ns() - payload_started_ns
+            ) / 1_000_000.0
     fact_id = verdict.case_id or f"plan:{verdict.authority_id}:precase-rejection"
     evidence = tuple(payload["evidence_ids"]) + tuple(payload["justification_ids"])
     return FactObservation(
@@ -156,4 +503,9 @@ def phase_observation(
     )
 
 
-__all__ = ["PhaseTimings", "build_phase_payload", "phase_observation"]
+__all__ = [
+    "LegacyPhaseOutcome", "LegacyCanonicalParityRow", "PhaseTimings",
+    "ShadowParityCounters", "ShadowParityPayload",
+    "build_phase_payload", "compare_shadow_parity", "parity_projection",
+    "project_shadow_parity", "require_shadow_parity", "phase_observation",
+]

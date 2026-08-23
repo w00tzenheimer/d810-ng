@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import re
 import sqlite3
 import time
@@ -25,8 +26,13 @@ import ida_bytes
 import idaapi
 import ida_hexrays
 import pytest
+from tests.system.e2e.unflattening_effect_safety_oracle import (
+    authority_oracle_marker_payload,
+)
 
 from tests.system.e2e.unflattening_effect_safety_oracle import (
+    AuthorityOracleEvidence,
+    parse_authority_phase_payloads,
     reachable_call_eas,
     require_distinct_native_eas,
     session_scoped_rows,
@@ -50,6 +56,13 @@ TARGET_SIZES = {
     # retains the semantic termination effect.
     "sub_7FF855576B50": 0x53D,
 }
+AUTHORITY_TARGETS = {
+    "sub_7FF8569F0540": "A",
+    "sub_7FF855576B50": "C",
+    "sub_7FF8568132D0": "B",
+}
+AUTHORITY_IMAGE = "idapro-9.4-speedups:latest"
+AUTHORITY_MARKER = "[UNFLATTEN-AUTHORITY-ORACLE] "
 
 
 def _session_window(
@@ -168,6 +181,80 @@ def _diagnostic_rows(
         assert isinstance(payload, dict), (kind, type(payload).__name__)
         decoded.append((str(kind), payload))
     return path, decoded
+
+
+def _authority_phase_payloads(
+    function_ea: int,
+    path: Path,
+    session_id: str,
+) -> AuthorityOracleEvidence:
+    """Select one session's phase facts; pure validation owns the contract."""
+    with sqlite3.connect(path) as conn:
+        started_at, finished_at = _session_window(conn, function_ea, session_id)
+        rows = conn.execute(
+            "SELECT f.payload FROM fact_observations f "
+            "JOIN snapshots s ON s.id=f.snapshot_id "
+            "WHERE f.func_ea_i64=? AND s.func_ea_i64=? "
+            "AND s.timestamp>=? AND s.timestamp<=? "
+            "AND f.kind='unflatten_authority_phase' ORDER BY f.rowid",
+            (int(function_ea), int(function_ea), started_at, finished_at),
+        ).fetchall()
+        attempt_rows = conn.execute(
+            "SELECT plan_id,attempt_id,current_phase,mutation_started,poisoned,session_id "
+            "FROM cfg_transaction_attempts WHERE func_ea_i64=? AND session_id=?",
+            (int(function_ea), str(session_id)),
+        ).fetchall()
+    payloads: list[dict] = []
+    for (raw_payload,) in rows:
+        payload = json.loads(raw_payload)
+        assert isinstance(payload, dict), type(payload).__name__
+        if payload.get("phase") in {"projected_preflight", "observed_post_apply"}:
+            payloads.append(payload)
+    try:
+        evidence = parse_authority_phase_payloads(payloads, expected_session_id=session_id)
+    except ValueError as exc:
+        pytest.fail(str(exc))
+    committed_attempts = {
+        (str(plan_id), str(attempt_id))
+        for plan_id, attempt_id, phase, mutation_started, poisoned, attempt_session in attempt_rows
+        if str(attempt_session) == str(session_id)
+        and str(phase) == "committed"
+        and int(mutation_started) == 1
+        and int(poisoned) == 0
+    }
+    assert (evidence.plan_id, evidence.attempt_id) in committed_attempts, (
+        "authority phase provenance is not a committed clean attempt: "
+        f"session={session_id!r} plan={evidence.plan_id!r} attempt={evidence.attempt_id!r}"
+    )
+    return evidence
+
+
+def _assert_authority_accepted(
+    function_ea: int,
+    path: Path,
+    session_id: str,
+) -> AuthorityOracleEvidence:
+    return _authority_phase_payloads(function_ea, path, session_id)
+
+
+def _emit_authority_oracle(
+    function: str,
+    function_ea: int,
+    path: Path,
+    session_id: str,
+    evidence: AuthorityOracleEvidence,
+) -> None:
+    target = AUTHORITY_TARGETS[function]
+    source = MASM_DIR / f"{function}.asm"
+    marker = authority_oracle_marker_payload(
+        target=target,
+        function=function,
+        function_ea=function_ea,
+        fixture_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        session_id=session_id,
+        evidence=evidence,
+    )
+    print(AUTHORITY_MARKER + json.dumps(marker, sort_keys=True))
 
 
 def _assert_committed_transaction(
@@ -688,6 +775,12 @@ class TestUnflatteningEffectSafetyDecompilation:
             function_ea,
             started_after=started_after,
         )
+        authority_rows = _assert_authority_accepted(
+            function_ea, path, session_id,
+        )
+        _emit_authority_oracle(
+            "sub_7FF8569F0540", function_ea, path, session_id, authority_rows,
+        )
         _assert_corridor_acceptance(function_ea, path, session_id)
         _assert_dispatcher_removal_proof_accepted(function_ea, path, session_id)
         _assert_exact_call_reachable(
@@ -752,6 +845,12 @@ class TestUnflatteningEffectSafetyDecompilation:
         path, committed, session_id = _assert_committed_transaction(
             function_ea,
             started_after=started_after,
+        )
+        authority_rows = _assert_authority_accepted(
+            function_ea, path, session_id,
+        )
+        _emit_authority_oracle(
+            "sub_7FF8568132D0", function_ea, path, session_id, authority_rows,
         )
         _assert_corridor_acceptance(function_ea, path, session_id)
         _assert_dispatcher_removal_proof_accepted(function_ea, path, session_id)
@@ -826,6 +925,12 @@ class TestUnflatteningEffectSafetyDecompilation:
         path, committed, session_id = _assert_committed_transaction(
             function_ea,
             started_after=started_after,
+        )
+        authority_rows = _assert_authority_accepted(
+            function_ea, path, session_id,
+        )
+        _emit_authority_oracle(
+            "sub_7FF855576B50", function_ea, path, session_id, authority_rows,
         )
         _assert_dispatcher_removal_proof_accepted(function_ea, path, session_id)
         _assert_exact_call_reachable(
