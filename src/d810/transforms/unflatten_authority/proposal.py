@@ -18,8 +18,14 @@ from d810.transforms.plan import (
 )
 
 from .model import (
+    BlockSubjectLocator,
+    CorridorSubjectLocator,
     LegacyUnflattenShadowEnvelope,
     ProposedUnflattenContract,
+    RetirementMemberCatalogRow,
+    RetiredDispatcherInfrastructureClaim,
+    SemanticSubjectRole,
+    UnflattenPlanShape,
     UnflattenAuthorityNotApplicable,
     UnflattenAuthorityReason,
     UnflattenPlanRoute,
@@ -28,6 +34,7 @@ from .producer_api import build_unflatten_plan_input_catalog
 from . import producer_api
 from .ids import content_id, validate_canonical_roundtrip
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
+from .legacy_keys import DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +44,71 @@ class RedirectStepManifest:
     steps: tuple[dict[str, object], ...]
     owner_refs: tuple[NativeBlockRef | LogicalBlockRef, ...]
     digest: str
+
+
+def retirement_member_catalog(
+    proposal: ProposedUnflattenContract,
+    claim: RetiredDispatcherInfrastructureClaim,
+) -> tuple[RetirementMemberCatalogRow, ...]:
+    """Validate and return all planned dispatcher members, retired or retained."""
+
+    if type(proposal) is not ProposedUnflattenContract:
+        raise TypeError("retirement catalog requires a closed proposal")
+    if type(claim) is not RetiredDispatcherInfrastructureClaim:
+        raise TypeError("retirement catalog requires a closed retirement claim")
+    source_catalog = {
+        item.block_ref: item for item in proposal.source_identity_catalog.blocks
+    }
+    plan_refs = tuple(proposal.plan_inputs.dispatcher_member_refs)
+    if not plan_refs:
+        raise ValueError("retirement plan has no dispatcher members")
+    if claim.source_generation != proposal.source_identity_catalog.generation:
+        raise ValueError("retirement claim generation differs from source catalog")
+    if proposal.retirement_catalog is None or claim.retirement_catalog != proposal.retirement_catalog:
+        raise ValueError("retirement claim is not bound to proposal catalog")
+    catalog_rows = {item.block_ref: item for item in proposal.retirement_catalog.members}
+    if claim.infrastructure_subject.block_ref != proposal.plan_inputs.dispatcher_entry_ref:
+        raise ValueError("retirement infrastructure subject is not the dispatcher entry")
+    corridor = claim.corridor_subject.locator
+    if type(corridor) is not CorridorSubjectLocator:
+        raise ValueError("retirement claim corridor locator is not closed")
+    entry = source_catalog.get(proposal.plan_inputs.dispatcher_entry_ref)
+    if entry is None:
+        raise ValueError("dispatcher entry is absent from source catalog")
+    catalog_order = tuple(item.block_ref for item in proposal.retirement_catalog.members)
+    if (
+        corridor.entry_ref != proposal.plan_inputs.dispatcher_entry_ref
+        or corridor.entry_anchor_ea != entry.anchor_ea
+        or tuple(corridor.member_refs) != catalog_order
+        or tuple(corridor.member_anchor_eas)
+        != tuple(source_catalog[ref].anchor_ea for ref in catalog_order)
+    ):
+        raise ValueError("retirement corridor is not the exact plan member catalog")
+    retired_by_ref = {member.block_ref: member for member in claim.member_subjects}
+    if len(retired_by_ref) != len(claim.member_subjects) or any(
+        ref not in plan_refs for ref in retired_by_ref
+    ):
+        raise ValueError("retirement members must be an exact plan-member subset")
+    rows: list[RetirementMemberCatalogRow] = []
+    for ref in plan_refs:
+        witness = source_catalog.get(ref)
+        if witness is None:
+            raise ValueError("dispatcher member is absent from source catalog")
+        member = retired_by_ref.get(ref)
+        exact_row = catalog_rows.get(ref)
+        if exact_row is None:
+            raise ValueError("retirement member is absent from exact catalog")
+        if member is not None:
+            if (
+                member.role is not SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+                or type(member.locator) is not BlockSubjectLocator
+                or member.anchor_ea != witness.anchor_ea
+            ):
+                raise ValueError("retirement member identity drifted from source catalog")
+        if exact_row.anchor_ea != witness.anchor_ea or exact_row.native_instruction_eas != witness.native_instruction_eas:
+            raise ValueError("retirement catalog native identity drifted")
+        rows.append(exact_row)
+    return tuple(rows)
 
 
 def _redirect_owner_sort_key(
@@ -218,6 +290,9 @@ def validate_proposal(
         validate_canonical_roundtrip(proposal, ProposedUnflattenContract)
         ProposedUnflattenContract.__post_init__(proposal)
         _validate_use_def_locator(plan, proposal)
+        for claim in proposal.claims:
+            if type(claim) is RetiredDispatcherInfrastructureClaim:
+                retirement_member_catalog(proposal, claim)
         source_blocks = proposal.source_identity_catalog.blocks
         if source_blocks and all(
             type(block.block_ref) is NativeBlockRef for block in source_blocks
@@ -410,6 +485,55 @@ def attach_typed_proposal(
         state_identity=state_identity,
         use_def_witness=use_def_witness,
     )
+    # Legacy retirement families are adapted once into the proposal-owned
+    # exact catalog.  The claim remains partial when the proof covers only a
+    # subset of planned members.
+    retirement_payload = plan.metadata_dict().get(
+        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA
+    )
+    retirement_family_keys = (
+        "retired_infrastructure", "retired_state_plumbing", "retired_corridor",
+    )
+    retirement_present = tuple(
+        key for key in retirement_family_keys
+        if isinstance(retirement_payload, dict)
+        and key in retirement_payload
+    )
+    if retirement_present:
+        from .legacy_codec import retirement_claim_from_legacy_proof
+
+        try:
+            if len(retirement_present) != 1:
+                raise ValueError("legacy retirement families are ambiguous")
+            transport = {retirement_present[0]: retirement_payload[retirement_present[0]]}
+            if "proof_ids" in retirement_payload:
+                transport["proof_ids"] = retirement_payload["proof_ids"]
+            claim = retirement_claim_from_legacy_proof(
+                transport,
+                proposal=proposal,
+                block_refs_by_serial=dict(block_refs_by_serial),
+            )
+            retired_refs = {member.block_ref for member in claim.member_subjects}
+            member_refs = set(proposal.plan_inputs.dispatcher_member_refs)
+            if retired_refs and retired_refs <= member_refs:
+                shape = (
+                    UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT
+                    if retired_refs == member_refs
+                    else UnflattenPlanShape.PARTIAL_REWRITE
+                )
+                proposal = replace(
+                    proposal,
+                    claims=tuple(sorted((*proposal.claims, claim), key=lambda item: item.claim_id)),
+                    plan_inputs=replace(
+                        proposal.plan_inputs,
+                        shape=shape,
+                    ),
+                    retirement_catalog=claim.retirement_catalog,
+                )
+        except (TypeError, ValueError) as exc:
+            # A supported retirement family is authority input once present;
+            # malformed rows fail closed instead of silently becoming a shadow.
+            raise ValueError("legacy retirement proof conversion failed") from exc
     from .legacy_codec import capture_legacy_unflatten_shadow
 
     cleaned, shadow = capture_legacy_unflatten_shadow(
@@ -442,6 +566,7 @@ __all__ = [
     "ShadowValidationResult",
     "TypedProposalRoute",
     "reserved_metadata_keys",
+    "retirement_member_catalog",
     "validate_proposal",
     "validate_shadow_for_plan",
     "attach_typed_proposal",

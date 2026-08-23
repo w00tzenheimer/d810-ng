@@ -14,7 +14,13 @@ from d810.analyses.control_flow.effect_branch_exclusion import (
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef
 from . import model, producer_api
-from .ids import canonical_bytes, semantic_graph_fingerprint, validate_canonical_roundtrip
+from .ids import (
+    _subject_factory,
+    canonical_bytes,
+    semantic_graph_fingerprint,
+    validate_canonical_roundtrip,
+)
+from .proposal import retirement_member_catalog
 
 
 def _canonical_digest(value: object, label: str) -> None:
@@ -42,6 +48,261 @@ def _validate_exact_result_authority(
         route_evidence=proposal.route_evidence,
         source_serial_by_ref=source_serial_by_ref,
     )
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class RetiredInfrastructureBindingResult:
+    """Bound retirement members, including exact retained-member rows."""
+
+    claim: model.RetiredDispatcherInfrastructureClaim
+    proposal: model.ProposedUnflattenContract
+    source_catalog: model.SourceIdentityCatalog
+    member_catalog: tuple[model.RetirementMemberCatalogRow, ...]
+    source_bindings: tuple[model.PhaseSubjectBinding, ...]
+    projected_bindings: tuple[model.PhaseSubjectBinding, ...]
+    generation: int
+    _content_seal: str = field(init=False, repr=False, compare=False)
+
+    def __new__(cls, *args: object, **kwargs: object):
+        raise TypeError("RetiredInfrastructureBindingResult can only be minted by bind_retired_dispatcher_infrastructure_claim")
+
+    @property
+    def claim_id(self) -> str:
+        return self.claim.claim_id
+
+    def _validate_fields(self) -> None:
+        if type(self.claim) is not model.RetiredDispatcherInfrastructureClaim:
+            raise TypeError("claim must be a closed retirement claim")
+        if type(self.proposal) is not model.ProposedUnflattenContract:
+            raise TypeError("proposal must be a closed proposal")
+        validate_canonical_roundtrip(self.claim, model.RetiredDispatcherInfrastructureClaim)
+        validate_canonical_roundtrip(self.proposal, model.ProposedUnflattenContract)
+        validate_canonical_roundtrip(self.source_catalog, model.SourceIdentityCatalog)
+        if self.claim not in self.proposal.claims:
+            raise ValueError("retirement claim is foreign to the proposal")
+        if self.generation != self.source_catalog.generation:
+            raise ValueError("retirement binding generation is stale")
+        expected = retirement_member_catalog(self.proposal, self.claim)
+        if tuple(self.member_catalog) != expected:
+            raise ValueError("retirement member catalog drifted after bind")
+        rows_by_ref = {row.block_ref: row for row in expected}
+        expected_subjects = {
+            item.block_ref: item for item in self.claim.member_subjects
+        }
+        source_by_id = {item.subject.subject_id: item for item in self.source_bindings}
+        projected_by_id = {item.subject.subject_id: item for item in self.projected_bindings}
+        expected_ids = {
+            expected_subjects.get(ref, _subject_factory(
+                model.SemanticSubjectRef,
+                kind=model.SemanticSubjectKind.BLOCK,
+                role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                block_ref=ref,
+                anchor_ea=row.anchor_ea,
+                locator=model.BlockSubjectLocator(ref, row.anchor_ea),
+            )).subject_id
+            for ref, row in rows_by_ref.items()
+        }
+        if set(source_by_id) != expected_ids or set(projected_by_id) != expected_ids:
+            raise ValueError("retirement binding rows do not cover the exact member catalog")
+        expected_order = tuple(sorted(expected_ids))
+        if (
+            tuple(item.subject.subject_id for item in self.source_bindings) != expected_order
+            or tuple(item.subject.subject_id for item in self.projected_bindings) != expected_order
+        ):
+            raise ValueError("retirement binding rows must preserve canonical subject order")
+        native_by_ref = (
+            {member.block_ref: member.native_instruction_eas
+             for member in self.proposal.retirement_catalog.members}
+            if self.proposal.retirement_catalog is not None else {}
+        )
+        for ref, row in rows_by_ref.items():
+            subject = expected_subjects.get(ref, _subject_factory(
+                model.SemanticSubjectRef,
+                kind=model.SemanticSubjectKind.BLOCK,
+                role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                block_ref=ref,
+                anchor_ea=row.anchor_ea,
+                locator=model.BlockSubjectLocator(ref, row.anchor_ea),
+            ))
+            source = source_by_id[subject.subject_id]
+            projected = projected_by_id[subject.subject_id]
+            if (
+                source.subject != subject
+                or
+                source.status is not model.SubjectBindingStatus.UNIQUE
+                or source.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+                or source.block_ref != ref
+                or source.anchor_ea != row.anchor_ea
+                or tuple(source.native_instruction_eas) != tuple(native_by_ref.get(ref, row.native_instruction_eas))
+                or source.generation != row.source_generation
+            ):
+                raise ValueError("retirement source binding is not catalog-bound")
+            expected_status = (
+                model.SubjectBindingStatus.MISSING if row.retired
+                else model.SubjectBindingStatus.UNIQUE
+            )
+            if (
+                projected.subject != subject
+                or projected.status is not expected_status
+                or projected.phase not in {
+                    model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                    model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+                }
+                or projected.generation != row.source_generation
+            ):
+                raise ValueError("projected retirement binding is not catalog-bound")
+            if expected_status is model.SubjectBindingStatus.UNIQUE and (
+                projected.block_ref != ref
+                or projected.anchor_ea != row.anchor_ea
+                or tuple(projected.native_instruction_eas) != tuple(native_by_ref[ref])
+            ):
+                raise ValueError("retained projected binding drifted from catalog")
+            if expected_status is model.SubjectBindingStatus.MISSING and (
+                projected.block_ref is not None
+                or projected.serial is not None
+                or projected.anchor_ea is not None
+                or projected.native_instruction_eas
+            ):
+                raise ValueError("retired projected binding is not an authorized missing row")
+
+
+def _retirement_binding_seal(result: RetiredInfrastructureBindingResult) -> str:
+    catalog_rows = tuple(
+        (
+            row.block_ref,
+            row.anchor_ea,
+            row.source_generation,
+            tuple(proof.proof_id for proof in row.proofs),
+        )
+        for row in result.member_catalog
+    )
+    return "sha256:" + hashlib.sha256(canonical_bytes((
+        result.claim, result.proposal, result.source_catalog,
+        catalog_rows, result.source_bindings,
+        result.projected_bindings, result.generation,
+    ))).hexdigest()
+
+
+def bind_retired_dispatcher_infrastructure_claim(
+    *,
+    claim: model.RetiredDispatcherInfrastructureClaim,
+    proposal: model.ProposedUnflattenContract,
+    source_serial_by_ref: Mapping[object, int] | None = None,
+    projected_serial_by_ref: Mapping[object, int] | None = None,
+    source_graph_fingerprint: str,
+    projected_graph_fingerprint: str,
+    generation: int,
+    phase: model.UnflattenAuthorityPhase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    projected_generation: int | None = None,
+    source_subject_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None,
+    projected_subject_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None,
+) -> RetiredInfrastructureBindingResult:
+    """Bind every planned member and require retained members to survive.
+
+    The projected map may omit only exact retired members.  No raw serial is
+    stored in the result's authority catalog; serials remain phase-local rows
+    on the returned bindings.
+    """
+
+    if type(claim) is not model.RetiredDispatcherInfrastructureClaim:
+        raise TypeError("retirement binding requires a closed retirement claim")
+    if type(proposal) is not model.ProposedUnflattenContract:
+        raise TypeError("retirement binding requires a closed proposal")
+    if claim not in proposal.claims:
+        raise ValueError("retirement claim is foreign to the proposal")
+    if type(phase) is not model.UnflattenAuthorityPhase:
+        raise TypeError("retirement binding phase must be an UnflattenAuthorityPhase")
+    if phase not in {
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    }:
+        raise ValueError("retirement binding phase must be projected or observed")
+    if projected_generation is None:
+        projected_generation = generation
+    if type(projected_generation) is not int or projected_generation < 0:
+        raise ValueError("retirement projected generation must be an exact non-negative int")
+    if projected_generation != generation:
+        raise ValueError("retirement projected generation differs from source authority")
+    if (source_subject_bindings is None) != (projected_subject_bindings is None):
+        raise ValueError("retirement source/projected bindings must be supplied together")
+    catalog_rows = retirement_member_catalog(proposal, claim)
+    catalog = proposal.source_identity_catalog
+    subjects_by_ref = {member.block_ref: member for member in claim.member_subjects}
+    subjects = []
+    for row in catalog_rows:
+        subject = subjects_by_ref.get(row.block_ref)
+        if subject is None:
+            subject = _subject_factory(
+                model.SemanticSubjectRef,
+                kind=model.SemanticSubjectKind.BLOCK,
+                role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                block_ref=row.block_ref,
+                anchor_ea=row.anchor_ea,
+                locator=model.BlockSubjectLocator(row.block_ref, row.anchor_ea),
+            )
+        subjects.append(subject)
+    if source_subject_bindings is not None:
+        for label, bindings in (
+            ("source_subject_bindings", source_subject_bindings),
+            ("projected_subject_bindings", projected_subject_bindings),
+        ):
+            if type(bindings) is not tuple or any(
+                type(binding) is not model.PhaseSubjectBinding for binding in bindings
+            ):
+                raise TypeError(f"{label} must be an exact tuple of PhaseSubjectBinding values")
+        source_bindings = source_subject_bindings
+        projected_bindings = projected_subject_bindings
+        for binding in source_bindings:
+            if (
+                binding.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+                or binding.graph_fingerprint != source_graph_fingerprint
+                or binding.generation != generation
+            ):
+                raise ValueError("retirement source binding disagrees with explicit authority fields")
+        for binding in projected_bindings:
+            if (
+                binding.phase is not phase
+                or binding.graph_fingerprint != projected_graph_fingerprint
+                or binding.generation != projected_generation
+            ):
+                raise ValueError("retirement candidate binding disagrees with explicit authority fields")
+    else:
+        if type(source_serial_by_ref) is not dict or type(projected_serial_by_ref) is not dict:
+            raise TypeError("retirement serial maps must be exact dicts")
+        catalog_refs = {item.block_ref for item in proposal.source_identity_catalog.blocks}
+        plan_refs = set(proposal.plan_inputs.dispatcher_member_refs)
+        if set(source_serial_by_ref) != catalog_refs:
+            raise ValueError("retirement source serial map is not the exact source catalog")
+        if not set(projected_serial_by_ref) <= plan_refs:
+            raise ValueError("retirement projected serial map contains an extra member")
+        if len(set(source_serial_by_ref.values())) != len(source_serial_by_ref):
+            raise ValueError("retirement source serial map is ambiguous")
+        if len(set(projected_serial_by_ref.values())) != len(projected_serial_by_ref):
+            raise ValueError("retirement projected serial map is ambiguous")
+        source_bindings = bind_source_subjects(
+            tuple(subjects), catalog=catalog,
+            phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+            graph_fingerprint=source_graph_fingerprint,
+            generation=generation,
+            serial_by_ref=source_serial_by_ref,
+        )
+        projected_bindings = bind_projected_subjects(
+            tuple(subjects), catalog=catalog,
+            phase=phase,
+            graph_fingerprint=projected_graph_fingerprint,
+            generation=projected_generation,
+            serial_by_ref=projected_serial_by_ref,
+        )
+    result = object.__new__(RetiredInfrastructureBindingResult)
+    for name, value in {
+        "claim": claim, "proposal": proposal, "source_catalog": catalog,
+        "member_catalog": catalog_rows, "source_bindings": source_bindings,
+        "projected_bindings": projected_bindings, "generation": generation,
+    }.items():
+        object.__setattr__(result, name, value)
+    object.__setattr__(result, "_content_seal", _retirement_binding_seal(result))
+    result._validate_fields()
+    return result
 
 
 @dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
@@ -835,13 +1096,28 @@ def _make_binding_entrypoint(graph_impl=_graph_bind_exact_effect_claim):
 
 
 bind_exact_effect_claim, validate_exact_effect_binding_result = _make_binding_entrypoint()
+
+
+def validate_retired_infrastructure_binding_result(
+    result: RetiredInfrastructureBindingResult,
+) -> None:
+    """Reject a retirement binding mutated after it was sealed."""
+
+    if type(result) is not RetiredInfrastructureBindingResult:
+        raise TypeError("retirement result must be closed")
+    if result._content_seal != _retirement_binding_seal(result):
+        raise ValueError("retirement binding content seal does not match")
+    result._validate_fields()
 del _make_binding_entrypoint
 del _graph_bind_exact_effect_claim
 
 
 __all__ = [
     "ExactEffectBindingResult",
+    "RetiredInfrastructureBindingResult",
+    "bind_retired_dispatcher_infrastructure_claim",
     "validate_exact_effect_binding_result",
+    "validate_retired_infrastructure_binding_result",
     "bind_subjects",
     "bind_source_subjects",
     "bind_projected_subjects",

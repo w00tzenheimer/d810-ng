@@ -21,6 +21,7 @@ from d810.transforms.plan import (
     PatchLowerConditionalStateTransition,
     PatchPlan,
     PatchRedirectBranch,
+    PatchRedirectGoto,
     PatchScalarizeLocalAliasAccess,
 )
 from d810.analyses.control_flow import semantic_route_evidence as route_model
@@ -611,6 +612,7 @@ def _receipt(
             ))
             if route_assessments else None
         ),
+        "retirement_catalog": proposal.retirement_catalog,
     }
     return model.PreparationAuthorityReceipt.mint(**values)
 
@@ -777,9 +779,17 @@ def _nominal_patch_lineage_parts(
 
     step_type = type(step)
     if step_type is PatchRedirectBranch:
-        owner = step.fallthrough_helper_block_id or step.from_serial
+        helper = step.fallthrough_helper_block_id
+        owners = (step.from_serial, helper) if helper is not None else (step.from_serial,)
         return (
-            (owner,),
+            owners,
+            (step.from_serial, step.old_target, step.new_target),
+            None,
+            None,
+        )
+    if step_type is PatchRedirectGoto:
+        return (
+            (step.from_serial,),
             (step.from_serial, step.old_target, step.new_target),
             None,
             None,
@@ -926,7 +936,7 @@ def _derive_patch_lineage_facts(
                         raise ValueError("patch-step reference belongs to a foreign plan")
                 elif ref not in source_refs:
                     raise ValueError("patch-step reference is foreign to the source plan")
-            if step_type in {"PatchLowerConditionalStateTransition", "PatchRedirectBranch"} and route_refs and not {
+            if step_type in {"PatchLowerConditionalStateTransition", "PatchRedirectGoto", "PatchRedirectBranch"} and route_refs and not {
                 ref for ref in refs if ref is not None
             } <= route_refs:
                 raise ValueError("patch-step source and destination refs are outside proposal route subjects")
@@ -1002,6 +1012,15 @@ def _derive_patch_lineage_relations(
     relations: list[model.ConditionalSubjectRelation] = []
     for fact in patch_step_facts:
         step = plan.steps[fact.step_index]
+        if (
+            type(step) is PatchRedirectBranch
+            and step.fallthrough_helper_block_id is not None
+            and type(fact.owner_ref) is not PlanBlockRef
+        ):
+            # The native source owner is carried as exact patch evidence for
+            # evaluator use-def projection, but helper lineage relations are
+            # established only by the helper-owned fact.
+            continue
         parts = _nominal_patch_lineage_parts(step)
         if parts is None:
             continue
@@ -1145,6 +1164,69 @@ def _derive_inputs(
         raise TypeError("candidate_inventory must be SemanticGraphInventory")
     model.validate_semantic_graph_inventory(source_inventory)
     model.validate_semantic_graph_inventory(candidate_inventory)
+    if phase in {
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    }:
+        for claim in proposal.claims:
+            if type(claim) is model.RetiredDispatcherInfrastructureClaim:
+                catalog_rows = claim.retirement_catalog.members
+                subjects_by_ref = {
+                    subject.block_ref: subject for subject in claim.member_subjects
+                }
+                exact_subjects = tuple(
+                    subjects_by_ref.get(row.block_ref, _subject_factory(
+                        model.SemanticSubjectRef,
+                        kind=model.SemanticSubjectKind.BLOCK,
+                        role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                        block_ref=row.block_ref,
+                        anchor_ea=row.anchor_ea,
+                        locator=model.BlockSubjectLocator(row.block_ref, row.anchor_ea),
+                    ))
+                    for row in catalog_rows
+                )
+                exact_subject_ids = {subject.subject_id for subject in exact_subjects}
+                source_retirement_bindings = tuple(
+                    binding for binding in source_inventory.bindings
+                    if binding.subject.subject_id in exact_subject_ids
+                )
+                projected_retirement_bindings = tuple(
+                    binding for binding in candidate_inventory.bindings
+                    if binding.subject.subject_id in exact_subject_ids
+                )
+                binding_result = authority_bind.bind_retired_dispatcher_infrastructure_claim(
+                    claim=claim, proposal=proposal,
+                    source_graph_fingerprint=source_inventory.graph_fingerprint,
+                    projected_graph_fingerprint=candidate_inventory.graph_fingerprint,
+                    generation=source_inventory.generation,
+                    phase=phase,
+                    projected_generation=candidate_generation
+                    if candidate_generation is not None else candidate_inventory.generation,
+                    source_subject_bindings=source_retirement_bindings,
+                    projected_subject_bindings=projected_retirement_bindings,
+                )
+                expected_source = {
+                    item.subject.subject_id: item
+                    for item in binding_result.source_bindings
+                }
+                actual_source = {
+                    item.subject.subject_id: item
+                    for item in source_inventory.bindings
+                    if item.subject.subject_id in expected_source
+                }
+                expected_projected = {
+                    item.subject.subject_id: item
+                    for item in binding_result.projected_bindings
+                }
+                actual_projected = {
+                    item.subject.subject_id: item
+                    for item in candidate_inventory.bindings
+                    if item.subject.subject_id in expected_projected
+                }
+                if actual_source != expected_source:
+                    raise ValueError("retirement binder result is not carried by source facts")
+                if actual_projected != expected_projected:
+                    raise ValueError("candidate retirement facts drifted from binder result")
     if type(phase_build_metrics) is not model.PhaseBuildMetrics:
         raise TypeError("phase_build_metrics must be PhaseBuildMetrics")
     model.validate_phase_build_metrics(phase_build_metrics)

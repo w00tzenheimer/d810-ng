@@ -30,6 +30,108 @@ class ExactEffectLossView:
     justification_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class RetiredInfrastructureView:
+    """Exact structural rows supported by one retirement claim."""
+
+    claim_id: str
+    retired_member_subject_ids: tuple[str, ...]
+    retained_member_subject_ids: tuple[str, ...]
+    structural_cell_keys: tuple[model.ObligationKey, ...]
+    justification_ids: tuple[str, ...]
+
+
+def retired_infrastructure_view(
+    case: model.SemanticSafetyCase, claim_id: str,
+) -> RetiredInfrastructureView:
+    """Project a retirement claim without widening it to corridor authority."""
+
+    _check_case(case)
+    if type(claim_id) is not str:
+        raise TypeError("claim ID must be an exact string")
+    claim = next(
+        (
+            item for item in case.claims
+            if type(item) is model.RetiredDispatcherInfrastructureClaim
+            and item.claim_id == claim_id
+        ),
+        None,
+    )
+    if claim is None:
+        raise ValueError("retirement claim is missing or ambiguous")
+    if case.retirement_catalog is None:
+        raise ValueError("case has no case-owned retirement catalog")
+    plan_refs = {item.block_ref for item in case.retirement_catalog.members}
+    retired = tuple(sorted(
+        member.subject_id for member in claim.member_subjects
+    ))
+    member_ids = {
+        subject.subject_id: subject
+        for subject in case.subjects
+        if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+        and subject.block_ref in plan_refs
+    }
+    retained = tuple(sorted(set(member_ids) - set(retired)))
+    structural = tuple(sorted(
+        (
+            cell.key for cell in case.obligation_index.cells
+            if cell.key.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
+            and cell.key.subject.subject_id in set(retired)
+        ),
+        key=lambda key: key.subject.subject_id,
+    ))
+    justifications = tuple(sorted(
+        item.justification_id for item in case.justifications
+        if item.claim_id == claim_id
+        and item.conclusion.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
+    ))
+    return RetiredInfrastructureView(
+        claim_id, retired, retained, structural, justifications,
+    )
+
+
+def retirement_rows(
+    case: model.SemanticSafetyCase, claim_id: str | None = None,
+) -> RetiredInfrastructureView:
+    """Project only exact case-owned retirement rows and satisfied cells."""
+
+    if claim_id is None:
+        retirement_ids = tuple(
+            item.claim_id for item in case.claims
+            if type(item) is model.RetiredDispatcherInfrastructureClaim
+        )
+        if len(retirement_ids) != 1:
+            raise ValueError("retirement rows require one unambiguous retirement claim")
+        claim_id = retirement_ids[0]
+    view = retired_infrastructure_view(case, claim_id)
+    ledger = semantic_loss_ledger(case)
+    cells = {
+        cell.key: cell for cell in case.obligation_index.cells
+    }
+    for subject_id in (*view.retired_member_subject_ids, *view.retained_member_subject_ids):
+        subject = next((item for item in case.subjects if item.subject_id == subject_id), None)
+        if subject is None:
+            raise ValueError("retirement row subject is absent from case")
+        cell = cells.get(model.ObligationKey(subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING))
+        if cell is None or cell.state is not model.ObligationState.SATISFIED:
+            raise ValueError("retirement row lacks a satisfied structural cell")
+        if subject_id in view.retired_member_subject_ids:
+            rows = tuple(row for row in ledger.rows if row.source_subject.subject_id == subject_id)
+            if len(rows) != 1 or rows[0].kind is not model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE:
+                raise ValueError("retired row lacks exact retirement ledger authority")
+            if {justification.claim_id for justification in rows[0].justifications
+                if justification.claim_id is not None} != {claim_id}:
+                raise ValueError("retired row lacks exact retirement claim justification")
+            if not any(
+                justification.rule is model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
+                and justification.conclusion == model.ObligationKey(subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+                and justification.claim_id == claim_id
+                for justification in rows[0].justifications
+            ):
+                raise ValueError("retired row lacks exact retirement proof rule")
+    return view
+
+
 def semantic_loss_ledger(case: model.SemanticSafetyCase) -> model.SemanticLossLedger:
     """Project the evaluator-owned case into its one canonical loss ledger."""
 
@@ -243,8 +345,8 @@ diagnostic_view = evidence_ids
 
 
 __all__ = [
-    "VIEW_GRAPH_TRAVERSALS", "ViewMetrics", "ExactEffectLossView", "obligation_states",
+    "VIEW_GRAPH_TRAVERSALS", "ViewMetrics", "ExactEffectLossView", "RetiredInfrastructureView", "obligation_states",
     "failed_obligations", "evidence_ids", "justification_ids", "view_metrics",
-    "exact_effect_loss_view", "semantic_loss_ledger", "observed_only_loss",
+    "exact_effect_loss_view", "retired_infrastructure_view", "retirement_rows", "semantic_loss_ledger", "observed_only_loss",
     "loss_view", "coverage_view", "diagnostic_view",
 ]

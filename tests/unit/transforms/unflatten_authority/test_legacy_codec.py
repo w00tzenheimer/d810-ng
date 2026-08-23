@@ -8,6 +8,7 @@ import inspect
 
 import pytest
 
+
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.transforms.cfg_transaction import LogicalBlockRef
 from d810.transforms.plan import PatchPlan
@@ -668,3 +669,36 @@ def test_shadow_model_and_plan_validation_reject_exactness_mutations() -> None:
     object.__setattr__(shadow.entries[0], "key", KeySubclass(shadow.entries[0].key))
     rejected = validate_shadow_for_plan(plan, shadow)
     assert rejected.detail_code == "shadow_invariants_invalid"
+
+
+def test_legacy_retirement_conversion_is_serial_free_and_exact() -> None:
+    from d810.transforms.unflatten_authority import model
+    from d810.transforms.unflatten_authority.legacy_codec import retirement_claim_from_legacy_proof
+    from .test_model import _valid_proposal
+
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    catalog = proposal.source_identity_catalog
+    refs = {7: catalog.blocks[0].block_ref, 11: catalog.blocks[1].block_ref, 23: catalog.blocks[2].block_ref}
+    payload = {
+        "retired_infrastructure": (
+            {"role": "comparison_dispatcher", "anchor": {"serial": 7, "ea": 0x1000}},
+            {"role": "comparison_corridor", "anchor": {"serial": 11, "ea": 0x1300}},
+        ),
+    }
+    claim = retirement_claim_from_legacy_proof(
+        payload, proposal=proposal, block_refs_by_serial=refs,
+    )
+    assert {subject.block_ref for subject in claim.member_subjects} == set(
+        proposal.plan_inputs.dispatcher_member_refs
+    )
+    assert all("serial" not in repr(subject.locator) for subject in claim.member_subjects)
+    for malformed in (
+            {"retired_infrastructure": payload["retired_infrastructure"] + (payload["retired_infrastructure"][0],)},
+        {"unknown": ()},
+        {"retired_infrastructure": [{"role": "unknown", "anchor": {"serial": 0, "ea": 0x1000}}]},
+        {"retired_infrastructure": [{"role": "comparison_dispatcher", "anchor": {"serial": 0, "ea": 0x1001}}]},
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            retirement_claim_from_legacy_proof(
+                malformed, proposal=proposal, block_refs_by_serial=refs,
+            )

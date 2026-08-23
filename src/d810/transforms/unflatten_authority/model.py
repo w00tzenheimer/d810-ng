@@ -42,6 +42,7 @@ from .ids import (
     authority_id,
     bound_unflatten_binding_id,
     canonical_bytes,
+    canonical_decode,
     validate_canonical_roundtrip,
     case_id,
     claim_id,
@@ -51,7 +52,7 @@ from .ids import (
     semantic_graph_inventory_digest,
 )
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
-from .legacy_wire import decode_legacy_value
+from .legacy_wire import decode_legacy_value, encode_legacy_value
 from .gates import GenericCfgGateFacts
 
 
@@ -142,6 +143,8 @@ def _structural_key(value: object):
         return ("str", value)
     if isinstance(value, int):
         return ("int", value)
+    if type(value) is bytes:
+        return ("bytes", value.hex())
     if type(value) is NativeBlockRef:
         identity = value.identity
         return (
@@ -389,6 +392,12 @@ class UnflattenPlanShape(str, Enum):
     FULL_DISPATCHER_RETIREMENT = "full_dispatcher_retirement"
 
 
+class RetirementProofFamily(str, Enum):
+    RETIRED_INFRASTRUCTURE = "retired_infrastructure"
+    RETIRED_STATE_PLUMBING = "retired_state_plumbing"
+    RETIRED_CORRIDOR = "retired_corridor"
+
+
 @dataclass(frozen=True, slots=True)
 class BlockSubjectLocator:
     block_ref: CfgBlockRef
@@ -513,10 +522,14 @@ class CorridorSubjectLocator:
         _id(self.corridor_id, "corridor_id")
         _cfg_ref(self.entry_ref, "entry_ref")
         object.__setattr__(self, "entry_anchor_ea", _ea(self.entry_anchor_ea, "entry_anchor_ea"))
-        pairs = _paired_tuples(
+        raw_pairs = _paired_tuples(
             self.member_refs, self.member_anchor_eas,
             "member_refs", "member_anchor_eas",
         )
+        # Corridor members share the same canonical authority-ref ordering as
+        # the case-owned retirement catalog.  Keep the ref/anchor association
+        # intact while using the canonical byte order for exact replay.
+        pairs = tuple(sorted(raw_pairs, key=lambda pair: canonical_bytes(pair[0])))
         for ref, ea in pairs:
             _cfg_ref(ref, "member_refs item")
             _ea(ea, "member_anchor_eas item")
@@ -1706,6 +1719,7 @@ class RetiredDispatcherInfrastructureClaim:
     member_subjects: tuple[SemanticSubjectRef, ...]
     retirement_proof_ids: tuple[str, ...]
     source_generation: int
+    retirement_catalog: RetirementAuthorityCatalog | None = None
 
     def __post_init__(self) -> None:
         _claim_common(self.claim_id, self.kind, UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE, self.source_generation)
@@ -1724,8 +1738,28 @@ class RetiredDispatcherInfrastructureClaim:
                 self.corridor_subject.locator.member_anchor_eas)
         )
         actual_members = tuple(_subject_block_pair(member) for member in members)
-        if set(actual_members) != set(expected_members):
-            raise ValueError("retirement members must match corridor members")
+        if self.retirement_catalog is None:
+            raise ValueError("retirement claims require an exact retirement catalog")
+        else:
+            if type(self.retirement_catalog) is not RetirementAuthorityCatalog:
+                raise TypeError("retirement_catalog must be RetirementAuthorityCatalog")
+            if self.retirement_catalog.source_generation != self.source_generation:
+                raise ValueError("retirement catalog generation differs from claim")
+            catalog_members = tuple(
+                (member.block_ref, member.anchor_ea)
+                for member in self.retirement_catalog.members
+            )
+            if catalog_members != expected_members:
+                raise ValueError("retirement catalog must match exact corridor member order")
+            retired_members = tuple(
+                (member.block_ref, member.anchor_ea)
+                for member in self.retirement_catalog.retired_members
+            )
+            if set(actual_members) != set(retired_members):
+                raise ValueError("retirement members must match retired catalog partition")
+            catalog_proof_ids = tuple(proof.proof_id for proof in self.retirement_catalog.proofs)
+            if proofs != tuple(sorted(catalog_proof_ids)):
+                raise ValueError("retirement proof IDs must match closed catalog proofs")
         if self.claim_id != claim_id(self):
             raise ValueError("claim_id does not match canonical claim content")
 
@@ -1987,6 +2021,244 @@ class SourceIdentityCatalog:
 
 
 @dataclass(frozen=True, slots=True)
+class RetirementProofRecord:
+    """Closed proof content attached to an exact retirement catalog row.
+
+    The proof ID is derived from the immutable payload digest and its ordered
+    member/anchor projection.  Callers therefore cannot mint an arbitrary
+    proof identifier and have it treated as retirement authority.
+    """
+
+    proof_id: str
+    family: RetirementProofFamily
+    canonical_payload: bytes
+    member_refs: tuple[NativeBlockRef | LogicalBlockRef, ...]
+    member_anchor_eas: tuple[int, ...]
+    source_generation: int
+    roles: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _id(self.proof_id, "proof_id")
+        _enum(self.family, RetirementProofFamily, "family")
+        if type(self.canonical_payload) is not bytes or not self.canonical_payload:
+            raise TypeError("canonical_payload must be non-empty exact bytes")
+        try:
+            decoded_payload = decode_legacy_value(self.canonical_payload)
+        except Exception as exc:
+            raise ValueError("canonical_payload must be valid legacy wire bytes") from exc
+        if type(decoded_payload) is not dict or set(decoded_payload) != {
+            "family", "source_generation", "members", "family_payload",
+        }:
+            raise ValueError("canonical_payload must be a closed retirement proof envelope")
+        if decoded_payload["family"] != self.family.value:
+            raise ValueError("retirement proof payload family disagrees with record")
+        if decoded_payload["source_generation"] != self.source_generation:
+            raise ValueError("retirement proof payload generation disagrees with record")
+        raw_members = decoded_payload["members"]
+        if type(raw_members) is not tuple:
+            raise ValueError("retirement proof payload members must preserve tuple order")
+        decoded_members = []
+        for raw_member in raw_members:
+            if type(raw_member) is not dict or set(raw_member) != {
+                "ref", "anchor_ea", "retired", "role",
+            }:
+                raise ValueError("retirement proof payload member is malformed")
+            if type(raw_member["ref"]) is not bytes:
+                raise ValueError("retirement proof payload ref is malformed")
+            if type(raw_member["anchor_ea"]) is not int or raw_member["anchor_ea"] < 0:
+                raise ValueError("retirement proof payload anchor is malformed")
+            if type(raw_member["retired"]) is not bool:
+                raise ValueError("retirement proof payload retired flag is malformed")
+            if type(raw_member["role"]) is not str or not raw_member["role"].strip():
+                raise ValueError("retirement proof payload role is malformed")
+            try:
+                ref = canonical_decode(raw_member["ref"])
+            except Exception as exc:
+                raise ValueError("retirement proof payload ref is not canonical") from exc
+            if type(ref) not in (NativeBlockRef, LogicalBlockRef):
+                raise ValueError("retirement proof payload ref is not an authority ref")
+            decoded_members.append((ref, raw_member["anchor_ea"], raw_member["retired"], raw_member["role"]))
+        if decoded_members != list(zip(self.member_refs, self.member_anchor_eas,
+                                       tuple(raw["retired"] for raw in raw_members), self.roles)):
+            raise ValueError("retirement proof payload members disagree with record")
+        family_payload = decoded_payload["family_payload"]
+        if type(family_payload) is not dict or set(family_payload) != {self.family.value}:
+            raise ValueError("retirement proof payload family content is malformed")
+        raw_rows = family_payload[self.family.value]
+        if type(raw_rows) is not tuple or len(raw_rows) != len(decoded_members):
+            raise ValueError("retirement proof family rows must preserve exact tuple order")
+        for raw_row, (_ref, anchor, retired, role) in zip(raw_rows, decoded_members):
+            if type(raw_row) is not dict or set(raw_row) != {"role", "anchor_ea", "retired"}:
+                raise ValueError("retirement proof family row is malformed")
+            if (
+                type(raw_row["role"]) is not str
+                or type(raw_row["anchor_ea"]) is not int
+                or raw_row["anchor_ea"] < 0
+                or type(raw_row["retired"]) is not bool
+            ):
+                raise ValueError("retirement proof family row has non-canonical fields")
+            if (
+                raw_row["role"] != role
+                or raw_row["anchor_ea"] != anchor
+                or raw_row["retired"] != retired
+            ):
+                raise ValueError("retirement proof family row disagrees with payload member")
+        if encode_legacy_value(decoded_payload) != self.canonical_payload:
+            raise ValueError("canonical_payload is not byte-canonical")
+        if type(self.member_refs) is not tuple:
+            raise TypeError("member_refs must be an exact tuple")
+        refs = self.member_refs
+        if not refs:
+            raise ValueError("retirement proof must cover at least one member")
+        for ref in refs:
+            _authority_ref(ref, "member_refs item")
+        if type(self.member_anchor_eas) is not tuple:
+            raise TypeError("member_anchor_eas must be an exact tuple")
+        anchors = self.member_anchor_eas
+        if len(anchors) != len(refs):
+            raise ValueError("retirement proof refs and anchors must be one-to-one")
+        for anchor in anchors:
+            _ea(anchor, "member_anchor_eas item")
+        if type(self.roles) is not tuple:
+            raise TypeError("roles must be an exact tuple")
+        roles = self.roles
+        if len(roles) != len(refs) or any(type(role) is not str or not role.strip() for role in roles):
+            raise ValueError("retirement proof roles must match ordered members")
+        allowed_roles = {
+            RetirementProofFamily.RETIRED_INFRASTRUCTURE: {
+                "comparison_dispatcher", "comparison_corridor", "dispatcher_feeder", "state_merge",
+            },
+            RetirementProofFamily.RETIRED_STATE_PLUMBING: {
+                "dispatcher_state_feeder", "dispatcher_state_merge", "state_normalizer",
+            },
+            RetirementProofFamily.RETIRED_CORRIDOR: {"comparison_corridor"},
+        }[self.family]
+        if any(role not in allowed_roles for role in roles):
+            raise ValueError("retirement proof role is not valid for its family")
+        _generation(self.source_generation, "source_generation")
+        if len(set(refs)) != len(refs):
+            raise ValueError("retirement proof member refs must be unique")
+        if len(set(anchors)) != len(anchors):
+            raise ValueError("retirement proof anchors must be unique")
+        object.__setattr__(self, "member_refs", refs)
+        object.__setattr__(self, "member_anchor_eas", anchors)
+        object.__setattr__(self, "roles", roles)
+        expected = authority_id(("unflatten.retirement-proof.v3", self.canonical_payload))
+        if self.proof_id != expected:
+            raise ValueError("proof_id does not match closed proof content")
+
+    @property
+    def content_digest(self) -> str:
+        return "sha256:" + hashlib.sha256(self.canonical_payload).hexdigest()
+
+    @property
+    def _decoded_retired_flags(self) -> tuple[bool, ...]:
+        decoded = decode_legacy_value(self.canonical_payload)
+        rows = decoded["family_payload"][self.family.value]
+        return tuple(row["retired"] for row in rows)
+
+
+@dataclass(frozen=True, slots=True)
+class RetirementMemberCatalogRow:
+    """One exact plan member, explicitly retired or retained."""
+
+    block_ref: NativeBlockRef | LogicalBlockRef
+    anchor_ea: int
+    native_instruction_eas: tuple[int, ...]
+    source_generation: int
+    retired: bool
+    proofs: tuple[RetirementProofRecord, ...] = ()
+
+    def __post_init__(self) -> None:
+        _authority_ref(self.block_ref, "block_ref")
+        _ea(self.anchor_ea, "anchor_ea")
+        eas = _tuple(self.native_instruction_eas, "native_instruction_eas")
+        if not eas or self.anchor_ea not in eas:
+            raise ValueError("retirement row must contain its anchor in native instruction EAs")
+        for ea in eas:
+            _ea(ea, "native_instruction_eas item")
+        _generation(self.source_generation, "source_generation")
+        if type(self.retired) is not bool:
+            raise TypeError("retired must be an exact bool")
+        proofs = _tuple(self.proofs, "proofs", sort=True)
+        if any(type(proof) is not RetirementProofRecord for proof in proofs):
+            raise TypeError("proofs must contain RetirementProofRecord values")
+        if not self.retired and proofs:
+            raise ValueError("retained retirement rows cannot carry retirement proofs")
+        for proof in proofs:
+            if self.block_ref not in proof.member_refs or self.anchor_ea not in proof.member_anchor_eas:
+                raise ValueError("retirement proof does not cover its catalog row")
+            if proof.source_generation != self.source_generation:
+                raise ValueError("retirement proof generation differs from catalog row")
+        object.__setattr__(self, "native_instruction_eas", eas)
+        object.__setattr__(self, "proofs", proofs)
+
+
+@dataclass(frozen=True, slots=True)
+class RetirementAuthorityCatalog:
+    """Canonical, case-owned exact retirement authority."""
+
+    catalog_id: str
+    source_generation: int
+    members: tuple[RetirementMemberCatalogRow, ...]
+    proofs: tuple[RetirementProofRecord, ...]
+
+    def __post_init__(self) -> None:
+        _id(self.catalog_id, "catalog_id")
+        _generation(self.source_generation, "source_generation")
+        members = _tuple(self.members, "members")
+        proofs = _tuple(self.proofs, "proofs", sort=True)
+        if not members:
+            raise ValueError("retirement catalog must not be empty")
+        if any(type(member) is not RetirementMemberCatalogRow for member in members):
+            raise TypeError("members must contain RetirementMemberCatalogRow values")
+        if any(type(proof) is not RetirementProofRecord for proof in proofs):
+            raise TypeError("proofs must contain RetirementProofRecord values")
+        if any(member.source_generation != self.source_generation for member in members):
+            raise ValueError("retirement catalog member generation mismatch")
+        if any(proof.source_generation != self.source_generation for proof in proofs):
+            raise ValueError("retirement catalog proof generation mismatch")
+        refs = tuple(member.block_ref for member in members)
+        if len(set(refs)) != len(refs):
+            raise ValueError("retirement catalog members must be unique")
+        if tuple(sorted(refs, key=canonical_bytes)) != refs:
+            raise ValueError("retirement catalog members must use canonical plan order")
+        proof_ids = {proof.proof_id for proof in proofs}
+        attached = {proof.proof_id for member in members for proof in member.proofs}
+        if attached != proof_ids:
+            raise ValueError("retirement catalog proof partition is not exact")
+        covered_refs = {ref for proof in proofs for ref in proof.member_refs}
+        if covered_refs != set(refs):
+            raise ValueError("retirement catalog proofs must cover every plan member")
+        decoded_partition: dict[NativeBlockRef | LogicalBlockRef, bool] = {}
+        for proof in proofs:
+            expected_proof_order = tuple(ref for ref in refs if ref in proof.member_refs)
+            if proof.member_refs != expected_proof_order:
+                raise ValueError("retirement proof members must preserve catalog order")
+            for ref, retired in zip(proof.member_refs, proof._decoded_retired_flags):
+                if ref in decoded_partition:
+                    raise ValueError("retirement proof partition contains duplicate members")
+                decoded_partition[ref] = retired
+        expected_partition = {member.block_ref: member.retired for member in members}
+        if decoded_partition != expected_partition:
+            raise ValueError("retirement proof partition does not equal catalog retirement flags")
+        expected = authority_id((
+            "unflatten.retirement-catalog.v1", self.source_generation,
+            members, proofs,
+        ))
+        if self.catalog_id != expected:
+            raise ValueError("catalog_id does not match exact retirement catalog")
+
+    @property
+    def retired_members(self) -> tuple[RetirementMemberCatalogRow, ...]:
+        return tuple(member for member in self.members if member.retired)
+
+    @property
+    def retained_members(self) -> tuple[RetirementMemberCatalogRow, ...]:
+        return tuple(member for member in self.members if not member.retired)
+
+
+@dataclass(frozen=True, slots=True)
 class AuthoritativeHandlerInput:
     block_ref: NativeBlockRef | LogicalBlockRef
     anchor_ea: int
@@ -2108,6 +2380,7 @@ class ProposedUnflattenContract:
     use_def_witness: UseDefFragmentWitness
     claims: tuple[ProducerUnflattenClaim, ...]
     plan_inputs: UnflattenPlanInputCatalog
+    retirement_catalog: RetirementAuthorityCatalog | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -2126,6 +2399,8 @@ class ProposedUnflattenContract:
             raise TypeError("use_def_witness must be UseDefFragmentWitness")
         if type(self.plan_inputs) is not UnflattenPlanInputCatalog:
             raise TypeError("plan_inputs must be UnflattenPlanInputCatalog")
+        if self.retirement_catalog is not None and type(self.retirement_catalog) is not RetirementAuthorityCatalog:
+            raise TypeError("retirement_catalog must be RetirementAuthorityCatalog or None")
         if (
             not self.use_def_witness.executed
             or not self.use_def_witness.fragment_atomic
@@ -2202,6 +2477,31 @@ class ProposedUnflattenContract:
             if type(claim) is RetiredDispatcherInfrastructureClaim
             for member in claim.member_subjects
         }
+        retirement_claims = tuple(
+            claim for claim in claims
+            if type(claim) is RetiredDispatcherInfrastructureClaim
+        )
+        if retirement_claims:
+            catalogs = tuple(claim.retirement_catalog for claim in retirement_claims)
+            if self.retirement_catalog is None or any(catalog != self.retirement_catalog for catalog in catalogs):
+                raise ValueError("retirement claims must share the proposal-owned catalog")
+            if set(retired_refs) != {
+                member.block_ref for member in self.retirement_catalog.retired_members
+            }:
+                raise ValueError("proposal retirement partition disagrees with catalog")
+            if {
+                member.block_ref for member in self.retirement_catalog.members
+            } != dispatcher_member_refs:
+                raise ValueError("proposal retirement catalog is not exact plan membership")
+            for member in self.retirement_catalog.members:
+                witness = catalog_by_ref.get(member.block_ref)
+                if witness is None or (
+                    member.anchor_ea != witness.anchor_ea
+                    or member.native_instruction_eas != witness.native_instruction_eas
+                ):
+                    raise ValueError("retirement catalog native identity drifted")
+        elif self.retirement_catalog is not None:
+            raise ValueError("proposal retirement catalog has no retirement claim")
         if not retired_refs <= dispatcher_member_refs:
             raise ValueError("retired refs must be a subset of dispatcher_member_refs")
         handler_refs = {
@@ -3233,6 +3533,7 @@ class PreparationAuthorityReceipt:
     metrics: PreparationBuildMetrics
     generic_gate_facts_digest: str | None = None
     route_assessment_digest: str | None = None
+    retirement_catalog: RetirementAuthorityCatalog | None = None
     # The receipt remains constructor-closed.  The transaction package uses
     # ``mint`` below after it has completed both inventory walks; callers
     # cannot provide either an ID or an authority token.
@@ -3260,6 +3561,8 @@ class PreparationAuthorityReceipt:
             value = getattr(self, name)
             if value is not None:
                 _id(value, name)
+        if self.retirement_catalog is not None and type(self.retirement_catalog) is not RetirementAuthorityCatalog:
+            raise TypeError("retirement_catalog must be RetirementAuthorityCatalog or None")
         _generation(self.source_generation, "source_generation")
         _generation(self.candidate_generation, "candidate_generation")
         if type(self.metrics) is not PreparationBuildMetrics:
@@ -3290,7 +3593,7 @@ class PreparationAuthorityReceipt:
                 "plan_input_digest", "dispatcher_member_digest",
                 "planned_helper_digest", "patch_step_digest",
                 "conditional_relation_digest", "metrics",
-                "generic_gate_facts_digest", "route_assessment_digest",
+                "generic_gate_facts_digest", "route_assessment_digest", "retirement_catalog",
             )
         }
         for name in ("generic_gate_facts_digest", "route_assessment_digest"):
@@ -3299,6 +3602,7 @@ class PreparationAuthorityReceipt:
                     _id(values[name], name)
             else:
                 values[name] = None
+        values.setdefault("retirement_catalog", None)
         if set(values) != required:
             raise TypeError("mint requires the complete preparation receipt inputs")
         instance = cls.__new__(cls)
@@ -3481,6 +3785,14 @@ class DerivedUnflattenPreparationInputs:
             raise TypeError("preparation_metrics must be PreparationBuildMetrics")
         if type(self.phase_build_metrics) is not PhaseBuildMetrics:
             raise TypeError("phase_build_metrics must be PhaseBuildMetrics")
+        has_retirement = any(
+            type(claim) is RetiredDispatcherInfrastructureClaim for claim in self.claims
+        )
+        if has_retirement:
+            if self.proposal.retirement_catalog is None or self.preparation_receipt.retirement_catalog != self.proposal.retirement_catalog:
+                raise ValueError("retirement preparation records must share the exact catalog")
+        elif self.proposal.retirement_catalog is not None or self.preparation_receipt.retirement_catalog is not None:
+            raise ValueError("retirement catalog is present without a retirement claim")
         validate_preparation_build_metrics(self.preparation_metrics)
         validate_phase_build_metrics(self.phase_build_metrics)
         PreparationAuthorityReceipt.__post_init__(self.preparation_receipt)
@@ -3539,6 +3851,7 @@ class SemanticSafetyCase:
     source_inventory: SemanticGraphInventory
     source_subject_ids: tuple[str, ...] = ()
     source_bindings: tuple[PhaseSubjectBinding, ...] = ()
+    retirement_catalog: RetirementAuthorityCatalog | None = None
 
     def __post_init__(self) -> None:
         _id(self.case_id, "case_id")
@@ -3547,6 +3860,16 @@ class SemanticSafetyCase:
         if type(self.preparation_receipt) is not PreparationAuthorityReceipt:
             raise TypeError("preparation_receipt must be PreparationAuthorityReceipt")
         PreparationAuthorityReceipt.__post_init__(self.preparation_receipt)
+        if self.retirement_catalog is not None and type(self.retirement_catalog) is not RetirementAuthorityCatalog:
+            raise TypeError("retirement_catalog must be RetirementAuthorityCatalog or None")
+        has_retirement = any(
+            type(claim) is RetiredDispatcherInfrastructureClaim for claim in self.claims
+        )
+        if has_retirement:
+            if self.retirement_catalog is None or self.preparation_receipt.retirement_catalog != self.retirement_catalog:
+                raise ValueError("retirement case records must share the exact catalog")
+        elif self.retirement_catalog is not None or self.preparation_receipt.retirement_catalog is not None:
+            raise ValueError("retirement catalog is present without a retirement claim")
         if self.preparation_receipt_id != self.preparation_receipt.receipt_id:
             raise ValueError("preparation_receipt_id does not match preparation_receipt")
         if self.preparation_receipt.source_fingerprint != self.source_fingerprint:

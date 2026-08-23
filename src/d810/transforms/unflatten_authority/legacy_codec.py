@@ -30,14 +30,26 @@ from .legacy_keys import (
 )
 from .legacy_wire import decode_legacy_value, encode_legacy_value
 from .model import (
+    BlockSubjectLocator,
+    CorridorSubjectLocator,
     LegacyShadowEntry,
     LegacyUnflattenShadowEnvelope,
     ProposedUnflattenContract,
+    RetirementAuthorityCatalog,
+    RetirementMemberCatalogRow,
+    RetirementProofFamily,
+    RetirementProofRecord,
+    RetiredDispatcherInfrastructureClaim,
+    SemanticSubjectRef,
+    SemanticSubjectKind,
+    SemanticSubjectRole,
+    UnflattenClaimKind,
     UnflattenAuthorityReason,
     UnflattenPlanRoute,
     UnflattenPlanInputCatalog,
     UseDefFragmentWitness,
 )
+from .ids import _claim_factory, _subject_factory, authority_id, canonical_bytes, content_id
 # Keep one owner for this set.  In particular, the exact-effect spelling is
 # imported through proposal.py from its producer rather than copied here.
 LEGACY_RESERVED_KEYS = LEGACY_UNFLATTEN_KEYS
@@ -195,6 +207,219 @@ def decode_legacy_canonical_payload(payload: bytes) -> object:
 # Descriptive aliases used by persistence adapters and tests.
 legacy_canonical_bytes = encode_legacy_value
 legacy_canonical_decode = decode_legacy_canonical_payload
+
+
+def retirement_claim_from_legacy_proof(
+    payload: object,
+    *,
+    proposal: ProposedUnflattenContract,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
+) -> RetiredDispatcherInfrastructureClaim:
+    """Convert one legacy retirement-proof family into a serial-free claim.
+
+    The legacy payload is transport only.  Serials are used to resolve the
+    captured anchors against the immutable source catalog and are discarded
+    before the returned claim is minted.  The adapter accepts the historical
+    preflight, interval-normalizer, state-transition, and comparison-corridor
+    spellings; every malformed, duplicate, unknown, or foreign row rejects.
+    """
+
+    if type(payload) is not dict:
+        raise ValueError("legacy retirement proof must be an exact mapping")
+    if type(proposal) is not ProposedUnflattenContract:
+        raise TypeError("legacy retirement conversion requires a closed proposal")
+    if type(block_refs_by_serial) is not dict:
+        raise TypeError("legacy retirement serial map must be an exact dict")
+    catalog = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+    if len(block_refs_by_serial) != len(catalog):
+        raise ValueError("legacy retirement serial map must cover the exact catalog")
+    if len(set(block_refs_by_serial.values())) != len(block_refs_by_serial):
+        raise ValueError("legacy retirement serial map contains duplicate refs")
+    if set(block_refs_by_serial.values()) != set(catalog):
+        raise ValueError("legacy retirement serial map must cover the exact catalog")
+    if any(
+        type(serial) is not int or serial < 0
+        or type(ref) not in (NativeBlockRef, LogicalBlockRef)
+        for serial, ref in block_refs_by_serial.items()
+    ):
+        raise ValueError("legacy retirement serial map contains a non-canonical row")
+    by_serial = dict(block_refs_by_serial)
+    if len(by_serial) != len(block_refs_by_serial):
+        raise ValueError("legacy retirement serial map contains duplicate serials")
+    by_anchor = {item.anchor_ea: item.block_ref for item in proposal.source_identity_catalog.blocks}
+
+    family_fields = (
+        "retired_infrastructure", "retired_state_plumbing", "retired_corridor",
+    )
+    if any(key not in (*family_fields, "proof_ids") for key in payload):
+        raise ValueError("legacy retirement proof contains an unknown field")
+    present = [field for field in family_fields if field in payload]
+    if len(present) != 1:
+        raise ValueError("legacy retirement proof family is missing or ambiguous")
+    raw_rows = payload[present[0]]
+    if type(raw_rows) is not tuple or not raw_rows:
+        raise ValueError("legacy retirement proof members must be an exact tuple")
+    rows: list[tuple[str, int, NativeBlockRef | LogicalBlockRef]] = []
+    declared_retired: dict[NativeBlockRef | LogicalBlockRef, bool] = {}
+    partitioned = False
+    seen: set[NativeBlockRef | LogicalBlockRef] = set()
+    family_roles = {
+        "retired_infrastructure": {
+            "comparison_dispatcher", "comparison_corridor", "dispatcher_feeder", "state_merge",
+        },
+        "retired_state_plumbing": {
+            "dispatcher_state_feeder", "dispatcher_state_merge", "state_normalizer",
+        },
+        "retired_corridor": {"comparison_corridor"},
+    }
+    for raw in raw_rows:
+        if type(raw) is not dict or set(raw) not in ({"role", "anchor"}, {"role", "anchor", "retired"}):
+            raise ValueError("legacy retirement proof member is malformed")
+        if "retired" in raw:
+            partitioned = True
+            if type(raw["retired"]) is not bool:
+                raise ValueError("legacy retirement proof retired flag is malformed")
+        role = raw["role"]
+        anchor = raw["anchor"]
+        if type(role) is not str or role not in family_roles[present[0]]:
+            raise ValueError("legacy retirement proof role is malformed")
+        if type(anchor) is not dict or set(anchor) != {"serial", "ea"}:
+            raise ValueError("legacy retirement proof anchor is malformed")
+        serial, ea = anchor["serial"], anchor["ea"]
+        if type(serial) is not int or serial < 0 or type(ea) is not int or ea < 0:
+            raise ValueError("legacy retirement proof anchor coordinates are malformed")
+        ref = by_serial.get(serial)
+        if ref is None or ref not in catalog:
+            raise ValueError("legacy retirement proof member is foreign")
+        if catalog[ref].anchor_ea != ea or by_anchor.get(ea) != ref:
+            raise ValueError("legacy retirement proof member anchor drifted")
+        if ref in seen:
+            raise ValueError("legacy retirement proof contains duplicate members")
+        seen.add(ref)
+        declared_retired[ref] = raw.get("retired", True)
+        rows.append((role, ea, ref))
+    plan_refs = tuple(proposal.plan_inputs.dispatcher_member_refs)
+    # Producer plan inputs are serial-canonical; retirement catalogs use the
+    # closed authority-ref order required by their canonical model boundary.
+    canonical_plan_refs = tuple(sorted(plan_refs, key=canonical_bytes))
+    if any(ref not in plan_refs for _role, _ea, ref in rows):
+        raise ValueError("legacy retirement proof member is outside the plan catalog")
+    if not rows:
+        raise ValueError("legacy retirement proof does not account for any plan member")
+    row_refs = tuple(ref for _role, _ea, ref in rows)
+    expected_order = tuple(ref for ref in canonical_plan_refs if ref in set(row_refs))
+    if row_refs != expected_order:
+        raise ValueError("legacy retirement proof member order is not canonical")
+    if partitioned and set(row_refs) != set(plan_refs):
+        raise ValueError("partitioned retirement proof must cover the full plan catalog")
+    retired_refs = {
+        ref for _role, _ea, ref in rows if declared_retired.get(ref, True)
+    }
+    entry_ref = proposal.plan_inputs.dispatcher_entry_ref
+    entry = catalog.get(entry_ref)
+    if entry is None:
+        raise ValueError("dispatcher entry is absent from source catalog")
+    member_subjects = tuple(
+        _subject_factory(
+            SemanticSubjectRef,
+            kind=SemanticSubjectKind.BLOCK,
+            role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+            block_ref=ref,
+            anchor_ea=ea,
+            locator=BlockSubjectLocator(ref, ea),
+        )
+        for _role, ea, ref in rows if ref in retired_refs
+    )
+    corridor = _subject_factory(
+        SemanticSubjectRef,
+        kind=SemanticSubjectKind.CORRIDOR,
+        role=SemanticSubjectRole.DISPATCHER_CORRIDOR,
+        block_ref=entry_ref,
+        anchor_ea=entry.anchor_ea,
+        locator=CorridorSubjectLocator(
+            content_id("unflatten.corridor.v1", plan_refs),
+            entry_ref,
+            entry.anchor_ea,
+            canonical_plan_refs,
+            tuple(catalog[ref].anchor_ea for ref in canonical_plan_refs),
+        ),
+    )
+    infrastructure = next(
+        (subject for subject in member_subjects if subject.block_ref == entry_ref),
+        _subject_factory(
+            SemanticSubjectRef,
+            kind=SemanticSubjectKind.BLOCK,
+            role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+            block_ref=entry_ref,
+            anchor_ea=entry.anchor_ea,
+            locator=BlockSubjectLocator(entry_ref, entry.anchor_ea),
+        ),
+    )
+    family = RetirementProofFamily(present[0])
+    # Legacy serials and proof IDs are transport-only.  The authority payload
+    # retains only closed family semantics after exact catalog resolution.
+    family_payload = {
+        present[0]: tuple({
+            "role": role,
+            "anchor_ea": ea,
+            "retired": declared_retired[ref],
+        } for role, ea, ref in rows),
+    }
+    canonical_payload = encode_legacy_value({
+        "family": family.value,
+        "source_generation": proposal.source_identity_catalog.generation,
+        "members": tuple({
+            "ref": canonical_bytes(ref),
+            "anchor_ea": ea,
+            "retired": declared_retired[ref],
+            "role": role,
+        } for role, ea, ref in rows),
+        "family_payload": family_payload,
+    })
+    proof = RetirementProofRecord(
+        proof_id=authority_id(("unflatten.retirement-proof.v3", canonical_payload)),
+        family=family, canonical_payload=canonical_payload,
+        member_refs=tuple(ref for _role, _ea, ref in rows),
+        member_anchor_eas=tuple(ea for _role, ea, _ref in rows),
+        source_generation=proposal.source_identity_catalog.generation,
+        roles=tuple(role for role, _ea, _ref in rows),
+    )
+    supplied_ids = payload.get("proof_ids")
+    if supplied_ids is not None:
+        if type(supplied_ids) is not tuple or supplied_ids != (proof.proof_id,):
+            raise ValueError("legacy retirement proof IDs are not content-authoritative")
+    rows_by_ref = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+    member_catalog = tuple(
+        RetirementMemberCatalogRow(
+            block_ref=ref,
+            anchor_ea=rows_by_ref[ref].anchor_ea,
+            native_instruction_eas=rows_by_ref[ref].native_instruction_eas,
+            source_generation=proposal.source_identity_catalog.generation,
+            retired=ref in retired_refs,
+            proofs=(proof,) if ref in retired_refs else (),
+        )
+        for ref in canonical_plan_refs
+    )
+    retirement_catalog = RetirementAuthorityCatalog(
+        catalog_id=authority_id((
+            "unflatten.retirement-catalog.v1",
+            proposal.source_identity_catalog.generation,
+            member_catalog, (proof,),
+        )),
+        source_generation=proposal.source_identity_catalog.generation,
+        members=member_catalog,
+        proofs=(proof,),
+    )
+    return _claim_factory(
+        RetiredDispatcherInfrastructureClaim,
+        kind=UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
+        infrastructure_subject=infrastructure,
+        corridor_subject=corridor,
+        member_subjects=member_subjects,
+        retirement_proof_ids=(proof.proof_id,),
+        source_generation=proposal.source_identity_catalog.generation,
+        retirement_catalog=retirement_catalog,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -804,5 +1029,6 @@ __all__ = [
     "decode_legacy_unflatten_contract",
     "legacy_canonical_bytes",
     "legacy_canonical_decode",
+    "retirement_claim_from_legacy_proof",
     "replay_legacy_unflatten_shadow",
 ]

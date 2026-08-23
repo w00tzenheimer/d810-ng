@@ -240,6 +240,283 @@ def test_inventory_site_family_swaps_are_typed_rejections() -> None:
         )
 
 
+def test_retirement_binding_requires_retained_members_and_seals_post_bind_mutation() -> None:
+    from dataclasses import replace
+
+    from d810.transforms.unflatten_authority.ids import authority_id
+    from d810.transforms.unflatten_authority import model
+    from d810.transforms.unflatten_authority.legacy_codec import retirement_claim_from_legacy_proof
+    from .test_model import _valid_proposal
+
+    base = model.ProposedUnflattenContract(**_valid_proposal(model))
+    catalog = base.source_identity_catalog
+    member_refs = base.plan_inputs.dispatcher_member_refs
+    refs = {index: item.block_ref for index, item in enumerate(catalog.blocks)}
+    claim = retirement_claim_from_legacy_proof(
+        {"retired_infrastructure": (
+            {"role": "comparison_dispatcher", "anchor": {"serial": 0, "ea": 0x1000}, "retired": True},
+            {"role": "comparison_dispatcher", "anchor": {"serial": 1, "ea": 0x1300}, "retired": False},
+        )},
+        proposal=base, block_refs_by_serial=refs,
+    )
+    proposal = replace(
+        base,
+        claims=(claim,),
+        plan_inputs=replace(base.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE),
+        retirement_catalog=claim.retirement_catalog,
+    )
+    from d810.transforms.unflatten_authority.bind import (
+        bind_retired_dispatcher_infrastructure_claim,
+        validate_retired_infrastructure_binding_result,
+    )
+
+    source_rows = {item.block_ref: index for index, item in enumerate(catalog.blocks)}
+    projected_rows = {member_refs[-1]: 0}
+    result = bind_retired_dispatcher_infrastructure_claim(
+        claim=claim, proposal=proposal,
+        source_serial_by_ref=source_rows,
+        projected_serial_by_ref=projected_rows,
+        source_graph_fingerprint=authority_id("source-retirement-bind"),
+        projected_graph_fingerprint=authority_id("projected-retirement-bind"),
+        generation=catalog.generation,
+    )
+    retained = next(
+        item for item in result.projected_bindings
+        if item.subject.block_ref == member_refs[-1]
+    )
+    assert retained.status is model.SubjectBindingStatus.UNIQUE
+    object.__setattr__(result, "generation", catalog.generation + 1)
+    with pytest.raises(ValueError, match="content seal|generation"):
+        validate_retired_infrastructure_binding_result(result)
+
+
+def test_retirement_binding_observed_phase_validates_exact_source_and_candidate_rows() -> None:
+    """Observed rebinding accepts only the exact catalog-correlated rows."""
+
+    from dataclasses import replace
+
+    from d810.transforms.unflatten_authority.legacy_codec import retirement_claim_from_legacy_proof
+    from d810.transforms.unflatten_authority.bind import bind_retired_dispatcher_infrastructure_claim
+
+    base = model.ProposedUnflattenContract(**_valid_proposal(model))
+    catalog = base.source_identity_catalog
+    refs = {index: item.block_ref for index, item in enumerate(catalog.blocks)}
+    claim = retirement_claim_from_legacy_proof(
+        {"retired_infrastructure": (
+            {"role": "comparison_dispatcher", "anchor": {"serial": 0, "ea": 0x1000}, "retired": True},
+            {"role": "comparison_dispatcher", "anchor": {"serial": 1, "ea": 0x1300}, "retired": False},
+        )},
+        proposal=base, block_refs_by_serial=refs,
+    )
+    proposal = replace(
+        base,
+        claims=(claim,),
+        plan_inputs=replace(base.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE),
+        retirement_catalog=claim.retirement_catalog,
+    )
+    rows = claim.retirement_catalog.members
+    subjects = tuple(
+        next(
+            (subject for subject in claim.member_subjects if subject.block_ref == row.block_ref),
+            _subject_factory(
+                model.SemanticSubjectRef,
+                kind=model.SemanticSubjectKind.BLOCK,
+                role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                block_ref=row.block_ref,
+                anchor_ea=row.anchor_ea,
+                locator=model.BlockSubjectLocator(row.block_ref, row.anchor_ea),
+            ),
+        )
+        for row in rows
+    )
+    source_fp = authority_id("retirement-observed-source")
+    observed_fp = authority_id("retirement-observed-candidate")
+    source_serials = {item.block_ref: index for index, item in enumerate(catalog.blocks)}
+    retained_ref = next(row.block_ref for row in rows if not row.retired)
+    candidate_serials = {retained_ref: 0}
+    source_bindings = bind.bind_source_subjects(
+        subjects, catalog=catalog,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        graph_fingerprint=source_fp, generation=catalog.generation,
+        serial_by_ref=source_serials,
+    )
+    observed_bindings = bind.bind_projected_subjects(
+        subjects, catalog=catalog,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        graph_fingerprint=observed_fp, generation=catalog.generation,
+        serial_by_ref=candidate_serials,
+    )
+
+    def bind_with(source_rows=source_bindings, candidate_rows=observed_bindings):
+        return bind_retired_dispatcher_infrastructure_claim(
+            claim=claim, proposal=proposal,
+            source_graph_fingerprint=source_fp,
+            projected_graph_fingerprint=observed_fp,
+            generation=catalog.generation,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            source_subject_bindings=source_rows,
+            projected_subject_bindings=candidate_rows,
+        )
+
+    result = bind_with()
+    assert {
+        row.status for row in result.projected_bindings if row.subject.block_ref == retained_ref
+    } == {model.SubjectBindingStatus.UNIQUE}
+    assert {
+        row.status for row in result.projected_bindings if row.subject.block_ref != retained_ref
+    } == {model.SubjectBindingStatus.MISSING}
+
+    source_first = source_bindings[0]
+    candidate_first = observed_bindings[0]
+    source_mutations = (
+        replace(source_first, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT),
+        replace(source_first, graph_fingerprint=authority_id("wrong-source-fingerprint")),
+        replace(source_first, generation=catalog.generation + 1),
+    )
+    candidate_mutations = (
+        replace(candidate_first, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT),
+        replace(candidate_first, graph_fingerprint=source_fp),
+        replace(candidate_first, generation=catalog.generation + 1),
+    )
+    for mutated in source_mutations:
+        with pytest.raises(ValueError):
+            bind_with((mutated,) + source_bindings[1:])
+    for mutated in candidate_mutations:
+        with pytest.raises(ValueError):
+            bind_with(candidate_rows=(mutated,) + observed_bindings[1:])
+
+    retained_source = next(
+        row for row in source_bindings
+        if row.subject.block_ref == retained_ref
+    )
+    retained_candidate = next(
+        row for row in observed_bindings
+        if row.subject.block_ref == retained_ref
+    )
+    source_native_drift = replace(
+        retained_source,
+        native_instruction_eas=(retained_source.anchor_ea, retained_source.anchor_ea + 4),
+    )
+    with pytest.raises(ValueError, match="retirement source binding is not catalog-bound"):
+        bind_with(
+            source_rows=tuple(
+                source_native_drift if row is retained_source else row
+                for row in source_bindings
+            ),
+        )
+    candidate_native_drift = replace(
+        retained_candidate,
+        native_instruction_eas=(retained_candidate.anchor_ea, retained_candidate.anchor_ea + 4),
+    )
+    with pytest.raises(ValueError, match="retained projected binding drifted from catalog"):
+        bind_with(
+            candidate_rows=tuple(
+                candidate_native_drift if row is retained_candidate else row
+                for row in observed_bindings
+            ),
+        )
+
+    foreign_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+        block_ref=source_bindings[1].subject.block_ref,
+        anchor_ea=source_bindings[1].subject.anchor_ea,
+        locator=model.BlockSubjectLocator(
+            source_bindings[1].subject.block_ref,
+            source_bindings[1].subject.anchor_ea,
+        ),
+    )
+    swapped = replace(
+        source_first,
+        subject=foreign_subject,
+        block_ref=foreign_subject.block_ref,
+        anchor_ea=foreign_subject.anchor_ea,
+        serial=source_bindings[1].serial,
+        native_instruction_eas=source_bindings[1].native_instruction_eas,
+    )
+    with pytest.raises(ValueError):
+        bind_with((swapped,) + source_bindings[1:])
+
+    # Ref substitution is coupled to subject identity by the canonical
+    # binding model; retain a valid row shape and assert the exact catalog-row
+    # coverage rejection at the binder boundary.
+    source_ref_substitution = replace(
+        retained_source,
+        subject=source_bindings[0].subject,
+        block_ref=source_bindings[0].block_ref,
+        anchor_ea=source_bindings[0].anchor_ea,
+        serial=source_bindings[0].serial,
+        native_instruction_eas=source_bindings[0].native_instruction_eas,
+    )
+    with pytest.raises(ValueError, match="rows do not cover the exact member catalog"):
+        bind_with(
+            source_rows=tuple(
+                source_ref_substitution if row is retained_source else row
+                for row in source_bindings
+            ),
+        )
+    candidate_ref_substitution = replace(
+        retained_candidate,
+        subject=observed_bindings[0].subject,
+        block_ref=observed_bindings[0].block_ref,
+        anchor_ea=observed_bindings[0].anchor_ea,
+        serial=observed_bindings[0].serial,
+        native_instruction_eas=observed_bindings[0].native_instruction_eas,
+        status=observed_bindings[0].status,
+    )
+    with pytest.raises(ValueError, match="rows do not cover the exact member catalog"):
+        bind_with(
+            candidate_rows=tuple(
+                candidate_ref_substitution if row is retained_candidate else row
+                for row in observed_bindings
+            ),
+        )
+
+    source_anchor = retained_source.anchor_ea + 4
+    source_anchor_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+        block_ref=retained_ref,
+        anchor_ea=source_anchor,
+        locator=model.BlockSubjectLocator(retained_ref, source_anchor),
+    )
+    source_anchor_drift = replace(
+        retained_source,
+        subject=source_anchor_subject,
+        anchor_ea=source_anchor,
+        native_instruction_eas=(source_anchor,),
+    )
+    with pytest.raises(ValueError, match="rows do not cover the exact member catalog"):
+        bind_with(
+            source_rows=tuple(
+                source_anchor_drift if row is retained_source else row
+                for row in source_bindings
+            ),
+        )
+    candidate_anchor = retained_candidate.anchor_ea + 4
+    candidate_anchor_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+        block_ref=retained_ref,
+        anchor_ea=candidate_anchor,
+        locator=model.BlockSubjectLocator(retained_ref, candidate_anchor),
+    )
+    candidate_anchor_drift = replace(
+        retained_candidate,
+        subject=candidate_anchor_subject,
+        anchor_ea=candidate_anchor,
+        native_instruction_eas=(candidate_anchor,),
+    )
+    with pytest.raises(ValueError, match="rows do not cover the exact member catalog"):
+        bind_with(
+            candidate_rows=tuple(
+                candidate_anchor_drift if row is retained_candidate else row
+                for row in observed_bindings
+            ),
+        )
 @pytest.mark.parametrize("site_kind", (model.EffectSiteKind.STORE, model.TerminalKind.RETURN))
 def test_inventory_binding_rejects_site_rows_outside_owned_native_origins(site_kind: object) -> None:
     _proposal, catalog = _fixture()

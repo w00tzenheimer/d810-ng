@@ -18,6 +18,7 @@ def test_views_export_read_only_case_projections() -> None:
     assert callable(views.exact_effect_loss_view)
     assert views.ExactEffectLossView.__dataclass_params__ is not None
     assert "case" in __import__("inspect").signature(views.exact_effect_loss_view).parameters
+    assert "retirement_rows" in views.__all__
 
 
 def test_semantic_loss_ledger_and_observed_delta_are_closed_projections() -> None:
@@ -77,3 +78,14 @@ def test_observed_delta_rejects_wrong_phase_before_comparing_rows() -> None:
     )
     with pytest.raises(ValueError, match="observed case"):
         views.observed_only_loss(case, case)
+
+
+def test_retirement_rows_rejects_empty_or_nonretirement_cases() -> None:
+    subject = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "retirement-empty")
+    case = build_semantic_case(
+        authority_id=authority_id("retirement-empty"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(source_subjects=(subject,), candidate_subjects=()),
+    )
+    with pytest.raises(ValueError, match="one unambiguous retirement claim"):
+        views.retirement_rows(case)

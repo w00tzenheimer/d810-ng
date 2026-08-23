@@ -22,6 +22,122 @@ from .test_model import _valid_proposal
 from .test_proposal import _shadow
 
 
+def test_retirement_public_prepare_reports_t14_corridor_obligation() -> None:
+    """Public prepare preserves retirement evidence while T14 corridor proof fails."""
+
+    from d810.transforms.unflatten_authority import transaction_api
+    from d810.transforms.unflatten_authority.legacy_keys import DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA
+    from d810.transforms.unflatten_authority.proposal import attach_typed_proposal, canonical_redirect_manifest
+
+    model = import_authority_model()
+    source, base, _exclusion, refs = exact_fixture()
+    template = PatchPlan(
+        plan_id=base.plan_id, snapshot_id=authority_id("retirement-public"),
+        source_generation=1,
+        steps=(PatchRedirectBranch(refs[1], refs[2], refs[0]),),
+        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+        metadata=((DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA, {
+            "retired_infrastructure": tuple({
+                "role": "comparison_dispatcher",
+                "anchor": {"serial": serial, "ea": 0x5000 if serial == 4 else 0x1000 if serial == 0 else 0x2000},
+                "retired": serial == 4,
+            } for serial in (4, 1)),
+        }),),
+    )
+    manifest = canonical_redirect_manifest(template)
+    witness = replace(
+        base.use_def_witness,
+        redirect_owner_refs=manifest.owner_refs,
+        redirect_digest=manifest.digest,
+    )
+    plan = attach_typed_proposal(
+        template, source=source, block_refs_by_serial=refs,
+        canonical_route_evidence=base.route_evidence,
+        exact_state_effect_exclusions=(_exclusion,), dispatcher_entry_serial=1,
+        dispatcher_member_serials=(4, 1), authoritative_handler_serials=(2,),
+        state_identity=base.plan_inputs.state_identity, use_def_witness=witness,
+    )
+    projected = type(source)({serial: block for serial, block in source.blocks.items() if serial != 4}, source.entry_serial, source.func_ea)
+    projection = CfgProjection(plan.plan_id, plan.snapshot_id, projected)
+    from d810.analyses.control_flow.graph_checks import (
+        check_effectful_reachability_preserved,
+        check_entry_reachability_not_collapsed,
+        check_terminal_reachability_preserved,
+    )
+    from d810.transforms.cfg_transaction import TransactionAttemptId
+    from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
+    generic_gates = GenericCfgGateBundle(
+        check_entry_reachability_not_collapsed(source, post_cfg=projected),
+        check_effectful_reachability_preserved(source, post_cfg=projected),
+        check_effectful_reachability_preserved(source, post_cfg=projected),
+        check_terminal_reachability_preserved(source, post_cfg=projected),
+    )
+    attempt = TransactionAttemptId(
+        plan.plan_id, authority_id("retirement-session"), 1,
+        authority_id("retirement-attempt"),
+    )
+    result = transaction_api.prepare_unflatten_authority(
+        source=source, projection=projection, plan=plan,
+        attempt_id=attempt, generic_gates=generic_gates,
+    )
+    assert getattr(result, "prepared", None) is None
+    assert result.verdict.reason is model.UnflattenAuthorityReason.OBLIGATION_VIOLATED
+    assert result.verdict.case_id is not None
+    assert result.verdict.safety_case is not None
+    case = result.verdict.safety_case
+    from d810.transforms.unflatten_authority import views
+    retirement_view = views.retirement_rows(case)
+    assert retirement_view.retired_member_subject_ids
+    assert retirement_view.retained_member_subject_ids
+    assert any(
+        cell.key.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
+        and cell.state is model.ObligationState.SATISFIED
+        for cell in case.obligation_index.cells
+        if cell.key.subject.subject_id in retirement_view.retired_member_subject_ids
+    )
+    assert any(
+        cell.key.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
+        and cell.state is model.ObligationState.SATISFIED
+        for cell in case.obligation_index.cells
+        if cell.key.subject.subject_id in retirement_view.retained_member_subject_ids
+    )
+    ledger = views.semantic_loss_ledger(case)
+    retired_rows = tuple(
+        row for row in ledger.rows
+        if row.source_subject.subject_id in retirement_view.retired_member_subject_ids
+    )
+    assert len(retired_rows) == len(retirement_view.retired_member_subject_ids)
+    assert all(
+        row.kind is model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE
+        and row.claim_ids == (retirement_view.claim_id,)
+        and any(
+            justification.rule is model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
+            and justification.claim_id == retirement_view.claim_id
+            for justification in row.justifications
+        )
+        for row in retired_rows
+    )
+    failed_corridor_cells = {
+        (cell.key.subject.subject_id, cell.key.subject.role, cell.key.dimension)
+        for cell in case.obligation_index.cells
+        if cell.state is not model.ObligationState.SATISFIED
+    }
+    retirement_claim = next(
+        claim for claim in case.claims
+        if claim.kind is model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE
+    )
+    entry_subject = next(
+        subject for subject in case.subjects
+        if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+    )
+    assert failed_corridor_cells == {
+        (retirement_claim.corridor_subject.subject_id, model.SemanticSubjectRole.DISPATCHER_CORRIDOR, model.SafetyDimension.CORRIDOR_COVERAGE),
+        (retirement_claim.corridor_subject.subject_id, model.SemanticSubjectRole.DISPATCHER_CORRIDOR, model.SafetyDimension.STRUCTURAL_ACCOUNTING),
+        (retirement_claim.infrastructure_subject.subject_id, model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, model.SafetyDimension.CORRIDOR_COVERAGE),
+        (entry_subject.subject_id, model.SemanticSubjectRole.DISPATCHER_ENTRY, model.SafetyDimension.CORRIDOR_COVERAGE),
+    }
+
+
 def test_helper_and_resegmentation_lineage_is_derived_before_case_builder(monkeypatch) -> None:
     """Helper ownership must enter the closed facts before case construction."""
 
@@ -118,7 +234,9 @@ def test_helper_and_resegmentation_lineage_is_derived_before_case_builder(monkey
         (fact.step_type, fact.owner_ref)
         for fact in inputs.patch_step_facts
     ) == (
+        ("PatchRedirectBranch", refs[0]),
         ("PatchRedirectBranch", helper),
+        ("PatchRedirectBranch", refs[1]),
         ("PatchRedirectBranch", second_helper),
     )
     case = transaction_api.build_semantic_case(

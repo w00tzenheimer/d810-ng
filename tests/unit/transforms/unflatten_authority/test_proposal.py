@@ -489,6 +489,88 @@ def test_typed_attachment_keeps_dispatcher_entry_when_not_a_redirect_owner() -> 
     assert select_plan_route(attached).route is model.UnflattenPlanRoute.TYPED_PROPOSAL
 
 
+def test_retirement_attachment_routes_present_family_keys_and_rejects_malformed_shapes() -> None:
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.legacy_keys import (
+        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+    )
+    from d810.transforms.unflatten_authority.proposal import (
+        attach_typed_proposal, canonical_redirect_manifest,
+    )
+    from .helpers import authority_id
+    from .test_bind import _exact_fixture
+
+    source, proposal, exclusion, refs = _exact_fixture()
+    rows = tuple(
+        {
+            "role": "comparison_dispatcher",
+            "anchor": {"serial": serial, "ea": proposal.source_identity_catalog.blocks[serial].anchor_ea},
+            "retired": serial == 0,
+        }
+        for serial in (0, 1)
+    )
+
+    class TupleSubclass(tuple):
+        pass
+
+    class StringSubclass(str):
+        pass
+
+    cases = (
+        [*rows],
+        StringSubclass("not-rows"),
+        TupleSubclass(rows),
+        {"0": rows[0]},
+    )
+    for value in cases:
+        template = PatchPlan(
+            plan_id=proposal.plan_id, snapshot_id=authority_id("retirement-attach"),
+            source_generation=1,
+            steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+            metadata=((DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA, {
+                "retired_infrastructure": value,
+            }),),
+        )
+        manifest = canonical_redirect_manifest(template)
+        witness = replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        )
+        with pytest.raises(ValueError, match="retirement proof|retirement families"):
+            attach_typed_proposal(
+                template, source=source, block_refs_by_serial=refs,
+                canonical_route_evidence=proposal.route_evidence,
+                exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
+                dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+                state_identity=proposal.plan_inputs.state_identity, use_def_witness=witness,
+            )
+
+    template = PatchPlan(
+        plan_id=proposal.plan_id, snapshot_id=authority_id("retirement-attach-ambiguous"),
+        source_generation=1,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+        metadata=((DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA, {
+            "retired_infrastructure": rows,
+            "retired_corridor": rows,
+        }),),
+    )
+    manifest = canonical_redirect_manifest(template)
+    witness = replace(
+        proposal.use_def_witness,
+        redirect_owner_refs=manifest.owner_refs,
+        redirect_digest=manifest.digest,
+    )
+    with pytest.raises(ValueError, match="ambiguous|conversion failed"):
+        attach_typed_proposal(
+            template, source=source, block_refs_by_serial=refs,
+            canonical_route_evidence=proposal.route_evidence,
+            exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
+            dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+            state_identity=proposal.plan_inputs.state_identity, use_def_witness=witness,
+        )
+
+
 def test_producer_exact_effect_claim_correlates_all_canonical_dimensions() -> None:
     from d810.analyses.control_flow.effect_branch_exclusion import ExactStateBranchEffectExclusion
     from d810.analyses.control_flow.semantic_route_evidence import (

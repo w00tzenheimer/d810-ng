@@ -25,7 +25,7 @@ from d810.transforms.patch_binding import BoundPatchPlan
 from d810.transforms.plan import PatchPlan
 from d810.transforms.unflatten_authority.ids import _case_factory, _claim_factory, _evidence_factory, _justification_factory, _subject_factory, authority_id as canonical_authority_id, bound_unflatten_binding_id, canonical_bytes, canonical_decode, content_id, receipt_id, semantic_graph_inventory_digest
 from .helpers import authority_id, block_ref, state_identity
-from .test_model import _valid_proposal
+from .test_model import _retirement_catalog, _valid_proposal
 
 
 def _role_subject(role: model.SemanticSubjectRole, token: str) -> model.SemanticSubjectRef:
@@ -332,6 +332,26 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
     relations = tuple(sorted(relations, key=lambda item: (item.source_subject_id, item.target_subject_id, item.dimension.value, item.provenance_id)))
     metrics = model.PreparationBuildMetrics(1, 1, 1.25)
     patch_payloads = tuple(patch_step_facts)
+    if not any(
+        item.step_type in {"PatchRedirectGoto", "PatchRedirectBranch"}
+        for item in patch_payloads
+    ):
+        redirect_facts = tuple(
+            model.PatchStepEvidencePayload(
+                proposal.plan_id, index, "PatchRedirectBranch", owner,
+                authority_id(f"fixture-redirect-{index}"), None, None, None,
+            )
+            for index, owner in enumerate(proposal.use_def_witness.redirect_owner_refs)
+        )
+        patch_payloads = (*redirect_facts, *patch_payloads)
+    if not patch_payloads:
+        patch_payloads = tuple(
+            model.PatchStepEvidencePayload(
+                proposal.plan_id, index, "PatchRedirectBranch", owner,
+                authority_id(f"fixture-redirect-{index}"), None, None, None,
+            )
+            for index, owner in enumerate(proposal.use_def_witness.redirect_owner_refs)
+        )
     source_subject_ids = tuple(source_subjects)
     candidate_subject_ids = tuple(candidate_subjects)
     receipt = _receipt_fixture(
@@ -350,6 +370,7 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         planned_helper_digest=_digest(tuple(item.subject_id for item in candidate_subjects if item.role is model.SemanticSubjectRole.PLANNED_HELPER)),
         patch_step_digest=_digest(tuple(sorted(patch_payloads, key=lambda item: (item.plan_id, item.step_index))),),
         conditional_relation_digest=_digest(relations), metrics=metrics,
+        retirement_catalog=proposal.retirement_catalog,
     )
     def fixture_inventory(
         phase_value: model.UnflattenAuthorityPhase,
@@ -797,6 +818,65 @@ def test_use_def_audit_evidence_is_evaluator_owned() -> None:
     )
     with pytest.raises(TypeError, match="unexpected keyword argument"):
         replace(inputs, lineage_evidence=(injected,))
+
+
+def test_use_def_redirect_owners_are_exact_patch_fact_projection() -> None:
+    """The evaluator derives redirect owners from receipt-bound patch facts."""
+
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "redirect-owner-facts")
+    inputs = _complete_inputs(source_subjects=(entry,), proposal=proposal)
+    redirect_facts = tuple(
+        fact for fact in inputs.patch_step_facts
+        if fact.step_type in {"PatchRedirectGoto", "PatchRedirectBranch"}
+    )
+
+    def with_facts(facts: tuple[model.PatchStepEvidencePayload, ...]):
+        values = {
+            name: getattr(inputs.preparation_receipt, name)
+            for name in inputs.preparation_receipt.__dataclass_fields__
+            if name not in {"receipt_id", "_minted"}
+        }
+        values["patch_step_digest"] = _digest(
+            tuple(sorted(facts, key=lambda item: (item.plan_id, item.step_index)))
+        )
+        return replace(
+            inputs, patch_step_facts=facts,
+            preparation_receipt=_receipt_fixture(**values),
+        )
+
+    for index, facts in enumerate((
+        (),
+        redirect_facts[:-1],
+        tuple(replace(fact, owner_ref=entry.block_ref) for fact in redirect_facts),
+        tuple(replace(fact, step_type="PatchInsertBlock") for fact in redirect_facts),
+        redirect_facts + (replace(redirect_facts[0], owner_ref=block_ref("foreign-owner"), step_index=98),),
+    )):
+        with pytest.raises(ValueError):
+            build_semantic_case(
+                authority_id=authority_id(f"redirect-owner-facts-{index}"),
+                phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                inputs=with_facts(facts),
+            )
+
+    # Owner order follows the canonical manifest, not patch-step order.
+    reversed_case = build_semantic_case(
+        authority_id=authority_id("redirect-owner-facts-reversed"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=with_facts(tuple(reversed(redirect_facts))),
+    )
+    assert reversed_case.case_id
+
+    # Multiple redirect facts may name one owner; canonical projection
+    # intentionally deduplicates that owner.
+    repeated_case = build_semantic_case(
+        authority_id=authority_id("redirect-owner-facts-repeated"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=with_facts(
+            redirect_facts + (replace(redirect_facts[0], step_index=99),),
+        ),
+    )
+    assert repeated_case.case_id
 
 
 def test_value_flow_identity_is_conjunctive_over_every_owner_binding() -> None:
@@ -2535,12 +2615,15 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         ),
     )
     destination = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
+    retirement_catalog = _retirement_catalog(model, (member0.block_ref, member1.block_ref), (member0.anchor_ea, member1.anchor_ea), 3)
     retirement = _claim_factory(
         model.RetiredDispatcherInfrastructureClaim,
         kind=model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
         infrastructure_subject=member0, corridor_subject=corridor,
         member_subjects=(member0, member1),
-        retirement_proof_ids=(authority_id("retirement-proof"),), source_generation=3,
+        retirement_proof_ids=(retirement_catalog.proofs[0].proof_id,),
+        source_generation=3,
+        retirement_catalog=retirement_catalog,
     )
 
     proposal_values = _valid_proposal(model)
@@ -2552,7 +2635,8 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     route = route_claim.retired_route_subject
     destination = route_claim.destination_subjects[0]
     retirement_proposal = model.ProposedUnflattenContract(
-        **{**proposal_values, "claims": tuple(sorted((retirement, route_claim), key=lambda claim: claim.claim_id))}
+        **{**proposal_values, "claims": tuple(sorted((retirement, route_claim), key=lambda claim: claim.claim_id),),
+           "retirement_catalog": retirement_catalog}
     )
     complete = build_semantic_case(
         authority_id=authority_id("retirement-complete"),
@@ -2648,6 +2732,117 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     )
 
 
+def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
+    """Retirement authority is structural and only covers exact retired rows."""
+
+    from d810.transforms.unflatten_authority.legacy_codec import retirement_claim_from_legacy_proof
+
+    base = model.ProposedUnflattenContract(**_valid_proposal(model))
+    refs = {index: item.block_ref for index, item in enumerate(base.source_identity_catalog.blocks)}
+    claim = retirement_claim_from_legacy_proof(
+        {"retired_infrastructure": (
+            {"role": "comparison_dispatcher", "anchor": {"serial": 0, "ea": 0x1000}, "retired": True},
+            {"role": "comparison_dispatcher", "anchor": {"serial": 1, "ea": 0x1300}, "retired": False},
+        )},
+        proposal=base,
+        block_refs_by_serial=refs,
+    )
+    proposal = replace(
+        base,
+        claims=tuple(sorted((*base.claims, claim), key=lambda item: item.claim_id)),
+        plan_inputs=replace(base.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE),
+        retirement_catalog=claim.retirement_catalog,
+    )
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "catalog-entry")
+    member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
+    member1 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1")
+    route_claim = base.claims[0]
+    inputs = _complete_inputs(
+        source_subjects=(entry, member0, member1, route_claim.retired_route_subject, *route_claim.destination_subjects),
+        claims=proposal.claims,
+        proposal=proposal,
+    )
+    retired_binding = next(
+        item for item in inputs.candidate_inventory.bindings
+        if item.subject.block_ref == member0.block_ref
+        and item.subject.anchor_ea == member0.anchor_ea
+        and item.subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+    )
+    candidate_bindings = tuple(
+        replace(
+            item, status=model.SubjectBindingStatus.MISSING,
+            block_ref=None, serial=None, anchor_ea=None,
+            native_instruction_eas=(),
+        ) if item is retired_binding else item
+        for item in inputs.candidate_inventory.bindings
+    )
+    object.__setattr__(inputs.candidate_inventory, "bindings", candidate_bindings)
+    object.__setattr__(inputs.candidate_inventory, "inventory_digest", semantic_graph_inventory_digest(
+        inputs.candidate_inventory.phase, inputs.candidate_inventory.graph_fingerprint,
+        inputs.candidate_inventory.generation, inputs.candidate_inventory.blocks,
+        inputs.candidate_inventory.subjects, candidate_bindings,
+        inputs.candidate_inventory.effects, inputs.candidate_inventory.terminals,
+        inputs.candidate_inventory.topology, inputs.candidate_inventory.reachable_serials,
+        inputs.candidate_inventory.entry_serial, inputs.candidate_inventory.source_subject_ids,
+    ))
+    object.__setattr__(inputs.preparation_receipt, "candidate_binding_digest", _digest(tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id))))
+    object.__setattr__(inputs.preparation_receipt, "candidate_inventory_digest", inputs.candidate_inventory.inventory_digest)
+    object.__setattr__(inputs.preparation_receipt, "receipt_id", receipt_id(inputs.preparation_receipt))
+    case = build_semantic_case(
+        authority_id=authority_id("exact-retirement-catalog"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    retired_cell = next(
+        cell for cell in case.obligation_index.cells
+        if cell.key == model.ObligationKey(member0, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+    )
+    retained_cell = next(
+        cell for cell in case.obligation_index.cells
+        if cell.key == model.ObligationKey(member1, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+    )
+    assert retired_cell.state is model.ObligationState.SATISFIED
+    assert retained_cell.state is model.ObligationState.SATISFIED
+    assert not any(
+        cell.key.subject == member0
+        and cell.key.dimension in {
+            model.SafetyDimension.CORRIDOR_COVERAGE,
+            model.SafetyDimension.TOPOLOGY_INTEGRITY,
+        }
+        for cell in case.obligation_index.cells
+    )
+    supporting = tuple(
+        item for item in case.justifications
+        if item.justification_id in retired_cell.supporting_justification_ids
+    )
+    assert supporting
+    assert all(
+        item.conclusion.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
+        for item in supporting
+    )
+    retirement_support = tuple(
+        item for item in supporting
+        if item.rule is model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
+    )
+    assert len(retirement_support) == 1
+    assert retirement_support[0].claim_id == claim.claim_id
+    assert retirement_support[0].conclusion == retired_cell.key
+    retained_support = tuple(
+        item for item in case.justifications
+        if item.conclusion == retained_cell.key
+        and item.rule is model.UnflattenJustificationRule.SOURCE_PRESERVED
+    )
+    assert retained_support
+    ledger_row = next(
+        row for row in views.semantic_loss_ledger(case).rows
+        if row.source_subject.subject_id == member0.subject_id
+    )
+    assert ledger_row.kind is model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE
+    retirement_view = views.retirement_rows(case, claim.claim_id)
+    assert retirement_view.claim_id == claim.claim_id
+    assert retirement_view.retired_member_subject_ids == (member0.subject_id,)
+    assert retirement_view.retained_member_subject_ids == (member1.subject_id,)
+    assert retirement_view.structural_cell_keys == (retired_cell.key,)
 def test_resegmentation_patch_step_supports_only_its_helper_structural_key() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "resegment-entry")
     helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")

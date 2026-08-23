@@ -17,7 +17,40 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from .helpers import import_authority_model
 from .helpers import authority_id, block_ref, edge_role, state_identity
-from d810.transforms.unflatten_authority.ids import _subject_factory, _claim_factory, _evidence_factory, subject_id
+from d810.transforms.unflatten_authority.ids import _subject_factory, _claim_factory, _evidence_factory, subject_id, authority_id as canonical_authority_id, canonical_bytes
+from d810.transforms.unflatten_authority.legacy_wire import encode_legacy_value
+
+
+def _retirement_catalog(model, refs, anchors, generation=3):
+    canonical_payload = encode_legacy_value({
+        "family": "retired_infrastructure",
+        "source_generation": generation,
+        "members": tuple({
+            "ref": canonical_bytes(ref), "anchor_ea": anchor,
+            "retired": True, "role": "comparison_dispatcher",
+        } for ref, anchor in zip(refs, anchors)),
+        "family_payload": {
+            "retired_infrastructure": tuple({
+                "role": "comparison_dispatcher",
+                "anchor_ea": anchor,
+                "retired": True,
+            } for anchor in anchors),
+        },
+    })
+    roles = tuple("comparison_dispatcher" for _ in refs)
+    proof = model.RetirementProofRecord(
+        canonical_authority_id(("unflatten.retirement-proof.v3", canonical_payload)),
+        model.RetirementProofFamily.RETIRED_INFRASTRUCTURE,
+        canonical_payload, tuple(refs), tuple(anchors), generation, roles,
+    )
+    rows = tuple(
+        model.RetirementMemberCatalogRow(ref, anchor, (anchor,), generation, True, (proof,))
+        for ref, anchor in zip(refs, anchors)
+    )
+    return model.RetirementAuthorityCatalog(
+        canonical_authority_id(("unflatten.retirement-catalog.v1", generation, rows, (proof,))),
+        generation, rows, (proof,),
+    )
 
 
 def _subject(model, kind, role, locator):
@@ -493,7 +526,8 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
     claims = [
         _claim_factory(model.RetiredDispatcherInfrastructureClaim,
             model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
-            infra, corridor, (infra, infra2), (authority_id("retire-proof"),), 0,
+                infra, corridor, (infra, infra2), (_retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0).proofs[0].proof_id,), 0,
+                _retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0),
         ),
         _claim_factory(model.EquivalentSemanticRouteClaim,
             model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
@@ -520,7 +554,8 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
     with pytest.raises(ValueError):
         _claim_factory(model.RetiredDispatcherInfrastructureClaim,
             model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
-            bad_subject, corridor, (infra,), (authority_id("proof"),), 0,
+            bad_subject, corridor, (infra,), (_retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0).proofs[0].proof_id,), 0,
+            _retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0),
         )
     with pytest.raises(ValueError):
         _claim_factory(model.EquivalentSemanticRouteClaim,
@@ -574,7 +609,8 @@ def test_retirement_and_route_claims_preserve_cross_field_membership() -> None:
     with pytest.raises(ValueError):
         _claim_factory(model.RetiredDispatcherInfrastructureClaim,
             model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
-            infra, corridor, (infra,), (authority_id("proof"),), 0,
+            infra, corridor, (infra,), (_retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0).proofs[0].proof_id,), 0,
+            _retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0),
         )
 
     retired_locator = model.RouteSubjectLocator(
@@ -858,9 +894,11 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
                         model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
                         model.CorridorSubjectLocator(authority_id("full-corridor"), b0, 0x1000,
                                                      (b0, b1), (0x1000, 0x1300)))
+    retirement_catalog = _retirement_catalog(model, (b0, b1), (0x1000, 0x1300), 3)
     retirement = _claim_factory(model.RetiredDispatcherInfrastructureClaim,
         model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
-        infra, corridor, (infra, infra2), (authority_id("full-proof"),), 3,
+            infra, corridor, (infra, infra2), (retirement_catalog.proofs[0].proof_id,), 3,
+            retirement_catalog,
     )
     assert model.AuthoritativeHandlerInput(b2, 0x1100, (1,)).block_ref not in {
         member.locator.block_ref for member in retirement.member_subjects
@@ -871,7 +909,8 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
         (model.AuthoritativeHandlerInput(b2, 0x1100, (1,)),), state_identity(),
     )
     assert model.ProposedUnflattenContract(
-        **{**valid, "claims": (retirement,), "plan_inputs": full_inputs}
+            **{**valid, "claims": (retirement,), "plan_inputs": full_inputs,
+               "retirement_catalog": retirement_catalog}
     )
     partial_inputs = model.UnflattenPlanInputCatalog(
         model.UnflattenPlanShape.PARTIAL_REWRITE,
@@ -895,9 +934,10 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
     foreign_retirement = _claim_factory(model.RetiredDispatcherInfrastructureClaim,
         model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
         foreign_infra, foreign_corridor, (foreign_infra,),
-        (authority_id("foreign-proof"),), 3,
+        (_retirement_catalog(model, (b2,), (0x1100,), 3).proofs[0].proof_id,), 3,
+        _retirement_catalog(model, (b2,), (0x1100,), 3),
     )
-    with pytest.raises(ValueError, match="dispatcher_member_refs"):
+    with pytest.raises(ValueError, match="retirement claims must share|dispatcher_member_refs"):
         model.ProposedUnflattenContract(
             **{**valid, "claims": (foreign_retirement,), "plan_inputs": partial_inputs}
         )

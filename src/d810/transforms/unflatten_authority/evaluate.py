@@ -13,6 +13,7 @@ from . import model
 from . import gates
 from . import producer_api
 from .ids import _case_factory, _evidence_factory, _justification_factory, authority_id as _authority_id_digest
+from .proposal import _redirect_owner_sort_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,7 @@ LOCAL_ALIAS_MOV_OPCODE = 4
 _SUPPORTED_PATCH_STEP_TYPES = frozenset({
     "PatchScalarizeLocalAliasAccess",
     "PatchLowerConditionalStateTransition",
+    "PatchRedirectGoto",
     "PatchRedirectBranch",
     "PatchEdgeSplitTrampoline",
     "PatchEdgeSplitCorridor",
@@ -68,6 +70,7 @@ def _patch_owner_subjects(
         )
     if payload.step_type in {
         "PatchLowerConditionalStateTransition",
+        "PatchRedirectGoto",
         "PatchRedirectBranch",
     }:
         return planned or tuple(
@@ -76,7 +79,7 @@ def _patch_owner_subjects(
             and (
                 subject.kind is model.SemanticSubjectKind.BLOCK
                 or (
-                    payload.step_type == "PatchRedirectBranch"
+                    payload.step_type in {"PatchRedirectGoto", "PatchRedirectBranch"}
                     and subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
                 )
             )
@@ -316,7 +319,7 @@ _JUSTIFICATION_RULE_SPECS: dict[model.UnflattenJustificationRule, _Justification
     model.UnflattenJustificationRule.SOURCE_SPLIT_WITH_RECIPROCAL_ORIGINS: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,)),
     model.UnflattenJustificationRule.SOURCE_FOLDED_WITH_RECIPROCAL_ORIGINS: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,)),
     model.UnflattenJustificationRule.SOURCE_LOSS_UNACCOUNTED: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.REFUTES, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,)),
-    model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.CORRIDOR_COVERAGE, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, model.AuthorityEvidenceKind.CORRIDOR_COVERAGE), max_premises=None),
+    model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, model.AuthorityEvidenceKind.CORRIDOR_COVERAGE), max_premises=None),
     model.UnflattenJustificationRule.EQUIVALENT_ROUTE_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.ROUTE_EQUIVALENCE, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.SEMANTIC_ROUTE,)),
     model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE, model.AuthorityEvidenceKind.SEMANTIC_ROUTE), min_premises=2, max_premises=2),
     model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE, model.AuthorityEvidenceKind.PATCH_STEP, model.AuthorityEvidenceKind.PHASE_BINDING, model.AuthorityEvidenceKind.REACHABILITY), min_premises=4, max_premises=4),
@@ -461,11 +464,19 @@ def _dimensions(
         ):
             dimensions = [
                 dimension for dimension in dimensions
-                if dimension is not model.SafetyDimension.TOPOLOGY_INTEGRITY
+                if dimension not in {
+                    model.SafetyDimension.TOPOLOGY_INTEGRITY,
+                    model.SafetyDimension.CORRIDOR_COVERAGE,
+                }
             ]
         dimensions.extend(
             dimension for target_id, dimension in relation_dimensions
-            if target_id == subject.subject_id and dimension not in dimensions
+            if target_id == subject.subject_id
+            and dimension not in dimensions
+            and not (
+                subject.subject_id in retired_topology_satisfied_ids
+                and dimension is not model.SafetyDimension.STRUCTURAL_ACCOUNTING
+            )
         )
         result.update(model.ObligationKey(subject, dimension) for dimension in dimensions)
     return tuple(sorted(result, key=lambda key: (key.subject.subject_id, key.dimension.value)))
@@ -759,6 +770,11 @@ def _validate_justification_graph(
             }.get(item.rule, False)
             if not allowed:
                 raise ValueError("justification rule does not match its claim")
+            if (
+                type(claim) is model.RetiredDispatcherInfrastructureClaim
+                and item.conclusion.dimension is not model.SafetyDimension.STRUCTURAL_ACCOUNTING
+            ):
+                raise ValueError("retirement claim supports structural accounting only")
             claim_targets = {
                 subject.subject_id for subject in _claim_subjects(claim)
             }
@@ -1625,14 +1641,28 @@ def _evaluator_fact_evidence(
         claim = next((claim for claim in inputs.claims
                       if type(claim) is model.RetiredDispatcherInfrastructureClaim
                       and subject.subject_id in {item.subject_id for item in claim.member_subjects}), None)
-        if (
+        retirement_authorized = (
             claim is not None
-            and disposition is not None
+            and phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
             and candidate_binding is not None
-            and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+            and candidate_binding.status is model.SubjectBindingStatus.MISSING
+            and claim.retirement_catalog is not None
+            and any(
+                member.block_ref == subject.block_ref
+                and member.anchor_ea == subject.anchor_ea
+                and member.retired
+                for member in claim.retirement_catalog.members
+            )
+        )
+        if (
+            retirement_authorized
         ):
             disposition = model.StructuralDisposition.AUTHORIZED_RETIREMENT
-        if effect_classification is None and subject.kind is model.SemanticSubjectKind.BLOCK:
+        if (
+            not retirement_authorized
+            and effect_classification is None
+            and subject.kind is model.SemanticSubjectKind.BLOCK
+        ):
             disposition, derived_candidate_ids, derived_origins, source_group = structural_lineage(
                 subject, source_binding, candidate_binding,
             )
@@ -1793,7 +1823,7 @@ def _evaluator_fact_evidence(
         if item.step_type not in _SUPPORTED_PATCH_STEP_TYPES:
             raise ValueError("patch-step evidence has an unsupported step kind")
         if (
-            item.step_type == "PatchRedirectBranch"
+            item.step_type in {"PatchRedirectGoto", "PatchRedirectBranch"}
             and type(item.owner_ref) is not PlanBlockRef
         ):
             # Legacy redirect branches retain Task 11's receipt semantics;
@@ -2024,10 +2054,20 @@ def build_semantic_case(
     expected_value_flow = model.ValueFlowSubjectLocator(
         use_def.fragment_id, use_def.state_identity, use_def.redirect_owner_refs,
     )
-    if tuple(use_def.redirect_owner_refs) != tuple(
-        proposal.plan_inputs.dispatcher_member_refs
-    ):
-        raise ValueError("use-def owners must be exact dispatcher member refs")
+    redirect_facts = tuple(
+        fact for fact in inputs.patch_step_facts
+        if fact.step_type in {"PatchRedirectGoto", "PatchRedirectBranch"}
+        and type(fact.owner_ref) is not PlanBlockRef
+    )
+    redirect_owner_refs = tuple(
+        sorted({fact.owner_ref for fact in redirect_facts}, key=_redirect_owner_sort_key)
+    )
+    if use_def.redirect_owner_refs and not redirect_facts:
+        raise ValueError("use-def owners require exact redirect patch facts")
+    if tuple(use_def.redirect_owner_refs) != redirect_owner_refs:
+        raise ValueError("use-def owners must match exact redirect patch facts")
+    if not set(redirect_owner_refs) <= set(proposal.plan_inputs.dispatcher_member_refs):
+        raise ValueError("use-def redirect owners must be dispatcher members")
     if (
         not expected_value_flow.redirect_owner_refs
         or len(set(expected_value_flow.redirect_owner_refs))
@@ -2064,6 +2104,13 @@ def build_semantic_case(
             member.subject_id
             for claim in inputs.claims
             if type(claim) is model.RetiredDispatcherInfrastructureClaim
+            and claim.retirement_catalog is not None
+            and {
+                ref for proof in claim.retirement_catalog.proofs
+                for ref in proof.member_refs
+            } == {
+                member.block_ref for member in claim.retirement_catalog.members
+            }
             and {
                 item.payload.source_subject_id for item in lineage_evidence
                 if type(item.payload) is model.StructuralLineageEvidencePayload
@@ -2073,9 +2120,16 @@ def build_semantic_case(
             and any(
                 type(item.payload) is model.CorridorCoverageEvidencePayload
                 and item.payload.corridor_subject_id == claim.corridor_subject.subject_id
-                and set(item.payload.member_subject_ids) == {member.subject_id for member in claim.member_subjects}
-                and set(item.payload.covered_subject_ids) == {member.subject_id for member in claim.member_subjects}
-                and not item.payload.residual_subject_ids
+                and set(item.payload.member_subject_ids) == {
+                    subject.subject_id for subject in source_subjects
+                    if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+                    if subject.block_ref in {
+                        member.block_ref for member in claim.retirement_catalog.members
+                    }
+                }
+                and set(item.payload.residual_subject_ids) <= {
+                    member.subject_id for member in claim.member_subjects
+                }
                 for item in lineage_evidence
             )
             for member in claim.member_subjects
@@ -2503,12 +2557,13 @@ def build_semantic_case(
             } or (
                 payload.step_type in {
                     "PatchLowerConditionalStateTransition",
+                    "PatchRedirectGoto",
                     "PatchRedirectBranch",
                 }
                 and (
                     item.subject.kind is model.SemanticSubjectKind.BLOCK
                     or (
-                        payload.step_type == "PatchRedirectBranch"
+                        payload.step_type in {"PatchRedirectGoto", "PatchRedirectBranch"}
                         and item.subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
                     )
                 )
@@ -2778,7 +2833,14 @@ def build_semantic_case(
                 item for item in evidence
                 if type(item.payload) is model.CorridorCoverageEvidencePayload
                 and item.payload.corridor_subject_id == claim.corridor_subject.subject_id
-                and set(item.payload.member_subject_ids) == {member.subject_id for member in claim.member_subjects}
+                and set(item.payload.member_subject_ids) == {
+                    subject.subject_id for subject in source_subjects
+                    if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+                    if claim.retirement_catalog is not None
+                    and subject.block_ref in {
+                        member.block_ref for member in claim.retirement_catalog.members
+                    }
+                }
             )
             claim_evidence = tuple(item.evidence_id for item in (*matching_lineage, *matching_coverage))
             lineage_members = tuple(item.payload.source_subject_id for item in matching_lineage)
@@ -2788,7 +2850,10 @@ def build_semantic_case(
                 and len(set(lineage_members)) == len(lineage_members)
             )
             if exact_lineage and matching_coverage:
-                targets = tuple((member, model.SafetyDimension.STRUCTURAL_ACCOUNTING) for member in claim.member_subjects) + ((claim.corridor_subject, model.SafetyDimension.CORRIDOR_COVERAGE),)
+                targets = tuple(
+                    (member, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+                    for member in claim.member_subjects
+                )
             rule = model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
         elif type(claim) is model.EquivalentSemanticRouteClaim:
             matching_route = tuple(
@@ -3000,6 +3065,7 @@ def build_semantic_case(
         "source_inventory": source_inventory,
         "source_subject_ids": tuple(item.subject_id for item in source_subjects),
         "source_bindings": tuple(source_inventory.bindings),
+        "retirement_catalog": inputs.proposal.retirement_catalog,
     }
     return _case_factory(model.SemanticSafetyCase, **values)
 
