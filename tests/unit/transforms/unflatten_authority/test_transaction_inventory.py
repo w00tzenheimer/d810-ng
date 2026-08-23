@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from d810.ir.flowgraph import BlockKind, BlockSnapshot
@@ -11,6 +13,18 @@ from d810.transforms.unflatten_authority.ids import authority_id, semantic_graph
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
+
+
+def test_transaction_derivation_does_not_construct_semantic_authority_payloads() -> None:
+    source = inspect.getsource(transaction_api._derive_inputs)
+    for forbidden in (
+        "StructuralLineageEvidencePayload", "TopologyEvidencePayload",
+        "SemanticRouteEvidencePayload", "EffectSiteEvidencePayload",
+        "ReachabilityEvidencePayload", "CorridorCoverageEvidencePayload",
+        "GenericCfgGateResult",
+    ):
+        assert forbidden not in source
+    assert not hasattr(transaction_api, "_topology_relations_from_inventory")
 
 
 def test_observe_inventory_block_preserves_raw_graph_start_ea() -> None:
@@ -172,7 +186,7 @@ def _topology_inventory(*, topology: tuple[model.InventoryTopologyIncidence, ...
     )
 
 
-def test_topology_projection_requires_reciprocal_rows_and_preserves_fallthrough() -> None:
+def test_raw_topology_incidence_requires_both_reciprocal_rows_and_anchor() -> None:
     successor = model.InventoryTopologyIncidence(
         model.TopologyIncidenceKind.SUCCESSOR, 1, 2, None,
     )
@@ -180,20 +194,18 @@ def test_topology_projection_requires_reciprocal_rows_and_preserves_fallthrough(
         model.TopologyIncidenceKind.PREDECESSOR, 2, 1, None,
     )
     inventory = _topology_inventory(topology=(predecessor, successor))
-    relations = transaction_api._topology_relations_from_inventory(
-        inventory, inventory.subjects,
-    )
-    assert relations
-    assert {item.native_edge_anchor_ea for item in relations} == {0x1004}
-
-    object.__setattr__(inventory, "topology", (successor,))
-    with pytest.raises((TypeError, ValueError)):
-        transaction_api._topology_relations_from_inventory(inventory, inventory.subjects)
-
-    object.__setattr__(inventory, "topology", (predecessor, successor))
-    foreign = model.InventoryTopologyIncidence(
-        model.TopologyIncidenceKind.PREDECESSOR, 1, 99, None,
-    )
-    object.__setattr__(inventory, "topology", (foreign, predecessor, successor))
-    with pytest.raises((TypeError, ValueError)):
-        transaction_api._topology_relations_from_inventory(inventory, inventory.subjects)
+    assert {(row.kind, row.owner_serial, row.peer_serial) for row in inventory.topology} == {
+        (model.TopologyIncidenceKind.SUCCESSOR, 1, 2),
+        (model.TopologyIncidenceKind.PREDECESSOR, 2, 1),
+    }
+    with pytest.raises(ValueError, match="topology incidence"):
+        _topology_inventory(topology=(successor,))
+    with pytest.raises(ValueError, match="topology incidence"):
+        _topology_inventory(topology=(predecessor,))
+    with pytest.raises(ValueError, match="transfer"):
+        _topology_inventory(topology=(
+            predecessor,
+            model.InventoryTopologyIncidence(
+                model.TopologyIncidenceKind.SUCCESSOR, 1, 2, 0xDEAD,
+            ),
+        ))

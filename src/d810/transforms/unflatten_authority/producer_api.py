@@ -470,7 +470,7 @@ def validate_exact_effect_semantics(
     source_catalog: SourceIdentityCatalog,
     route_evidence: CanonicalSemanticEvidence,
     source_serial_by_ref: dict[object, int],
-) -> None:
+) -> _ExactEffectSemanticCorrelation:
     """Validate the one shared portable proposal/exclusion/claim relationship."""
 
     if type(exclusion) is not ExactStateBranchEffectExclusion:
@@ -525,7 +525,7 @@ def validate_exact_effect_semantics(
     selected_locator = claim.selected_target_subject.locator
     if not all(type(locator.block_ref) is NativeBlockRef for locator in (source_locator, predicate_locator, selected_locator)) or type(effect_locator.owner_ref) is not NativeBlockRef:
         raise ValueError("exact claim route refs are not native identities")
-    _resolve_exact_effect_semantics(
+    return _resolve_exact_effect_semantics(
         exclusion=exclusion,
         source_catalog=source_catalog,
         route_evidence=route_evidence,
@@ -539,7 +539,69 @@ def validate_exact_effect_semantics(
         expected_selected_edge_role=claim.selected_edge_role,
         expected_width=claim.width,
     )
-    return None
+
+
+def validate_exact_effect_claim_semantics(
+    *,
+    proposal: ProposedUnflattenContract,
+    claim: ExactInfeasibleEffectClaim,
+    source_serial_by_ref: dict[object, int],
+) -> _ExactEffectSemanticCorrelation | None:
+    """Validate one proposal claim through the producer-owned proof matcher.
+
+    The typed claim does not persist the legacy exclusion record, so rebuild
+    that closed record from its canonical locators and scalar fields before
+    delegating to ``validate_exact_effect_semantics``.  All state/storage,
+    route, width, source-write, branch, role, and proof correlation remains in
+    the one existing matcher.
+    """
+
+    if type(proposal) is not ProposedUnflattenContract:
+        raise TypeError("proposal must be a ProposedUnflattenContract")
+    if type(claim) is not ExactInfeasibleEffectClaim:
+        raise TypeError("claim must be an ExactInfeasibleEffectClaim")
+    source_locator = claim.source_subject.locator
+    predicate_locator = claim.predicate_subject.locator
+    selected_locator = claim.selected_target_subject.locator
+    effect_locator = claim.discarded_effect_subject.locator
+    if not all(
+        type(locator) is BlockSubjectLocator
+        for locator in (source_locator, predicate_locator, selected_locator)
+    ) or type(effect_locator) is not EffectSubjectLocator:
+        return None
+    serials = {
+        "source_serial": source_serial_by_ref.get(source_locator.block_ref),
+        "predicate_serial": source_serial_by_ref.get(predicate_locator.block_ref),
+        "selected_target_serial": source_serial_by_ref.get(selected_locator.block_ref),
+        "discarded_effect_serial": source_serial_by_ref.get(effect_locator.owner_ref),
+    }
+    if any(type(value) is not int for value in serials.values()):
+        return None
+    exclusion = ExactStateBranchEffectExclusion(
+        normalized_state=claim.normalized_state,
+        source_serial=serials["source_serial"],
+        source_ea=source_locator.anchor_ea,
+        source_write_ea=claim.source_write_ea,
+        predicate_serial=serials["predicate_serial"],
+        predicate_ea=predicate_locator.anchor_ea,
+        predicate_branch_ea=claim.predicate_branch_ea,
+        selected_target_serial=serials["selected_target_serial"],
+        selected_target_ea=selected_locator.anchor_ea,
+        discarded_effect_serial=serials["discarded_effect_serial"],
+        discarded_effect_ea=claim.discarded_effect_ea,
+        state_identity=claim.state_identity,
+    )
+    try:
+        return validate_exact_effect_semantics(
+            proposal=proposal,
+            exclusion=exclusion,
+            claim=claim,
+            source_catalog=proposal.source_identity_catalog,
+            route_evidence=proposal.route_evidence,
+            source_serial_by_ref=source_serial_by_ref,
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _valid_ea(value: object) -> bool:
@@ -1122,4 +1184,5 @@ __all__ = [
     "build_proposal",
     "build_exact_effect_claim",
     "validate_exact_effect_semantics",
+    "validate_exact_effect_claim_semantics",
 ]

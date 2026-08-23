@@ -92,6 +92,148 @@ def _validate_terminal(result: TerminalReachabilityResult) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class GenericEntryGateFacts:
+    """Lossless portable DTO for one entry reachability result."""
+
+    passed: bool
+    pre_reachable_count: int
+    post_reachable_count: int
+    retained_ratio: float
+    min_pre_reachable: int
+    min_retained_ratio: float
+    reason: str
+
+    @classmethod
+    def from_result(cls, result: EntryReachabilityResult) -> GenericEntryGateFacts:
+        if type(result) is not EntryReachabilityResult:
+            raise TypeError("entry facts require EntryReachabilityResult")
+        _validate_entry(result)
+        return cls(
+            result.passed, result.pre_reachable_count, result.post_reachable_count,
+            result.retained_ratio, result.min_pre_reachable,
+            result.min_retained_ratio, result.reason,
+        )
+
+    def to_result(self) -> EntryReachabilityResult:
+        result = EntryReachabilityResult(
+            self.passed, self.pre_reachable_count, self.post_reachable_count,
+            self.retained_ratio, self.min_pre_reachable,
+            self.min_retained_ratio, self.reason,
+        )
+        _validate_entry(result)
+        return result
+
+    def __post_init__(self) -> None:
+        _validate_entry(self.to_result())
+
+
+@dataclass(frozen=True, slots=True)
+class GenericEffectfulGateFacts:
+    """Lossless portable DTO for raw or effective effect reachability."""
+
+    passed: bool
+    pre_effectful_block_serials: frozenset[int]
+    post_reachable_effectful_block_serials: frozenset[int]
+    lost_block_serials: frozenset[int]
+    reason: str
+
+    @classmethod
+    def from_result(cls, result: EffectfulReachabilityResult) -> GenericEffectfulGateFacts:
+        if type(result) is not EffectfulReachabilityResult:
+            raise TypeError("effect facts require EffectfulReachabilityResult")
+        _validate_effect(result, "effect")
+        return cls(
+            result.passed, result.pre_effectful_block_serials,
+            result.post_reachable_effectful_block_serials,
+            result.lost_block_serials, result.reason,
+        )
+
+    def to_result(self) -> EffectfulReachabilityResult:
+        result = EffectfulReachabilityResult(
+            self.passed, self.pre_effectful_block_serials,
+            self.post_reachable_effectful_block_serials,
+            self.lost_block_serials, self.reason,
+        )
+        _validate_effect(result, "effect")
+        return result
+
+    def __post_init__(self) -> None:
+        _validate_effect(self.to_result(), "effect")
+
+
+@dataclass(frozen=True, slots=True)
+class GenericTerminalGateFacts:
+    """Lossless portable DTO for terminal reachability."""
+
+    passed: bool
+    pre_reachable_terminals: frozenset[int]
+    post_reachable_terminals: frozenset[int]
+    pre_reachable_count: int
+    post_reachable_count: int
+    reason: str
+
+    @classmethod
+    def from_result(cls, result: TerminalReachabilityResult) -> GenericTerminalGateFacts:
+        if type(result) is not TerminalReachabilityResult:
+            raise TypeError("terminal facts require TerminalReachabilityResult")
+        _validate_terminal(result)
+        return cls(
+            result.passed, result.pre_reachable_terminals,
+            result.post_reachable_terminals, result.pre_reachable_count,
+            result.post_reachable_count, result.reason,
+        )
+
+    def to_result(self) -> TerminalReachabilityResult:
+        result = TerminalReachabilityResult(
+            self.passed, self.pre_reachable_terminals,
+            self.post_reachable_terminals, self.pre_reachable_count,
+            self.post_reachable_count, self.reason,
+        )
+        _validate_terminal(result)
+        return result
+
+    def __post_init__(self) -> None:
+        _validate_terminal(self.to_result())
+
+
+@dataclass(frozen=True, slots=True)
+class GenericCfgGateFacts:
+    """The only portable transport for native generic CFG facts."""
+
+    entry: GenericEntryGateFacts
+    effectful_raw: GenericEffectfulGateFacts
+    effectful_effective: GenericEffectfulGateFacts
+    terminal: GenericTerminalGateFacts
+
+    def __post_init__(self) -> None:
+        if type(self.entry) is not GenericEntryGateFacts:
+            raise TypeError("entry must be GenericEntryGateFacts")
+        if type(self.effectful_raw) is not GenericEffectfulGateFacts:
+            raise TypeError("effectful_raw must be GenericEffectfulGateFacts")
+        if type(self.effectful_effective) is not GenericEffectfulGateFacts:
+            raise TypeError("effectful_effective must be GenericEffectfulGateFacts")
+        if type(self.terminal) is not GenericTerminalGateFacts:
+            raise TypeError("terminal must be GenericTerminalGateFacts")
+        validate_generic_cfg_gate_bundle(self.to_bundle())
+
+    @classmethod
+    def from_bundle(cls, bundle: GenericCfgGateBundle) -> GenericCfgGateFacts:
+        validate_generic_cfg_gate_bundle(bundle)
+        return cls(
+            GenericEntryGateFacts.from_result(bundle.entry),
+            GenericEffectfulGateFacts.from_result(bundle.effectful_raw),
+            GenericEffectfulGateFacts.from_result(bundle.effectful_effective),
+            GenericTerminalGateFacts.from_result(bundle.terminal),
+        )
+
+    def to_bundle(self) -> GenericCfgGateBundle:
+        return GenericCfgGateBundle(
+            self.entry.to_result(), self.effectful_raw.to_result(),
+            self.effectful_effective.to_result(), self.terminal.to_result(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class GenericCfgGateBundle:
     """Exact raw/effective gate results retained across both transaction phases."""
 
@@ -110,6 +252,16 @@ class GenericCfgGateBundle:
             self.effectful_raw.lost_block_serials
             - self.effectful_effective.lost_block_serials
         )
+
+    @property
+    def facts(self) -> GenericCfgGateFacts:
+        return GenericCfgGateFacts.from_bundle(self)
+
+
+def generic_cfg_gate_facts_from_bundle(bundle: GenericCfgGateBundle) -> GenericCfgGateFacts:
+    """Adapt native graph-check results once into the closed facts DTO."""
+
+    return GenericCfgGateFacts.from_bundle(bundle)
 
 
 def validate_generic_cfg_gate_bundle(bundle: GenericCfgGateBundle) -> GenericCfgGateBundle:
@@ -144,4 +296,8 @@ def validate_generic_cfg_gate_bundle(bundle: GenericCfgGateBundle) -> GenericCfg
     return bundle
 
 
-__all__ = ["GenericCfgGateBundle", "validate_generic_cfg_gate_bundle"]
+__all__ = [
+    "GenericCfgGateBundle", "GenericCfgGateFacts", "GenericEntryGateFacts",
+    "GenericEffectfulGateFacts", "GenericTerminalGateFacts",
+    "generic_cfg_gate_facts_from_bundle", "validate_generic_cfg_gate_bundle",
+]

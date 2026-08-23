@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import is_dataclass, replace
+import inspect
 
 import pytest
 
@@ -214,6 +215,25 @@ def test_model_dataclasses_are_frozen_and_slotted() -> None:
         if is_dataclass(value):
             assert getattr(value, "__slots__", None) is not None
             assert getattr(value, "__dataclass_params__").frozen
+
+
+def test_derived_inputs_exposes_only_transaction_facts() -> None:
+    model = import_authority_model()
+    fields = set(inspect.signature(model.DerivedUnflattenPreparationInputs).parameters)
+    assert fields == {
+        "proposal", "claims", "preparation_receipt", "source_inventory",
+        "candidate_inventory", "source_route_assessment",
+        "candidate_route_assessment", "generic_gate_facts",
+        "conditional_relations", "patch_step_facts", "preparation_metrics",
+        "phase_build_metrics",
+    }
+    for removed in (
+        "source_subjects", "candidate_subjects", "source_bindings",
+        "candidate_bindings", "source_fingerprint", "candidate_fingerprint",
+        "source_generation", "candidate_generation", "lineage_evidence",
+        "patch_step_evidence", "generic_gates",
+    ):
+        assert removed not in fields
 
 
 def test_locator_tuples_are_normalized_and_duplicate_checked() -> None:

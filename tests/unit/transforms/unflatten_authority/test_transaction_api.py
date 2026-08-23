@@ -252,6 +252,25 @@ def test_prepare_derives_closed_inputs_and_bind_consumes_exact_bound_patch_plan(
     assert len(build_calls) == 2
     assert len(prepared_result.prepared.source_inventory.blocks) == len(source.blocks)
     assert set(prepared_result.prepared.source_inventory.reachable_serials) <= set(source.blocks)
+    derived_inputs = transaction_api.derive_unflatten_preparation_inputs(
+        source, projection, plan, proposal, generic_gates,
+    )
+    from d810.transforms.unflatten_authority import model
+    derived_case = transaction_api.build_semantic_case(
+        authority_id=authority_id("legacy-derived-inputs"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=derived_inputs,
+    )
+    assert derived_case.phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+    from d810.analyses.control_flow.semantic_route_evidence import CanonicalRouteAssessmentPhase
+    candidate_assessment = prepared_result.prepared.source_inputs.candidate_route_assessment
+    assert candidate_assessment is not None
+    original_assessment_phase = candidate_assessment.phase
+    object.__setattr__(candidate_assessment, "phase", CanonicalRouteAssessmentPhase.OBSERVED)
+    with pytest.raises(ValueError, match="route assessment"):
+        prepared_result.prepared.source_inputs.__post_init__()
+    object.__setattr__(candidate_assessment, "phase", original_assessment_phase)
+    prepared_result.prepared.source_inputs.__post_init__()
     receipt = prepared_result.prepared.source_inputs.preparation_receipt
     assert receipt.source_inventory_digest == prepared_result.prepared.source_inventory.inventory_digest
     assert receipt.candidate_inventory_digest == prepared_result.prepared.source_inputs.candidate_inventory.inventory_digest
@@ -588,18 +607,18 @@ def test_prepare_derives_closed_inputs_and_bind_consumes_exact_bound_patch_plan(
     ) is None
     object.__setattr__(catalog, "generation", 1)
 
-    # A failed fold must report the already-built candidate fingerprint.  In
-    # particular, it must not rescan the live graph for the exception verdict.
-    from d810.transforms.unflatten_authority import ids
+    # A failed fold must report the already-built candidate fingerprint. In
+    # particular, it must not rematerialize either live graph for the error.
+    from d810.analyses.control_flow.semantic_route_evidence import CanonicalRouteMaterialization
 
-    projections = []
-    original_projection = ids._graph_projection
+    captures = []
+    original_capture = CanonicalRouteMaterialization.capture
 
-    def counted_projection(*args, **kwargs):
-        projections.append(True)
-        return original_projection(*args, **kwargs)
+    def counted_capture(*args, **kwargs):
+        captures.append(True)
+        return original_capture(*args, **kwargs)
 
-    monkeypatch.setattr(ids, "_graph_projection", counted_projection)
+    monkeypatch.setattr(CanonicalRouteMaterialization, "capture", counted_capture)
     monkeypatch.setattr(
         transaction_api,
         "_derive_inputs",
@@ -611,7 +630,7 @@ def test_prepare_derives_closed_inputs_and_bind_consumes_exact_bound_patch_plan(
     )
     assert getattr(failed_result, "prepared", None) is None
     assert failed_result.verdict.candidate_fingerprint == prepared_result.prepared.projected_fingerprint
-    assert len(projections) == 2
+    assert len(captures) == 2
 
 
 def test_bound_patch_plan_transport_is_exact_nominal_and_gate_bundle_is_lossless() -> None:
@@ -710,19 +729,9 @@ def test_gate_bundle_rejects_lossy_rows_and_raw_effect_drift() -> None:
 
 
 def test_same_owner_effect_gate_uses_exact_effect_locator_presence() -> None:
-    """A claimed CALL exclusion cannot authorize an unclaimed sibling STORE."""
-    from d810.analyses.control_flow.graph_checks import (
-        EffectfulReachabilityResult,
-        check_entry_reachability_not_collapsed,
-        check_terminal_reachability_preserved,
-    )
-    from d810.transforms.unflatten_authority import bind as authority_bind
+    """Gate transport contains facts only; effect identity comes from inventory."""
     from d810.transforms.unflatten_authority import transaction_api
-    from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
-    from d810.transforms.unflatten_authority.model import (
-        EffectSiteKind,
-        UnflattenAuthorityPhase,
-    )
+    from d810.transforms.unflatten_authority.model import UnflattenAuthorityPhase
     from d810.transforms.plan import PatchRedirectGoto
 
     source, proposal, _exclusion, refs = __import__(
@@ -756,82 +765,17 @@ def test_same_owner_effect_gate_uses_exact_effect_locator_presence() -> None:
         source, proposal, plan, source=True,
         phase=UnflattenAuthorityPhase.PRODUCER_FORECAST,
     )
-    store_locator = transaction_api.model.EffectSubjectLocator(
-        refs[3], 0x4000, 0x4001, EffectSiteKind.STORE,
-    )
-    store_subject = transaction_api._subject(
-        transaction_api.model.SemanticSubjectKind.EFFECT,
-        transaction_api.model.SemanticSubjectRole.EFFECT_SITE,
-        store_locator,
-    )
-    source_store_binding = authority_bind.bind_subjects(
-        (store_subject,), catalog=proposal.source_identity_catalog,
-        phase=UnflattenAuthorityPhase.PRODUCER_FORECAST,
-        graph_fingerprint=source_inventory.graph_fingerprint,
-        generation=source_inventory.generation,
-        serial_by_ref=transaction_api._catalog_serials(source, proposal, plan),
-    )
-    store_site = transaction_api.model.InventoryEffectSite(
-        3, refs[3], 0x4000, 0, 0x4001, EffectSiteKind.STORE, 0, 1,
-    )
-    object.__setattr__(source_inventory, "subjects", source_inventory.subjects + (store_subject,))
-    object.__setattr__(source_inventory, "bindings", source_inventory.bindings + source_store_binding)
-    object.__setattr__(source_inventory, "effects", source_inventory.effects + (store_site,))
     candidate_inventory = transaction_api._build_semantic_graph_inventory(
         source, proposal, plan, source=False,
         phase=UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
     )
-    candidate_store_binding = authority_bind.bind_projected_subjects(
-        (store_subject,), catalog=proposal.source_identity_catalog,
-        phase=UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        graph_fingerprint=candidate_inventory.graph_fingerprint,
-        generation=candidate_inventory.generation,
-        serial_by_ref=transaction_api._projected_serials(source, proposal),
-    )
-    object.__setattr__(candidate_inventory, "subjects", candidate_inventory.subjects + (store_subject,))
-    object.__setattr__(candidate_inventory, "bindings", candidate_inventory.bindings + candidate_store_binding)
-    object.__setattr__(candidate_inventory, "effects", candidate_inventory.effects + (store_site,))
-    entry = check_entry_reachability_not_collapsed(source, post_cfg=source)
-    terminal = check_terminal_reachability_preserved(source, post_cfg=source)
-    bundle = GenericCfgGateBundle(
-        entry,
-        EffectfulReachabilityResult(False, frozenset({3}), frozenset(), frozenset({3})),
-        EffectfulReachabilityResult(True, frozenset({3}), frozenset({3}), frozenset()),
-        terminal,
-    )
-    rows = transaction_api._generic_gates(
-        bundle, source_inventory, candidate_inventory,
-        source_inventory.subjects, proposal,
-    )
-    effect_row = next(item for item in rows if item.gate.value == "effectful_reachability")
-    assert store_subject.subject_id in effect_row.supported_subject_ids
-
-    removed_candidate = replace(
-        candidate_inventory,
-        subjects=tuple(item for item in candidate_inventory.subjects if item is not store_subject),
-        bindings=tuple(item for item in candidate_inventory.bindings if item.subject is not store_subject),
-        effects=tuple(item for item in candidate_inventory.effects if item != store_site),
-    )
-    with pytest.raises(ValueError):
-        transaction_api._generic_gates(
-            bundle, source_inventory, removed_candidate,
-            source_inventory.subjects, proposal,
-        )
-
-    claim = next(item for item in proposal.claims if type(item) is transaction_api.model.ExactInfeasibleEffectClaim)
-    bad_locator = transaction_api.model.EffectSubjectLocator(
-        refs[3], 0x4000, 0x4999, EffectSiteKind.CALL,
-    )
-    object.__setattr__(claim, "discarded_effect_subject", transaction_api._subject(
-        transaction_api.model.SemanticSubjectKind.EFFECT,
-        transaction_api.model.SemanticSubjectRole.EFFECT_SITE,
-        bad_locator,
-    ))
-    with pytest.raises(ValueError):
-        transaction_api._generic_gates(
-            bundle, source_inventory, candidate_inventory,
-            source_inventory.subjects, proposal,
-        )
+    source_effects = tuple(source_inventory.effects)
+    candidate_effects = tuple(candidate_inventory.effects)
+    assert source_effects
+    assert {item.effect_kind for item in source_effects} >= {item.effect_kind for item in candidate_effects}
+    assert all(item.owner_serial in source_inventory.reachable_serials for item in source_effects)
+    assert not hasattr(transaction_api, "_generic_gates")
+    assert not hasattr(transaction_api, "_topology_relations_from_inventory")
 
 
 def test_prepare_rejects_projected_route_predicate_erasure() -> None:

@@ -5,8 +5,102 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 
+from d810.analyses.control_flow import semantic_route_evidence as route_model
+
 from . import model
+from . import gates
+from . import producer_api
 from .ids import _case_factory, _evidence_factory, _justification_factory, authority_id as _authority_id_digest
+
+
+@dataclass(frozen=True, slots=True)
+class _EffectClassification:
+    """Single classification of one source effect site for this phase."""
+
+    preserved: bool
+    authorized_loss: bool
+    refuted: bool
+    claim: model.ExactInfeasibleEffectClaim | None
+
+
+def _classify_effect_site(
+    effect: model.InventoryEffectSite,
+    subject: model.SemanticSubjectRef,
+    source_binding: model.PhaseSubjectBinding,
+    candidate_binding: model.PhaseSubjectBinding | None,
+    candidate_effect: model.InventoryEffectSite | tuple[model.InventoryEffectSite, ...] | None,
+    claim: model.ExactInfeasibleEffectClaim | None,
+    route_assessment: route_model.CanonicalRouteAssessment | None,
+    generic_gate_facts: gates.GenericCfgGateFacts | None,
+) -> _EffectClassification:
+    """Classify one effect from closed phase facts exactly once."""
+
+    candidate_rows = (
+        () if candidate_effect is None
+        else candidate_effect if type(candidate_effect) is tuple
+        else (candidate_effect,)
+    )
+    candidate_row = candidate_rows[0] if len(candidate_rows) == 1 else None
+    candidate_site_matches = bool(
+        candidate_row is not None
+        and candidate_binding is not None
+        and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+        and candidate_row.owner_serial == candidate_binding.serial
+        and candidate_row.owner_ref == effect.owner_ref
+        and candidate_row.owner_anchor_ea == effect.owner_anchor_ea
+        and candidate_row.instruction_ea == effect.instruction_ea
+        and candidate_row.effect_kind is effect.effect_kind
+        and candidate_row.opcode == effect.opcode
+        and candidate_row.width == effect.width
+    )
+    preserved = (
+        source_binding.status is model.SubjectBindingStatus.UNIQUE
+        and candidate_binding is not None
+        and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+        and candidate_site_matches
+    )
+    if preserved:
+        # A present site is preserved; a claim cannot annotate a preserved
+        # effect or authorize any loss metadata.
+        return _EffectClassification(True, False, False, None)
+    # A candidate row that exists but mismatches the source is drift, not an
+    # authorized absence.  Only the closed MISSING site binding qualifies for
+    # an exact-loss claim.
+    candidate_site_absent = (
+        not candidate_rows
+        and candidate_binding is not None
+        and candidate_binding.status is model.SubjectBindingStatus.MISSING
+    )
+    exact = (
+        candidate_site_absent
+        and
+        claim is not None
+        and claim.discarded_effect_subject.subject_id == subject.subject_id
+        and claim.discarded_effect_ea == effect.instruction_ea
+        and claim.width == effect.width
+        and claim.discarded_effect_subject.locator.owner_ref == effect.owner_ref
+        and claim.discarded_effect_subject.locator.owner_anchor_ea == effect.owner_anchor_ea
+        and claim.discarded_effect_subject.locator.effect_kind is effect.effect_kind
+    )
+    route_ok = bool(
+        claim is not None
+        and route_assessment is not None
+        and route_assessment.accepted
+        and tuple(claim.route_proof_ids) == tuple(route_assessment.proof_ids)
+    )
+    raw_facts = None if generic_gate_facts is None else generic_gate_facts.effectful_raw
+    effective_facts = None if generic_gate_facts is None else generic_gate_facts.effectful_effective
+    owner = effect.owner_serial
+    raw_lost = raw_facts is not None and owner in raw_facts.lost_block_serials
+    raw_retained = raw_facts is not None and owner in raw_facts.pre_effectful_block_serials and not raw_lost
+    effective_retained = effective_facts is not None and owner in effective_facts.pre_effectful_block_serials and owner not in effective_facts.lost_block_serials
+    gate_ok = bool(
+        generic_gate_facts is not None
+        and effective_retained
+        and (raw_lost or raw_retained)
+    )
+    authorized = bool(exact and route_ok and gate_ok)
+    return _EffectClassification(False, authorized, not authorized, claim if authorized else None)
 
 
 REQUIRED_DIMENSIONS: dict[model.SemanticSubjectRole, tuple[model.SafetyDimension, ...]] = {
@@ -40,15 +134,15 @@ REQUIRED_DIMENSIONS: dict[model.SemanticSubjectRole, tuple[model.SafetyDimension
         model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.HANDLER_REACHABILITY,
     ),
     model.SemanticSubjectRole.TERMINAL_SITE: (
-        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
-        model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.TERMINAL_REACHABILITY,
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+        model.SafetyDimension.TERMINAL_REACHABILITY,
     ),
     model.SemanticSubjectRole.NON_STATE_VALUE_FLOW: (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.USE_DEF_INTEGRITY,
     ),
     model.SemanticSubjectRole.DISPATCHER_CORRIDOR: (
-        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
-        model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.CORRIDOR_COVERAGE,
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+        model.SafetyDimension.CORRIDOR_COVERAGE,
     ),
     model.SemanticSubjectRole.PLANNED_HELPER: (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
@@ -254,6 +348,7 @@ def _validate_justification_graph(
     candidate_generation: int | None = None,
     bindings: tuple[model.PhaseSubjectBinding, ...] = (),
     subjects: tuple[model.SemanticSubjectRef, ...] = (),
+    source_subject_ids: tuple[str, ...] = (),
 ) -> None:
     required_set = set(required)
     ids = {item.justification_id for item in justifications}
@@ -336,7 +431,14 @@ def _validate_justification_graph(
                 valid_rows = tuple(
                     binding for binding in binding_rows
                     if binding.phase is phase
-                    and binding.status is model.SubjectBindingStatus.UNIQUE
+                    and (
+                        binding.status is model.SubjectBindingStatus.UNIQUE
+                        or (
+                            phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+                            and binding.status is model.SubjectBindingStatus.MISSING
+                            and binding.subject.subject_id in set(source_subject_ids)
+                        )
+                    )
                     and binding.graph_fingerprint == candidate_fingerprint
                     and binding.generation == candidate_generation
                     and (
@@ -372,8 +474,8 @@ def _validate_justification_graph(
                         if target.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
                         else 1
                     )
-                ):
-                    raise ValueError("nonunique identity refutation lacks a mismatch condition")
+                    ):
+                        raise ValueError("nonunique identity refutation lacks a mismatch condition")
             if item.rule in {
                 model.UnflattenJustificationRule.USE_DEF_AUDIT_CLEAN,
                 model.UnflattenJustificationRule.USE_DEF_AUDIT_UNAVAILABLE,
@@ -608,14 +710,37 @@ def _identity_support(
     phase: model.UnflattenAuthorityPhase,
     fingerprint: str,
     generation: int,
+    *,
+    allow_source_indexed_missing: bool = False,
 ) -> bool:
-    if not any(candidate == subject for candidate in inventory):
+    if not any(candidate == subject for candidate in inventory) and not (
+        allow_source_indexed_missing
+        and any(
+            binding.subject == subject
+            and binding.status is model.SubjectBindingStatus.MISSING
+            for binding in bindings
+        )
+    ):
+        # source-indexed MISSING rows are a known identity absence
         return False
     valid = tuple(
         binding for binding in bindings
-        if binding.phase is phase and binding.status is model.SubjectBindingStatus.UNIQUE
+        if binding.phase is phase and (
+            binding.status is model.SubjectBindingStatus.UNIQUE
+            or (
+                allow_source_indexed_missing
+                and binding.status is model.SubjectBindingStatus.MISSING
+                and binding.subject == subject
+            )
+        )
         and binding.graph_fingerprint == fingerprint and binding.generation == generation
     )
+    if allow_source_indexed_missing and any(
+        binding.subject == subject
+        and binding.status is model.SubjectBindingStatus.MISSING
+        for binding in valid
+    ) and type(subject.locator) is not model.ValueFlowSubjectLocator:
+        return True
     def owner(ref: object, anchor: int | None = None) -> bool:
         return any(
             binding.subject.kind is model.SemanticSubjectKind.BLOCK
@@ -691,20 +816,20 @@ def _validate_receipt(
         raise ValueError("preparation receipt belongs to a different proposal")
     if receipt.plan_id != proposal.plan_id:
         raise ValueError("preparation receipt belongs to a different plan")
-    if receipt.source_fingerprint != inputs.source_fingerprint or receipt.candidate_fingerprint != inputs.candidate_fingerprint:
+    if receipt.source_fingerprint != inputs.source_inventory.graph_fingerprint or receipt.candidate_fingerprint != inputs.candidate_inventory.graph_fingerprint:
         raise ValueError("preparation receipt fingerprint mismatch")
-    if receipt.source_generation != inputs.source_generation or receipt.candidate_generation != inputs.candidate_generation:
+    if receipt.source_generation != inputs.source_inventory.generation or receipt.candidate_generation != inputs.candidate_inventory.generation:
         raise ValueError("preparation receipt generation mismatch")
     if receipt.metrics != inputs.preparation_metrics:
         raise ValueError("preparation receipt metrics mismatch")
-    source_subjects = tuple(sorted(inputs.source_subjects, key=lambda item: item.subject_id))
-    candidate_subjects = tuple(sorted(inputs.candidate_subjects, key=lambda item: item.subject_id))
-    source_bindings = tuple(sorted(inputs.source_bindings, key=lambda item: item.subject.subject_id))
-    candidate_bindings = tuple(sorted(inputs.candidate_bindings, key=lambda item: item.subject.subject_id))
+    source_subjects = tuple(sorted(inputs.source_inventory.subjects, key=lambda item: item.subject_id))
+    candidate_subjects = tuple(sorted(inputs.candidate_inventory.subjects, key=lambda item: item.subject_id))
+    source_bindings = tuple(sorted(inputs.source_inventory.bindings, key=lambda item: item.subject.subject_id))
+    candidate_bindings = tuple(sorted(inputs.candidate_inventory.bindings, key=lambda item: item.subject.subject_id))
     relations = tuple(sorted(inputs.conditional_relations, key=lambda item: (item.source_subject_id, item.target_subject_id, item.dimension.value, item.provenance_id)))
     patch_payloads = tuple(
-        item.payload for item in inputs.patch_step_evidence
-        if type(item.payload) is model.PatchStepEvidencePayload
+        item for item in inputs.patch_step_facts
+        if type(item) is model.PatchStepEvidencePayload
     )
     route_subjects = tuple(
         item for item in source_subjects
@@ -742,6 +867,24 @@ def _validate_receipt(
         "planned_helper_digest": _receipt_digest(helpers),
         "patch_step_digest": _receipt_digest(tuple(sorted(patch_payloads, key=lambda item: (item.plan_id, item.step_index)))),
         "conditional_relation_digest": _receipt_digest(relations),
+        "generic_gate_facts_digest": (
+            _receipt_digest(inputs.generic_gate_facts)
+            if inputs.generic_gate_facts is not None else None
+        ),
+        "route_assessment_digest": (
+            _receipt_digest(tuple(
+                (
+                    item.phase.value, item.graph_fingerprint, item.generation,
+                    item.evidence_id, item.proof_ids,
+                    item.rejection_reason.value if item.rejection_reason else None,
+                    item.bound_content_digest,
+                )
+                for item in (inputs.source_route_assessment, inputs.candidate_route_assessment)
+                if item is not None
+            ))
+            if inputs.source_route_assessment is not None or inputs.candidate_route_assessment is not None
+            else None
+        ),
     }
     for name, value in expected.items():
         if getattr(receipt, name) != value:
@@ -816,6 +959,356 @@ def _validate_receipt(
         raise ValueError("source inventory does not cover canonical route expansion")
 
 
+def _evaluator_fact_evidence(
+    inputs: model.DerivedUnflattenPreparationInputs,
+    phase: model.UnflattenAuthorityPhase,
+) -> tuple[tuple[model.AuthorityEvidence, ...], tuple[model.AuthorityEvidence, ...], tuple[model.GenericCfgGateResult, ...], dict[str, _EffectClassification]]:
+    """Create semantic evidence from closed inventories and transport facts."""
+
+    source = inputs.source_inventory
+    candidate = inputs.candidate_inventory
+    source_subjects = tuple(sorted(source.subjects, key=lambda item: item.subject_id))
+    candidate_subjects = tuple(sorted(candidate.subjects, key=lambda item: item.subject_id))
+    source_bindings = {item.subject.subject_id: item for item in source.bindings}
+    candidate_bindings = {item.subject.subject_id: item for item in candidate.bindings}
+    evidence: list[model.AuthorityEvidence] = []
+    classifications: dict[str, _EffectClassification] = {}
+    validated_exact_claims: dict[str, model.ExactInfeasibleEffectClaim] = {}
+    for exact_claim in inputs.claims:
+        if type(exact_claim) is not model.ExactInfeasibleEffectClaim:
+            continue
+        try:
+            correlation = producer_api.validate_exact_effect_claim_semantics(
+                proposal=inputs.proposal,
+                claim=exact_claim,
+                source_serial_by_ref=source.serial_by_ref,
+            )
+        except (TypeError, ValueError):
+            correlation = None
+        if correlation is not None:
+            validated_exact_claims[exact_claim.discarded_effect_subject.subject_id] = exact_claim
+
+    topology_roles = {
+        model.SemanticSubjectRole.SOURCE_ENTRY,
+        model.SemanticSubjectRole.DISPATCHER_ENTRY,
+        model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+        model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+        model.SemanticSubjectRole.PLANNED_HELPER,
+    }
+
+    def topology_relations(inventory: model.SemanticGraphInventory) -> tuple[model.TopologyEdgeRelation, ...]:
+        by_serial = {item.serial: item for item in inventory.blocks}
+        subject_by_serial: dict[int, tuple[model.SemanticSubjectRef, ...]] = defaultdict(tuple)
+        for subject in inventory.subjects:
+            if (
+                subject.role in topology_roles
+                and subject.block_ref is not None
+                and subject.block_ref in inventory.serial_by_ref
+            ):
+                serial = inventory.serial_by_ref[subject.block_ref]
+                subject_by_serial[serial] = (*subject_by_serial[serial], subject)
+        rows: dict[tuple[int, int], dict[model.TopologyIncidenceKind, model.InventoryTopologyIncidence]] = {}
+        for item in inventory.topology:
+            key = (item.owner_serial, item.peer_serial) if item.kind is model.TopologyIncidenceKind.SUCCESSOR else (item.peer_serial, item.owner_serial)
+            rows.setdefault(key, {})[item.kind] = item
+        result: list[model.TopologyEdgeRelation] = []
+        for (source_serial, target_serial), pair in rows.items():
+            successor = pair.get(model.TopologyIncidenceKind.SUCCESSOR)
+            predecessor = pair.get(model.TopologyIncidenceKind.PREDECESSOR)
+            if successor is None or predecessor is None or successor.source_transfer_ea != predecessor.source_transfer_ea:
+                continue
+            anchor = successor.source_transfer_ea
+            if anchor is None:
+                anchor = by_serial[source_serial].anchor_ea
+            if anchor is None:
+                continue
+            for source_subject in subject_by_serial.get(source_serial, ()):
+                for target_subject in subject_by_serial.get(target_serial, ()):
+                    result.append(model.TopologyEdgeRelation(
+                        model.SemanticEdgeRole.DIRECT, source_subject.subject_id,
+                        target_subject.subject_id, anchor,
+                    ))
+                    result.append(model.TopologyEdgeRelation(
+                        model.SemanticEdgeRole.DIRECT, target_subject.subject_id,
+                        source_subject.subject_id, anchor,
+                    ))
+        return tuple(sorted(result, key=lambda item: (item.source_subject_id, item.target_subject_id, item.native_edge_anchor_ea)))
+
+    source_topology = topology_relations(source)
+    candidate_topology = topology_relations(candidate)
+
+    def has_reciprocal_edges(relations: tuple[model.TopologyEdgeRelation, ...]) -> bool:
+        """Report reciprocity of the raw topology rows being assessed."""
+
+        if not relations:
+            return True
+        relation_set = set(relations)
+        return all(
+            model.TopologyEdgeRelation(
+                relation.role,
+                relation.target_subject_id,
+                relation.source_subject_id,
+                relation.native_edge_anchor_ea,
+            ) in relation_set
+            for relation in relations
+        )
+
+    # Reachability is reconstructed from the closed candidate block rows.  A
+    # two-node ``(root, target)`` witness is not evidence: every returned path
+    # must follow the candidate successor relation and name each intermediate
+    # inventoried block.
+    source_entry = next((
+        item for item in source_subjects
+        if item.role is model.SemanticSubjectRole.SOURCE_ENTRY
+    ), None)
+    candidate_binding_by_id = {
+        item.subject.subject_id: item for item in candidate.bindings
+    }
+    candidate_subjects_by_serial: dict[int, tuple[model.SemanticSubjectRef, ...]] = {}
+    for subject in candidate.subjects:
+        binding = candidate_binding_by_id.get(subject.subject_id)
+        if binding is None or binding.status is not model.SubjectBindingStatus.UNIQUE:
+            continue
+        if type(binding.serial) is not int:
+            continue
+        candidate_subjects_by_serial[binding.serial] = (
+            *candidate_subjects_by_serial.get(binding.serial, ()), subject,
+        )
+    candidate_blocks_by_serial = {item.serial: item for item in candidate.blocks}
+    candidate_entry_binding = (
+        None if source_entry is None
+        else candidate_binding_by_id.get(source_entry.subject_id)
+    )
+    root_serial = (
+        None if candidate_entry_binding is None
+        or candidate_entry_binding.status is not model.SubjectBindingStatus.UNIQUE
+        else candidate_entry_binding.serial
+    )
+    paths: dict[int, tuple[int, ...]] = {}
+    if type(root_serial) is int and root_serial in candidate_blocks_by_serial:
+        queue = [root_serial]
+        paths[root_serial] = (root_serial,)
+        while queue:
+            serial = queue.pop(0)
+            block = candidate_blocks_by_serial[serial]
+            for successor in block.successor_serials:
+                if successor in paths or successor not in candidate_blocks_by_serial:
+                    continue
+                paths[successor] = (*paths[serial], successor)
+                queue.append(successor)
+    assessment = inputs.source_route_assessment if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST else inputs.candidate_route_assessment
+    for subject in source_subjects:
+        if subject.role is model.SemanticSubjectRole.EFFECT_SITE and type(subject.locator) is model.EffectSubjectLocator:
+            locator = subject.locator
+            effect = next((item for item in source.effects
+                           if item.owner_ref == locator.owner_ref
+                           and item.owner_anchor_ea == locator.owner_anchor_ea
+                           and item.instruction_ea == locator.instruction_ea
+                           and item.effect_kind is locator.effect_kind), None)
+            if effect is not None and effect.owner_serial in source.reachable_serials:
+                candidate_effect = tuple(
+                    item for item in candidate.effects
+                    if item.owner_ref == effect.owner_ref
+                    and item.owner_anchor_ea == effect.owner_anchor_ea
+                    and item.instruction_ea == effect.instruction_ea
+                )
+                classifications[subject.subject_id] = _classify_effect_site(
+                    effect,
+                    subject,
+                    source_bindings[subject.subject_id],
+                    candidate_bindings.get(subject.subject_id),
+                    candidate_effect,
+                    validated_exact_claims.get(subject.subject_id),
+                    assessment,
+                    inputs.generic_gate_facts,
+                )
+    for subject in source_subjects:
+        if subject.role not in {
+            model.SemanticSubjectRole.DISPATCHER_ENTRY,
+            model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+            model.SemanticSubjectRole.TERMINAL_SITE,
+            model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        } or source_entry is None or subject.block_ref is None:
+            continue
+        binding = candidate_binding_by_id.get(subject.subject_id)
+        candidate_serial = (
+            None if binding is None
+            or binding.status is not model.SubjectBindingStatus.UNIQUE
+            else binding.serial
+        )
+        serial_path = paths.get(candidate_serial) if type(candidate_serial) is int else None
+        if serial_path is None:
+            path_subject_ids: tuple[str, ...] = ()
+            reachable = False
+        else:
+            path_subject_ids_list: list[str] = [source_entry.subject_id]
+            for serial in serial_path[1:-1]:
+                intermediate = candidate_subjects_by_serial.get(serial, ())
+                if not intermediate:
+                    path_subject_ids_list = []
+                    break
+                path_subject_ids_list.append(intermediate[0].subject_id)
+            if path_subject_ids_list and serial_path[-1] == root_serial:
+                path_subject_ids = tuple(path_subject_ids_list)
+            elif path_subject_ids_list:
+                path_subject_ids = (*path_subject_ids_list, subject.subject_id)
+            else:
+                path_subject_ids = ()
+            reachable = bool(path_subject_ids)
+        evidence.append(_evidence_factory(
+            model.AuthorityEvidence,
+            model.AuthorityEvidenceKind.REACHABILITY,
+            subject,
+            phase,
+            model.ReachabilityEvidencePayload(
+                source_entry.subject_id, subject.subject_id, reachable,
+                path_subject_ids,
+            ),
+        ))
+
+    for subject in source_subjects:
+        if subject.block_ref is None:
+            continue
+        source_binding = source_bindings.get(subject.subject_id)
+        candidate_binding = candidate_bindings.get(subject.subject_id)
+        if source_binding is None:
+            continue
+        effect_classification = classifications.get(subject.subject_id)
+        preserved = (
+            source_binding.status is model.SubjectBindingStatus.UNIQUE
+            and candidate_binding is not None
+            and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+        )
+        if effect_classification is not None:
+            if effect_classification.authorized_loss:
+                # Exact-effect claims provide the later structural support;
+                # never emit an unaccounted lineage row for authorized loss.
+                disposition = None
+            elif effect_classification.preserved:
+                disposition = model.StructuralDisposition.PRESERVED
+            else:
+                disposition = model.StructuralDisposition.UNACCOUNTED_LOSS
+        else:
+            disposition = model.StructuralDisposition.PRESERVED if preserved else model.StructuralDisposition.UNACCOUNTED_LOSS
+        claim = next((claim for claim in inputs.claims
+                      if type(claim) is model.RetiredDispatcherInfrastructureClaim
+                      and subject.subject_id in {item.subject_id for item in claim.member_subjects}), None)
+        if (
+            claim is not None
+            and disposition is not None
+            and candidate_binding is not None
+            and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+        ):
+            disposition = model.StructuralDisposition.AUTHORIZED_RETIREMENT
+        if disposition is not None:
+            lineage = model.StructuralLineageEvidencePayload(
+                subject.subject_id, (subject.subject_id,) if preserved else (), disposition,
+                tuple(sorted(set(source_binding.native_instruction_eas) & set(
+                    candidate_binding.native_instruction_eas if candidate_binding is not None else (),
+                ))), claim.claim_id if claim is not None else None, (subject.subject_id,),
+            )
+            evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, subject, phase, lineage))
+        if subject.role not in topology_roles:
+            continue
+        expected = tuple(item for item in source_topology if subject.subject_id in (item.source_subject_id, item.target_subject_id))
+        observed = tuple(item for item in candidate_topology if subject.subject_id in (item.source_subject_id, item.target_subject_id))
+        topology = model.TopologyEvidencePayload(
+            subject.subject_id,
+            tuple(sorted(item.source_subject_id for item in expected if item.target_subject_id == subject.subject_id)),
+            tuple(sorted(item.target_subject_id for item in expected if item.source_subject_id == subject.subject_id)),
+            has_reciprocal_edges(expected), _authority_id_digest(expected), _authority_id_digest(observed), expected, observed,
+        )
+        evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.TOPOLOGY, subject, phase, topology))
+
+    for subject in source_subjects:
+        if subject.role is not model.SemanticSubjectRole.EFFECT_SITE or type(subject.locator) is not model.EffectSubjectLocator:
+            continue
+        locator = subject.locator
+        effect = next((item for item in source.effects
+                       if item.owner_ref == locator.owner_ref
+                       and item.owner_anchor_ea == locator.owner_anchor_ea
+                       and item.instruction_ea == locator.instruction_ea
+                       and item.effect_kind is locator.effect_kind), None)
+        if effect is None or effect.owner_serial not in source.reachable_serials:
+            continue
+        classification = classifications.get(subject.subject_id)
+        if classification is None:
+            continue
+        metadata_claim = classification.claim
+        payload = model.EffectSiteEvidencePayload(
+            subject.subject_id, effect.effect_kind, effect.instruction_ea, effect.opcode,
+            effect.width,
+            metadata_claim.state_identity if metadata_claim is not None else None,
+            metadata_claim.normalized_state if metadata_claim is not None else None,
+            metadata_claim.consensus.mode if metadata_claim is not None else model.ProviderConsensusMode.NOT_APPLICABLE,
+            metadata_claim.consensus.provider_ids if metadata_claim is not None else (),
+            classification.preserved,
+        )
+        evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.EFFECT_SITE, subject, phase, payload))
+
+    for subject in source_subjects:
+        if subject.kind is not model.SemanticSubjectKind.ROUTE:
+            continue
+        locator = subject.locator
+        destinations = tuple(
+            next(item.subject_id for item in source_subjects
+                 if item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
+                 and item.block_ref == ref and item.anchor_ea == anchor)
+            for ref, anchor in zip(locator.destination_refs, locator.destination_anchor_eas)
+        )
+        route_payload = model.SemanticRouteEvidencePayload(
+            subject.subject_id, (locator.proof_id,), locator.atomic_group_id,
+            next((item.subject_id for item in source_subjects
+                  if item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
+                  and item.block_ref == locator.source_ref and item.anchor_ea == locator.source_anchor_ea), subject.subject_id),
+            destinations, bool(assessment is not None and assessment.accepted and locator.proof_id in assessment.proof_ids),
+        )
+        evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.SEMANTIC_ROUTE, subject, phase, route_payload))
+
+    corridor = next((item for item in source_subjects if item.role is model.SemanticSubjectRole.DISPATCHER_CORRIDOR), None)
+    if corridor is not None:
+        members = tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE)
+        covered = tuple(item for item in members if candidate_bindings.get(item) is not None and candidate_bindings[item].status is model.SubjectBindingStatus.UNIQUE)
+        evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.CORRIDOR_COVERAGE, corridor, phase, model.CorridorCoverageEvidencePayload(corridor.subject_id, members, covered, tuple(item for item in members if item not in covered))))
+
+    generic_gates: list[model.GenericCfgGateResult] = []
+    facts = inputs.generic_gate_facts
+    if facts is not None:
+        entry = next((item for item in source_subjects if item.role is model.SemanticSubjectRole.SOURCE_ENTRY), None)
+        entry_ids = () if entry is None else (entry.subject_id,)
+        generic_gates.append(model.GenericCfgGateResult(model.GenericCfgGateKind.ENTRY_REACHABILITY, facts.entry.passed, entry_ids if facts.entry.passed else (), () if facts.entry.passed else entry_ids, facts.entry.reason or "entry_reachability"))
+        effect_ids = tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.EFFECT_SITE and type(item.locator) is model.EffectSubjectLocator and item.locator.effect_kind in {model.EffectSiteKind.CALL, model.EffectSiteKind.STORE})
+        generic_gates.append(model.GenericCfgGateResult(model.GenericCfgGateKind.EFFECTFUL_REACHABILITY, facts.effectful_effective.passed, effect_ids if facts.effectful_effective.passed else (), () if facts.effectful_effective.passed else effect_ids, facts.effectful_effective.reason or "effectful_reachability"))
+        terminal_ids = tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.TERMINAL_SITE and type(item.locator) is model.TerminalSubjectLocator and item.locator.terminal_kind in {model.TerminalKind.RETURN, model.TerminalKind.STOP})
+        generic_gates.append(model.GenericCfgGateResult(model.GenericCfgGateKind.TERMINAL_REACHABILITY, facts.terminal.passed, terminal_ids if facts.terminal.passed else (), () if facts.terminal.passed else terminal_ids, facts.terminal.reason or "terminal_reachability"))
+    # A missing generic-gate bundle is an absence of evidence.  It must not
+    # be converted into synthetic passing rows: inventory-derived reachability
+    # and presence evidence remain independently authoritative where defined.
+    patch_evidence_rows = []
+    for item in inputs.patch_step_facts:
+        patch_subject = next(
+            (
+                subject for subject in candidate_subjects
+                if subject.role is model.SemanticSubjectRole.PLANNED_HELPER
+                and subject.block_ref == item.owner_ref
+            ),
+            None,
+        )
+        if patch_subject is None:
+            raise ValueError("patch-step fact owner is not an inventoried planned helper")
+        patch_evidence_rows.append(_evidence_factory(
+            model.AuthorityEvidence,
+            model.AuthorityEvidenceKind.PATCH_STEP,
+            patch_subject,
+            phase,
+            item,
+        ))
+    patch_evidence = tuple(patch_evidence_rows)
+    return tuple(sorted(evidence, key=lambda item: item.evidence_id)), patch_evidence, tuple(generic_gates), classifications
+
+
 def build_semantic_case(
     *, authority_id: str, phase: model.UnflattenAuthorityPhase,
     inputs: model.DerivedUnflattenPreparationInputs,
@@ -827,12 +1320,19 @@ def build_semantic_case(
     if type(phase) is not model.UnflattenAuthorityPhase:
         raise TypeError("phase must be UnflattenAuthorityPhase")
     proposal = inputs.proposal
-    if any(item.kind in (
-        model.AuthorityEvidenceKind.PHASE_BINDING,
-        model.AuthorityEvidenceKind.GENERIC_CFG_GATE,
-        model.AuthorityEvidenceKind.USE_DEF_AUDIT,
-    ) for item in (*inputs.lineage_evidence, *inputs.patch_step_evidence)):
-        raise ValueError("binding, generic-gate, and use-def evidence are evaluator-owned typed rows")
+    source_inventory = inputs.source_inventory
+    candidate_inventory = inputs.candidate_inventory
+    source_subjects = tuple(sorted(source_inventory.subjects, key=lambda item: item.subject_id))
+    candidate_subjects = tuple(sorted(candidate_inventory.subjects, key=lambda item: item.subject_id))
+    source_bindings = tuple(sorted(source_inventory.bindings, key=lambda item: item.subject.subject_id))
+    candidate_bindings = tuple(sorted(candidate_inventory.bindings, key=lambda item: item.subject.subject_id))
+    source_fingerprint = source_inventory.graph_fingerprint
+    candidate_fingerprint = candidate_inventory.graph_fingerprint
+    source_generation = source_inventory.generation
+    candidate_generation = candidate_inventory.generation
+    lineage_evidence, patch_step_evidence, generic_gates, classifications = _evaluator_fact_evidence(
+        inputs, phase,
+    )
     proposal_claim_ids = {claim.claim_id for claim in proposal.claims}
     input_claim_ids = {claim.claim_id for claim in inputs.claims}
     if not proposal_claim_ids <= input_claim_ids or any(
@@ -840,18 +1340,16 @@ def build_semantic_case(
         for claim in inputs.claims
     ):
         raise ValueError("derived claims must preserve producer claims and closed transaction-derived claims")
-    if inputs.source_generation != proposal.source_identity_catalog.generation:
+    if source_generation != proposal.source_identity_catalog.generation:
         raise ValueError("source generation does not match proposal")
-    if not inputs.source_subjects:
+    if not source_subjects:
         raise ValueError("authority requires a non-empty source inventory")
-    if len(inputs.generic_gates) != len(model.GenericCfgGateKind):
-        raise ValueError("authority requires exactly one row per generic gate")
     _validate_receipt(inputs)
-    source_ids = {subject.subject_id for subject in inputs.source_subjects}
-    candidate_ids = {subject.subject_id for subject in inputs.candidate_subjects}
+    source_ids = {subject.subject_id for subject in source_subjects}
+    candidate_ids = {subject.subject_id for subject in candidate_subjects}
     known_input_subjects = {
         subject.subject_id: subject
-        for subject in (*inputs.source_subjects, *inputs.candidate_subjects)
+        for subject in (*source_subjects, *candidate_subjects)
     }
     alias_owners = {
         claim.owner_subject.subject_id
@@ -873,7 +1371,7 @@ def build_semantic_case(
         if relation.source_subject_id not in source_ids:
             raise ValueError("conditional relation source is outside source inventory")
         if relation.target_subject_id not in source_ids | {
-            item.subject_id for item in inputs.candidate_subjects
+            item.subject_id for item in candidate_subjects
             if item.role is model.SemanticSubjectRole.PLANNED_HELPER
         }:
             raise ValueError("conditional relation target is outside case inventory")
@@ -893,13 +1391,13 @@ def build_semantic_case(
                 raise ValueError("effect conditional relation must target an exact STORE alias effect")
         elif relation.dimension not in allowed_relation_dimensions:
             raise ValueError("conditional relation has an unsupported dimension")
-    if any(binding.subject.subject_id not in source_ids for binding in inputs.source_bindings):
+    if any(binding.subject.subject_id not in source_ids for binding in source_bindings):
         raise ValueError("source binding is outside source inventory")
-    if any(binding.subject.subject_id not in source_ids | candidate_ids for binding in inputs.candidate_bindings):
+    if any(binding.subject.subject_id not in source_ids | candidate_ids for binding in candidate_bindings):
         raise ValueError("candidate binding is outside candidate inventory")
-    if {binding.subject.subject_id for binding in inputs.source_bindings} != source_ids:
+    if {binding.subject.subject_id for binding in source_bindings} != source_ids:
         raise ValueError("source binding inventory is incomplete")
-    if {binding.subject.subject_id for binding in inputs.candidate_bindings} != source_ids | candidate_ids:
+    if {binding.subject.subject_id for binding in candidate_bindings} != source_ids | candidate_ids:
         raise ValueError("candidate binding inventory is incomplete; include MISSING rows")
     claim_subject_ids = {
         subject.subject_id for claim in inputs.claims for subject in _claim_subjects(claim)
@@ -907,7 +1405,7 @@ def build_semantic_case(
     if not claim_subject_ids <= source_ids:
         raise ValueError("claim subject is outside the source inventory")
     source_entries = tuple(
-        subject for subject in inputs.source_subjects
+        subject for subject in source_subjects
         if subject.role is model.SemanticSubjectRole.SOURCE_ENTRY
     )
     if len(source_entries) != 1:
@@ -931,7 +1429,7 @@ def build_semantic_case(
             return None
         return next(
             (
-                subject for subject in inputs.source_subjects
+                subject for subject in source_subjects
                 if subject.role is role
                 and subject.block_ref == ref
                 and subject.anchor_ea == witness.anchor_ea
@@ -950,29 +1448,29 @@ def build_semantic_case(
             subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
             and subject.block_ref == handler.block_ref
             and subject.anchor_ea == handler.anchor_ea
-            for subject in inputs.source_subjects
+            for subject in source_subjects
         )
         for handler in proposal.plan_inputs.authoritative_handlers
     ):
         raise ValueError("source inventory is missing an authoritative handler")
     actual_source_entries = {
         (subject.block_ref, subject.anchor_ea)
-        for subject in inputs.source_subjects
+        for subject in source_subjects
         if subject.role is model.SemanticSubjectRole.SOURCE_ENTRY
     }
     actual_dispatcher_entries = {
         (subject.block_ref, subject.anchor_ea)
-        for subject in inputs.source_subjects
+        for subject in source_subjects
         if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
     }
     actual_members = {
         (subject.block_ref, subject.anchor_ea)
-        for subject in inputs.source_subjects
+        for subject in source_subjects
         if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
     }
     actual_handlers = {
         (subject.block_ref, subject.anchor_ea)
-        for subject in inputs.source_subjects
+        for subject in source_subjects
         if subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
     }
     expected_source_entries = {
@@ -998,7 +1496,7 @@ def build_semantic_case(
         or actual_handlers != expected_handlers
     ):
         raise ValueError("source plan-input role inventory is not exact")
-    for source in inputs.source_subjects:
+    for source in source_subjects:
         if source.block_ref is not None:
             witness = catalog_by_ref.get(source.block_ref)
             if witness is None or witness.anchor_ea != source.anchor_ea:
@@ -1008,7 +1506,7 @@ def build_semantic_case(
                 raise ValueError("value-flow owner is outside the proposal source catalog")
     use_def = proposal.use_def_witness
     value_flows = tuple(
-        subject for subject in inputs.source_subjects
+        subject for subject in source_subjects
         if subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
     )
     expected_value_flow = model.ValueFlowSubjectLocator(
@@ -1032,30 +1530,30 @@ def build_semantic_case(
     if len(value_flows) != 1 or value_flows[0].locator != expected_value_flow:
         raise ValueError("source inventory must contain the exact use-def value-flow subject")
     value_flow = value_flows[0]
-    subjects = tuple(sorted({*inputs.source_subjects, *(subject for subject in inputs.candidate_subjects if subject.role is model.SemanticSubjectRole.PLANNED_HELPER)}, key=_subject_key))
+    subjects = tuple(sorted({*source_subjects, *(subject for subject in candidate_subjects if subject.role is model.SemanticSubjectRole.PLANNED_HELPER)}, key=_subject_key))
     phase_bindings = (
-        inputs.source_bindings
+        source_bindings
         if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-        else inputs.candidate_bindings
+        else candidate_bindings
     )
     required = _dimensions(
         subjects, inputs.claims, phase_bindings,
         candidate_fingerprint=(
-            inputs.source_fingerprint
+            source_fingerprint
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-            else inputs.candidate_fingerprint
+            else candidate_fingerprint
         ),
         candidate_generation=(
-            inputs.source_generation
+            source_generation
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-            else inputs.candidate_generation
+            else candidate_generation
         ),
         retired_topology_satisfied_ids=frozenset(
             member.subject_id
             for claim in inputs.claims
             if type(claim) is model.RetiredDispatcherInfrastructureClaim
             and {
-                item.payload.source_subject_id for item in inputs.lineage_evidence
+                item.payload.source_subject_id for item in lineage_evidence
                 if type(item.payload) is model.StructuralLineageEvidencePayload
                 and item.payload.claim_id == claim.claim_id
                 and item.payload.disposition is model.StructuralDisposition.AUTHORIZED_RETIREMENT
@@ -1066,24 +1564,32 @@ def build_semantic_case(
                 and set(item.payload.member_subject_ids) == {member.subject_id for member in claim.member_subjects}
                 and set(item.payload.covered_subject_ids) == {member.subject_id for member in claim.member_subjects}
                 and not item.payload.residual_subject_ids
-                for item in inputs.lineage_evidence
+                for item in lineage_evidence
             )
             for member in claim.member_subjects
         ),
         conditional_relations=inputs.conditional_relations,
     )
     justifications: list[model.AuthorityJustification] = []
-    candidate_bindings = {binding.subject.subject_id: binding for binding in inputs.candidate_bindings}
-    source_bindings = {binding.subject.subject_id: binding for binding in inputs.source_bindings}
-    candidate_bindings_tuple = inputs.candidate_bindings
+    candidate_bindings = {binding.subject.subject_id: binding for binding in candidate_bindings}
+    source_bindings = {binding.subject.subject_id: binding for binding in source_bindings}
+    candidate_bindings_tuple = tuple(candidate_inventory.bindings)
     bindings = tuple(sorted(
-        candidate_bindings_tuple if phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST else inputs.source_bindings,
+        candidate_bindings_tuple if phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST else tuple(source_inventory.bindings),
         key=lambda item: item.subject.subject_id,
     ))
     current_bindings = candidate_bindings if phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST else source_bindings
     binding_evidence: dict[str, str] = {}
     evidence_rows: list[model.AuthorityEvidence] = []
-    for binding in (candidate_bindings_tuple if phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST else inputs.source_bindings):
+    case_subject_ids = {
+        subject.subject_id for subject in source_subjects
+    } | {
+        subject.subject_id for subject in candidate_subjects
+        if subject.role is model.SemanticSubjectRole.PLANNED_HELPER
+    }
+    for binding in (candidate_bindings_tuple if phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST else tuple(source_inventory.bindings)):
+        if binding.subject.subject_id not in case_subject_ids:
+            continue
         payload = model.PhaseBindingEvidencePayload(binding)
         evidence_item = _evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.PHASE_BINDING, binding.subject, phase, payload)
         evidence_rows.append(evidence_item)
@@ -1099,45 +1605,18 @@ def build_semantic_case(
         audit_subject, phase, audit_payload,
     )
     evidence_rows.append(audit_item)
-    supplied_effect_evidence = tuple(
-        item.payload for item in (*inputs.lineage_evidence, *inputs.patch_step_evidence)
-        if type(item.payload) is model.EffectSiteEvidencePayload
-    )
-    supplied_route_evidence = tuple(
-        item.payload for item in (*inputs.lineage_evidence, *inputs.patch_step_evidence)
-        if type(item.payload) is model.SemanticRouteEvidencePayload
-    )
-    classified_loss_subject_ids = {
-        claim.discarded_effect_subject.subject_id
-        for claim in inputs.claims
-        if type(claim) is model.ExactInfeasibleEffectClaim
-        and any(
-            payload.effect_subject_id == claim.discarded_effect_subject.subject_id
-            and payload.instruction_ea == claim.discarded_effect_ea
-            and not payload.preserved
-            and payload.width == claim.width
-            and payload.storage_identity == claim.state_identity
-            and payload.normalized_state == claim.normalized_state
-            and payload.provider_mode is claim.consensus.mode
-            and payload.provider_ids == claim.consensus.provider_ids
-            for payload in supplied_effect_evidence
-        )
-        and any(
-            payload.proof_ids == tuple(sorted(claim.route_proof_ids))
-            and payload.source_subject_id == claim.predicate_subject.subject_id
-            and claim.selected_target_subject.subject_id in payload.destination_subject_ids
-            and payload.matched
-            for payload in supplied_route_evidence
-        )
+    authorized_loss_subject_ids = {
+        subject_id for subject_id, classification in classifications.items()
+        if classification.authorized_loss
     }
     supplied_lineage_sources = {
         source_id
-        for item in (*inputs.lineage_evidence, *inputs.patch_step_evidence)
+        for item in (*lineage_evidence, *patch_step_evidence)
         if type(item.payload) is model.StructuralLineageEvidencePayload
         for source_id in item.payload.source_subject_ids
     }
     lineage_rows = tuple(
-        item for item in (*inputs.lineage_evidence, *inputs.patch_step_evidence)
+        item for item in (*lineage_evidence, *patch_step_evidence)
         if type(item.payload) is model.StructuralLineageEvidencePayload
     )
     lineage_covered_sources = tuple(
@@ -1145,10 +1624,10 @@ def build_semantic_case(
     )
     if len(set(lineage_covered_sources)) != len(lineage_covered_sources):
         raise ValueError("each source subject requires exactly one lineage classification")
-    for source in inputs.source_subjects:
+    for source in source_subjects:
         if source.subject_id in supplied_lineage_sources:
             continue
-        if source.subject_id in classified_loss_subject_ids:
+        if source.subject_id in authorized_loss_subject_ids:
             continue
         missing_lineage = model.StructuralLineageEvidencePayload(
             source.subject_id, (), model.StructuralDisposition.UNACCOUNTED_LOSS, (), None,
@@ -1157,7 +1636,7 @@ def build_semantic_case(
             model.AuthorityEvidence, model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,
             source, phase, missing_lineage,
         ))
-    for gate in inputs.generic_gates:
+    for gate in generic_gates:
             expected_role = {
             model.GenericCfgGateKind.ENTRY_REACHABILITY: model.SemanticSubjectRole.SOURCE_ENTRY,
             model.GenericCfgGateKind.EFFECTFUL_REACHABILITY: model.SemanticSubjectRole.EFFECT_SITE,
@@ -1207,12 +1686,18 @@ def build_semantic_case(
             continue
         subject_id_ = key.subject.subject_id
         binding = current_bindings.get(subject_id_)
-        expected_fingerprint = inputs.source_fingerprint if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST else inputs.candidate_fingerprint
-        expected_generation = inputs.source_generation if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST else inputs.candidate_generation
+        expected_fingerprint = source_fingerprint if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST else candidate_fingerprint
+        expected_generation = source_generation if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST else candidate_generation
         supports = _identity_support(
             key.subject,
-            inputs.source_subjects if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST else inputs.candidate_subjects,
+            source_subjects if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST else candidate_subjects,
             bindings, phase, expected_fingerprint, expected_generation,
+            allow_source_indexed_missing=(
+                phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+                and subject_id_ in {
+                    item.subject_id for item in source_subjects
+                }
+            ),
         )
         if type(key.subject.locator) is model.ValueFlowSubjectLocator:
             # Value-flow identity is the conjunction of the exact owner
@@ -1225,7 +1710,7 @@ def build_semantic_case(
                     for binding in sorted(
                         candidate_bindings_tuple
                         if phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-                        else inputs.source_bindings,
+                        else tuple(source_inventory.bindings),
                         key=lambda item: item.subject.subject_id,
                     )
                     if binding.subject.block_ref in key.subject.locator.redirect_owner_refs
@@ -1241,7 +1726,7 @@ def build_semantic_case(
             model.EvidencePolarity.SUPPORTS if supports else model.EvidencePolarity.REFUTES, phase,
             premises,
         )
-    evidence = tuple(sorted((*evidence_rows, *inputs.lineage_evidence, *inputs.patch_step_evidence), key=lambda item: item.evidence_id))
+    evidence = tuple(sorted((*evidence_rows, *lineage_evidence, *patch_step_evidence), key=lambda item: item.evidence_id))
     known_subjects = {subject.subject_id: subject for subject in subjects}
     known_subject_ids = set(known_subjects)
     topology_rows = {
@@ -1511,10 +1996,10 @@ def build_semantic_case(
         if type(payload) is model.StructuralLineageEvidencePayload:
             if payload.disposition in (model.StructuralDisposition.SPLIT, model.StructuralDisposition.FOLDED) and not payload.reciprocal_native_origin_eas:
                 raise ValueError("split/fold lineage requires reciprocal origins")
-            source_subject_ids = {subject.subject_id for subject in inputs.source_subjects}
+            source_subject_ids = {subject.subject_id for subject in source_subjects}
             if any(value not in source_subject_ids for value in payload.source_subject_ids):
                 raise ValueError("lineage source group is absent from source inventory")
-            candidate_subject_ids = {subject.subject_id for subject in inputs.candidate_subjects}
+            candidate_subject_ids = {subject.subject_id for subject in candidate_subjects}
             if any(value not in candidate_subject_ids for value in payload.candidate_subject_ids):
                 raise ValueError("lineage candidate is absent from candidate inventory")
             if payload.disposition is model.StructuralDisposition.PRESERVED and len(payload.candidate_subject_ids) != 1:
@@ -1627,10 +2112,9 @@ def build_semantic_case(
                 for source_id in payload.source_subject_ids
             )
         elif type(payload) is model.SemanticRouteEvidencePayload:
-            # A route payload is only generic negative evidence.  Positive
-            # route conclusions belong to the exact claim rule below and
-            # must carry that claim's correlated evidence; otherwise a
-            # producer can self-authorize a route by setting ``matched``.
+            # A route payload is negative evidence by itself.  Positive
+            # route authority is attached below only through a correlated
+            # exact claim and the sealed assessment that produced ``matched``.
             if not payload.matched:
                 rule = model.UnflattenJustificationRule.ROUTE_MISSING_OR_DRIFTED
                 targets = tuple(
@@ -1643,26 +2127,8 @@ def build_semantic_case(
                 )
         elif type(payload) is model.EffectSiteEvidencePayload:
             rule = model.UnflattenJustificationRule.EFFECT_PRESERVED if payload.preserved else model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED
-            classified_loss = any(
-                type(claim) is model.ExactInfeasibleEffectClaim
-                and claim.discarded_effect_subject.subject_id == payload.effect_subject_id
-                and claim.discarded_effect_ea == payload.instruction_ea
-                and not payload.preserved
-                and payload.width == claim.width
-                and payload.storage_identity == claim.state_identity
-                and payload.normalized_state == claim.normalized_state
-                and payload.provider_mode is claim.consensus.mode
-                and payload.provider_ids == claim.consensus.provider_ids
-                and any(
-                    type(route_item.payload) is model.SemanticRouteEvidencePayload
-                    and route_item.payload.proof_ids == tuple(sorted(claim.route_proof_ids))
-                    and route_item.payload.source_subject_id == claim.predicate_subject.subject_id
-                    and claim.selected_target_subject.subject_id in route_item.payload.destination_subject_ids
-                    and route_item.payload.matched
-                    for route_item in evidence
-                )
-                for claim in inputs.claims
-            )
+            classified_loss = classifications.get(payload.effect_subject_id)
+            classified_loss = bool(classified_loss and classified_loss.authorized_loss)
             targets = () if classified_loss else ((payload.effect_subject_id, model.SafetyDimension.EFFECT_PRESERVATION, payload.preserved, rule),)
         elif type(payload) is model.ReachabilityEvidencePayload:
             target = next((subject for subject in subjects if subject.subject_id == payload.target_subject_id), None)
@@ -1754,7 +2220,7 @@ def build_semantic_case(
             if (
                 not passed
                 and dimension is model.SafetyDimension.EFFECT_PRESERVATION
-                and target_id in classified_loss_subject_ids
+                and target_id in authorized_loss_subject_ids
             ):
                 # A failed generic effect gate remains in the evidence
                 # inventory, but exact classified loss is normalized by its
@@ -1799,7 +2265,7 @@ def build_semantic_case(
                 if type(item.payload) is model.SemanticRouteEvidencePayload
                 and item.payload.route_subject_id == claim.retired_route_subject.subject_id
                 and item.payload.source_subject_id == claim.source_subject.subject_id
-                and item.payload.destination_subject_ids == _route_destination_ids(claim.retired_route_subject, inputs.source_subjects)
+                and item.payload.destination_subject_ids == _route_destination_ids(claim.retired_route_subject, source_subjects)
                 and item.payload.atomic_group_id == claim.atomic_group_id
                 and item.payload.matched
             )
@@ -1813,12 +2279,8 @@ def build_semantic_case(
                 if type(item.payload) is model.EffectSiteEvidencePayload
                 and item.payload.effect_subject_id == claim.discarded_effect_subject.subject_id
                 and item.payload.instruction_ea == claim.discarded_effect_ea
-                and not item.payload.preserved
-                and item.payload.width == claim.width
-                and item.payload.storage_identity == claim.state_identity
-                and item.payload.normalized_state == claim.normalized_state
-                and item.payload.provider_mode is claim.consensus.mode
-                and item.payload.provider_ids == claim.consensus.provider_ids
+                and classifications.get(item.payload.effect_subject_id) is not None
+                and classifications[item.payload.effect_subject_id].authorized_loss
             )
             matching_route = tuple(
                 item for item in evidence
@@ -1829,9 +2291,12 @@ def build_semantic_case(
                 and claim.selected_target_subject.subject_id in item.payload.destination_subject_ids
                 and item.payload.matched
             )
-            if matching_effect and matching_route:
+            if matching_route:
                 claim_evidence = tuple(item.evidence_id for item in (*matching_effect, *matching_route))
-                targets = ((claim.discarded_effect_subject, model.SafetyDimension.EFFECT_PRESERVATION), (claim.discarded_effect_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING))
+                targets = (
+                    (claim.discarded_effect_subject, model.SafetyDimension.EFFECT_PRESERVATION),
+                    (claim.discarded_effect_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING),
+                ) if matching_effect else ()
                 route_subject = next(
                     subject for subject in subjects
                     if subject.kind is model.SemanticSubjectKind.ROUTE
@@ -1940,33 +2405,36 @@ def build_semantic_case(
         justifications_tuple, required, evidence, phase, inputs.claims,
         inputs.conditional_relations,
         candidate_fingerprint=(
-            inputs.source_fingerprint
+            source_fingerprint
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-            else inputs.candidate_fingerprint
+            else candidate_fingerprint
         ),
         candidate_generation=(
-            inputs.source_generation
+            source_generation
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-            else inputs.candidate_generation
+            else candidate_generation
         ),
         bindings=bindings,
         subjects=subjects,
+        source_subject_ids=tuple(item.subject_id for item in source_subjects),
     )
     index = _build_obligation_index(required, justifications_tuple, phase)
     values = {
         "authority_id": authority_id,
         "preparation_receipt_id": inputs.preparation_receipt.receipt_id,
+        "preparation_receipt": inputs.preparation_receipt,
         "phase": phase,
         "candidate_fingerprint": (
-            inputs.source_fingerprint
+            source_fingerprint
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-            else inputs.candidate_fingerprint
+            else candidate_fingerprint
         ),
         "candidate_generation": (
-            inputs.source_generation
+            source_generation
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-            else inputs.candidate_generation
-        ), "claims": inputs.claims, "subjects": subjects,
+            else candidate_generation
+        ), "source_fingerprint": source_fingerprint,
+        "claims": inputs.claims, "subjects": subjects,
         "bindings": bindings, "conditional_relations": inputs.conditional_relations,
         "required_obligations": required, "evidence": evidence,
         "justifications": justifications_tuple, "obligation_index": index,
@@ -1979,6 +2447,9 @@ def build_semantic_case(
             inputs.phase_build_metrics.phase,
             inputs.phase_build_metrics,
         ),
+        "source_inventory": source_inventory,
+        "source_subject_ids": tuple(item.subject_id for item in source_subjects),
+        "source_bindings": tuple(source_inventory.bindings),
     }
     return _case_factory(model.SemanticSafetyCase, **values)
 

@@ -222,6 +222,9 @@ def _validate_canonical_value(value: object, seen: set[int] | None = None) -> No
                 if type(value).__name__ in {"PreparationBuildMetrics", "PhaseBuildMetrics"} and name == "inventory_ms":
                     if type(item) not in (int, float) or not math.isfinite(float(item)):
                         raise ValueError("invalid preparation metric")
+                elif type(value).__name__ == "GenericEntryGateFacts" and name in {"retained_ratio", "min_retained_ratio"}:
+                    if type(item) is not float or not math.isfinite(item):
+                        raise ValueError("invalid generic gate ratio")
                 else:
                     _validate_canonical_value(item, seen)
         finally:
@@ -379,11 +382,12 @@ def _ensure_registries() -> None:
     from d810.analyses.control_flow.materialized_indirect_transfer import TerminalReturnCarrierRequest
     from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef
     from d810.transforms.unflatten_authority import model
+    from d810.transforms.unflatten_authority import gates
 
     _ENUM_TYPES.update({
         model.UnflattenAuthorityPhase, model.SemanticSubjectKind, model.SemanticSubjectRole,
         model.SafetyDimension, model.EvidencePolarity, model.ObligationState,
-        model.SubjectBindingStatus, model.UnflattenClaimKind, model.ProviderConsensusMode,
+        model.SubjectBindingStatus, model.SemanticLossKind, model.UnflattenClaimKind, model.ProviderConsensusMode,
         model.StructuralDisposition, model.EffectSiteKind, model.TerminalKind,
         model.GenericCfgGateKind, model.AuthorityEvidenceKind, model.UnflattenJustificationRule,
         model.UnflattenAuthorityReason, model.UnflattenPlanRoute, model.UnflattenPlanShape,
@@ -394,6 +398,7 @@ def _ensure_registries() -> None:
         BlockKind, InsnKind, OperandKind,
         StorageIdentityKind, route.SemanticRouteShape, route.SemanticRouteProofKind,
         route.SemanticPredicateKind, route.SemanticStateWriteDeliveryKind,
+        route.CanonicalRouteAssessmentPhase, route.CanonicalRouteAssessmentRejection,
         TerminalReturnCarrierSourceKind,
     })
     model_records = (
@@ -414,6 +419,7 @@ def _ensure_registries() -> None:
         model.ConditionalSubjectRelation, model.PreparationAuthorityReceipt,
         model.ObligationKey, model.AuthorityJustification, model.ObligationEvidenceCell,
         model.ObligationEvidenceIndex, model.FailedObligation, model.PreparationBuildMetrics,
+        model.SemanticLossRow, model.SemanticLossLedger, model.ObservedSemanticLossDelta,
         model.SemanticPhaseMetrics,
         model.PhaseBuildMetrics, model.InventoryInstructionObservation,
         model.InventoryBlockObservation,
@@ -479,6 +485,9 @@ def _ensure_registries() -> None:
         model.ObligationEvidenceCell: ("key", "phase", "supporting_justification_ids", "refuting_justification_ids"),
         model.ObligationEvidenceIndex: ("cells",),
         model.FailedObligation: ("key", "state"),
+        model.SemanticLossRow: ("case", "source_subject", "source_binding", "candidate_binding", "structural_obligation", "relevant_semantic_obligations", "justifications", "evidence", "claims"),
+        model.SemanticLossLedger: ("case", "authority_id", "case_id", "phase", "source_fingerprint", "candidate_fingerprint", "rows"),
+        model.ObservedSemanticLossDelta: ("authority_id", "source_fingerprint", "projected_case_id", "observed_case_id", "rows"),
         model.PreparationBuildMetrics: ("source_inventory_builds", "candidate_inventory_builds", "inventory_ms"),
             model.SemanticPhaseMetrics: ("preparation_metrics", "source_inventory_builds", "candidate_inventory_builds", "index_folds", "view_graph_traversals", "phase", "phase_build_metrics"),
         model.PhaseBuildMetrics: ("phase", "source_inventory_builds", "candidate_inventory_builds", "inventory_ms"),
@@ -489,18 +498,24 @@ def _ensure_registries() -> None:
         model.InventoryTopologyIncidence: ("kind", "owner_serial", "peer_serial", "source_transfer_ea"),
             model.SemanticGraphInventory: ("phase", "graph_fingerprint", "generation", "blocks", "subjects", "bindings", "effects", "terminals", "topology", "inventory_digest", "reachable_serials", "entry_serial", "source_subject_ids"),
         model.ConditionalSubjectRelation: ("source_subject_id", "target_subject_id", "dimension", "provenance_id"),
-        model.PreparationAuthorityReceipt: ("receipt_id", "proposal_id", "plan_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "source_inventory_digest", "candidate_inventory_digest", "source_binding_digest", "candidate_binding_digest", "route_expansion_digest", "effect_catalog_digest", "terminal_catalog_digest", "plan_input_digest", "dispatcher_member_digest", "planned_helper_digest", "patch_step_digest", "conditional_relation_digest", "metrics"),
-        model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_subjects", "candidate_subjects", "source_bindings", "candidate_bindings", "conditional_relations", "lineage_evidence", "patch_step_evidence", "generic_gates", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "preparation_metrics", "source_inventory", "candidate_inventory", "phase_build_metrics"),
-        model.SemanticSafetyCase: ("case_id", "authority_id", "preparation_receipt_id", "phase", "candidate_fingerprint", "candidate_generation", "claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications", "obligation_index", "phase_metrics"),
+            model.PreparationAuthorityReceipt: ("receipt_id", "proposal_id", "plan_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "source_inventory_digest", "candidate_inventory_digest", "source_binding_digest", "candidate_binding_digest", "route_expansion_digest", "effect_catalog_digest", "terminal_catalog_digest", "plan_input_digest", "dispatcher_member_digest", "planned_helper_digest", "patch_step_digest", "conditional_relation_digest", "metrics", "generic_gate_facts_digest", "route_assessment_digest"),
+            model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_inventory", "candidate_inventory", "source_route_assessment", "candidate_route_assessment", "generic_gate_facts", "conditional_relations", "patch_step_facts", "preparation_metrics", "phase_build_metrics"),
+        model.SemanticSafetyCase: ("case_id", "authority_id", "preparation_receipt_id", "preparation_receipt", "phase", "source_fingerprint", "candidate_fingerprint", "candidate_generation", "claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications", "obligation_index", "phase_metrics", "source_inventory", "source_subject_ids", "source_bindings"),
         model.UnflattenAuthorityVerdict: ("accepted", "phase", "reason", "authority_id", "binding_id", "case_id", "candidate_fingerprint", "safety_case", "failed_obligations"),
     })
     _EXTERNAL_TYPES.update({
         NativePreanalysisKey, NativeEaInterval, NativeEaIntervalSet, StorageIdentity,
         StableBlockIdentity, LogicalBlockRef, NativeBlockRef, PlanBlockRef,
         TransactionAttemptId,
-        route.SemanticCorridorPoint, route.SemanticPredicateProof, route.SemanticCarrierProof,
-        route.SemanticRouteDestination, route.SemanticStateWriteProof, route.SemanticRouteProof,
-        route.CanonicalSemanticEvidence, TerminalReturnCarrierEvidence,
+            route.SemanticCorridorPoint, route.SemanticPredicateProof, route.SemanticCarrierProof,
+            route.SemanticRouteDestination, route.SemanticStateWriteProof, route.SemanticRouteProof,
+            route.CanonicalSemanticEvidence,
+            route.BoundSemanticBlock, route.BoundSemanticRouteDestination,
+            route.BoundSemanticPredicate, route.BoundSemanticCarrier,
+            route.BoundSemanticRoute, route.BoundCanonicalSemanticEvidence,
+        TerminalReturnCarrierEvidence,
+        gates.GenericEntryGateFacts, gates.GenericEffectfulGateFacts,
+        gates.GenericTerminalGateFacts, gates.GenericCfgGateFacts,
         TerminalReturnCarrierSource, TerminalReturnCarrierRequest,
     })
     _EXTERNAL_FIELDS.update({
@@ -519,7 +534,17 @@ def _ensure_registries() -> None:
         route.SemanticRouteDestination: ("role", "state_constant", "target_identity", "target_anchor_ea", "terminal"),
         route.SemanticStateWriteProof: ("identity", "instruction_ea", "state_variable", "width", "state_constant", "corridor_instruction_eas", "authority_transfer_ea", "preserved_call_instruction_eas", "delivery_kind"),
         route.SemanticRouteProof: ("proof_id", "atomic_group_id", "proof_kind", "shape", "source_identity", "source_anchor_ea", "destinations", "delivery_region", "source_owner_identity", "source_owner_anchor_ea", "state_write", "predicate", "carriers", "terminal_return_carrier", "diagnostic_provenance"),
-        route.CanonicalSemanticEvidence: ("native_key", "generation", "atomic_group_id", "route_proofs"),
+            route.CanonicalSemanticEvidence: ("native_key", "generation", "atomic_group_id", "route_proofs"),
+            route.BoundSemanticBlock: ("serial", "identity", "anchor_ea"),
+            route.BoundSemanticRouteDestination: ("evidence", "block"),
+            route.BoundSemanticPredicate: ("evidence", "origin", "consumer", "corridor"),
+            route.BoundSemanticCarrier: ("evidence", "definition", "consumers", "corridor"),
+            route.BoundSemanticRoute: ("evidence", "source", "destinations", "source_owner", "state_write_block", "predicate", "carriers"),
+            route.BoundCanonicalSemanticEvidence: ("evidence", "routes"),
+        gates.GenericEntryGateFacts: ("passed", "pre_reachable_count", "post_reachable_count", "retained_ratio", "min_pre_reachable", "min_retained_ratio", "reason"),
+        gates.GenericEffectfulGateFacts: ("passed", "pre_effectful_block_serials", "post_reachable_effectful_block_serials", "lost_block_serials", "reason"),
+        gates.GenericTerminalGateFacts: ("passed", "pre_reachable_terminals", "post_reachable_terminals", "pre_reachable_count", "post_reachable_count", "reason"),
+        gates.GenericCfgGateFacts: ("entry", "effectful_raw", "effectful_effective", "terminal"),
         TerminalReturnCarrierEvidence: ("request", "capture_identity", "terminal_identity", "state_write_ea", "carrier_ea", "terminal_return_ea", "operation", "source", "return_width", "corridor_instruction_eas"),
         TerminalReturnCarrierSource: ("kind", "width", "storage_identity", "constant"),
         TerminalReturnCarrierRequest: ("source_handler_ea", "terminal_target_ea", "state_var_reg", "state_constant"),
@@ -537,7 +562,7 @@ def _ensure_registries() -> None:
         if names != declared:
             raise RuntimeError(f"canonical record schema drift: {record_type.__name__}")
     for external_type, names in _EXTERNAL_FIELDS.items():
-        declared = tuple(field.name for field in fields(external_type))
+        declared = tuple(field.name for field in fields(external_type) if not field.name.startswith("_"))
         if external_type is NativePreanalysisKey:
             expected = ("schema_version",) + declared
         else:
@@ -604,7 +629,13 @@ def _external_wire(value: object) -> object:
     pairs = []
     for name in names:
         item = type(value).SCHEMA_VERSION if type(value).__name__ == "NativePreanalysisKey" and name == "schema_version" else getattr(value, name)
-        pairs.append([name, _wire(item)])
+        if type(value).__name__ == "GenericEntryGateFacts" and name in {"retained_ratio", "min_retained_ratio"}:
+            if type(item) is not float or not math.isfinite(item):
+                raise ValueError("invalid generic gate ratio")
+            encoded = {"t": "decimal", "v": item.hex()}
+        else:
+            encoded = _wire(item)
+        pairs.append([name, encoded])
     return {"t": "record", "n": type(value).__name__, "v": pairs}
 
 
@@ -733,6 +764,15 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
                 # Keep untrusted serialized cells unprivileged until the
                 # surrounding case has recomputed and compared its fold.
                 result = _DecodedIndexCells(kwargs["cells"])
+            elif record_type.__name__ == "PreparationAuthorityReceipt":
+                # Receipts are constructor-closed transaction records, but
+                # canonical replay must still reconstruct and revalidate
+                # the exact sealed value carried by a safety case.
+                result = record_type.__new__(record_type)
+                for name, item in kwargs.items():
+                    object.__setattr__(result, name, item)
+                object.__setattr__(result, "_minted", True)
+                record_type.__post_init__(result)
             elif record_type.__name__ == "SemanticSafetyCase":
                 serialized_index = kwargs.get("obligation_index")
                 if not isinstance(serialized_index, _DecodedIndexCells):
@@ -745,6 +785,11 @@ def _decode_wire(value: object, *, allow_index: bool = False) -> object:
                     kwargs["justifications"], kwargs["required_obligations"],
                     kwargs["evidence"], kwargs["phase"], kwargs["claims"],
                     kwargs["conditional_relations"],
+                    candidate_fingerprint=kwargs["candidate_fingerprint"],
+                    candidate_generation=kwargs["candidate_generation"],
+                    bindings=kwargs["bindings"],
+                    subjects=kwargs["subjects"],
+                    source_subject_ids=kwargs["source_subject_ids"],
                 )
                 expected_index = _build_obligation_index(
                     kwargs["required_obligations"], kwargs["justifications"], kwargs["phase"],

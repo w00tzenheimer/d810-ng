@@ -6,9 +6,10 @@ from dataclasses import replace
 from time import perf_counter
 
 from d810.transforms.plan import PatchPlan
+from d810.analyses.control_flow import semantic_route_evidence as route_model
 from d810.analyses.control_flow.semantic_route_evidence import (
-    BoundCanonicalSemanticEvidence,
-    bind_canonical_semantic_evidence,
+    assess_canonical_route,
+    CanonicalRouteMaterialization,
 )
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import CfgProjection, TransactionAttemptId
@@ -20,17 +21,16 @@ from d810.transforms.unflatten_authority import bind as authority_bind
 from d810.transforms.unflatten_authority import model
 from d810.transforms.unflatten_authority import producer_api
 from d810.transforms.unflatten_authority.evaluate import build_semantic_case, evaluate_case
+from d810.transforms.unflatten_authority import gates
 from d810.transforms.unflatten_authority.gates import (
     GenericCfgGateBundle,
     validate_generic_cfg_gate_bundle,
 )
 from d810.transforms.unflatten_authority.ids import (
-    _evidence_factory,
     _subject_factory,
     authority_id,
     bound_unflatten_binding_id,
     content_id,
-    semantic_graph_fingerprint_cached,
     semantic_graph_inventory_digest,
 )
 
@@ -278,6 +278,7 @@ def _build_semantic_graph_inventory(
     source: bool,
     phase: model.UnflattenAuthorityPhase,
     source_subjects: tuple[model.SemanticSubjectRef, ...] = (),
+    materialization: CanonicalRouteMaterialization | None = None,
 ) -> model.SemanticGraphInventory:
     """Build one complete source or candidate inventory.
 
@@ -285,13 +286,26 @@ def _build_semantic_graph_inventory(
     discovery, subject construction, and topology materialization.
     """
 
-    blocks_by_serial = dict(graph.blocks)
+    if materialization is None:
+        materialization = CanonicalRouteMaterialization.capture(
+            graph,
+            generation=proposal.source_identity_catalog.generation,
+            phase=(
+                route_model.CanonicalRouteAssessmentPhase.SOURCE
+                if source else route_model.CanonicalRouteAssessmentPhase.PROJECTED
+            ),
+        )
+    if materialization.blocks and materialization.entry_serial != graph.entry_serial:
+        raise ValueError("route materialization entry differs from graph")
+    if materialization.generation != proposal.source_identity_catalog.generation:
+        raise ValueError("route materialization generation differs from inventory")
+    blocks_by_serial = materialization.blocks
     reachable = _reachable_serials_from_blocks(blocks_by_serial, graph.entry_serial)
     serial_by_ref = (
         _catalog_serials(graph, proposal, plan, blocks=blocks_by_serial)
         if source else _projected_serials(graph, proposal, blocks=blocks_by_serial)
     )
-    fingerprint = semantic_graph_fingerprint_cached(graph, blocks_by_serial)
+    fingerprint = materialization.graph_fingerprint
     block_rows = []
     effects = []
     terminals = []
@@ -385,182 +399,15 @@ def _build_semantic_graph_inventory(
         phase, fingerprint, proposal.source_identity_catalog.generation,
         tuple(block_rows), subjects, bindings, effects, terminals, topology, digest,
         reachable_tuple,
-        graph.entry_serial,
+        materialization.entry_serial,
         source_subject_ids,
     )
 
 
-def _generic_gates(bundle, source_inventory, candidate_inventory, subjects, proposal):
-    """Map one exact source/candidate gate bundle to inventoried subjects."""
-    if type(bundle) is not GenericCfgGateBundle:
-        raise TypeError("generic_gates must be one exact GenericCfgGateBundle")
-    validate_generic_cfg_gate_bundle(bundle)
-    entry_subjects = tuple(
-        item for item in subjects
-        if item.role is model.SemanticSubjectRole.SOURCE_ENTRY
-    )
-    if len(entry_subjects) != 1:
-        raise ValueError("generic gate inventory must have exactly one source entry")
-
-    effect_subjects = tuple(
-        item for item in subjects
-        if item.role is model.SemanticSubjectRole.EFFECT_SITE
-        and type(item.locator) is model.EffectSubjectLocator
-        and item.locator.effect_kind in {
-            model.EffectSiteKind.CALL,
-            model.EffectSiteKind.STORE,
-        }
-    )
-    source_effects = tuple(
-        item for item in source_inventory.effects
-        if item.owner_serial in source_inventory.reachable_serials
-        and item.effect_kind in {
-            model.EffectSiteKind.CALL,
-            model.EffectSiteKind.STORE,
-        }
-    )
-    recognized_source_effect_serials = {
-        effect.owner_ref and source_inventory.serial_by_ref.get(effect.owner_ref)
-        for effect in source_effects
-        if effect.effect_kind in {
-            model.EffectSiteKind.CALL,
-            model.EffectSiteKind.STORE,
-        }
-    }
-    if None in recognized_source_effect_serials or recognized_source_effect_serials != set(
-        bundle.effectful_raw.pre_effectful_block_serials
-    ):
-        raise ValueError("raw effect pre set does not exactly match recognized effect owners")
-    discovered_effect_ids = set()
-    effect_supported: list[str] = []
-    effect_refuted: list[str] = []
-    candidate_binding_by_id = {
-        item.subject.subject_id: item for item in candidate_inventory.bindings
-    }
-    exact_claim_subject_ids = {
-        claim.discarded_effect_subject.subject_id
-        for claim in proposal.claims
-        if type(claim) is model.ExactInfeasibleEffectClaim
-    }
-    for effect in source_effects:
-        subject = next(
-            (item for item in effect_subjects if item.locator == model.EffectSubjectLocator(
-                effect.owner_ref, effect.owner_anchor_ea, effect.instruction_ea,
-                effect.effect_kind,
-            )),
-            None,
-        )
-        if subject is None:
-            raise ValueError("discovered source effect is absent from inventory")
-        discovered_effect_ids.add(subject.subject_id)
-        serial = source_inventory.serial_by_ref.get(effect.owner_ref)
-        if type(serial) is not int or serial not in bundle.effectful_raw.pre_effectful_block_serials:
-            raise ValueError("discovered recognized effect owner is absent from raw effect pre set")
-        candidate_binding = candidate_binding_by_id.get(subject.subject_id)
-        candidate_present = (
-            candidate_binding is not None
-            and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
-        )
-        receipt_support = (
-            serial in bundle.allowed_effect_exclusions
-            and subject.subject_id in exact_claim_subject_ids
-        )
-        if serial in bundle.effectful_raw.lost_block_serials:
-            if receipt_support or candidate_present:
-                effect_supported.append(subject.subject_id)
-            else:
-                effect_refuted.append(subject.subject_id)
-        elif serial in bundle.effectful_effective.post_reachable_effectful_block_serials:
-            if candidate_present:
-                effect_supported.append(subject.subject_id)
-            else:
-                effect_refuted.append(subject.subject_id)
-        elif serial in bundle.effectful_effective.lost_block_serials:
-            effect_refuted.append(subject.subject_id)
-        else:
-            raise ValueError("effect serial is absent from effective post/lost sets")
-    if discovered_effect_ids != {item.subject_id for item in effect_subjects}:
-        raise ValueError("effect gate inventory is incomplete")
-    if bundle.allowed_effect_exclusions:
-        for serial in bundle.allowed_effect_exclusions:
-            owners = tuple(
-                item for item in source_effects
-                if source_inventory.serial_by_ref.get(item.owner_ref) == serial
-            )
-            owned_claims = tuple(
-                item for item in owners
-                if next(
-                    (subject.subject_id for subject in effect_subjects if subject.locator == model.EffectSubjectLocator(
-                        item.owner_ref, item.owner_anchor_ea, item.instruction_ea, item.effect_kind,
-                    )),
-                    None,
-                ) in exact_claim_subject_ids
-            )
-            if len(owned_claims) != 1:
-                raise ValueError("excluded effect serial must map to one receipt-owned effect")
-
-    # The graph-check result is the generic gate's domain authority.  The
-    # inventory binding still supplies exact site presence; this gate does not
-    # broaden the domain to TRAP/NORETURN or other semantic terminal rows.
-    recognized_source_terminal_serials = frozenset(bundle.terminal.pre_reachable_terminals)
-    terminal_subjects = tuple(
-        item for item in subjects
-        if item.role is model.SemanticSubjectRole.TERMINAL_SITE
-        and type(item.locator) is model.TerminalSubjectLocator
-        and item.locator.terminal_kind in {
-            model.TerminalKind.RETURN,
-            model.TerminalKind.STOP,
-        }
-        and source_inventory.serial_by_ref.get(item.locator.block_ref)
-        in recognized_source_terminal_serials
-    )
-    terminal_supported: list[str] = []
-    terminal_refuted: list[str] = []
-    for subject in terminal_subjects:
-        source_serial = source_inventory.serial_by_ref.get(subject.locator.block_ref)
-        candidate_binding = candidate_binding_by_id.get(subject.subject_id)
-        candidate_serial = (
-            None
-            if candidate_binding is None
-            or candidate_binding.status is not model.SubjectBindingStatus.UNIQUE
-            else candidate_binding.serial
-        )
-        source_reachable = source_serial in source_inventory.reachable_serials
-        candidate_reachable = candidate_serial in candidate_inventory.reachable_serials
-        if source_reachable and candidate_reachable:
-            terminal_supported.append(subject.subject_id)
-        else:
-            terminal_refuted.append(subject.subject_id)
-    if set(terminal_supported) & set(terminal_refuted):
-        raise ValueError("terminal support/refutation overlap")
-
-    rows = (
-        model.GenericCfgGateResult(
-            model.GenericCfgGateKind.ENTRY_REACHABILITY,
-            bundle.entry.passed,
-            (entry_subjects[0].subject_id,) if bundle.entry.passed else (),
-            () if bundle.entry.passed else (entry_subjects[0].subject_id,),
-            bundle.entry.reason or "entry_reachability",
-        ),
-        model.GenericCfgGateResult(
-            model.GenericCfgGateKind.EFFECTFUL_REACHABILITY,
-            bundle.effectful_effective.passed,
-            tuple(effect_supported), tuple(effect_refuted),
-            bundle.effectful_effective.reason or "effectful_reachability",
-        ),
-        model.GenericCfgGateResult(
-            model.GenericCfgGateKind.TERMINAL_REACHABILITY,
-            bundle.terminal.passed,
-            tuple(terminal_supported), tuple(terminal_refuted),
-            bundle.terminal.reason or "terminal_reachability",
-        ),
-    )
-    return rows
-
-
 def _receipt(
-    inputs, proposal, source_fp, candidate_fp, source_generation,
-    candidate_generation, metrics, *, source_inventory, candidate_inventory,
+    proposal, metrics, *, source_inventory, candidate_inventory,
+    generic_gate_facts=None, route_assessments=(), conditional_relations=(),
+    patch_step_facts=(),
 ):
     if type(source_inventory) is not model.SemanticGraphInventory:
         raise TypeError("source_inventory must be SemanticGraphInventory")
@@ -569,18 +416,80 @@ def _receipt(
     model.validate_semantic_graph_inventory(source_inventory)
     model.validate_semantic_graph_inventory(candidate_inventory)
     model.validate_preparation_build_metrics(metrics)
+    if type(proposal) is not model.ProposedUnflattenContract:
+        raise TypeError("proposal must be ProposedUnflattenContract")
+    if generic_gate_facts is not None and type(generic_gate_facts) is not gates.GenericCfgGateFacts:
+        raise TypeError("generic_gate_facts must be GenericCfgGateFacts or None")
+    for assessment in route_assessments:
+        route_model.validate_canonical_route_assessment(assessment)
+    ordered_source_subjects = tuple(sorted(
+        source_inventory.subjects, key=lambda item: item.subject_id,
+    ))
+    ordered_candidate_subjects = tuple(sorted(
+        candidate_inventory.subjects, key=lambda item: item.subject_id,
+    ))
+    ordered_source_bindings = tuple(sorted(
+        source_inventory.bindings, key=lambda item: item.subject.subject_id,
+    ))
+    ordered_candidate_bindings = tuple(sorted(
+        candidate_inventory.bindings, key=lambda item: item.subject.subject_id,
+    ))
     values = {
         "proposal_id": authority_id(proposal), "plan_id": proposal.plan_id,
-        "source_fingerprint": source_fp, "candidate_fingerprint": candidate_fp,
-        "source_generation": source_generation, "candidate_generation": candidate_generation,
+        "source_fingerprint": source_inventory.graph_fingerprint,
+        "candidate_fingerprint": candidate_inventory.graph_fingerprint,
+        "source_generation": source_inventory.generation,
+        "candidate_generation": candidate_inventory.generation,
         "source_inventory_digest": source_inventory.inventory_digest,
         "candidate_inventory_digest": candidate_inventory.inventory_digest,
-        "source_binding_digest": authority_id(tuple(sorted(inputs[2], key=lambda item: item.subject.subject_id))), "candidate_binding_digest": authority_id(tuple(sorted(inputs[3], key=lambda item: item.subject.subject_id))),
-        "route_expansion_digest": authority_id(tuple(item for item in inputs[0] if item.role in (model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION))),
-        "effect_catalog_digest": authority_id(inputs[4]), "terminal_catalog_digest": authority_id(inputs[5]),
-        "plan_input_digest": authority_id(tuple(item.subject_id for item in inputs[0] if item.role in {model.SemanticSubjectRole.SOURCE_ENTRY, model.SemanticSubjectRole.DISPATCHER_ENTRY, model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, model.SemanticSubjectRole.AUTHORITATIVE_HANDLER})), "dispatcher_member_digest": authority_id(tuple(item.subject_id for item in inputs[0] if item.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE)),
-        "planned_helper_digest": authority_id(tuple(item.subject_id for item in inputs[0] if item.role is model.SemanticSubjectRole.PLANNED_HELPER)), "patch_step_digest": authority_id(()),
-        "conditional_relation_digest": authority_id(()), "metrics": metrics,
+        "source_binding_digest": authority_id(ordered_source_bindings),
+        "candidate_binding_digest": authority_id(ordered_candidate_bindings),
+        "route_expansion_digest": authority_id(tuple(
+            item for item in ordered_source_subjects
+            if item.role in (
+                model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+                model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+            )
+        )),
+        "effect_catalog_digest": authority_id(tuple(
+            item.subject_id for item in ordered_source_subjects
+            if item.role is model.SemanticSubjectRole.EFFECT_SITE
+        )),
+        "terminal_catalog_digest": authority_id(tuple(
+            item.subject_id for item in ordered_source_subjects
+            if item.role is model.SemanticSubjectRole.TERMINAL_SITE
+        )),
+        "plan_input_digest": authority_id(tuple(
+            item.subject_id for item in ordered_source_subjects
+            if item.role in {
+                model.SemanticSubjectRole.SOURCE_ENTRY,
+                model.SemanticSubjectRole.DISPATCHER_ENTRY,
+                model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+            }
+        )),
+        "dispatcher_member_digest": authority_id(tuple(
+            item.subject_id for item in ordered_source_subjects
+            if item.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+        )),
+        "planned_helper_digest": authority_id(tuple(
+            item.subject_id for item in ordered_candidate_subjects
+            if item.role is model.SemanticSubjectRole.PLANNED_HELPER
+        )),
+        "patch_step_digest": authority_id(tuple(patch_step_facts)),
+        "conditional_relation_digest": authority_id(tuple(conditional_relations)),
+        "metrics": metrics,
+        "generic_gate_facts_digest": authority_id(generic_gate_facts) if generic_gate_facts is not None else None,
+        "route_assessment_digest": (
+            authority_id(tuple(
+                (item.phase.value, item.graph_fingerprint, item.generation,
+                 item.evidence_id, item.proof_ids,
+                 item.rejection_reason.value if item.rejection_reason else None,
+                 item.bound_content_digest)
+                for item in route_assessments
+            ))
+            if route_assessments else None
+        ),
     }
     return model.PreparationAuthorityReceipt.mint(**values)
 
@@ -591,303 +500,56 @@ def _derive_inputs(
     candidate_generation=None,
     phase_build_metrics,
     preparation_metrics,
+    source_route_assessment=None,
+    candidate_route_assessment=None,
 ):
+    """Assemble immutable facts; semantic evidence belongs to the evaluator."""
+
+    del plan, candidate_generation
     if type(source_inventory) is not model.SemanticGraphInventory:
         raise TypeError("source_inventory must be SemanticGraphInventory")
     if type(candidate_inventory) is not model.SemanticGraphInventory:
         raise TypeError("candidate_inventory must be SemanticGraphInventory")
     model.validate_semantic_graph_inventory(source_inventory)
     model.validate_semantic_graph_inventory(candidate_inventory)
-    source_serials = source_inventory.serial_by_ref
-    source_fp = source_inventory.graph_fingerprint
-    candidate_fp = candidate_inventory.graph_fingerprint
-    source_subjects = source_inventory.subjects
-    candidate_subjects = candidate_inventory.subjects
-    source_bindings = source_inventory.bindings
-    candidate_bindings = candidate_inventory.bindings
     if type(phase_build_metrics) is not model.PhaseBuildMetrics:
         raise TypeError("phase_build_metrics must be PhaseBuildMetrics")
     model.validate_phase_build_metrics(phase_build_metrics)
-    phase_metrics = phase_build_metrics
     if type(preparation_metrics) is not model.PreparationBuildMetrics:
         raise TypeError("preparation_metrics must be PreparationBuildMetrics")
     model.validate_preparation_build_metrics(preparation_metrics)
-    metrics = preparation_metrics
-    subjects = source_subjects
-    gates = _generic_gates(
-        generic_gates,
-        source_inventory,
-        candidate_inventory,
-        subjects,
-        proposal,
+    generic_gate_facts = None
+    if type(generic_gates) is GenericCfgGateBundle:
+        validate_generic_cfg_gate_bundle(generic_gates)
+        generic_gate_facts = generic_gates.facts
+    elif generic_gates is not None:
+        raise TypeError("generic_gates must be GenericCfgGateBundle or None")
+    route_assessments = tuple(
+        item for item in (source_route_assessment, candidate_route_assessment)
+        if item is not None
     )
-    # Structural and topology rows are derived in this one preparation walk;
-    # T4 only folds these closed rows into the assurance case.
-    lineage = []
-    topology = []
-    source_by_ref = {item.subject.block_ref: item for item in source_bindings if item.subject.block_ref is not None}
-    candidate_binding_by_id = {item.subject.subject_id: item for item in candidate_bindings}
-    expected_topology = _topology_relations_from_inventory(source_inventory, subjects)
-    candidate_topology = _topology_relations_from_inventory(candidate_inventory, candidate_subjects)
-    for subject in subjects:
-        if subject.block_ref is None:
-            continue
-        source_binding = source_by_ref.get(subject.block_ref)
-        candidate_binding = candidate_binding_by_id.get(subject.subject_id)
-        if candidate_binding is None:
-            raise ValueError("candidate inventory binding coverage is incomplete")
-        if source_binding is None:
-            continue
-        source_ids = tuple(source_binding.native_instruction_eas)
-        candidate_ids = tuple(candidate_binding.native_instruction_eas)
-        disposition = model.StructuralDisposition.PRESERVED if candidate_binding.status is model.SubjectBindingStatus.UNIQUE else model.StructuralDisposition.UNACCOUNTED_LOSS
-        lineage.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, subject, phase, model.StructuralLineageEvidencePayload(
-            subject.subject_id, (subject.subject_id,) if candidate_ids else (), disposition,
-            tuple(sorted(set(source_ids))), None, (subject.subject_id,),
-        )))
-        expected_incident = tuple(
-            relation for relation in expected_topology
-            if subject.subject_id in (relation.source_subject_id, relation.target_subject_id)
-        )
-        candidate_incident = tuple(
-            relation for relation in candidate_topology
-            if subject.subject_id in (relation.source_subject_id, relation.target_subject_id)
-        )
-        expected_predecessors = tuple(sorted(
-            relation.source_subject_id for relation in expected_incident
-            if relation.target_subject_id == subject.subject_id
-        ))
-        expected_successors = tuple(sorted(
-            relation.target_subject_id for relation in expected_incident
-            if relation.source_subject_id == subject.subject_id
-        ))
-        topology.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.TOPOLOGY, subject, phase, model.TopologyEvidencePayload(
-            subject.subject_id, expected_predecessors, expected_successors,
-            True, authority_id(expected_incident), authority_id(candidate_incident),
-            expected_incident, candidate_incident,
-        )))
-    effects_by_subject = {subject.subject_id: subject for subject in subjects if subject.role is model.SemanticSubjectRole.EFFECT_SITE}
-    exact_by_ea = {
-        claim.discarded_effect_ea: claim for claim in proposal.claims
-        if type(claim) is model.ExactInfeasibleEffectClaim
-    }
-    effect_rows = []
-    for effect in source_inventory.effects:
-        if effect.owner_serial not in source_inventory.reachable_serials:
-            continue
-        locator = model.EffectSubjectLocator(
-            effect.owner_ref, effect.owner_anchor_ea, effect.instruction_ea,
-            effect.effect_kind,
-        )
-        subject = next(item for item in effects_by_subject.values() if item.locator == locator)
-        claim = exact_by_ea.get(subject.locator.instruction_ea)
-        candidate_site_binding = candidate_binding_by_id.get(subject.subject_id)
-        preserved = (
-            claim is None
-            and candidate_site_binding is not None
-            and candidate_site_binding.status is model.SubjectBindingStatus.UNIQUE
-        )
-        payload = model.EffectSiteEvidencePayload(
-            subject.subject_id, subject.locator.effect_kind, subject.locator.instruction_ea,
-            effect.opcode,
-            claim.width if claim is not None else effect.width,
-            None if claim is None else claim.state_identity,
-            None if claim is None else claim.normalized_state,
-            model.ProviderConsensusMode.NOT_APPLICABLE, (), preserved,
-        )
-        effect_rows.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.EFFECT_SITE, subject, phase, payload))
-    route_rows = []
-    route_subjects = {subject.subject_id: subject for subject in subjects if subject.kind is model.SemanticSubjectKind.ROUTE}
-    for claim in proposal.claims:
-        if type(claim) is model.ExactInfeasibleEffectClaim:
-            proof_ids = tuple(sorted(claim.route_proof_ids))
-            matching_routes = tuple(
-                subject for subject in route_subjects.values()
-                if subject.locator.proof_id in proof_ids
-            )
-            if len(matching_routes) != len(proof_ids):
-                raise ValueError("exact-effect claim route evidence is not inventoried")
-            route_subject = matching_routes[0]
-            destination_subject_ids = tuple(
-                next(
-                    item.subject_id for item in subjects
-                    if item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
-                    and item.block_ref == ref
-                    and item.anchor_ea == anchor
-                )
-                for ref, anchor in zip(
-                    route_subject.locator.destination_refs,
-                    route_subject.locator.destination_anchor_eas,
-                )
-            )
-            route_rows.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.SEMANTIC_ROUTE, route_subject, phase, model.SemanticRouteEvidencePayload(
-                route_subject.subject_id, proof_ids, proposal.route_evidence.atomic_group_id,
-                claim.predicate_subject.subject_id,
-                destination_subject_ids, True,
-            )))
-        elif type(claim) is model.EquivalentSemanticRouteClaim:
-            locator = claim.retired_route_subject.locator
-            destination_subject_ids = tuple(
-                next(
-                    item.subject_id for item in subjects
-                    if item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
-                    and item.block_ref == ref
-                    and item.anchor_ea == anchor
-                )
-                for ref, anchor in zip(
-                    locator.destination_refs, locator.destination_anchor_eas,
-                )
-            )
-            route_rows.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.SEMANTIC_ROUTE, claim.retired_route_subject, phase, model.SemanticRouteEvidencePayload(
-                claim.retired_route_subject.subject_id, claim.route_proof_ids, claim.atomic_group_id,
-                claim.source_subject.subject_id, destination_subject_ids, True,
-            )))
-    reach_rows = []
-    source_reachable = source_inventory.reachable_serials
-    candidate_reachable = candidate_inventory.reachable_serials
-    source_entry_subject = next(
-        item for item in subjects
-        if item.role is model.SemanticSubjectRole.SOURCE_ENTRY
-    )
-    for subject in subjects:
-        if subject.role in (model.SemanticSubjectRole.SOURCE_ENTRY, model.SemanticSubjectRole.DISPATCHER_ENTRY, model.SemanticSubjectRole.AUTHORITATIVE_HANDLER, model.SemanticSubjectRole.TERMINAL_SITE) and subject.block_ref is not None:
-            serial = source_serials[subject.block_ref]
-            candidate_binding = candidate_binding_by_id.get(subject.subject_id)
-            candidate_serial = None if candidate_binding is None else candidate_binding.serial
-            reachable = (
-                serial in source_reachable
-                and candidate_serial is not None
-                and candidate_serial in candidate_reachable
-            )
-            reach_rows.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.REACHABILITY, subject, phase, model.ReachabilityEvidencePayload(
-                source_entry_subject.subject_id, subject.subject_id, reachable,
-                (
-                    (source_entry_subject.subject_id, subject.subject_id)
-                    if reachable and subject.subject_id != source_entry_subject.subject_id
-                    else (source_entry_subject.subject_id,)
-                ),
-            )))
-    corridor = next(item for item in subjects if item.role is model.SemanticSubjectRole.DISPATCHER_CORRIDOR)
-    members = tuple(item.subject_id for item in subjects if item.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE)
-    corridor_row = _evidence_factory(
-        model.AuthorityEvidence,
-        model.AuthorityEvidenceKind.CORRIDOR_COVERAGE,
-        corridor,
-        phase,
-        model.CorridorCoverageEvidencePayload(
-            corridor.subject_id,
-            members,
-            members if all(
-                candidate_binding_by_id.get(item) is not None
-                and candidate_binding_by_id[item].status is model.SubjectBindingStatus.UNIQUE
-                for item in members
-            ) else (),
-            (),
-        ),
-    )
-    all_lineage = tuple(sorted((*lineage, *topology, *effect_rows, *route_rows, *reach_rows, corridor_row), key=lambda item: item.evidence_id))
     receipt = _receipt(
-        (
-            source_subjects, candidate_subjects, source_bindings,
-            candidate_bindings,
-            tuple(item.subject_id for item in effects_by_subject.values()),
-            tuple(item.subject_id for item in subjects
-                  if item.role is model.SemanticSubjectRole.TERMINAL_SITE),
-        ),
-        proposal, source_fp, candidate_fp,
-        proposal.source_identity_catalog.generation,
-        candidate_generation if candidate_generation is not None
-        else proposal.source_identity_catalog.generation,
-        metrics,
+        proposal,
+        preparation_metrics,
         source_inventory=source_inventory,
         candidate_inventory=candidate_inventory,
+        generic_gate_facts=generic_gate_facts,
+        route_assessments=route_assessments,
     )
     return model.DerivedUnflattenPreparationInputs(
-        proposal=proposal, claims=proposal.claims, preparation_receipt=receipt,
-        source_subjects=source_subjects, candidate_subjects=candidate_subjects,
-        source_bindings=source_bindings, candidate_bindings=candidate_bindings,
-        conditional_relations=(), lineage_evidence=all_lineage, patch_step_evidence=(),
-        generic_gates=gates, source_fingerprint=source_fp, candidate_fingerprint=candidate_fp,
-        source_generation=proposal.source_identity_catalog.generation,
-        candidate_generation=candidate_generation if candidate_generation is not None else proposal.source_identity_catalog.generation,
-        preparation_metrics=metrics,
+        proposal=proposal,
+        claims=proposal.claims,
+        preparation_receipt=receipt,
         source_inventory=source_inventory,
         candidate_inventory=candidate_inventory,
-        phase_build_metrics=phase_metrics,
+        source_route_assessment=source_route_assessment,
+        candidate_route_assessment=candidate_route_assessment,
+        generic_gate_facts=generic_gate_facts,
+        conditional_relations=(),
+        patch_step_facts=(),
+        preparation_metrics=preparation_metrics,
+        phase_build_metrics=phase_build_metrics,
     )
-
-
-def _topology_relations_from_inventory(inventory, subjects):
-    """Project raw topology incidence into typed subject relations."""
-    if type(inventory) is not model.SemanticGraphInventory:
-        raise TypeError("inventory must be SemanticGraphInventory")
-    model.validate_semantic_graph_inventory(inventory)
-
-    block_subjects: dict[object, tuple[model.SemanticSubjectRef, ...]] = {}
-    for subject in subjects:
-        if subject.kind is not model.SemanticSubjectKind.BLOCK:
-            continue
-        if subject.block_ref is not None:
-            block_subjects[subject.block_ref] = tuple(sorted(
-                (*block_subjects.get(subject.block_ref, ()), subject),
-                key=lambda item: item.subject_id,
-            ))
-    serial_to_subject = {}
-    for ref, serial in inventory.serial_by_ref.items():
-        subjects_for_ref = block_subjects.get(ref, ())
-        if subjects_for_ref:
-            serial_to_subject[int(serial)] = subjects_for_ref
-    relations = set()
-    edge_rows: dict[tuple[int, int], dict[model.TopologyIncidenceKind, model.InventoryTopologyIncidence]] = {}
-    for incidence in inventory.topology:
-        if incidence.kind is model.TopologyIncidenceKind.SUCCESSOR:
-            key = (incidence.owner_serial, incidence.peer_serial)
-        else:
-            key = (incidence.peer_serial, incidence.owner_serial)
-        edge_rows.setdefault(key, {})[incidence.kind] = incidence
-    block_by_serial = {item.serial: item for item in inventory.blocks}
-    for (source_serial, target_serial), incidences in edge_rows.items():
-        successor = incidences.get(model.TopologyIncidenceKind.SUCCESSOR)
-        predecessor = incidences.get(model.TopologyIncidenceKind.PREDECESSOR)
-        if successor is None or predecessor is None:
-            continue
-        if successor.source_transfer_ea != predecessor.source_transfer_ea:
-            continue
-        edge_anchor = successor.source_transfer_ea
-        if edge_anchor is None:
-            source_block = block_by_serial.get(source_serial)
-            if source_block is None:
-                continue
-            source_tail_eas = tuple(
-                item.instruction_ea for item in source_block.instruction_observations
-                if item.instruction_ea is not None
-            )
-            if source_tail_eas:
-                edge_anchor = source_tail_eas[-1]
-            elif source_block.anchor_ea is not None:
-                edge_anchor = source_block.anchor_ea
-            else:
-                continue
-        owner_subjects = serial_to_subject.get(source_serial)
-        peer_subjects = serial_to_subject.get(target_serial)
-        if not owner_subjects or not peer_subjects:
-            continue
-        for owner in owner_subjects:
-            peer_by_role = {item.role: item for item in peer_subjects}
-            peer = peer_by_role.get(owner.role, peer_subjects[0])
-            source_id, target_id = owner.subject_id, peer.subject_id
-            relations.add(model.TopologyEdgeRelation(
-                model.SemanticEdgeRole.DIRECT, source_id, target_id,
-                edge_anchor,
-            ))
-            relations.add(model.TopologyEdgeRelation(
-                model.SemanticEdgeRole.DIRECT, target_id, source_id,
-                edge_anchor,
-            ))
-    return tuple(sorted(relations, key=lambda item: (
-        item.source_subject_id, item.target_subject_id,
-        item.role.value, item.native_edge_anchor_ea,
-    )))
 
 
 def derive_unflatten_preparation_inputs(
@@ -897,14 +559,26 @@ def derive_unflatten_preparation_inputs(
     if type(projection) is not CfgProjection:
         raise TypeError("projection must be CfgProjection")
     build_started = perf_counter()
+    source_materialization = CanonicalRouteMaterialization.capture(
+        source,
+        generation=proposal.source_identity_catalog.generation,
+        phase=route_model.CanonicalRouteAssessmentPhase.SOURCE,
+    )
+    projected_materialization = CanonicalRouteMaterialization.capture(
+        projection.graph,
+        generation=proposal.source_identity_catalog.generation,
+        phase=route_model.CanonicalRouteAssessmentPhase.PROJECTED,
+    )
     source_inventory = _build_semantic_graph_inventory(
         source, proposal, plan, source=True,
         phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        materialization=source_materialization,
     )
     candidate_inventory = _build_semantic_graph_inventory(
         projection.graph, proposal, plan, source=False,
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         source_subjects=source_inventory.subjects,
+        materialization=projected_materialization,
     )
     phase_build_metrics = model.PhaseBuildMetrics(
         model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, 1, 1,
@@ -912,6 +586,12 @@ def derive_unflatten_preparation_inputs(
     )
     preparation_metrics = model.PreparationBuildMetrics(
         1, 1, phase_build_metrics.inventory_ms,
+    )
+    source_route_assessment = assess_canonical_route(
+        source_materialization, proposal.route_evidence,
+    )
+    projected_route_assessment = assess_canonical_route(
+        projected_materialization, proposal.route_evidence,
     )
     return _derive_inputs(
         source_inventory,
@@ -922,6 +602,8 @@ def derive_unflatten_preparation_inputs(
         candidate_generation=proposal.source_identity_catalog.generation,
         phase_build_metrics=phase_build_metrics,
         preparation_metrics=preparation_metrics,
+        source_route_assessment=source_route_assessment,
+        candidate_route_assessment=projected_route_assessment,
     )
 
 
@@ -957,14 +639,26 @@ def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic
     candidate_fingerprint = None
     try:
         build_started = perf_counter()
+        source_materialization = CanonicalRouteMaterialization.capture(
+            source,
+            generation=proposal.source_identity_catalog.generation,
+            phase=route_model.CanonicalRouteAssessmentPhase.SOURCE,
+        )
+        projected_materialization = CanonicalRouteMaterialization.capture(
+            projection.graph,
+            generation=proposal.source_identity_catalog.generation,
+            phase=route_model.CanonicalRouteAssessmentPhase.PROJECTED,
+        )
         source_inventory = _build_semantic_graph_inventory(
             source, proposal, plan, source=True,
             phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+            materialization=source_materialization,
         )
         candidate_inventory = _build_semantic_graph_inventory(
             projection.graph, proposal, plan, source=False,
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
             source_subjects=source_inventory.subjects,
+            materialization=projected_materialization,
         )
         candidate_fingerprint = candidate_inventory.graph_fingerprint
         phase_build_metrics = model.PhaseBuildMetrics(
@@ -974,25 +668,33 @@ def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic
         preparation_metrics = model.PreparationBuildMetrics(
             1, 1, phase_build_metrics.inventory_ms,
         )
+        source_route_assessment = assess_canonical_route(
+            source_materialization,
+            proposal.route_evidence,
+        )
+        projected_route_assessment = assess_canonical_route(
+            projected_materialization,
+            proposal.route_evidence,
+        )
         inputs = _derive_inputs(
             source_inventory, candidate_inventory,
             plan, proposal, generic_gates,
             candidate_generation=attempt_id.generation,
             phase_build_metrics=phase_build_metrics,
             preparation_metrics=preparation_metrics,
+            source_route_assessment=source_route_assessment,
+            candidate_route_assessment=projected_route_assessment,
         )
-        bound_routes = bind_canonical_semantic_evidence(source, proposal.route_evidence)
-        if not isinstance(bound_routes, BoundCanonicalSemanticEvidence):
-            raise ValueError("canonical route evidence is not bound to the source graph")
-        projected_bound_routes = bind_canonical_semantic_evidence(
-            projection.graph,
-            proposal.route_evidence,
-        )
-        if not isinstance(projected_bound_routes, BoundCanonicalSemanticEvidence):
-            raise ValueError(
-                "canonical route evidence is not bound to the projected graph"
-            )
-        prepared_authority_id = authority_id((proposal, inputs.source_fingerprint, inputs.candidate_fingerprint, inputs.source_generation, inputs.candidate_generation, inputs.source_bindings, inputs.candidate_bindings))
+        bound_routes = source_route_assessment.bound_evidence
+        prepared_authority_id = authority_id((
+            proposal,
+            inputs.source_inventory.graph_fingerprint,
+            inputs.candidate_inventory.graph_fingerprint,
+            inputs.source_inventory.generation,
+            inputs.candidate_inventory.generation,
+            inputs.source_inventory.bindings,
+            inputs.candidate_inventory.bindings,
+        ))
         case = build_semantic_case(
             authority_id=prepared_authority_id,
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
@@ -1008,17 +710,19 @@ def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic
                 source_coordinate_digest=authority_id(
                     tuple(sorted(plan.source_coordinates, key=lambda item: repr(item)))
                 ),
-                source_fingerprint=inputs.source_fingerprint,
-                projected_fingerprint=inputs.candidate_fingerprint,
-                source_generation=inputs.source_generation,
-                projected_generation=inputs.candidate_generation,
-                source_bindings=inputs.source_bindings,
-                projected_bindings=inputs.candidate_bindings,
+                source_fingerprint=inputs.source_inventory.graph_fingerprint,
+                projected_fingerprint=inputs.candidate_inventory.graph_fingerprint,
+                source_generation=inputs.source_inventory.generation,
+                projected_generation=inputs.candidate_inventory.generation,
+                source_bindings=inputs.source_inventory.bindings,
+                projected_bindings=inputs.candidate_inventory.bindings,
                 projected_case=case,
                 source_inputs=inputs,
                 source_inventory=source_inventory,
                 preparation_attempt_id=attempt_id,
                 legacy_unflatten_shadow=plan.legacy_unflatten_shadow,
+                source_route_assessment=source_route_assessment,
+                projected_route_assessment=projected_route_assessment,
             )
             return UnflattenAuthorityPreparationAccepted(prepared, verdict)
         return UnflattenAuthorityPreparationRejected(verdict)
@@ -1173,10 +877,16 @@ def revalidate_observed_unflatten_authority(
         )
     build_started = perf_counter()
     try:
+        observed_materialization = CanonicalRouteMaterialization.capture(
+            observed,
+            generation=observed_generation,
+            phase=route_model.CanonicalRouteAssessmentPhase.OBSERVED,
+        )
         candidate_inventory = _build_semantic_graph_inventory(
             observed, validated_prepared.proposal, validated_prepared.owning_plan,
             source=False, phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
             source_subjects=validated_prepared.source_inventory.subjects,
+            materialization=observed_materialization,
         )
     except (TypeError, ValueError):
         return model.UnflattenAuthorityVerdict(
@@ -1200,6 +910,14 @@ def revalidate_observed_unflatten_authority(
         raise ValueError("prepared authority lacks its closed source inventory")
     if validated_prepared.source_inventory is not prepared_inputs.source_inventory:
         raise ValueError("prepared source inventory identity changed")
+    source_route_assessment = validated_prepared.source_route_assessment
+    if source_route_assessment is None:
+        source_route_assessment = prepared_inputs.source_route_assessment
+    if source_route_assessment is None:
+        raise ValueError("prepared authority lacks source route assessment")
+    observed_route_assessment = assess_canonical_route(
+        observed_materialization, validated_prepared.proposal.route_evidence,
+    )
     try:
         inputs = _derive_inputs(
             prepared_inputs.source_inventory, candidate_inventory,
@@ -1208,6 +926,8 @@ def revalidate_observed_unflatten_authority(
             candidate_generation=observed_generation,
             phase_build_metrics=phase_build_metrics,
             preparation_metrics=prepared_inputs.preparation_metrics,
+            source_route_assessment=source_route_assessment,
+            candidate_route_assessment=observed_route_assessment,
         )
     except (TypeError, ValueError):
         return model.UnflattenAuthorityVerdict(

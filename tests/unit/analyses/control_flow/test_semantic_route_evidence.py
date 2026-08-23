@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import copy
+import gc
+import weakref
 
 import pytest
+import d810.analyses.control_flow.semantic_route_evidence as route_evidence
 
 from d810.analyses.control_flow.semantic_route_evidence import (
+    CanonicalRouteAssessment,
+    CanonicalRouteMaterialization,
+    CanonicalRouteAssessmentPhase,
+    CanonicalRouteAssessmentRejection,
     CanonicalSemanticEvidence,
     SemanticCarrierProof,
     SemanticCorridorPoint,
@@ -19,8 +27,12 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteShape,
     SemanticStateWriteDeliveryKind,
     SemanticStateWriteProof,
+    assess_canonical_route,
     bind_canonical_semantic_evidence,
+    validate_canonical_route_materialization,
+    validate_canonical_route_assessment,
 )
+from d810.transforms.unflatten_authority.ids import canonical_bytes
 from d810.capabilities.semantic_routes import CanonicalSemanticEvidenceCapability
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
@@ -243,6 +255,141 @@ def test_direct_state_assignment_replays_delivery_edge() -> None:
 
     bound = bind_canonical_semantic_evidence(_direct_graph(), _evidence(proof))
     assert bound is not None
+
+
+def test_route_assessment_is_minted_only_by_the_trusted_binding_kernel() -> None:
+    materialization = CanonicalRouteMaterialization.capture(
+            _direct_graph(), phase=CanonicalRouteAssessmentPhase.SOURCE,
+            generation=3,
+    )
+    assessment = assess_canonical_route(materialization, _evidence())
+    assert type(assessment) is CanonicalRouteAssessment
+    assert assessment.accepted
+    assert assessment.rejection_reason is None
+    assert assessment.evidence_id == assessment.evidence.atomic_group_id
+    assert assessment.proof_ids == tuple(
+        sorted(proof.proof_id for proof in assessment.evidence.route_proofs)
+    )
+    assert validate_canonical_route_assessment(assessment) is assessment
+    with pytest.raises(TypeError, match="minted"):
+        CanonicalRouteAssessment()
+    with pytest.raises(TypeError):
+        replace(assessment, graph_fingerprint="sha256:" + "b" * 64)
+    object.__setattr__(assessment, "evidence_id", "forged-evidence-id")
+    with pytest.raises(ValueError):
+        validate_canonical_route_assessment(assessment)
+
+
+def test_materialization_and_assessment_require_exact_registry_identity() -> None:
+    for name in (
+        "_register_materialization", "_register_assessment",
+        "_materialization_state", "_assessment_state",
+    ):
+        assert not hasattr(route_evidence, name)
+
+    materialization = CanonicalRouteMaterialization.capture(
+        _direct_graph(), phase=CanonicalRouteAssessmentPhase.SOURCE, generation=3,
+    )
+    clone = object.__new__(CanonicalRouteMaterialization)
+    for name in CanonicalRouteMaterialization.__dataclass_fields__:
+        object.__setattr__(clone, name, getattr(materialization, name))
+    with pytest.raises((TypeError, ValueError)):
+        validate_canonical_route_materialization(clone)
+    object.__setattr__(materialization, "generation", 4)
+    with pytest.raises((TypeError, ValueError)):
+        validate_canonical_route_materialization(materialization)
+    materialization = CanonicalRouteMaterialization.capture(
+        _direct_graph(), phase=CanonicalRouteAssessmentPhase.SOURCE, generation=3,
+    )
+    object.__setattr__(materialization.blocks[1], "succs", (999,))
+    with pytest.raises((TypeError, ValueError)):
+        validate_canonical_route_materialization(materialization)
+
+    materialization = CanonicalRouteMaterialization.capture(
+        _direct_graph(), phase=CanonicalRouteAssessmentPhase.SOURCE, generation=3,
+    )
+    assessment = assess_canonical_route(materialization, _evidence())
+    assessment_clone = object.__new__(CanonicalRouteAssessment)
+    for name in CanonicalRouteAssessment.__dataclass_fields__:
+        object.__setattr__(assessment_clone, name, getattr(assessment, name))
+    with pytest.raises((TypeError, ValueError)):
+        validate_canonical_route_assessment(assessment_clone)
+    object.__setattr__(assessment, "graph_fingerprint", "sha256:" + "f" * 64)
+    object.__setattr__(assessment, "_seal", "sha256:" + "0" * 64)
+    with pytest.raises((TypeError, ValueError)):
+        validate_canonical_route_assessment(assessment)
+
+
+def test_route_authority_registry_does_not_retain_results() -> None:
+    """The closed identity registries must not become process-lifetime owners."""
+
+    materializations: list[CanonicalRouteMaterialization] = []
+    assessments: list[CanonicalRouteAssessment] = []
+    materialization_refs: list[weakref.ReferenceType[CanonicalRouteMaterialization]] = []
+    assessment_refs: list[weakref.ReferenceType[CanonicalRouteAssessment]] = []
+    for _ in range(25):
+        materialization = CanonicalRouteMaterialization.capture(
+            _direct_graph(), phase=CanonicalRouteAssessmentPhase.SOURCE, generation=3,
+        )
+        assessment = assess_canonical_route(materialization, _evidence())
+        materializations.append(materialization)
+        assessments.append(assessment)
+        materialization_refs.append(weakref.ref(materialization))
+        assessment_refs.append(weakref.ref(assessment))
+
+    assert all(reference() is not None for reference in materialization_refs)
+    assert all(reference() is not None for reference in assessment_refs)
+    del materializations, assessments
+    del materialization, assessment
+    gc.collect()
+    assert all(reference() is None for reference in materialization_refs)
+    assert all(reference() is None for reference in assessment_refs)
+
+
+def test_route_assessment_rejects_unbound_unique_endpoint_without_authority() -> None:
+    assessment = assess_canonical_route(
+        CanonicalRouteMaterialization.capture(
+            _graph(include_target=False), phase=CanonicalRouteAssessmentPhase.PROJECTED,
+            generation=4,
+        ), _evidence(),
+    )
+    assert assessment.rejected
+    assert assessment.bound_evidence is None
+    assert assessment.rejection_reason is CanonicalRouteAssessmentRejection.ROUTE_BINDING_FAILED
+
+
+def test_route_assessment_is_in_memory_and_seals_bound_mapping() -> None:
+    assessment = assess_canonical_route(
+        CanonicalRouteMaterialization.capture(
+            _direct_graph(), phase=CanonicalRouteAssessmentPhase.SOURCE,
+            generation=3,
+        ), _evidence(),
+    )
+    with pytest.raises(TypeError, match="canonical encoding"):
+        canonical_bytes(assessment)
+    with pytest.raises(TypeError, match="copied"):
+        copy.copy(assessment)
+    forged_bound = replace(assessment.bound_evidence, routes=())
+    object.__setattr__(assessment, "bound_evidence", forged_bound)
+    with pytest.raises(ValueError):
+        validate_canonical_route_assessment(assessment)
+
+
+@pytest.mark.parametrize("family", ("destinations", "carriers"))
+def test_bound_route_nested_collections_require_exact_tuples(family: str) -> None:
+    materialization = CanonicalRouteMaterialization.capture(
+        _direct_graph(), phase=CanonicalRouteAssessmentPhase.SOURCE, generation=3,
+    )
+    assessment = assess_canonical_route(materialization, _evidence())
+    route = assessment.bound_evidence.routes[0]
+    if family == "destinations":
+        forged_route = replace(route, destinations=list(route.destinations))
+    elif family == "carriers":
+        forged_route = replace(route, carriers=list(route.carriers))
+    forged_bound = replace(assessment.bound_evidence, routes=(forged_route,))
+    object.__setattr__(assessment, "bound_evidence", forged_bound)
+    with pytest.raises((TypeError, ValueError)):
+        validate_canonical_route_assessment(assessment)
 
 
 @pytest.mark.parametrize("reciprocal", (False,))

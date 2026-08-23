@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
+import hashlib
+import json
+from types import MappingProxyType
+from collections.abc import Mapping
 
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import (
@@ -12,7 +16,7 @@ from d810.ir.block_identity import (
     stable_block_identities_refine_at_anchor,
     stable_block_identity_from_snapshot,
 )
-from d810.ir.flowgraph import FlowGraph, OperandKind
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, OperandKind
 from d810.ir.flowgraph import InsnKind
 from d810.ir.insn_projection import InstructionProjection
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -63,6 +67,23 @@ class SemanticStateWriteDeliveryKind(str, Enum):
     DIRECT = "direct"
     INDIRECT = "indirect"
     CONDITIONAL = "conditional"
+
+
+class CanonicalRouteAssessmentPhase(str, Enum):
+    """Lifecycle phase in which one canonical route was assessed."""
+
+    SOURCE = "source"
+    PROJECTED = "projected"
+    OBSERVED = "observed"
+
+
+class CanonicalRouteAssessmentRejection(str, Enum):
+    """Typed reasons for an assessment that did not become authoritative."""
+
+    ROUTE_BINDING_FAILED = "route_binding_failed"
+    GRAPH_IDENTITY_MISMATCH = "graph_identity_mismatch"
+    GENERATION_MISMATCH = "generation_mismatch"
+    PREDICATE_NOT_LIVE = "predicate_not_live"
 
 
 def _identifier(value: str, description: str) -> str:
@@ -901,6 +922,112 @@ class BoundCanonicalSemanticEvidence:
         return self.evidence.atomic_group_id
 
 
+def _fingerprint_value(value: object) -> object:
+    if value is None or type(value) in (bool, int, str, float):
+        return value
+    if isinstance(value, Enum):
+        return ("enum", type(value).__qualname__, value.value)
+    if is_dataclass(value):
+        return (
+            "record", type(value).__qualname__,
+            tuple(
+                (item.name, _fingerprint_value(getattr(value, item.name)))
+                for item in fields(value)
+                if not item.name.startswith("_")
+            ),
+        )
+    if isinstance(value, Mapping):
+        return (
+            "mapping",
+            tuple(sorted(
+                (_fingerprint_value(key), _fingerprint_value(item))
+                for key, item in value.items()
+            )),
+        )
+    if type(value) is tuple:
+        return ("tuple", tuple(_fingerprint_value(item) for item in value))
+    if type(value) is list:
+        return ("list", tuple(_fingerprint_value(item) for item in value))
+    if type(value) is frozenset:
+        return ("frozenset", tuple(sorted(_fingerprint_value(item) for item in value)))
+    if type(value) is set:
+        return ("set", tuple(sorted(_fingerprint_value(item) for item in value)))
+    raise TypeError(f"unsupported route fingerprint value: {type(value).__name__}")
+
+
+def _materialized_graph_fingerprint(
+    graph: FlowGraph, blocks: Mapping[int, BlockSnapshot],
+) -> str:
+    payload = _fingerprint_value((graph.func_ea, graph.entry_serial, blocks))
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _materialized_graph_fingerprint_values(
+    func_ea: int, entry_serial: int, blocks: Mapping[int, BlockSnapshot],
+) -> str:
+    payload = _fingerprint_value((func_ea, entry_serial, blocks))
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class CanonicalRouteMaterialization:
+    """Immutable route-binding input captured once from a live ``FlowGraph``."""
+
+    blocks: Mapping[int, object]
+    entry_serial: int
+    func_ea: int
+    graph_fingerprint: str
+    generation: int
+    phase: CanonicalRouteAssessmentPhase
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("route materializations are transaction-owned")
+
+    @classmethod
+    def capture(
+        cls,
+        graph: FlowGraph,
+        *,
+        generation: int,
+        phase: CanonicalRouteAssessmentPhase,
+    ) -> "CanonicalRouteMaterialization":
+        del cls, graph, generation, phase
+        raise TypeError("route materialization capture is installed by the authority kernel")
+
+    def __post_init__(self) -> None:
+        if type(self.blocks) is not MappingProxyType:
+            raise TypeError("route materialization blocks must be immutable")
+        if any(type(block) is not BlockSnapshot for block in self.blocks.values()):
+            raise TypeError("route materialization blocks must be exact snapshots")
+        if type(self.entry_serial) is not int or isinstance(self.entry_serial, bool):
+            raise TypeError("route materialization entry must be exact int")
+        if type(self.func_ea) is not int or isinstance(self.func_ea, bool) or self.func_ea < 0:
+            raise TypeError("route materialization function EA must be exact and non-negative")
+        if self.blocks and self.entry_serial not in self.blocks:
+            raise ValueError("route materialization entry is outside blocks")
+        if self.graph_fingerprint != _materialized_graph_fingerprint_values(
+            self.func_ea, self.entry_serial, self.blocks,
+        ):
+            raise ValueError("route materialization fingerprint does not match its snapshot")
+        _validate_materialization_registry(self)
+
+    def __copy__(self) -> "CanonicalRouteMaterialization":
+        raise TypeError("route materializations cannot be copied")
+
+    def __deepcopy__(self, memo: dict[int, object]) -> "CanonicalRouteMaterialization":
+        del memo
+        raise TypeError("route materializations cannot be deep-copied")
+
+    def __reduce__(self) -> object:
+        raise TypeError("route materializations cannot be pickled")
+
+    def get_block(self, serial: int) -> object:
+        return self.blocks[serial]
+
+
 def _unique_bound_block(
     graph: FlowGraph,
     identity: StableBlockIdentity,
@@ -1511,12 +1638,12 @@ def _validate_conditional_route(
 
 
 def bind_canonical_semantic_evidence(
-    graph: FlowGraph,
+    graph: FlowGraph | CanonicalRouteMaterialization,
     evidence: CanonicalSemanticEvidence,
 ) -> BoundCanonicalSemanticEvidence | None:
     """Bind one complete atomic group or abstain without a partial result."""
-    if not isinstance(graph, FlowGraph):
-        raise TypeError("semantic route binding requires a FlowGraph")
+    if type(graph) not in (FlowGraph, CanonicalRouteMaterialization):
+        raise TypeError("semantic route binding requires a captured graph")
     if not isinstance(evidence, CanonicalSemanticEvidence):
         raise TypeError("semantic route binding requires canonical evidence")
     routes: list[BoundSemanticRoute] = []
@@ -1654,6 +1781,398 @@ def bind_canonical_semantic_evidence(
     )
 
 
+def _route_assessment_seal(
+    phase: CanonicalRouteAssessmentPhase,
+    graph_fingerprint: str,
+    generation: int,
+    evidence_id: str,
+    proof_ids: tuple[str, ...],
+    accepted: bool,
+    rejection_reason: CanonicalRouteAssessmentRejection | None,
+    bound_content_digest: str,
+) -> str:
+    payload = "\x00".join((
+        phase.value, graph_fingerprint, str(generation), evidence_id,
+        *proof_ids, "accepted" if accepted else "rejected",
+        rejection_reason.value if rejection_reason is not None else "",
+        bound_content_digest,
+    ))
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class CanonicalRouteAssessment:
+    """Closed result of binding one route evidence generation to a graph.
+
+    The public constructor is intentionally unavailable.  Only
+    ``assess_canonical_route`` can mint the private authority token, so a
+    caller cannot manufacture an accepted route by supplying a boolean or by
+    replaying a decoded/ copied record.  Consumers should call
+    ``validate_canonical_route_assessment`` before using the result.
+    """
+
+    phase: CanonicalRouteAssessmentPhase
+    graph_fingerprint: str
+    generation: int
+    evidence_id: str
+    proof_ids: tuple[str, ...]
+    evidence: CanonicalSemanticEvidence
+    bound_evidence: BoundCanonicalSemanticEvidence | None
+    rejection_reason: CanonicalRouteAssessmentRejection | None
+    _seal: str = field(default="", repr=False, compare=False)
+    _bound_content_digest: str = field(default="", repr=False, compare=False)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("route assessment must be minted by assess_canonical_route")
+
+    def __copy__(self) -> "CanonicalRouteAssessment":
+        raise TypeError("route assessments cannot be copied")
+
+    def __deepcopy__(self, memo: dict[int, object]) -> "CanonicalRouteAssessment":
+        del memo
+        raise TypeError("route assessments cannot be deep-copied")
+
+    def __reduce__(self) -> object:
+        raise TypeError("route assessments cannot be pickled")
+
+    def __post_init__(self) -> None:
+        if type(self.phase) is not CanonicalRouteAssessmentPhase:
+            raise TypeError("route assessment phase must be canonical")
+        if type(self.graph_fingerprint) is not str or not self.graph_fingerprint.startswith("sha256:"):
+            raise ValueError("route assessment graph fingerprint must be a canonical ID")
+        if len(self.graph_fingerprint) != 71:
+            raise ValueError("route assessment graph fingerprint must be a SHA-256 ID")
+        if type(self.generation) is not int or isinstance(self.generation, bool) or self.generation < 0:
+            raise TypeError("route assessment generation must be an exact non-negative int")
+        if type(self.evidence_id) is not str or not self.evidence_id:
+            raise TypeError("route assessment evidence_id must be a non-empty string")
+        if type(self.proof_ids) is not tuple or any(
+            type(proof_id) is not str or not proof_id for proof_id in self.proof_ids
+        ):
+            raise TypeError("route assessment proof_ids must be an exact string tuple")
+        if self.proof_ids != tuple(sorted(set(self.proof_ids))):
+            raise ValueError("route assessment proof_ids must be sorted and unique")
+        if type(self.evidence) is not CanonicalSemanticEvidence:
+            raise TypeError("route assessment evidence must be canonical semantic evidence")
+        self.evidence.__post_init__()
+        expected_proofs = tuple(sorted(proof.proof_id for proof in self.evidence.route_proofs))
+        if self.evidence_id != self.evidence.atomic_group_id:
+            raise ValueError("route assessment evidence_id does not match atomic group")
+        if self.proof_ids != expected_proofs:
+            raise ValueError("route assessment proof_ids do not match evidence")
+        if self.bound_evidence is None:
+            if type(self.rejection_reason) is not CanonicalRouteAssessmentRejection:
+                raise TypeError("rejected route assessment requires a typed reason")
+        else:
+            if type(self.bound_evidence) is not BoundCanonicalSemanticEvidence:
+                raise TypeError("accepted route assessment requires bound evidence")
+            self.bound_evidence.evidence.__post_init__()
+            if self.bound_evidence.evidence != self.evidence:
+                raise ValueError("bound route assessment evidence does not match source evidence")
+            if self.rejection_reason is not None:
+                raise ValueError("accepted route assessment cannot carry a rejection reason")
+            _validate_bound_route_content(self.bound_evidence, self.evidence)
+        expected_bound_digest = _bound_content_digest(self.bound_evidence)
+        if self._bound_content_digest != expected_bound_digest:
+            raise ValueError("route assessment bound content seal mismatch")
+        expected_seal = _route_assessment_seal(
+            self.phase, self.graph_fingerprint, self.generation,
+            self.evidence_id, self.proof_ids, self.bound_evidence is not None,
+            self.rejection_reason, expected_bound_digest,
+        )
+        if self._seal != expected_seal:
+            raise ValueError("route assessment seal does not match its immutable facts")
+        _validate_assessment_registry(self)
+
+    @property
+    def accepted(self) -> bool:
+        """Derived status; callers cannot provide or override this verdict."""
+
+        return self.bound_evidence is not None
+
+    @property
+    def rejected(self) -> bool:
+        return self.bound_evidence is None
+
+    @property
+    def evidence_ids(self) -> tuple[str, ...]:
+        return (self.evidence_id,)
+
+    @property
+    def bound_content_digest(self) -> str:
+        """Digest of the exact rebound route/block/endpoint content."""
+
+        return self._bound_content_digest
+
+
+def _bound_content_digest(bound: BoundCanonicalSemanticEvidence | None) -> str:
+    if bound is None:
+        return "sha256:" + "0" * 64
+    payload = _fingerprint_value(bound)
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _validate_bound_route_content(
+    bound: BoundCanonicalSemanticEvidence,
+    evidence: CanonicalSemanticEvidence,
+) -> None:
+    def validate_block(block: BoundSemanticBlock) -> None:
+        if type(block) is not BoundSemanticBlock:
+            raise TypeError("bound route block must be exact")
+        if type(block.serial) is not int or isinstance(block.serial, bool) or block.serial < 0:
+            raise ValueError("bound route serial must be exact and non-negative")
+        if type(block.identity) is not StableBlockIdentity:
+            raise TypeError("bound route identity must be stable")
+        if type(block.anchor_ea) is not int or isinstance(block.anchor_ea, bool):
+            raise TypeError("bound route anchor must be exact int")
+        if not block.identity.native_ranges.contains(block.anchor_ea):
+            raise ValueError("bound route anchor is outside its identity")
+
+    if type(bound) is not BoundCanonicalSemanticEvidence:
+        raise TypeError("bound route evidence must be exact")
+    if type(bound.evidence) is not CanonicalSemanticEvidence:
+        raise TypeError("bound route canonical evidence must be exact")
+    if type(bound.routes) is not tuple:
+        raise TypeError("bound route rows must be an exact tuple")
+    if bound.evidence != evidence or len(bound.routes) != len(evidence.route_proofs):
+        raise ValueError("bound route evidence does not exactly match canonical evidence")
+    for route, proof in zip(bound.routes, evidence.route_proofs):
+        if type(route) is not BoundSemanticRoute:
+            raise TypeError("bound route must be exact")
+        if type(route.evidence) is not SemanticRouteProof:
+            raise TypeError("bound route proof must be exact")
+        if type(route.destinations) is not tuple:
+            raise TypeError("bound route destinations must be an exact tuple")
+        if type(route.carriers) is not tuple:
+            raise TypeError("bound route carriers must be an exact tuple")
+        validate_block(route.source)
+        for destination in route.destinations:
+            if type(destination) is not BoundSemanticRouteDestination:
+                raise TypeError("bound route destination must be exact")
+            validate_block(destination.block)
+        if route.source_owner is not None:
+            validate_block(route.source_owner)
+        if route.state_write_block is not None:
+            validate_block(route.state_write_block)
+        if route.predicate is not None:
+            if type(route.predicate) is not BoundSemanticPredicate:
+                raise TypeError("bound route predicate must be exact")
+            if type(route.predicate.corridor) is not tuple:
+                raise TypeError("bound route predicate corridor must be an exact tuple")
+            validate_block(route.predicate.origin)
+            validate_block(route.predicate.consumer)
+            for block in route.predicate.corridor:
+                validate_block(block)
+        for carrier in route.carriers:
+            if type(carrier) is not BoundSemanticCarrier:
+                raise TypeError("bound route carrier must be exact")
+            if type(carrier.consumers) is not tuple or type(carrier.corridor) is not tuple:
+                raise TypeError("bound route carrier rows must be exact tuples")
+            validate_block(carrier.definition)
+            for block in (*carrier.consumers, *carrier.corridor):
+                validate_block(block)
+        if route.evidence != proof:
+            raise ValueError("bound route proof mismatch")
+        if route.source.identity != proof.source_identity or route.source.anchor_ea != proof.source_anchor_ea:
+            raise ValueError("bound route source mismatch")
+        if len(route.destinations) != len(proof.destinations):
+            raise ValueError("bound route destination count mismatch")
+        for bound_destination, destination in zip(route.destinations, proof.destinations):
+            if (
+                bound_destination.evidence != destination
+                or bound_destination.block.identity != destination.target_identity
+                or bound_destination.block.anchor_ea != destination.target_anchor_ea
+            ):
+                raise ValueError("bound route destination mismatch")
+        if proof.source_owner_identity is None:
+            if route.source_owner is not None:
+                raise ValueError("bound route has an unexpected source owner")
+        elif (
+            route.source_owner is None
+            or route.source_owner.identity != proof.source_owner_identity
+            or route.source_owner.anchor_ea != proof.source_owner_anchor_ea
+        ):
+            raise ValueError("bound route source owner mismatch")
+        if proof.state_write is None:
+            if route.state_write_block is not None:
+                raise ValueError("bound route has an unexpected state-write block")
+        elif (
+            route.state_write_block is None
+            or route.state_write_block.identity != proof.state_write.identity
+            or route.state_write_block.anchor_ea != proof.state_write.instruction_ea
+        ):
+            raise ValueError("bound route state-write mismatch")
+        if proof.predicate is None:
+            if route.predicate is not None:
+                raise ValueError("bound route has an unexpected predicate")
+        elif route.predicate is None or route.predicate.evidence != proof.predicate:
+            raise ValueError("bound route predicate mismatch")
+        if tuple(item.evidence for item in route.carriers) != proof.carriers:
+            raise ValueError("bound route carrier mismatch")
+
+
+def _install_closed_route_authority() -> tuple[object, ...]:
+    import weakref
+
+    materializations: dict[int, tuple[weakref.ReferenceType[object], object]] = {}
+    assessments: dict[int, tuple[weakref.ReferenceType[object], object]] = {}
+
+    def expected_materialization(value: CanonicalRouteMaterialization) -> object:
+        return (
+            _fingerprint_value(value.blocks), value.entry_serial, value.func_ea,
+            value.graph_fingerprint, value.generation, value.phase,
+        )
+
+    def expected_assessment(value: CanonicalRouteAssessment) -> object:
+        return (
+            value.phase, value.graph_fingerprint, value.generation,
+            value.evidence_id, _fingerprint_value(value.proof_ids),
+            _fingerprint_value(value.evidence),
+            _fingerprint_value(value.bound_evidence), value.rejection_reason,
+            value._seal, value._bound_content_digest,
+        )
+
+    def register(
+        registry: dict[int, tuple[weakref.ReferenceType[object], object]],
+        value: object,
+        expected: object,
+    ) -> None:
+        ident = id(value)
+
+        def remove(reference: weakref.ReferenceType[object]) -> None:
+            record = registry.get(ident)
+            if record is not None and record[0] is reference:
+                registry.pop(ident, None)
+
+        registry[ident] = (weakref.ref(value, remove), expected)
+
+    def validate(
+        registry: dict[int, tuple[weakref.ReferenceType[object], object]],
+        value: object,
+        expected: object,
+        description: str,
+    ) -> None:
+        record = registry.get(id(value))
+        if record is None or record[0]() is not value:
+            raise TypeError(f"{description} is not a registered result")
+        if record[1] != expected:
+            raise ValueError(f"{description} changed after capture")
+
+    def capture(
+        cls: type[CanonicalRouteMaterialization],
+        graph: FlowGraph,
+        *,
+        generation: int,
+        phase: CanonicalRouteAssessmentPhase,
+    ) -> CanonicalRouteMaterialization:
+        if type(graph) is not FlowGraph:
+            raise TypeError("route materialization requires an exact FlowGraph")
+        if type(generation) is not int or isinstance(generation, bool) or generation < 0:
+            raise TypeError("route materialization generation must be exact and non-negative")
+        if type(phase) is not CanonicalRouteAssessmentPhase:
+            raise TypeError("route materialization phase must be canonical")
+        cached_blocks = dict(graph.blocks)
+        value = object.__new__(cls)
+        object.__setattr__(value, "blocks", MappingProxyType(cached_blocks))
+        object.__setattr__(value, "entry_serial", graph.entry_serial)
+        object.__setattr__(value, "func_ea", graph.func_ea)
+        object.__setattr__(
+            value, "graph_fingerprint",
+            _materialized_graph_fingerprint(graph, cached_blocks),
+        )
+        object.__setattr__(value, "generation", generation)
+        object.__setattr__(value, "phase", phase)
+        register(materializations, value, expected_materialization(value))
+        cls.__post_init__(value)
+        return value
+
+    def validate_materialization(value: object) -> CanonicalRouteMaterialization:
+        if type(value) is not CanonicalRouteMaterialization:
+            raise TypeError("route materialization must be CanonicalRouteMaterialization")
+        # Shape and fingerprint checks remain on the nominal class boundary.
+        CanonicalRouteMaterialization.__post_init__(value)
+        validate(
+            materializations, value, expected_materialization(value),
+            "route materialization",
+        )
+        return value
+
+    def assess(
+        materialization: CanonicalRouteMaterialization,
+        evidence: CanonicalSemanticEvidence,
+    ) -> CanonicalRouteAssessment:
+        validate_materialization(materialization)
+        if type(evidence) is not CanonicalSemanticEvidence:
+            raise TypeError("route assessment requires canonical semantic evidence")
+        evidence.__post_init__()
+        bound = bind_canonical_semantic_evidence(materialization, evidence)
+        rejection_reason = (
+            None if bound is not None
+            else CanonicalRouteAssessmentRejection.ROUTE_BINDING_FAILED
+        )
+        proof_ids = tuple(sorted(proof.proof_id for proof in evidence.route_proofs))
+        bound_digest = _bound_content_digest(bound)
+        value = object.__new__(CanonicalRouteAssessment)
+        for name, item in {
+            "phase": materialization.phase,
+            "graph_fingerprint": materialization.graph_fingerprint,
+            "generation": materialization.generation,
+            "evidence_id": evidence.atomic_group_id,
+            "proof_ids": proof_ids,
+            "evidence": evidence,
+            "bound_evidence": bound,
+            "rejection_reason": rejection_reason,
+            "_seal": _route_assessment_seal(
+                materialization.phase, materialization.graph_fingerprint,
+                materialization.generation, evidence.atomic_group_id, proof_ids,
+                bound is not None, rejection_reason, bound_digest,
+            ),
+            "_bound_content_digest": bound_digest,
+        }.items():
+            object.__setattr__(value, name, item)
+        register(assessments, value, expected_assessment(value))
+        CanonicalRouteAssessment.__post_init__(value)
+        return value
+
+    def validate_assessment(value: object) -> CanonicalRouteAssessment:
+        if type(value) is not CanonicalRouteAssessment:
+            raise TypeError("route assessment must be CanonicalRouteAssessment")
+        CanonicalRouteAssessment.__post_init__(value)
+        validate(assessments, value, expected_assessment(value), "route assessment")
+        return value
+
+    def validate_materialization_registry(value: object) -> None:
+        validate(
+            materializations, value, expected_materialization(value),
+            "route materialization",
+        )
+
+    def validate_assessment_registry(value: object) -> None:
+        validate(assessments, value, expected_assessment(value), "route assessment")
+
+    return (
+        capture, assess, validate_materialization, validate_assessment,
+        validate_materialization_registry, validate_assessment_registry,
+    )
+
+
+(
+    _closed_capture, _closed_assess, _closed_validate_materialization,
+    _closed_validate_assessment, _closed_validate_materialization_registry,
+    _closed_validate_assessment_registry,
+) = _install_closed_route_authority()
+CanonicalRouteMaterialization.capture = classmethod(_closed_capture)
+assess_canonical_route = _closed_assess
+validate_canonical_route_materialization = _closed_validate_materialization
+validate_canonical_route_assessment = _closed_validate_assessment
+_validate_materialization_registry = _closed_validate_materialization_registry
+_validate_assessment_registry = _closed_validate_assessment_registry
+del _closed_capture, _closed_assess, _closed_validate_materialization
+del _closed_validate_assessment, _closed_validate_materialization_registry
+del _closed_validate_assessment_registry, _install_closed_route_authority
+
+
 __all__ = [
     "BoundCanonicalSemanticEvidence",
     "BoundSemanticCarrier",
@@ -1662,6 +2181,12 @@ __all__ = [
     "BoundSemanticRoute",
     "BoundSemanticRouteDestination",
     "CanonicalSemanticEvidence",
+    "CanonicalRouteMaterialization",
+    "CanonicalRouteAssessment",
+    "CanonicalRouteAssessmentPhase",
+    "CanonicalRouteAssessmentRejection",
+    "validate_canonical_route_materialization",
+    "validate_canonical_route_assessment",
     "SemanticCarrierProof",
     "SemanticCorridorPoint",
     "SemanticPredicateKind",
@@ -1674,6 +2199,8 @@ __all__ = [
     "SemanticStateWriteProof",
     "SemanticStateWriteDeliveryKind",
     "bind_canonical_semantic_evidence",
+    "assess_canonical_route",
+    "validate_canonical_route_assessment",
     "canonical_terminal_state_targets",
     "semantic_route_proof_reaches_consumer",
 ]

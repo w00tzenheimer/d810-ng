@@ -218,6 +218,23 @@ def validate_proposal(
         validate_canonical_roundtrip(proposal, ProposedUnflattenContract)
         ProposedUnflattenContract.__post_init__(proposal)
         _validate_use_def_locator(plan, proposal)
+        source_blocks = proposal.source_identity_catalog.blocks
+        if source_blocks and all(
+            type(block.block_ref) is NativeBlockRef for block in source_blocks
+        ):
+            source_serial_by_ref = {
+                block.block_ref: serial
+                for serial, block in enumerate(source_blocks)
+            }
+            for claim in proposal.claims:
+                if type(claim) is not producer_api.ExactInfeasibleEffectClaim:
+                    continue
+                if producer_api.validate_exact_effect_claim_semantics(
+                    proposal=proposal,
+                    claim=claim,
+                    source_serial_by_ref=source_serial_by_ref,
+                ) is None:
+                    raise ValueError("exact effect claim semantic correlation is invalid")
     except Exception:
         return ProposalRejected(
             UnflattenAuthorityReason.MALFORMED_PROPOSAL,

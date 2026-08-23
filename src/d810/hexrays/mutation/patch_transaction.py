@@ -1579,6 +1579,7 @@ class _PatchTransactionLifecycle:
                     semantic_verdict,
                     maturity=str(self.plan.source_maturity),
                     source_ea=int(observed.func_ea),
+                    projected_case=self.bound.unflatten_authority.prepared.projected_case,
                 ),),
             )
             if not semantic_verdict.accepted:

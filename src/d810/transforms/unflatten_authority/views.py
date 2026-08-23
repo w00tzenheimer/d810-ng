@@ -30,6 +30,140 @@ class ExactEffectLossView:
     justification_ids: tuple[str, ...]
 
 
+def semantic_loss_ledger(case: model.SemanticSafetyCase) -> model.SemanticLossLedger:
+    """Project the evaluator-owned case into its one canonical loss ledger."""
+
+    _check_case(case)
+    subjects = {subject.subject_id: subject for subject in case.subjects}
+    bindings = {binding.subject.subject_id: binding for binding in case.bindings}
+    source_bindings = {binding.subject.subject_id: binding for binding in case.source_bindings}
+    cells = {cell.key: cell for cell in case.obligation_index.cells}
+    justifications = {item.justification_id: item for item in case.justifications}
+    evidence = {item.evidence_id: item for item in case.evidence}
+    claims = {item.claim_id: item for item in case.claims}
+    rows: list[model.SemanticLossRow] = []
+    for subject_id in case.source_subject_ids:
+        subject = subjects.get(subject_id)
+        binding = bindings.get(subject_id)
+        if subject is None or binding is None:
+            raise ValueError("source subject partition is not covered by the case")
+        source_binding = source_bindings.get(subject_id)
+        if source_binding is None:
+            raise ValueError("source subject partition is not covered by source bindings")
+        if binding.status is not model.SubjectBindingStatus.MISSING:
+            continue
+        if case.phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST:
+            continue
+        structural_key = model.ObligationKey(subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+        structural = cells.get(structural_key)
+        if structural is None:
+            # Aggregate source subjects such as NON_STATE_VALUE_FLOW have no
+            # structural-accounting cell and therefore cannot be semantic-loss
+            # ledger subjects.
+            continue
+        semantic = tuple(
+            cell for cell in case.obligation_index.cells
+            if cell.key.subject.subject_id == subject_id
+            and cell.key.dimension is not model.SafetyDimension.STRUCTURAL_ACCOUNTING
+        )
+        relevant = (structural, *semantic)
+        relevant_justifications = tuple(
+            justifications[justification_id]
+            for cell in relevant
+            for justification_id in (
+                *cell.supporting_justification_ids,
+                *cell.refuting_justification_ids,
+            )
+        )
+        relevant_evidence = tuple(
+            evidence[premise]
+            for item in relevant_justifications
+            for premise in item.premise_ids
+        )
+        relevant_claims = tuple(
+            claims[item.claim_id]
+            for item in relevant_justifications
+            if item.claim_id is not None
+        )
+        rows.append(model.SemanticLossRow(
+            case=case,
+            source_subject=subject,
+            source_binding=source_binding,
+            candidate_binding=binding,
+            structural_obligation=structural,
+            relevant_semantic_obligations=semantic,
+            justifications=tuple(sorted(set(relevant_justifications), key=lambda item: item.justification_id)),
+            evidence=tuple(sorted(set(relevant_evidence), key=lambda item: item.evidence_id)),
+            claims=tuple(sorted(set(relevant_claims), key=lambda item: item.claim_id)),
+        ))
+    ledger = model.SemanticLossLedger(
+        case=case,
+        authority_id=case.authority_id,
+        case_id=case.case_id,
+        phase=case.phase,
+        source_fingerprint=case.source_fingerprint,
+        candidate_fingerprint=case.candidate_fingerprint,
+        rows=tuple(sorted(rows, key=lambda row: row.source_subject.subject_id)),
+    )
+    return ledger
+
+
+def observed_only_loss(
+    projected_case: model.SemanticSafetyCase,
+    observed_case: model.SemanticSafetyCase,
+) -> model.ObservedSemanticLossDelta:
+    """Project exact observed-only loss subjects relative to preflight."""
+
+    _check_case(projected_case)
+    _check_case(observed_case)
+    if projected_case.phase is not model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+        raise ValueError("projected case must be PROJECTED_PREFLIGHT")
+    if observed_case.phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        raise ValueError("observed case must be OBSERVED_POST_APPLY")
+    if projected_case.authority_id != observed_case.authority_id:
+        raise ValueError("projected and observed cases have different authorities")
+    if projected_case.source_fingerprint != observed_case.source_fingerprint:
+        raise ValueError("projected and observed cases have different source fingerprints")
+    if projected_case.source_subject_ids != observed_case.source_subject_ids:
+        raise ValueError("projected and observed cases have different source partitions")
+    projected_subjects = tuple(
+        subject for subject in projected_case.subjects
+        if subject.subject_id in set(projected_case.source_subject_ids)
+    )
+    observed_subjects = tuple(
+        subject for subject in observed_case.subjects
+        if subject.subject_id in set(observed_case.source_subject_ids)
+    )
+    if projected_subjects != observed_subjects:
+        raise ValueError("projected and observed cases have different source subjects")
+    if projected_case.source_bindings != observed_case.source_bindings:
+        raise ValueError("projected and observed cases have different source bindings")
+    if projected_case.source_inventory != observed_case.source_inventory:
+        raise ValueError("projected and observed cases have different source inventories")
+    projected = semantic_loss_ledger(projected_case)
+    observed = semantic_loss_ledger(observed_case)
+    projected_by_subject = {row.source_subject.subject_id: row for row in projected.rows}
+    observed_by_subject = {row.source_subject.subject_id: row for row in observed.rows}
+    common = set(projected_by_subject) & set(observed_by_subject)
+    drift = {
+        subject_id for subject_id in common
+        if projected_by_subject[subject_id].kind is not observed_by_subject[subject_id].kind
+    }
+    if drift:
+        raise ValueError("observed semantic loss classification drift")
+    rows = tuple(sorted(
+        (row for subject_id, row in observed_by_subject.items() if subject_id not in projected_by_subject),
+        key=lambda row: row.source_subject.subject_id,
+    ))
+    return model.ObservedSemanticLossDelta(
+        authority_id=observed.authority_id,
+        source_fingerprint=observed.source_fingerprint,
+        projected_case_id=projected.case_id,
+        observed_case_id=observed.case_id,
+        rows=rows,
+    )
+
+
 def obligation_states(case: model.SemanticSafetyCase) -> tuple[tuple[model.ObligationKey, model.ObligationState], ...]:
     _check_case(case)
     return tuple((cell.key, cell.state) for cell in case.obligation_index.cells)
@@ -111,5 +245,6 @@ diagnostic_view = evidence_ids
 __all__ = [
     "VIEW_GRAPH_TRAVERSALS", "ViewMetrics", "ExactEffectLossView", "obligation_states",
     "failed_obligations", "evidence_ids", "justification_ids", "view_metrics",
-    "exact_effect_loss_view", "loss_view", "coverage_view", "diagnostic_view",
+    "exact_effect_loss_view", "semantic_loss_ledger", "observed_only_loss",
+    "loss_view", "coverage_view", "diagnostic_view",
 ]

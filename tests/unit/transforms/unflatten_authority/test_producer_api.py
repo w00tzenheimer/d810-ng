@@ -13,6 +13,7 @@ from d810.transforms.unflatten_authority.model import (
 )
 from d810.transforms.unflatten_authority.producer_api import (
     classify_block_effects_and_terminals,
+    validate_exact_effect_claim_semantics,
 )
 
 
@@ -185,3 +186,26 @@ def test_classifier_accepts_unknown_kind_recovered_transfer(transfer: ControlTra
     classify_block_effects_and_terminals(
         _block(instruction), owner_ref=None, owner_anchor_ea=0x1000,
     )
+
+
+def test_exact_claim_semantics_rejects_state_and_storage_forgery() -> None:
+    from dataclasses import replace
+
+    from tests.unit.transforms.unflatten_authority.test_bind import _exact_fixture
+
+    _source, proposal, _exclusion, refs = _exact_fixture()
+    claim = next(item for item in proposal.claims if item.kind.value == "exact_infeasible_effect")
+    serial_by_ref = {ref: serial for serial, ref in refs.items()}
+    assert validate_exact_effect_claim_semantics(
+        proposal=proposal, claim=claim, source_serial_by_ref=serial_by_ref,
+    ) is not None
+
+    object.__setattr__(claim, "normalized_state", claim.normalized_state + 1)
+    assert validate_exact_effect_claim_semantics(
+        proposal=proposal, claim=claim, source_serial_by_ref=serial_by_ref,
+    ) is None
+    object.__setattr__(claim, "normalized_state", 7)
+    object.__setattr__(claim, "state_identity", replace(claim.state_identity, offset=8))
+    assert validate_exact_effect_claim_semantics(
+        proposal=proposal, claim=claim, source_serial_by_ref=serial_by_ref,
+    ) is None

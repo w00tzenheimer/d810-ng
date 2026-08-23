@@ -47,7 +47,7 @@ def _exact_fixture(*, optional_owner: bool = False):
         (0, (1,), (), 0x1000, (InsnSnapshot(0, 0x1000, (), l=state_number, d=state_stack, kind=InsnKind.MOV, value_op_kind=ValueOpKind.MOVE), InsnSnapshot(0, 0x1001, (), l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=1), kind=InsnKind.GOTO))),
         (1, (2, 3), (0,), 0x2000, (InsnSnapshot(0, 0x2000, (), kind=InsnKind.NOP, value_op_kind=ValueOpKind.VENDOR), InsnSnapshot(0, 0x2001, (), l=state_stack, r=state_number, d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2), kind=InsnKind.COND_JUMP, branch_predicate=PredicateKind.EQ, is_conditional_jump=True),)),
         (2, (), (1,), 0x3000, (InsnSnapshot(0, 0x3000, (), kind=InsnKind.NOP),)),
-        (3, (), (1,), 0x4000, (InsnSnapshot(0, 0x4000, (), kind=InsnKind.CALL, is_call=True),)),
+        (3, (), (1,), 0x4000, (InsnSnapshot(0, 0x4000, (), l=state_number, kind=InsnKind.CALL, is_call=True),)),
         (4, (), (), 0x5000, (InsnSnapshot(0, 0x5000, (), kind=InsnKind.NOP),)),
     )
     source = FlowGraph({serial: BlockSnapshot(serial, 0, succs, preds, 0, ea, insns,
