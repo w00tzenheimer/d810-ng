@@ -12,7 +12,7 @@ from d810.analyses.control_flow.effect_branch_exclusion import (
     validate_exact_state_branch_effect_exclusion,
 )
 from d810.ir.flowgraph import FlowGraph
-from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef
 from . import model, producer_api
 from .ids import canonical_bytes, semantic_graph_fingerprint, validate_canonical_roundtrip
 
@@ -408,7 +408,11 @@ def bind_projected_subjects(
     witnesses = {item.block_ref: item for item in catalog.blocks}
     if len(witnesses) != len(catalog.blocks):
         raise ValueError("source catalog contains duplicate block references")
-    if any(ref not in witnesses for ref in serial_by_ref):
+    extra_refs = {
+        ref for ref in serial_by_ref
+        if ref not in witnesses
+    }
+    if any(type(ref) is not PlanBlockRef for ref in extra_refs):
         raise ValueError("projected serial binding contains a foreign source reference")
     serials = tuple(serial_by_ref.values())
     if any(type(serial) is not int or serial < 0 for serial in serials):
@@ -426,11 +430,28 @@ def bind_projected_subjects(
     )
     if native_instruction_eas_by_ref is not None and set(origins) != set(serial_by_ref):
         raise ValueError("projected native-origin binding must cover every projected reference")
-    if any(ref not in witnesses or ref not in serial_by_ref for ref in origins):
+    if any(ref not in serial_by_ref for ref in origins):
         raise ValueError("projected native-origin binding contains a foreign reference")
     for ref, supplied in origins.items():
-        if tuple(supplied) != tuple(witnesses[ref].native_instruction_eas):
-            raise ValueError("native instruction origins do not exactly match catalog")
+        if ref in witnesses:
+            expected_origins = tuple(witnesses[ref].native_instruction_eas)
+            supplied_origins = tuple(supplied)
+            if supplied_origins != expected_origins and not (
+                ref in extra_refs
+                and type(ref) is PlanBlockRef
+                and
+                supplied_origins
+                and set(supplied_origins) < set(expected_origins)
+                and witnesses[ref].anchor_ea in supplied_origins
+            ):
+                raise ValueError("native instruction origins do not exactly match catalog")
+        if ref in extra_refs and (
+            type(supplied) is not tuple
+            or not supplied
+            or any(type(ea) is not int or ea < 0 for ea in supplied)
+            or len(set(supplied)) != len(supplied)
+        ):
+            raise ValueError("plan helper origins must be exact and nonempty")
 
     result: list[model.PhaseSubjectBinding] = []
     seen_subjects: set[str] = set()
@@ -442,7 +463,7 @@ def bind_projected_subjects(
             raise ValueError("subject bindings contain duplicate subjects")
         seen_subjects.add(subject.subject_id)
         refs = _locator_refs(subject)
-        if any(ref not in witnesses for ref in refs):
+        if any(ref not in witnesses and ref not in extra_refs for ref in refs):
             raise ValueError("subject contains a foreign or missing source reference")
         owner = subject.block_ref
         if subject.kind is model.SemanticSubjectKind.VALUE_FLOW:
@@ -466,10 +487,15 @@ def bind_projected_subjects(
                 role=subject.role,
             ))
             continue
-        witness = witnesses[owner]
-        if subject.anchor_ea is None or subject.anchor_ea != witness.anchor_ea:
+        if owner in witnesses:
+            witness_anchor = witnesses[owner].anchor_ea
+            witness_origins = tuple(origins[owner])
+        else:
+            witness_anchor = subject.anchor_ea
+            witness_origins = tuple(origins.get(owner, ()))
+        if subject.anchor_ea is None or subject.anchor_ea != witness_anchor:
             raise ValueError("subject anchor is a near-match for its source witness")
-        if subject.anchor_ea not in tuple(origins.get(owner, ())):
+        if subject.anchor_ea not in witness_origins:
             raise ValueError("projected subject origin does not exactly match catalog")
         result.append(model.PhaseSubjectBinding(
             subject=subject,
@@ -480,7 +506,7 @@ def bind_projected_subjects(
             status=model.SubjectBindingStatus.UNIQUE,
             serial=serial_by_ref[owner],
             anchor_ea=subject.anchor_ea,
-            native_instruction_eas=witness.native_instruction_eas,
+            native_instruction_eas=witness_origins,
             role=subject.role,
         ))
     return tuple(sorted(result, key=lambda item: item.subject.subject_id))

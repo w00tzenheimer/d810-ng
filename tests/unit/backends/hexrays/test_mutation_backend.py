@@ -78,6 +78,8 @@ from d810.transforms.cfg_transaction import (
 from d810.transforms.unflatten_authority.ids import authority_id
 from d810.transforms.unflatten_authority import model as authority_model
 from d810.transforms.unflatten_authority import views as authority_views
+from d810.transforms.unflatten_authority.proposal import TypedProposalRoute
+from d810.transforms.unflatten_authority.transaction_api import select_plan_route
 from d810.transforms.dispatcher_corridor_coverage import (
     DISPATCHER_CORRIDOR_COVERAGE_METADATA,
     DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
@@ -2565,6 +2567,58 @@ def _typed_local_alias_fixture(
     return source, plan
 
 
+def _typed_lowering_fixture() -> tuple[FlowGraph, PatchPlan]:
+    """Build typed lower authority with a no-op redirect on a one-way source."""
+
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+
+    source, original_proposal, exclusion, refs = exact_fixture()
+    from d810.transforms.unflatten_authority import producer_api
+    proposal = producer_api.build_proposal(
+        plan_id=original_proposal.plan_id,
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=original_proposal.source_identity_catalog.generation,
+        canonical_route_evidence=original_proposal.route_evidence,
+        exact_state_effect_exclusions=(exclusion,),
+        dispatcher_entry_serial=0,
+        dispatcher_member_serials=(0,),
+        authoritative_handler_serials=(2,),
+        state_identity=original_proposal.plan_inputs.state_identity,
+        use_def_witness=original_proposal.use_def_witness,
+    )
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=authority_id("typed-lowering-snapshot"),
+        source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
+        source_generation=proposal.source_identity_catalog.generation,
+        steps=(
+            PatchRedirectGoto(refs[0], refs[1], refs[1]),
+            PatchLowerConditionalStateTransition(
+                source_serial=refs[1],
+                old_dispatcher_serial=refs[2],
+                rewrite_from_ea=0x2001,
+                condition_operand="typed-live-predicate",
+                false_target_serial=refs[2],
+                true_target_serial=refs[3],
+            ),
+        ),
+        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+        unflatten_proposal=proposal,
+    )
+    manifest = canonical_redirect_manifest(plan)
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    return source, replace(plan, unflatten_proposal=proposal)
+
+
 def _observed_scalarized_cfg(
     source: FlowGraph,
     *,
@@ -2745,6 +2799,50 @@ def test_backend_accepts_exact_reachable_local_alias_store_scalarization() -> No
         type(claim) is authority_model.LocalAliasEffectScalarizationClaim
         for claim in execution.projected_unflatten_verdict.safety_case.claims
     )
+
+
+def test_backend_typed_lowering_observe_bypasses_legacy_canonicalizer(monkeypatch) -> None:
+    """Typed lower observation uses the real projected graph and no legacy canonicalizer."""
+
+    from d810.transforms import dispatcher_corridor_coverage as coverage_module
+
+    source, plan = _typed_lowering_fixture()
+    assert isinstance(select_plan_route(plan), TypedProposalRoute)
+    assert _requires_observed_identity_canonicalization(plan)
+    projected = project_patch_plan(source, plan, snapshot_id=plan.snapshot_id)
+    calls: list[object] = []
+
+    def fail_legacy(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("typed lifecycle must not invoke legacy canonicalizer")
+
+    monkeypatch.setattr(coverage_module, "canonicalize_observed_dispatcher_graph", fail_legacy)
+
+    class _TypedLowerTranslator(_FakeTranslator):
+        def lift(self, _live_source: object) -> FlowGraph:
+            self.lift_count += 1
+            return source if self.lift_count == 1 else projected.graph
+
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(
+            source,
+            plan,
+            native_key=next(
+                ref.identity.native_key
+                for ref, _serial in plan.source_coordinates
+                if isinstance(ref, NativeBlockRef)
+            ),
+        ),
+        translator=_TypedLowerTranslator(source),
+    )
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=source.num_blocks))
+
+    assert result is projected.graph
+    assert calls == []
+    execution = backend.last_patch_execution
+    assert execution is not None
+    verdict = execution.observed_unflatten_verdict
+    assert verdict is not None and verdict.accepted
 
 
 def test_backend_accepts_two_typed_local_alias_hosts_in_one_owner() -> None:

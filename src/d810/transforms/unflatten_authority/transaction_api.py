@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import fields, replace
 from time import perf_counter
 import hashlib
 import re
 
-from d810.transforms.plan import PatchPlan, PatchScalarizeLocalAliasAccess
+from d810.transforms.plan import (
+    PatchBlockSpec,
+    PatchCloneConditionalAsGoto,
+    PatchCloneConditionalAsGotoFromBranchArm,
+    PatchConditionalRedirect,
+    PatchDuplicateBlock,
+    PatchDuplicateReplayAndRedirect,
+    PatchEdgeSplitCorridor,
+    PatchEdgeSplitTrampoline,
+    PatchInsertBlock,
+    PatchLowerConditionalStateTransition,
+    PatchPlan,
+    PatchRedirectBranch,
+    PatchScalarizeLocalAliasAccess,
+)
 from d810.analyses.control_flow import semantic_route_evidence as route_model
 from d810.analyses.control_flow.semantic_route_evidence import (
     assess_canonical_route,
@@ -15,9 +30,14 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import CfgProjection, TransactionAttemptId
-from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
+from d810.transforms.cfg_transaction import (
+    LogicalBlockRef,
+    NativeBlockRef,
+    PlanBlockRef,
+)
 from d810.transforms.patch_binding import (
     BoundPatchPlan,
+    iter_refs,
     validate_bound_patch_plan,
 )
 from d810.transforms.unflatten_authority import bind as authority_bind
@@ -129,8 +149,38 @@ def _catalog_serials(source: FlowGraph, proposal, plan: PatchPlan, *, blocks=Non
     return by_ref
 
 
-def _projected_serials(graph: FlowGraph, proposal, *, blocks=None) -> dict[object, int]:
+def _projected_plan_serials(plan: PatchPlan) -> dict[PlanBlockRef, int]:
+    """Resolve planned block references in the immutable projection coordinate space."""
+
+    if not plan.new_blocks:
+        return {}
+    source_coordinates = dict(plan.source_coordinates)
+    source_stop = plan.relocation_map.source_stop
+    stop_before = source_coordinates.get(source_stop) if source_stop is not None else None
+    if stop_before is None and source_coordinates:
+        stop_before = max(source_coordinates.values())
+    if stop_before is None:
+        return {}
+    return {
+        spec.block_id: int(stop_before) + offset
+        for offset, spec in enumerate(plan.new_blocks)
+    }
+
+
+def _projected_serials(
+    graph: FlowGraph, proposal, *, blocks=None, plan: PatchPlan | None = None,
+    planned_serials: Mapping[PlanBlockRef, int] | None = None,
+) -> dict[object, int]:
     result: dict[object, int] = {}
+    block_values = graph.blocks if blocks is None else blocks
+    if planned_serials is None:
+        planned_serials = _projected_plan_serials(plan) if plan is not None else {}
+    else:
+        planned_serials = dict(planned_serials)
+        if any(type(ref) is not PlanBlockRef or type(serial) is not int or serial < 0
+               for ref, serial in planned_serials.items()):
+            raise ValueError("observed helper coordinates must be exact PlanBlockRef rows")
+    planned_serial_set = set(planned_serials.values())
     for witness in proposal.source_identity_catalog.blocks:
         def _anchor(block):
             native = getattr(block, "native_start_ea", None)
@@ -138,13 +188,19 @@ def _projected_serials(graph: FlowGraph, proposal, *, blocks=None) -> dict[objec
             return native if native is not None else start
         matches = tuple(
             block.serial
-            for block in (graph.blocks if blocks is None else blocks).values()
+            for block in block_values.values()
+            if block.serial not in planned_serial_set
             if _anchor(block) == witness.anchor_ea
         )
         if len(matches) == 1:
             result[witness.block_ref] = int(matches[0])
     if len(set(result.values())) != len(result):
         raise ValueError("projected inventory has duplicate source identities")
+    for ref, serial in planned_serials.items():
+        if serial in block_values:
+            if serial in result.values():
+                raise ValueError("planned block coordinate overlaps a source identity")
+            result[ref] = serial
     return result
 
 
@@ -171,7 +227,10 @@ def _block_subjects(proposal, serials, *, include_corridor=True):
     return subjects
 
 
-def _inventory_subjects(proposal, source_serials, effects=(), terminals=(), plan=None):
+def _inventory_subjects(
+    proposal, source_serials, effects=(), terminals=(), plan=None,
+    planned_helpers: Mapping[PlanBlockRef, int] | None = None,
+):
     subjects = _block_subjects(proposal, source_serials)
     by_id = {subject.subject_id: subject for subject in subjects}
     # The fragment-wide value-flow subject is always present, even for an
@@ -253,6 +312,13 @@ def _inventory_subjects(proposal, source_serials, effects=(), terminals=(), plan
                 model.BlockSubjectLocator(step.block_serial, witness.anchor_ea),
             )
             by_id[owner.subject_id] = owner
+    for ref, anchor in (planned_helpers or {}).items():
+        helper = _subject(
+            model.SemanticSubjectKind.BLOCK,
+            model.SemanticSubjectRole.PLANNED_HELPER,
+            model.BlockSubjectLocator(ref, anchor),
+        )
+        by_id[helper.subject_id] = helper
     represented = {subject.block_ref for subject in by_id.values() if subject.block_ref is not None}
     for ref, witness in ((item.block_ref, item) for item in proposal.source_identity_catalog.blocks):
         if ref not in represented:
@@ -297,6 +363,7 @@ def _build_semantic_graph_inventory(
     phase: model.UnflattenAuthorityPhase,
     source_subjects: tuple[model.SemanticSubjectRef, ...] = (),
     materialization: CanonicalRouteMaterialization | None = None,
+    planned_serials: Mapping[PlanBlockRef, int] | None = None,
 ) -> model.SemanticGraphInventory:
     """Build one complete source or candidate inventory.
 
@@ -321,7 +388,10 @@ def _build_semantic_graph_inventory(
     reachable = _reachable_serials_from_blocks(blocks_by_serial, graph.entry_serial)
     serial_by_ref = (
         _catalog_serials(graph, proposal, plan, blocks=blocks_by_serial)
-        if source else _projected_serials(graph, proposal, blocks=blocks_by_serial)
+        if source else _projected_serials(
+            graph, proposal, blocks=blocks_by_serial, plan=plan,
+            planned_serials=planned_serials,
+        )
     )
     fingerprint = materialization.graph_fingerprint
     block_rows = []
@@ -335,9 +405,19 @@ def _build_semantic_graph_inventory(
         owner_anchor = None
         if owner_ref is not None:
             owner_anchor = next(
-                item.anchor_ea for item in proposal.source_identity_catalog.blocks
-                if item.block_ref == owner_ref
+                (
+                    item.anchor_ea
+                    for item in proposal.source_identity_catalog.blocks
+                    if item.block_ref == owner_ref
+                ),
+                None,
             )
+            if owner_anchor is None:
+                owner_anchor = getattr(block, "native_start_ea", None)
+            if owner_anchor is None:
+                owner_anchor = getattr(block, "start_ea", None)
+            if owner_anchor is None:
+                raise ValueError("planned block has no exact native anchor")
         observed = producer_api.observe_inventory_block(
             block, owner_ref=owner_ref, owner_anchor_ea=owner_anchor,
         )
@@ -360,12 +440,23 @@ def _build_semantic_graph_inventory(
         item.instruction_ordinal if item.instruction_ordinal is not None else -1,
         item.instruction_ea, item.terminal_kind.value,
     )))
+    planned_helpers = {
+        ref: next(
+            block.anchor_ea if block.anchor_ea is not None
+            else min(block.native_instruction_eas)
+            for block in block_rows
+            if block.serial == serial
+        )
+        for ref, serial in serial_by_ref.items()
+        if not source and type(ref) is PlanBlockRef
+    }
     discovered_subjects = _inventory_subjects(
         proposal,
         serial_by_ref,
         tuple(item for item in effects if item.owner_serial in reachable),
         tuple(item for item in terminals if item.owner_serial in reachable),
         plan,
+        planned_helpers=planned_helpers,
     )
     if source:
         subjects = discovered_subjects
@@ -389,6 +480,17 @@ def _build_semantic_graph_inventory(
             effects=tuple(item for item in effects if item.owner_serial in reachable),
             terminals=tuple(item for item in terminals if item.owner_serial in reachable),
             reachable_serials=tuple(sorted(reachable)),
+            native_instruction_eas_by_ref=(
+                {
+                    row.block_ref: row.native_instruction_eas
+                    for row in block_rows
+                    if row.block_ref is not None
+                }
+                if any(
+                    isinstance(step, (PatchRedirectBranch, PatchLowerConditionalStateTransition))
+                    for step in plan.steps
+                ) else None
+            ),
         )
     )
     topology = []
@@ -645,6 +747,326 @@ def _derive_local_alias_transaction_facts(
     )
 
 
+def _patch_step_preimage(step_index: int, step: object) -> tuple[object, ...]:
+    """Return the closed semantic fields of one helper/resegmentation step."""
+
+    step_type = type(step).__name__
+    values = tuple(
+        (field.name, getattr(step, field.name))
+        for field in fields(step)
+        if not field.name.startswith("_")
+    )
+    return (step_type, step_index, values)
+
+
+def _patch_block_spec_preimage(spec_index: int, spec: PatchBlockSpec) -> tuple[object, ...]:
+    """Return every public field of one created-helper specification."""
+
+    values = tuple(
+        (field.name, getattr(spec, field.name))
+        for field in fields(spec)
+        if not field.name.startswith("_")
+    )
+    return ("PatchBlockSpec", spec_index, values)
+
+
+def _nominal_patch_lineage_parts(
+    step: object,
+) -> tuple[tuple[object, ...], tuple[object, ...], int | None, int | None] | None:
+    """Return exact owner/ref fields for supported nominal planner steps."""
+
+    step_type = type(step)
+    if step_type is PatchRedirectBranch:
+        owner = step.fallthrough_helper_block_id or step.from_serial
+        return (
+            (owner,),
+            (step.from_serial, step.old_target, step.new_target),
+            None,
+            None,
+        )
+    if step_type is PatchLowerConditionalStateTransition:
+        return (
+            (step.source_serial,),
+            (
+                step.source_serial, step.old_dispatcher_serial,
+                step.false_target_serial, step.true_target_serial,
+            ),
+            step.rewrite_from_ea,
+            None,
+        )
+    if step_type is PatchEdgeSplitTrampoline:
+        return (
+            (step.block_id,),
+            (
+                step.source_serial, step.via_pred, step.old_target,
+                step.apply_old_target, step.new_target, step.template_block,
+            ),
+            None,
+            None,
+        )
+    if step_type is PatchEdgeSplitCorridor:
+        return (
+            tuple(step.clone_block_ids),
+            (
+                step.source_serial, step.via_pred, step.old_target,
+                step.new_target, step.clone_until, *step.corridor_serials,
+                step.source_new_target,
+            ),
+            None,
+            None,
+        )
+    if step_type is PatchConditionalRedirect:
+        return (
+            (step.block_id, step.fallthrough_block_id),
+            (
+                step.source_serial, step.ref_block, step.conditional_target,
+                step.fallthrough_target, step.old_target_serial,
+            ),
+            None,
+            None,
+        )
+    if step_type is PatchInsertBlock:
+        return (
+            (step.block_id,),
+            (step.pred_serial, step.succ_serial, step.old_target_serial),
+            None,
+            None,
+        )
+    if step_type is PatchDuplicateBlock:
+        return (
+            tuple(ref for ref in (step.block_id, step.fallthrough_block_id) if ref is not None),
+            (
+                step.source_serial, step.pred_serial, *step.source_successors,
+                step.target_serial, step.conditional_target,
+                step.fallthrough_target,
+            ),
+            None,
+            None,
+        )
+    if step_type is PatchDuplicateReplayAndRedirect:
+        owners = tuple(
+            ref for entry in step.per_pred_replays
+            for ref in (entry.replay_block_id, entry.clone_block_id)
+            if ref is not None
+        )
+        refs = (
+            step.source_serial, step.dispatcher_entry,
+            *(ref for entry in step.per_pred_replays for ref in (
+                entry.pred_serial, entry.target_serial,
+            )),
+        )
+        return owners, refs, None, None
+    if step_type is PatchCloneConditionalAsGoto:
+        return (
+            (step.block_id,),
+            (
+                step.source_serial, step.pred_serial, step.goto_target,
+                *step.source_successors, step.conditional_target,
+                step.fallthrough_target,
+            ),
+            None,
+            None,
+        )
+    if step_type is PatchCloneConditionalAsGotoFromBranchArm:
+        return (
+            (step.block_id,),
+            (
+                step.source_serial, step.pred_serial, step.goto_target,
+                *step.source_successors, *step.pred_successors,
+                step.pred_branch_target_serial,
+                step.pred_fallthrough_target_serial,
+                step.conditional_target, step.fallthrough_target,
+            ),
+            None,
+            None,
+        )
+    return None
+
+
+def _derive_patch_lineage_facts(
+    source_inventory: model.SemanticGraphInventory,
+    plan: PatchPlan,
+) -> tuple[model.PatchStepEvidencePayload, ...]:
+    """Derive helper/resegmentation step evidence once at the transaction edge."""
+
+    source_refs = set(source_inventory.serial_by_ref)
+    route_refs = {
+        subject.block_ref
+        for claim in plan.unflatten_proposal.claims
+        for subject in _claim_subjects(claim)
+        if subject.block_ref is not None
+    } if plan.unflatten_proposal is not None else set()
+    rows: list[model.PatchStepEvidencePayload] = []
+    helper_specs = {
+        spec.block_id: (spec_index, spec)
+        for spec_index, spec in enumerate(plan.new_blocks)
+    }
+    if len(helper_specs) != len(plan.new_blocks):
+        raise ValueError("plan helper specifications must have unique block IDs")
+    for step_index, step in enumerate(plan.steps):
+        step_type = type(step).__name__
+        parts = _nominal_patch_lineage_parts(step)
+        if parts is None:
+            continue
+        owners, refs, host_ea, host_opcode = parts
+        for owner in owners:
+            if type(owner) is not PlanBlockRef and owner not in source_refs:
+                raise ValueError("patch-step owner is foreign to the source or plan")
+            if type(owner) is PlanBlockRef and owner.plan_id != plan.plan_id:
+                raise ValueError("patch-step owner belongs to a foreign plan")
+            helper_spec = helper_specs.get(owner) if type(owner) is PlanBlockRef else None
+            if type(owner) is PlanBlockRef and helper_spec is None:
+                raise ValueError("patch-step helper owner lacks exactly one creation spec")
+            owner_preimage = ("owner", owner)
+            for ref in refs:
+                if ref is None:
+                    continue
+                if type(ref) is PlanBlockRef:
+                    if ref.plan_id != plan.plan_id:
+                        raise ValueError("patch-step reference belongs to a foreign plan")
+                elif ref not in source_refs:
+                    raise ValueError("patch-step reference is foreign to the source plan")
+            if step_type in {"PatchLowerConditionalStateTransition", "PatchRedirectBranch"} and route_refs and not {
+                ref for ref in refs if ref is not None
+            } <= route_refs:
+                raise ValueError("patch-step source and destination refs are outside proposal route subjects")
+            step_preimage: tuple[object, ...] = _patch_step_preimage(step_index, step)
+            step_preimage += (owner_preimage,)
+            if helper_spec is not None:
+                step_preimage += (_patch_block_spec_preimage(*helper_spec),)
+            step_digest = authority_id(step_preimage)
+            rows.append(model.PatchStepEvidencePayload(
+                plan.plan_id, step_index, step_type, owner, step_digest,
+                host_ea, host_opcode, None,
+            ))
+    owned_helpers = {
+        fact.owner_ref for fact in rows if type(fact.owner_ref) is PlanBlockRef
+    }
+    helper_owner_counts = {
+        helper_ref: sum(1 for fact in rows if fact.owner_ref == helper_ref)
+        for helper_ref in helper_specs
+    }
+    if owned_helpers != set(helper_specs) or any(
+        count != 1 for count in helper_owner_counts.values()
+    ):
+        raise ValueError("every plan helper specification must have one exact patch-step owner")
+    return tuple(rows)
+
+
+def _derive_transaction_facts(
+    source_inventory: model.SemanticGraphInventory,
+    plan: PatchPlan,
+) -> tuple[
+    tuple[model.LocalAliasEffectScalarizationClaim, ...],
+    tuple[model.PatchStepEvidencePayload, ...],
+    tuple[model.ConditionalSubjectRelation, ...],
+]:
+    """Derive the complete transaction fact set at one authority boundary.
+
+    Revalidation must replay this exact function.  Keeping alias and
+    patch-lineage derivation behind one entry point prevents a later caller
+    from silently comparing a Task 12 plan against the Task 11-only replay.
+    """
+
+    alias_claims, alias_patch_facts, alias_relations = (
+        _derive_local_alias_transaction_facts(source_inventory, plan)
+    )
+    patch_step_facts = tuple(sorted(
+        (*alias_patch_facts, *_derive_patch_lineage_facts(source_inventory, plan)),
+        key=lambda item: (item.plan_id, item.step_index, item.step_type),
+    ))
+    return alias_claims, patch_step_facts, alias_relations
+
+
+def _derive_patch_lineage_relations(
+    source_inventory: model.SemanticGraphInventory,
+    candidate_inventory: model.SemanticGraphInventory,
+    plan: PatchPlan,
+    patch_step_facts: tuple[model.PatchStepEvidencePayload, ...],
+) -> tuple[model.ConditionalSubjectRelation, ...]:
+    """Bind each patch step to exact source/candidate block witnesses."""
+
+    source_subjects = tuple(
+        subject for subject in source_inventory.subjects
+        if subject.kind is model.SemanticSubjectKind.BLOCK
+        and subject.block_ref is not None
+    )
+    candidate_subjects = tuple(
+        subject for subject in candidate_inventory.subjects
+        if subject.kind is model.SemanticSubjectKind.BLOCK
+        and subject.block_ref is not None
+    )
+    candidate_bindings = {
+        item.subject.subject_id: item for item in candidate_inventory.bindings
+    }
+    relations: list[model.ConditionalSubjectRelation] = []
+    for fact in patch_step_facts:
+        step = plan.steps[fact.step_index]
+        parts = _nominal_patch_lineage_parts(step)
+        if parts is None:
+            continue
+        _owners, refs, _host_ea, _host_opcode = parts
+        source_ref = next((ref for ref in refs if type(ref) is not PlanBlockRef), None)
+        owner = fact.owner_ref
+        helper_spec = next(
+            (spec for spec in plan.new_blocks if spec.block_id == owner), None
+        ) if type(owner) is PlanBlockRef else None
+        if helper_spec is not None and helper_spec.template_block is not None:
+            source_ref = helper_spec.template_block
+        if source_ref is None:
+            raise ValueError("patch-step lineage lacks an exact source reference")
+        sources = tuple(item for item in source_subjects if item.block_ref == source_ref)
+        candidates = tuple(item for item in candidate_subjects if item.block_ref == owner)
+        if not sources or not candidates:
+            raise ValueError("patch-step lineage lacks exact source/candidate witnesses")
+        if type(owner) is PlanBlockRef:
+            preferred = tuple(
+                source for source in sources
+                if source.role is model.SemanticSubjectRole.SOURCE_ENTRY
+            )
+            if len(preferred) == 1:
+                sources = preferred
+            elif len(sources) != 1:
+                raise ValueError("helper lineage source role is ambiguous")
+        else:
+            by_role = {}
+            for source in sources:
+                by_role.setdefault(source.role, []).append(source)
+            candidate_by_role = {}
+            for candidate in candidates:
+                candidate_by_role.setdefault(candidate.role, []).append(candidate)
+            paired = []
+            for role in sorted(set(by_role) & set(candidate_by_role), key=lambda value: value.value):
+                left, right = by_role[role], candidate_by_role[role]
+                if len(left) != 1 or len(right) != 1:
+                    raise ValueError("patch-step lineage role witness is ambiguous")
+                paired.append((left[0], right[0]))
+            if not paired:
+                if len(sources) != 1 or len(candidates) != 1:
+                    raise ValueError("patch-step lineage block witness is ambiguous")
+                paired.append((sources[0], candidates[0]))
+        if type(owner) is PlanBlockRef:
+            if len(candidates) != 1:
+                raise ValueError("helper lineage candidate role is ambiguous")
+            paired = ((sources[0], candidates[0]),)
+        for source, candidate in paired:
+            binding = candidate_bindings.get(candidate.subject_id)
+            if binding is None or binding.status is not model.SubjectBindingStatus.UNIQUE:
+                raise ValueError("patch-step lineage candidate witness is not unique")
+            relations.append(model.ConditionalSubjectRelation(
+                source.subject_id,
+                candidate.subject_id,
+                model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+                authority_id(("patch-lineage", fact.step_digest,
+                              source.subject_id, candidate.subject_id,
+                              binding.native_instruction_eas)),
+            ))
+    return tuple(sorted(relations, key=lambda item: (
+        item.source_subject_id, item.target_subject_id,
+        item.dimension.value, item.provenance_id,
+    )))
+
+
 def _local_alias_step_preimage(
     step_index: int, step: PatchScalarizeLocalAliasAccess,
 ) -> tuple[object, ...]:
@@ -735,11 +1157,17 @@ def _derive_inputs(
         generic_gate_facts = generic_gates.facts
     elif generic_gates is not None:
         raise TypeError("generic_gates must be GenericCfgGateBundle or None")
-    alias_claims, patch_step_facts, alias_relations = (
-        _derive_local_alias_transaction_facts(source_inventory, plan)
+    alias_claims, patch_step_facts, alias_relations = _derive_transaction_facts(
+        source_inventory, plan,
     )
+    conditional_relations = tuple(sorted(
+        (*alias_relations, *_derive_patch_lineage_relations(
+            source_inventory, candidate_inventory, plan, patch_step_facts,
+        )),
+        key=lambda item: (item.source_subject_id, item.target_subject_id,
+                          item.dimension.value, item.provenance_id),
+    ))
     claims = tuple(sorted((*proposal.claims, *alias_claims), key=lambda item: item.claim_id))
-    conditional_relations = alias_relations
     route_assessments = tuple(
         item for item in (source_route_assessment, candidate_route_assessment)
         if item is not None
@@ -972,11 +1400,19 @@ def revalidate_bound_patch_plan_against_prepared(
     model.DerivedUnflattenPreparationInputs.__post_init__(prepared.source_inputs)
     if bound_plan.plan is not prepared.owning_plan:
         raise ValueError("bound patch plan belongs to a foreign plan")
-    alias_claims, patch_step_facts, conditional_relations = (
-        _derive_local_alias_transaction_facts(
-            prepared.source_inventory, bound_plan.plan,
-        )
+    alias_claims, patch_step_facts, conditional_relations = _derive_transaction_facts(
+        prepared.source_inventory, bound_plan.plan,
     )
+    conditional_relations = tuple(sorted(
+        (*conditional_relations, *_derive_patch_lineage_relations(
+            prepared.source_inventory,
+            prepared.source_inputs.candidate_inventory,
+            bound_plan.plan,
+            patch_step_facts,
+        )),
+        key=lambda item: (item.source_subject_id, item.target_subject_id,
+                          item.dimension.value, item.provenance_id),
+    ))
     expected_claims = tuple(sorted(
         (*prepared.proposal.claims, *alias_claims),
         key=lambda item: item.claim_id,
@@ -1019,28 +1455,80 @@ def revalidate_bound_patch_plan_against_prepared(
         and bound_plan.maturity.provider_id != prepared.source_maturity.provider_id
     ):
         raise ValueError("bound patch plan maturity differs from source maturity")
-    expected = dict(prepared.owning_plan.source_coordinates)
-    supplied_refs = {ref for ref, _serial in bound_plan.bindings}
-    required_refs = {
-        item.block_ref
-        for item in prepared.projected_bindings
-        if item.status is model.SubjectBindingStatus.UNIQUE
-        and item.block_ref is not None
+    source_coordinates = dict(prepared.owning_plan.source_coordinates)
+    discovered_refs = tuple(dict.fromkeys(iter_refs(
+        (bound_plan.plan.steps, bound_plan.plan.new_blocks, bound_plan.plan.relocation_map),
+    )))
+    executable_refs = {
+        ref for ref in discovered_refs
+        if type(ref) in (NativeBlockRef, LogicalBlockRef)
     }
-    if supplied_refs != required_refs:
-        raise ValueError("bound patch plan does not exactly cover required source references")
-    expected_order = tuple(
-        ref for ref, _serial in prepared.owning_plan.source_coordinates
-        if ref in required_refs
+    helper_refs = {
+        spec.block_id for spec in bound_plan.plan.new_blocks
+    }
+    supplied_refs = {ref for ref, _serial in bound_plan.bindings}
+    if supplied_refs != executable_refs | helper_refs:
+        raise ValueError("bound patch plan does not exactly cover executable references")
+    expected_order = (
+        tuple(ref for ref in discovered_refs if type(ref) in (NativeBlockRef, LogicalBlockRef))
+        + tuple(spec.block_id for spec in bound_plan.plan.new_blocks)
     )
     if tuple(ref for ref, _serial in bound_plan.bindings) != expected_order:
-        raise ValueError("bound patch plan source tuple order differs from plan")
+        raise ValueError("bound patch plan reference order differs from live binder")
+    if any(
+        sum(1 for ref, _serial in bound_plan.bindings if ref == helper_ref) != 1
+        for helper_ref in helper_refs
+    ):
+        raise ValueError("each PlanBlockRef helper requires exactly one bound row")
     for ref, serial in bound_plan.bindings:
-        if ref not in expected:
+        if type(ref) is PlanBlockRef:
+            if ref not in helper_refs:
+                raise ValueError("bound patch plan contains a foreign helper reference")
+            continue
+        if ref not in source_coordinates:
             raise ValueError("bound patch plan contains a foreign source reference")
-        if int(expected[ref]) != int(serial):
-            raise ValueError("bound patch plan source tuple differs from plan")
+        if int(source_coordinates[ref]) != int(serial):
+            raise ValueError("bound patch plan source tuple differs from source coordinates")
     return bound_plan
+
+
+def _validated_observed_helper_serials(
+    prepared: model.PreparedUnflattenAuthority,
+    bound_plan: BoundPatchPlan,
+    observed: FlowGraph,
+) -> dict[PlanBlockRef, int]:
+    """Use the revalidated binder rows as the live helper-coordinate authority."""
+    helper_refs = tuple(spec.block_id for spec in bound_plan.plan.new_blocks)
+    rows = tuple(
+        (ref, serial) for ref, serial in bound_plan.bindings
+        if type(ref) is PlanBlockRef
+    )
+    if tuple(ref for ref, _serial in rows) != helper_refs:
+        raise ValueError("observed helper bindings do not exactly cover plan helpers")
+    if len({serial for _ref, serial in rows}) != len(rows):
+        raise ValueError("observed helper bindings duplicate live serials")
+    source_serials = {
+        serial for ref, serial in bound_plan.bindings
+        if type(ref) in (NativeBlockRef, LogicalBlockRef)
+    }
+    source_serials.update(
+        int(serial)
+        for _ref, serial in prepared.owning_plan.source_coordinates
+    )
+    source_serials.update(
+        int(binding.serial)
+        for binding in prepared.source_inventory.bindings
+        if binding.serial is not None
+    )
+    if any(serial in source_serials for _ref, serial in rows):
+        raise ValueError("observed helper binding collides with a source serial")
+    if any(serial not in observed.blocks for _ref, serial in rows):
+        raise ValueError("observed helper binding is absent from the live graph")
+    if prepared.owning_plan.plan_id != bound_plan.plan.plan_id:
+        raise ValueError("observed helper binding belongs to a foreign plan")
+    if prepared.projected_generation != bound_plan.generation:
+        raise ValueError("observed helper binding generation differs from authority")
+    return dict(rows)
 
 
 def bind_prepared_unflatten_authority(*, prepared, patch_binding):
@@ -1095,6 +1583,9 @@ def revalidate_observed_unflatten_authority(
         revalidate_bound_patch_plan_against_prepared(
             authority.prepared, authority.patch_binding
         )
+        observed_helper_serials = _validated_observed_helper_serials(
+            authority.prepared, authority.patch_binding, observed,
+        )
     except (TypeError, ValueError, AttributeError):
         return _live_binding_failed_verdict()
     validated_prepared = authority.prepared
@@ -1123,6 +1614,7 @@ def revalidate_observed_unflatten_authority(
             source=False, phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
             source_subjects=validated_prepared.source_inventory.subjects,
             materialization=observed_materialization,
+            planned_serials=observed_helper_serials,
         )
     except (TypeError, ValueError):
         return model.UnflattenAuthorityVerdict(

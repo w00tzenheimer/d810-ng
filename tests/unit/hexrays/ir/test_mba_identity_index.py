@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import fields
 
 import pytest
@@ -20,7 +20,7 @@ from d810.ir.block_identity import (
 )
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.ir.maturity import MaturityEnvelope
-from d810.hexrays.mutation.patch_binding import bind_patch_plan
+from d810.hexrays.mutation.patch_binding import PatchBindingRejected, bind_patch_plan
 from d810.transforms.cfg_transaction import (
     LogicalBlockRef,
     NativeBlockRef,
@@ -114,6 +114,66 @@ def test_plan_refs_keep_cloned_native_blocks_as_distinct_logical_versions() -> N
     bound = bind_patch_plan(plan, index, attempt)
     assert dict(bound.bindings)[refs[17]] == 17
     assert dict(bound.bindings)[refs[18]] == 18
+    index.abort_proxy_transaction(attempt.attempt_id)
+
+
+def test_patch_binding_uses_executable_subset_of_full_source_coordinates() -> None:
+    """Full sealed coordinates may include source rows unused by this plan."""
+
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
+    )
+    target = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
+    )
+    unused = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40F001, 0x40F002),), native_key=NATIVE_KEY
+    )
+    refs = tuple(
+        NativeBlockRef(identity)
+        for identity in (source, target, unused)
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=4,
+        maturity=0,
+        bindings=((source, 0), (target, 1), (unused, 2)),
+        native_key=NATIVE_KEY,
+    )
+    plan = compile_patch_plan(
+        [ConvertToGoto(block_serial=0, goto_target=1)],
+        block_refs_by_serial={0: refs[0], 1: refs[1]},
+        plan_id="source-coordinate-subset",
+        snapshot_id=index.snapshot_id,
+        source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
+        source_generation=4,
+    )
+    wide = replace(plan, source_coordinates=(*plan.source_coordinates, (refs[2], 2)))
+    attempt = TransactionAttemptId.new(wide.plan_id, index.session_id, index.generation)
+    index.begin_transaction(attempt, quantity=3)
+    bound = bind_patch_plan(wide, index, attempt)
+    assert set(ref for ref, _serial in bound.bindings) == {refs[0], refs[1]}
+
+    with pytest.raises(PatchBindingRejected, match="coordinate"):
+        bind_patch_plan(
+            replace(wide, source_coordinates=(wide.source_coordinates[0],)),
+            index,
+            attempt,
+        )
+    with pytest.raises(ValueError, match="duplicate"):
+        replace(wide, source_coordinates=(*wide.source_coordinates, wide.source_coordinates[0]))
+
+    foreign = NativeBlockRef(
+        StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40F101, 0x40F102),), native_key=NATIVE_KEY
+        )
+    )
+    foreign_plan = replace(
+        wide,
+        steps=(ConvertToGoto(block_serial=foreign, goto_target=refs[1]),),
+        source_coordinates=(*wide.source_coordinates, (foreign, 3)),
+    )
+    with pytest.raises(PatchBindingRejected, match="unique|binding"):
+        bind_patch_plan(foreign_plan, index, attempt)
     index.abort_proxy_transaction(attempt.attempt_id)
 
 
@@ -351,11 +411,12 @@ def test_live_mba_identity_scan_uses_imported_eas_without_reading_operands() -> 
             self.next = next_insn
 
         @property
-        def l(self):
+        def operand_l(self):
             raise AssertionError("identity indexing must not inspect operands")
 
-        r = l
-        d = l
+        vars()["l"] = operand_l
+        r = operand_l
+        d = operand_l
 
     block = type(
         "Block",
@@ -666,7 +727,7 @@ def test_imported_region_rebind_abstains_on_duplicate_earliest_anchor() -> None:
         )
         for serial in (40, 41)
     }
-    index = MbaBlockIdentityIndex.from_flow_graph(
+    MbaBlockIdentityIndex.from_flow_graph(
         generation=3,
         flow_graph=FlowGraph(
             blocks=blocks,

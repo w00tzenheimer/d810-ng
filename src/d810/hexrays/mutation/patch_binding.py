@@ -94,7 +94,7 @@ def bind_patch_plan(
     source_provider_stage = (
         None if plan.source_maturity is None else plan.source_maturity.provider_id
     )
-    if source_provider_stage != identity_index.maturity:
+    if source_provider_stage is not None and source_provider_stage != identity_index.maturity:
         raise PatchBindingRejected("source maturity authority differs")
 
     refs = tuple(
@@ -113,9 +113,9 @@ def bind_patch_plan(
         ref for ref in refs if isinstance(ref, (NativeBlockRef, LogicalBlockRef))
     )
     source_coordinates = dict(plan.source_coordinates)
-    if set(source_coordinates) != set(source_refs):
+    if not set(source_refs).issubset(source_coordinates):
         raise PatchBindingRejected(
-            "source coordinate coverage differs from executable block authority"
+            "executable block references lack sealed source coordinates"
         )
 
     initial_quantity = identity_index.transaction_quantity(
@@ -170,7 +170,7 @@ def bind_patch_plan(
         from d810.ir.maturity import MaturityEnvelope
 
         maturity = MaturityEnvelope(
-            ir=None, provider="hexrays", provider_id=int(identity_index.maturity)
+            ir=None, provider="hexrays", provider_id=int(identity_index.maturity or 0)
         )
     else:
         maturity = hexrays_maturity_envelope(int(identity_index.maturity))

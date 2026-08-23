@@ -7,7 +7,8 @@ from inspect import signature
 
 import pytest
 
-from d810.transforms.plan import PatchPlan
+from d810.transforms.plan import PatchBlockSpec, PatchEdgeRef, PatchPlan, PatchRedirectBranch
+from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
 from d810.transforms.unflatten_authority.model import (
     UnflattenAuthorityReason,
     UnflattenAuthorityNotApplicable,
@@ -16,10 +17,293 @@ from d810.transforms.unflatten_authority.model import (
 from d810.transforms.unflatten_authority.transaction_api import select_plan_route
 from d810.transforms.unflatten_authority.ids import authority_id
 
-from .helpers import import_authority_model
+from .helpers import exact_fixture, import_authority_model, authority_id as helper_authority_id
 from .test_model import _valid_proposal
 from .test_proposal import _shadow
 
+
+def test_helper_and_resegmentation_lineage_is_derived_before_case_builder(monkeypatch) -> None:
+    """Helper ownership must enter the closed facts before case construction."""
+
+    from d810.transforms.unflatten_authority import transaction_api
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    from d810.ir.block_identity import StableBlockIdentity
+    from d810.ir.flowgraph import InsnKind, InsnSnapshot
+    from d810.transforms.unflatten_authority import producer_api
+    source = replace(
+        source,
+        blocks={
+            **source.blocks,
+            4: replace(
+                source.blocks[4],
+                insn_snapshots=(
+                    source.blocks[4].insn_snapshots[0],
+                    InsnSnapshot(0, 0x5001, (), kind=InsnKind.NOP),
+                ),
+            ),
+        },
+    )
+    refs = {
+        **refs,
+        4: type(refs[4])(
+            StableBlockIdentity.from_instruction_eas(
+                (0x5000, 0x5001), native_key=refs[4].identity.native_key,
+            )
+        ),
+    }
+    proposal = producer_api.build_proposal(
+        plan_id=proposal.plan_id,
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=proposal.source_identity_catalog.generation,
+        canonical_route_evidence=proposal.route_evidence,
+        exact_state_effect_exclusions=(_exclusion,),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=proposal.plan_inputs.state_identity,
+        use_def_witness=proposal.use_def_witness,
+    )
+    helper = PlanBlockRef(proposal.plan_id, "fallthrough-helper")
+    second_helper = PlanBlockRef(proposal.plan_id, "second-helper")
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=helper_authority_id("snapshot-lineage"),
+        source_generation=1,
+        steps=(
+            PatchRedirectBranch(refs[0], refs[1], refs[2], helper),
+            PatchRedirectBranch(refs[1], refs[2], refs[0], second_helper),
+        ),
+        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+        new_blocks=(
+            PatchBlockSpec(helper, "insert_block", template_block=refs[4]),
+            PatchBlockSpec(second_helper, "insert_block", template_block=refs[4]),
+        ),
+        unflatten_proposal=proposal,
+    )
+    projected = type(source)(
+        {serial: block for serial, block in source.blocks.items() if serial != 4}
+        | {
+            4: replace(
+                source.blocks[4], serial=4,
+                insn_snapshots=(source.blocks[4].insn_snapshots[0],),
+            ),
+                5: replace(
+                    source.blocks[4], serial=5,
+                    start_ea=0x5001,
+                    insn_snapshots=(source.blocks[4].insn_snapshots[1],),
+            ),
+        },
+        source.entry_serial, source.func_ea,
+    )
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+    manifest = canonical_redirect_manifest(plan)
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+    projection = CfgProjection(plan.plan_id, plan.snapshot_id, projected)
+
+    inputs = transaction_api.derive_unflatten_preparation_inputs(
+        source, projection, plan, proposal, None,
+    )
+
+    assert tuple(
+        (fact.step_type, fact.owner_ref)
+        for fact in inputs.patch_step_facts
+    ) == (
+        ("PatchRedirectBranch", helper),
+        ("PatchRedirectBranch", second_helper),
+    )
+    case = transaction_api.build_semantic_case(
+        authority_id=helper_authority_id("lineage-case"),
+        phase=import_authority_model().UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    assert case.evidence
+    assert any(
+        getattr(item.payload, "owner_ref", None) == helper
+        for item in case.evidence
+    )
+
+    from d810.analyses.control_flow.graph_checks import (
+        check_effectful_reachability_preserved,
+        check_entry_reachability_not_collapsed,
+        check_terminal_reachability_preserved,
+    )
+    from d810.transforms.cfg_transaction import TransactionAttemptId
+    from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
+    from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+    from d810.hexrays.mutation.patch_binding import bind_patch_plan
+
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=1,
+        maturity=None,
+        native_key=refs[0].identity.native_key,
+        snapshot_id=plan.snapshot_id,
+        session_id=helper_authority_id("lineage-session"),
+        bindings=tuple((ref.identity, serial) for serial, ref in refs.items()),
+    )
+    attempt = TransactionAttemptId(
+        plan.plan_id, index.session_id, 1,
+        helper_authority_id("lineage-attempt"),
+    )
+    generic_gates = GenericCfgGateBundle(
+        check_entry_reachability_not_collapsed(source, post_cfg=source),
+        check_effectful_reachability_preserved(source, post_cfg=source),
+        check_effectful_reachability_preserved(source, post_cfg=source),
+        check_terminal_reachability_preserved(source, post_cfg=source),
+    )
+    prepared_result = transaction_api.prepare_unflatten_authority(
+        source=source, projection=projection, plan=plan,
+        attempt_id=attempt, generic_gates=generic_gates,
+    )
+    assert getattr(prepared_result, "prepared", None) is not None, getattr(
+        prepared_result, "verdict", prepared_result,
+    )
+    index.begin_transaction(attempt, quantity=len(source.blocks))
+    patch_binding = bind_patch_plan(plan, index, attempt).bound_plan
+    bound_result = transaction_api.bind_prepared_unflatten_authority(
+        prepared=prepared_result.prepared, patch_binding=patch_binding,
+    )
+    assert getattr(bound_result, "authority", None) is not None, getattr(bound_result, "verdict", bound_result)
+    live_observed = type(source)(
+        {serial: block for serial, block in source.blocks.items() if serial != 4}
+        | {
+            5: replace(
+                source.blocks[4], serial=5,
+                insn_snapshots=(source.blocks[4].insn_snapshots[0],),
+            ),
+            6: replace(
+                source.blocks[4], serial=6,
+                start_ea=0x5001,
+                insn_snapshots=(source.blocks[4].insn_snapshots[1],),
+            ),
+        },
+        source.entry_serial, source.func_ea,
+    )
+    from d810.transforms import dispatcher_corridor_coverage
+    monkeypatch.setattr(
+        dispatcher_corridor_coverage,
+        "canonicalize_observed_dispatcher_graph",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("typed observed authority must not canonicalize")
+        ),
+    )
+    observed_result = transaction_api.revalidate_observed_unflatten_authority(
+        authority=bound_result.authority, observed=live_observed,
+        observed_generation=attempt.generation, generic_gates=generic_gates,
+    )
+    assert observed_result.accepted
+    unused_source_collision = replace(
+        patch_binding,
+        bindings=tuple(
+            (ref, 3 if ref == helper else serial)
+            for ref, serial in patch_binding.bindings
+        ),
+    )
+    collision_authority = transaction_api.bind_prepared_unflatten_authority(
+        prepared=prepared_result.prepared, patch_binding=unused_source_collision,
+    )
+    assert getattr(collision_authority, "authority", None) is not None
+    builder_calls = []
+    case_calls = []
+    with monkeypatch.context() as collision_patch:
+        collision_patch.setattr(
+            transaction_api,
+            "_build_semantic_graph_inventory",
+            lambda *_args, **_kwargs: builder_calls.append(True),
+        )
+        collision_patch.setattr(
+            transaction_api,
+            "build_semantic_case",
+            lambda *_args, **_kwargs: case_calls.append(True),
+        )
+        collision_observed = transaction_api.revalidate_observed_unflatten_authority(
+            authority=collision_authority.authority, observed=live_observed,
+            observed_generation=attempt.generation, generic_gates=generic_gates,
+        )
+    assert not collision_observed.accepted
+    assert builder_calls == []
+    assert case_calls == []
+    missing_helper = transaction_api.revalidate_observed_unflatten_authority(
+        authority=bound_result.authority, observed=projected,
+        observed_generation=attempt.generation, generic_gates=generic_gates,
+    )
+    assert not missing_helper.accepted
+
+    original_spec, second_spec = plan.new_blocks
+    mutations = {
+        "block_id": PlanBlockRef(plan.plan_id, "different-helper"),
+        "kind": "changed-kind",
+        "template_block": refs[3],
+        "incoming_edge": PatchEdgeRef(refs[0], refs[1]),
+        "outgoing_edges": (PatchEdgeRef(refs[1], refs[2]),),
+        "instructions": (source.blocks[0].insn_snapshots[0],),
+        "captured_body": object(),
+    }
+    for field, value in mutations.items():
+        object.__setattr__(
+            plan, "new_blocks", (replace(original_spec, **{field: value}), second_spec),
+        )
+        mutated_result = transaction_api.bind_prepared_unflatten_authority(
+            prepared=prepared_result.prepared, patch_binding=patch_binding,
+        )
+        assert getattr(mutated_result, "authority", None) is None, field
+        observed_mutation = transaction_api.revalidate_observed_unflatten_authority(
+            authority=bound_result.authority, observed=live_observed,
+            observed_generation=attempt.generation, generic_gates=generic_gates,
+        )
+        assert not observed_mutation.accepted, field
+        object.__setattr__(plan, "new_blocks", (original_spec, second_spec))
+    object.__setattr__(plan, "new_blocks", (second_spec, original_spec))
+    reordered_result = transaction_api.bind_prepared_unflatten_authority(
+        prepared=prepared_result.prepared, patch_binding=patch_binding,
+    )
+    assert getattr(reordered_result, "authority", None) is None
+    object.__setattr__(plan, "new_blocks", (original_spec, second_spec))
+
+    shifted_bindings = tuple(
+        (ref, 99 if ref == helper else serial)
+        for ref, serial in patch_binding.bindings
+    )
+    shifted_binding = replace(patch_binding, bindings=shifted_bindings)
+    shifted_result = transaction_api.bind_prepared_unflatten_authority(
+        prepared=prepared_result.prepared, patch_binding=shifted_binding,
+    )
+    assert shifted_result.authority is not None
+    shifted_observed = transaction_api.revalidate_observed_unflatten_authority(
+        authority=shifted_result.authority, observed=live_observed,
+        observed_generation=attempt.generation, generic_gates=generic_gates,
+    )
+    assert not shifted_observed.accepted
+
+    original_bindings = patch_binding.bindings
+    object.__setattr__(
+        patch_binding, "bindings",
+        tuple((ref, 0 if ref == helper else serial) for ref, serial in original_bindings),
+    )
+    colliding_observed = transaction_api.revalidate_observed_unflatten_authority(
+        authority=bound_result.authority, observed=live_observed,
+        observed_generation=attempt.generation, generic_gates=generic_gates,
+    )
+    assert not colliding_observed.accepted
+    object.__setattr__(patch_binding, "bindings", original_bindings)
+    object.__setattr__(
+        patch_binding, "bindings", original_bindings + ((helper, 5),),
+    )
+    duplicate_observed = transaction_api.revalidate_observed_unflatten_authority(
+        authority=bound_result.authority, observed=live_observed,
+        observed_generation=attempt.generation, generic_gates=generic_gates,
+    )
+    assert not duplicate_observed.accepted
+    object.__setattr__(patch_binding, "bindings", original_bindings)
 
 def _typed_plan() -> PatchPlan:
     model = import_authority_model()
@@ -284,7 +568,9 @@ def test_prepare_derives_closed_inputs_and_bind_consumes_exact_bound_patch_plan(
         plan=plan, attempt_id=attempt, session_id=attempt.session_id,
         generation=attempt.generation,
         maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
-        bindings=tuple((ref, serial) for serial, ref in refs.items()),
+        bindings=tuple(
+            (ref, serial) for serial, ref in refs.items() if serial in {0, 1, 2}
+        ),
     )
     replacement = replace(proposal)
     assert replacement == proposal

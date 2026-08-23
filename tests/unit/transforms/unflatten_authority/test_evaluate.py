@@ -1607,7 +1607,7 @@ def test_patch_step_evidence_must_match_closed_step_inventory() -> None:
     helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")
     proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
     payload = model.PatchStepEvidencePayload(
-        proposal.plan_id, 0, "PatchResegmentBlock", helper.block_ref,
+        proposal.plan_id, 0, "PatchInsertBlock", helper.block_ref,
         authority_id("patch-step"), helper.anchor_ea, 0x90, 4,
     )
     evidence = _evidence_factory(
@@ -1621,6 +1621,71 @@ def test_patch_step_evidence_must_match_closed_step_inventory() -> None:
             authority_id=authority_id("patch-inventory-forged"),
             phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
             inputs=replace(_complete_inputs(source_subjects=(entry,), candidate_subjects=(entry, helper), patch_step_facts=(evidence.payload,), proposal=proposal), preparation_receipt=_receipt_fixture(**values)),
+        )
+
+
+def test_patch_step_lineage_materializes_one_row_per_exact_owner_role() -> None:
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "patch-role-entry")
+    dispatcher_entry = _role_subject(model.SemanticSubjectRole.DISPATCHER_ENTRY, "0")
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    payload = model.PatchStepEvidencePayload(
+        proposal.plan_id, 0, "PatchLowerConditionalStateTransition", entry.block_ref,
+        authority_id("patch-role-step"), entry.anchor_ea, None, None,
+    )
+    inputs = _complete_inputs(
+        source_subjects=(entry,),
+        candidate_subjects=(entry, dispatcher_entry),
+        patch_step_facts=(payload,), proposal=proposal,
+    )
+
+    case = build_semantic_case(
+        authority_id=authority_id("patch-role-case"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    owner_subjects = tuple(
+        subject for subject in inputs.candidate_inventory.subjects
+        if subject.block_ref == payload.owner_ref
+        and subject.kind is model.SemanticSubjectKind.BLOCK
+    )
+    patch_rows = tuple(
+        item for item in case.evidence
+        if item.kind is model.AuthorityEvidenceKind.PATCH_STEP
+    )
+    assert len(patch_rows) == len(owner_subjects)
+    assert {item.subject.subject_id for item in patch_rows} == {
+        item.subject_id for item in owner_subjects
+    }
+    assert canonical_decode(canonical_bytes(case)) == case
+    with pytest.raises(ValueError, match="evidence_id"):
+        replace(patch_rows[0], evidence_id=authority_id("forged-patch-row"))
+    for justification in case.justifications:
+        if justification.rule is model.UnflattenJustificationRule.HELPER_OWNER_LINEAGE_PROVEN:
+            assert all(
+                next(item for item in case.evidence if item.evidence_id == premise).subject.subject_id
+                == justification.conclusion.subject.subject_id
+                for premise in justification.premise_ids
+            )
+
+
+def test_hostile_same_name_resegmentation_step_is_not_authority() -> None:
+    """A stringly named foreign step cannot create lineage authority."""
+
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "hostile-resegment")
+    helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    payload = model.PatchStepEvidencePayload(
+        proposal.plan_id, 0, "PatchResegmentBlock", helper.block_ref,
+        authority_id("hostile-resegment-step"), helper.anchor_ea, 0x90, 4,
+    )
+    with pytest.raises(ValueError, match="unsupported step kind"):
+        build_semantic_case(
+            authority_id=authority_id("hostile-resegment-case"),
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            inputs=_complete_inputs(
+                source_subjects=(entry,), candidate_subjects=(entry, helper),
+                patch_step_facts=(payload,), proposal=proposal,
+            ),
         )
 
 
@@ -2588,7 +2653,7 @@ def test_resegmentation_patch_step_supports_only_its_helper_structural_key() -> 
     helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")
     proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
     payload = model.PatchStepEvidencePayload(
-        proposal.plan_id, 0, "PatchResegmentBlock", helper.block_ref,
+        proposal.plan_id, 0, "PatchInsertBlock", helper.block_ref,
         authority_id("resegment-step"), helper.anchor_ea, 0x90, 4,
     )
     evidence = _evidence_factory(

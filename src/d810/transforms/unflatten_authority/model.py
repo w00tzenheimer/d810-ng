@@ -3932,11 +3932,17 @@ class PreparedUnflattenAuthority:
         ))
         if frozenset(source_binding_coordinates) != frozenset(expected_coordinates):
             raise ValueError("source bindings do not cover the proposal catalog")
-        source_subjects = tuple(self.projected_case.subjects)
-        if {binding.subject.subject_id for binding in self.source_bindings} != {
-            subject.subject_id for subject in source_subjects
-        }:
-            raise ValueError("source bindings must cover every projected source subject exactly")
+        source_subject_ids = self.projected_case.source_subject_ids
+        if source_subject_ids != self.source_inventory.source_subject_ids:
+            raise ValueError("prepared case/source inventory partition differs")
+        if tuple(binding.subject.subject_id for binding in self.source_bindings) != source_subject_ids:
+            raise ValueError("source bindings must cover every case source subject exactly")
+        source_subjects = tuple(
+            subject for subject in self.projected_case.subjects
+            if subject.subject_id in set(source_subject_ids)
+        )
+        if source_subjects != self.source_inventory.subjects:
+            raise ValueError("prepared case source subjects differ from source inventory")
         if any(
             binding.subject != subject
             for subject in source_subjects
@@ -3944,6 +3950,12 @@ class PreparedUnflattenAuthority:
             if binding.subject.subject_id == subject.subject_id
         ):
             raise ValueError("source binding subject identity does not match the projected source subject")
+        if self.source_inputs is not None:
+            candidate_bindings = self.source_inputs.candidate_inventory.bindings
+            if self.projected_bindings != candidate_bindings:
+                raise ValueError("projected bindings must exactly match candidate inventory")
+            if self.projected_bindings != self.projected_case.bindings:
+                raise ValueError("projected bindings must exactly match projected case")
         if self.bound_routes.evidence != self.proposal.route_evidence:
             raise ValueError("bound routes do not exactly cover proposal route evidence")
         if tuple(sorted(route.evidence.proof_id for route in self.bound_routes.routes)) != tuple(sorted(proof.proof_id for proof in self.proposal.route_evidence.route_proofs)):

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import re
 
 from d810.analyses.control_flow import semantic_route_evidence as route_model
+from d810.transforms.cfg_transaction import PlanBlockRef
 
 from . import model
 from . import gates
@@ -31,6 +32,64 @@ class _EffectClassification:
 # accepting an arbitrary opcode would make the display text the only semantic
 # proof of the transition.
 LOCAL_ALIAS_MOV_OPCODE = 4
+
+_SUPPORTED_PATCH_STEP_TYPES = frozenset({
+    "PatchScalarizeLocalAliasAccess",
+    "PatchLowerConditionalStateTransition",
+    "PatchRedirectBranch",
+    "PatchEdgeSplitTrampoline",
+    "PatchEdgeSplitCorridor",
+    "PatchConditionalRedirect",
+    "PatchInsertBlock",
+    "PatchDuplicateBlock",
+    "PatchDuplicateReplayAndRedirect",
+    "PatchCloneConditionalAsGoto",
+    "PatchCloneConditionalAsGotoFromBranchArm",
+})
+
+
+def _patch_owner_subjects(
+    payload: model.PatchStepEvidencePayload,
+    subjects: tuple[model.SemanticSubjectRef, ...],
+) -> tuple[model.SemanticSubjectRef, ...]:
+    """Return the exact candidate-role witnesses for one closed patch fact."""
+
+    planned = tuple(
+        subject for subject in subjects
+        if subject.role is model.SemanticSubjectRole.PLANNED_HELPER
+        and subject.block_ref == payload.owner_ref
+    )
+    if payload.step_type == "PatchScalarizeLocalAliasAccess":
+        return planned or tuple(
+            subject for subject in subjects
+            if subject.role is model.SemanticSubjectRole.EFFECT_SITE
+            and subject.kind is model.SemanticSubjectKind.BLOCK
+            and subject.block_ref == payload.owner_ref
+        )
+    if payload.step_type in {
+        "PatchLowerConditionalStateTransition",
+        "PatchRedirectBranch",
+    }:
+        return planned or tuple(
+            subject for subject in subjects
+            if subject.block_ref == payload.owner_ref
+            and (
+                subject.kind is model.SemanticSubjectKind.BLOCK
+                or (
+                    payload.step_type == "PatchRedirectBranch"
+                    and subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
+                )
+            )
+        )
+    if payload.step_type in _SUPPORTED_PATCH_STEP_TYPES - {
+        "PatchScalarizeLocalAliasAccess",
+    }:
+        return planned
+    return tuple(
+        subject for subject in subjects
+        if subject.role is model.SemanticSubjectRole.EFFECT_SITE
+        and subject.block_ref == payload.owner_ref
+    )
 
 
 def _has_exact_scalar_base_access(
@@ -1057,6 +1116,171 @@ def _evaluator_fact_evidence(
     evidence: list[model.AuthorityEvidence] = []
     classifications: dict[str, _EffectClassification] = {}
     validated_exact_claims: dict[str, model.ExactInfeasibleEffectClaim] = {}
+
+    def structural_lineage(
+        subject: model.SemanticSubjectRef,
+        source_binding: model.PhaseSubjectBinding,
+        candidate_binding: model.PhaseSubjectBinding | None,
+    ) -> tuple[model.StructuralDisposition, tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
+        """Classify block origins from the already-bound candidate inventory."""
+
+        if source_binding.status is not model.SubjectBindingStatus.UNIQUE:
+            return model.StructuralDisposition.UNACCOUNTED_LOSS, (), (), (subject.subject_id,)
+        source_origins = set(source_binding.native_instruction_eas)
+        if subject.kind is not model.SemanticSubjectKind.BLOCK:
+            if (
+                candidate_binding is not None
+                and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+            ):
+                origins = tuple(sorted(source_origins & set(candidate_binding.native_instruction_eas)))
+                return model.StructuralDisposition.PRESERVED, (subject.subject_id,), origins, (subject.subject_id,)
+            return model.StructuralDisposition.UNACCOUNTED_LOSS, (), (), (subject.subject_id,)
+        if not any(
+            type(binding.subject.block_ref) is PlanBlockRef
+            for binding in candidate_bindings.values()
+            if binding.status is model.SubjectBindingStatus.UNIQUE
+        ):
+            intersecting_ids = {
+                binding.subject.subject_id
+                for binding in candidate_bindings.values()
+                if binding.status is model.SubjectBindingStatus.UNIQUE
+                and binding.subject.kind is model.SemanticSubjectKind.BLOCK
+                and binding.subject.role in {
+                    subject.role,
+                    model.SemanticSubjectRole.PLANNED_HELPER,
+                }
+                and set(binding.native_instruction_eas) & source_origins
+            }
+            if (
+                candidate_binding is None
+                or candidate_binding.status is not model.SubjectBindingStatus.UNIQUE
+                or set(candidate_binding.native_instruction_eas) != source_origins
+                or intersecting_ids != {subject.subject_id}
+            ):
+                return model.StructuralDisposition.UNACCOUNTED_LOSS, (), (), (subject.subject_id,)
+            return (
+                model.StructuralDisposition.PRESERVED,
+                (subject.subject_id,),
+                tuple(sorted(candidate_binding.native_instruction_eas)),
+                (subject.subject_id,),
+            )
+        candidates = tuple(
+            binding for binding in candidate_bindings.values()
+            if binding.status is model.SubjectBindingStatus.UNIQUE
+            and binding.subject.kind is model.SemanticSubjectKind.BLOCK
+            and binding.subject.role in {
+                subject.role,
+                model.SemanticSubjectRole.PLANNED_HELPER,
+            }
+        )
+        closed_targets = {
+            relation.target_subject_id
+            for relation in inputs.conditional_relations
+            if relation.source_subject_id == subject.subject_id
+            and relation.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
+        }
+        intersecting_candidates = tuple(
+            binding for binding in candidate_bindings.values()
+            if binding.status is model.SubjectBindingStatus.UNIQUE
+            and binding.subject.kind is model.SemanticSubjectKind.BLOCK
+            and binding.subject.role in {
+                subject.role,
+                model.SemanticSubjectRole.PLANNED_HELPER,
+            }
+            and set(binding.native_instruction_eas) & source_origins
+        )
+        intersecting_candidate_ids = {
+            binding.subject.subject_id for binding in intersecting_candidates
+        }
+        if not closed_targets:
+            if (
+                candidate_binding is not None
+                and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+                and set(candidate_binding.native_instruction_eas) == source_origins
+                and intersecting_candidate_ids == {subject.subject_id}
+            ):
+                return model.StructuralDisposition.PRESERVED, (subject.subject_id,), tuple(sorted(source_origins)), (subject.subject_id,)
+            return model.StructuralDisposition.UNACCOUNTED_LOSS, (), (), (subject.subject_id,)
+        if intersecting_candidate_ids != closed_targets:
+            return model.StructuralDisposition.UNACCOUNTED_LOSS, (), (), (subject.subject_id,)
+        candidates = tuple(
+            binding for binding in candidates
+            if binding.subject.subject_id in closed_targets
+        )
+        candidates = tuple(sorted(candidates, key=lambda item: item.subject.subject_id))
+        candidate_sets = tuple(set(item.native_instruction_eas) for item in candidates)
+        reverse_sources = {
+            candidate.subject.subject_id: {
+                relation.source_subject_id
+                for relation in inputs.conditional_relations
+                if relation.target_subject_id == candidate.subject.subject_id
+                and relation.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
+            }
+            for candidate in candidates
+        }
+        if (
+            len(candidates) >= 2
+            and all(candidate_sets)
+            and all(reverse_sources[item.subject.subject_id] == {subject.subject_id} for item in candidates)
+            and all(left.isdisjoint(right) for index, left in enumerate(candidate_sets) for right in candidate_sets[index + 1:])
+            and set().union(*candidate_sets) == source_origins
+        ):
+            return (
+                model.StructuralDisposition.SPLIT,
+                tuple(item.subject.subject_id for item in candidates),
+                tuple(sorted(source_origins)),
+                (subject.subject_id,),
+            )
+        if len(candidates) == 1:
+            candidate_origins = candidate_sets[0]
+            source_group = tuple(sorted(
+                item.subject_id
+                for item in source_subjects
+                if item.kind is model.SemanticSubjectKind.BLOCK
+                and item.role is subject.role
+                and (
+                    binding := source_bindings.get(item.subject_id)
+                ) is not None
+                and binding.status is model.SubjectBindingStatus.UNIQUE
+                and any(
+                    relation.source_subject_id == item.subject_id
+                    and relation.target_subject_id == candidates[0].subject.subject_id
+                    and relation.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
+                    for relation in inputs.conditional_relations
+                )
+            ))
+            source_sets = tuple(
+                set(source_bindings[item].native_instruction_eas)
+                for item in source_group
+            )
+            intersecting_sources = {
+                item.subject_id for item in source_subjects
+                if item.kind is model.SemanticSubjectKind.BLOCK
+                and item.role is subject.role
+                and (binding := source_bindings.get(item.subject_id)) is not None
+                and binding.status is model.SubjectBindingStatus.UNIQUE
+                and set(binding.native_instruction_eas) & candidate_origins
+            }
+            if (
+                len(source_group) >= 2
+                and reverse_sources[candidates[0].subject.subject_id] == set(source_group)
+                and intersecting_sources == set(source_group)
+                and all(source_sets)
+                and all(left.isdisjoint(right) for index, left in enumerate(source_sets) for right in source_sets[index + 1:])
+                and set().union(*source_sets) == candidate_origins
+            ):
+                return (
+                    model.StructuralDisposition.FOLDED,
+                    (candidates[0].subject.subject_id,),
+                    tuple(sorted(candidate_origins)),
+                    source_group,
+                )
+            if (
+                candidate_origins == source_origins
+                and reverse_sources[candidates[0].subject.subject_id] == {subject.subject_id}
+            ):
+                return model.StructuralDisposition.PRESERVED, (candidates[0].subject.subject_id,), tuple(sorted(source_origins)), (subject.subject_id,)
+        return model.StructuralDisposition.UNACCOUNTED_LOSS, (), (), (subject.subject_id,)
     for exact_claim in inputs.claims:
         if type(exact_claim) is not model.ExactInfeasibleEffectClaim:
             continue
@@ -1343,6 +1567,34 @@ def _evaluator_fact_evidence(
         if source_binding is None:
             continue
         effect_classification = classifications.get(subject.subject_id)
+        if (
+            phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+            and
+            effect_classification is not None
+            and effect_classification.refuted
+            and not effect_classification.authorized_loss
+            and subject.kind is not model.SemanticSubjectKind.BLOCK
+            and (
+                candidate_binding is not None
+                and candidate_binding.status is model.SubjectBindingStatus.MISSING
+            )
+            and any(
+                binding.block_ref == subject.block_ref
+                and binding.status is model.SubjectBindingStatus.UNIQUE
+                for binding in candidate_bindings.values()
+            )
+            and not any(
+                candidate.kind is model.SemanticSubjectKind.EFFECT
+                and candidate.block_ref == subject.block_ref
+                and candidate.anchor_ea == subject.anchor_ea
+                and (
+                    candidate_binding_for_subject := candidate_bindings.get(candidate.subject_id)
+                ) is not None
+                and candidate_binding_for_subject.status is model.SubjectBindingStatus.UNIQUE
+                for candidate in candidate_subjects
+            )
+        ):
+            raise ValueError("preserved lineage requires an exact candidate subject")
         preserved = (
             source_binding.status is model.SubjectBindingStatus.UNIQUE
             and candidate_binding is not None
@@ -1380,6 +1632,16 @@ def _evaluator_fact_evidence(
             and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
         ):
             disposition = model.StructuralDisposition.AUTHORIZED_RETIREMENT
+        if effect_classification is None and subject.kind is model.SemanticSubjectKind.BLOCK:
+            disposition, derived_candidate_ids, derived_origins, source_group = structural_lineage(
+                subject, source_binding, candidate_binding,
+            )
+            if disposition is model.StructuralDisposition.FOLDED and subject.subject_id != source_group[0]:
+                continue
+        else:
+            derived_candidate_ids = ()
+            derived_origins = ()
+            source_group = (subject.subject_id,)
         lineage_preserved = disposition is model.StructuralDisposition.PRESERVED
         lineage_binding = candidate_binding
         if (
@@ -1396,14 +1658,24 @@ def _evaluator_fact_evidence(
                 and effect_classification is not None
                 and type(effect_classification.claim) is model.LocalAliasEffectScalarizationClaim
             )
-            else ((subject.subject_id,) if lineage_preserved else ())
+            else (derived_candidate_ids if disposition in {
+                model.StructuralDisposition.SPLIT,
+                model.StructuralDisposition.FOLDED,
+            } else (
+                derived_candidate_ids
+                if lineage_preserved and derived_candidate_ids
+                else ((subject.subject_id,) if lineage_preserved else ())
+            ))
         )
         if disposition is not None:
+            exact_origins = derived_origins
+            if not exact_origins and lineage_binding is not None:
+                candidate_origins = set(lineage_binding.native_instruction_eas)
+                if candidate_origins == set(source_binding.native_instruction_eas):
+                    exact_origins = tuple(sorted(candidate_origins))
             lineage = model.StructuralLineageEvidencePayload(
                 subject.subject_id, lineage_candidate_ids, disposition,
-                tuple(sorted(set(source_binding.native_instruction_eas) & set(
-                    lineage_binding.native_instruction_eas if lineage_binding is not None else (),
-                ))), claim.claim_id if claim is not None else None, (subject.subject_id,),
+                exact_origins, claim.claim_id if claim is not None else None, source_group,
             )
             evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, subject, phase, lineage))
         if subject.role not in topology_roles:
@@ -1417,6 +1689,33 @@ def _evaluator_fact_evidence(
             has_reciprocal_edges(expected), _authority_id_digest(expected), _authority_id_digest(observed), expected, observed,
         )
         evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.TOPOLOGY, subject, phase, topology))
+
+    source_subject_ids = {subject.subject_id for subject in source_subjects}
+    for helper in candidate_subjects:
+        if (
+            helper.role is not model.SemanticSubjectRole.PLANNED_HELPER
+            or helper.subject_id in source_subject_ids
+        ):
+            continue
+        observed = tuple(
+            item for item in candidate_topology
+            if helper.subject_id in (item.source_subject_id, item.target_subject_id)
+        )
+        evidence.append(_evidence_factory(
+            model.AuthorityEvidence,
+            model.AuthorityEvidenceKind.TOPOLOGY,
+            helper,
+            phase,
+            model.TopologyEvidencePayload(
+                helper.subject_id,
+                (),
+                (),
+                has_reciprocal_edges(observed),
+                _authority_id_digest(()),
+                _authority_id_digest(observed),
+                (), observed,
+            ),
+        ))
 
     for subject in source_subjects:
         if subject.role is not model.SemanticSubjectRole.EFFECT_SITE or type(subject.locator) is not model.EffectSubjectLocator:
@@ -1489,32 +1788,31 @@ def _evaluator_fact_evidence(
     # and presence evidence remain independently authoritative where defined.
     patch_evidence_rows = []
     for item in inputs.patch_step_facts:
-        patch_subject = next(
-            (
-                subject for subject in candidate_subjects
-                if subject.role is model.SemanticSubjectRole.PLANNED_HELPER
-                and subject.block_ref == item.owner_ref
-            ),
-            None,
-        )
-        if patch_subject is None:
-            patch_subject = next(
-                (
-                    subject for subject in candidate_subjects
-                    if subject.role is model.SemanticSubjectRole.EFFECT_SITE
-                    and subject.block_ref == item.owner_ref
-                ),
-                None,
-            )
-        if patch_subject is None:
+        if item.plan_id != inputs.proposal.plan_id:
+            raise ValueError("patch-step evidence belongs to a different plan")
+        if item.step_type not in _SUPPORTED_PATCH_STEP_TYPES:
+            raise ValueError("patch-step evidence has an unsupported step kind")
+        if (
+            item.step_type == "PatchRedirectBranch"
+            and type(item.owner_ref) is not PlanBlockRef
+        ):
+            # Legacy redirect branches retain Task 11's receipt semantics;
+            # their closed fact is still hashed and replayed, but they do not
+            # acquire a new helper-obligation row without a planned owner.
+            continue
+        patch_subjects = _patch_owner_subjects(item, candidate_subjects)
+        if not patch_subjects:
             raise ValueError("patch-step fact owner is not an inventoried planned helper")
-        patch_evidence_rows.append(_evidence_factory(
-            model.AuthorityEvidence,
-            model.AuthorityEvidenceKind.PATCH_STEP,
-            patch_subject,
-            phase,
-            item,
-        ))
+        patch_evidence_rows.extend(
+            _evidence_factory(
+                model.AuthorityEvidence,
+                model.AuthorityEvidenceKind.PATCH_STEP,
+                patch_subject,
+                phase,
+                item,
+            )
+            for patch_subject in patch_subjects
+        )
     patch_evidence = tuple(patch_evidence_rows)
     return tuple(sorted(evidence, key=lambda item: item.evidence_id)), patch_evidence, tuple(generic_gates), classifications
 
@@ -1575,6 +1873,7 @@ def build_semantic_case(
         model.SafetyDimension.TOPOLOGY_INTEGRITY,
         model.SafetyDimension.HANDLER_REACHABILITY,
         model.SafetyDimension.TERMINAL_REACHABILITY,
+        model.SafetyDimension.STRUCTURAL_ACCOUNTING,
     }
     for relation in inputs.conditional_relations:
         if relation.source_subject_id not in source_ids:
@@ -2198,10 +2497,23 @@ def build_semantic_case(
                 raise ValueError("corridor evidence member scope does not match its locator")
         elif type(payload) is model.PatchStepEvidencePayload:
             header_target = item.subject.subject_id
-            if item.subject.role not in {
+            allowed_owner = item.subject.role in {
                 model.SemanticSubjectRole.PLANNED_HELPER,
                 model.SemanticSubjectRole.EFFECT_SITE,
-            } or item.subject.block_ref != payload.owner_ref:
+            } or (
+                payload.step_type in {
+                    "PatchLowerConditionalStateTransition",
+                    "PatchRedirectBranch",
+                }
+                and (
+                    item.subject.kind is model.SemanticSubjectKind.BLOCK
+                    or (
+                        payload.step_type == "PatchRedirectBranch"
+                        and item.subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
+                    )
+                )
+            )
+            if not allowed_owner or item.subject.block_ref != payload.owner_ref:
                 raise ValueError("patch-step evidence header does not match its owner")
         elif type(payload) is model.GenericCfgGateEvidencePayload:
             if len(payload.affected_subject_ids) != 1:
@@ -2290,7 +2602,7 @@ def build_semantic_case(
                         and payload.source_subject_id in {member.subject_id for member in claim.member_subjects}
                     ),
                     None,
-                )
+            )
                 if retirement_claim is None:
                     raise ValueError("retirement lineage requires an in-scope claim")
         targets: tuple[tuple[str, model.SafetyDimension, bool, model.UnflattenJustificationRule], ...] = ()
@@ -2407,31 +2719,18 @@ def build_semantic_case(
             if payload.plan_id != proposal.plan_id:
                 raise ValueError("patch-step evidence belongs to a different plan")
             if payload.step_type not in {
-                "PatchScalarizeLocalAliasAccess",
-                "PatchLowerConditionalStateTransition",
-                "PatchRedirectBranch",
-                "PatchResegmentBlock",
+                *_SUPPORTED_PATCH_STEP_TYPES,
             }:
                 raise ValueError("patch-step evidence has an unsupported step kind")
-            helper_ids = tuple(
-                subject.subject_id for subject in subjects
-                if subject.role is model.SemanticSubjectRole.PLANNED_HELPER
-                and subject.block_ref == payload.owner_ref
-            )
-            if payload.step_type == "PatchScalarizeLocalAliasAccess":
-                helper_ids = helper_ids or tuple(
-                    subject.subject_id for subject in subjects
-                    if subject.role is model.SemanticSubjectRole.EFFECT_SITE
-                    and subject.kind is model.SemanticSubjectKind.BLOCK
-                    and subject.block_ref == payload.owner_ref
-                )
+            owner_subject_ids = {
+                subject.subject_id for subject in _patch_owner_subjects(payload, subjects)
+            }
+            if item.subject.subject_id not in owner_subject_ids:
+                raise ValueError("patch-step evidence row is outside its exact owner-role set")
+            helper_ids = (item.subject.subject_id,)
             if not helper_ids:
                 raise ValueError("patch-step evidence owner is outside helper inventory")
-            rule = (
-                model.UnflattenJustificationRule.RESEGMENTATION_LINEAGE_PROVEN
-                if payload.step_type == "PatchResegmentBlock"
-                else model.UnflattenJustificationRule.HELPER_OWNER_LINEAGE_PROVEN
-            )
+            rule = model.UnflattenJustificationRule.HELPER_OWNER_LINEAGE_PROVEN
             targets = () if payload.step_type == "PatchScalarizeLocalAliasAccess" else tuple(
                 (target, model.SafetyDimension.STRUCTURAL_ACCOUNTING, True, rule)
                 for target in helper_ids

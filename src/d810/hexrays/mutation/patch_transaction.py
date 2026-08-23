@@ -1211,7 +1211,14 @@ class _PatchTransactionLifecycle:
             projection.graph,
             legacy_view,
         )
-        if _requires_observed_identity_canonicalization(self.plan):
+        # Typed unflatten authority owns helper/resegmentation lineage.  Its
+        # observed graph must remain raw so the authority evaluator consumes
+        # the exact transaction-bound origins; ordinary legacy plans retain
+        # the compatibility canonicalizer until their later migration slice.
+        if (
+            self.bound.unflatten_authority is None
+            and _requires_observed_identity_canonicalization(self.plan)
+        ):
             from d810.transforms.dispatcher_corridor_coverage import (
                 DispatcherCorridorCoverageValidation,
                 canonicalize_observed_dispatcher_graph,
