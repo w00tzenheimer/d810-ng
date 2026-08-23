@@ -248,11 +248,10 @@ REQUIRED_DIMENSIONS: dict[model.SemanticSubjectRole, tuple[model.SafetyDimension
     model.SemanticSubjectRole.DISPATCHER_ENTRY: (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
         model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.ENTRY_REACHABILITY,
-        model.SafetyDimension.CORRIDOR_COVERAGE,
     ),
     model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE: (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
-        model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.CORRIDOR_COVERAGE,
+        model.SafetyDimension.STRUCTURAL_ACCOUNTING,
     ),
     model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE: (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
@@ -278,7 +277,7 @@ REQUIRED_DIMENSIONS: dict[model.SemanticSubjectRole, tuple[model.SafetyDimension
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.USE_DEF_INTEGRITY,
     ),
     model.SemanticSubjectRole.DISPATCHER_CORRIDOR: (
-        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+        model.SafetyDimension.IDENTITY_BINDING,
         model.SafetyDimension.CORRIDOR_COVERAGE,
     ),
     model.SemanticSubjectRole.PLANNED_HELPER: (
@@ -319,7 +318,7 @@ _JUSTIFICATION_RULE_SPECS: dict[model.UnflattenJustificationRule, _Justification
     model.UnflattenJustificationRule.SOURCE_SPLIT_WITH_RECIPROCAL_ORIGINS: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,)),
     model.UnflattenJustificationRule.SOURCE_FOLDED_WITH_RECIPROCAL_ORIGINS: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,)),
     model.UnflattenJustificationRule.SOURCE_LOSS_UNACCOUNTED: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.REFUTES, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,)),
-    model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, model.AuthorityEvidenceKind.CORRIDOR_COVERAGE), max_premises=None),
+    model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,), max_premises=None),
     model.UnflattenJustificationRule.EQUIVALENT_ROUTE_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.ROUTE_EQUIVALENCE, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.SEMANTIC_ROUTE,)),
     model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE, model.AuthorityEvidenceKind.SEMANTIC_ROUTE), min_premises=2, max_premises=2),
     model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE, model.AuthorityEvidenceKind.PATCH_STEP, model.AuthorityEvidenceKind.PHASE_BINDING, model.AuthorityEvidenceKind.REACHABILITY), min_premises=4, max_premises=4),
@@ -445,11 +444,39 @@ def _dimensions(
     candidate_generation: int | None = None,
     retired_topology_satisfied_ids: frozenset[str] = frozenset(),
     conditional_relations: tuple[model.ConditionalSubjectRelation, ...] = (),
+    proposal: model.ProposedUnflattenContract | None = None,
 ) -> tuple[model.ObligationKey, ...]:
     result: set[model.ObligationKey] = set()
     relation_dimensions = {(item.target_subject_id, item.dimension) for item in conditional_relations}
+    # A dispatcher entry that is itself an exact retired-catalog row is no
+    # longer an applicable live entry obligation.  This is T13 retirement
+    # applicability; corridor coverage never supplies this exception.
+    retired_dispatcher_entry_refs = {
+        member.block_ref
+        for claim in claims
+        if type(claim) is model.RetiredDispatcherInfrastructureClaim
+        and claim.retirement_catalog is not None
+        for member in claim.retirement_catalog.members
+        if member.retired
+        and any(
+            subject.block_ref == member.block_ref
+            for subject in claim.member_subjects
+        )
+    }
     for subject in subjects:
         dimensions = list(REQUIRED_DIMENSIONS[subject.role])
+        if (
+            subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+            and subject.block_ref in retired_dispatcher_entry_refs
+        ):
+            dimensions = [
+                dimension for dimension in dimensions
+                if dimension not in {
+                    model.SafetyDimension.TOPOLOGY_INTEGRITY,
+                    model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+                    model.SafetyDimension.ENTRY_REACHABILITY,
+                }
+            ]
         if (
             subject.role is model.SemanticSubjectRole.EFFECT_SITE
             and subject.kind is model.SemanticSubjectKind.BLOCK
@@ -668,11 +695,8 @@ def _validate_justification_graph(
                     raise ValueError("use-def severance refutation lacks complete actionable violations")
         if item.rule in {
             model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN,
-        } and not {
-            model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,
-            model.AuthorityEvidenceKind.CORRIDOR_COVERAGE,
-        } <= set(premise_kinds):
-            raise ValueError("retirement justification requires lineage and coverage evidence")
+        } and model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE not in premise_kinds:
+            raise ValueError("retirement justification requires structural lineage evidence")
         if item.rule is model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN and tuple(sorted(premise_kinds, key=lambda kind: kind.value)) != (
             model.AuthorityEvidenceKind.EFFECT_SITE,
             model.AuthorityEvidenceKind.SEMANTIC_ROUTE,
@@ -732,19 +756,7 @@ def _validate_justification_graph(
                     and by_evidence_id[premise].subject.subject_id == target
                 ) or (
                     type(payload) is model.CorridorCoverageEvidencePayload
-                    and (
-                        payload.corridor_subject_id == target
-                        or target in payload.member_subject_ids
-                        or any(
-                            subject.subject_id == target
-                            and any(
-                                member.subject_id in payload.member_subject_ids
-                                and member.block_ref == subject.block_ref
-                                for member in subjects
-                            )
-                            for subject in subjects
-                        )
-                    )
+                    and payload.corridor_subject_id == target
                 ) or (
                     type(payload) is model.PatchStepEvidencePayload
                     and by_evidence_id[premise].subject.subject_id == target
@@ -800,9 +812,6 @@ def _validate_justification_graph(
                     correlated = (
                         type(payload) is model.StructuralLineageEvidencePayload
                         and payload.claim_id == claim.claim_id
-                    ) or (
-                        type(payload) is model.CorridorCoverageEvidencePayload
-                        and payload.corridor_subject_id == claim.corridor_subject.subject_id
                     )
                 elif type(claim) is model.EquivalentSemanticRouteClaim:
                     correlated = (
@@ -1117,6 +1126,35 @@ def _validate_receipt(
         raise ValueError("source inventory does not cover canonical route expansion")
 
 
+def derive_corridor_coverage_evidence(
+    inputs: model.DerivedUnflattenPreparationInputs,
+    phase: model.UnflattenAuthorityPhase,
+) -> model.CorridorCoverageEvidencePayload | None:
+    """Project the transaction-owned corridor phase result for compatibility."""
+
+    if type(inputs) is not model.DerivedUnflattenPreparationInputs:
+        raise TypeError("inputs must be DerivedUnflattenPreparationInputs")
+    if type(phase) is not model.UnflattenAuthorityPhase:
+        raise TypeError("phase must be UnflattenAuthorityPhase")
+    model.DerivedUnflattenPreparationInputs.__post_init__(inputs)
+    result = inputs.corridor_coverage_phase_result
+    corridor = next((
+        subject for subject in inputs.source_inventory.subjects
+        if subject.role is model.SemanticSubjectRole.DISPATCHER_CORRIDOR
+    ), None)
+    if result is None or corridor is None:
+        return None
+    if result.phase is not phase:
+        raise ValueError("corridor phase result differs from requested phase")
+    return model.CorridorCoverageEvidencePayload(
+        corridor.subject_id, result.forecast_id, result.result_id,
+        result.covered_path_ids, result.residual_path_ids,
+        result.drifted_path_ids, result.enumeration_complete,
+        result.matched_semantic_exclusion_ids,
+        result.source_dispatcher_reachable, result.candidate_dispatcher_reachable,
+    )
+
+
 def _evaluator_fact_evidence(
     inputs: model.DerivedUnflattenPreparationInputs,
     phase: model.UnflattenAuthorityPhase,
@@ -1384,7 +1422,18 @@ def _evaluator_fact_evidence(
         model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
         model.SemanticSubjectRole.PLANNED_HELPER,
     }
-
+    retired_topology_refs = {
+        row.block_ref
+        for claim in inputs.claims
+        if type(claim) is model.RetiredDispatcherInfrastructureClaim
+        and claim.retirement_catalog is not None
+        for row in claim.retirement_catalog.members
+        if row.retired
+    }
+    retired_roles = {
+        model.SemanticSubjectRole.DISPATCHER_ENTRY,
+        model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+    }
     def topology_relations(inventory: model.SemanticGraphInventory) -> tuple[model.TopologyEdgeRelation, ...]:
         by_serial = {item.serial: item for item in inventory.blocks}
         subject_by_serial: dict[int, tuple[model.SemanticSubjectRef, ...]] = defaultdict(tuple)
@@ -1413,6 +1462,14 @@ def _evaluator_fact_evidence(
                 continue
             for source_subject in subject_by_serial.get(source_serial, ()):
                 for target_subject in subject_by_serial.get(target_serial, ()):
+                    if (
+                        source_subject.block_ref in retired_topology_refs
+                        and source_subject.role in retired_roles
+                    ) or (
+                        target_subject.block_ref in retired_topology_refs
+                        and target_subject.role in retired_roles
+                    ):
+                        continue
                     result.append(model.TopologyEdgeRelation(
                         model.SemanticEdgeRole.DIRECT, source_subject.subject_id,
                         target_subject.subject_id, anchor,
@@ -1798,10 +1855,26 @@ def _evaluator_fact_evidence(
         evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.SEMANTIC_ROUTE, subject, phase, route_payload))
 
     corridor = next((item for item in source_subjects if item.role is model.SemanticSubjectRole.DISPATCHER_CORRIDOR), None)
-    if corridor is not None:
-        members = tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE)
-        covered = tuple(item for item in members if candidate_bindings.get(item) is not None and candidate_bindings[item].status is model.SubjectBindingStatus.UNIQUE)
-        evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.CORRIDOR_COVERAGE, corridor, phase, model.CorridorCoverageEvidencePayload(corridor.subject_id, members, covered, tuple(item for item in members if item not in covered))))
+    phase_result = inputs.corridor_coverage_phase_result
+    if corridor is not None and phase_result is not None:
+        evidence.append(_evidence_factory(
+            model.AuthorityEvidence,
+            model.AuthorityEvidenceKind.CORRIDOR_COVERAGE,
+            corridor,
+            phase,
+            model.CorridorCoverageEvidencePayload(
+                corridor.subject_id,
+                phase_result.forecast_id,
+                phase_result.result_id,
+                phase_result.covered_path_ids,
+                phase_result.residual_path_ids,
+                phase_result.drifted_path_ids,
+                phase_result.enumeration_complete,
+                phase_result.matched_semantic_exclusion_ids,
+                phase_result.source_dispatcher_reachable,
+                phase_result.candidate_dispatcher_reachable,
+            ),
+        ))
 
     generic_gates: list[model.GenericCfgGateResult] = []
     facts = inputs.generic_gate_facts
@@ -2066,7 +2139,8 @@ def build_semantic_case(
         raise ValueError("use-def owners require exact redirect patch facts")
     if tuple(use_def.redirect_owner_refs) != redirect_owner_refs:
         raise ValueError("use-def owners must match exact redirect patch facts")
-    if not set(redirect_owner_refs) <= set(proposal.plan_inputs.dispatcher_member_refs):
+    allowed_redirect_owners = set(proposal.plan_inputs.dispatcher_member_refs)
+    if not set(redirect_owner_refs) <= allowed_redirect_owners:
         raise ValueError("use-def redirect owners must be dispatcher members")
     if (
         not expected_value_flow.redirect_owner_refs
@@ -2117,24 +2191,10 @@ def build_semantic_case(
                 and item.payload.claim_id == claim.claim_id
                 and item.payload.disposition is model.StructuralDisposition.AUTHORIZED_RETIREMENT
             } == {member.subject_id for member in claim.member_subjects}
-            and any(
-                type(item.payload) is model.CorridorCoverageEvidencePayload
-                and item.payload.corridor_subject_id == claim.corridor_subject.subject_id
-                and set(item.payload.member_subject_ids) == {
-                    subject.subject_id for subject in source_subjects
-                    if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
-                    if subject.block_ref in {
-                        member.block_ref for member in claim.retirement_catalog.members
-                    }
-                }
-                and set(item.payload.residual_subject_ids) <= {
-                    member.subject_id for member in claim.member_subjects
-                }
-                for item in lineage_evidence
-            )
             for member in claim.member_subjects
         ),
         conditional_relations=inputs.conditional_relations,
+        proposal=inputs.proposal,
     )
     justifications: list[model.AuthorityJustification] = []
     candidate_bindings = {binding.subject.subject_id: binding for binding in candidate_bindings}
@@ -2306,19 +2366,22 @@ def build_semantic_case(
     if len(topology_rows) != len(topology_items):
         raise ValueError("topology evidence must contain one row per subject")
     candidate_drift_ids: set[str] = set()
-    # A changed relation set is a shared edge-owner drift: both endpoints
-    # lose topology authority, even when the peer row happens to retain its
-    # own reverse relation.
     for item in topology_items:
         payload = item.payload
-        if set(payload.candidate_edge_relations) != set(payload.expected_edge_relations):
+        if set(payload.expected_edge_relations) != set(payload.candidate_edge_relations):
             candidate_drift_ids.update(
                 relation.source_subject_id
-                for relation in (*payload.expected_edge_relations, *payload.candidate_edge_relations)
+                for relation in (
+                    *payload.expected_edge_relations,
+                    *payload.candidate_edge_relations,
+                )
             )
             candidate_drift_ids.update(
                 relation.target_subject_id
-                for relation in (*payload.expected_edge_relations, *payload.candidate_edge_relations)
+                for relation in (
+                    *payload.expected_edge_relations,
+                    *payload.candidate_edge_relations,
+                )
             )
     for item in topology_items:
         payload = item.payload
@@ -2361,11 +2424,17 @@ def build_semantic_case(
             if candidate_relations != expected_relations:
                 candidate_drift_ids.update(
                     relation.source_subject_id
-                    for relation in (*payload.expected_edge_relations, *payload.candidate_edge_relations)
+                    for relation in (
+                        *payload.expected_edge_relations,
+                        *payload.candidate_edge_relations,
+                    )
                 )
                 candidate_drift_ids.update(
                     relation.target_subject_id
-                    for relation in (*payload.expected_edge_relations, *payload.candidate_edge_relations)
+                    for relation in (
+                        *payload.expected_edge_relations,
+                        *payload.candidate_edge_relations,
+                    )
                 )
             expected_predecessors = {
                 relation.source_subject_id for relation in payload.expected_edge_relations
@@ -2537,18 +2606,38 @@ def build_semantic_case(
             corridor_subject = known_subjects.get(payload.corridor_subject_id)
             if corridor_subject is None or type(corridor_subject.locator) is not model.CorridorSubjectLocator:
                 raise ValueError("corridor evidence target is not a derived corridor")
-            member_pairs = set(zip(
-                corridor_subject.locator.member_refs,
-                corridor_subject.locator.member_anchor_eas,
-            ))
-            corridor_members = {
-                subject.subject_id for subject in subjects
-                if (subject.block_ref, subject.anchor_ea) in member_pairs
-                and subject.kind is model.SemanticSubjectKind.BLOCK
-                and subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
-            }
-            if set(payload.member_subject_ids) != corridor_members:
-                raise ValueError("corridor evidence member scope does not match its locator")
+            forecast = inputs.proposal.corridor_coverage_forecast
+            result = inputs.corridor_coverage_phase_result
+            if forecast is None or result is None:
+                raise ValueError("corridor evidence lacks its transaction-owned result")
+            if (
+                payload.forecast_id != forecast.forecast_id
+                or payload.phase_result_id != result.result_id
+                or payload.covered_path_ids != result.covered_path_ids
+                or payload.residual_path_ids != result.residual_path_ids
+                or payload.drifted_path_ids != result.drifted_path_ids
+                or payload.enumeration_complete != result.enumeration_complete
+                or payload.matched_semantic_exclusion_ids != result.matched_semantic_exclusion_ids
+                or payload.source_dispatcher_reachable != result.source_dispatcher_reachable
+                or payload.candidate_dispatcher_reachable != result.candidate_dispatcher_reachable
+                or item.phase is not result.phase
+                or result.source_fingerprint != inputs.source_inventory.graph_fingerprint
+                or result.candidate_fingerprint != inputs.candidate_inventory.graph_fingerprint
+                or result.source_generation != inputs.source_inventory.generation
+                or result.candidate_generation != inputs.candidate_inventory.generation
+                or result.source_fingerprint != inputs.preparation_receipt.source_fingerprint
+                or result.candidate_fingerprint != inputs.preparation_receipt.candidate_fingerprint
+                or result.source_generation != inputs.preparation_receipt.source_generation
+                or result.candidate_generation != inputs.preparation_receipt.candidate_generation
+            ):
+                raise ValueError("corridor evidence drifted from the bound phase result")
+            forecast_ids = {path.path_id for path in forecast.paths}
+            if set(payload.covered_path_ids) | set(payload.residual_path_ids) | set(payload.drifted_path_ids) != forecast_ids:
+                raise ValueError("corridor evidence path partition is not exhaustive")
+            if set(payload.covered_path_ids) != set(forecast.covered_path_ids):
+                raise ValueError("corridor evidence covered partition drifted from forecast")
+            if set(payload.residual_path_ids) != set(forecast.residual_path_ids):
+                raise ValueError("corridor evidence residual partition drifted from forecast")
         elif type(payload) is model.PatchStepEvidencePayload:
             header_target = item.subject.subject_id
             allowed_owner = item.subject.role in {
@@ -2759,17 +2848,22 @@ def build_semantic_case(
                     rule = model.UnflattenJustificationRule.NON_STATE_USE_DEF_SEVERED
                 targets = ((target.subject_id, model.SafetyDimension.USE_DEF_INTEGRITY, clean, rule),)
         elif type(payload) is model.CorridorCoverageEvidencePayload:
-            complete = not payload.residual_subject_ids and set(payload.member_subject_ids) == set(payload.covered_subject_ids)
-            target_ids = (payload.corridor_subject_id, *payload.member_subject_ids)
-            target_ids += tuple(
-                subject.subject_id
-                for subject in subjects
-                if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+            complete = (
+                payload.enumeration_complete
+                and payload.source_dispatcher_reachable
+                and not payload.candidate_dispatcher_reachable
+                and not payload.residual_path_ids
+                and not payload.drifted_path_ids
+                and bool(inputs.proposal.corridor_coverage_forecast.paths)
             )
-            targets = tuple(
-                (target, model.SafetyDimension.CORRIDOR_COVERAGE, complete, model.UnflattenJustificationRule.CORRIDOR_FULLY_COVERED if complete else model.UnflattenJustificationRule.CORRIDOR_RESIDUAL_UNACCOUNTED)
-                for target in dict.fromkeys(target_ids)
-            )
+            targets = ((
+                payload.corridor_subject_id,
+                model.SafetyDimension.CORRIDOR_COVERAGE,
+                complete,
+                model.UnflattenJustificationRule.CORRIDOR_FULLY_COVERED
+                if complete
+                else model.UnflattenJustificationRule.CORRIDOR_RESIDUAL_UNACCOUNTED,
+            ),)
         elif type(payload) is model.PatchStepEvidencePayload:
             if payload.plan_id != proposal.plan_id:
                 raise ValueError("patch-step evidence belongs to a different plan")
@@ -2829,27 +2923,14 @@ def build_semantic_case(
                 and item.payload.source_subject_id in {member.subject_id for member in claim.member_subjects}
                 and item.payload.disposition is model.StructuralDisposition.AUTHORIZED_RETIREMENT
             )
-            matching_coverage = tuple(
-                item for item in evidence
-                if type(item.payload) is model.CorridorCoverageEvidencePayload
-                and item.payload.corridor_subject_id == claim.corridor_subject.subject_id
-                and set(item.payload.member_subject_ids) == {
-                    subject.subject_id for subject in source_subjects
-                    if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
-                    if claim.retirement_catalog is not None
-                    and subject.block_ref in {
-                        member.block_ref for member in claim.retirement_catalog.members
-                    }
-                }
-            )
-            claim_evidence = tuple(item.evidence_id for item in (*matching_lineage, *matching_coverage))
+            claim_evidence = tuple(item.evidence_id for item in matching_lineage)
             lineage_members = tuple(item.payload.source_subject_id for item in matching_lineage)
             exact_lineage = (
                 len(matching_lineage) == len(claim.member_subjects)
                 and set(lineage_members) == {member.subject_id for member in claim.member_subjects}
                 and len(set(lineage_members)) == len(lineage_members)
             )
-            if exact_lineage and matching_coverage:
+            if exact_lineage:
                 targets = tuple(
                     (member, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
                     for member in claim.member_subjects
@@ -3066,6 +3147,7 @@ def build_semantic_case(
         "source_subject_ids": tuple(item.subject_id for item in source_subjects),
         "source_bindings": tuple(source_inventory.bindings),
         "retirement_catalog": inputs.proposal.retirement_catalog,
+        "corridor_coverage_phase_result": inputs.corridor_coverage_phase_result,
     }
     return _case_factory(model.SemanticSafetyCase, **values)
 
@@ -3108,4 +3190,7 @@ def evaluate_case(case: model.SemanticSafetyCase) -> model.UnflattenAuthorityVer
     )
 
 
-__all__ = ["REQUIRED_DIMENSIONS", "build_semantic_case", "evaluate_case", "_build_obligation_index"]
+__all__ = [
+    "REQUIRED_DIMENSIONS", "derive_corridor_coverage_evidence",
+    "build_semantic_case", "evaluate_case", "_build_obligation_index",
+]

@@ -19,13 +19,14 @@ from d810.transforms.unflatten_authority import gates
 from d810.transforms.unflatten_authority import views
 from d810.transforms.unflatten_authority.evaluate import _classify_effect_site
 from d810.transforms.unflatten_authority.evaluate import build_semantic_case
+from d810.transforms.unflatten_authority.evaluate import derive_corridor_coverage_evidence
 from d810.transforms.unflatten_authority.evaluate import evaluate_case
 from d810.transforms.unflatten_authority.evaluate import REQUIRED_DIMENSIONS
 from d810.transforms.patch_binding import BoundPatchPlan
 from d810.transforms.plan import PatchPlan
 from d810.transforms.unflatten_authority.ids import _case_factory, _claim_factory, _evidence_factory, _justification_factory, _subject_factory, authority_id as canonical_authority_id, bound_unflatten_binding_id, canonical_bytes, canonical_decode, content_id, receipt_id, semantic_graph_inventory_digest
 from .helpers import authority_id, block_ref, state_identity
-from .test_model import _retirement_catalog, _valid_proposal
+from .test_model import _minimal_corridor_forecast, _retirement_catalog, _valid_proposal
 
 
 def _role_subject(role: model.SemanticSubjectRole, token: str) -> model.SemanticSubjectRef:
@@ -91,6 +92,155 @@ def test_route_payload_projects_destination_ids_in_locator_pair_order() -> None:
     )
     assert payload.destination_subject_ids != tuple(sorted(by_pair.values()))
     assert canonical_decode(canonical_bytes(payload)) == payload
+
+
+def test_corridor_coverage_uses_plan_catalog_without_graph_rescan() -> None:
+    """The aggregate corridor cell is a sealed path-domain phase result."""
+
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "source")
+    entry = _role_subject(model.SemanticSubjectRole.DISPATCHER_ENTRY, "0")
+    member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
+    member1 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1")
+    corridor_locator = model.CorridorSubjectLocator(
+        authority_id("catalog-corridor"), entry.block_ref, entry.anchor_ea,
+        (member0.block_ref, member1.block_ref),
+        (member0.anchor_ea, member1.anchor_ea),
+    )
+    corridor = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.CORRIDOR,
+        role=model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
+        block_ref=entry.block_ref,
+        anchor_ea=entry.anchor_ea,
+        locator=corridor_locator,
+    )
+    proposal_values = _valid_proposal(model)
+    path_nodes = (
+        model.CorridorCoveragePathNode(block_ref("b1"), 0x1300),
+        model.CorridorCoveragePathNode(block_ref("b0"), 0x1000),
+    )
+    path_id = canonical_authority_id((
+        "unflatten.corridor-coverage-path.v1", path_nodes, None,
+        model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
+    ))
+    path = model.CorridorCoveragePath(
+        path_id, path_nodes, None,
+        model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
+    )
+    forecast_id = canonical_authority_id((
+        "unflatten.corridor-coverage-forecast.v1", proposal_values["plan_id"],
+        0, proposal_values["source_identity_catalog"].native_key, 3,
+        block_ref("b0"), 0x1000, (path,), (path_id,), (), True, (), (), (),
+    ))
+    proposal_values["corridor_coverage_forecast"] = model.CorridorCoverageForecast(
+        forecast_id, proposal_values["plan_id"], 0,
+        proposal_values["source_identity_catalog"].native_key, 3, block_ref("b0"),
+        0x1000, (path,), (path_id,), (), True, (), (), (),
+    )
+    proposal = model.ProposedUnflattenContract(**proposal_values)
+    complete_inputs = _complete_inputs(
+        source_subjects=(source_entry, entry, member0, member1, corridor),
+        candidate_subjects=(source_entry, entry, member0, member1, corridor),
+        proposal=proposal,
+    )
+    case = build_semantic_case(
+        authority_id=authority_id("catalog-corridor-case"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=complete_inputs,
+    )
+    coverage = derive_corridor_coverage_evidence(
+        complete_inputs,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert coverage is not None
+    assert coverage.forecast_id == proposal.corridor_coverage_forecast.forecast_id
+    assert coverage.covered_path_ids == (path_id,)
+    corridor_cells = tuple(
+        cell for cell in case.obligation_index.cells
+        if cell.key.subject == corridor
+    )
+    assert tuple(cell.key.dimension for cell in corridor_cells) == (
+        model.SafetyDimension.CORRIDOR_COVERAGE,
+        model.SafetyDimension.IDENTITY_BINDING,
+    )
+    assert all(cell.state is model.ObligationState.SATISFIED for cell in corridor_cells)
+    assert not any(
+        item.kind is model.AuthorityEvidenceKind.CORRIDOR_COVERAGE
+        and item.subject.subject_id != corridor.subject_id
+        for item in case.evidence
+    )
+    assert case.phase_metrics.view_graph_traversals == 0
+
+
+def test_derived_inputs_reject_reminted_inventory_function_ea() -> None:
+    """Direct construction cannot bypass the binder's function identity seal."""
+
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "source")
+    entry = _role_subject(model.SemanticSubjectRole.DISPATCHER_ENTRY, "0")
+    member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
+    member1 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1")
+    corridor = _role_subject(model.SemanticSubjectRole.DISPATCHER_CORRIDOR, "corridor")
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    proposal = replace(proposal, corridor_coverage_forecast=_minimal_corridor_forecast(model, proposal))
+    inputs = _complete_inputs(
+        source_subjects=(source_entry, entry, member0, member1, corridor),
+        candidate_subjects=(source_entry, entry, member0, member1, corridor),
+        proposal=proposal,
+    )
+    wrong_function_ea = 0x8000
+    wrong_digest = semantic_graph_inventory_digest(
+        inputs.source_inventory.phase, inputs.source_inventory.graph_fingerprint,
+        inputs.source_inventory.generation, inputs.source_inventory.blocks,
+        inputs.source_inventory.subjects, inputs.source_inventory.bindings,
+        inputs.source_inventory.effects, inputs.source_inventory.terminals,
+        inputs.source_inventory.topology, inputs.source_inventory.reachable_serials,
+        inputs.source_inventory.entry_serial, inputs.source_inventory.source_subject_ids,
+        wrong_function_ea,
+    )
+    reminted_source = replace(
+        inputs.source_inventory,
+        function_ea=wrong_function_ea,
+        inventory_digest=wrong_digest,
+    )
+    candidate_digest = semantic_graph_inventory_digest(
+        inputs.candidate_inventory.phase, inputs.candidate_inventory.graph_fingerprint,
+        inputs.candidate_inventory.generation, inputs.candidate_inventory.blocks,
+        inputs.candidate_inventory.subjects, inputs.candidate_inventory.bindings,
+        inputs.candidate_inventory.effects, inputs.candidate_inventory.terminals,
+        inputs.candidate_inventory.topology, inputs.candidate_inventory.reachable_serials,
+        inputs.candidate_inventory.entry_serial, inputs.candidate_inventory.source_subject_ids,
+        wrong_function_ea,
+    )
+    reminted_candidate = replace(
+        inputs.candidate_inventory,
+        function_ea=wrong_function_ea,
+        inventory_digest=candidate_digest,
+    )
+    from copy import copy
+    reminted_receipt = copy(inputs.preparation_receipt)
+    object.__setattr__(reminted_receipt, "source_inventory_digest", wrong_digest)
+    object.__setattr__(reminted_receipt, "candidate_inventory_digest", candidate_digest)
+    object.__setattr__(reminted_receipt, "receipt_id", receipt_id(reminted_receipt))
+    with pytest.raises(ValueError, match="function EA"):
+        replace(
+            inputs,
+            source_inventory=reminted_source,
+            candidate_inventory=reminted_candidate,
+            preparation_receipt=reminted_receipt,
+        )
+    case = build_semantic_case(
+        authority_id=authority_id("function-ea-case"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    with pytest.raises(ValueError, match="function EA"):
+        replace(
+            case,
+            source_inventory=reminted_source,
+            preparation_receipt=reminted_receipt,
+            preparation_receipt_id=reminted_receipt.receipt_id,
+        )
+
 
 
 def _digest(value: object) -> str:
@@ -371,6 +521,7 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         patch_step_digest=_digest(tuple(sorted(patch_payloads, key=lambda item: (item.plan_id, item.step_index))),),
         conditional_relation_digest=_digest(relations), metrics=metrics,
         retirement_catalog=proposal.retirement_catalog,
+        corridor_coverage_forecast=proposal.corridor_coverage_forecast,
     )
     def fixture_inventory(
         phase_value: model.UnflattenAuthorityPhase,
@@ -435,14 +586,43 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
             and binding.block_ref is not None
         }
         serials = tuple(binding.serial for binding in sorted(unique.values(), key=lambda item: item.serial))
+        forecast = proposal.corridor_coverage_forecast
+        forecast_edges: set[tuple[int, int]] = set()
+        if forecast is not None and phase_value is model.UnflattenAuthorityPhase.PRODUCER_FORECAST:
+            serial_by_ref = {
+                binding.block_ref: binding.serial
+                for binding in unique.values()
+                if binding.block_ref is not None and binding.serial is not None
+            }
+            for path in forecast.paths:
+                forecast_edges.update(
+                    (serial_by_ref[left.block_ref], serial_by_ref[right.block_ref])
+                    for left, right in zip(path.nodes, path.nodes[1:])
+                    if left.block_ref in serial_by_ref and right.block_ref in serial_by_ref
+                )
+        if forecast_edges:
+            predecessor_by_serial: dict[int, list[int]] = {serial: [] for serial in serials}
+            successor_by_serial: dict[int, tuple[int, ...]] = {serial: () for serial in serials}
+            for left, right in sorted(forecast_edges):
+                successor_by_serial[left] = (*successor_by_serial[left], right)
+                predecessor_by_serial[right].append(left)
+        else:
+            predecessor_by_serial = {
+                serial: ([serials[index - 1]] if index else [])
+                for index, serial in enumerate(serials)
+            }
+            successor_by_serial = {
+                serial: ((serials[index + 1],) if index + 1 < len(serials) else ())
+                for index, serial in enumerate(serials)
+            }
         blocks = tuple(
             model.InventoryBlockObservation(
                 binding.serial,
                 binding.block_ref,
                 binding.anchor_ea,
                 binding.native_instruction_eas,
-                (serials[index - 1],) if index else (),
-                (serials[index + 1],) if index + 1 < len(serials) else (),
+                tuple(sorted(predecessor_by_serial[binding.serial])),
+                tuple(sorted(successor_by_serial[binding.serial])),
                 next(
                     (
                         ea for ea in reversed(binding.native_instruction_eas)
@@ -568,19 +748,34 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         effects = tuple(sorted(effects, key=lambda item: (item.owner_serial, item.instruction_ordinal, item.instruction_ea, item.effect_kind.value)))
         terminals = tuple(sorted(terminals, key=lambda item: (item.owner_serial, item.instruction_ordinal is None, item.instruction_ordinal if item.instruction_ordinal is not None else -1, item.instruction_ea, item.terminal_kind.value)))
         topology = tuple(sorted(topology, key=lambda item: (item.kind.value, item.owner_serial, item.peer_serial, -1)))
-        closure = serials
+        closure_set: set[int] = set()
+        pending = [blocks[0].serial] if blocks else []
+        blocks_by_serial = {block.serial: block for block in blocks}
+        while pending:
+            serial = pending.pop()
+            if serial in closure_set:
+                continue
+            closure_set.add(serial)
+            pending.extend(blocks_by_serial[serial].successor_serials)
+        closure = tuple(sorted(closure_set))
         partition = subjects if source_partition is None else source_partition
+        function_ea = (
+            proposal.corridor_coverage_forecast.function_ea
+            if proposal.corridor_coverage_forecast is not None
+            else 0
+        )
         digest = semantic_graph_inventory_digest(
             phase_value, fingerprint, generation, blocks, subjects, bindings,
             effects, terminals, topology, closure,
             blocks[0].serial if blocks else 0,
-            tuple(item.subject_id for item in partition),
+            tuple(item.subject_id for item in partition), function_ea,
         )
         return model.SemanticGraphInventory(
             phase_value, fingerprint, generation, blocks, subjects, bindings,
             effects, terminals, topology, digest, closure,
             blocks[0].serial if blocks else 0,
             tuple(item.subject_id for item in partition),
+            function_ea,
         )
 
     source_inventory = fixture_inventory(
@@ -590,6 +785,22 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         source_subjects,
     )
     source_bindings = source_inventory.bindings
+    if proposal.corridor_coverage_forecast is not None:
+        dispatcher_ref = proposal.corridor_coverage_forecast.dispatcher_ref
+        candidate_bindings = tuple(
+            replace(
+                binding,
+                block_ref=None,
+                anchor_ea=None,
+                serial=None,
+                native_instruction_eas=(),
+                status=model.SubjectBindingStatus.MISSING,
+            )
+            if binding.subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+            and binding.subject.block_ref == dispatcher_ref
+            else binding
+            for binding in candidate_bindings
+        )
     candidate_inventory = fixture_inventory(
         phase, authority_id("candidate-fp"), 4,
         tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id)),
@@ -621,6 +832,15 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
     object.__setattr__(receipt, "source_inventory_digest", source_inventory.inventory_digest)
     object.__setattr__(receipt, "candidate_inventory_digest", candidate_inventory.inventory_digest)
     object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
+    corridor_result = None
+    if proposal.corridor_coverage_forecast is not None:
+        from d810.transforms.unflatten_authority.bind import bind_corridor_coverage_forecast
+        corridor_result = bind_corridor_coverage_forecast(
+            proposal=proposal,
+            source_inventory=source_inventory,
+            candidate_inventory=candidate_inventory,
+            phase=phase,
+        )
     return model.DerivedUnflattenPreparationInputs(
         proposal=proposal, claims=claims, preparation_receipt=receipt,
         source_inventory=source_inventory,
@@ -630,6 +850,7 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         patch_step_facts=patch_payloads,
         preparation_metrics=metrics,
         phase_build_metrics=model.PhaseBuildMetrics(phase, 1, 1, 1.25),
+        corridor_coverage_phase_result=corridor_result,
     )
 
 
@@ -939,6 +1160,7 @@ def test_value_flow_identity_is_conjunctive_over_every_owner_binding() -> None:
                 inputs.candidate_inventory.reachable_serials,
                 inputs.candidate_inventory.entry_serial,
                 inputs.candidate_inventory.source_subject_ids,
+                inputs.candidate_inventory.function_ea,
             ),
         )
         object.__setattr__(
@@ -984,6 +1206,7 @@ def test_value_flow_identity_is_conjunctive_over_every_owner_binding() -> None:
             inputs.candidate_inventory.reachable_serials,
             inputs.candidate_inventory.entry_serial,
             inputs.candidate_inventory.source_subject_ids,
+            inputs.candidate_inventory.function_ea,
         ),
     )
     object.__setattr__(receipt, "candidate_binding_digest", _digest(inputs.candidate_inventory.bindings))
@@ -1028,6 +1251,7 @@ def test_value_flow_identity_is_conjunctive_over_every_owner_binding() -> None:
             inputs.candidate_inventory.reachable_serials,
             inputs.candidate_inventory.entry_serial,
             inputs.candidate_inventory.source_subject_ids,
+            inputs.candidate_inventory.function_ea,
         ),
     )
     object.__setattr__(receipt, "candidate_inventory_digest", inputs.candidate_inventory.inventory_digest)
@@ -1402,7 +1626,7 @@ def test_inventory_topology_mismatches_refute_exact_case_cells() -> None:
             inventory.blocks, inventory.subjects, inventory.bindings,
             inventory.effects, inventory.terminals, inventory.topology,
             inventory.reachable_serials, inventory.entry_serial,
-            inventory.source_subject_ids,
+            inventory.source_subject_ids, inventory.function_ea,
         )
         object.__setattr__(inventory, "inventory_digest", digest)
         object.__setattr__(inputs.preparation_receipt, "candidate_inventory_digest", digest)
@@ -2352,6 +2576,7 @@ def test_fold_lineage_partitions_disjoint_source_origins_and_supports_each_membe
             inputs.candidate_inventory.reachable_serials,
             inputs.candidate_inventory.entry_serial,
             inputs.candidate_inventory.source_subject_ids,
+            inputs.candidate_inventory.function_ea,
         ),
     )
     object.__setattr__(inputs.preparation_receipt, "candidate_inventory_digest", inputs.candidate_inventory.inventory_digest)
@@ -2631,6 +2856,8 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         proposal_values["plan_inputs"],
         shape=model.UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT,
     )
+    proposal_base = model.ProposedUnflattenContract(**_valid_proposal(model))
+    proposal_values["corridor_coverage_forecast"] = _minimal_corridor_forecast(model, proposal_base)
     route_claim = proposal_values["claims"][0]
     route = route_claim.retired_route_subject
     destination = route_claim.destination_subjects[0]
@@ -2680,6 +2907,7 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         candidate_inventory.effects, candidate_inventory.terminals,
         candidate_inventory.topology, candidate_inventory.reachable_serials,
         candidate_inventory.entry_serial, candidate_inventory.source_subject_ids,
+        candidate_inventory.function_ea,
     )
     object.__setattr__(candidate_inventory, "inventory_digest", candidate_digest)
     object.__setattr__(
@@ -2718,18 +2946,9 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     )
     corridor_coverage = next(
         cell for cell in incomplete.obligation_index.cells
-        if cell.key == model.ObligationKey(
-            corridor, model.SafetyDimension.CORRIDOR_COVERAGE,
-        )
+        if cell.key == model.ObligationKey(corridor, model.SafetyDimension.CORRIDOR_COVERAGE)
     )
-    assert corridor_coverage.state is model.ObligationState.VIOLATED
-    assert any(
-        next(
-            item for item in incomplete.justifications
-            if item.justification_id == justification_id
-        ).rule is model.UnflattenJustificationRule.CORRIDOR_RESIDUAL_UNACCOUNTED
-        for justification_id in corridor_coverage.refuting_justification_ids
-    )
+    assert corridor_coverage.state is model.ObligationState.SATISFIED
 
 
 def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
@@ -2752,6 +2971,7 @@ def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
         claims=tuple(sorted((*base.claims, claim), key=lambda item: item.claim_id)),
         plan_inputs=replace(base.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE),
         retirement_catalog=claim.retirement_catalog,
+        corridor_coverage_forecast=_minimal_corridor_forecast(model, base),
     )
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "catalog-entry")
     member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
@@ -2784,6 +3004,7 @@ def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
         inputs.candidate_inventory.effects, inputs.candidate_inventory.terminals,
         inputs.candidate_inventory.topology, inputs.candidate_inventory.reachable_serials,
         inputs.candidate_inventory.entry_serial, inputs.candidate_inventory.source_subject_ids,
+        inputs.candidate_inventory.function_ea,
     ))
     object.__setattr__(inputs.preparation_receipt, "candidate_binding_digest", _digest(tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id))))
     object.__setattr__(inputs.preparation_receipt, "candidate_inventory_digest", inputs.candidate_inventory.inventory_digest)

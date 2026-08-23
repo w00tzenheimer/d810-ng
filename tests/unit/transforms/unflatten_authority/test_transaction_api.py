@@ -8,7 +8,7 @@ from inspect import signature
 import pytest
 
 from d810.transforms.plan import PatchBlockSpec, PatchEdgeRef, PatchPlan, PatchRedirectBranch
-from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
+from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef, TransactionAttemptId
 from d810.transforms.unflatten_authority.model import (
     UnflattenAuthorityReason,
     UnflattenAuthorityNotApplicable,
@@ -22,27 +22,301 @@ from .test_model import _valid_proposal
 from .test_proposal import _shadow
 
 
-def test_retirement_public_prepare_reports_t14_corridor_obligation() -> None:
-    """Public prepare preserves retirement evidence while T14 corridor proof fails."""
+def _full_corridor_fixture():
+    """Build a live, non-empty corridor retirement around an unaffected route."""
+
+    from d810.analyses.control_flow.graph_checks import (
+        check_effectful_reachability_preserved,
+        check_entry_reachability_not_collapsed,
+        check_terminal_reachability_preserved,
+    )
+    from d810.ir.block_identity import StableBlockIdentity
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, InsnKind, InsnSnapshot
+    from d810.transforms import dispatcher_corridor_coverage
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.edit_simulator import project_patch_plan
+    from d810.transforms.graph_modification import RedirectBranch
+    from d810.transforms.plan import PatchRedirectBranch
+    from d810.transforms.unflatten_authority.proposal import (
+        attach_typed_proposal,
+        canonical_redirect_manifest,
+    )
+    from d810.transforms.unflatten_authority.legacy_keys import (
+        DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+    )
+    from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
+
+    source, base, exclusion, refs = exact_fixture()
+    blocks = dict(source.blocks)
+    blocks[0] = replace(blocks[0], preds=(5, 6))
+    # The corridor is a linear bypass into the existing canonical route.  The
+    # patch-owned feeder edge is the only edge rewritten by the projection.
+    blocks[4] = BlockSnapshot(
+        4, 0, (5,), (), 0, 0x5000,
+        (InsnSnapshot(0, 0x5000, (), kind=InsnKind.GOTO),),
+        kind=BlockKind.ONE_WAY,
+    )
+    blocks[5] = BlockSnapshot(
+        5, 0, (0, 6), (4,), 0, 0x6000,
+        (InsnSnapshot(0, 0x6000, (), kind=InsnKind.COND_JUMP),),
+        kind=BlockKind.TWO_WAY,
+    )
+    blocks[6] = BlockSnapshot(
+        6, 0, (0,), (5,), 0, 0x7000,
+        (InsnSnapshot(0, 0x7000, (), kind=InsnKind.GOTO),),
+        kind=BlockKind.ONE_WAY,
+    )
+    source = type(source)(blocks, 4, 0x7000)
+    native_key = refs[0].identity.native_key
+    refs = dict(refs)
+    for serial, ea in ((5, 0x6000), (6, 0x7000)):
+        refs[serial] = NativeBlockRef(
+            StableBlockIdentity.from_instruction_eas((ea,), native_key=native_key)
+        )
+    evidence = base.route_evidence
+    modifications = (RedirectBranch(from_serial=5, old_target=6, new_target=0),)
+    coverage = dispatcher_corridor_coverage.analyze_dispatcher_corridor_coverage(
+        source, modifications=modifications, dispatcher_entry_serial=6,
+    )
+    assert coverage.covered_corridors and not coverage.residual_corridors, coverage.to_metadata()
+    template = PatchPlan(
+        plan_id=authority_id("full-corridor-plan"), snapshot_id=authority_id("full-corridor-snapshot"),
+        source_generation=1,
+        steps=(PatchRedirectBranch(refs[5], refs[6], refs[0]),),
+        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+        metadata=(
+            (DISPATCHER_CORRIDOR_COVERAGE_METADATA, coverage.to_metadata()),
+            (DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA, {
+                "retired_infrastructure": tuple({
+                    "role": "comparison_dispatcher",
+                    "anchor": {"serial": serial, "ea": {5: 0x6000, 6: 0x7000}[serial]},
+                    "retired": serial == 6,
+                } for serial in (5, 6)),
+            }),
+        ),
+    )
+    manifest = canonical_redirect_manifest(template)
+    witness = replace(
+        base.use_def_witness,
+        redirect_owner_refs=manifest.owner_refs,
+        redirect_digest=manifest.digest,
+    )
+    plan = attach_typed_proposal(
+        template, source=source, block_refs_by_serial=refs,
+        canonical_route_evidence=evidence,
+        exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=6,
+        dispatcher_member_serials=(5, 6), authoritative_handler_serials=(2,),
+        state_identity=base.plan_inputs.state_identity, use_def_witness=witness,
+    )
+    projected = project_patch_plan(source, plan, snapshot_id=plan.snapshot_id).graph
+    projected_blocks = {
+        serial: block for serial, block in projected.blocks.items()
+        if serial != 6
+    }
+    projected_blocks[0] = replace(projected_blocks[0], preds=(5,))
+    projected_blocks[5] = replace(
+        projected_blocks[5], succs=(0,), kind=BlockKind.ONE_WAY,
+    )
+    projected = type(projected)(projected_blocks, projected.entry_serial, projected.func_ea)
+    gates = GenericCfgGateBundle(
+        check_entry_reachability_not_collapsed(source, post_cfg=projected),
+        check_effectful_reachability_preserved(source, post_cfg=projected),
+        check_effectful_reachability_preserved(source, post_cfg=projected),
+        check_terminal_reachability_preserved(source, post_cfg=projected),
+    )
+    return source, plan, projected, gates
+
+
+def test_full_corridor_public_lifecycle_uses_sealed_nonempty_forecast(monkeypatch) -> None:
+    """A real covered corridor survives prepare, bind, and observed revalidation."""
+
+    from d810.transforms import dispatcher_corridor_coverage
+    from d810.transforms.cfg_transaction import TransactionAttemptId
+    from d810.transforms.unflatten_authority import transaction_api
+
+    source, plan, projected, gates = _full_corridor_fixture()
+    attempt = TransactionAttemptId(
+        plan.plan_id, authority_id("full-corridor-session"), 1,
+        authority_id("full-corridor-attempt"),
+    )
+    monkeypatch.setattr(
+        dispatcher_corridor_coverage, "analyze_dispatcher_corridor_coverage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("analyzer called after attachment")),
+    )
+    monkeypatch.setattr(
+        dispatcher_corridor_coverage, "validate_dispatcher_corridor_coverage_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy validator called")),
+    )
+    monkeypatch.setattr(
+        dispatcher_corridor_coverage, "canonicalize_observed_dispatcher_graph",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy parser called")),
+    )
+    prepared_result = transaction_api.prepare_unflatten_authority(
+        source=source, projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan, attempt_id=attempt, generic_gates=gates,
+    )
+    assert getattr(prepared_result, "prepared", None) is not None, (
+        getattr(prepared_result, "verdict", prepared_result),
+        getattr(getattr(prepared_result, "verdict", None), "reason", None),
+        getattr(getattr(prepared_result, "verdict", None), "failed_obligations", ()),
+    )
+    forecast = prepared_result.prepared.source_inputs.proposal.corridor_coverage_forecast
+    assert forecast is not None and forecast.paths and forecast.enumeration_complete
+    phase_result = prepared_result.prepared.source_inputs.corridor_coverage_phase_result
+    assert phase_result is not None and phase_result.full
+    assert phase_result.source_dispatcher_reachable
+    assert not phase_result.candidate_dispatcher_reachable
+
+    # Continue through the public binder with the same closed forecast and
+    # receipt.  The observed phase must consume the bound authority rather
+    # than re-running the producer or legacy corridor adapters.
+    from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+    from d810.hexrays.mutation.patch_binding import bind_patch_plan
+
+    refs = {
+        block.block_ref: block
+        for block in plan.unflatten_proposal.source_identity_catalog.blocks
+    }
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=attempt.generation,
+        maturity=None,
+        native_key=next(iter(refs)).identity.native_key,
+        snapshot_id=plan.snapshot_id,
+        session_id=attempt.session_id,
+        bindings=tuple(
+            (ref.identity, serial)
+            for ref, serial in plan.source_coordinates
+        ),
+    )
+    index.begin_transaction(attempt, quantity=len(source.blocks))
+    patch_binding = bind_patch_plan(plan, index, attempt).bound_plan
+    bound_result = transaction_api.bind_prepared_unflatten_authority(
+        prepared=prepared_result.prepared,
+        patch_binding=patch_binding,
+    )
+    assert bound_result.authority is not None, getattr(bound_result, "verdict", bound_result)
+    bound_forecast = bound_result.authority.prepared.source_inputs.proposal.corridor_coverage_forecast
+    assert bound_forecast is not None
+    assert bound_forecast.forecast_id == forecast.forecast_id
+    assert bound_result.authority.prepared.source_inputs.corridor_coverage_phase_result.result_id == phase_result.result_id
+    observed_result = transaction_api.revalidate_observed_unflatten_authority(
+        authority=bound_result.authority,
+        observed=projected,
+        observed_generation=attempt.generation,
+        generic_gates=gates,
+    )
+    assert observed_result.accepted, getattr(observed_result, "verdict", observed_result)
+    observed_phase = observed_result.safety_case.corridor_coverage_phase_result
+    assert observed_phase is not None
+    assert observed_phase.forecast_id == forecast.forecast_id
+    assert observed_phase.full
+
+
+def test_public_prepare_rejects_reminted_forecast_function_ea_drift() -> None:
+    """A validly reminted forecast cannot change the source function identity."""
 
     from d810.transforms.unflatten_authority import transaction_api
-    from d810.transforms.unflatten_authority.legacy_keys import DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA
+
+    source, plan, projected, gates = _full_corridor_fixture()
+    forecast = plan.unflatten_proposal.corridor_coverage_forecast
+    assert forecast is not None and source.func_ea == 0x7000
+    wrong_function_ea = 0x8000
+    reminted_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", forecast.plan_id,
+        wrong_function_ea, forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea, forecast.paths,
+        forecast.covered_path_ids, forecast.residual_path_ids,
+        forecast.enumeration_complete, forecast.semantic_exclusion_digests,
+        forecast.semantic_exclusions, forecast.semantic_exclusion_path_ids,
+    ))
+    reminted = replace(
+        forecast, function_ea=wrong_function_ea, forecast_id=reminted_id,
+    )
+    proposal = replace(
+        plan.unflatten_proposal, corridor_coverage_forecast=reminted,
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+    result = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=TransactionAttemptId(
+            plan.plan_id, authority_id("function-ea-drift-session"), 1,
+            authority_id("function-ea-drift-attempt"),
+        ),
+        generic_gates=gates,
+    )
+    assert getattr(result, "prepared", None) is None
+    assert result.verdict.reason is UnflattenAuthorityReason.PROJECTED_BINDING_FAILED
+
+
+def test_full_corridor_retained_feeder_topology_drift_is_not_coverage_exempt() -> None:
+    """Aggregate coverage cannot authorize unrelated retained topology drift."""
+
+    from d810.ir.flowgraph import BlockKind
+    from d810.transforms.cfg_transaction import TransactionAttemptId
+    from d810.transforms.unflatten_authority import model
+    from d810.transforms.unflatten_authority import transaction_api
+
+    source, plan, projected, gates = _full_corridor_fixture()
+    blocks = dict(projected.blocks)
+    blocks[5] = replace(blocks[5], succs=(0, 2), kind=BlockKind.TWO_WAY)
+    blocks[2] = replace(blocks[2], preds=tuple(sorted(set(blocks[2].preds + (5,)))))
+    drifted = type(projected)(blocks, projected.entry_serial, projected.func_ea)
+    result = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, drifted),
+        plan=plan,
+        attempt_id=TransactionAttemptId(
+            plan.plan_id, authority_id("retained-feeder-drift-session"), 1,
+            authority_id("retained-feeder-drift-attempt"),
+        ),
+        generic_gates=gates,
+    )
+    assert getattr(result, "prepared", None) is None
+    failed = {
+        (item.key.subject.role, item.key.subject.anchor_ea, item.key.dimension)
+        for item in result.verdict.failed_obligations
+    }
+    assert (
+        model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+        0x6000,
+        model.SafetyDimension.TOPOLOGY_INTEGRITY,
+    ) in failed
+
+
+def test_retirement_public_prepare_reports_only_t14_corridor_obligation(monkeypatch) -> None:
+    """A partial retirement keeps T13 structural proof but refutes aggregate coverage."""
+
+    from d810.transforms.unflatten_authority import transaction_api
+    from d810.transforms.unflatten_authority.legacy_keys import (
+        DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+    )
+    from d810.transforms.dispatcher_corridor_coverage import analyze_dispatcher_corridor_coverage
     from d810.transforms.unflatten_authority.proposal import attach_typed_proposal, canonical_redirect_manifest
 
     model = import_authority_model()
     source, base, _exclusion, refs = exact_fixture()
+    coverage_metadata = analyze_dispatcher_corridor_coverage(
+        source, modifications=(), dispatcher_entry_serial=1,
+    ).to_metadata()
     template = PatchPlan(
         plan_id=base.plan_id, snapshot_id=authority_id("retirement-public"),
         source_generation=1,
         steps=(PatchRedirectBranch(refs[1], refs[2], refs[0]),),
         source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
-        metadata=((DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA, {
+        metadata=(
+            (DISPATCHER_CORRIDOR_COVERAGE_METADATA, coverage_metadata),
+            (DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA, {
             "retired_infrastructure": tuple({
                 "role": "comparison_dispatcher",
                 "anchor": {"serial": serial, "ea": 0x5000 if serial == 4 else 0x1000 if serial == 0 else 0x2000},
                 "retired": serial == 4,
             } for serial in (4, 1)),
-        }),),
+            }),
+        ),
     )
     manifest = canonical_redirect_manifest(template)
     witness = replace(
@@ -56,6 +330,18 @@ def test_retirement_public_prepare_reports_t14_corridor_obligation() -> None:
         exact_state_effect_exclusions=(_exclusion,), dispatcher_entry_serial=1,
         dispatcher_member_serials=(4, 1), authoritative_handler_serials=(2,),
         state_identity=base.plan_inputs.state_identity, use_def_witness=witness,
+    )
+    monkeypatch.setattr(
+        "d810.transforms.dispatcher_corridor_coverage.analyze_dispatcher_corridor_coverage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy analyzer called")),
+    )
+    monkeypatch.setattr(
+        "d810.transforms.dispatcher_corridor_coverage.validate_dispatcher_corridor_coverage_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy validator called")),
+    )
+    monkeypatch.setattr(
+        "d810.transforms.dispatcher_corridor_coverage.canonicalize_observed_dispatcher_graph",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy parser called")),
     )
     projected = type(source)({serial: block for serial, block in source.blocks.items() if serial != 4}, source.entry_serial, source.func_ea)
     projection = CfgProjection(plan.plan_id, plan.snapshot_id, projected)
@@ -81,6 +367,7 @@ def test_retirement_public_prepare_reports_t14_corridor_obligation() -> None:
         attempt_id=attempt, generic_gates=generic_gates,
     )
     assert getattr(result, "prepared", None) is None
+    assert not result.verdict.accepted
     assert result.verdict.reason is model.UnflattenAuthorityReason.OBLIGATION_VIOLATED
     assert result.verdict.case_id is not None
     assert result.verdict.safety_case is not None
@@ -117,24 +404,22 @@ def test_retirement_public_prepare_reports_t14_corridor_obligation() -> None:
         )
         for row in retired_rows
     )
-    failed_corridor_cells = {
+    failed_cells = tuple(
         (cell.key.subject.subject_id, cell.key.subject.role, cell.key.dimension)
         for cell in case.obligation_index.cells
         if cell.state is not model.ObligationState.SATISFIED
-    }
-    retirement_claim = next(
-        claim for claim in case.claims
-        if claim.kind is model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE
     )
     entry_subject = next(
         subject for subject in case.subjects
         if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
     )
-    assert failed_corridor_cells == {
-        (retirement_claim.corridor_subject.subject_id, model.SemanticSubjectRole.DISPATCHER_CORRIDOR, model.SafetyDimension.CORRIDOR_COVERAGE),
-        (retirement_claim.corridor_subject.subject_id, model.SemanticSubjectRole.DISPATCHER_CORRIDOR, model.SafetyDimension.STRUCTURAL_ACCOUNTING),
-        (retirement_claim.infrastructure_subject.subject_id, model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, model.SafetyDimension.CORRIDOR_COVERAGE),
-        (entry_subject.subject_id, model.SemanticSubjectRole.DISPATCHER_ENTRY, model.SafetyDimension.CORRIDOR_COVERAGE),
+    assert len(failed_cells) == 1
+    assert failed_cells[0][1] is model.SemanticSubjectRole.DISPATCHER_CORRIDOR
+    assert failed_cells[0][2] is model.SafetyDimension.CORRIDOR_COVERAGE
+    assert entry_subject.subject_id not in {
+        cell.key.subject.subject_id
+        for cell in case.obligation_index.cells
+        if cell.key.dimension is model.SafetyDimension.CORRIDOR_COVERAGE
     }
 
 

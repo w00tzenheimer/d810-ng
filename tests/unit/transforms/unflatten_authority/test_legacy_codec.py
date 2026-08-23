@@ -19,6 +19,7 @@ from d810.transforms.unflatten_authority.model import (
 )
 from d810.transforms.unflatten_authority.proposal import LEGACY_UNFLATTEN_KEYS
 from d810.transforms.unflatten_authority.legacy_keys import EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA
+from d810.transforms.unflatten_authority.ids import authority_id
 
 
 def _codec():
@@ -61,6 +62,201 @@ def _decode_context(codec, *, evidence=None, generation=3, ref=None):
         "plan", source, generation,
         ((0, ref or LogicalBlockRef("legacy", "b0", 1)),), evidence,
     )
+
+
+def _corridor_metadata(*, covered=True, path=None, **overrides):
+    """Return one analyzer-shaped corridor record for the logical fixture."""
+
+    # _valid_proposal intentionally uses three source-catalog rows whose
+    # anchors are 0x1000, 0x1300, and 0x1100.  The dispatcher is serial 0;
+    # the path ends there and its penultimate row is the feeder.
+    path = path or [
+        {"serial": 1, "ea": 0x1300, "label": "blk1@0x1300"},
+        {"serial": 2, "ea": 0x1100, "label": "blk2@0x1100"},
+        {"serial": 0, "ea": 0x1000, "label": "blk0@0x1000"},
+    ]
+    row = {
+        "source": path[0],
+        "state_merge": path[0],
+        "dispatcher_feeder": path[-2],
+        "dispatcher": path[-1],
+        "path": path,
+        "label": " -> ".join(item["label"] for item in path),
+    }
+    payload = {
+        "function_ea": 0x1000,
+        "dispatcher": path[-1],
+        "completion_status": "pending_patch_application",
+        "planned_completion_status": (
+            "planned_dispatcher_corridors_covered"
+            if covered else "planned_partial_residual_dispatcher"
+        ),
+        "application_status": "pending",
+        "full_unflattening_claim": False,
+        "enumeration_complete": True,
+        "covered_corridors": [row] if covered else [],
+        "residual_corridors": [] if covered else [row],
+        "semantic_exclusions": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _corridor_fixture():
+    from .test_model import _valid_proposal
+
+    model = importlib.import_module("d810.transforms.unflatten_authority.model")
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    refs = {
+        serial: item.block_ref
+        for serial, item in enumerate(proposal.source_identity_catalog.blocks)
+    }
+    return model, proposal, refs
+
+
+def _without(payload, key):
+    result = dict(payload)
+    result.pop(key)
+    return result
+
+
+def test_legacy_corridor_metadata_converts_exact_analyzer_shape_and_statuses() -> None:
+    codec = _codec()
+    _model, proposal, refs = _corridor_fixture()
+    forecast = codec.corridor_coverage_forecast_from_legacy_metadata(
+        _corridor_metadata(), proposal=proposal,
+        block_refs_by_serial=refs, source_function_ea=0x1000,
+    )
+    assert forecast.plan_id == proposal.plan_id
+    assert forecast.function_ea == 0x1000
+    assert forecast.source_native_key == proposal.source_identity_catalog.native_key
+    assert forecast.source_generation == proposal.source_identity_catalog.generation
+    assert forecast.enumeration_complete is True
+    assert forecast.covered_path_ids == (forecast.paths[0].path_id,)
+    assert forecast.residual_path_ids == ()
+    assert forecast.paths[0].nodes[-1].block_ref == proposal.plan_inputs.dispatcher_entry_ref
+    assert forecast.paths[0].nodes[-2].block_ref == refs[2]
+    assert forecast.paths[0].state_merge == forecast.paths[0].nodes[-3]
+    residual = codec.corridor_coverage_forecast_from_legacy_metadata(
+        _corridor_metadata(covered=False), proposal=proposal,
+        block_refs_by_serial=refs, source_function_ea=0x1000,
+    )
+    assert residual.covered_path_ids == ()
+    assert residual.residual_path_ids == (residual.paths[0].path_id,)
+    assert residual.paths[0].disposition.value == "residual"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("dispatcher", None),
+        ("dispatcher", {"serial": 0}),
+        ("dispatcher", {"serial": 0, "ea": 0x1000, "label": "wrong"}),
+        ("function_ea", 0x1004),
+        ("completion_status", "complete"),
+        ("application_status", "applied"),
+        ("full_unflattening_claim", True),
+    ],
+)
+def test_legacy_corridor_supported_fields_reject_none_malformed_or_foreign(field, value) -> None:
+    codec = _codec()
+    _model, proposal, refs = _corridor_fixture()
+    payload = _corridor_metadata(**{field: value})
+    with pytest.raises((TypeError, ValueError)):
+        codec.corridor_coverage_forecast_from_legacy_metadata(
+            payload, proposal=proposal, block_refs_by_serial=refs,
+            source_function_ea=0x1000,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation,match",
+    [
+        (lambda p: {**p, "covered_corridors": p["covered_corridors"] * 2}, "unique"),
+        (lambda p: _without(p, "covered_corridors"), "incomplete"),
+        (lambda p: {**p, "planned_completion_status": "planned_partial_residual_dispatcher", "covered_corridors": [p["covered_corridors"][0]], "residual_corridors": [p["covered_corridors"][0]]}, "unique"),
+        (lambda p: {**p, "covered_corridors": [{**p["covered_corridors"][0], "source": p["covered_corridors"][0]["dispatcher"]}]}, "endpoints"),
+        (lambda p: {**p, "covered_corridors": [{**p["covered_corridors"][0], "dispatcher_feeder": p["covered_corridors"][0]["dispatcher"]}]}, "penultimate"),
+        (lambda p: {**p, "covered_corridors": [{**p["covered_corridors"][0], "state_merge": p["covered_corridors"][0]["dispatcher"]}]}, r"path\[-3\]"),
+        (lambda p: {**p, "covered_corridors": [{**p["covered_corridors"][0], "path": list(reversed(p["covered_corridors"][0]["path"]))}]}, "endpoints"),
+    ],
+)
+def test_legacy_corridor_duplicate_overlap_omission_and_substitution_fail_closed(mutation, match) -> None:
+    codec = _codec()
+    _model, proposal, refs = _corridor_fixture()
+    with pytest.raises((TypeError, ValueError), match=match):
+        codec.corridor_coverage_forecast_from_legacy_metadata(
+            mutation(_corridor_metadata()), proposal=proposal,
+            block_refs_by_serial=refs, source_function_ea=0x1000,
+        )
+
+
+def test_legacy_corridor_foreign_catalog_native_key_generation_dispatcher_and_anchor_reject() -> None:
+    codec = _codec()
+    model, proposal, refs = _corridor_fixture()
+    payload = _corridor_metadata()
+    # A serial map with a foreign ref is rejected before any path can be minted.
+    foreign = dict(refs)
+    foreign[2] = LogicalBlockRef("foreign", "b2", 1)
+    with pytest.raises((TypeError, ValueError), match="catalog|foreign"):
+        codec.corridor_coverage_forecast_from_legacy_metadata(
+            payload, proposal=proposal, block_refs_by_serial=foreign,
+            source_function_ea=0x1000,
+        )
+    with pytest.raises(ValueError, match="function"):
+        codec.corridor_coverage_forecast_from_legacy_metadata(
+            payload, proposal=proposal, block_refs_by_serial=refs,
+            source_function_ea=0x1004,
+        )
+    bad_dispatcher = _corridor_metadata(dispatcher={"serial": 1, "ea": 0x1300, "label": "blk1@0x1300"})
+    with pytest.raises(ValueError, match="dispatcher"):
+        codec.corridor_coverage_forecast_from_legacy_metadata(
+            bad_dispatcher, proposal=proposal, block_refs_by_serial=refs,
+            source_function_ea=0x1000,
+        )
+    bad_anchor = _corridor_metadata(path=[
+        {"serial": 1, "ea": 0x1301, "label": "blk1@0x1301"},
+        {"serial": 2, "ea": 0x1100, "label": "blk2@0x1100"},
+        {"serial": 0, "ea": 0x1000, "label": "blk0@0x1000"},
+    ])
+    with pytest.raises(ValueError, match="catalog|foreign"):
+        codec.corridor_coverage_forecast_from_legacy_metadata(
+            bad_anchor, proposal=proposal, block_refs_by_serial=refs,
+            source_function_ea=0x1000,
+        )
+
+
+def test_legacy_corridor_path_identity_changes_for_each_authoritative_component() -> None:
+    model, proposal, refs = _corridor_fixture()
+    codec = _codec()
+    base = codec.corridor_coverage_forecast_from_legacy_metadata(
+        _corridor_metadata(), proposal=proposal, block_refs_by_serial=refs,
+        source_function_ea=0x1000,
+    ).paths[0]
+    def mint(nodes, state_merge, disposition):
+        return model.CorridorCoveragePath(
+            authority_id(("unflatten.corridor-coverage-path.v1", nodes, state_merge, disposition, ())),
+            nodes, state_merge, disposition, (),
+        )
+
+    variants = [
+        mint((base.nodes[0], model.CorridorCoveragePathNode(LogicalBlockRef("foreign", "node", 1), 0x1100), base.nodes[-1]), base.state_merge, base.disposition),
+        mint((base.nodes[0], model.CorridorCoveragePathNode(refs[2], 0x1101), base.nodes[-1]), base.state_merge, base.disposition),
+        mint((base.nodes[1], base.nodes[0], base.nodes[-1]), base.nodes[0], base.disposition),
+        mint(base.nodes, None, base.disposition),
+        mint(base.nodes, base.state_merge, model.CorridorPathDisposition.RESIDUAL),
+    ]
+    assert len({item.path_id for item in variants} | {base.path_id}) == 6
+
+
+def test_legacy_corridor_semantic_exclusions_are_reserved_and_fail_closed() -> None:
+    codec = _codec()
+    _model, proposal, refs = _corridor_fixture()
+    with pytest.raises(ValueError, match="Task15|semantic exclusion"):
+        codec.corridor_coverage_forecast_from_legacy_metadata(
+            _corridor_metadata(semantic_exclusions=[{}]), proposal=proposal,
+            block_refs_by_serial=refs, source_function_ea=0x1000,
+        )
 
 
 def test_shadow_envelope_replays_each_payload_byte_for_byte() -> None:

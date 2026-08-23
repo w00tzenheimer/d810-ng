@@ -6,9 +6,10 @@ import pytest
 
 from d810.transforms.unflatten_authority import bind
 from d810.transforms.unflatten_authority import model
-from d810.transforms.unflatten_authority.ids import authority_id, _claim_factory, _subject_factory
-from .helpers import block_ref, exact_fixture
-from .test_model import _valid_proposal
+from d810.transforms.cfg_transaction import LogicalBlockRef
+from d810.transforms.unflatten_authority.ids import authority_id, semantic_graph_inventory_digest, _claim_factory, _subject_factory
+from .helpers import block_ref, exact_fixture, state_identity
+from .test_model import _minimal_corridor_forecast, _valid_proposal
 
 
 def _fixture():
@@ -20,6 +21,203 @@ def _fixture():
 # Existing binding tests use the original private spelling as a compatibility
 # alias; the implementation lives in the shared public helpers module.
 _exact_fixture = exact_fixture
+
+
+def _corridor_inventories(*, candidate_full=False, disposition=None, enumeration_complete=True, candidate_subject_tokens=None):
+    """Build source/candidate inventories through the closed test builder."""
+
+    from .test_evaluate import _complete_inputs, _role_subject
+
+    refs = {0: block_ref("b0"), 1: block_ref("b1"), 2: block_ref("b2")}
+    proposal_values = _valid_proposal(model)
+    nodes = tuple(
+        model.CorridorCoveragePathNode(refs[index], anchor)
+        for index, anchor in ((1, 0x1300), (2, 0x1100), (0, 0x1000))
+    )
+    disposition = disposition or model.CorridorPathDisposition.STRUCTURALLY_COVERED
+    path_id = authority_id((
+        "unflatten.corridor-coverage-path.v1", nodes, None,
+        disposition, (),
+    ))
+    path = model.CorridorCoveragePath(
+        path_id, nodes, None, disposition, (),
+    )
+    covered = (path_id,) if disposition is not model.CorridorPathDisposition.RESIDUAL else ()
+    residual = (path_id,) if disposition is model.CorridorPathDisposition.RESIDUAL else ()
+    forecast_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", proposal_values["plan_id"],
+        0x1000, proposal_values["source_identity_catalog"].native_key, 3,
+        refs[0], 0x1000, (path,), covered, residual, enumeration_complete, (), (), (),
+    ))
+    proposal_values["corridor_coverage_forecast"] = model.CorridorCoverageForecast(
+        forecast_id, proposal_values["plan_id"], 0x1000,
+        proposal_values["source_identity_catalog"].native_key, 3, refs[0],
+        0x1000, (path,), covered, residual, enumeration_complete, (), (), (),
+    )
+    proposal = model.ProposedUnflattenContract(**proposal_values)
+    source_subjects = tuple(
+        _role_subject(role, token)
+        for role, token in (
+            (model.SemanticSubjectRole.DISPATCHER_ENTRY, "0"),
+            (model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1"),
+            (model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "2"),
+        )
+    )
+    if candidate_full:
+        candidate_subjects = source_subjects
+    elif candidate_subject_tokens is None:
+        candidate_subjects = source_subjects[1:]
+    else:
+        candidate_subjects = tuple(
+            _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, token)
+            for token in candidate_subject_tokens
+        )
+    inputs = _complete_inputs(
+        source_subjects=source_subjects,
+        candidate_subjects=candidate_subjects,
+        proposal=proposal,
+    )
+    source = inputs.source_inventory
+    candidate = inputs.candidate_inventory
+    if candidate_full:
+        candidate = _inventory_rephase(
+            source, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            fingerprint=authority_id("candidate-full"), generation=4,
+        )
+    return proposal, source, candidate
+
+
+def _inventory_rephase(inventory, *, phase, fingerprint, generation):
+    from dataclasses import replace
+
+    bindings = tuple(
+        replace(binding, phase=phase, graph_fingerprint=fingerprint, generation=generation)
+        for binding in inventory.bindings
+    )
+    digest = semantic_graph_inventory_digest(
+        phase, fingerprint, generation, inventory.blocks, inventory.subjects,
+        bindings, inventory.effects, inventory.terminals, inventory.topology,
+        inventory.reachable_serials, inventory.entry_serial,
+        inventory.source_subject_ids, inventory.function_ea,
+    )
+    return replace(
+        inventory, phase=phase, graph_fingerprint=fingerprint,
+        generation=generation, bindings=bindings, inventory_digest=digest,
+    )
+
+
+def _inventory_with_edges(inventory, successors, predecessors):
+    """Rebuild a closed inventory after an explicit topology mutation."""
+
+    from dataclasses import replace
+
+    blocks = tuple(
+        replace(
+            block,
+            successor_serials=tuple(sorted(successors.get(block.serial, block.successor_serials))),
+            predecessor_serials=tuple(sorted(predecessors.get(block.serial, block.predecessor_serials))),
+        )
+        for block in inventory.blocks
+    )
+    by_serial = {block.serial: block for block in blocks}
+    topology = tuple(
+        incidence
+        for block in blocks
+        for incidence in (
+            tuple(
+                model.InventoryTopologyIncidence(
+                    model.TopologyIncidenceKind.SUCCESSOR,
+                    block.serial, peer, block.transfer_ea,
+                )
+                for peer in block.successor_serials
+            )
+            + tuple(
+                model.InventoryTopologyIncidence(
+                    model.TopologyIncidenceKind.PREDECESSOR,
+                    block.serial, peer, by_serial[peer].transfer_ea,
+                )
+                for peer in block.predecessor_serials
+            )
+        )
+    )
+    topology = tuple(sorted(
+        topology,
+        key=lambda item: (
+            item.kind.value, item.owner_serial, item.peer_serial,
+            item.source_transfer_ea if item.source_transfer_ea is not None else -1,
+        ),
+    ))
+    closure = set()
+    pending = [inventory.entry_serial]
+    by_serial = {block.serial: block for block in blocks}
+    while pending:
+        serial = pending.pop()
+        if serial in closure:
+            continue
+        closure.add(serial)
+        pending.extend(by_serial[serial].successor_serials)
+    reachable_serials = tuple(sorted(closure))
+    digest = semantic_graph_inventory_digest(
+        inventory.phase, inventory.graph_fingerprint, inventory.generation,
+        blocks, inventory.subjects, inventory.bindings, inventory.effects,
+        inventory.terminals, topology, reachable_serials,
+        inventory.entry_serial, inventory.source_subject_ids,
+        inventory.function_ea,
+    )
+    return replace(
+        inventory, blocks=blocks, topology=topology,
+        reachable_serials=reachable_serials, inventory_digest=digest,
+    )
+
+
+def _corridor_forecast_variant(proposal, *, state_merge=None, disposition=None, enumeration_complete=None):
+    from dataclasses import replace
+
+    forecast = proposal.corridor_coverage_forecast
+    base = forecast.paths[0]
+    disposition = disposition or base.disposition
+    enumeration_complete = forecast.enumeration_complete if enumeration_complete is None else enumeration_complete
+    path_id = authority_id((
+        "unflatten.corridor-coverage-path.v1", base.nodes, state_merge,
+        disposition, (),
+    ))
+    path = model.CorridorCoveragePath(path_id, base.nodes, state_merge, disposition, ())
+    covered = (path_id,) if disposition is not model.CorridorPathDisposition.RESIDUAL else ()
+    residual = (path_id,) if disposition is model.CorridorPathDisposition.RESIDUAL else ()
+    forecast_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", forecast.plan_id,
+        forecast.function_ea, forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea, (path,), covered,
+        residual, enumeration_complete, (), (), (),
+    ))
+    changed = model.CorridorCoverageForecast(
+        forecast_id, forecast.plan_id, forecast.function_ea,
+        forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea, (path,), covered,
+        residual, enumeration_complete, (), (), (),
+    )
+    return replace(proposal, corridor_coverage_forecast=changed)
+
+
+def _branch_corridor_inventories():
+    proposal, source, candidate = _corridor_inventories()
+    source = _inventory_with_edges(
+        source,
+        {0: (1,), 1: (2,), 2: (0, 1)},
+        {0: (2,), 1: (0, 2), 2: (1,)},
+    )
+    # Candidate dispatcher b0 is intentionally absent.  The surviving merge
+    # still has two predecessors (itself and feeder b2), so the positive
+    # state-merge check exercises the complete source/candidate topology.
+    candidate = _inventory_with_edges(
+        candidate,
+        {1: (1, 2), 2: (1,)},
+        {1: (1, 2), 2: (1,)},
+    )
+    return _corridor_forecast_variant(
+        proposal,
+        state_merge=proposal.corridor_coverage_forecast.paths[0].nodes[-3],
+    ), source, candidate
 
 
 def test_bind_subjects_requires_exact_catalog_identity_and_generation() -> None:
@@ -264,6 +462,7 @@ def test_retirement_binding_requires_retained_members_and_seals_post_bind_mutati
         claims=(claim,),
         plan_inputs=replace(base.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE),
         retirement_catalog=claim.retirement_catalog,
+        corridor_coverage_forecast=_minimal_corridor_forecast(model, base),
     )
     from d810.transforms.unflatten_authority.bind import (
         bind_retired_dispatcher_infrastructure_claim,
@@ -313,6 +512,7 @@ def test_retirement_binding_observed_phase_validates_exact_source_and_candidate_
         claims=(claim,),
         plan_inputs=replace(base.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE),
         retirement_catalog=claim.retirement_catalog,
+        corridor_coverage_forecast=_minimal_corridor_forecast(model, base),
     )
     rows = claim.retirement_catalog.members
     subjects = tuple(
@@ -1527,3 +1727,424 @@ def test_exact_effect_binding_uses_shared_call_predicate_resolver() -> None:
         state_identity=proposal.plan_inputs.state_identity,
     )
     assert result.discarded_effect_ea == exclusion.discarded_effect_ea
+
+
+def test_bind_corridor_coverage_forecast_direct_inventory_matrix() -> None:
+    proposal, source, candidate_missing = _corridor_inventories()
+    result = bind.bind_corridor_coverage_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=candidate_missing,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert result is not None
+    assert result.source_dispatcher_reachable is True
+    assert result.candidate_dispatcher_reachable is False
+    assert result.covered_path_ids == proposal.corridor_coverage_forecast.covered_path_ids
+    assert result.residual_path_ids == proposal.corridor_coverage_forecast.residual_path_ids
+    assert result.drifted_path_ids == ()
+    assert result.source_fingerprint == source.graph_fingerprint
+    assert result.candidate_fingerprint == candidate_missing.graph_fingerprint
+    assert result.source_generation == source.generation
+    assert result.candidate_generation == candidate_missing.generation
+
+    _proposal, _source, candidate_full = _corridor_inventories(candidate_full=True)
+    full = bind.bind_corridor_coverage_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=candidate_full,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert full.candidate_dispatcher_reachable is True
+    assert full.covered_path_ids == ()
+    assert full.drifted_path_ids == proposal.corridor_coverage_forecast.covered_path_ids
+
+
+def test_bind_corridor_forecast_requires_reachable_source_and_nonempty_path_domain() -> None:
+    from dataclasses import replace
+
+    proposal, source, candidate = _corridor_inventories()
+    forecast = proposal.corridor_coverage_forecast
+    empty_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", forecast.plan_id,
+        forecast.function_ea, forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea, (), (), (),
+        forecast.enumeration_complete, (), (), (),
+    ))
+    empty = model.CorridorCoverageForecast(
+        empty_id, forecast.plan_id, forecast.function_ea, forecast.source_native_key,
+        forecast.source_generation, forecast.dispatcher_ref,
+        forecast.dispatcher_anchor_ea, (), (), (), True, (), (), (),
+    )
+    with pytest.raises(ValueError, match="path|empty"):
+        bind.bind_corridor_coverage_forecast(
+            proposal=replace(proposal, corridor_coverage_forecast=empty),
+            source_inventory=source, candidate_inventory=candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+    stale_source = _inventory_rephase(
+        source, phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        fingerprint=source.graph_fingerprint, generation=source.generation + 1,
+    )
+    with pytest.raises(ValueError, match="generation"):
+        bind.bind_corridor_coverage_forecast(
+            proposal=proposal, source_inventory=stale_source,
+            candidate_inventory=candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+def test_bind_corridor_candidate_reachable_topology_loss_remains_nonfull_coverage() -> None:
+    from dataclasses import replace
+
+    proposal, source, candidate = _corridor_inventories(candidate_full=True)
+    blocks = tuple(
+        replace(
+            block,
+            successor_serials=() if block.serial == 1 else block.successor_serials,
+            predecessor_serials=() if block.serial == 2 else block.predecessor_serials,
+        )
+        for block in candidate.blocks
+    )
+    topology = tuple(
+        row for row in candidate.topology
+        if not (
+            row.kind is model.TopologyIncidenceKind.SUCCESSOR
+            and row.owner_serial == 1 and row.peer_serial == 2
+        ) and not (
+            row.kind is model.TopologyIncidenceKind.PREDECESSOR
+            and row.owner_serial == 2 and row.peer_serial == 1
+        )
+    )
+    drifted = replace(
+        candidate,
+        blocks=blocks, topology=topology,
+        inventory_digest=semantic_graph_inventory_digest(
+            candidate.phase, candidate.graph_fingerprint, candidate.generation,
+            blocks, candidate.subjects, candidate.bindings, candidate.effects,
+            candidate.terminals, topology, candidate.reachable_serials,
+            candidate.entry_serial, candidate.source_subject_ids,
+            candidate.function_ea,
+        ),
+    )
+    assert (1, 2) not in {
+        (row.owner_serial, row.peer_serial)
+        for row in drifted.topology
+        if row.kind is model.TopologyIncidenceKind.SUCCESSOR
+    }
+    result = bind.bind_corridor_coverage_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=drifted,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    # ``drifted_path_ids`` is reserved for source-path drift and residual
+    # paths.  A reachable candidate that loses a covered path is a sealed,
+    # non-full structural result, not proof that the source forecast drifted.
+    assert result.candidate_dispatcher_reachable is True
+    assert result.covered_path_ids == proposal.corridor_coverage_forecast.covered_path_ids
+    assert result.drifted_path_ids == ()
+
+
+@pytest.mark.parametrize("mutation", ["ref", "ea", "order"])
+def test_bind_corridor_source_path_node_ref_ea_and_order_mutations_reject(mutation) -> None:
+    from dataclasses import replace
+
+    proposal, source, candidate = _corridor_inventories()
+    forecast = proposal.corridor_coverage_forecast
+    base = forecast.paths[0]
+    if mutation == "ref":
+        nodes = (
+            base.nodes[0],
+            model.CorridorCoveragePathNode(LogicalBlockRef("foreign", "corridor", 1), base.nodes[1].anchor_ea),
+            base.nodes[2],
+        )
+    elif mutation == "ea":
+        nodes = (
+            base.nodes[0],
+            model.CorridorCoveragePathNode(base.nodes[1].block_ref, base.nodes[1].anchor_ea + 1),
+            base.nodes[2],
+        )
+    else:
+        nodes = (base.nodes[1], base.nodes[0], base.nodes[2])
+    path_id = authority_id((
+        "unflatten.corridor-coverage-path.v1", nodes, None,
+        base.disposition, (),
+    ))
+    path = model.CorridorCoveragePath(path_id, nodes, None, base.disposition, ())
+    forecast_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", forecast.plan_id,
+        forecast.function_ea, forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea, (path,), (path_id,),
+        (), True, (), (), (),
+    ))
+    changed = model.CorridorCoverageForecast(
+        forecast_id, forecast.plan_id, forecast.function_ea,
+        forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea,
+        (path,), (path_id,), (), True, (), (), (),
+    )
+    with pytest.raises(ValueError, match="classification|partition|corridor"):
+        bind.bind_corridor_coverage_forecast(
+            proposal=replace(proposal, corridor_coverage_forecast=changed),
+            source_inventory=source, candidate_inventory=candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+@pytest.mark.parametrize("merge_index", [1, 2])
+def test_bind_corridor_state_merge_is_exact_path_minus_three_and_requires_branch_topology(merge_index) -> None:
+    from dataclasses import replace
+
+    proposal, source, candidate = _corridor_inventories()
+    forecast = proposal.corridor_coverage_forecast
+    base = forecast.paths[0]
+    merge = base.nodes[merge_index]
+    path_id = authority_id((
+        "unflatten.corridor-coverage-path.v1", base.nodes, merge,
+        base.disposition, (),
+    ))
+    path = model.CorridorCoveragePath(path_id, base.nodes, merge, base.disposition, ())
+    forecast_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", forecast.plan_id,
+        forecast.function_ea, forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea, (path,), (path_id,),
+        (), True, (), (), (),
+    ))
+    changed = model.CorridorCoverageForecast(
+        forecast_id, forecast.plan_id, forecast.function_ea,
+        forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea,
+        (path,), (path_id,), (), True, (), (), (),
+    )
+    message = r"path\[-3\]"
+    with pytest.raises(ValueError, match=message):
+        bind.bind_corridor_coverage_forecast(
+            proposal=replace(proposal, corridor_coverage_forecast=changed),
+            source_inventory=source, candidate_inventory=candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+def test_bind_corridor_state_merge_positive_requires_exact_branch_topology() -> None:
+    proposal, source, candidate = _branch_corridor_inventories()
+    result = bind.bind_corridor_coverage_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    path = proposal.corridor_coverage_forecast.paths[0]
+    merge_serial = source.serial_by_ref[path.state_merge.block_ref]
+    feeder_serial = source.serial_by_ref[path.nodes[-2].block_ref]
+    assert path.state_merge == path.nodes[-3]
+    assert sum(
+        row.kind is model.TopologyIncidenceKind.PREDECESSOR
+        and row.owner_serial == merge_serial
+        for row in source.topology
+    ) == 2
+    assert {
+        row.peer_serial for row in source.topology
+        if row.kind is model.TopologyIncidenceKind.SUCCESSOR
+        and row.owner_serial == merge_serial
+    } == {feeder_serial}
+    assert result.covered_path_ids == proposal.corridor_coverage_forecast.covered_path_ids
+    assert result.drifted_path_ids == ()
+    assert result.candidate_dispatcher_reachable is False
+
+
+@pytest.mark.parametrize("candidate_subject_tokens", [("2",), ("1",)])
+def test_bind_corridor_covered_state_merge_missing_candidate_node_is_still_covered(candidate_subject_tokens) -> None:
+    proposal, source, _candidate = _branch_corridor_inventories()
+    _plain_proposal, _plain_source, candidate = _corridor_inventories(
+        candidate_subject_tokens=candidate_subject_tokens,
+    )
+    result = bind.bind_corridor_coverage_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert result.source_dispatcher_reachable is True
+    assert result.candidate_dispatcher_reachable is False
+    assert result.covered_path_ids == proposal.corridor_coverage_forecast.covered_path_ids
+    assert result.drifted_path_ids == ()
+
+
+@pytest.mark.parametrize(
+    "successors,predecessors",
+    [
+        ({0: (), 1: (2,), 2: (0, 1)}, {0: (2,), 1: (2,), 2: (1,)}),
+        ({0: (1, 2), 1: (0, 2), 2: (0, 1)}, {0: (1, 2), 1: (0, 2), 2: (0, 1)}),
+    ],
+)
+def test_bind_corridor_residual_state_merge_candidate_topology_is_required(successors, predecessors) -> None:
+    proposal, source, _candidate = _branch_corridor_inventories()
+    residual_proposal = _corridor_forecast_variant(
+        proposal,
+        state_merge=proposal.corridor_coverage_forecast.paths[0].nodes[-3],
+        disposition=model.CorridorPathDisposition.RESIDUAL,
+    )
+    candidate = _inventory_rephase(
+        source, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        fingerprint=authority_id("residual-candidate"), generation=4,
+    )
+    mutated_candidate = _inventory_with_edges(candidate, successors, predecessors)
+    if successors[1] == (0, 2):
+        result = bind.bind_corridor_coverage_forecast(
+            proposal=residual_proposal, source_inventory=source,
+            candidate_inventory=mutated_candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+        assert result.drifted_path_ids == residual_proposal.corridor_coverage_forecast.residual_path_ids
+    else:
+        with pytest.raises(ValueError, match="classification|partition"):
+            bind.bind_corridor_coverage_forecast(
+                proposal=residual_proposal, source_inventory=source,
+                candidate_inventory=mutated_candidate,
+                phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            )
+
+
+def test_bind_corridor_residual_state_merge_missing_candidate_merge_refutes_partition() -> None:
+    proposal, source, _candidate = _branch_corridor_inventories()
+    residual_proposal = _corridor_forecast_variant(
+        proposal,
+        state_merge=proposal.corridor_coverage_forecast.paths[0].nodes[-3],
+        disposition=model.CorridorPathDisposition.RESIDUAL,
+    )
+    _plain_proposal, _plain_source, candidate = _corridor_inventories(
+        candidate_subject_tokens=("2",),
+    )
+    with pytest.raises(ValueError, match="classification|partition"):
+        bind.bind_corridor_coverage_forecast(
+            proposal=residual_proposal, source_inventory=source,
+            candidate_inventory=candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+@pytest.mark.parametrize(
+    "successors,predecessors",
+    [
+        ({0: (), 1: (2,), 2: (0, 1)}, {0: (2,), 1: (2,), 2: (1,)}),
+        ({0: (1, 2), 1: (0, 2), 2: (0, 1)}, {0: (1, 2), 1: (0, 2), 2: (0, 1)}),
+    ],
+)
+def test_bind_corridor_state_merge_rejects_predecessor_or_successor_set_drift(successors, predecessors) -> None:
+    proposal, source, candidate = _branch_corridor_inventories()
+    mutated_source = _inventory_with_edges(source, successors, predecessors)
+    with pytest.raises(ValueError, match="state merge semantics"):
+        bind.bind_corridor_coverage_forecast(
+            proposal=proposal, source_inventory=mutated_source,
+            candidate_inventory=candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+def test_bind_corridor_inventory_authority_correlation_is_explicit_and_phase_bound() -> None:
+    proposal, source, candidate = _corridor_inventories()
+    drifted_source = _inventory_rephase(
+        source, phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        fingerprint=authority_id("drifted-source"), generation=source.generation,
+    )
+    result = bind.bind_corridor_coverage_forecast(
+        proposal=proposal, source_inventory=drifted_source,
+        candidate_inventory=candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert result.source_fingerprint == drifted_source.graph_fingerprint
+
+    drifted_candidate = _inventory_rephase(
+        candidate, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        fingerprint=authority_id("drifted-candidate"), generation=candidate.generation + 1,
+    )
+    result = bind.bind_corridor_coverage_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=drifted_candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert result.candidate_fingerprint == drifted_candidate.graph_fingerprint
+    assert result.candidate_generation == drifted_candidate.generation
+    with pytest.raises(ValueError, match="phase"):
+        bind.bind_corridor_coverage_forecast(
+            proposal=proposal, source_inventory=source,
+            candidate_inventory=drifted_candidate,
+            phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        )
+
+
+def test_bind_corridor_residual_and_incomplete_results_remain_nonfull() -> None:
+    # The test builder's candidate dispatcher is intentionally absent while
+    # constructing a forecast; use the honest full candidate inventory for a
+    # residual result, then assert the result remains residual rather than a
+    # full-coverage authorization.
+    residual_proposal, residual_source, residual_candidate = _corridor_inventories(candidate_full=True)
+    residual_proposal = _corridor_forecast_variant(
+        residual_proposal,
+        disposition=model.CorridorPathDisposition.RESIDUAL,
+    )
+    residual = bind.bind_corridor_coverage_forecast(
+        proposal=residual_proposal, source_inventory=residual_source,
+        candidate_inventory=residual_candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert residual.covered_path_ids == ()
+    assert residual.residual_path_ids == residual_proposal.corridor_coverage_forecast.residual_path_ids
+    assert residual.drifted_path_ids == ()
+
+    incomplete_proposal, incomplete_source, incomplete_candidate = _corridor_inventories()
+    incomplete_proposal = _corridor_forecast_variant(
+        incomplete_proposal, enumeration_complete=False,
+    )
+    incomplete = bind.bind_corridor_coverage_forecast(
+        proposal=incomplete_proposal, source_inventory=incomplete_source,
+        candidate_inventory=incomplete_candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert incomplete.enumeration_complete is False
+    assert incomplete.covered_path_ids == incomplete_proposal.corridor_coverage_forecast.covered_path_ids
+
+
+def test_bind_corridor_semantic_exclusion_is_rejected_at_closed_proposal_boundary() -> None:
+    from dataclasses import replace
+
+    proposal, _source, _candidate = _corridor_inventories()
+    forecast = proposal.corridor_coverage_forecast
+    base = forecast.paths[0]
+    exclusion_state = state_identity()
+    typed = (
+        "unflatten.corridor-semantic-exclusion.v1", 7, exclusion_state,
+        base.nodes[0], base.nodes[-2], base.nodes[0], base.nodes[0],
+    )
+    exclusion_id = authority_id(typed)
+    exclusion_digest = authority_id((
+        "unflatten.corridor-semantic-exclusion-digest.v1", typed,
+    ))
+    exclusion = model.CorridorSemanticExclusion(
+        exclusion_id, exclusion_digest, 7, exclusion_state,
+        base.nodes[0], base.nodes[-2], base.nodes[0], base.nodes[0],
+    )
+    path_id = authority_id((
+        "unflatten.corridor-coverage-path.v1", base.nodes, None,
+        model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED, (exclusion_id,),
+    ))
+    path = model.CorridorCoveragePath(
+        path_id, base.nodes, None,
+        model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED, (exclusion_id,),
+    )
+    forecast_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", forecast.plan_id,
+        forecast.function_ea, forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea, (path,), (path_id,), (),
+        True, ((exclusion_id, exclusion_digest),), (exclusion,),
+        ((exclusion_id, (path_id,)),),
+    ))
+    excluded_forecast = model.CorridorCoverageForecast(
+        forecast_id, forecast.plan_id, forecast.function_ea,
+        forecast.source_native_key, forecast.source_generation,
+        forecast.dispatcher_ref, forecast.dispatcher_anchor_ea, (path,), (path_id,), (),
+        True, ((exclusion_id, exclusion_digest),), (exclusion,),
+        ((exclusion_id, (path_id,)),),
+    )
+    # Task14 intentionally leaves semantic-exclusion authority to Task15;
+    # this assertion validates the closed proposal boundary before any binder
+    # call, without corrupting a frozen forecast via object.__setattr__.
+    with pytest.raises(ValueError, match="semantic exclusion"):
+        replace(proposal, corridor_coverage_forecast=excluded_forecast)

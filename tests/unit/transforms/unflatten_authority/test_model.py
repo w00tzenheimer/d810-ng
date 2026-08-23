@@ -170,6 +170,43 @@ def _valid_proposal(model):
     )
 
 
+def _minimal_corridor_forecast(model, proposal):
+    """Build a minimal typed PATH-domain forecast for retirement fixtures."""
+
+    dispatcher_ref = proposal.plan_inputs.dispatcher_entry_ref
+    dispatcher = next(
+        item for item in proposal.source_identity_catalog.blocks
+        if item.block_ref == dispatcher_ref
+    )
+    source = next(
+        item for item in proposal.source_identity_catalog.blocks
+        if item.block_ref != dispatcher_ref
+    )
+    nodes = (
+        model.CorridorCoveragePathNode(source.block_ref, source.anchor_ea),
+        model.CorridorCoveragePathNode(dispatcher_ref, dispatcher.anchor_ea),
+    )
+    path_id = canonical_authority_id((
+        "unflatten.corridor-coverage-path.v1", nodes, None,
+        model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
+    ))
+    path = model.CorridorCoveragePath(
+        path_id, nodes, None, model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
+    )
+    forecast_id = canonical_authority_id((
+        "unflatten.corridor-coverage-forecast.v1", proposal.plan_id,
+        dispatcher.anchor_ea, proposal.source_identity_catalog.native_key,
+        proposal.source_identity_catalog.generation, dispatcher_ref,
+        dispatcher.anchor_ea, (path,), (path_id,), (), True, (), (), (),
+    ))
+    return model.CorridorCoverageForecast(
+        forecast_id, proposal.plan_id, dispatcher.anchor_ea,
+        proposal.source_identity_catalog.native_key,
+        proposal.source_identity_catalog.generation, dispatcher_ref,
+        dispatcher.anchor_ea, (path,), (path_id,), (), True, (), (), (),
+    )
+
+
 def test_authority_model_package_exists_and_is_closed() -> None:
     """The model package is the only import surface for typed authority data."""
 
@@ -257,8 +294,8 @@ def test_derived_inputs_exposes_only_transaction_facts() -> None:
         "proposal", "claims", "preparation_receipt", "source_inventory",
         "candidate_inventory", "source_route_assessment",
         "candidate_route_assessment", "generic_gate_facts",
-        "conditional_relations", "patch_step_facts", "preparation_metrics",
-        "phase_build_metrics",
+            "conditional_relations", "patch_step_facts", "preparation_metrics",
+            "phase_build_metrics", "corridor_coverage_phase_result",
     }
     for removed in (
         "source_subjects", "candidate_subjects", "source_bindings",
@@ -459,7 +496,8 @@ def test_every_evidence_kind_accepts_only_its_exact_payload_class() -> None:
             authority_id("fragment"), state_identity(), True, True, 0, (),
         ),
         model.AuthorityEvidenceKind.CORRIDOR_COVERAGE: model.CorridorCoverageEvidencePayload(
-            subject.subject_id, (subject.subject_id,), (subject.subject_id,), (),
+            subject.subject_id, authority_id("forecast"), authority_id("phase-result"),
+            (authority_id("path"),), (), (), True, (),
         ),
         model.AuthorityEvidenceKind.PATCH_STEP: model.PatchStepEvidencePayload(
             authority_id("plan"), 0, "redirect", b0, authority_id("step"), 0x1004, 1, 4,
@@ -883,6 +921,8 @@ def test_unordered_model_collections_have_reversed_input_equality() -> None:
 def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> None:
     model = import_authority_model()
     valid = _valid_proposal(model)
+    valid_base = model.ProposedUnflattenContract(**valid)
+    valid["corridor_coverage_forecast"] = _minimal_corridor_forecast(model, valid_base)
     b0, b1, b2 = block_ref("b0"), block_ref("b1"), block_ref("b2")
     infra = _subject(model, model.SemanticSubjectKind.BLOCK,
                      model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,

@@ -41,6 +41,65 @@ class RetiredInfrastructureView:
     justification_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CorridorCoverageView:
+    """The case-owned aggregate corridor coverage projection."""
+
+    corridor_subject_id: str
+    forecast_id: str
+    phase_result_id: str
+    covered_path_ids: tuple[str, ...]
+    residual_path_ids: tuple[str, ...]
+    drifted_path_ids: tuple[str, ...]
+    enumeration_complete: bool
+    matched_semantic_exclusion_ids: tuple[str, ...]
+    state: model.ObligationState
+    evidence_ids: tuple[str, ...]
+    justification_ids: tuple[str, ...]
+
+
+def corridor_coverage_rows(case: model.SemanticSafetyCase) -> CorridorCoverageView:
+    """Project the sole aggregate corridor result without recomputation."""
+
+    _check_case(case)
+    evidence = tuple(
+        item for item in case.evidence
+        if item.kind is model.AuthorityEvidenceKind.CORRIDOR_COVERAGE
+    )
+    if len(evidence) != 1 or type(evidence[0].payload) is not model.CorridorCoverageEvidencePayload:
+        raise ValueError("corridor coverage requires one canonical evidence row")
+    payload = evidence[0].payload
+    result = case.corridor_coverage_phase_result
+    if result is None or payload.phase_result_id != result.result_id:
+        raise ValueError("corridor coverage lacks its case-owned phase result")
+    key = next(
+        (
+            cell.key for cell in case.obligation_index.cells
+            if cell.key.subject.subject_id == payload.corridor_subject_id
+            and cell.key.dimension is model.SafetyDimension.CORRIDOR_COVERAGE
+        ),
+        None,
+    )
+    if key is None:
+        raise ValueError("corridor coverage evidence lacks its aggregate obligation")
+    cell = next(cell for cell in case.obligation_index.cells if cell.key == key)
+    return CorridorCoverageView(
+        payload.corridor_subject_id,
+        payload.forecast_id,
+        payload.phase_result_id,
+        payload.covered_path_ids,
+        payload.residual_path_ids,
+        payload.drifted_path_ids,
+        payload.enumeration_complete,
+        payload.matched_semantic_exclusion_ids,
+        cell.state,
+        (evidence[0].evidence_id,),
+        tuple(sorted(
+            (*cell.supporting_justification_ids, *cell.refuting_justification_ids)
+        )),
+    )
+
+
 def retired_infrastructure_view(
     case: model.SemanticSafetyCase, claim_id: str,
 ) -> RetiredInfrastructureView:
@@ -345,7 +404,7 @@ diagnostic_view = evidence_ids
 
 
 __all__ = [
-    "VIEW_GRAPH_TRAVERSALS", "ViewMetrics", "ExactEffectLossView", "RetiredInfrastructureView", "obligation_states",
+    "VIEW_GRAPH_TRAVERSALS", "ViewMetrics", "ExactEffectLossView", "RetiredInfrastructureView", "CorridorCoverageView", "corridor_coverage_rows", "obligation_states",
     "failed_obligations", "evidence_ids", "justification_ids", "view_metrics",
     "exact_effect_loss_view", "retired_infrastructure_view", "retirement_rows", "semantic_loss_ledger", "observed_only_loss",
     "loss_view", "coverage_view", "diagnostic_view",

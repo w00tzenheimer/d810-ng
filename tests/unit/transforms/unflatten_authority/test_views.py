@@ -6,6 +6,7 @@ from d810.transforms.unflatten_authority import views
 from d810.transforms.unflatten_authority import model
 from .test_evaluate import _complete_inputs, _role_subject, authority_id
 from d810.transforms.unflatten_authority.evaluate import build_semantic_case
+from d810.transforms.unflatten_authority.ids import _subject_factory
 import pytest
 from dataclasses import replace
 
@@ -19,6 +20,62 @@ def test_views_export_read_only_case_projections() -> None:
     assert views.ExactEffectLossView.__dataclass_params__ is not None
     assert "case" in __import__("inspect").signature(views.exact_effect_loss_view).parameters
     assert "retirement_rows" in views.__all__
+    assert "corridor_coverage_rows" in views.__all__
+
+
+def test_corridor_coverage_view_projects_the_case_owned_aggregate() -> None:
+    entry = _role_subject(model.SemanticSubjectRole.DISPATCHER_ENTRY, "0")
+    member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
+    member1 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1")
+    corridor = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.CORRIDOR,
+        role=model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
+        block_ref=entry.block_ref,
+        anchor_ea=entry.anchor_ea,
+        locator=model.CorridorSubjectLocator(
+            authority_id("view-corridor-locator"), entry.block_ref, entry.anchor_ea,
+            (member0.block_ref, member1.block_ref),
+            (member0.anchor_ea, member1.anchor_ea),
+        ),
+    )
+    case = build_semantic_case(
+        authority_id=authority_id("view-corridor-case"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(
+            source_subjects=(
+                _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "source"),
+                entry, member0, member1, corridor,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="canonical evidence row"):
+        views.corridor_coverage_rows(case)
+
+
+def test_corridor_coverage_view_projects_an_accepted_phase_result() -> None:
+    from .test_transaction_api import _full_corridor_fixture
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.unflatten_authority import transaction_api
+
+    source, plan, projected, gates = _full_corridor_fixture()
+    inputs = transaction_api.derive_unflatten_preparation_inputs(
+        source,
+        CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan,
+        plan.unflatten_proposal,
+        gates,
+    )
+    case = build_semantic_case(
+        authority_id=authority_id("view-full-corridor-case"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    view = views.corridor_coverage_rows(case)
+    assert view.state is model.ObligationState.SATISFIED
+    assert view.enumeration_complete
+    assert view.covered_path_ids
+    assert not view.residual_path_ids
 
 
 def test_semantic_loss_ledger_and_observed_delta_are_closed_projections() -> None:

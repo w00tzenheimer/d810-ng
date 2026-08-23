@@ -295,6 +295,14 @@ class StructuralDisposition(str, Enum):
     UNACCOUNTED_LOSS = "unaccounted_loss"
 
 
+class CorridorPathDisposition(str, Enum):
+    """Producer-owned disposition for one exact dispatcher corridor path."""
+
+    STRUCTURALLY_COVERED = "structurally_covered"
+    SEMANTICALLY_EXCLUDED = "semantically_excluded"
+    RESIDUAL = "residual"
+
+
 class EffectSiteKind(str, Enum):
     CALL = "call"
     STORE = "store"
@@ -539,6 +547,254 @@ class CorridorSubjectLocator:
             raise ValueError("corridor members must include entry_ref")
         object.__setattr__(self, "member_refs", refs)
         object.__setattr__(self, "member_anchor_eas", eas)
+
+
+@dataclass(frozen=True, slots=True)
+class CorridorCoveragePathNode:
+    """One serial-free node in a producer-enumerated corridor path."""
+
+    block_ref: NativeBlockRef | LogicalBlockRef
+    anchor_ea: int
+
+    def __post_init__(self) -> None:
+        _authority_ref(self.block_ref)
+        object.__setattr__(self, "anchor_ea", _ea(self.anchor_ea, "anchor_ea"))
+
+
+@dataclass(frozen=True, slots=True)
+class CorridorSemanticExclusion:
+    """Serial-free typed linkage for one producer semantic exclusion."""
+
+    exclusion_id: str
+    digest: str
+    normalized_state: int
+    state_identity: StorageIdentity
+    source: CorridorCoveragePathNode
+    feeder: CorridorCoveragePathNode | None
+    prefix: CorridorCoveragePathNode
+    root: CorridorCoveragePathNode
+
+    def __post_init__(self) -> None:
+        _id(self.exclusion_id, "exclusion_id")
+        _id(self.digest, "digest")
+        _nonnegative(self.normalized_state, "normalized_state")
+        if type(self.state_identity) is not StorageIdentity:
+            raise TypeError("state_identity must be a StorageIdentity")
+        for name in ("source", "prefix", "root"):
+            if type(getattr(self, name)) is not CorridorCoveragePathNode:
+                raise TypeError(f"{name} must be a CorridorCoveragePathNode")
+        if self.feeder is not None and type(self.feeder) is not CorridorCoveragePathNode:
+            raise TypeError("feeder must be a CorridorCoveragePathNode or None")
+        typed = (
+            "unflatten.corridor-semantic-exclusion.v1", self.normalized_state,
+            self.state_identity, self.source, self.feeder, self.prefix, self.root,
+        )
+        if self.exclusion_id != authority_id(typed):
+            raise ValueError("exclusion_id does not match serial-free content")
+        if self.digest != authority_id(("unflatten.corridor-semantic-exclusion-digest.v1", typed)):
+            raise ValueError("exclusion digest does not match serial-free content")
+
+
+@dataclass(frozen=True, slots=True)
+class CorridorCoveragePath:
+    """A closed path row; no backend serial or live graph object is retained."""
+
+    path_id: str
+    nodes: tuple[CorridorCoveragePathNode, ...]
+    state_merge: CorridorCoveragePathNode | None
+    disposition: CorridorPathDisposition
+    semantic_exclusion_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _id(self.path_id, "path_id")
+        if type(self.nodes) is not tuple or len(self.nodes) < 2:
+            raise TypeError("corridor path requires at least two exact nodes")
+        if any(type(node) is not CorridorCoveragePathNode for node in self.nodes):
+            raise TypeError("corridor path nodes must be closed nominal rows")
+        if len({(node.block_ref, node.anchor_ea) for node in self.nodes}) != len(self.nodes):
+            raise ValueError("corridor path nodes must be unique")
+        if self.state_merge is not None and type(self.state_merge) is not CorridorCoveragePathNode:
+            raise TypeError("state_merge must be a CorridorCoveragePathNode or None")
+        _enum(self.disposition, CorridorPathDisposition, "disposition")
+        if type(self.semantic_exclusion_ids) is not tuple:
+            raise TypeError("semantic_exclusion_ids must be an exact tuple")
+        exclusions = _tuple(self.semantic_exclusion_ids, "semantic_exclusion_ids")
+        if exclusions != tuple(sorted(exclusions)):
+            raise ValueError("semantic_exclusion_ids must be canonically ordered")
+        for value in exclusions:
+            _id(value, "semantic_exclusion_ids item")
+        object.__setattr__(self, "semantic_exclusion_ids", exclusions)
+        if self.disposition is CorridorPathDisposition.SEMANTICALLY_EXCLUDED and not exclusions:
+            raise ValueError("semantic exclusion disposition requires exclusion IDs")
+        if self.disposition is not CorridorPathDisposition.SEMANTICALLY_EXCLUDED and exclusions:
+            raise ValueError("only semantically excluded paths may carry exclusion IDs")
+        node_pairs = {(node.block_ref, node.anchor_ea) for node in self.nodes}
+        if self.state_merge is not None and (
+            self.state_merge.block_ref, self.state_merge.anchor_ea
+        ) not in node_pairs:
+            raise ValueError("state merge must be an exact path node")
+        expected_id = authority_id((
+            "unflatten.corridor-coverage-path.v1", self.nodes,
+            self.state_merge, self.disposition, self.semantic_exclusion_ids,
+        ))
+        if self.path_id != expected_id:
+            raise ValueError("path_id does not match serial-free path content")
+
+
+@dataclass(frozen=True, slots=True)
+class CorridorCoverageForecast:
+    """Sealed producer forecast for the exact corridor-path domain."""
+
+    forecast_id: str
+    plan_id: str
+    function_ea: int
+    source_native_key: NativePreanalysisKey
+    source_generation: int
+    dispatcher_ref: NativeBlockRef | LogicalBlockRef
+    dispatcher_anchor_ea: int
+    paths: tuple[CorridorCoveragePath, ...]
+    covered_path_ids: tuple[str, ...]
+    residual_path_ids: tuple[str, ...]
+    enumeration_complete: bool
+    semantic_exclusion_digests: tuple[tuple[str, str], ...]
+    semantic_exclusions: tuple[CorridorSemanticExclusion, ...]
+    semantic_exclusion_path_ids: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def __post_init__(self) -> None:
+        _id(self.forecast_id, "forecast_id")
+        _id(self.plan_id, "plan_id")
+        object.__setattr__(self, "function_ea", _ea(self.function_ea, "function_ea"))
+        if type(self.source_native_key) is not NativePreanalysisKey:
+            raise TypeError("source_native_key must be a NativePreanalysisKey")
+        _generation(self.source_generation, "source_generation")
+        _authority_ref(self.dispatcher_ref, "dispatcher_ref")
+        object.__setattr__(self, "dispatcher_anchor_ea", _ea(self.dispatcher_anchor_ea, "dispatcher_anchor_ea"))
+        if type(self.paths) is not tuple:
+            raise TypeError("corridor forecast paths must be an exact tuple")
+        if any(type(path) is not CorridorCoveragePath for path in self.paths):
+            raise TypeError("corridor forecast paths must be closed nominal rows")
+        paths = tuple(sorted(self.paths, key=lambda path: path.path_id))
+        if paths != self.paths or len({path.path_id for path in paths}) != len(paths):
+            raise ValueError("corridor forecast paths must be canonically ordered and unique")
+        path_ids = tuple(path.path_id for path in paths)
+        covered = _strict_id_tuple(self.covered_path_ids, "covered_path_ids")
+        residual = _strict_id_tuple(self.residual_path_ids, "residual_path_ids")
+        if set(covered) & set(residual) or set(covered) | set(residual) != set(path_ids):
+            raise ValueError("corridor path partition must be disjoint and exhaustive")
+        disposition_by_id = {path.path_id: path.disposition for path in paths}
+        if any(disposition_by_id[path_id] is CorridorPathDisposition.RESIDUAL for path_id in covered):
+            raise ValueError("residual disposition cannot be in covered partition")
+        if any(disposition_by_id[path_id] is not CorridorPathDisposition.RESIDUAL for path_id in residual):
+            raise ValueError("covered disposition cannot be in residual partition")
+        if type(self.enumeration_complete) is not bool:
+            raise TypeError("enumeration_complete must be an exact bool")
+        digests = tuple(self.semantic_exclusion_digests)
+        if type(self.semantic_exclusion_digests) is not tuple or any(
+            type(row) is not tuple or len(row) != 2 or type(row[0]) is not str or type(row[1]) is not str
+            for row in digests
+        ):
+            raise TypeError("semantic exclusion digests must be exact (ID, digest) rows")
+        if digests != tuple(sorted(set(digests))) or any(
+            not _validate_id(row[0], "semantic exclusion ID") or not _validate_id(row[1], "semantic exclusion digest")
+            for row in digests
+        ):
+            raise ValueError("semantic exclusion digests must be canonical and unique")
+        exclusion_ids = {value for path in paths for value in path.semantic_exclusion_ids}
+        if exclusion_ids != {row[0] for row in digests}:
+            raise ValueError("semantic exclusion linkage is not exact")
+        exclusions = tuple(self.semantic_exclusions)
+        if type(exclusions) is not tuple or any(type(item) is not CorridorSemanticExclusion for item in exclusions):
+            raise TypeError("semantic exclusions must be exact closed rows")
+        if tuple(item.exclusion_id for item in exclusions) != tuple(sorted(item.exclusion_id for item in exclusions)):
+            raise ValueError("semantic exclusions must be canonically ordered")
+        if {item.exclusion_id for item in exclusions} != exclusion_ids:
+            raise ValueError("semantic exclusion records do not match path linkage")
+        exclusion_paths = tuple(self.semantic_exclusion_path_ids)
+        if type(exclusion_paths) is not tuple or any(
+            type(row) is not tuple or len(row) != 2 or type(row[0]) is not str
+            or type(row[1]) is not tuple
+            for row in exclusion_paths
+        ) or exclusion_paths != tuple(sorted(exclusion_paths)):
+            raise ValueError("semantic exclusion path linkage is not canonical")
+        if {row[0] for row in exclusion_paths} != exclusion_ids:
+            raise ValueError("semantic exclusion path linkage is incomplete")
+        path_universe = set(path_ids)
+        for exclusion_id, linked_paths in exclusion_paths:
+            if not linked_paths or linked_paths != tuple(sorted(set(linked_paths))) or not set(linked_paths) <= path_universe:
+                raise ValueError("semantic exclusion path linkage is malformed")
+            expected_linked = tuple(path.path_id for path in paths if exclusion_id in path.semantic_exclusion_ids)
+            if linked_paths != expected_linked:
+                raise ValueError("semantic exclusion path linkage disagrees with paths")
+        if any(
+            path.nodes[-1].block_ref != self.dispatcher_ref
+            or path.nodes[-1].anchor_ea != self.dispatcher_anchor_ea
+            for path in paths
+        ):
+            raise ValueError("forecast path dispatcher identity drifted")
+        if self.forecast_id != authority_id((
+            "unflatten.corridor-coverage-forecast.v1", self.plan_id, self.function_ea,
+            self.source_native_key, self.source_generation, self.dispatcher_ref,
+            self.dispatcher_anchor_ea, self.paths, covered, residual,
+            self.enumeration_complete, digests, exclusions, exclusion_paths,
+        )):
+            raise ValueError("forecast_id does not match canonical forecast content")
+
+
+@dataclass(frozen=True, slots=True)
+class CorridorCoveragePhaseResult:
+    """Transaction/binder result consumed by the evaluator as one aggregate fact."""
+
+    result_id: str
+    forecast_id: str
+    phase: UnflattenAuthorityPhase
+    source_fingerprint: str
+    candidate_fingerprint: str
+    source_generation: int
+    candidate_generation: int
+    covered_path_ids: tuple[str, ...]
+    residual_path_ids: tuple[str, ...]
+    drifted_path_ids: tuple[str, ...]
+    enumeration_complete: bool
+    matched_semantic_exclusion_ids: tuple[str, ...]
+    source_dispatcher_reachable: bool = False
+    candidate_dispatcher_reachable: bool = False
+
+    def __post_init__(self) -> None:
+        _id(self.result_id, "result_id")
+        _id(self.forecast_id, "forecast_id")
+        _enum(self.phase, UnflattenAuthorityPhase, "phase")
+        _id(self.source_fingerprint, "source_fingerprint")
+        _id(self.candidate_fingerprint, "candidate_fingerprint")
+        _generation(self.source_generation, "source_generation")
+        _generation(self.candidate_generation, "candidate_generation")
+        for name in ("covered_path_ids", "residual_path_ids", "drifted_path_ids", "matched_semantic_exclusion_ids"):
+            values = _strict_id_tuple(getattr(self, name), name)
+            object.__setattr__(self, name, values)
+        if set(self.covered_path_ids) & set(self.residual_path_ids) or set(self.drifted_path_ids) & (set(self.covered_path_ids) | set(self.residual_path_ids)):
+            raise ValueError("phase path partitions overlap")
+        if type(self.enumeration_complete) is not bool:
+            raise TypeError("enumeration_complete must be an exact bool")
+        if type(self.source_dispatcher_reachable) is not bool or type(self.candidate_dispatcher_reachable) is not bool:
+            raise TypeError("dispatcher reachability flags must be exact bools")
+        if self.result_id != authority_id((
+            "unflatten.corridor-coverage-phase.v1", self.forecast_id,
+            self.phase, self.source_fingerprint, self.candidate_fingerprint,
+            self.source_generation, self.candidate_generation,
+            self.covered_path_ids, self.residual_path_ids, self.drifted_path_ids,
+            self.enumeration_complete, self.matched_semantic_exclusion_ids,
+            self.source_dispatcher_reachable, self.candidate_dispatcher_reachable,
+        )):
+            raise ValueError("result_id does not match canonical phase result content")
+
+    @property
+    def full(self) -> bool:
+        return (
+            self.enumeration_complete
+            and self.source_dispatcher_reachable
+            and not self.candidate_dispatcher_reachable
+            and not self.residual_path_ids
+            and not self.drifted_path_ids
+        )
 
 
 SemanticSubjectLocator: TypeAlias = (
@@ -1472,17 +1728,31 @@ class UseDefAuditEvidencePayload:
 @dataclass(frozen=True, slots=True)
 class CorridorCoverageEvidencePayload:
     corridor_subject_id: str
-    member_subject_ids: tuple[str, ...]
-    covered_subject_ids: tuple[str, ...]
-    residual_subject_ids: tuple[str, ...]
+    forecast_id: str
+    phase_result_id: str
+    covered_path_ids: tuple[str, ...]
+    residual_path_ids: tuple[str, ...]
+    drifted_path_ids: tuple[str, ...]
+    enumeration_complete: bool
+    matched_semantic_exclusion_ids: tuple[str, ...]
+    source_dispatcher_reachable: bool = False
+    candidate_dispatcher_reachable: bool = False
 
     def __post_init__(self) -> None:
         _id(self.corridor_subject_id, "corridor_subject_id")
-        for name in ("member_subject_ids", "covered_subject_ids", "residual_subject_ids"):
-            values = _tuple(getattr(self, name), name, sort=True)
-            for value in values:
-                _id(value, f"{name} item")
-            object.__setattr__(self, name, values)
+        _id(self.forecast_id, "forecast_id")
+        _id(self.phase_result_id, "phase_result_id")
+        for name in ("covered_path_ids", "residual_path_ids", "drifted_path_ids"):
+            object.__setattr__(self, name, _strict_id_tuple(getattr(self, name), name))
+        if set(self.covered_path_ids) & set(self.residual_path_ids) or set(self.drifted_path_ids) & (set(self.covered_path_ids) | set(self.residual_path_ids)):
+            raise ValueError("corridor evidence path partitions overlap")
+        if type(self.enumeration_complete) is not bool:
+            raise TypeError("enumeration_complete must be an exact bool")
+        if type(self.source_dispatcher_reachable) is not bool or type(self.candidate_dispatcher_reachable) is not bool:
+            raise TypeError("dispatcher reachability flags must be exact bools")
+        object.__setattr__(self, "matched_semantic_exclusion_ids", _strict_id_tuple(
+            self.matched_semantic_exclusion_ids, "matched_semantic_exclusion_ids"
+        ))
 
 
 @dataclass(frozen=True, slots=True)
@@ -2381,6 +2651,7 @@ class ProposedUnflattenContract:
     claims: tuple[ProducerUnflattenClaim, ...]
     plan_inputs: UnflattenPlanInputCatalog
     retirement_catalog: RetirementAuthorityCatalog | None = None
+    corridor_coverage_forecast: CorridorCoverageForecast | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -2401,6 +2672,28 @@ class ProposedUnflattenContract:
             raise TypeError("plan_inputs must be UnflattenPlanInputCatalog")
         if self.retirement_catalog is not None and type(self.retirement_catalog) is not RetirementAuthorityCatalog:
             raise TypeError("retirement_catalog must be RetirementAuthorityCatalog or None")
+        if self.corridor_coverage_forecast is not None:
+            if type(self.corridor_coverage_forecast) is not CorridorCoverageForecast:
+                raise TypeError("corridor_coverage_forecast must be CorridorCoverageForecast or None")
+            self.corridor_coverage_forecast.__post_init__()
+            forecast = self.corridor_coverage_forecast
+            if forecast.semantic_exclusions or any(
+                path.disposition is CorridorPathDisposition.SEMANTICALLY_EXCLUDED
+                for path in forecast.paths
+            ):
+                raise ValueError("semantic exclusion corridor authority is reserved for Task15")
+            if forecast.plan_id != self.plan_id:
+                raise ValueError("corridor forecast belongs to a foreign plan")
+            if forecast.source_native_key != self.source_identity_catalog.native_key:
+                raise ValueError("corridor forecast native key differs from source catalog")
+            if forecast.source_generation != self.source_identity_catalog.generation:
+                raise ValueError("corridor forecast generation differs from source catalog")
+            if forecast.dispatcher_ref != self.plan_inputs.dispatcher_entry_ref:
+                raise ValueError("corridor forecast dispatcher differs from plan input")
+            source_blocks = {item.block_ref: item for item in self.source_identity_catalog.blocks}
+            dispatcher = source_blocks.get(forecast.dispatcher_ref)
+            if dispatcher is None or dispatcher.anchor_ea != forecast.dispatcher_anchor_ea:
+                raise ValueError("corridor forecast dispatcher anchor differs from source catalog")
         if (
             not self.use_def_witness.executed
             or not self.use_def_witness.fragment_atomic
@@ -2417,6 +2710,12 @@ class ProposedUnflattenContract:
         if len({claim.claim_id for claim in claims}) != len(claims):
             raise ValueError("claims must not contain duplicate IDs")
         object.__setattr__(self, "claims", claims)
+        requires_corridor_forecast = (
+            self.retirement_catalog is not None
+            or any(type(claim) is RetiredDispatcherInfrastructureClaim for claim in claims)
+        )
+        if requires_corridor_forecast and self.corridor_coverage_forecast is None:
+            raise ValueError("corridor rewrite or retirement proposals require a coverage forecast")
         if self.route_evidence.native_key != self.source_identity_catalog.native_key:
             raise ValueError("proposal route evidence and source catalog key must match")
         if self.route_evidence.generation != self.source_identity_catalog.generation:
@@ -3060,6 +3359,7 @@ class SemanticGraphInventory:
     reachable_serials: tuple[int, ...]
     entry_serial: int
     source_subject_ids: tuple[str, ...]
+    function_ea: int
 
     @property
     def serial_by_ref(self) -> dict[CfgBlockRef, int]:
@@ -3096,6 +3396,7 @@ class SemanticGraphInventory:
             raise TypeError("graph_fingerprint must be an exact string")
         _id(self.graph_fingerprint, "graph_fingerprint")
         _inventory_nonnegative(self.generation, "generation")
+        _inventory_ea(self.function_ea, "function_ea")
         _inventory_nonnegative(self.entry_serial, "entry_serial")
         for name, cls in (
             ("blocks", InventoryBlockObservation),
@@ -3454,7 +3755,7 @@ class SemanticGraphInventory:
             self.phase, self.graph_fingerprint, self.generation, self.blocks,
             self.subjects, self.bindings, self.effects, self.terminals, self.topology,
             self.reachable_serials,
-            self.entry_serial, self.source_subject_ids,
+            self.entry_serial, self.source_subject_ids, self.function_ea,
         )
         if self.inventory_digest != expected:
             raise ValueError("inventory_digest does not match inventory content")
@@ -3534,6 +3835,7 @@ class PreparationAuthorityReceipt:
     generic_gate_facts_digest: str | None = None
     route_assessment_digest: str | None = None
     retirement_catalog: RetirementAuthorityCatalog | None = None
+    corridor_coverage_forecast: CorridorCoverageForecast | None = None
     # The receipt remains constructor-closed.  The transaction package uses
     # ``mint`` below after it has completed both inventory walks; callers
     # cannot provide either an ID or an authority token.
@@ -3563,6 +3865,14 @@ class PreparationAuthorityReceipt:
                 _id(value, name)
         if self.retirement_catalog is not None and type(self.retirement_catalog) is not RetirementAuthorityCatalog:
             raise TypeError("retirement_catalog must be RetirementAuthorityCatalog or None")
+        if self.corridor_coverage_forecast is not None:
+            if type(self.corridor_coverage_forecast) is not CorridorCoverageForecast:
+                raise TypeError("corridor_coverage_forecast must be CorridorCoverageForecast or None")
+            self.corridor_coverage_forecast.__post_init__()
+            if self.corridor_coverage_forecast.plan_id != self.plan_id:
+                raise ValueError("receipt corridor forecast belongs to a foreign plan")
+            if self.corridor_coverage_forecast.source_generation != self.source_generation:
+                raise ValueError("receipt corridor forecast generation differs from source")
         _generation(self.source_generation, "source_generation")
         _generation(self.candidate_generation, "candidate_generation")
         if type(self.metrics) is not PreparationBuildMetrics:
@@ -3594,6 +3904,7 @@ class PreparationAuthorityReceipt:
                 "planned_helper_digest", "patch_step_digest",
                 "conditional_relation_digest", "metrics",
                 "generic_gate_facts_digest", "route_assessment_digest", "retirement_catalog",
+                "corridor_coverage_forecast",
             )
         }
         for name in ("generic_gate_facts_digest", "route_assessment_digest"):
@@ -3603,6 +3914,7 @@ class PreparationAuthorityReceipt:
             else:
                 values[name] = None
         values.setdefault("retirement_catalog", None)
+        values.setdefault("corridor_coverage_forecast", None)
         if set(values) != required:
             raise TypeError("mint requires the complete preparation receipt inputs")
         instance = cls.__new__(cls)
@@ -3741,6 +4053,7 @@ class DerivedUnflattenPreparationInputs:
     patch_step_facts: tuple[PatchStepEvidencePayload, ...]
     preparation_metrics: PreparationBuildMetrics
     phase_build_metrics: PhaseBuildMetrics
+    corridor_coverage_phase_result: CorridorCoveragePhaseResult | None = None
 
     def __post_init__(self) -> None:
         if type(self.proposal) is not ProposedUnflattenContract:
@@ -3759,6 +4072,12 @@ class DerivedUnflattenPreparationInputs:
             if type(inventory) is not SemanticGraphInventory:
                 raise TypeError(f"{name} must be SemanticGraphInventory")
             validate_semantic_graph_inventory(inventory)
+        forecast = self.proposal.corridor_coverage_forecast
+        if forecast is not None and not (
+            forecast.function_ea == self.source_inventory.function_ea
+            and forecast.function_ea == self.candidate_inventory.function_ea
+        ):
+            raise ValueError("corridor forecast function EA is not sealed to both inventories")
         if self.candidate_inventory.source_subject_ids != self.source_inventory.source_subject_ids:
             raise ValueError(
                 "candidate source subject partition must equal source inventory partition"
@@ -3785,6 +4104,30 @@ class DerivedUnflattenPreparationInputs:
             raise TypeError("preparation_metrics must be PreparationBuildMetrics")
         if type(self.phase_build_metrics) is not PhaseBuildMetrics:
             raise TypeError("phase_build_metrics must be PhaseBuildMetrics")
+        if self.corridor_coverage_phase_result is not None:
+            if type(self.corridor_coverage_phase_result) is not CorridorCoveragePhaseResult:
+                raise TypeError("corridor_coverage_phase_result must be CorridorCoveragePhaseResult or None")
+            result = self.corridor_coverage_phase_result
+            result.__post_init__()
+            if forecast is None or result.forecast_id != forecast.forecast_id:
+                raise ValueError("corridor phase result is foreign to the proposal forecast")
+            if result.phase is not self.phase_build_metrics.phase:
+                raise ValueError("corridor phase result phase differs from inputs")
+            if (
+                result.source_fingerprint != self.source_inventory.graph_fingerprint
+                or result.source_fingerprint != self.preparation_receipt.source_fingerprint
+                or result.candidate_fingerprint != self.candidate_inventory.graph_fingerprint
+                or result.candidate_fingerprint != self.preparation_receipt.candidate_fingerprint
+                or result.source_generation != self.source_inventory.generation
+                or result.source_generation != self.preparation_receipt.source_generation
+                or result.candidate_generation != self.candidate_inventory.generation
+                or result.candidate_generation != self.preparation_receipt.candidate_generation
+                or forecast.source_generation != self.source_inventory.generation
+                or forecast.source_native_key != self.proposal.source_identity_catalog.native_key
+            ):
+                raise ValueError("corridor phase result coordinates are not sealed to inventories and receipt")
+        elif self.proposal.corridor_coverage_forecast is not None:
+            raise ValueError("typed corridor forecast requires a bound phase result")
         has_retirement = any(
             type(claim) is RetiredDispatcherInfrastructureClaim for claim in self.claims
         )
@@ -3793,6 +4136,8 @@ class DerivedUnflattenPreparationInputs:
                 raise ValueError("retirement preparation records must share the exact catalog")
         elif self.proposal.retirement_catalog is not None or self.preparation_receipt.retirement_catalog is not None:
             raise ValueError("retirement catalog is present without a retirement claim")
+        if self.preparation_receipt.corridor_coverage_forecast != self.proposal.corridor_coverage_forecast:
+            raise ValueError("preparation receipt corridor forecast differs from proposal")
         validate_preparation_build_metrics(self.preparation_metrics)
         validate_phase_build_metrics(self.phase_build_metrics)
         PreparationAuthorityReceipt.__post_init__(self.preparation_receipt)
@@ -3852,6 +4197,7 @@ class SemanticSafetyCase:
     source_subject_ids: tuple[str, ...] = ()
     source_bindings: tuple[PhaseSubjectBinding, ...] = ()
     retirement_catalog: RetirementAuthorityCatalog | None = None
+    corridor_coverage_phase_result: CorridorCoveragePhaseResult | None = None
 
     def __post_init__(self) -> None:
         _id(self.case_id, "case_id")
@@ -3860,8 +4206,32 @@ class SemanticSafetyCase:
         if type(self.preparation_receipt) is not PreparationAuthorityReceipt:
             raise TypeError("preparation_receipt must be PreparationAuthorityReceipt")
         PreparationAuthorityReceipt.__post_init__(self.preparation_receipt)
+        validate_semantic_graph_inventory(self.source_inventory)
+        forecast = self.preparation_receipt.corridor_coverage_forecast
+        if forecast is not None and forecast.function_ea != self.source_inventory.function_ea:
+            raise ValueError("case corridor forecast function EA differs from source inventory")
         if self.retirement_catalog is not None and type(self.retirement_catalog) is not RetirementAuthorityCatalog:
             raise TypeError("retirement_catalog must be RetirementAuthorityCatalog or None")
+        if self.corridor_coverage_phase_result is not None:
+            if type(self.corridor_coverage_phase_result) is not CorridorCoveragePhaseResult:
+                raise TypeError("corridor_coverage_phase_result must be CorridorCoveragePhaseResult or None")
+            self.corridor_coverage_phase_result.__post_init__()
+            if forecast is None or self.corridor_coverage_phase_result.forecast_id != forecast.forecast_id:
+                raise ValueError("case corridor phase result is foreign to receipt forecast")
+            result = self.corridor_coverage_phase_result
+            if (
+                result.phase is not self.phase
+                or result.source_fingerprint != self.source_fingerprint
+                or result.candidate_fingerprint != self.candidate_fingerprint
+                or result.source_fingerprint != self.source_inventory.graph_fingerprint
+                or result.candidate_fingerprint != self.preparation_receipt.candidate_fingerprint
+                or result.source_generation != self.preparation_receipt.source_generation
+                or result.candidate_generation != self.candidate_generation
+                or forecast.source_generation != self.preparation_receipt.source_generation
+            ):
+                raise ValueError("case corridor phase result coordinates are not sealed")
+        elif self.preparation_receipt.corridor_coverage_forecast is not None:
+            raise ValueError("typed corridor forecast requires a case-owned phase result")
         has_retirement = any(
             type(claim) is RetiredDispatcherInfrastructureClaim for claim in self.claims
         )

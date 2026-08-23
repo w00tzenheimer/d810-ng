@@ -38,12 +38,14 @@ def _inventory(**overrides: object) -> model.SemanticGraphInventory:
         values["entry_serial"] = min(values["blocks"], key=lambda item: item.serial).serial if values["blocks"] else 0
     if "source_subject_ids" not in values:
         values["source_subject_ids"] = tuple(item.subject_id for item in values["subjects"])
+    if "function_ea" not in values:
+        values["function_ea"] = 0
     values["inventory_digest"] = semantic_graph_inventory_digest(
         values["phase"], values["graph_fingerprint"], values["generation"],
         values["blocks"], values["subjects"], values["bindings"],
         values["effects"], values["terminals"], values["topology"],
         values["reachable_serials"],
-        values["entry_serial"], values["source_subject_ids"],
+        values["entry_serial"], values["source_subject_ids"], values["function_ea"],
     )
     return model.SemanticGraphInventory(**values)
 
@@ -373,10 +375,11 @@ def test_inventory_digest_covers_every_preceding_field() -> None:
     for field_name, replacement in (
         ("graph_fingerprint", authority_id("other-graph")),
         ("generation", 4),
-            ("blocks", (model.InventoryBlockObservation(
-                1, ref, 1, (2,), (), (), None,
-                (_obs(0, 2, 0, 0),),
-            ),)),
+        ("function_ea", 1),
+        ("blocks", (model.InventoryBlockObservation(
+            1, ref, 1, (2,), (), (), None,
+            (_obs(0, 2, 0, 0),),
+        ),)),
         ("effects", (model.InventoryEffectSite(1, ref, 1, 0, 2, model.EffectSiteKind.STORE, 1, 0),)),
         ("terminals", (model.InventoryTerminalSite(1, ref, 1, None, 2, model.TerminalKind.STOP),)),
     ):
@@ -481,9 +484,9 @@ def test_inventory_revalidates_nested_refs_and_rejects_plan_refs_in_producer() -
                 model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
                 authority_id("graph"), 3,
                 (model.InventoryBlockObservation(1, ref, 1, (), (), (), None),),
-                (), (), (), (), (), (1,), 1, (),
+                (), (), (), (), (), (1,), 1, (), 0,
             ),
-            reachable_serials=(1,), entry_serial=1, source_subject_ids=(),
+            reachable_serials=(1,), entry_serial=1, source_subject_ids=(), function_ea=0,
         )
 
 
@@ -581,10 +584,10 @@ def test_inventory_requires_instruction_rows_for_native_origins_and_mapped_ancho
     block = model.InventoryBlockObservation(1, ref, 2, (1,), (), (), None, (instruction,))
     phase = model.UnflattenAuthorityPhase.PRODUCER_FORECAST
     fingerprint = authority_id("graph")
-    digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, ())
+    digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, (), 0)
     with pytest.raises(ValueError):
         model.SemanticGraphInventory(
-            phase, fingerprint, 3, (block,), (), (), (), (), (), digest, (1,), 1, (),
+            phase, fingerprint, 3, (block,), (), (), (), (), (), digest, (1,), 1, (), 0,
         )
 
 
@@ -596,11 +599,11 @@ def test_inventory_revalidates_nested_native_identity_graph() -> None:
     block = model.InventoryBlockObservation(1, ref, 1, (1,), (), (), None, (instruction,))
     phase = model.UnflattenAuthorityPhase.PRODUCER_FORECAST
     fingerprint = authority_id("graph")
-    digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, ())
+    digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, (), 0)
     object.__setattr__(key, "input_identity", "")
     with pytest.raises((TypeError, ValueError)):
         model.SemanticGraphInventory(
-            phase, fingerprint, 3, (block,), (), (), (), (), (), digest, (1,), 1, (),
+            phase, fingerprint, 3, (block,), (), (), (), (), (), digest, (1,), 1, (), 0,
         )
 
 
@@ -611,11 +614,11 @@ def test_inventory_rejects_native_identity_bool_before_normalization() -> None:
     block = model.InventoryBlockObservation(1, ref, 1, (1,), (), (), None, (_obs(0, 1, 0, 0),))
     phase = model.UnflattenAuthorityPhase.PRODUCER_FORECAST
     fingerprint = authority_id("graph")
-    digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, ())
+    digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, (), 0)
     object.__setattr__(identity, "exact_instruction_eas", frozenset({True}))
     with pytest.raises((TypeError, ValueError)):
         model.SemanticGraphInventory(
-            phase, fingerprint, 3, (block,), (), (), (), (), (), digest, (1,), 1, (),
+            phase, fingerprint, 3, (block,), (), (), (), (), (), digest, (1,), 1, (), 0,
         )
     assert type(next(iter(identity.exact_instruction_eas))) is bool
 
@@ -646,10 +649,10 @@ def test_inventory_rejects_native_interval_outside_domain_in_every_phase(
             instruction_observations=(_obs(0, 1, 0, 0),),
         )
     fingerprint = authority_id("graph")
-    digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, ())
+    digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, (), 0)
     with pytest.raises((TypeError, ValueError)):
         model.SemanticGraphInventory(
-            phase, fingerprint, 3, (block,), (), (), (), (), (), digest, (1,), 1, (),
+            phase, fingerprint, 3, (block,), (), (), (), (), (), digest, (1,), 1, (), 0,
         )
 
 
@@ -729,10 +732,10 @@ def test_inventory_rejects_foreign_valid_native_identity() -> None:
     block = model.InventoryBlockObservation(1, ref, 0x1000, (0x1000,), (), (), None, (instruction,))
     phase = model.UnflattenAuthorityPhase.PRODUCER_FORECAST
     fingerprint = authority_id("graph")
-    digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, ())
+    digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, (), 0)
     with pytest.raises(ValueError):
         model.SemanticGraphInventory(
-            phase, fingerprint, 3, (block,), (), (), (), (), (), digest, (1,), 1, (),
+            phase, fingerprint, 3, (block,), (), (), (), (), (), digest, (1,), 1, (), 0,
         )
 
 

@@ -232,7 +232,10 @@ def _inventory_subjects(
     proposal, source_serials, effects=(), terminals=(), plan=None,
     planned_helpers: Mapping[PlanBlockRef, int] | None = None,
 ):
-    subjects = _block_subjects(proposal, source_serials)
+    subjects = _block_subjects(
+        proposal, source_serials,
+        include_corridor=proposal.corridor_coverage_forecast is not None,
+    )
     by_id = {subject.subject_id: subject for subject in subjects}
     # The fragment-wide value-flow subject is always present, even for an
     # exact-effect-only proposal.
@@ -515,7 +518,7 @@ def _build_semantic_graph_inventory(
     digest = semantic_graph_inventory_digest(
         phase, fingerprint, proposal.source_identity_catalog.generation,
         tuple(block_rows), subjects, bindings, effects, terminals, topology,
-        reachable_tuple, graph.entry_serial, source_subject_ids,
+        reachable_tuple, graph.entry_serial, source_subject_ids, graph.func_ea,
     )
     return model.SemanticGraphInventory(
         phase, fingerprint, proposal.source_identity_catalog.generation,
@@ -523,6 +526,7 @@ def _build_semantic_graph_inventory(
         reachable_tuple,
         materialization.entry_serial,
         source_subject_ids,
+        function_ea=graph.func_ea,
     )
 
 
@@ -613,6 +617,7 @@ def _receipt(
             if route_assessments else None
         ),
         "retirement_catalog": proposal.retirement_catalog,
+        "corridor_coverage_forecast": proposal.corridor_coverage_forecast,
     }
     return model.PreparationAuthorityReceipt.mint(**values)
 
@@ -936,9 +941,42 @@ def _derive_patch_lineage_facts(
                         raise ValueError("patch-step reference belongs to a foreign plan")
                 elif ref not in source_refs:
                     raise ValueError("patch-step reference is foreign to the source plan")
+            allowed_corridor_refs = {
+                proposal_ref
+                for proposal_ref in (
+                    plan.unflatten_proposal.plan_inputs.source_entry_ref,
+                    plan.unflatten_proposal.plan_inputs.dispatcher_entry_ref,
+                    *plan.unflatten_proposal.plan_inputs.dispatcher_member_refs,
+                )
+                if proposal_ref is not None
+            } if plan.unflatten_proposal is not None else set()
+            if plan.unflatten_proposal is not None:
+                forecast = plan.unflatten_proposal.corridor_coverage_forecast
+                if forecast is not None:
+                    allowed_corridor_refs.update(
+                        node.block_ref
+                        for path in forecast.paths
+                        for node in path.nodes
+                    )
+                    dispatcher_serial = source_inventory.serial_by_ref.get(
+                        forecast.dispatcher_ref
+                    )
+                    if dispatcher_serial is not None:
+                        successor_serials = {
+                            successor
+                            for block in source_inventory.blocks
+                            if block.serial == dispatcher_serial
+                            for successor in block.successor_serials
+                        }
+                        allowed_corridor_refs.update(
+                            block.block_ref
+                            for block in source_inventory.blocks
+                            if block.serial in successor_serials
+                            and block.block_ref is not None
+                        )
             if step_type in {"PatchLowerConditionalStateTransition", "PatchRedirectGoto", "PatchRedirectBranch"} and route_refs and not {
                 ref for ref in refs if ref is not None
-            } <= route_refs:
+            } <= route_refs | allowed_corridor_refs:
                 raise ValueError("patch-step source and destination refs are outside proposal route subjects")
             step_preimage: tuple[object, ...] = _patch_step_preimage(step_index, step)
             step_preimage += (owner_preimage,)
@@ -1249,6 +1287,12 @@ def _derive_inputs(
         key=lambda item: (item.source_subject_id, item.target_subject_id,
                           item.dimension.value, item.provenance_id),
     ))
+    corridor_coverage_phase_result = authority_bind.bind_corridor_coverage_forecast(
+        proposal=proposal,
+        source_inventory=source_inventory,
+        candidate_inventory=candidate_inventory,
+        phase=phase,
+    )
     claims = tuple(sorted((*proposal.claims, *alias_claims), key=lambda item: item.claim_id))
     route_assessments = tuple(
         item for item in (source_route_assessment, candidate_route_assessment)
@@ -1277,6 +1321,7 @@ def _derive_inputs(
         patch_step_facts=patch_step_facts,
         preparation_metrics=preparation_metrics,
         phase_build_metrics=phase_build_metrics,
+        corridor_coverage_phase_result=corridor_coverage_phase_result,
     )
 
 

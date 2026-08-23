@@ -34,7 +34,10 @@ from .producer_api import build_unflatten_plan_input_catalog
 from . import producer_api
 from .ids import content_id, validate_canonical_roundtrip
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
-from .legacy_keys import DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA
+from .legacy_keys import (
+    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,7 +342,8 @@ def _validate_use_def_locator(
     witness = proposal.use_def_witness
     if tuple(witness.redirect_owner_refs) != manifest.owner_refs:
         raise ValueError("use-def redirect owners do not match the redirect manifest")
-    if not set(witness.redirect_owner_refs) <= set(proposal.plan_inputs.dispatcher_member_refs):
+    allowed_redirect_owners = set(proposal.plan_inputs.dispatcher_member_refs)
+    if not set(witness.redirect_owner_refs) <= allowed_redirect_owners:
         raise ValueError("use-def redirect owners must be dispatcher members")
     if witness.redirect_digest != manifest.digest:
         raise ValueError("use-def redirect digest does not match the redirect manifest")
@@ -485,10 +489,30 @@ def attach_typed_proposal(
         state_identity=state_identity,
         use_def_witness=use_def_witness,
     )
+    metadata_items = tuple(normalized_metadata_items(plan.metadata))
+    corridor_rows = tuple(
+        value for key, value in metadata_items
+        if key == DISPATCHER_CORRIDOR_COVERAGE_METADATA
+    )
+    if len(corridor_rows) > 1:
+        raise ValueError("legacy corridor coverage metadata occurs more than once")
+    if corridor_rows:
+        corridor_payload = corridor_rows[0]
+        from .legacy_codec import corridor_coverage_forecast_from_legacy_metadata
+        try:
+            forecast = corridor_coverage_forecast_from_legacy_metadata(
+                corridor_payload,
+                proposal=proposal,
+                block_refs_by_serial=block_refs_by_serial,
+                source_function_ea=int(source.func_ea),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("legacy corridor coverage conversion failed") from exc
+        proposal = replace(proposal, corridor_coverage_forecast=forecast)
     # Legacy retirement families are adapted once into the proposal-owned
     # exact catalog.  The claim remains partial when the proof covers only a
     # subset of planned members.
-    retirement_payload = plan.metadata_dict().get(
+    retirement_payload = dict(metadata_items).get(
         DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA
     )
     retirement_family_keys = (
@@ -511,7 +535,7 @@ def attach_typed_proposal(
             claim = retirement_claim_from_legacy_proof(
                 transport,
                 proposal=proposal,
-                block_refs_by_serial=dict(block_refs_by_serial),
+                block_refs_by_serial=block_refs_by_serial,
             )
             retired_refs = {member.block_ref for member in claim.member_subjects}
             member_refs = set(proposal.plan_inputs.dispatcher_member_refs)
@@ -534,6 +558,11 @@ def attach_typed_proposal(
             # A supported retirement family is authority input once present;
             # malformed rows fail closed instead of silently becoming a shadow.
             raise ValueError("legacy retirement proof conversion failed") from exc
+    if (
+        proposal.retirement_catalog is not None
+        or any(type(claim) is RetiredDispatcherInfrastructureClaim for claim in proposal.claims)
+    ) and proposal.corridor_coverage_forecast is None:
+        raise ValueError("corridor rewrite or retirement proposal requires coverage metadata")
     from .legacy_codec import capture_legacy_unflatten_shadow
 
     cleaned, shadow = capture_legacy_unflatten_shadow(

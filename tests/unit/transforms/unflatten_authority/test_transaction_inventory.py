@@ -176,13 +176,14 @@ def _topology_inventory(*, topology: tuple[model.InventoryTopologyIncidence, ...
     )
     digest = semantic_graph_inventory_digest(
         phase, fingerprint, 3, blocks, subjects, bindings, (), (), topology, closure,
-        1, tuple(item.subject_id for item in subjects),
+        1, tuple(item.subject_id for item in subjects), 0,
     )
     return model.SemanticGraphInventory(
         phase, fingerprint, 3, blocks, subjects, bindings, (), (), topology, digest,
         closure,
         1,
         tuple(item.subject_id for item in subjects),
+        0,
     )
 
 

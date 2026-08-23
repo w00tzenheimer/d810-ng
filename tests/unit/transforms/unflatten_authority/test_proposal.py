@@ -442,7 +442,8 @@ def test_first_typed_effect_plan_moves_all_legacy_keys_into_shadow() -> None:
     )
     manifest = canonical_redirect_manifest(plan_template)
     witness = replace(proposal.use_def_witness, redirect_owner_refs=manifest.owner_refs, redirect_digest=manifest.digest)
-    values = tuple((key, {"family": key}) for key in LEGACY_UNFLATTEN_KEYS)
+    from d810.transforms.unflatten_authority.legacy_keys import DISPATCHER_CORRIDOR_COVERAGE_METADATA
+    values = tuple((key, {"family": key}) for key in LEGACY_UNFLATTEN_KEYS if key != DISPATCHER_CORRIDOR_COVERAGE_METADATA)
     plan = replace(plan_template, metadata=values, unflatten_proposal=None)
     attached = attach_typed_proposal(
         plan,
@@ -456,7 +457,7 @@ def test_first_typed_effect_plan_moves_all_legacy_keys_into_shadow() -> None:
     assert getattr(selected, "route", None) is model.UnflattenPlanRoute.TYPED_PROPOSAL
     assert attached.legacy_unflatten_shadow is not None
     assert attached.metadata == ()
-    assert tuple(entry.key for entry in attached.legacy_unflatten_shadow.entries) == tuple(sorted(LEGACY_UNFLATTEN_KEYS))
+    assert tuple(entry.key for entry in attached.legacy_unflatten_shadow.entries) == tuple(sorted(key for key in LEGACY_UNFLATTEN_KEYS if key != DISPATCHER_CORRIDOR_COVERAGE_METADATA))
 
 
 def test_typed_attachment_keeps_dispatcher_entry_when_not_a_redirect_owner() -> None:
@@ -465,6 +466,7 @@ def test_typed_attachment_keeps_dispatcher_entry_when_not_a_redirect_owner() -> 
     from d810.transforms.plan import PatchRedirectGoto
     from d810.transforms.unflatten_authority.proposal import attach_typed_proposal, canonical_redirect_manifest
     from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
+    from d810.transforms.unflatten_authority.legacy_keys import DISPATCHER_CORRIDOR_COVERAGE_METADATA
     from d810.transforms.unflatten_authority.transaction_api import select_plan_route
 
     model = import_authority_model()
@@ -474,7 +476,7 @@ def test_typed_attachment_keeps_dispatcher_entry_when_not_a_redirect_owner() -> 
         plan_id=proposal.plan_id, snapshot_id="snapshot-1",
         source_generation=1,
         steps=steps,
-        metadata=tuple((key, {"family": key}) for key in LEGACY_UNFLATTEN_KEYS),
+        metadata=tuple((key, {"family": key}) for key in LEGACY_UNFLATTEN_KEYS if key != DISPATCHER_CORRIDOR_COVERAGE_METADATA),
     )
     manifest = canonical_redirect_manifest(plan)
     witness = replace(proposal.use_def_witness, redirect_owner_refs=manifest.owner_refs, redirect_digest=manifest.digest)

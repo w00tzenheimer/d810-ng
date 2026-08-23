@@ -389,6 +389,7 @@ def _ensure_registries() -> None:
         model.SafetyDimension, model.EvidencePolarity, model.ObligationState,
         model.SubjectBindingStatus, model.SemanticLossKind, model.UnflattenClaimKind, model.ProviderConsensusMode,
         model.StructuralDisposition, model.EffectSiteKind, model.TerminalKind,
+        model.CorridorPathDisposition,
         model.GenericCfgGateKind, model.AuthorityEvidenceKind, model.UnflattenJustificationRule,
         model.UnflattenAuthorityReason, model.UnflattenPlanRoute, model.UnflattenPlanShape,
         model.TopologyIncidenceKind,
@@ -406,6 +407,8 @@ def _ensure_registries() -> None:
         model.BlockSubjectLocator, model.EdgeSubjectLocator, model.RouteSubjectLocator,
         model.EffectSubjectLocator, model.HandlerSubjectLocator, model.TerminalSubjectLocator,
         model.ValueFlowSubjectLocator, model.CorridorSubjectLocator, model.SemanticSubjectRef,
+        model.CorridorCoveragePathNode, model.CorridorSemanticExclusion, model.CorridorCoveragePath,
+        model.CorridorCoverageForecast, model.CorridorCoveragePhaseResult,
         model.PhaseSubjectBinding, model.PhaseBindingEvidencePayload, model.TopologyEdgeRelation, model.TopologyEvidencePayload,
         model.StructuralLineageEvidencePayload, model.SemanticRouteEvidencePayload,
         model.EffectSiteEvidencePayload, model.ReachabilityEvidencePayload,
@@ -456,6 +459,11 @@ def _ensure_registries() -> None:
         model.TerminalSubjectLocator: ("block_ref", "anchor_ea", "terminal_kind", "instruction_ea"),
         model.ValueFlowSubjectLocator: ("fragment_id", "state_identity", "redirect_owner_refs"),
         model.CorridorSubjectLocator: ("corridor_id", "entry_ref", "entry_anchor_ea", "member_refs", "member_anchor_eas"),
+        model.CorridorCoveragePathNode: ("block_ref", "anchor_ea"),
+        model.CorridorSemanticExclusion: ("exclusion_id", "digest", "normalized_state", "state_identity", "source", "feeder", "prefix", "root"),
+        model.CorridorCoveragePath: ("path_id", "nodes", "state_merge", "disposition", "semantic_exclusion_ids"),
+        model.CorridorCoverageForecast: ("forecast_id", "plan_id", "function_ea", "source_native_key", "source_generation", "dispatcher_ref", "dispatcher_anchor_ea", "paths", "covered_path_ids", "residual_path_ids", "enumeration_complete", "semantic_exclusion_digests", "semantic_exclusions", "semantic_exclusion_path_ids"),
+        model.CorridorCoveragePhaseResult: ("result_id", "forecast_id", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "covered_path_ids", "residual_path_ids", "drifted_path_ids", "enumeration_complete", "matched_semantic_exclusion_ids", "source_dispatcher_reachable", "candidate_dispatcher_reachable"),
         model.SemanticSubjectRef: ("kind", "role", "subject_id", "block_ref", "anchor_ea", "locator"),
         model.PhaseSubjectBinding: ("subject", "phase", "block_ref", "graph_fingerprint", "generation", "status", "serial", "anchor_ea", "native_instruction_eas", "role"),
         model.PhaseBindingEvidencePayload: ("binding",),
@@ -466,7 +474,7 @@ def _ensure_registries() -> None:
         model.EffectSiteEvidencePayload: ("effect_subject_id", "effect_kind", "instruction_ea", "opcode", "width", "storage_identity", "normalized_state", "provider_mode", "provider_ids", "preserved"),
         model.ReachabilityEvidencePayload: ("root_subject_id", "target_subject_id", "reachable", "path_subject_ids"),
         model.UseDefAuditEvidencePayload: ("fragment_id", "state_identity", "executed", "fragment_atomic", "actionable_non_state_severance_count", "violation_ids"),
-        model.CorridorCoverageEvidencePayload: ("corridor_subject_id", "member_subject_ids", "covered_subject_ids", "residual_subject_ids"),
+        model.CorridorCoverageEvidencePayload: ("corridor_subject_id", "forecast_id", "phase_result_id", "covered_path_ids", "residual_path_ids", "drifted_path_ids", "enumeration_complete", "matched_semantic_exclusion_ids", "source_dispatcher_reachable", "candidate_dispatcher_reachable"),
         model.PatchStepEvidencePayload: ("plan_id", "step_index", "step_type", "owner_ref", "step_digest", "host_ea", "host_opcode", "value_size"),
         model.GenericCfgGateEvidencePayload: ("gate", "passed", "affected_subject_ids", "reason_code"),
         model.AuthorityEvidence: ("evidence_id", "kind", "subject", "phase", "payload"),
@@ -485,7 +493,7 @@ def _ensure_registries() -> None:
         model.RetirementAuthorityCatalog: ("catalog_id", "source_generation", "members", "proofs"),
         model.AuthoritativeHandlerInput: ("block_ref", "anchor_ea", "normalized_states"),
         model.UnflattenPlanInputCatalog: ("shape", "source_entry_ref", "dispatcher_entry_ref", "dispatcher_member_refs", "authoritative_handlers", "state_identity"),
-        model.ProposedUnflattenContract: ("schema_version", "rule_set_version", "plan_id", "route_evidence", "source_identity_catalog", "use_def_witness", "claims", "plan_inputs", "retirement_catalog"),
+        model.ProposedUnflattenContract: ("schema_version", "rule_set_version", "plan_id", "route_evidence", "source_identity_catalog", "use_def_witness", "claims", "plan_inputs", "retirement_catalog", "corridor_coverage_forecast"),
         model.ObligationKey: ("subject", "dimension"),
         model.AuthorityJustification: ("justification_id", "rule", "premise_ids", "conclusion", "polarity", "phase", "claim_id"),
         model.ObligationEvidenceCell: ("key", "phase", "supporting_justification_ids", "refuting_justification_ids"),
@@ -502,11 +510,11 @@ def _ensure_registries() -> None:
         model.InventoryEffectSite: ("owner_serial", "owner_ref", "owner_anchor_ea", "instruction_ordinal", "instruction_ea", "effect_kind", "opcode", "width"),
         model.InventoryTerminalSite: ("owner_serial", "owner_ref", "owner_anchor_ea", "instruction_ordinal", "instruction_ea", "terminal_kind"),
         model.InventoryTopologyIncidence: ("kind", "owner_serial", "peer_serial", "source_transfer_ea"),
-            model.SemanticGraphInventory: ("phase", "graph_fingerprint", "generation", "blocks", "subjects", "bindings", "effects", "terminals", "topology", "inventory_digest", "reachable_serials", "entry_serial", "source_subject_ids"),
+        model.SemanticGraphInventory: ("phase", "graph_fingerprint", "generation", "blocks", "subjects", "bindings", "effects", "terminals", "topology", "inventory_digest", "reachable_serials", "entry_serial", "source_subject_ids", "function_ea"),
         model.ConditionalSubjectRelation: ("source_subject_id", "target_subject_id", "dimension", "provenance_id"),
-            model.PreparationAuthorityReceipt: ("receipt_id", "proposal_id", "plan_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "source_inventory_digest", "candidate_inventory_digest", "source_binding_digest", "candidate_binding_digest", "route_expansion_digest", "effect_catalog_digest", "terminal_catalog_digest", "plan_input_digest", "dispatcher_member_digest", "planned_helper_digest", "patch_step_digest", "conditional_relation_digest", "metrics", "generic_gate_facts_digest", "route_assessment_digest", "retirement_catalog"),
-            model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_inventory", "candidate_inventory", "source_route_assessment", "candidate_route_assessment", "generic_gate_facts", "conditional_relations", "patch_step_facts", "preparation_metrics", "phase_build_metrics"),
-        model.SemanticSafetyCase: ("case_id", "authority_id", "preparation_receipt_id", "preparation_receipt", "phase", "source_fingerprint", "candidate_fingerprint", "candidate_generation", "claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications", "obligation_index", "phase_metrics", "source_inventory", "source_subject_ids", "source_bindings", "retirement_catalog"),
+            model.PreparationAuthorityReceipt: ("receipt_id", "proposal_id", "plan_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "source_inventory_digest", "candidate_inventory_digest", "source_binding_digest", "candidate_binding_digest", "route_expansion_digest", "effect_catalog_digest", "terminal_catalog_digest", "plan_input_digest", "dispatcher_member_digest", "planned_helper_digest", "patch_step_digest", "conditional_relation_digest", "metrics", "generic_gate_facts_digest", "route_assessment_digest", "retirement_catalog", "corridor_coverage_forecast"),
+            model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_inventory", "candidate_inventory", "source_route_assessment", "candidate_route_assessment", "generic_gate_facts", "conditional_relations", "patch_step_facts", "preparation_metrics", "phase_build_metrics", "corridor_coverage_phase_result"),
+        model.SemanticSafetyCase: ("case_id", "authority_id", "preparation_receipt_id", "preparation_receipt", "phase", "source_fingerprint", "candidate_fingerprint", "candidate_generation", "claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications", "obligation_index", "phase_metrics", "source_inventory", "source_subject_ids", "source_bindings", "retirement_catalog", "corridor_coverage_phase_result"),
         model.UnflattenAuthorityVerdict: ("accepted", "phase", "reason", "authority_id", "binding_id", "case_id", "candidate_fingerprint", "safety_case", "failed_obligations"),
     })
     _EXTERNAL_TYPES.update({
@@ -906,8 +914,8 @@ def binding_id(value: object) -> str:
 
 def semantic_graph_inventory_digest(*fields: object) -> str:
     """Digest the complete inventory payload, excluding its digest field."""
-    if len(fields) != 12:
-        raise TypeError("semantic graph inventory digest requires twelve fields")
+    if len(fields) != 13:
+        raise TypeError("semantic graph inventory digest requires thirteen fields")
     return content_id(SEMANTIC_GRAPH_INVENTORY_SCHEMA, tuple(fields))
 
 

@@ -19,6 +19,7 @@ from .ids import (
     canonical_bytes,
     semantic_graph_fingerprint,
     validate_canonical_roundtrip,
+    authority_id,
 )
 from .proposal import retirement_member_catalog
 
@@ -181,6 +182,201 @@ def _retirement_binding_seal(result: RetiredInfrastructureBindingResult) -> str:
         catalog_rows, result.source_bindings,
         result.projected_bindings, result.generation,
     ))).hexdigest()
+
+
+def bind_corridor_coverage_forecast(
+    *,
+    proposal: model.ProposedUnflattenContract,
+    source_inventory: model.SemanticGraphInventory,
+    candidate_inventory: model.SemanticGraphInventory,
+    phase: model.UnflattenAuthorityPhase,
+) -> model.CorridorCoveragePhaseResult | None:
+    """Fold one sealed forecast against already-built inventory topology."""
+
+    if type(proposal) is not model.ProposedUnflattenContract:
+        raise TypeError("corridor forecast binding requires a closed proposal")
+    forecast = proposal.corridor_coverage_forecast
+    if forecast is None:
+        return None
+    if type(source_inventory) is not model.SemanticGraphInventory or type(candidate_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("corridor forecast binding requires closed inventories")
+    model.validate_semantic_graph_inventory(source_inventory)
+    model.validate_semantic_graph_inventory(candidate_inventory)
+    if type(phase) is not model.UnflattenAuthorityPhase or candidate_inventory.phase is not phase:
+        raise ValueError("corridor forecast phase differs from candidate inventory")
+    if source_inventory.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST:
+        raise ValueError("corridor forecast source inventory must be producer forecast")
+
+    source_blocks = {row.block_ref: row for row in source_inventory.blocks if row.block_ref is not None}
+    candidate_blocks = {row.block_ref: row for row in candidate_inventory.blocks if row.block_ref is not None}
+    candidate_edges = {
+        (row.owner_serial, row.peer_serial)
+        for row in candidate_inventory.topology
+        if row.kind is model.TopologyIncidenceKind.SUCCESSOR
+    }
+    source_edges = {
+        (row.owner_serial, row.peer_serial)
+        for row in source_inventory.topology
+        if row.kind is model.TopologyIncidenceKind.SUCCESSOR
+    }
+    source_predecessor_counts: dict[int, int] = {}
+    for row in source_inventory.topology:
+        if row.kind is model.TopologyIncidenceKind.PREDECESSOR:
+            source_predecessor_counts[row.owner_serial] = source_predecessor_counts.get(row.owner_serial, 0) + 1
+    source_fp = source_inventory.graph_fingerprint
+    candidate_fp = candidate_inventory.graph_fingerprint
+    if source_inventory.generation != forecast.source_generation:
+        raise ValueError("corridor forecast source generation differs from source inventory")
+    if forecast.function_ea != source_inventory.function_ea:
+        raise ValueError("corridor forecast function EA differs from source inventory")
+    if candidate_inventory.function_ea != source_inventory.function_ea:
+        raise ValueError("candidate function EA differs from source inventory")
+    dispatcher_bindings = tuple(
+        binding for binding in source_inventory.bindings
+        if binding.subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+        and binding.subject.block_ref == forecast.dispatcher_ref
+        and binding.subject.anchor_ea == forecast.dispatcher_anchor_ea
+    )
+    if len(dispatcher_bindings) != 1:
+        raise ValueError("corridor forecast dispatcher binding is missing or ambiguous")
+    source_dispatcher = dispatcher_bindings[0]
+    if (
+        source_dispatcher.status is not model.SubjectBindingStatus.UNIQUE
+        or source_dispatcher.serial not in source_inventory.reachable_serials
+    ):
+        raise ValueError("corridor forecast source dispatcher is not uniquely reachable")
+    candidate_dispatcher_bindings = tuple(
+        binding for binding in candidate_inventory.bindings
+        if binding.subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+        and binding.subject.block_ref == forecast.dispatcher_ref
+        and binding.subject.anchor_ea == forecast.dispatcher_anchor_ea
+    )
+    if len(candidate_dispatcher_bindings) != 1:
+        raise ValueError("corridor forecast candidate dispatcher binding is missing or ambiguous")
+    candidate_dispatcher = candidate_dispatcher_bindings[0]
+    if candidate_dispatcher.status not in {
+        model.SubjectBindingStatus.MISSING, model.SubjectBindingStatus.UNIQUE,
+    }:
+        raise ValueError("corridor forecast candidate dispatcher binding drifted")
+    source_dispatcher_reachable = True
+    candidate_dispatcher_reachable = (
+        candidate_dispatcher.status is model.SubjectBindingStatus.UNIQUE
+        and candidate_dispatcher.serial in candidate_inventory.reachable_serials
+    )
+    if source_dispatcher_reachable and not forecast.paths:
+        raise ValueError("reachable source dispatcher requires a non-empty corridor forecast")
+    forecast_path_ids = {path.path_id for path in forecast.paths}
+    if set(forecast.covered_path_ids) | set(forecast.residual_path_ids) != forecast_path_ids:
+        raise ValueError("corridor forecast partitions do not cover the path universe")
+    if set(forecast.covered_path_ids) & set(forecast.residual_path_ids):
+        raise ValueError("corridor forecast partitions overlap")
+    covered: list[str] = []
+    residual: list[str] = []
+    drifted: list[str] = []
+    matched_exclusions: list[str] = []
+    for path in forecast.paths:
+        source_serials: list[int] = []
+        candidate_serials: list[int] = []
+        source_ok = True
+        candidate_ok = True
+        for node in path.nodes:
+            source_row = source_blocks.get(node.block_ref)
+            if source_row is None or source_row.anchor_ea != node.anchor_ea:
+                source_ok = False
+                candidate_ok = False
+                break
+            source_serials.append(source_row.serial)
+            candidate_row = candidate_blocks.get(node.block_ref)
+            if candidate_row is None or candidate_row.anchor_ea != node.anchor_ea:
+                candidate_ok = False
+            else:
+                candidate_serials.append(candidate_row.serial)
+        source_path_exists = source_ok and all(
+            (left, right) in source_edges
+            for left, right in zip(source_serials, source_serials[1:])
+        )
+        candidate_path_exists = candidate_ok and len(candidate_serials) == len(path.nodes) and all(
+            (left, right) in candidate_edges
+            for left, right in zip(candidate_serials, candidate_serials[1:])
+        )
+        candidate_state_ok = True
+        candidate_state_hard_failure = False
+        if source_path_exists and path.state_merge is not None:
+            if path.state_merge != path.nodes[-3]:
+                raise ValueError("corridor state merge is not the exact path[-3] node")
+            merge_row = source_blocks.get(path.state_merge.block_ref)
+            feeder_row = source_blocks.get(path.nodes[-2].block_ref)
+            if (
+                merge_row is None or feeder_row is None
+                or source_predecessor_counts.get(merge_row.serial, 0) < 2
+                or (merge_row.serial, feeder_row.serial) not in source_edges
+                or {
+                    peer for left, peer in source_edges if left == merge_row.serial
+                } != {feeder_row.serial}
+            ):
+                raise ValueError("corridor state merge semantics drifted from source topology")
+            candidate_merge = candidate_blocks.get(path.state_merge.block_ref)
+            candidate_feeder = candidate_blocks.get(path.nodes[-2].block_ref)
+            if candidate_merge is None or candidate_feeder is None:
+                candidate_state_ok = False
+                candidate_state_hard_failure = True
+            else:
+                candidate_merge_predecessors = sum(
+                    1 for row in candidate_inventory.topology
+                    if row.kind is model.TopologyIncidenceKind.PREDECESSOR
+                    and row.owner_serial == candidate_merge.serial
+                )
+                candidate_state_ok = (
+                    candidate_merge_predecessors >= 2
+                    and (candidate_merge.serial, candidate_feeder.serial) in candidate_edges
+                    and {
+                        peer for left, peer in candidate_edges
+                        if left == candidate_merge.serial
+                    } == {candidate_feeder.serial}
+                )
+                candidate_state_hard_failure = candidate_merge_predecessors < 2
+
+        if not source_path_exists:
+            drifted.append(path.path_id)
+        elif path.disposition is model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED:
+            raise ValueError("semantic exclusion coverage requires a bound route proof")
+        elif path.disposition is model.CorridorPathDisposition.RESIDUAL:
+            if not candidate_path_exists or candidate_state_hard_failure:
+                raise ValueError(
+                    "residual corridor path classification lacks required candidate topology"
+                )
+            (residual if candidate_state_ok else drifted).append(path.path_id)
+        elif candidate_path_exists:
+            drifted.append(path.path_id)
+        else:
+            covered.append(path.path_id)
+            if path.semantic_exclusion_ids:
+                raise ValueError("structural corridor coverage cannot carry semantic exclusions")
+    result_id = authority_id((
+        "unflatten.corridor-coverage-phase.v1", forecast.forecast_id, phase,
+        source_fp, candidate_fp, source_inventory.generation,
+        candidate_inventory.generation, tuple(sorted(covered)),
+        tuple(sorted(residual)), tuple(sorted(drifted)),
+        forecast.enumeration_complete, tuple(sorted(set(matched_exclusions))),
+        source_dispatcher_reachable, candidate_dispatcher_reachable,
+    ))
+    expected_covered = {
+        path_id for path_id in forecast.covered_path_ids
+        if next(path for path in forecast.paths if path.path_id == path_id).disposition is not model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED
+    }
+    if (
+        (not candidate_dispatcher_reachable and set(covered) != expected_covered)
+        or set(covered) & set(residual)
+        or set(covered) | set(residual) | set(drifted) != forecast_path_ids
+    ):
+        raise ValueError("corridor phase classification disagrees with sealed forecast partition")
+    return model.CorridorCoveragePhaseResult(
+        result_id, forecast.forecast_id, phase, source_fp, candidate_fp,
+        source_inventory.generation, candidate_inventory.generation,
+        tuple(sorted(covered)), tuple(sorted(residual)), tuple(sorted(drifted)),
+        forecast.enumeration_complete, tuple(sorted(set(matched_exclusions))),
+        source_dispatcher_reachable, candidate_dispatcher_reachable,
+    )
 
 
 def bind_retired_dispatcher_infrastructure_claim(

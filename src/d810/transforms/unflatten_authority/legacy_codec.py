@@ -31,6 +31,11 @@ from .legacy_keys import (
 from .legacy_wire import decode_legacy_value, encode_legacy_value
 from .model import (
     BlockSubjectLocator,
+    CorridorCoverageForecast,
+    CorridorCoveragePath,
+    CorridorCoveragePathNode,
+    CorridorSemanticExclusion,
+    CorridorPathDisposition,
     CorridorSubjectLocator,
     LegacyShadowEntry,
     LegacyUnflattenShadowEnvelope,
@@ -207,6 +212,214 @@ def decode_legacy_canonical_payload(payload: bytes) -> object:
 # Descriptive aliases used by persistence adapters and tests.
 legacy_canonical_bytes = encode_legacy_value
 legacy_canonical_decode = decode_legacy_canonical_payload
+
+
+def corridor_coverage_forecast_from_legacy_metadata(
+    payload: object,
+    *,
+    proposal: ProposedUnflattenContract,
+    block_refs_by_serial: dict[int, NativeBlockRef | LogicalBlockRef],
+    source_function_ea: int,
+) -> CorridorCoverageForecast:
+    """Convert the legacy path report once at typed proposal attachment."""
+
+    if type(payload) is not dict:
+        raise ValueError("legacy corridor coverage must be an exact dict")
+    if set(payload) - {
+        "function_ea", "dispatcher", "completion_status", "planned_completion_status",
+        "application_status", "full_unflattening_claim", "enumeration_complete",
+        "covered_corridors", "residual_corridors", "semantic_exclusions",
+    }:
+        raise ValueError("legacy corridor coverage contains unknown fields")
+    required = {"dispatcher", "enumeration_complete", "covered_corridors", "residual_corridors"}
+    if not required <= set(payload):
+        raise ValueError("legacy corridor coverage is incomplete")
+    if type(payload["enumeration_complete"]) is not bool:
+        raise TypeError("legacy corridor enumeration_complete must be an exact bool")
+    if type(payload["covered_corridors"]) is not list or type(payload["residual_corridors"]) is not list:
+        raise TypeError("legacy corridor partitions must be exact lists")
+    if type(payload.get("function_ea")) is not int or payload["function_ea"] != source_function_ea:
+        raise ValueError("legacy corridor function_ea differs from source")
+    required_statuses = {
+        "completion_status", "planned_completion_status", "application_status",
+        "full_unflattening_claim",
+    }
+    if not required_statuses <= set(payload):
+        raise ValueError("legacy corridor status presentation is incomplete")
+    if payload["completion_status"] != "pending_patch_application":
+        raise ValueError("legacy corridor completion status is not pending")
+    if payload["application_status"] != "pending":
+        raise ValueError("legacy corridor application status is not pending")
+    if payload["full_unflattening_claim"] is not False:
+        raise ValueError("legacy corridor must not claim full unflattening")
+    for name in ("completion_status", "planned_completion_status", "application_status"):
+        if type(payload[name]) is not str:
+            raise TypeError(f"legacy corridor {name} must be an exact str")
+    if type(payload["full_unflattening_claim"]) is not bool:
+        raise TypeError("legacy corridor full_unflattening_claim must be an exact bool")
+    if type(block_refs_by_serial) is not dict:
+        raise TypeError("legacy corridor serial map must be an exact dict")
+    catalog = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+    if set(block_refs_by_serial.values()) != set(catalog) or len(block_refs_by_serial) != len(catalog):
+        raise ValueError("legacy corridor serial map must cover the exact source catalog")
+    if any(type(serial) is not int or serial < 0 for serial in block_refs_by_serial):
+        raise TypeError("legacy corridor serial map has a malformed serial")
+    if any(type(ref) not in (NativeBlockRef, LogicalBlockRef) for ref in block_refs_by_serial.values()):
+        raise TypeError("legacy corridor serial map has a malformed ref")
+    if payload["dispatcher"] is None or type(payload["dispatcher"]) is not dict:
+        raise ValueError("legacy corridor dispatcher anchor is required")
+
+    def anchor(raw: object, label: str) -> tuple[int, int]:
+        if type(raw) is not dict or set(raw) != {"serial", "ea", "label"}:
+            raise ValueError(f"{label} anchor shape is not exact")
+        serial, ea, text = raw["serial"], raw["ea"], raw["label"]
+        if type(serial) is not int or serial < 0 or type(ea) is not int or ea < 0 or type(text) is not str:
+            raise TypeError(f"{label} anchor scalar shape is not exact")
+        if text != f"blk{serial}@0x{ea:x}":
+            raise ValueError(f"{label} anchor label drifted")
+        ref = block_refs_by_serial.get(serial)
+        if ref is None or ref not in catalog or catalog[ref].anchor_ea != ea:
+            raise ValueError(f"{label} anchor is foreign to source catalog")
+        return serial, ea
+
+    dispatcher_serial, dispatcher_ea = anchor(payload["dispatcher"], "dispatcher")
+    dispatcher_ref = block_refs_by_serial[dispatcher_serial]
+    if dispatcher_ref != proposal.plan_inputs.dispatcher_entry_ref:
+        raise ValueError("legacy corridor dispatcher differs from plan entry")
+    raw_exclusions: list[CorridorSemanticExclusion] = []
+    raw_exclusion_payloads = payload.get("semantic_exclusions", [])
+    if type(raw_exclusion_payloads) is not list:
+        raise TypeError("legacy semantic exclusions must be an exact list")
+    if raw_exclusion_payloads:
+        raise ValueError("semantic exclusion corridor authority is reserved for Task15")
+    for raw in raw_exclusion_payloads:
+        if type(raw) is not dict or set(raw) != {"normalized_state", "source", "feeder", "prefix", "root", "state_identity"}:
+            raise ValueError("legacy semantic exclusion shape is not exact")
+        if type(raw["normalized_state"]) is not int or raw["normalized_state"] < 0:
+            raise TypeError("legacy semantic exclusion state is malformed")
+        source_serial, source_ea = anchor(raw["source"], "semantic exclusion source")
+        feeder = None
+        if raw["feeder"] is not None:
+            feeder_serial, feeder_ea = anchor(raw["feeder"], "semantic exclusion feeder")
+            feeder = CorridorCoveragePathNode(block_refs_by_serial[feeder_serial], feeder_ea)
+        prefix_serial, prefix_ea = anchor(raw["prefix"], "semantic exclusion prefix")
+        root_serial, root_ea = anchor(raw["root"], "semantic exclusion root")
+        if type(raw["state_identity"]) is not dict:
+            raise TypeError("legacy semantic exclusion identity is malformed")
+        identity = storage_identity_from_record(raw["state_identity"])
+        if identity.to_record() != raw["state_identity"]:
+            raise ValueError("legacy semantic exclusion identity is not canonical")
+        source_node = CorridorCoveragePathNode(block_refs_by_serial[source_serial], source_ea)
+        prefix_node = CorridorCoveragePathNode(block_refs_by_serial[prefix_serial], prefix_ea)
+        root_node = CorridorCoveragePathNode(block_refs_by_serial[root_serial], root_ea)
+        typed = ("unflatten.corridor-semantic-exclusion.v1", raw["normalized_state"], identity, source_node, feeder, prefix_node, root_node)
+        exclusion = CorridorSemanticExclusion(
+            authority_id(typed), authority_id(("unflatten.corridor-semantic-exclusion-digest.v1", typed)),
+            raw["normalized_state"], identity, source_node, feeder, prefix_node, root_node,
+        )
+        raw_exclusions.append(exclusion)
+
+    def path_row(raw: object, disposition: CorridorPathDisposition) -> CorridorCoveragePath:
+        if type(raw) is not dict or set(raw) != {"source", "state_merge", "dispatcher_feeder", "dispatcher", "path", "label"}:
+            raise ValueError("legacy corridor path shape is not exact")
+        if type(raw["path"]) is not list or len(raw["path"]) < 2:
+            raise TypeError("legacy corridor path must be an exact list of at least two nodes")
+        anchors = tuple(anchor(item, "corridor path") for item in raw["path"])
+        if anchor(raw["source"], "corridor source") != anchors[0] or anchor(raw["dispatcher"], "corridor dispatcher") != anchors[-1]:
+            raise ValueError("legacy corridor path endpoints drifted")
+        if raw["state_merge"] is not None and anchor(raw["state_merge"], "corridor state merge") not in anchors:
+            raise ValueError("legacy corridor state merge is outside path")
+        if raw["state_merge"] is not None and anchor(raw["state_merge"], "corridor state merge") != anchors[-3]:
+            raise ValueError("legacy corridor state merge must be the exact path[-3] node")
+        if anchor(raw["dispatcher_feeder"], "corridor dispatcher feeder") != anchors[-2]:
+            raise ValueError("legacy corridor dispatcher feeder is not penultimate")
+        if raw["label"] != " -> ".join(f"blk{serial}@0x{ea:x}" for serial, ea in anchors):
+            raise ValueError("legacy corridor path label drifted")
+        nodes = tuple(CorridorCoveragePathNode(block_refs_by_serial[serial], ea) for serial, ea in anchors)
+        suffixes = {
+            exclusion.exclusion_id: tuple(
+                node for node in (exclusion.source, exclusion.feeder, exclusion.prefix, exclusion.root)
+                if node is not None
+            )
+            for exclusion in raw_exclusions
+        }
+        linked = tuple(
+            exclusion for exclusion in raw_exclusions
+            if len(suffixes[exclusion.exclusion_id]) <= len(nodes)
+            and nodes[-len(suffixes[exclusion.exclusion_id]):] == suffixes[exclusion.exclusion_id]
+        )
+        exclusions = tuple(sorted(exclusion.exclusion_id for exclusion in linked))
+        if linked and disposition is CorridorPathDisposition.RESIDUAL:
+            raise ValueError("semantic exclusion cannot relabel a residual path")
+        actual_disposition = CorridorPathDisposition.SEMANTICALLY_EXCLUDED if linked else disposition
+        state_merge = None if raw["state_merge"] is None else CorridorCoveragePathNode(
+            block_refs_by_serial[anchor(raw["state_merge"], "corridor state merge")[0]],
+            anchor(raw["state_merge"], "corridor state merge")[1],
+        )
+        path_id = authority_id((
+            "unflatten.corridor-coverage-path.v1", nodes, state_merge,
+            actual_disposition, exclusions,
+        ))
+        return CorridorCoveragePath(
+            path_id, nodes, state_merge, actual_disposition, exclusions,
+        )
+
+    covered_paths = tuple(
+        path_row(raw, CorridorPathDisposition.STRUCTURALLY_COVERED)
+        for raw in payload["covered_corridors"]
+    )
+    residual_paths = tuple(
+        path_row(raw, CorridorPathDisposition.RESIDUAL)
+        for raw in payload["residual_corridors"]
+    )
+    covered_domain = {(path.nodes, path.state_merge) for path in covered_paths}
+    if len(covered_domain) != len(covered_paths):
+        raise ValueError("legacy corridor paths must be unique")
+    residual_domain = {(path.nodes, path.state_merge) for path in residual_paths}
+    if len(residual_domain) != len(residual_paths):
+        raise ValueError("legacy corridor paths must be unique")
+    # The covered/residual partition is a partition of the raw corridor
+    # domain.  Disposition is deliberately excluded from this key: it is a
+    # classification of a path, not a second path identity.
+    if covered_domain & residual_domain:
+        raise ValueError(
+            "legacy corridor paths must be unique; covered/residual raw path domains overlap"
+        )
+    paths = covered_paths + residual_paths
+    if len({path.path_id for path in paths}) != len(paths):
+        raise ValueError("legacy corridor paths must be unique")
+    paths = tuple(sorted(paths, key=lambda path: path.path_id))
+    covered = tuple(path.path_id for path in paths if path.disposition is not CorridorPathDisposition.RESIDUAL)
+    residual = tuple(path.path_id for path in paths if path.disposition is CorridorPathDisposition.RESIDUAL)
+    exclusion_paths = tuple(
+        (exclusion.exclusion_id, tuple(
+            path.path_id for path in paths if exclusion.exclusion_id in path.semantic_exclusion_ids
+        ))
+        for exclusion in sorted(raw_exclusions, key=lambda item: item.exclusion_id)
+    )
+    if any(not linked_paths for _exclusion_id, linked_paths in exclusion_paths):
+        raise ValueError("legacy semantic exclusion does not map to any exact path suffix")
+    digests = tuple(sorted((item.exclusion_id, item.digest) for item in raw_exclusions))
+    exclusions = tuple(sorted(raw_exclusions, key=lambda item: item.exclusion_id))
+    expected_planned = (
+        "abstained_dispatcher_missing" if payload["dispatcher"] is None else
+        "planned_partial_residual_dispatcher" if residual else
+        "abstained_incomplete_corridor_enumeration" if not payload["enumeration_complete"] else
+        "planned_dispatcher_corridors_covered"
+    )
+    if payload["planned_completion_status"] != expected_planned:
+        raise ValueError("legacy corridor planned completion status is not derived")
+    forecast_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", proposal.plan_id,
+        payload["function_ea"], proposal.source_identity_catalog.native_key,
+        proposal.source_identity_catalog.generation, dispatcher_ref, dispatcher_ea,
+        paths, covered, residual, payload["enumeration_complete"], digests, exclusions, exclusion_paths,
+    ))
+    return CorridorCoverageForecast(
+        forecast_id, proposal.plan_id, payload["function_ea"], proposal.source_identity_catalog.native_key,
+        proposal.source_identity_catalog.generation, dispatcher_ref, dispatcher_ea,
+        paths, covered, residual, payload["enumeration_complete"], digests, exclusions, exclusion_paths,
+    )
 
 
 def retirement_claim_from_legacy_proof(
