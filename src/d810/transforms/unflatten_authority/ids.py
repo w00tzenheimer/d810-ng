@@ -491,7 +491,7 @@ def _ensure_registries() -> None:
         model.PreparationBuildMetrics: ("source_inventory_builds", "candidate_inventory_builds", "inventory_ms"),
             model.SemanticPhaseMetrics: ("preparation_metrics", "source_inventory_builds", "candidate_inventory_builds", "index_folds", "view_graph_traversals", "phase", "phase_build_metrics"),
         model.PhaseBuildMetrics: ("phase", "source_inventory_builds", "candidate_inventory_builds", "inventory_ms"),
-        model.InventoryInstructionObservation: ("ordinal", "instruction_ea", "opcode", "width", "instruction_kind", "control_transfer_kind", "is_call", "call_kind"),
+        model.InventoryInstructionObservation: ("ordinal", "instruction_ea", "opcode", "width", "instruction_kind", "control_transfer_kind", "is_call", "call_kind", "display_text"),
         model.InventoryBlockObservation: ("serial", "block_ref", "anchor_ea", "native_instruction_eas", "predecessor_serials", "successor_serials", "transfer_ea", "instruction_observations", "block_kind", "graph_start_ea"),
         model.InventoryEffectSite: ("owner_serial", "owner_ref", "owner_anchor_ea", "instruction_ordinal", "instruction_ea", "effect_kind", "opcode", "width"),
         model.InventoryTerminalSite: ("owner_serial", "owner_ref", "owner_anchor_ea", "instruction_ordinal", "instruction_ea", "terminal_kind"),
@@ -1080,7 +1080,7 @@ def _instruction_projection(value: object) -> object:
         value.predicate_kind, value.branch_predicate, value.compare_width,
         value.is_conditional_jump, value.is_unconditional_jump, value.is_call,
         _operand_projection(value.l), _operand_projection(value.r), _operand_projection(value.d),
-        dict(value.opcode_attrs), hashlib.sha256(value.display_text.encode("utf-8")).hexdigest(),
+        dict(value.opcode_attrs), hashlib.sha256(value.display_text.encode("utf-8", errors="replace")).hexdigest(),
     )
 
 

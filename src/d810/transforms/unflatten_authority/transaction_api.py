@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 from time import perf_counter
+import hashlib
+import re
 
-from d810.transforms.plan import PatchPlan
+from d810.transforms.plan import PatchPlan, PatchScalarizeLocalAliasAccess
 from d810.analyses.control_flow import semantic_route_evidence as route_model
 from d810.analyses.control_flow.semantic_route_evidence import (
     assess_canonical_route,
@@ -13,6 +15,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import CfgProjection, TransactionAttemptId
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.patch_binding import (
     BoundPatchPlan,
     validate_bound_patch_plan,
@@ -27,6 +30,7 @@ from d810.transforms.unflatten_authority.gates import (
     validate_generic_cfg_gate_bundle,
 )
 from d810.transforms.unflatten_authority.ids import (
+    _claim_factory,
     _subject_factory,
     authority_id,
     bound_unflatten_binding_id,
@@ -167,7 +171,7 @@ def _block_subjects(proposal, serials, *, include_corridor=True):
     return subjects
 
 
-def _inventory_subjects(proposal, source_serials, effects=(), terminals=()):
+def _inventory_subjects(proposal, source_serials, effects=(), terminals=(), plan=None):
     subjects = _block_subjects(proposal, source_serials)
     by_id = {subject.subject_id: subject for subject in subjects}
     # The fragment-wide value-flow subject is always present, even for an
@@ -235,6 +239,20 @@ def _inventory_subjects(proposal, source_serials, effects=(), terminals=()):
         )
         subject = _subject(model.SemanticSubjectKind.TERMINAL, model.SemanticSubjectRole.TERMINAL_SITE, locator)
         by_id[subject.subject_id] = subject
+    if plan is not None:
+        catalog = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+        for step in plan.steps:
+            if type(step) is not PatchScalarizeLocalAliasAccess:
+                continue
+            witness = catalog.get(step.block_serial)
+            if witness is None:
+                raise ValueError("local-alias step owner is absent from source catalog")
+            owner = _subject(
+                model.SemanticSubjectKind.BLOCK,
+                model.SemanticSubjectRole.EFFECT_SITE,
+                model.BlockSubjectLocator(step.block_serial, witness.anchor_ea),
+            )
+            by_id[owner.subject_id] = owner
     represented = {subject.block_ref for subject in by_id.values() if subject.block_ref is not None}
     for ref, witness in ((item.block_ref, item) for item in proposal.source_identity_catalog.blocks):
         if ref not in represented:
@@ -347,6 +365,7 @@ def _build_semantic_graph_inventory(
         serial_by_ref,
         tuple(item for item in effects if item.owner_serial in reachable),
         tuple(item for item in terminals if item.owner_serial in reachable),
+        plan,
     )
     if source:
         subjects = discovered_subjects
@@ -494,6 +513,199 @@ def _receipt(
     return model.PreparationAuthorityReceipt.mint(**values)
 
 
+def _derive_local_alias_transaction_facts(
+    source_inventory: model.SemanticGraphInventory,
+    plan: PatchPlan,
+) -> tuple[
+    tuple[model.LocalAliasEffectScalarizationClaim, ...],
+    tuple[model.PatchStepEvidencePayload, ...],
+    tuple[model.ConditionalSubjectRelation, ...],
+]:
+    """Derive alias authority from the exact typed plan and source inventory."""
+
+    if plan.source_generation is not None and plan.source_generation != source_inventory.generation:
+        raise ValueError("local-alias plan generation differs from source inventory")
+
+    claims: list[model.LocalAliasEffectScalarizationClaim] = []
+    patch_facts: list[model.PatchStepEvidencePayload] = []
+    relations: list[model.ConditionalSubjectRelation] = []
+    source_coordinates = dict(plan.source_coordinates)
+    blocks_by_serial = {block.serial: block for block in source_inventory.blocks}
+    bindings_by_ref = {
+        binding.block_ref: binding
+        for binding in source_inventory.bindings
+        if binding.block_ref is not None
+        and binding.status is model.SubjectBindingStatus.UNIQUE
+    }
+    owner_subjects = {
+        subject.block_ref: subject
+        for subject in source_inventory.subjects
+        if subject.kind is model.SemanticSubjectKind.BLOCK
+        and subject.role is model.SemanticSubjectRole.EFFECT_SITE
+    }
+    seen_hosts: set[tuple[object, int, int]] = set()
+    for step_index, step in enumerate(plan.steps):
+        if type(step) is not PatchScalarizeLocalAliasAccess:
+            continue
+        _validate_local_alias_step(step)
+        serial = source_coordinates.get(step.block_serial)
+        if type(serial) is not int:
+            raise ValueError("local-alias step owner lacks an exact source coordinate")
+        binding = bindings_by_ref.get(step.block_serial)
+        owner_subject = owner_subjects.get(step.block_serial)
+        block = blocks_by_serial.get(serial)
+        if binding is None or owner_subject is None or block is None:
+            raise ValueError("local-alias step owner is not uniquely bound")
+        if serial not in source_inventory.reachable_serials:
+            raise ValueError("local-alias step owner is unreachable")
+        host_key = (step.block_serial, step.host_ea, step.host_opcode)
+        if host_key in seen_hosts:
+            raise ValueError("local-alias step owner is ambiguous")
+        seen_hosts.add(host_key)
+        if (
+            binding.serial != serial
+            or step.host_ea not in binding.native_instruction_eas
+            or owner_subject.anchor_ea != binding.anchor_ea
+        ):
+            raise ValueError("local-alias step owner binding is stale")
+        observations = tuple(
+            item for item in block.instruction_observations
+            if item.instruction_ea == step.host_ea
+            and item.opcode == step.host_opcode
+        )
+        effects = tuple(
+            item for item in source_inventory.effects
+            if item.owner_serial == serial
+            and item.instruction_ea == step.host_ea
+            and item.opcode == step.host_opcode
+            and item.effect_kind is model.EffectSiteKind.STORE
+        )
+        if len(observations) != 1 or len(effects) != 1:
+            raise ValueError("local-alias step must identify one exact STORE observation")
+        observation = observations[0]
+        if observation.instruction_kind is not model.InsnKind.STORE:
+            raise ValueError("local-alias step host is not a STORE")
+        display_text = observation.display_text
+        if display_text is None:
+            raise ValueError("local-alias step host lacks exact text provenance")
+        if re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(step.alias_token)}(?![A-Za-z0-9_])",
+            display_text,
+        ) is None:
+            raise ValueError("local-alias tokens do not match exact host text")
+        if step.host_text_sha1 is not None and hashlib.sha1(
+            display_text.encode("utf-8", errors="replace")
+        ).hexdigest()[:16] != step.host_text_sha1:
+            raise ValueError("local-alias host text digest is stale")
+        if step.value_size is not None and step.value_size != effects[0].width:
+            raise ValueError("local-alias step value size disagrees with STORE")
+        step_digest = authority_id(_local_alias_step_preimage(step_index, step))
+        claim = _claim_factory(
+            model.LocalAliasEffectScalarizationClaim,
+            kind=model.UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION,
+            owner_subject=owner_subject,
+            step_index=step_index,
+            host_ea=step.host_ea,
+            host_opcode=step.host_opcode,
+            alias_token=step.alias_token,
+            base_token=step.base_token,
+            host_text_sha1=step.host_text_sha1,
+            value_size=step.value_size,
+            step_digest=step_digest,
+            source_generation=source_inventory.generation,
+        )
+        patch_facts.append(model.PatchStepEvidencePayload(
+            plan.plan_id, step_index, "PatchScalarizeLocalAliasAccess",
+            step.block_serial, step_digest, step.host_ea, step.host_opcode,
+            step.value_size,
+        ))
+        effect_subject = next(
+            subject for subject in source_inventory.subjects
+            if subject.kind is model.SemanticSubjectKind.EFFECT
+            and subject.role is model.SemanticSubjectRole.EFFECT_SITE
+            and subject.block_ref == step.block_serial
+            and subject.anchor_ea == owner_subject.anchor_ea
+            and getattr(subject.locator, "instruction_ea", None) == step.host_ea
+            and getattr(subject.locator, "effect_kind", None) is model.EffectSiteKind.STORE
+        )
+        relations.append(model.ConditionalSubjectRelation(
+            owner_subject.subject_id,
+            effect_subject.subject_id,
+            model.SafetyDimension.EFFECT_PRESERVATION,
+            authority_id(("local-alias-effect", step_digest, effect_subject.subject_id)),
+        ))
+        claims.append(claim)
+    return (
+        tuple(sorted(claims, key=lambda item: item.claim_id)),
+        tuple(sorted(patch_facts, key=lambda item: (item.plan_id, item.step_index))),
+        tuple(sorted(relations, key=lambda item: (
+            item.source_subject_id, item.target_subject_id,
+            item.dimension.value, item.provenance_id,
+        ))),
+    )
+
+
+def _local_alias_step_preimage(
+    step_index: int, step: PatchScalarizeLocalAliasAccess,
+) -> tuple[object, ...]:
+    """Return the canonical, closed representation of an alias step.
+
+    ``PatchScalarizeLocalAliasAccess`` is a planner record and deliberately is
+    not part of the semantic-authority codec.  The transaction boundary still
+    needs a stable digest of every field that becomes semantic authority, so
+    digest the exact typed fields rather than passing the planner object to the
+    canonical encoder.
+    """
+
+    return (
+        "PatchScalarizeLocalAliasAccess",
+        step_index,
+        step.block_serial,
+        step.host_ea,
+        step.host_opcode,
+        step.alias_token,
+        step.base_token,
+        step.host_text_sha1,
+        step.value_size,
+    )
+
+
+def _validate_local_alias_step(step: PatchScalarizeLocalAliasAccess) -> None:
+    """Revalidate the planner record at the semantic authority boundary."""
+
+    if type(step) is not PatchScalarizeLocalAliasAccess:
+        raise TypeError("local-alias step must be nominal")
+    owner = step.block_serial
+    if type(owner) not in (NativeBlockRef, LogicalBlockRef):
+        raise TypeError("local-alias owner must be NativeBlockRef or LogicalBlockRef")
+    try:
+        owner.__post_init__()
+    except (TypeError, ValueError) as error:
+        raise ValueError("local-alias owner reference is malformed") from error
+    if (
+        type(step.host_ea) is not int
+        or not 0 <= step.host_ea < 0xFFFFFFFFFFFFFFFF
+    ):
+        raise TypeError("local-alias host_ea must be an exact native EA")
+    if type(step.host_opcode) is not int or step.host_opcode < 0:
+        raise TypeError("local-alias host_opcode must be an exact nonnegative int")
+    for value, label in (
+        (step.alias_token, "alias_token"),
+        (step.base_token, "base_token"),
+    ):
+        if type(value) is not str or not value.strip():
+            raise TypeError(f"local-alias {label} must be a nonblank exact string")
+    if step.host_text_sha1 is not None and (
+        type(step.host_text_sha1) is not str
+        or re.fullmatch(r"[0-9a-f]{16}", step.host_text_sha1) is None
+    ):
+        raise ValueError("local-alias host_text_sha1 must be lowercase 16-hex")
+    if step.value_size is not None and (
+        type(step.value_size) is not int or step.value_size <= 0
+    ):
+        raise TypeError("local-alias value_size must be an exact positive int")
+
+
 def _derive_inputs(
     source_inventory, candidate_inventory, plan, proposal, generic_gates, *,
     phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
@@ -505,7 +717,6 @@ def _derive_inputs(
 ):
     """Assemble immutable facts; semantic evidence belongs to the evaluator."""
 
-    del plan, candidate_generation
     if type(source_inventory) is not model.SemanticGraphInventory:
         raise TypeError("source_inventory must be SemanticGraphInventory")
     if type(candidate_inventory) is not model.SemanticGraphInventory:
@@ -524,6 +735,11 @@ def _derive_inputs(
         generic_gate_facts = generic_gates.facts
     elif generic_gates is not None:
         raise TypeError("generic_gates must be GenericCfgGateBundle or None")
+    alias_claims, patch_step_facts, alias_relations = (
+        _derive_local_alias_transaction_facts(source_inventory, plan)
+    )
+    claims = tuple(sorted((*proposal.claims, *alias_claims), key=lambda item: item.claim_id))
+    conditional_relations = alias_relations
     route_assessments = tuple(
         item for item in (source_route_assessment, candidate_route_assessment)
         if item is not None
@@ -535,18 +751,20 @@ def _derive_inputs(
         candidate_inventory=candidate_inventory,
         generic_gate_facts=generic_gate_facts,
         route_assessments=route_assessments,
+        conditional_relations=conditional_relations,
+        patch_step_facts=patch_step_facts,
     )
     return model.DerivedUnflattenPreparationInputs(
         proposal=proposal,
-        claims=proposal.claims,
+        claims=claims,
         preparation_receipt=receipt,
         source_inventory=source_inventory,
         candidate_inventory=candidate_inventory,
         source_route_assessment=source_route_assessment,
         candidate_route_assessment=candidate_route_assessment,
         generic_gate_facts=generic_gate_facts,
-        conditional_relations=(),
-        patch_step_facts=(),
+        conditional_relations=conditional_relations,
+        patch_step_facts=patch_step_facts,
         preparation_metrics=preparation_metrics,
         phase_build_metrics=phase_build_metrics,
     )
@@ -688,6 +906,9 @@ def prepare_unflatten_authority(*, source, projection, plan, attempt_id, generic
         bound_routes = source_route_assessment.bound_evidence
         prepared_authority_id = authority_id((
             proposal,
+            inputs.claims,
+            inputs.patch_step_facts,
+            inputs.conditional_relations,
             inputs.source_inventory.graph_fingerprint,
             inputs.candidate_inventory.graph_fingerprint,
             inputs.source_inventory.generation,
@@ -751,6 +972,21 @@ def revalidate_bound_patch_plan_against_prepared(
     model.DerivedUnflattenPreparationInputs.__post_init__(prepared.source_inputs)
     if bound_plan.plan is not prepared.owning_plan:
         raise ValueError("bound patch plan belongs to a foreign plan")
+    alias_claims, patch_step_facts, conditional_relations = (
+        _derive_local_alias_transaction_facts(
+            prepared.source_inventory, bound_plan.plan,
+        )
+    )
+    expected_claims = tuple(sorted(
+        (*prepared.proposal.claims, *alias_claims),
+        key=lambda item: item.claim_id,
+    ))
+    if (
+        prepared.source_inputs.claims != expected_claims
+        or prepared.source_inputs.patch_step_facts != patch_step_facts
+        or prepared.source_inputs.conditional_relations != conditional_relations
+    ):
+        raise ValueError("bound patch plan local-alias authority changed")
     if bound_plan.plan.legacy_unflatten_shadow is not prepared.legacy_unflatten_shadow:
         raise ValueError("bound patch plan shadow differs from prepared authority")
     proposal_validation = validate_proposal(

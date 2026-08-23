@@ -182,6 +182,7 @@ def _inventory_instruction_rows(
         rows.append(InventoryInstructionObservation(
             ordinal, instruction_ea, insn.opcode, max(sizes, default=0),
             insn.kind, insn.control_transfer_kind, insn.is_call, insn.call_kind,
+            insn.display_text,
         ))
     return tuple(rows)
 

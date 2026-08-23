@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+import re
 
 from d810.analyses.control_flow import semantic_route_evidence as route_model
 
@@ -20,7 +21,31 @@ class _EffectClassification:
     preserved: bool
     authorized_loss: bool
     refuted: bool
-    claim: model.ExactInfeasibleEffectClaim | None
+    claim: model.ExactInfeasibleEffectClaim | model.LocalAliasEffectScalarizationClaim | None
+    authorized_transition: bool = False
+    structural_preserved: bool = False
+
+
+# Inventory observations use the compact canonical opcode assigned by the
+# backend adapter.  A local-alias scalarization is specifically STORE -> MOV;
+# accepting an arbitrary opcode would make the display text the only semantic
+# proof of the transition.
+LOCAL_ALIAS_MOV_OPCODE = 4
+
+
+def _has_exact_scalar_base_access(
+    display_text: str, base_token: str, expected_width: int,
+) -> bool:
+    """Match the complete destination/base operand and optional width."""
+
+    match = re.fullmatch(
+        rf"\s*mov\s+[^,]+,\s*{re.escape(base_token)}(?:\.(?P<width>\d+))?\s*",
+        display_text,
+    )
+    return match is not None and (
+        match.group("width") is None
+        or match.group("width") == str(expected_width)
+    )
 
 
 def _classify_effect_site(
@@ -32,6 +57,12 @@ def _classify_effect_site(
     claim: model.ExactInfeasibleEffectClaim | None,
     route_assessment: route_model.CanonicalRouteAssessment | None,
     generic_gate_facts: gates.GenericCfgGateFacts | None,
+    *,
+    phase: model.UnflattenAuthorityPhase | None = None,
+    local_alias_claim: model.LocalAliasEffectScalarizationClaim | None = None,
+    local_alias_owner_binding: model.PhaseSubjectBinding | None = None,
+    local_alias_owner_observation: model.InventoryInstructionObservation | None = None,
+    local_alias_owner_reachable: bool = False,
 ) -> _EffectClassification:
     """Classify one effect from closed phase facts exactly once."""
 
@@ -59,10 +90,17 @@ def _classify_effect_site(
         and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
         and candidate_site_matches
     )
-    if preserved:
+    if preserved and not (
+        local_alias_claim is not None
+        and phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+    ):
         # A present site is preserved; a claim cannot annotate a preserved
         # effect or authorize any loss metadata.
         return _EffectClassification(True, False, False, None)
+    preserved_alias_transition_missing = preserved and (
+        local_alias_claim is not None
+        and phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+    )
     # A candidate row that exists but mismatches the source is drift, not an
     # authorized absence.  Only the closed MISSING site binding qualifies for
     # an exact-loss claim.
@@ -100,6 +138,43 @@ def _classify_effect_site(
         and (raw_lost or raw_retained)
     )
     authorized = bool(exact and route_ok and gate_ok)
+    alias_exact = bool(
+        not candidate_rows
+        and local_alias_claim is not None
+        and local_alias_claim.owner_subject.block_ref == effect.owner_ref
+        and local_alias_claim.owner_subject.anchor_ea == effect.owner_anchor_ea
+        and local_alias_claim.host_ea == effect.instruction_ea
+        and local_alias_claim.host_opcode == effect.opcode
+        and (
+            local_alias_claim.value_size is None
+            or local_alias_claim.value_size == effect.width
+        )
+        and candidate_binding is not None
+        and candidate_binding.status is model.SubjectBindingStatus.MISSING
+        and local_alias_owner_binding is not None
+        and local_alias_owner_binding.status is model.SubjectBindingStatus.UNIQUE
+        and local_alias_owner_reachable
+        and local_alias_owner_observation is not None
+        and local_alias_owner_observation.instruction_ea == effect.instruction_ea
+        and local_alias_owner_observation.instruction_kind is model.InsnKind.MOV
+        and local_alias_owner_observation.opcode == LOCAL_ALIAS_MOV_OPCODE
+        and local_alias_owner_observation.display_text is not None
+        and local_alias_owner_observation.width == effect.width
+        and _has_exact_scalar_base_access(
+            local_alias_owner_observation.display_text,
+            local_alias_claim.base_token,
+            effect.width,
+        )
+        and not local_alias_owner_observation.is_call
+        and local_alias_owner_observation.call_kind is None
+        and local_alias_owner_observation.control_transfer_kind is None
+    )
+    if alias_exact:
+        return _EffectClassification(False, True, False, local_alias_claim, True)
+    if preserved_alias_transition_missing:
+        return _EffectClassification(
+            False, False, True, None, False, True,
+        )
     return _EffectClassification(False, authorized, not authorized, claim if authorized else None)
 
 
@@ -313,6 +388,14 @@ def _dimensions(
     relation_dimensions = {(item.target_subject_id, item.dimension) for item in conditional_relations}
     for subject in subjects:
         dimensions = list(REQUIRED_DIMENSIONS[subject.role])
+        if (
+            subject.role is model.SemanticSubjectRole.EFFECT_SITE
+            and subject.kind is model.SemanticSubjectKind.BLOCK
+        ):
+            dimensions = [
+                dimension for dimension in dimensions
+                if dimension is not model.SafetyDimension.EFFECT_PRESERVATION
+            ]
         if (
             subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
             and subject.subject_id in retired_topology_satisfied_ids
@@ -987,6 +1070,70 @@ def _evaluator_fact_evidence(
             correlation = None
         if correlation is not None:
             validated_exact_claims[exact_claim.discarded_effect_subject.subject_id] = exact_claim
+    alias_context_by_effect: dict[
+        str,
+        tuple[
+            model.LocalAliasEffectScalarizationClaim,
+            model.PhaseSubjectBinding | None,
+            model.InventoryInstructionObservation | None,
+            bool,
+        ],
+    ] = {}
+    for alias_claim in (
+        claim for claim in inputs.claims
+        if type(claim) is model.LocalAliasEffectScalarizationClaim
+    ):
+        effect_subjects = tuple(
+            subject for subject in source_subjects
+            if subject.role is model.SemanticSubjectRole.EFFECT_SITE
+            and type(subject.locator) is model.EffectSubjectLocator
+            and subject.locator.owner_ref == alias_claim.owner_subject.block_ref
+            and subject.locator.owner_anchor_ea == alias_claim.owner_subject.anchor_ea
+            and subject.locator.instruction_ea == alias_claim.host_ea
+            and subject.locator.effect_kind is model.EffectSiteKind.STORE
+        )
+        if len(effect_subjects) != 1:
+            raise ValueError("local-alias relation must target an exact STORE alias effect")
+        effect_subject = effect_subjects[0]
+        relation_rows = tuple(
+            relation for relation in inputs.conditional_relations
+            if relation.source_subject_id == alias_claim.owner_subject.subject_id
+            and relation.target_subject_id == effect_subject.subject_id
+            and relation.dimension is model.SafetyDimension.EFFECT_PRESERVATION
+        )
+        if len(relation_rows) != 1 or effect_subject.subject_id in alias_context_by_effect:
+            raise ValueError("local-alias claim must have one unique effect relation")
+        if (
+            effect_subject is None
+            or effect_subject.role is not model.SemanticSubjectRole.EFFECT_SITE
+            or type(effect_subject.locator) is not model.EffectSubjectLocator
+            or effect_subject.locator.owner_ref != alias_claim.owner_subject.block_ref
+            or effect_subject.locator.owner_anchor_ea != alias_claim.owner_subject.anchor_ea
+            or effect_subject.locator.instruction_ea != alias_claim.host_ea
+            or effect_subject.locator.effect_kind is not model.EffectSiteKind.STORE
+        ):
+            raise ValueError("local-alias relation does not target its exact STORE alias effect")
+        owner_binding = candidate_bindings.get(alias_claim.owner_subject.subject_id)
+        owner_observation = None
+        if owner_binding is not None and owner_binding.status is model.SubjectBindingStatus.UNIQUE:
+            owner_observations = tuple(
+                observation
+                for block in candidate.blocks
+                if block.serial == owner_binding.serial
+                for observation in block.instruction_observations
+                if observation.instruction_ea == alias_claim.host_ea
+            )
+            if len(owner_observations) > 1:
+                raise ValueError("local-alias host observation is ambiguous")
+            owner_observation = owner_observations[0] if owner_observations else None
+        owner_reachable = bool(
+            owner_binding is not None
+            and owner_binding.status is model.SubjectBindingStatus.UNIQUE
+            and owner_binding.serial in candidate.reachable_serials
+        )
+        alias_context_by_effect[effect_subject.subject_id] = (
+            alias_claim, owner_binding, owner_observation, owner_reachable,
+        )
 
     topology_roles = {
         model.SemanticSubjectRole.SOURCE_ENTRY,
@@ -1114,6 +1261,9 @@ def _evaluator_fact_evidence(
                     and item.owner_anchor_ea == effect.owner_anchor_ea
                     and item.instruction_ea == effect.instruction_ea
                 )
+                alias_context = alias_context_by_effect.get(
+                    subject.subject_id, (None, None, None, False),
+                )
                 classifications[subject.subject_id] = _classify_effect_site(
                     effect,
                     subject,
@@ -1123,6 +1273,11 @@ def _evaluator_fact_evidence(
                     validated_exact_claims.get(subject.subject_id),
                     assessment,
                     inputs.generic_gate_facts,
+                    local_alias_claim=alias_context[0],
+                    local_alias_owner_binding=alias_context[1],
+                    local_alias_owner_observation=alias_context[2],
+                    local_alias_owner_reachable=alias_context[3],
+                    phase=phase,
                 )
     for subject in source_subjects:
         if subject.role not in {
@@ -1130,7 +1285,15 @@ def _evaluator_fact_evidence(
             model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
             model.SemanticSubjectRole.TERMINAL_SITE,
             model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
-        } or source_entry is None or subject.block_ref is None:
+        } and not (
+            subject.role is model.SemanticSubjectRole.EFFECT_SITE
+            and subject.kind is model.SemanticSubjectKind.BLOCK
+            and any(
+                type(claim) is model.LocalAliasEffectScalarizationClaim
+                and claim.owner_subject.subject_id == subject.subject_id
+                for claim in inputs.claims
+            )
+        ) or source_entry is None or subject.block_ref is None:
             continue
         binding = candidate_binding_by_id.get(subject.subject_id)
         candidate_serial = (
@@ -1151,7 +1314,11 @@ def _evaluator_fact_evidence(
                     break
                 path_subject_ids_list.append(intermediate[0].subject_id)
             if path_subject_ids_list and serial_path[-1] == root_serial:
-                path_subject_ids = tuple(path_subject_ids_list)
+                path_subject_ids = (
+                    tuple(path_subject_ids_list)
+                    if subject.subject_id == source_entry.subject_id
+                    else (*path_subject_ids_list, subject.subject_id)
+                )
             elif path_subject_ids_list:
                 path_subject_ids = (*path_subject_ids_list, subject.subject_id)
             else:
@@ -1183,10 +1350,21 @@ def _evaluator_fact_evidence(
         )
         if effect_classification is not None:
             if effect_classification.authorized_loss:
-                # Exact-effect claims provide the later structural support;
-                # never emit an unaccounted lineage row for authorized loss.
-                disposition = None
-            elif effect_classification.preserved:
+                alias_owner_binding = None
+                if type(effect_classification.claim) is model.LocalAliasEffectScalarizationClaim:
+                    alias_owner_binding = candidate_bindings.get(
+                        effect_classification.claim.owner_subject.subject_id
+                    )
+                if (
+                    alias_owner_binding is not None
+                    and alias_owner_binding.status is model.SubjectBindingStatus.UNIQUE
+                ):
+                    # Alias scalarization changes the exact effect, while the
+                    # owning block remains structurally preserved.
+                    disposition = model.StructuralDisposition.PRESERVED
+                else:
+                    disposition = None
+            elif effect_classification.preserved or effect_classification.structural_preserved:
                 disposition = model.StructuralDisposition.PRESERVED
             else:
                 disposition = model.StructuralDisposition.UNACCOUNTED_LOSS
@@ -1202,11 +1380,29 @@ def _evaluator_fact_evidence(
             and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
         ):
             disposition = model.StructuralDisposition.AUTHORIZED_RETIREMENT
+        lineage_preserved = disposition is model.StructuralDisposition.PRESERVED
+        lineage_binding = candidate_binding
+        if (
+            effect_classification is not None
+            and type(effect_classification.claim) is model.LocalAliasEffectScalarizationClaim
+        ):
+            lineage_binding = candidate_bindings.get(
+                effect_classification.claim.owner_subject.subject_id,
+            )
+        lineage_candidate_ids = (
+            (effect_classification.claim.owner_subject.subject_id,)
+            if (
+                lineage_preserved
+                and effect_classification is not None
+                and type(effect_classification.claim) is model.LocalAliasEffectScalarizationClaim
+            )
+            else ((subject.subject_id,) if lineage_preserved else ())
+        )
         if disposition is not None:
             lineage = model.StructuralLineageEvidencePayload(
-                subject.subject_id, (subject.subject_id,) if preserved else (), disposition,
+                subject.subject_id, lineage_candidate_ids, disposition,
                 tuple(sorted(set(source_binding.native_instruction_eas) & set(
-                    candidate_binding.native_instruction_eas if candidate_binding is not None else (),
+                    lineage_binding.native_instruction_eas if lineage_binding is not None else (),
                 ))), claim.claim_id if claim is not None else None, (subject.subject_id,),
             )
             evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, subject, phase, lineage))
@@ -1237,13 +1433,18 @@ def _evaluator_fact_evidence(
         if classification is None:
             continue
         metadata_claim = classification.claim
+        exact_metadata_claim = (
+            metadata_claim
+            if type(metadata_claim) is model.ExactInfeasibleEffectClaim
+            else None
+        )
         payload = model.EffectSiteEvidencePayload(
             subject.subject_id, effect.effect_kind, effect.instruction_ea, effect.opcode,
             effect.width,
-            metadata_claim.state_identity if metadata_claim is not None else None,
-            metadata_claim.normalized_state if metadata_claim is not None else None,
-            metadata_claim.consensus.mode if metadata_claim is not None else model.ProviderConsensusMode.NOT_APPLICABLE,
-            metadata_claim.consensus.provider_ids if metadata_claim is not None else (),
+            exact_metadata_claim.state_identity if exact_metadata_claim is not None else None,
+            exact_metadata_claim.normalized_state if exact_metadata_claim is not None else None,
+            exact_metadata_claim.consensus.mode if exact_metadata_claim is not None else model.ProviderConsensusMode.NOT_APPLICABLE,
+            exact_metadata_claim.consensus.provider_ids if exact_metadata_claim is not None else (),
             classification.preserved,
         )
         evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.EFFECT_SITE, subject, phase, payload))
@@ -1296,6 +1497,15 @@ def _evaluator_fact_evidence(
             ),
             None,
         )
+        if patch_subject is None:
+            patch_subject = next(
+                (
+                    subject for subject in candidate_subjects
+                    if subject.role is model.SemanticSubjectRole.EFFECT_SITE
+                    and subject.block_ref == item.owner_ref
+                ),
+                None,
+            )
         if patch_subject is None:
             raise ValueError("patch-step fact owner is not an inventoried planned helper")
         patch_evidence_rows.append(_evidence_factory(
@@ -1356,11 +1566,10 @@ def build_semantic_case(
         for claim in inputs.claims
         if type(claim) is model.LocalAliasEffectScalarizationClaim
     }
-    alias_claims_by_owner = {
-        claim.owner_subject.subject_id: claim
-        for claim in inputs.claims
+    alias_claims = tuple(
+        claim for claim in inputs.claims
         if type(claim) is model.LocalAliasEffectScalarizationClaim
-    }
+    )
     allowed_relation_dimensions = {
         model.SafetyDimension.ROUTE_EQUIVALENCE,
         model.SafetyDimension.TOPOLOGY_INTEGRITY,
@@ -1377,16 +1586,20 @@ def build_semantic_case(
             raise ValueError("conditional relation target is outside case inventory")
         if relation.dimension is model.SafetyDimension.EFFECT_PRESERVATION:
             target = known_input_subjects.get(relation.target_subject_id)
-            claim = alias_claims_by_owner.get(relation.source_subject_id)
+            matching_claims = tuple(
+                claim for claim in alias_claims
+                if claim.owner_subject.subject_id == relation.source_subject_id
+                and claim.host_ea == target.locator.instruction_ea
+            ) if target is not None and type(target.locator) is model.EffectSubjectLocator else ()
             if (
                 relation.source_subject_id not in alias_owners
-                or claim is None
+                or len(matching_claims) != 1
                 or target is None
                 or target.role is not model.SemanticSubjectRole.EFFECT_SITE
                 or type(target.locator) is not model.EffectSubjectLocator
                 or target.locator.effect_kind is not model.EffectSiteKind.STORE
-                or target.locator.owner_ref != claim.owner_subject.block_ref
-                or target.locator.owner_anchor_ea != claim.owner_subject.anchor_ea
+                or target.locator.owner_ref != matching_claims[0].owner_subject.block_ref
+                or target.locator.owner_anchor_ea != matching_claims[0].owner_subject.anchor_ea
             ):
                 raise ValueError("effect conditional relation must target an exact STORE alias effect")
         elif relation.dimension not in allowed_relation_dimensions:
@@ -1985,7 +2198,10 @@ def build_semantic_case(
                 raise ValueError("corridor evidence member scope does not match its locator")
         elif type(payload) is model.PatchStepEvidencePayload:
             header_target = item.subject.subject_id
-            if item.subject.role is not model.SemanticSubjectRole.PLANNED_HELPER or item.subject.block_ref != payload.owner_ref:
+            if item.subject.role not in {
+                model.SemanticSubjectRole.PLANNED_HELPER,
+                model.SemanticSubjectRole.EFFECT_SITE,
+            } or item.subject.block_ref != payload.owner_ref:
                 raise ValueError("patch-step evidence header does not match its owner")
         elif type(payload) is model.GenericCfgGateEvidencePayload:
             if len(payload.affected_subject_ids) != 1:
@@ -2202,6 +2418,13 @@ def build_semantic_case(
                 if subject.role is model.SemanticSubjectRole.PLANNED_HELPER
                 and subject.block_ref == payload.owner_ref
             )
+            if payload.step_type == "PatchScalarizeLocalAliasAccess":
+                helper_ids = helper_ids or tuple(
+                    subject.subject_id for subject in subjects
+                    if subject.role is model.SemanticSubjectRole.EFFECT_SITE
+                    and subject.kind is model.SemanticSubjectKind.BLOCK
+                    and subject.block_ref == payload.owner_ref
+                )
             if not helper_ids:
                 raise ValueError("patch-step evidence owner is outside helper inventory")
             rule = (
@@ -2209,7 +2432,10 @@ def build_semantic_case(
                 if payload.step_type == "PatchResegmentBlock"
                 else model.UnflattenJustificationRule.HELPER_OWNER_LINEAGE_PROVEN
             )
-            targets = tuple((target, model.SafetyDimension.STRUCTURAL_ACCOUNTING, True, rule) for target in helper_ids)
+            targets = () if payload.step_type == "PatchScalarizeLocalAliasAccess" else tuple(
+                (target, model.SafetyDimension.STRUCTURAL_ACCOUNTING, True, rule)
+                for target in helper_ids
+            )
         elif type(payload) is model.GenericCfgGateEvidencePayload:
             dimension = {model.GenericCfgGateKind.ENTRY_REACHABILITY: model.SafetyDimension.ENTRY_REACHABILITY, model.GenericCfgGateKind.EFFECTFUL_REACHABILITY: model.SafetyDimension.EFFECT_PRESERVATION, model.GenericCfgGateKind.TERMINAL_REACHABILITY: model.SafetyDimension.TERMINAL_REACHABILITY}[payload.gate]
             targets = tuple((target, dimension, payload.passed, model.UnflattenJustificationRule.GENERIC_CFG_GATE_PASSED if payload.passed else model.UnflattenJustificationRule.GENERIC_CFG_GATE_FAILED) for target in payload.affected_subject_ids)
@@ -2220,7 +2446,13 @@ def build_semantic_case(
             if (
                 not passed
                 and dimension is model.SafetyDimension.EFFECT_PRESERVATION
-                and target_id in authorized_loss_subject_ids
+                and (
+                    target_id in authorized_loss_subject_ids
+                    or (
+                        classifications.get(target_id) is not None
+                        and classifications[target_id].preserved
+                    )
+                )
             ):
                 # A failed generic effect gate remains in the evidence
                 # inventory, but exact classified loss is normalized by its
@@ -2327,6 +2559,13 @@ def build_semantic_case(
                 relation for relation in inputs.conditional_relations
                 if relation.source_subject_id == claim.owner_subject.subject_id
                 and relation.dimension is model.SafetyDimension.EFFECT_PRESERVATION
+                and any(
+                    subject.subject_id == relation.target_subject_id
+                    and type(subject.locator) is model.EffectSubjectLocator
+                    and subject.locator.instruction_ea == claim.host_ea
+                    and subject.locator.effect_kind is model.EffectSiteKind.STORE
+                    for subject in subjects
+                )
             )
             alias_target_ids = {relation.target_subject_id for relation in alias_relations}
             alias_effect = tuple(
@@ -2334,10 +2573,21 @@ def build_semantic_case(
                 if type(item.payload) is model.EffectSiteEvidencePayload
                 and item.payload.effect_subject_id in alias_target_ids
                 and item.payload.effect_kind is model.EffectSiteKind.STORE
-                and item.payload.preserved
+                and (
+                    item.payload.preserved
+                    or (
+                        classifications.get(item.payload.effect_subject_id) is not None
+                        and classifications[item.payload.effect_subject_id].authorized_loss
+                        and classifications[item.payload.effect_subject_id].authorized_transition
+                        and classifications[item.payload.effect_subject_id].claim is claim
+                    )
+                )
                 and item.payload.instruction_ea == claim.host_ea
                 and item.payload.opcode == claim.host_opcode
-                and item.payload.width == claim.value_size
+                and (
+                    claim.value_size is None
+                    or item.payload.width == claim.value_size
+                )
             )
             alias_patch = tuple(
                 item for item in evidence
@@ -2374,7 +2624,8 @@ def build_semantic_case(
             alias_evidence = (*alias_effect, *alias_patch, *alias_binding, *alias_reachability)
             if len(alias_relations) == 1 and len(alias_effect) == len(alias_patch) == len(alias_binding) == len(alias_reachability) == 1:
                 claim_evidence = tuple(item.evidence_id for item in alias_evidence)
-                targets = ((next(subject for subject in subjects if subject.subject_id in alias_target_ids), model.SafetyDimension.EFFECT_PRESERVATION),)
+                effect_target = next(subject for subject in subjects if subject.subject_id in alias_target_ids)
+                targets = ((effect_target, model.SafetyDimension.EFFECT_PRESERVATION),)
             rule = model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN
         elif type(claim) is model.TerminalCycleBreakClaim:
             matching_lineage = tuple(

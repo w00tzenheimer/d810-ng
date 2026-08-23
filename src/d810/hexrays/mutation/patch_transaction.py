@@ -19,7 +19,7 @@ from d810.analyses.control_flow.effect_branch_exclusion import (
 from d810.transforms.unflatten_authority.legacy_codec import (
     exact_state_branch_effect_exclusion_from_metadata,
 )
-from d810.ir.flowgraph import FlowGraph, InsnKind
+from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import (
     BoundCfgTransaction,
     CfgGenerationPoisoned,
@@ -419,121 +419,6 @@ def _reachable_serials(graph: FlowGraph) -> frozenset[int]:
     return frozenset(seen)
 
 
-def _insn_eas(insn: object) -> frozenset[int]:
-    values: set[int] = set()
-    for field_name in ("ea", "native_ea"):
-        raw = getattr(insn, field_name, None)
-        if raw is None:
-            continue
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if 0 <= value < 0xFFFFFFFFFFFFFFFF:
-            values.add(value)
-    return frozenset(values)
-
-
-def _validated_local_alias_effect_exclusions(
-    source: FlowGraph,
-    post_graph: FlowGraph,
-    plan: PatchPlan,
-) -> frozenset[int] | None:
-    """Certify exact local-alias STORE-to-scalar transformations.
-
-    The portable CFG projection intentionally leaves instructions unchanged,
-    while the live backend rewrites a proven local-alias ``STORE`` to a scalar
-    ``MOV``.  Effect preservation must recognize that typed transformation,
-    but only while the owning block remains reachable and every original
-    effect in that block is one of the exact bound scalarization hosts.
-    """
-
-    source_coordinates = dict(plan.source_coordinates)
-    store_hosts_by_serial: dict[int, set[int]] = {}
-    for step in plan.steps:
-        if not isinstance(step, PatchScalarizeLocalAliasAccess):
-            continue
-        serial = source_coordinates.get(step.block_serial)
-        if serial is None:
-            return None
-        serial = int(serial)
-        block = source.get_block(serial)
-        if block is None:
-            return None
-        matches = tuple(
-            insn
-            for insn in block.insn_snapshots
-            if int(step.host_ea) in _insn_eas(insn)
-            and int(getattr(insn, "opcode", -1)) == int(step.host_opcode)
-        )
-        if len(matches) != 1:
-            return None
-        host = matches[0]
-        if host.kind is not InsnKind.STORE:
-            continue
-        text = str(getattr(host, "display_text", "") or "")
-        if not step.alias_token or step.alias_token not in text:
-            return None
-        if step.host_text_sha1 is not None and (
-            hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
-            != str(step.host_text_sha1)
-        ):
-            return None
-        if step.value_size is not None:
-            try:
-                source_size = int(getattr(getattr(host, "l", None), "size", 0) or 0)
-            except (TypeError, ValueError):
-                return None
-            if source_size <= 0 or source_size != int(step.value_size):
-                return None
-        store_hosts_by_serial.setdefault(serial, set()).add(int(step.host_ea))
-
-    source_reachable = _reachable_serials(source)
-    post_reachable = _reachable_serials(post_graph)
-    allowed: set[int] = set()
-    for serial, host_eas in store_hosts_by_serial.items():
-        if serial not in source_reachable or serial not in post_reachable:
-            continue
-        block = source.get_block(serial)
-        post_block = post_graph.get_block(serial)
-        if block is None or post_block is None:
-            continue
-        effects = tuple(
-            insn
-            for insn in block.insn_snapshots
-            if insn.is_call or insn.kind in {InsnKind.CALL, InsnKind.STORE}
-        )
-        if not effects or any(insn.kind is not InsnKind.STORE for insn in effects):
-            continue
-        effect_eas = tuple(
-            next(iter(_insn_eas(insn)), None)
-            for insn in effects
-        )
-        if any(ea is None for ea in effect_eas) or set(effect_eas) != host_eas:
-            continue
-        observed_by_ea = {
-            ea: insn
-            for insn in post_block.insn_snapshots
-            for ea in _insn_eas(insn)
-            if ea in host_eas
-        }
-        if any(
-            insn.is_call
-            or insn.kind in {InsnKind.UNKNOWN, InsnKind.CALL, InsnKind.STORE}
-            for insn in observed_by_ea.values()
-        ) and any(
-            # The unchanged portable preflight projection still contains the
-            # exact original STORE.  A live observation may instead contain
-            # any classified non-effectful value/control instruction after
-            # Hex-Rays optimizes the scalar MOV, or no instruction at all.
-            insn.kind is not InsnKind.STORE
-            for insn in observed_by_ea.values()
-        ):
-            continue
-        allowed.add(serial)
-    return frozenset(allowed)
-
-
 def _transaction_reachability_removal_validation(
     candidate: object,
     *,
@@ -899,23 +784,10 @@ class HexRaysPatchTransactionParticipant:
             projection.graph,
             legacy_view,
         )
-        validated_alias_effect_exclusions = (
-            _validated_local_alias_effect_exclusions(
-                snapshot,
-                projection.graph,
-                self.plan,
-            )
-        )
-        if (
-            validated_effect_exclusions is None
-            or validated_alias_effect_exclusions is None
-        ):
+        if validated_effect_exclusions is None:
             raise PatchTransactionPreflightRejected(
                 "projected effect exclusion rejected: malformed or stale exact proof"
             )
-        validated_effect_exclusions = frozenset(
-            validated_effect_exclusions | validated_alias_effect_exclusions
-        )
         self._validated_effect_exclusion_serials = validated_effect_exclusions
         terminal_reachability = check_terminal_reachability_preserved(
             snapshot,
@@ -1370,20 +1242,6 @@ class _PatchTransactionLifecycle:
                         observed_coverage_validation
                     ),
                 ) from error
-        validated_alias_effect_exclusions = (
-            _validated_local_alias_effect_exclusions(
-                source,
-                observed_validation_graph,
-                self.plan,
-            )
-        )
-        if (
-            validated_effect_exclusions is not None
-            and validated_alias_effect_exclusions is not None
-        ):
-            validated_effect_exclusions = frozenset(
-                validated_effect_exclusions | validated_alias_effect_exclusions
-            )
         if (
             validated_effect_exclusions is None
             or validated_effect_exclusions
@@ -1516,7 +1374,23 @@ class _PatchTransactionLifecycle:
             observed_coverage_validation is not None
             and not observed_coverage_validation.passed
         )
-        if not terminal_reachability.passed or not effectful_reachability.passed or (
+        # A bound transaction-derived alias claim is the only typed path that
+        # may defer an observed effectful failure to semantic evaluation.  The
+        # evaluator then scopes the allowance to its exact STORE relation;
+        # this is deliberately not a serial/EA exclusion set.
+        bound_claims = ()
+        if self.bound.unflatten_authority is not None:
+            bound_claims = self.bound.unflatten_authority.prepared.claims
+        from d810.transforms.unflatten_authority.model import (
+            LocalAliasEffectScalarizationClaim,
+        )
+        has_local_alias_claim = any(
+            type(claim) is LocalAliasEffectScalarizationClaim
+            for claim in bound_claims
+        )
+        if not terminal_reachability.passed or (
+            not effectful_reachability.passed and not has_local_alias_claim
+        ) or (
             not entry_reachability.passed and not entry_allowance_passed
         ) or observed_removal_rejected or observed_coverage_rejected:
             effectful_detail = ""

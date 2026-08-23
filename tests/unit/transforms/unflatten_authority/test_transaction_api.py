@@ -203,7 +203,7 @@ def test_prepare_derives_closed_inputs_and_bind_consumes_exact_bound_patch_plan(
     from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
     plan = PatchPlan(
         plan_id=proposal.plan_id,
-            snapshot_id=authority_id("snapshot-exact"),
+        snapshot_id=authority_id("snapshot-exact"),
         source_generation=1,
         steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]), PatchRedirectGoto(refs[1], refs[2], refs[0])),
         source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
@@ -854,6 +854,86 @@ def test_prepare_rejects_projected_route_predicate_erasure() -> None:
 
     assert getattr(result, "prepared", None) is None
     assert result.verdict.reason.name == "PROJECTED_BINDING_FAILED"
+
+
+def test_local_alias_claim_is_derived_before_authority_id() -> None:
+    """A scalarization step is transaction authority, not producer metadata."""
+
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.plan import PatchPlan, PatchScalarizeLocalAliasAccess
+    from d810.transforms.unflatten_authority import model, transaction_api
+    from d810.ir.flowgraph import (
+        BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot,
+        MopSnapshot, OperandKind,
+    )
+
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    refs = tuple(item.block_ref for item in proposal.source_identity_catalog.blocks)
+    source = FlowGraph(
+        {
+            0: BlockSnapshot(0, 0, (), (), 0, 0x1000, (
+                    InsnSnapshot(
+                        58, 0x1000, (),
+                        l=MopSnapshot(kind=OperandKind.LVAR, size=4),
+                        display_text="store alias base",
+                        kind=InsnKind.STORE,
+                    ),
+            ), kind=BlockKind.ZERO_WAY),
+            1: BlockSnapshot(1, 0, (), (), 0, 0x1300, (
+                InsnSnapshot(0, 0x1300, (), kind=InsnKind.NOP),
+            ), kind=BlockKind.ZERO_WAY),
+            2: BlockSnapshot(2, 0, (), (), 0, 0x1100, (
+                InsnSnapshot(0, 0x1100, (), kind=InsnKind.NOP),
+            ), kind=BlockKind.ZERO_WAY),
+        },
+        0,
+        0x1000,
+    )
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=authority_id("local-alias-derived"),
+        source_generation=proposal.source_identity_catalog.generation,
+        steps=(PatchScalarizeLocalAliasAccess(
+            block_serial=refs[0], host_ea=0x1000, host_opcode=58,
+            alias_token="alias", base_token="base",
+        ),),
+        source_coordinates=tuple((ref, serial) for serial, ref in enumerate(refs)),
+        unflatten_proposal=proposal,
+    )
+    inputs = transaction_api.derive_unflatten_preparation_inputs(
+        source, CfgProjection(plan.plan_id, plan.snapshot_id, source),
+        plan, proposal, None,
+    )
+
+    assert any(
+        type(claim) is model.LocalAliasEffectScalarizationClaim
+        for claim in inputs.claims
+    )
+    alias_claim = next(
+        claim for claim in inputs.claims
+        if type(claim) is model.LocalAliasEffectScalarizationClaim
+    )
+    assert inputs.preparation_receipt.patch_step_digest == authority_id(
+        inputs.patch_step_facts
+    )
+    assert inputs.preparation_receipt.conditional_relation_digest == authority_id(
+        inputs.conditional_relations
+    )
+    assert inputs.patch_step_facts[0].step_digest == alias_claim.step_digest
+    with pytest.raises((TypeError, ValueError)):
+        replace(proposal, claims=(*proposal.claims, alias_claim))
+    mutated_plan = replace(
+        plan,
+        steps=(replace(plan.steps[0], alias_token="mutated-alias"),),
+    )
+    with pytest.raises(ValueError, match="tokens"):
+        transaction_api.derive_unflatten_preparation_inputs(
+            source,
+            CfgProjection(mutated_plan.plan_id, mutated_plan.snapshot_id, source),
+            mutated_plan,
+            proposal,
+            None,
+        )
 
 
 def test_prepare_rejects_projected_route_carrier_interference() -> None:

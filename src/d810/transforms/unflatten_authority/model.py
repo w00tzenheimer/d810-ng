@@ -57,7 +57,7 @@ from .gates import GenericCfgGateFacts
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
 _OBLIGATION_INDEX_TOKEN = object()
-_SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA1_RE = re.compile(r"^[0-9a-f]{16}$")
 _CFG_REF_TYPES = (NativeBlockRef, LogicalBlockRef, PlanBlockRef)
 _AUTHORITY_REF_TYPES = (NativeBlockRef, LogicalBlockRef)
 
@@ -787,6 +787,7 @@ class InventoryInstructionObservation:
     control_transfer_kind: ControlTransferKind | None
     is_call: bool
     call_kind: CallKind | None
+    display_text: str | None = None
 
     def __post_init__(self) -> None:
         _inventory_nonnegative(self.ordinal, "ordinal")
@@ -803,6 +804,8 @@ class InventoryInstructionObservation:
             raise TypeError("is_call must be an exact bool")
         if self.call_kind is not None and type(self.call_kind) is not CallKind:
             raise TypeError("call_kind must be CallKind or None")
+        if self.display_text is not None and type(self.display_text) is not str:
+            raise TypeError("display_text must be an exact string or None")
 
 
 def required_inventory_control_transfer(
@@ -1859,7 +1862,7 @@ class LocalAliasEffectScalarizationClaim:
         _text(self.base_token, "base_token")
         if self.host_text_sha1 is not None:
             if not isinstance(self.host_text_sha1, str) or not _SHA1_RE.fullmatch(self.host_text_sha1):
-                raise ValueError("host_text_sha1 must be lowercase 40-hex or None")
+                raise ValueError("host_text_sha1 must be lowercase 16-hex or None")
         if self.value_size is not None:
             _nonnegative(self.value_size, "value_size")
         _id(self.step_digest, "step_digest")
@@ -3601,6 +3604,11 @@ class SemanticSafetyCase:
             raise ValueError("source_inventory generation does not match preparation_receipt")
         if self.source_inventory.inventory_digest != self.preparation_receipt.source_inventory_digest:
             raise ValueError("source_inventory digest does not match preparation_receipt")
+        if any(
+            claim.source_generation != self.source_inventory.generation
+            for claim in self.claims
+        ):
+            raise ValueError("claims must use the exact source generation")
         source_subject_ids = _tuple(self.source_subject_ids, "source_subject_ids", sort=True)
         if any(type(value) is not str for value in source_subject_ids):
             raise TypeError("source_subject_ids must contain strings")

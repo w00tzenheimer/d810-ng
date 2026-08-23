@@ -785,7 +785,7 @@ def test_catalog_binds_exact_anchors_and_native_keys() -> None:
         )
 
 
-def test_alias_host_text_sha1_is_lowercase_40_hex() -> None:
+def test_alias_host_text_sha1_is_lowercase_16_hex() -> None:
     model = import_authority_model()
     b0 = block_ref("b0")
     owner = _subject(model, model.SemanticSubjectKind.BLOCK,
@@ -795,7 +795,7 @@ def test_alias_host_text_sha1_is_lowercase_40_hex() -> None:
         claim_id=authority_id("alias-sha"),
         kind=model.UnflattenClaimKind.LOCAL_ALIAS_EFFECT_SCALARIZATION,
         owner_subject=owner, step_index=0, host_ea=0x1000, host_opcode=1,
-        alias_token="alias", base_token="base", host_text_sha1="a" * 40,
+        alias_token="alias", base_token="base", host_text_sha1="a" * 16,
         value_size=None, step_digest=authority_id("step-sha"), source_generation=0,
     )
     _claim_factory(model.LocalAliasEffectScalarizationClaim, **{key: value for key, value in kwargs.items() if key != "claim_id"})
@@ -807,7 +807,7 @@ def test_alias_host_text_sha1_is_lowercase_40_hex() -> None:
                 model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
                 model.BlockSubjectLocator(b0, 0x1000),
             )})
-    for malformed in ("A" * 40, "a" * 39, "a" * 41, "z" * 40):
+    for malformed in ("A" * 16, "a" * 15, "a" * 17, "z" * 16):
         with pytest.raises(ValueError):
             _claim_factory(model.LocalAliasEffectScalarizationClaim, **{
                 **{key: value for key, value in kwargs.items() if key != "claim_id"},

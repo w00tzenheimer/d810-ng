@@ -2909,7 +2909,7 @@ def test_same_owner_missing_claim_does_not_authorize_unclaimed_sibling() -> None
 
 
 def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
-    from tests.unit.transforms.unflatten_authority.test_bind import _exact_fixture
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
     from d810.analyses.control_flow.graph_checks import (
         check_effectful_reachability_preserved,
         check_entry_reachability_not_collapsed,
@@ -2922,7 +2922,7 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
     from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
     from d810.ir.flowgraph import InsnKind
 
-    source_graph, proposal, _exclusion, refs = _exact_fixture()
+    source_graph, proposal, _exclusion, refs = exact_fixture()
     plan = PatchPlan(
         plan_id=proposal.plan_id,
         snapshot_id=authority_id("exact-effect-snapshot"),

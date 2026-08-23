@@ -75,6 +75,9 @@ from d810.transforms.cfg_transaction import (
     PlanBlockRef,
     PreparedCfgTransaction,
 )
+from d810.transforms.unflatten_authority.ids import authority_id
+from d810.transforms.unflatten_authority import model as authority_model
+from d810.transforms.unflatten_authority import views as authority_views
 from d810.transforms.dispatcher_corridor_coverage import (
     DISPATCHER_CORRIDOR_COVERAGE_METADATA,
     DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
@@ -107,6 +110,7 @@ from d810.transforms.plan import (
     PatchRemoveEdge,
     PatchRedirectBranch,
     PatchRedirectGoto,
+    PatchRemoveEdge,
     PatchScalarizeLocalAliasAccess,
 )
 from tests.native_preanalysis import make_native_key
@@ -323,6 +327,7 @@ def _ordinary_gateway(
     cfg: FlowGraph,
     plan: PatchPlan,
     *,
+    native_key=NATIVE_KEY,
     event_emitter: EventEmitter | None = None,
     lifecycle_authority: object | None = None,
 ) -> MbaMutationGateway:
@@ -331,14 +336,14 @@ def _ordinary_gateway(
         generation=int(plan.source_generation or 0),
         maturity=0,
         snapshot_id=plan.snapshot_id,
-        native_key=NATIVE_KEY,
+        native_key=native_key,
         flow_graph=cfg,
     )
     return MbaMutationGateway(
         session_id=index.session_id,
         generation=index.generation,
         maturity=0,
-        native_key=NATIVE_KEY,
+        native_key=native_key,
         identity_index=index,
         event_emitter=event_emitter,
         lifecycle_authority=lifecycle_authority,
@@ -2421,6 +2426,145 @@ def _local_alias_scalarization_plan() -> PatchPlan:
     )
 
 
+def _typed_local_alias_fixture(
+    *, two_hosts: bool = False, sibling_kind: InsnKind = InsnKind.STORE,
+) -> tuple[FlowGraph, PatchPlan]:
+    """Build a real producer proposal with one reachable STORE owner."""
+
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    source = replace(
+        source,
+        blocks={
+            **source.blocks,
+            2: replace(
+                source.blocks[2],
+                insn_snapshots=(InsnSnapshot(
+                    opcode=0,
+                    ea=0x3000,
+                    native_ea=0x3000,
+                    operands=(),
+                    l=MopSnapshot(kind=OperandKind.LVAR, size=4),
+                    display_text="store %var_alias",
+                    kind=InsnKind.STORE,
+                ),),
+            ),
+        },
+    )
+    if two_hosts:
+        from dataclasses import replace as dataclass_replace
+        from d810.transforms.unflatten_authority import producer_api
+
+        source = replace(
+            source,
+            blocks={
+                **source.blocks,
+                2: replace(
+                    source.blocks[2],
+                    insn_snapshots=(
+                        source.blocks[2].insn_snapshots[0],
+                        InsnSnapshot(
+                            opcode=0,
+                            ea=0x3001,
+                            native_ea=0x3001,
+                            operands=(),
+                            l=MopSnapshot(kind=OperandKind.LVAR, size=4),
+                            display_text=(
+                                "store %var_alias2"
+                                if sibling_kind is InsnKind.STORE
+                                else "call %var_sibling"
+                            ),
+                            kind=sibling_kind,
+                            is_call=sibling_kind is InsnKind.CALL,
+                        ),
+                    ),
+                ),
+            },
+        )
+        old_identity = refs[2].identity
+        refs = {
+            **refs,
+            2: NativeBlockRef(StableBlockIdentity.from_instruction_eas(
+                (0x3000, 0x3001), native_key=old_identity.native_key,
+            )),
+        }
+        route_proofs = tuple(
+            dataclass_replace(
+                proof,
+                destinations=tuple(
+                    dataclass_replace(destination, target_identity=refs[2].identity)
+                    if destination.target_identity == old_identity else destination
+                    for destination in proof.destinations
+                ),
+            )
+            for proof in proposal.route_evidence.route_proofs
+        )
+        route_evidence = dataclass_replace(
+            proposal.route_evidence, route_proofs=route_proofs,
+        )
+        proposal = producer_api.build_proposal(
+            plan_id=proposal.plan_id,
+            source=source,
+            block_refs_by_serial=refs,
+            source_generation=proposal.source_identity_catalog.generation,
+            canonical_route_evidence=route_evidence,
+                exact_state_effect_exclusions=(_exclusion,),
+            dispatcher_entry_serial=1,
+            dispatcher_member_serials=(0, 1),
+            authoritative_handler_serials=(2,),
+            state_identity=proposal.plan_inputs.state_identity,
+            use_def_witness=proposal.use_def_witness,
+        )
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=authority_id("typed-local-alias-snapshot"),
+        source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
+        source_generation=proposal.source_identity_catalog.generation,
+        steps=(
+            PatchRedirectGoto(refs[0], refs[1], refs[1]),
+            PatchRedirectBranch(refs[1], refs[2], refs[2]),
+            PatchRemoveEdge(refs[2], refs[3]),
+            PatchRemoveEdge(refs[2], refs[4]),
+            PatchScalarizeLocalAliasAccess(
+                block_serial=refs[2],
+                host_ea=0x3000,
+                host_opcode=0,
+                alias_token="%var_alias",
+                base_token="%var_398",
+                value_size=4,
+            ),
+            *(() if not two_hosts or sibling_kind is not InsnKind.STORE else (
+                PatchScalarizeLocalAliasAccess(
+                    block_serial=refs[2],
+                    host_ea=0x3001,
+                    host_opcode=0,
+                    alias_token="%var_alias2",
+                    base_token="%var_399",
+                    value_size=4,
+                ),
+            )),
+        ),
+        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+        unflatten_proposal=proposal,
+    )
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+    proposal = replace(
+        proposal,
+        plan_inputs=replace(
+            proposal.plan_inputs,
+            dispatcher_member_refs=(refs[0], refs[1]),
+        ),
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=canonical_redirect_manifest(plan).owner_refs,
+            redirect_digest=canonical_redirect_manifest(plan).digest,
+        ),
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+    return source, plan
+
+
 def _observed_scalarized_cfg(
     source: FlowGraph,
     *,
@@ -2461,29 +2605,577 @@ def _observed_scalarized_cfg(
     return _make_cfg([(0, 2), (1, 2)], stop_serials=(2,))
 
 
-def test_backend_accepts_exact_reachable_local_alias_store_scalarization() -> None:
-    """A typed scalarization may replace only its exact local-alias STORE."""
+def _observed_typed_local_alias_cfg(
+    source: FlowGraph, *, two_hosts: bool = False, drop_second: bool = False,
+) -> FlowGraph:
+    block = source.blocks[2]
+    observations = (
+        InsnSnapshot(
+            opcode=4,
+            ea=0x3000,
+            native_ea=0x3000,
+            operands=(),
+            l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+            d=MopSnapshot(kind=OperandKind.LVAR, size=4),
+            kind=InsnKind.MOV,
+            display_text="mov #1.4, %var_398.4",
+        ),
+    )
+    if two_hosts and not drop_second:
+        observations += (
+            InsnSnapshot(
+                opcode=4,
+                ea=0x3001,
+                native_ea=0x3001,
+                operands=(),
+                l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=2),
+                d=MopSnapshot(kind=OperandKind.LVAR, size=4),
+                kind=InsnKind.MOV,
+                display_text="mov #2.4, %var_399.4",
+            ),
+        )
+    return replace(
+        source,
+        blocks={
+            **source.blocks,
+            2: replace(
+                block,
+                insn_snapshots=observations,
+            ),
+        },
+    )
 
-    pre_cfg = _local_alias_store_cfg()
-    observed_cfg = _observed_scalarized_cfg(pre_cfg)
-    plan = _local_alias_scalarization_plan()
 
+def _typed_effect_subject(case: authority_model.SemanticSafetyCase, ea: int):
+    return next(
+        subject for subject in case.subjects
+        if subject.kind is authority_model.SemanticSubjectKind.EFFECT
+        and type(subject.locator) is authority_model.EffectSubjectLocator
+        and subject.locator.instruction_ea == ea
+    )
+
+
+def _assert_typed_effect_cell(
+    case: authority_model.SemanticSafetyCase,
+    *,
+    ea: int,
+    state: authority_model.ObligationState | tuple[authority_model.ObligationState, ...],
+    rule: authority_model.UnflattenJustificationRule,
+) -> None:
+    subject = _typed_effect_subject(case, ea)
+    key = authority_model.ObligationKey(
+        subject, authority_model.SafetyDimension.EFFECT_PRESERVATION,
+    )
+    cell = next(cell for cell in case.obligation_index.cells if cell.key == key)
+    expected_states = (state,) if type(state) is authority_model.ObligationState else state
+    assert cell.state in expected_states
+    justification_ids = (
+        cell.supporting_justification_ids + cell.refuting_justification_ids
+    )
+    justifications = tuple(
+        item for item in case.justifications
+        if item.justification_id in justification_ids
+    )
+    assert any(item.rule is rule and item.conclusion == key for item in justifications)
+
+
+def _mutate_typed_alias_host(source: FlowGraph, **changes: object) -> FlowGraph:
+    block = source.blocks[2]
+    observation = replace(block.insn_snapshots[0], **changes)
+    return replace(
+        source,
+        blocks={2: replace(block, insn_snapshots=(observation,)), **{
+            serial: item for serial, item in source.blocks.items() if serial != 2
+        }},
+    )
+
+
+def _typed_alias_backend(
+    pre_cfg: FlowGraph, plan: PatchPlan, observed_cfg: FlowGraph,
+) -> HexRaysMutationBackend:
     class _ScalarizingTranslator(_FakeTranslator):
         def lift(self, _live_source: object) -> FlowGraph:
             self.lift_count += 1
             return observed_cfg if self.lower_calls else pre_cfg
 
-    gateway = _ordinary_gateway(pre_cfg, plan)
-    backend = HexRaysMutationBackend(
+    gateway = _ordinary_gateway(
+        pre_cfg,
+        plan,
+        native_key=next(
+            ref.identity.native_key
+            for ref, _serial in plan.source_coordinates
+            if isinstance(ref, NativeBlockRef)
+        ),
+    )
+    return HexRaysMutationBackend(
         mutation_gateway=gateway,
         translator=_ScalarizingTranslator(pre_cfg),
     )
 
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
 
+def test_backend_accepts_exact_reachable_local_alias_store_scalarization() -> None:
+    """A typed scalarization may replace only its exact local-alias STORE."""
+
+    pre_cfg, plan = _typed_local_alias_fixture()
+    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg)
+
+    backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
     assert result is observed_cfg
-    assert not gateway.generation_poisoned
     assert backend.last_patch_execution is not None
+    execution = backend.last_patch_execution
+    assert execution is not None
+    assert execution.projected_unflatten_verdict is not None
+    assert execution.observed_unflatten_verdict is not None
+    assert execution.projected_unflatten_verdict.safety_case is not None
+    assert execution.observed_unflatten_verdict.safety_case is not None
+    projected_ledger = authority_views.semantic_loss_ledger(
+        execution.projected_unflatten_verdict.safety_case,
+    )
+    observed_ledger = authority_views.semantic_loss_ledger(
+        execution.observed_unflatten_verdict.safety_case,
+    )
+    assert projected_ledger.rows == ()
+    assert len(observed_ledger.rows) == 1
+    loss_row = observed_ledger.rows[0]
+    assert loss_row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
+    assert loss_row.anchored_location == "blk2@0x3000"
+    assert any(
+        type(claim) is authority_model.LocalAliasEffectScalarizationClaim
+        for claim in execution.projected_unflatten_verdict.safety_case.claims
+    )
+
+
+def test_backend_accepts_two_typed_local_alias_hosts_in_one_owner() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture(two_hosts=True)
+    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    assert result is observed
+    execution = backend.last_patch_execution
+    assert execution is not None
+    verdict = execution.observed_unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    ledger = authority_views.semantic_loss_ledger(verdict.safety_case)
+    assert tuple(row.anchored_location for row in ledger.rows) == (
+        "blk2@0x3000", "blk2@0x3000",
+    )
+    assert len({row.claim_ids for row in ledger.rows}) == 2
+    assert all(
+        row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
+        for row in ledger.rows
+    )
+
+
+def test_backend_preserves_unclaimed_typed_local_alias_sibling_store() -> None:
+    pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
+    plan = replace(full_plan, steps=full_plan.steps[:-1])
+    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            2: replace(
+                observed.blocks[2],
+                insn_snapshots=(
+                    observed.blocks[2].insn_snapshots[0],
+                    replace(
+                        pre_cfg.blocks[2].insn_snapshots[1],
+                        display_text="store %var_alias2",
+                    ),
+                ),
+            ),
+        },
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    assert result is observed
+    execution = backend.last_patch_execution
+    assert execution is not None
+    verdict = execution.observed_unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    ledger = authority_views.semantic_loss_ledger(verdict.safety_case)
+    assert len(ledger.rows) == 1
+    alias_claim = next(
+        claim for claim in verdict.safety_case.claims
+        if type(claim) is authority_model.LocalAliasEffectScalarizationClaim
+    )
+    assert ledger.rows[0].claim_ids == (alias_claim.claim_id,)
+
+
+def test_backend_reports_unclaimed_typed_local_alias_sibling_store_loss() -> None:
+    pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
+    plan = replace(full_plan, steps=full_plan.steps[:-1])
+    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            2: replace(
+                observed.blocks[2],
+                insn_snapshots=(
+                    observed.blocks[2].insn_snapshots[0],
+                    replace(
+                        observed.blocks[2].insn_snapshots[1],
+                        kind=InsnKind.NOP,
+                        display_text="nop",
+                    ),
+                ),
+            ),
+        },
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    with pytest.raises(CfgGenerationPoisoned) as caught:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    verdict = caught.value.unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    case = verdict.safety_case
+    _assert_typed_effect_cell(
+        case,
+        ea=0x3000,
+        state=authority_model.ObligationState.SATISFIED,
+        rule=authority_model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN,
+    )
+    _assert_typed_effect_cell(
+        case,
+        ea=0x3001,
+        state=authority_model.ObligationState.VIOLATED,
+        rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
+    )
+    ledger = authority_views.semantic_loss_ledger(case)
+    sibling_subject = _typed_effect_subject(case, 0x3001)
+    sibling_row = next(row for row in ledger.rows if row.source_subject == sibling_subject)
+    assert sibling_row.kind is authority_model.SemanticLossKind.UNCLASSIFIED
+    assert sibling_row.claim_ids == ()
+
+
+def test_backend_rejects_unclaimed_typed_local_alias_sibling_call() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture(
+        two_hosts=True, sibling_kind=InsnKind.CALL,
+    )
+    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    sibling_nop = replace(
+        observed.blocks[2].insn_snapshots[1],
+        kind=InsnKind.NOP,
+        display_text="nop",
+    )
+    observed = replace(
+        observed,
+        blocks={2: replace(
+            observed.blocks[2],
+            insn_snapshots=(observed.blocks[2].insn_snapshots[0], sibling_nop),
+        ), **{serial: block for serial, block in observed.blocks.items() if serial != 2}},
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    with pytest.raises(CfgGenerationPoisoned) as caught:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    verdict = caught.value.unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    case = verdict.safety_case
+    _assert_typed_effect_cell(
+        case,
+        ea=0x3000,
+        state=authority_model.ObligationState.SATISFIED,
+        rule=authority_model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN,
+    )
+    _assert_typed_effect_cell(
+        case,
+        ea=0x3001,
+        state=authority_model.ObligationState.VIOLATED,
+        rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
+    )
+    sibling_subject = _typed_effect_subject(case, 0x3001)
+    sibling_row = next(
+        row for row in authority_views.semantic_loss_ledger(case).rows
+        if row.source_subject == sibling_subject
+    )
+    assert sibling_row.kind is authority_model.SemanticLossKind.UNCLASSIFIED
+    assert sibling_row.claim_ids == ()
+
+
+def test_backend_rejects_duplicate_typed_local_alias_host_coordinate() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture(two_hosts=True)
+    duplicate = replace(plan.steps[-1], host_ea=0x3000)
+    plan = replace(plan, steps=(*plan.steps[:-1], duplicate))
+    backend = _typed_alias_backend(
+        pre_cfg, plan, _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True),
+    )
+    assert backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks)) is pre_cfg
+    assert backend.last_patch_execution is None
+
+
+def test_backend_rejects_ambiguous_typed_local_alias_observation() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture()
+    observed = _observed_typed_local_alias_cfg(pre_cfg)
+    host = observed.blocks[2].insn_snapshots[0]
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            2: replace(observed.blocks[2], insn_snapshots=(host, replace(host))),
+        },
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    with pytest.raises(CfgGenerationPoisoned):
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+
+def test_backend_accepts_typed_local_alias_without_optional_value_size() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture()
+    plan = replace(plan, steps=(*plan.steps[:-1], replace(plan.steps[-1], value_size=None)))
+    observed = _observed_typed_local_alias_cfg(pre_cfg)
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    assert result is observed
+    execution = backend.last_patch_execution
+    assert execution is not None
+    verdict = execution.observed_unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    ledger = authority_views.semantic_loss_ledger(verdict.safety_case)
+    assert len(ledger.rows) == 1
+    assert ledger.rows[0].kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
+
+
+def test_backend_rejects_typed_local_alias_source_token_substring() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture()
+    plan = replace(
+        plan,
+        steps=(*plan.steps[:-1], replace(plan.steps[-1], alias_token="%var_alia")),
+    )
+    backend = _typed_alias_backend(
+        pre_cfg, plan, _observed_typed_local_alias_cfg(pre_cfg),
+    )
+    assert backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks)) is pre_cfg
+    assert backend.last_patch_execution is None
+
+
+def test_backend_rejects_unchanged_typed_local_alias_store() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture()
+    observed = _mutate_typed_alias_host(
+        pre_cfg,
+        kind=InsnKind.STORE,
+        opcode=0,
+        display_text="store %var_alias",
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    with pytest.raises(CfgGenerationPoisoned) as caught:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    verdict = caught.value.unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    ledger = authority_views.semantic_loss_ledger(verdict.safety_case)
+    assert ledger.rows == ()
+    case = verdict.safety_case
+    _assert_typed_effect_cell(
+        case,
+        ea=0x3000,
+        state=authority_model.ObligationState.INCONSISTENT,
+        rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
+    )
+    effect_subject = _typed_effect_subject(case, 0x3000)
+    owner_key = authority_model.ObligationKey(
+        effect_subject,
+        authority_model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+    )
+    owner_cell = next(cell for cell in case.obligation_index.cells if cell.key == owner_key)
+    assert owner_cell.state is authority_model.ObligationState.SATISFIED
+    assert all(
+        failed.key != owner_key for failed in verdict.failed_obligations
+    )
+
+
+@pytest.mark.parametrize(
+    ("instruction_kind", "display_text"),
+    (
+        (InsnKind.NOP, "nop"),
+        (InsnKind.MOV, "mov #1.4, %var_other.4"),
+        (InsnKind.MOV, "mov #1.4, %var_399.4"),
+        (InsnKind.MOV, "mov unrelated_%var_398_suffix"),
+        (InsnKind.MOV, "mov %var_398.4, %var_other.4"),
+        (InsnKind.MOV, "mov #1.4, %var_398.8"),
+        (InsnKind.MOV, "mov #1.4, %var_398.04"),
+        (InsnKind.MOV, "mov #1.4, %var_398." + "9" * 5000),
+    ),
+)
+def test_backend_rejects_typed_local_alias_wrong_scalarized_observation(
+    instruction_kind: InsnKind, display_text: str,
+) -> None:
+    pre_cfg, plan = _typed_local_alias_fixture()
+    observed = _observed_typed_local_alias_cfg(pre_cfg)
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            2: replace(
+                observed.blocks[2],
+                insn_snapshots=(replace(
+                    observed.blocks[2].insn_snapshots[0],
+                    kind=instruction_kind,
+                    display_text=display_text,
+                ),),
+            ),
+        },
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    with pytest.raises(CfgGenerationPoisoned) as caught:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    verdict = caught.value.unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    _assert_typed_effect_cell(
+        verdict.safety_case,
+        ea=0x3000,
+        state=(
+            authority_model.ObligationState.VIOLATED,
+            authority_model.ObligationState.INCONSISTENT,
+        ),
+        rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
+    )
+    assert not any(
+        row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
+        for row in authority_views.semantic_loss_ledger(verdict.safety_case).rows
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"opcode": 999},
+        {"d": MopSnapshot(kind=OperandKind.LVAR, size=8), "l": MopSnapshot(kind=OperandKind.NUMBER, size=8, value=1), "display_text": "mov #1.8, %var_398.8"},
+    ),
+)
+def test_backend_rejects_typed_local_alias_noncanonical_mov_observation(
+    changes: dict[str, object],
+) -> None:
+    pre_cfg, plan = _typed_local_alias_fixture()
+    observed = _mutate_typed_alias_host(_observed_typed_local_alias_cfg(pre_cfg), **changes)
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    with pytest.raises(CfgGenerationPoisoned) as caught:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    verdict = caught.value.unflatten_verdict
+    assert verdict.safety_case is not None
+    _assert_typed_effect_cell(
+        verdict.safety_case,
+        ea=0x3000,
+        state=(
+            authority_model.ObligationState.VIOLATED,
+            authority_model.ObligationState.INCONSISTENT,
+        ),
+        rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
+    )
+    assert not any(
+        row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
+        for row in authority_views.semantic_loss_ledger(verdict.safety_case).rows
+    )
+
+
+def test_backend_rejects_typed_local_alias_wrong_host_ea_precase() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture()
+    observed = _mutate_typed_alias_host(
+        _observed_typed_local_alias_cfg(pre_cfg),
+        ea=0x3004,
+        native_ea=0x3004,
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    with pytest.raises(CfgGenerationPoisoned) as caught:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    verdict = caught.value.unflatten_verdict
+    assert verdict is not None
+    assert verdict.safety_case is None
+    assert verdict.failed_obligations == ()
+    assert verdict.reason is authority_model.UnflattenAuthorityReason.LIVE_BINDING_FAILED
+
+
+def test_backend_rejects_typed_local_alias_stale_host_text_claim() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture()
+    alias_step = replace(plan.steps[-1], host_text_sha1="0" * 16)
+    plan = replace(plan, steps=(*plan.steps[:-1], alias_step))
+    backend = _typed_alias_backend(pre_cfg, plan, _observed_typed_local_alias_cfg(pre_cfg))
+    assert backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks)) is pre_cfg
+    assert backend.last_patch_execution is None
+
+
+def test_backend_rejects_typed_local_alias_host_call_transition() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture()
+    observed = _observed_typed_local_alias_cfg(pre_cfg)
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            2: replace(
+                observed.blocks[2],
+                insn_snapshots=(replace(
+                    observed.blocks[2].insn_snapshots[0],
+                    opcode=57,
+                    kind=InsnKind.CALL,
+                    is_call=True,
+                    display_text="call %var_other",
+                ),),
+            ),
+        },
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    with pytest.raises(CfgGenerationPoisoned) as caught:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    verdict = caught.value.unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    assert verdict.reason in {
+        authority_model.UnflattenAuthorityReason.OBLIGATION_UNPROVEN,
+        authority_model.UnflattenAuthorityReason.OBLIGATION_INCONSISTENT,
+        authority_model.UnflattenAuthorityReason.OBLIGATION_VIOLATED,
+    }
+    assert verdict.failed_obligations
+    _assert_typed_effect_cell(
+        verdict.safety_case,
+        ea=0x3000,
+        state=(
+            authority_model.ObligationState.VIOLATED,
+            authority_model.ObligationState.INCONSISTENT,
+        ),
+        rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
+    )
+    assert not any(
+        row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
+        for row in authority_views.semantic_loss_ledger(verdict.safety_case).rows
+    )
+
+
+def test_backend_rejects_typed_local_alias_unreachable_owner() -> None:
+    pre_cfg, plan = _typed_local_alias_fixture()
+    observed = _observed_typed_local_alias_cfg(pre_cfg)
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            1: replace(observed.blocks[1], succs=(3,), kind=BlockKind.ONE_WAY),
+            2: replace(observed.blocks[2], preds=()),
+            3: replace(observed.blocks[3], preds=(1,)),
+        },
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    with pytest.raises(CfgGenerationPoisoned) as caught:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    verdict = caught.value.unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    assert verdict.reason in {
+        authority_model.UnflattenAuthorityReason.OBLIGATION_UNPROVEN,
+        authority_model.UnflattenAuthorityReason.OBLIGATION_INCONSISTENT,
+        authority_model.UnflattenAuthorityReason.OBLIGATION_VIOLATED,
+    }
+    assert verdict.failed_obligations
+    _assert_typed_effect_cell(
+        verdict.safety_case,
+        ea=0x3000,
+        state=(
+            authority_model.ObligationState.VIOLATED,
+            authority_model.ObligationState.INCONSISTENT,
+        ),
+        rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
+    )
+    assert not any(
+        row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
+        for row in authority_views.semantic_loss_ledger(verdict.safety_case).rows
+    )
 
 
 @pytest.mark.parametrize(
