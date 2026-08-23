@@ -116,6 +116,7 @@ __all__ = [
     "ManifestError",
     "PassImplementationAmbiguous",
     "PassImplementationCandidate",
+    "PassImplementationRequirement",
     "PassImplementationError",
     "PassImplementationMisdeclared",
     "PassImplementationMissing",
@@ -308,6 +309,31 @@ class PassImplementationCandidate:
     backend_origin: str
     rule_modules: tuple[str, ...]
     rule_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class PassImplementationRequirement:
+    """Static optional-package requirement declared by a config-v2 pass.
+
+    This is catalog metadata only.  It never imports, probes, or activates the
+    provider.  ``activation_required`` distinguishes strict extension-backed
+    passes from optional enhancement passes that remain inert when absent.
+    """
+
+    distribution: str
+    backend_name: str
+    activation_required: bool = True
+
+    def __post_init__(self) -> None:
+        distribution = str(self.distribution).strip()
+        if not distribution:
+            raise ValueError("implementation distribution must not be empty")
+        backend_name = str(self.backend_name).strip()
+        if not backend_name:
+            raise ValueError("implementation backend name must not be empty")
+        object.__setattr__(self, "distribution", distribution)
+        object.__setattr__(self, "backend_name", backend_name)
+        object.__setattr__(self, "activation_required", bool(self.activation_required))
 
 
 class PassImplementationError(RuntimeError):
@@ -670,6 +696,10 @@ class BackendRegistry:
         self._manifests: dict[str, BackendManifest] = {}
         self._loaded: dict[str, Any] = {}
         self._errors: dict[str, BaseException] = {}
+        self._active_implementations: set[PassImplementationCandidate] = set()
+        self._implementation_failures: dict[
+            PassImplementationCandidate, dict[str, str]
+        ] = {}
         #: Injected to keep optimizer-layer imports out of ``core.plugins``.
         self._registration_lookup = registration_lookup
 
@@ -716,6 +746,8 @@ class BackendRegistry:
             self._manifests = {}
             self._loaded = {}
             self._errors = {}
+            self._active_implementations = set()
+            self._implementation_failures = {}
             self._discovered = True
 
     # -- introspection (never imports) -------------------------------------
@@ -899,6 +931,165 @@ class BackendRegistry:
             )
         )
 
+    def implementation_manifest_info(self, name: str) -> BackendInfo:
+        """Classify one backend from its manifest without loading ``provides``.
+
+        Unlike :meth:`info`, this distinguishes a fresh manifest import,
+        validation, or API-version failure while preserving lazy backend
+        activation.  It intentionally does not mutate the registry's runtime
+        status; diagnostics and activation remain owned by :meth:`probe`.
+        """
+        self.discover()
+        with self._lock:
+            current = self.info(name)
+            if current.status is not BackendStatus.NOT_LOADED:
+                return current
+            specs = self._candidates[name]
+
+            rejected: list[tuple[str, str]] = []
+            for index, spec in enumerate(specs):
+                status = BackendStatus.NOT_LOADED
+                reason: str | None = None
+                api_version: int | None = None
+                try:
+                    manifest = manifest_of(spec.load_manifest())
+                except ImportError as exc:
+                    status = BackendStatus.UNAVAILABLE
+                    reason = str(exc)
+                except ManifestError as exc:
+                    status = BackendStatus.BROKEN
+                    reason = str(exc)
+                except Exception as exc:
+                    status = BackendStatus.BROKEN
+                    reason = f"manifest raised {type(exc).__name__}: {exc}"
+                else:
+                    api_version = manifest.api_version
+                    if api_version != PLUGIN_API_VERSION:
+                        status = BackendStatus.INCOMPATIBLE
+                        reason = (
+                            f"built for plugin API v{api_version}; "
+                            f"this d810 speaks v{PLUGIN_API_VERSION}"
+                        )
+
+                if status is BackendStatus.NOT_LOADED or index == len(specs) - 1:
+                    below = specs[index + 1 :]
+                    return BackendInfo(
+                        name=name,
+                        status=status,
+                        origin=spec.origin,
+                        api_version=api_version,
+                        reason=reason,
+                        shadowed=tuple(candidate.origin for candidate in below),
+                        rejected=tuple(rejected),
+                    )
+                rejected.append((spec.origin, reason or status.value))
+
+        raise AssertionError(f"backend {name!r} has no manifest candidates")
+
+    def implementation_is_active(
+        self, candidate: PassImplementationCandidate
+    ) -> bool:
+        """Whether this exact declaration completed activation successfully."""
+        with self._lock:
+            return candidate in self._active_implementations
+
+    def implementation_registration_available(
+        self, candidate: PassImplementationCandidate
+    ) -> bool:
+        """Whether an already-loaded rule registration matches ``candidate``.
+
+        This is a read-only lookup for non-strict implementations whose rule
+        modules are loaded by the normal optimizer catalogue lifecycle rather
+        than :meth:`activate_implementation`.
+        """
+        lookup = self._registration_lookup
+        if lookup is None:
+            return False
+        try:
+            return lookup(candidate) is not None
+        except Exception:
+            return False
+
+    def implementation_failure(
+        self, candidate: PassImplementationCandidate
+    ) -> str | None:
+        """Return retained candidate-level load/activation failure evidence."""
+        with self._lock:
+            failures = self._implementation_failures.get(candidate, {})
+            if not failures:
+                return None
+            return "; ".join(failures[key] for key in sorted(failures))
+
+    def record_rule_module_result(
+        self, module_name: str, error: BaseException | None
+    ) -> None:
+        """Record or clear normal extension-loader evidence for one module."""
+        source = f"module:{module_name}"
+        with self._lock:
+            candidates: list[PassImplementationCandidate] = []
+            for backend_name, manifest in self._manifests.items():
+                if module_name not in manifest.rules:
+                    continue
+                spec = self._settled.get(backend_name)
+                if spec is None:
+                    continue
+                candidates.extend(
+                    PassImplementationCandidate(
+                        pass_id=str(pass_id),
+                        backend_name=backend_name,
+                        backend_origin=spec.origin,
+                        rule_modules=tuple(manifest.rules),
+                        rule_name=rule_name,
+                    )
+                    for pass_id, rule_name in manifest.implements.items()
+                )
+            for candidate in candidates:
+                failures = self._implementation_failures.setdefault(candidate, {})
+                if error is None:
+                    failures.pop(source, None)
+                    if not failures:
+                        self._implementation_failures.pop(candidate, None)
+                else:
+                    failures[source] = f"{type(error).__name__}: {error}"
+
+    def finalize_rule_module_loading(self) -> None:
+        """Validate declarations after the normal extension loader finishes."""
+        with self._lock:
+            candidates = tuple(
+                PassImplementationCandidate(
+                    pass_id=str(pass_id),
+                    backend_name=backend_name,
+                    backend_origin=spec.origin,
+                    rule_modules=tuple(manifest.rules),
+                    rule_name=rule_name,
+                )
+                for backend_name, manifest in self._manifests.items()
+                if (spec := self._settled.get(backend_name)) is not None
+                and self._status.get(backend_name) is BackendStatus.AVAILABLE
+                for pass_id, rule_name in manifest.implements.items()
+            )
+        for candidate in candidates:
+            reason: str | None = None
+            lookup = self._registration_lookup
+            if lookup is None:
+                reason = "no registration lookup was injected"
+            else:
+                try:
+                    if lookup(candidate) is None:
+                        reason = f"rule {candidate.rule_name!r} is not registered"
+                except Exception as exc:
+                    reason = (
+                        f"registration lookup raised {type(exc).__name__}: {exc}"
+                    )
+            with self._lock:
+                failures = self._implementation_failures.setdefault(candidate, {})
+                if reason is None:
+                    failures.pop("registration", None)
+                    if not failures:
+                        self._implementation_failures.pop(candidate, None)
+                else:
+                    failures["registration"] = reason
+
     def require_unique_implementation(
         self, pass_id: PassId | str, *, install_hint: str
     ) -> PassImplementationCandidate:
@@ -912,6 +1103,26 @@ class BackendRegistry:
         return candidates[0]
 
     def activate_implementation(
+        self, candidate: PassImplementationCandidate
+    ) -> None:
+        """Activate exactly one declaration and retain truthful failure state."""
+        with self._lock:
+            self._active_implementations.discard(candidate)
+            failures = self._implementation_failures.get(candidate)
+            if failures is not None:
+                failures.pop("activation", None)
+                if not failures:
+                    self._implementation_failures.pop(candidate, None)
+        try:
+            self._activate_implementation_once(candidate)
+        except Exception as exc:
+            with self._lock:
+                self._implementation_failures.setdefault(candidate, {})[
+                    "activation"
+                ] = f"{type(exc).__name__}: {exc}"
+            raise
+
+    def _activate_implementation_once(
         self, candidate: PassImplementationCandidate
     ) -> None:
         """Probe, import, and verify one selected implementation.
@@ -946,6 +1157,7 @@ class BackendRegistry:
                     f"rule module {module_name!r} failed to import: "
                     f"{type(exc).__name__}: {exc}",
                 ) from exc
+            self.record_rule_module_result(module_name, None)
 
         if self._registration_lookup is None:
             raise PassImplementationMisdeclared(
@@ -975,6 +1187,13 @@ class BackendRegistry:
                 candidate=candidate,
                 reason=f"rule {candidate.rule_name!r} is not registered",
             )
+        with self._lock:
+            self._active_implementations.add(candidate)
+            failures = self._implementation_failures.get(candidate)
+            if failures is not None:
+                failures.pop("registration", None)
+                if not failures:
+                    self._implementation_failures.pop(candidate, None)
 
     def rule_modules(self) -> tuple[str, ...]:
         """Optimizer rule modules contributed by backends that resolved.

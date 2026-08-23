@@ -826,7 +826,12 @@ class D810Manager:
         )
         self.comparison_service = WorkbenchComparisonService()
         workbench_registry = operational_config_v2_pass_registry()
-        self.recipe_service = RecipeService(workbench_registry)
+        from d810.backends import registry as backend_registry
+
+        self.recipe_service = RecipeService(
+            workbench_registry,
+            backend_registry=backend_registry(),
+        )
         self.function_recipe_runtime = FunctionRecipeRuntime(
             storage_provider=lambda: self.function_storage_runtime.storage,
             event_emitter=self.event_emitter,

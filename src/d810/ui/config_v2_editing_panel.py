@@ -50,6 +50,7 @@ if IDA_AVAILABLE:
     from d810.ui.config_v2_transform_catalog import ConfigV2TransformCatalogWidget
     from d810.ui.config_v2_rule_catalog import ConfigV2RuleCatalogWidget
     from d810.ui.checkable_choice_list import CheckableChoiceListWidget
+    from d810.ui.provider_availability_widget import ProviderAvailabilityWidget
     from d810.ui.filterable_catalog_logic import (
         CatalogColumnSpec,
         CatalogRow,
@@ -170,6 +171,7 @@ if IDA_AVAILABLE:
             self.pass_title_label.setWordWrap(False)
             self.pass_purpose_label = QtWidgets.QLabel()
             self.pass_purpose_label.setWordWrap(True)
+            self.provider_availability = ProviderAvailabilityWidget()
             self.inspector_actions = QtWidgets.QWidget()
             self.details_body = QtWidgets.QWidget()
             self.summary_message_label = QtWidgets.QLabel()
@@ -283,6 +285,7 @@ if IDA_AVAILABLE:
             inspector_header_layout.setSpacing(4)
             inspector_header_layout.addWidget(self.pass_title_label)
             inspector_header_layout.addWidget(self.pass_purpose_label)
+            inspector_header_layout.addWidget(self.provider_availability)
 
             inspector_action_layout = QtWidgets.QHBoxLayout(self.inspector_actions)
             inspector_action_layout.setContentsMargins(0, 0, 0, 0)
@@ -827,6 +830,7 @@ if IDA_AVAILABLE:
                     self.pass_title_label.setToolTip("")
                     self.pass_purpose_label.setText("")
                     self.pass_purpose_label.setToolTip("")
+                    self.provider_availability.set_availability(None)
                     self.inspector_actions.setVisible(False)
                     self.details_body.setVisible(False)
                     for label in self.contract_chip_labels.values():
@@ -851,6 +855,7 @@ if IDA_AVAILABLE:
                 self.pass_title_label.setToolTip(title)
                 self.pass_purpose_label.setText(inspector.purpose)
                 self.pass_purpose_label.setToolTip(inspector.purpose)
+                self.provider_availability.set_availability(inspector.implementation)
                 self.inspector_actions.setVisible(True)
                 for label in self.contract_chip_labels.values():
                     label.setText("")
@@ -1313,11 +1318,13 @@ if IDA_AVAILABLE:
 
         def _add_pass(self, checked: bool = False) -> None:
             del checked
+            self._catalog = tuple(self._adapter.catalog())
             columns = (
                 CatalogColumnSpec("include", "Include", searchable=False),
                 CatalogColumnSpec("pass", "Pass"),
                 CatalogColumnSpec("id", "ID"),
                 CatalogColumnSpec("purpose", "Purpose"),
+                CatalogColumnSpec("implementation", "Implementation"),
             )
             rows = tuple(
                 CatalogRow(
@@ -1326,6 +1333,11 @@ if IDA_AVAILABLE:
                         entry.display_name,
                         entry.pass_id,
                         entry.purpose,
+                        (
+                            ""
+                            if entry.implementation is None
+                            else entry.implementation.catalog_label
+                        ),
                     ),
                 )
                 for entry in self._catalog

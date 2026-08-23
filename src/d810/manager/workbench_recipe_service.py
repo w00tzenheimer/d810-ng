@@ -6,6 +6,10 @@ import dataclasses
 import json
 from collections.abc import Mapping, Sequence
 
+from d810.core.plugins import BackendRegistry
+from d810.manager.pass_implementation_availability import (
+    project_pass_implementation_availability,
+)
 from d810.manager.workbench_recipe_models import (
     DEFAULT_PASS_PURPOSE,
     FunctionPipelineOverride,
@@ -112,8 +116,14 @@ def _maturity_label(config: PipelineConfig) -> str:
 class RecipeService:
     """Compose immutable drafts strictly from registered pass templates."""
 
-    def __init__(self, registry: PassRegistry) -> None:
+    def __init__(
+        self,
+        registry: PassRegistry,
+        *,
+        backend_registry: BackendRegistry | None = None,
+    ) -> None:
         self._registry = registry
+        self._backend_registry = backend_registry
 
     def _purpose(self, pass_id: str) -> str:
         purpose = _PASS_PURPOSES.get(pass_id)
@@ -151,6 +161,11 @@ class RecipeService:
             editor_spec=editor_spec,
             workflow_stage=config.workflow_stage,
             purpose=self._purpose(pass_id),
+            implementation=project_pass_implementation_availability(
+                pass_id,
+                self._registry.implementation_requirement_for(pass_id),
+                self._backend_registry,
+            ),
         )
 
     def catalog(self) -> tuple[PassCatalogEntry, ...]:

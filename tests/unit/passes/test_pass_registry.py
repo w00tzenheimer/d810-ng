@@ -8,6 +8,7 @@ import pytest
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.pass_editor_spec import PassEditorSpec
+from d810.core.plugins import PassImplementationRequirement
 from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
     state_machine_pass_registry,
@@ -54,6 +55,30 @@ def test_registry_rejects_unknown_pass_ids():
 
     with pytest.raises(UnknownPassIdError, match="unknown pass id"):
         registry.build_spec(PipelineConfig(pass_id="missing"))
+
+
+def test_registry_retains_optional_provider_requirement_as_pass_metadata() -> None:
+    registry = PassRegistry()
+    requirement = PassImplementationRequirement(
+        distribution="d810-example",
+        backend_name="example",
+        activation_required=True,
+    )
+
+    registry.register(
+        "fake",
+        _FakePass,
+        implementation_requirement=requirement,
+    )
+
+    assert registry.implementation_requirement_for("fake") is requirement
+
+
+def test_registry_omits_provider_requirement_for_builtin_passes() -> None:
+    registry = PassRegistry()
+    registry.register("fake", _FakePass)
+
+    assert registry.implementation_requirement_for("fake") is None
 
 
 def test_state_machine_wrapper_pass_id_remains_unregistered():

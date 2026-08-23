@@ -1123,6 +1123,247 @@ class TestPassImplementations(unittest.TestCase):
         self.assertEqual(probe_calls, [])
         self.assertEqual(load.calls, 0)
 
+    def test_manifest_info_classifies_failures_without_loading_backend(self):
+        cases = (
+            (ImportError("binding missing"), BackendStatus.UNAVAILABLE),
+            (RuntimeError("manifest exploded"), BackendStatus.BROKEN),
+        )
+        for error, expected in cases:
+            with self.subTest(expected=expected):
+                reg = registry(
+                    [
+                        BackendSpec(
+                            name="cobra",
+                            origin="test",
+                            load_manifest=lambda error=error: (_ for _ in ()).throw(
+                                error
+                            ),
+                        )
+                    ]
+                )
+
+                info = reg.implementation_manifest_info("cobra")
+
+                self.assertEqual(info.status, expected)
+                self.assertEqual(reg.info("cobra").status, BackendStatus.NOT_LOADED)
+
+    def test_manifest_info_classifies_incompatible_without_loading_backend(self):
+        load = Recorder(result=object())
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION - 1,
+            provides=load,
+            rules=("json",),
+            implements={"mba-egraph": "EgglogOptimizer"},
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="old", load_manifest=lambda: manifest)]
+        )
+
+        info = reg.implementation_manifest_info("cobra")
+
+        self.assertEqual(info.status, BackendStatus.INCOMPATIBLE)
+        self.assertEqual(load.calls, 0)
+
+    def test_implementation_is_ready_only_after_exact_candidate_activation(self):
+        manifest = self.manifest(
+            {"mba-egraph": "EgglogOptimizer"},
+            rules=("json",),
+            provides=lambda: object(),
+        )
+        reg = BackendRegistry(
+            source=lambda: (
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: manifest,
+                ),
+            ),
+            registration_lookup=lambda _candidate: object(),
+        )
+        candidate = reg.require_unique_implementation(
+            "mba-egraph", install_hint="d810-egglog"
+        )
+        reg.probe("cobra")
+        self.assertFalse(reg.implementation_is_active(candidate))
+
+        reg.activate_implementation(candidate)
+
+        self.assertTrue(reg.implementation_is_active(candidate))
+
+    def test_failed_reactivation_revokes_previous_activation_evidence(self):
+        registered = {"value": object()}
+        manifest = self.manifest(
+            {"mba-egraph": "EgglogOptimizer"},
+            rules=("json",),
+            provides=lambda: object(),
+        )
+        reg = BackendRegistry(
+            source=lambda: (
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: manifest,
+                ),
+            ),
+            registration_lookup=lambda _candidate: registered["value"],
+        )
+        candidate = reg.require_unique_implementation(
+            "mba-egraph", install_hint="d810-egglog"
+        )
+        reg.activate_implementation(candidate)
+        self.assertTrue(reg.implementation_is_active(candidate))
+
+        registered["value"] = None
+        with self.assertRaises(PassImplementationMisdeclared):
+            reg.activate_implementation(candidate)
+
+        self.assertFalse(reg.implementation_is_active(candidate))
+        self.assertIn("not registered", reg.implementation_failure(candidate) or "")
+
+        registered["value"] = object()
+        reg.activate_implementation(candidate)
+        self.assertIsNone(reg.implementation_failure(candidate))
+
+    def test_registration_availability_is_read_only_activation_evidence(self):
+        registered = {"value": object()}
+        manifest = self.manifest(
+            {"mba-solve": "CobraSolveRule"},
+            rules=("json",),
+            provides=lambda: object(),
+        )
+        reg = BackendRegistry(
+            source=lambda: (
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: manifest,
+                ),
+            ),
+            registration_lookup=lambda _candidate: registered["value"],
+        )
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="d810-cobra"
+        )
+
+        self.assertTrue(reg.implementation_registration_available(candidate))
+        self.assertFalse(reg.implementation_is_active(candidate))
+        registered["value"] = None
+        self.assertFalse(reg.implementation_registration_available(candidate))
+
+    def test_rule_module_failure_evidence_is_recoverable_per_module(self):
+        manifest = self.manifest(
+            {"mba-solve": "CobraSolveRule"},
+            rules=("acme.first", "acme.second"),
+            provides=lambda: object(),
+        )
+        reg = BackendRegistry(
+            source=lambda: (
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: manifest,
+                ),
+            ),
+            registration_lookup=lambda _candidate: object(),
+        )
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="d810-cobra"
+        )
+        reg.probe("cobra")
+
+        reg.record_rule_module_result(
+            "acme.first", ModuleNotFoundError("native binding missing")
+        )
+        self.assertIn("native binding missing", reg.implementation_failure(candidate) or "")
+
+        reg.record_rule_module_result("acme.first", None)
+        self.assertIsNone(reg.implementation_failure(candidate))
+
+    def test_strict_activation_clears_prior_normal_loader_failure(self):
+        manifest = self.manifest(
+            {"mba-egraph": "EgglogOptimizer"},
+            rules=("json",),
+            provides=lambda: object(),
+        )
+        reg = BackendRegistry(
+            source=lambda: (
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: manifest,
+                ),
+            ),
+            registration_lookup=lambda _candidate: object(),
+        )
+        candidate = reg.require_unique_implementation(
+            "mba-egraph", install_hint="d810-egglog"
+        )
+        reg.probe("cobra")
+        reg.record_rule_module_result("json", ModuleNotFoundError("stale failure"))
+        self.assertIsNotNone(reg.implementation_failure(candidate))
+
+        reg.activate_implementation(candidate)
+
+        self.assertTrue(reg.implementation_is_active(candidate))
+        self.assertIsNone(reg.implementation_failure(candidate))
+
+    def test_normal_loader_finalization_classifies_missing_registration(self):
+        registered = {"value": None}
+        manifest = self.manifest(
+            {"mba-solve": "CobraSolveRule"},
+            rules=("json",),
+            provides=lambda: object(),
+        )
+        reg = BackendRegistry(
+            source=lambda: (
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: manifest,
+                ),
+            ),
+            registration_lookup=lambda _candidate: registered["value"],
+        )
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="d810-cobra"
+        )
+        reg.probe("cobra")
+        reg.record_rule_module_result("json", None)
+
+        reg.finalize_rule_module_loading()
+        self.assertIn("not registered", reg.implementation_failure(candidate) or "")
+
+        registered["value"] = object()
+        reg.finalize_rule_module_loading()
+        self.assertIsNone(reg.implementation_failure(candidate))
+
+    def test_normal_loader_does_not_validate_unavailable_backend_registration(self):
+        manifest = self.manifest(
+            {"mba-solve": "CobraSolveRule"},
+            rules=("acme.rules",),
+            provides=lambda: (_ for _ in ()).throw(ImportError("binding missing")),
+        )
+        reg = BackendRegistry(
+            source=lambda: (
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: manifest,
+                ),
+            ),
+            registration_lookup=lambda _candidate: None,
+        )
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="d810-cobra"
+        )
+        self.assertEqual(reg.rule_modules(), ())
+
+        reg.finalize_rule_module_loading()
+
+        self.assertEqual(reg.info("cobra").status, BackendStatus.UNAVAILABLE)
+        self.assertIsNone(reg.implementation_failure(candidate))
+
 
 if __name__ == "__main__":
     unittest.main()

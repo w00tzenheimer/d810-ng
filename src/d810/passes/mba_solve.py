@@ -37,6 +37,7 @@ from d810.core.pass_editor_spec import (
     PassEditorSectionSpec,
     PassEditorSpec,
 )
+from d810.core.plugins import PassImplementationRequirement
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity, IR_MATURITY_ORDER
 from d810.passes.pass_pipeline import (
@@ -418,6 +419,11 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                     presentation=PassEditorSectionPresentation.SECONDARY,
                 ),
             ),
+        ),
+        implementation_requirement=PassImplementationRequirement(
+            distribution="d810-cobra",
+            backend_name="cobra",
+            activation_required=False,
         ),
     )
     return registry

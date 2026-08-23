@@ -22,7 +22,10 @@ from d810.manager.config_v2_edit_models import (
     ConfigV2ProjectValidation,
 )
 from d810.manager.effective_pipeline_schedule import normalize_maturity
-from d810.manager.workbench_recipe_models import PassCatalogEntry
+from d810.manager.workbench_recipe_models import (
+    PassCatalogEntry,
+    PassImplementationAvailability,
+)
 
 
 def _project_maturity(value: object) -> tuple[str, str | None]:
@@ -268,6 +271,7 @@ class ConfigV2PassInspectorView:
     # optional so an already-loaded overview cannot fail during a hot reload.
     rule_catalog: ConfigV2RuleCatalogView | None = None
     layout: ConfigV2PassInspectorLayoutView | None = None
+    implementation: PassImplementationAvailability | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1216,6 +1220,7 @@ def project_config_v2_editor_view(
                     ("Safety", catalog_entry.safety_policy),
                 ),
                 field_sections=field_sections,
+                implementation=catalog_entry.implementation,
             )
         )
 

@@ -6,7 +6,19 @@ import json
 import pytest
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
-from d810.manager.workbench_recipe_models import FunctionPipelineOverride, RecipePass
+from d810.core.pass_editor_spec import PassEditorSpec
+from d810.core.plugins import (
+    BackendManifest,
+    BackendRegistry,
+    BackendSpec,
+    BackendStatus,
+    PassImplementationRequirement,
+)
+from d810.manager.workbench_recipe_models import (
+    FunctionPipelineOverride,
+    PassImplementationStatus,
+    RecipePass,
+)
 from d810.manager.workbench_recipe_service import RecipeEditError, RecipeService
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PassResult, PipelineConfig
@@ -120,6 +132,404 @@ def test_public_catalog_assigns_one_specific_purpose_to_every_registered_pass() 
     assert purpose_by_id["mba-solve"] == (
         "Solve selected MBA expressions with proof-backed equivalence."
     )
+
+
+def _provider_registry(*manifests: BackendManifest) -> BackendRegistry:
+    specs = tuple(
+        BackendSpec(
+            manifest.name,
+            load_manifest=lambda manifest=manifest: manifest,
+            origin=f"{manifest.name}-wheel",
+        )
+        for manifest in manifests
+    )
+    return BackendRegistry(source=lambda: specs)
+
+
+def test_catalog_projects_missing_optional_provider_without_hiding_the_pass() -> None:
+    service = RecipeService(
+        operational_config_v2_pass_registry(),
+        backend_registry=_provider_registry(),
+    )
+
+    catalog = service.catalog()
+    egraph = next(entry for entry in catalog if entry.pass_id == "mba-egraph")
+    builtin = next(entry for entry in catalog if entry.pass_id == "jump-fixer")
+
+    assert egraph.implementation is not None
+    assert egraph.implementation.distribution == "d810-egglog"
+    assert egraph.implementation.status is PassImplementationStatus.NOT_INSTALLED
+    assert egraph.implementation.activation_required is True
+    assert "activation" in egraph.implementation.detail.casefold()
+    assert builtin.implementation is None
+
+
+def test_catalog_projects_installed_provider_without_importing_implementation() -> None:
+    loaded = False
+
+    def _provides():
+        nonlocal loaded
+        loaded = True
+        return object()
+
+    manifest = BackendManifest(
+        name="egglog",
+        api_version=1,
+        provides=_provides,
+        rules=("d810_egglog.rules",),
+        implements={"mba-egraph": "EgglogOptimizer"},
+    )
+    service = RecipeService(
+        operational_config_v2_pass_registry(),
+        backend_registry=_provider_registry(manifest),
+    )
+
+    egraph = next(
+        entry for entry in service.catalog() if entry.pass_id == "mba-egraph"
+    )
+
+    assert egraph.implementation is not None
+    assert egraph.implementation.status is PassImplementationStatus.INSTALLED_NOT_LOADED
+    assert egraph.implementation.backend_names == ("egglog",)
+    assert loaded is False
+
+
+def test_catalog_does_not_claim_ready_after_backend_probe_alone() -> None:
+    manifest = BackendManifest(
+        name="egglog",
+        api_version=1,
+        provides=lambda: object(),
+        rules=("d810_egglog.rules",),
+        implements={"mba-egraph": "EgglogOptimizer"},
+    )
+    backends = _provider_registry(manifest)
+    assert backends.probe("egglog").usable is True
+
+    egraph = next(
+        entry
+        for entry in RecipeService(
+            operational_config_v2_pass_registry(),
+            backend_registry=backends,
+        ).catalog()
+        if entry.pass_id == "mba-egraph"
+    )
+
+    assert egraph.implementation is not None
+    assert (
+        egraph.implementation.status
+        is PassImplementationStatus.INSTALLED_NOT_LOADED
+    )
+
+
+def test_catalog_projects_ready_provider_after_exact_implementation_activation() -> None:
+    manifest = BackendManifest(
+        name="egglog",
+        api_version=1,
+        provides=lambda: object(),
+        rules=("json",),
+        implements={"mba-egraph": "EgglogOptimizer"},
+    )
+    backends = BackendRegistry(
+        source=lambda: (
+            BackendSpec(
+                name="egglog",
+                load_manifest=lambda: manifest,
+                origin="egglog-wheel",
+            ),
+        ),
+        registration_lookup=lambda _candidate: object(),
+    )
+    candidate = backends.require_unique_implementation(
+        "mba-egraph", install_hint="d810-egglog"
+    )
+    backends.activate_implementation(candidate)
+
+    egraph = next(
+        entry
+        for entry in RecipeService(
+            operational_config_v2_pass_registry(),
+            backend_registry=backends,
+        ).catalog()
+        if entry.pass_id == "mba-egraph"
+    )
+
+    assert egraph.implementation is not None
+    assert egraph.implementation.status is PassImplementationStatus.READY
+
+
+@pytest.mark.parametrize(
+    ("manifest", "expected_status"),
+    (
+        (
+            BackendManifest(
+                name="egglog",
+                api_version=999,
+                provides=lambda: object(),
+                rules=("d810_egglog.rules",),
+                implements={"mba-egraph": "EgglogOptimizer"},
+            ),
+            PassImplementationStatus.INCOMPATIBLE,
+        ),
+        (
+            BackendManifest(
+                name="egglog",
+                api_version=1,
+                provides=lambda: (_ for _ in ()).throw(ImportError("binding missing")),
+                rules=("d810_egglog.rules",),
+                implements={"mba-egraph": "EgglogOptimizer"},
+            ),
+            PassImplementationStatus.UNAVAILABLE,
+        ),
+    ),
+)
+def test_catalog_preserves_known_backend_failure_status_when_no_candidate_is_usable(
+    manifest: BackendManifest,
+    expected_status: PassImplementationStatus,
+) -> None:
+    backends = _provider_registry(manifest)
+    backends.probe("egglog")
+
+    egraph = next(
+        entry
+        for entry in RecipeService(
+            operational_config_v2_pass_registry(),
+            backend_registry=backends,
+        ).catalog()
+        if entry.pass_id == "mba-egraph"
+    )
+
+    assert egraph.implementation is not None
+    assert egraph.implementation.status is expected_status
+
+
+@pytest.mark.parametrize(
+    ("manifest_loader", "expected_status"),
+    (
+        (
+            lambda: (_ for _ in ()).throw(ImportError("manifest dependency missing")),
+            PassImplementationStatus.UNAVAILABLE,
+        ),
+        (
+            lambda: (_ for _ in ()).throw(RuntimeError("manifest exploded")),
+            PassImplementationStatus.BROKEN,
+        ),
+        (
+            lambda: BackendManifest(
+                name="egglog",
+                api_version=999,
+                provides=lambda: object(),
+                rules=("d810_egglog.rules",),
+                implements={"mba-egraph": "EgglogOptimizer"},
+            ),
+            PassImplementationStatus.INCOMPATIBLE,
+        ),
+    ),
+)
+def test_catalog_classifies_fresh_manifest_failure_without_runtime_probe(
+    manifest_loader,
+    expected_status: PassImplementationStatus,
+) -> None:
+    backends = BackendRegistry(
+        source=lambda: (
+            BackendSpec(
+                name="egglog",
+                load_manifest=manifest_loader,
+                origin="egglog-wheel",
+            ),
+        )
+    )
+
+    egraph = next(
+        entry
+        for entry in RecipeService(
+            operational_config_v2_pass_registry(),
+            backend_registry=backends,
+        ).catalog()
+        if entry.pass_id == "mba-egraph"
+    )
+
+    assert egraph.implementation is not None
+    assert egraph.implementation.status is expected_status
+    assert backends.info("egglog").status is BackendStatus.NOT_LOADED
+
+
+def test_catalog_projects_ambiguous_provider_declarations() -> None:
+    manifests = tuple(
+        BackendManifest(
+            name=name,
+            api_version=1,
+            provides=lambda: object(),
+            rules=(f"{name}.rules",),
+            implements={"mba-egraph": f"{name.title()}Optimizer"},
+        )
+        for name in ("egglog-a", "egglog-b")
+    )
+    service = RecipeService(
+        operational_config_v2_pass_registry(),
+        backend_registry=_provider_registry(*manifests),
+    )
+
+    egraph = next(
+        entry for entry in service.catalog() if entry.pass_id == "mba-egraph"
+    )
+
+    assert egraph.implementation is not None
+    assert egraph.implementation.status is PassImplementationStatus.AMBIGUOUS
+    assert egraph.implementation.backend_names == ("egglog-a", "egglog-b")
+
+
+def test_custom_registry_can_declare_nonblocking_optional_implementation() -> None:
+    registry = PassRegistry()
+    registry.register(
+        "private-pass",
+        _PassWithoutEditorSpec,
+        public=False,
+        editor_spec=PassEditorSpec.summary(),
+        implementation_requirement=PassImplementationRequirement(
+            distribution="d810-private",
+            backend_name="private",
+            activation_required=False,
+        ),
+    )
+
+    entry = RecipeService(
+        registry,
+        backend_registry=_provider_registry(),
+    ).inspection_catalog(("private-pass",))[0]
+
+    assert entry.implementation is not None
+    assert entry.implementation.activation_required is False
+    assert "inactive" in entry.implementation.detail.casefold()
+
+
+def test_nonblocking_provider_is_ready_when_backend_and_rule_are_registered() -> None:
+    registry = PassRegistry()
+    registry.register(
+        "private-pass",
+        _PassWithoutEditorSpec,
+        public=False,
+        editor_spec=PassEditorSpec.summary(),
+        implementation_requirement=PassImplementationRequirement(
+            distribution="d810-private",
+            backend_name="private",
+            activation_required=False,
+        ),
+    )
+    manifest = BackendManifest(
+        name="private",
+        api_version=1,
+        provides=lambda: object(),
+        rules=("json",),
+        implements={"private-pass": "PrivateRule"},
+    )
+    backends = BackendRegistry(
+        source=lambda: (
+            BackendSpec(
+                name="private",
+                load_manifest=lambda: manifest,
+                origin="private-wheel",
+            ),
+        ),
+        registration_lookup=lambda _candidate: object(),
+    )
+    backends.probe("private")
+
+    entry = RecipeService(
+        registry,
+        backend_registry=backends,
+    ).inspection_catalog(("private-pass",))[0]
+
+    assert entry.implementation is not None
+    assert entry.implementation.status is PassImplementationStatus.READY
+
+
+def test_provider_rule_load_failure_projects_broken_until_recovered() -> None:
+    registry = PassRegistry()
+    registry.register(
+        "private-pass",
+        _PassWithoutEditorSpec,
+        public=False,
+        editor_spec=PassEditorSpec.summary(),
+        implementation_requirement=PassImplementationRequirement(
+            distribution="d810-private",
+            backend_name="private",
+            activation_required=False,
+        ),
+    )
+    manifest = BackendManifest(
+        name="private",
+        api_version=1,
+        provides=lambda: object(),
+        rules=("private.rules",),
+        implements={"private-pass": "PrivateRule"},
+    )
+    backends = BackendRegistry(
+        source=lambda: (
+            BackendSpec(
+                name="private",
+                load_manifest=lambda: manifest,
+                origin="private-wheel",
+            ),
+        ),
+        registration_lookup=lambda _candidate: object(),
+    )
+    backends.probe("private")
+    backends.record_rule_module_result(
+        "private.rules", ModuleNotFoundError("provider rule missing")
+    )
+
+    entry = RecipeService(
+        registry,
+        backend_registry=backends,
+    ).inspection_catalog(("private-pass",))[0]
+
+    assert entry.implementation is not None
+    assert entry.implementation.status is PassImplementationStatus.BROKEN
+    assert "provider rule missing" in entry.implementation.detail
+
+
+def test_nonblocking_missing_registration_projects_broken_after_loader_finishes() -> None:
+    registry = PassRegistry()
+    registry.register(
+        "private-pass",
+        _PassWithoutEditorSpec,
+        public=False,
+        editor_spec=PassEditorSpec.summary(),
+        implementation_requirement=PassImplementationRequirement(
+            distribution="d810-private",
+            backend_name="private",
+            activation_required=False,
+        ),
+    )
+    manifest = BackendManifest(
+        name="private",
+        api_version=1,
+        provides=lambda: object(),
+        rules=("json",),
+        implements={"private-pass": "PrivateRule"},
+    )
+    backends = BackendRegistry(
+        source=lambda: (
+            BackendSpec(
+                name="private",
+                load_manifest=lambda: manifest,
+                origin="private-wheel",
+            ),
+        ),
+        registration_lookup=lambda _candidate: None,
+    )
+    backends.probe("private")
+    backends.record_rule_module_result("json", None)
+    backends.finalize_rule_module_loading()
+
+    entry = RecipeService(
+        registry,
+        backend_registry=backends,
+    ).inspection_catalog(("private-pass",))[0]
+
+    assert entry.implementation is not None
+    assert entry.implementation.status is PassImplementationStatus.BROKEN
+    assert "not registered" in entry.implementation.detail
 
 
 def test_catalog_exposes_only_the_consolidated_constant_operation():

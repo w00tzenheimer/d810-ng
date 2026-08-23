@@ -35,10 +35,18 @@ class _FakeRegistry:
     def __init__(self, modules):
         self._modules = tuple(modules)
         self.calls = 0
+        self.results = []
+        self.finalized = 0
 
     def rule_modules(self):
         self.calls += 1
         return self._modules
+
+    def record_rule_module_result(self, module_name, error):
+        self.results.append((module_name, error))
+
+    def finalize_rule_module_loading(self):
+        self.finalized += 1
 
 
 class TestLoadExtensionRules(unittest.TestCase):
@@ -99,7 +107,8 @@ class TestLoadExtensionRules(unittest.TestCase):
     def test_declared_rule_module_is_imported(self):
         """The whole point: an extension's rule module actually gets imported."""
         marker = self.write_rule("acme_ext_rule_ok")
-        self._patch_registry(_FakeRegistry(["acme_ext_rule_ok"]))
+        fake = _FakeRegistry(["acme_ext_rule_ok"])
+        self._patch_registry(fake)
 
         self.assertFalse(marker.exists(), "precondition: not imported yet")
         load_extension_rules()
@@ -108,6 +117,8 @@ class TestLoadExtensionRules(unittest.TestCase):
             marker.exists(),
             "load_extension_rules did not import the declared rule module",
         )
+        self.assertEqual(fake.results, [("acme_ext_rule_ok", None)])
+        self.assertEqual(fake.finalized, 1)
 
     def test_a_rule_that_fails_to_import_does_not_break_startup(self):
         """An extension is optional by construction; d810 must start without it.
@@ -115,9 +126,12 @@ class TestLoadExtensionRules(unittest.TestCase):
         Letting this propagate would take the entire optimizer catalogue down
         with one bad extension -- every rule, not just the extension's.
         """
-        self._patch_registry(_FakeRegistry(["acme_ext.module.that.does.not.exist"]))
+        fake = _FakeRegistry(["acme_ext.module.that.does.not.exist"])
+        self._patch_registry(fake)
 
         load_extension_rules()  # must not raise
+        self.assertEqual(fake.results[0][0], "acme_ext.module.that.does.not.exist")
+        self.assertIsInstance(fake.results[0][1], ModuleNotFoundError)
 
     def test_a_rule_that_raises_on_import_is_contained(self):
         """Not just ImportError: a rule whose module body throws is contained too."""

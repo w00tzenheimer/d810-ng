@@ -14,6 +14,7 @@ PANEL = (
     / "ui"
     / "config_v2_editing_panel.py"
 )
+PROVIDER_WIDGET = PANEL.with_name("provider_availability_widget.py")
 
 
 def _tree() -> ast.Module:
@@ -106,6 +107,35 @@ def test_inspector_header_separates_full_width_identity_from_compact_actions() -
     )
     assert "inspector_identity_label" not in init_source
     assert "inspector_identity_strip" not in create_source
+
+
+def test_inspector_uses_shared_provider_availability_widget() -> None:
+    panel_source = PANEL.read_text(encoding="utf-8")
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+    render_source = _source("_render_inspector")
+
+    assert "ProviderAvailabilityWidget" in panel_source
+    assert "self.provider_availability" in init_source
+    assert "inspector_header_layout.addWidget(self.provider_availability)" in create_source
+    assert "self.provider_availability.set_availability(None)" in render_source
+    assert "self.provider_availability.set_availability(inspector.implementation)" in render_source
+
+
+def test_shared_provider_widget_exposes_its_compact_rendered_text() -> None:
+    tree = ast.parse(
+        PROVIDER_WIDGET.read_text(encoding="utf-8"),
+        filename=str(PROVIDER_WIDGET),
+    )
+    method = next(
+        item
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "ProviderAvailabilityWidget"
+        for item in node.body
+        if isinstance(item, ast.FunctionDef) and item.name == "display_text"
+    )
+
+    assert "self._label.text()" in ast.unparse(method)
 
 
 def test_builder_description_is_a_compact_preview_with_the_full_text_on_hover() -> None:

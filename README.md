@@ -743,6 +743,41 @@ different from exposing a timeout for a transform that actually invokes Z3.
 See `src/d810/passes/mba_transform_catalog.py` and
 `src/d810/passes/mba_transform_options.py` for the complete catalogue.
 
+#### Optional pass implementations
+
+A public pass whose implementation ships in another distribution remains a
+normal config-v2 pass: it still owns its `PassEditorSpec`, canonical defaults,
+and stable pass ID. Declare the package boundary separately with
+`PassImplementationRequirement`:
+
+```python
+from d810.core.plugins import PassImplementationRequirement
+
+registry.register_configured(
+    "example-extension-pass",
+    build_example_pass,
+    config_template=template,
+    editor_spec=editor_spec,
+    implementation_requirement=PassImplementationRequirement(
+        distribution="d810-example",
+        backend_name="example",
+        activation_required=True,
+    ),
+)
+```
+
+`distribution` is the package shown to the operator; `backend_name` is the
+stable name declared by its `d810.backends` manifest. Set
+`activation_required=True` when the project must fail closed without the
+implementation. Use `False` only when the existing runtime contract explicitly
+keeps the pass inert while allowing the rest of the project to activate.
+
+The shared Project Editor and Add Pass catalogue then show the same provider
+state: not installed, installed but not loaded, ready, unavailable,
+incompatible, broken, or ambiguous. Rendering reads the lightweight manifest
+declaration but never probes or imports the provider implementation. Built-in
+passes declare no requirement and therefore show no provider section.
+
 #### Author checklist
 
 Before registering a public config-v2 pass:
@@ -759,6 +794,8 @@ Before registering a public config-v2 pass:
    not infer it from names.
 7. Add registry-contract, projection, round-trip, and validation tests. When a
    control uses Qt behavior, also cover it with the IDA 9.4 Docker GUI tests.
+8. If implementation lives in an extension, declare one
+   `PassImplementationRequirement`; do not add provider-specific Qt branches.
 
 The architecture tests intentionally fail when a public config-v2 option is
 not editor-visible. Treat that failure as a missing product surface, not as a

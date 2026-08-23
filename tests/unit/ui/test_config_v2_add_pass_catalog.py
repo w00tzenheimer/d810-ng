@@ -8,6 +8,10 @@ from pathlib import Path
 from d810.core.pass_editor_spec import PassEditorSpec
 from d810.manager.workbench_recipe_service import RecipeService
 from d810.manager.workbench_recipe_models import PassCatalogEntry
+from d810.manager.workbench_recipe_models import (
+    PassImplementationAvailability,
+    PassImplementationStatus,
+)
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.ui.filterable_catalog_logic import (
     CatalogColumnSpec,
@@ -96,6 +100,7 @@ def _entry(
     *,
     configured: bool,
     purpose: str = "Test purpose",
+    implementation: PassImplementationAvailability | None = None,
 ) -> PassCatalogEntry:
     return PassCatalogEntry(
         pass_id=pass_id,
@@ -111,6 +116,7 @@ def _entry(
         configured=configured,
         editor_spec=PassEditorSpec.summary(),
         purpose=purpose,
+        implementation=implementation,
     )
 
 
@@ -120,6 +126,7 @@ def _panel(catalog, *, selected_index: int | None, keys: tuple[str, ...]):
     _Dialog.next_result = 1
     edits: list[object] = []
     adapter = SimpleNamespace(
+        catalog=lambda: tuple(catalog),
         add_passes=lambda draft, pass_ids, *, index: edits.append(
             (draft, tuple(pass_ids), index)
         )
@@ -134,6 +141,30 @@ def _panel(catalog, *, selected_index: int | None, keys: tuple[str, ...]):
         _apply_edit=lambda operation: operation(),
     )
     return panel, edits
+
+
+def test_add_pass_refreshes_provider_status_from_adapter_at_open_time() -> None:
+    stale = _entry("mba-egraph", "MBA e-graph", configured=True)
+    ready = PassImplementationAvailability(
+        distribution="d810-egglog",
+        status=PassImplementationStatus.READY,
+        status_label="Ready",
+        detail="d810-egglog is ready.",
+        activation_required=True,
+        backend_names=("egglog",),
+    )
+    fresh = _entry(
+        "mba-egraph",
+        "MBA e-graph",
+        configured=True,
+        implementation=ready,
+    )
+    panel, _edits = _panel((stale,), selected_index=None, keys=())
+    panel._adapter.catalog = lambda: (fresh,)
+
+    _compiled_add_pass()(panel)
+
+    assert _Dialog.instances[-1].rows[0].cells[-1] == "d810-egglog - Ready"
 
 
 def test_add_pass_projects_public_catalog_into_shared_multi_check_dialog() -> None:
@@ -151,6 +182,7 @@ def test_add_pass_projects_public_catalog_into_shared_multi_check_dialog() -> No
         "Pass",
         "ID",
         "Purpose",
+        "Implementation",
     ]
     assert dialog.mode is CatalogSelectionMode.MULTI_CHECK
     assert dialog.title == "Add pass"
@@ -162,6 +194,7 @@ def test_add_pass_projects_public_catalog_into_shared_multi_check_dialog() -> No
                 "Known pass",
                 "known-pass",
                 "Test purpose",
+                "",
             ),
         ),
         CatalogRow(
@@ -170,10 +203,49 @@ def test_add_pass_projects_public_catalog_into_shared_multi_check_dialog() -> No
                 "Unconfigured pass",
                 "unconfigured-pass",
                 "Test purpose",
+                "",
             ),
         ),
     )
     assert edits == []
+
+
+def test_add_pass_catalog_surfaces_and_searches_provider_availability() -> None:
+    unavailable = PassImplementationAvailability(
+        distribution="d810-egglog",
+        status=PassImplementationStatus.NOT_INSTALLED,
+        status_label="Not installed",
+        detail="Install d810-egglog before project activation.",
+        activation_required=True,
+        backend_names=(),
+    )
+    entries = (
+        _entry("builtin", "Built in", configured=True),
+        _entry(
+            "mba-egraph",
+            "MBA e-graph",
+            configured=True,
+            implementation=unavailable,
+        ),
+    )
+    panel, _edits = _panel(entries, selected_index=None, keys=())
+
+    _compiled_add_pass()(panel)
+
+    dialog = _Dialog.instances[-1]
+    assert dialog.rows[0].cells[-1] == ""
+    assert dialog.rows[1].cells[-1] == "d810-egglog - Not installed"
+    state = initial_filterable_catalog_state(
+        dialog.columns, initial_sort_column_id="id"
+    )
+    view = project_filterable_catalog(
+        dialog.rows,
+        dialog.columns,
+        set_catalog_query(state, "not installed"),
+        CatalogSelectionMode.MULTI_CHECK,
+        action_verb="Add",
+    )
+    assert tuple(row.key for row in view.rows) == ("mba-egraph",)
 
 
 def test_real_public_purposes_are_searchable_in_the_catalog_projection() -> None:

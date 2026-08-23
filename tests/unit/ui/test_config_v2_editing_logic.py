@@ -27,6 +27,10 @@ from d810.core.pass_editor_spec import (
     VerificationStatus,
 )
 from d810.manager.workbench_recipe_models import PassCatalogEntry
+from d810.manager.workbench_recipe_models import (
+    PassImplementationAvailability,
+    PassImplementationStatus,
+)
 from d810.ui import config_v2_editing_logic as logic
 
 
@@ -202,6 +206,36 @@ def _catalog() -> tuple[PassCatalogEntry, ...]:
             editor_spec=PassEditorSpec.summary(),
         ),
     )
+
+
+def test_editor_projects_provider_availability_only_for_declared_passes() -> None:
+    availability = PassImplementationAvailability(
+        distribution="d810-egglog",
+        status=PassImplementationStatus.NOT_INSTALLED,
+        status_label="Not installed",
+        detail="Install d810-egglog before project activation.",
+        activation_required=True,
+        backend_names=(),
+    )
+    entry = dataclasses.replace(_catalog()[0], implementation=availability)
+    draft = _draft_with_pipeline(
+        document={
+            "description": "Provider test",
+            "additional_configuration": {
+                "pipeline_v2": [{"pass_id": entry.pass_id, "options": {}}]
+            },
+        }
+    )
+
+    inspector = logic.project_config_v2_editor_view(
+        draft, _validation(), (entry,)
+    ).inspectors[0]
+
+    assert inspector.implementation is availability
+
+
+def test_editor_omits_provider_availability_for_builtin_pass() -> None:
+    assert _inspector_for("jump-fixer").implementation is None
 
 
 def _draft_with_pipeline(

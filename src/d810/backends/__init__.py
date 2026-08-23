@@ -132,13 +132,17 @@ def load_extension_rules() -> None:
     with it: an extension is optional by construction, and d810 has to start
     without it.
     """
-    for module_name in registry().rule_modules():
+    backend_registry = registry()
+    for module_name in backend_registry.rule_modules():
         try:
             importlib.import_module(module_name)
-        except Exception:
+        except Exception as exc:
+            backend_registry.record_rule_module_result(module_name, exc)
             logger.exception(
                 "extension rule module failed to import, rule not registered: %s",
                 module_name,
             )
         else:
+            backend_registry.record_rule_module_result(module_name, None)
             logger.info("extension rule module loaded: %s", module_name)
+    backend_registry.finalize_rule_module_loading()

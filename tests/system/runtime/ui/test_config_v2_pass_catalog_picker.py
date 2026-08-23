@@ -122,6 +122,17 @@ def _drive_add_pass_dialog(receipt: dict[str, object]) -> None:
             return
         try:
             catalog = dialog.catalog
+            assert tuple(column.label for column in catalog._columns) == (
+                "Include",
+                "Pass",
+                "ID",
+                "Purpose",
+                "Implementation",
+            )
+            rows_by_id = {row.key: row for row in catalog._rows}
+            assert rows_by_id["jump-fixer"].cells[-1] == ""
+            assert rows_by_id["mba-egraph"].cells[-1].startswith("d810-egglog - ")
+            receipt["egraph_implementation"] = rows_by_id["mba-egraph"].cells[-1]
             target_ids = ("constant-simplification", "mba-solve")
             available = {row.key for row in catalog.view().rows}
             assert set(target_ids) <= available
@@ -217,6 +228,7 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
             "constant-simplification",
             "mba-solve",
         }
+        assert str(receipt["egraph_implementation"]).startswith("d810-egglog - ")
 
         selected_order = tuple(receipt["selected_after_clear"])
         pipeline_ids = tuple(row.pass_id for row in panel._view.pipeline_rows)
@@ -268,6 +280,12 @@ def test_config_v2_pass_catalog_picker_native_ida94(tmp_path: pathlib.Path) -> N
         assert duplicate_inspector is not None
         assert duplicate_inspector.pass_id == "mba-solve"
         assert duplicate_inspector.pass_index == duplicate_index
+        assert duplicate_inspector.implementation is not None
+        assert duplicate_inspector.implementation.distribution == "d810-cobra"
+        assert panel.provider_availability.isVisible() is True
+        assert panel.provider_availability.display_text().startswith(
+            "Implementation: d810-cobra - "
+        )
 
         choice_control = _choice_control(panel, "maturities")
         declared = choice_control.choices()

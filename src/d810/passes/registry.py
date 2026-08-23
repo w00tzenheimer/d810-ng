@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from d810.core.pass_editor_spec import PassEditorKind, PassEditorSpec
+from d810.core.plugins import PassImplementationRequirement
 from d810.core.typing import Callable
 from d810.passes.execution_stages import ExecutionStageDescriptor
 from d810.passes.pass_pipeline import PipelineConfig, PipelinePass, PassSpec
@@ -34,6 +35,9 @@ class PassRegistry:
         self._stages: dict[str, tuple[ExecutionStageDescriptor, ...]] = {}
         self._transform_ids: dict[str, tuple[str, ...]] = {}
         self._editor_specs: dict[str, PassEditorSpec | None] = {}
+        self._implementation_requirements: dict[
+            str, PassImplementationRequirement | None
+        ] = {}
         self._public: set[str] = set()
         self._editor_contract_required: set[str] = set()
 
@@ -293,10 +297,17 @@ class PassRegistry:
         stages: tuple[ExecutionStageDescriptor, ...],
         transform_ids: tuple[str, ...],
         editor_spec: PassEditorSpec | None,
+        implementation_requirement: PassImplementationRequirement | None,
         public: bool,
         config_aware: bool,
     ) -> None:
         explicit_config_template = config_template is not None
+        if implementation_requirement is not None and not isinstance(
+            implementation_requirement, PassImplementationRequirement
+        ):
+            raise PassRegistryError(
+                "implementation_requirement must be PassImplementationRequirement"
+            )
         template = config_template or PipelineConfig(pass_id=pass_id)
         if template.pass_id != pass_id:
             raise PassRegistryError(
@@ -348,6 +359,7 @@ class PassRegistry:
         self._stages[pass_id] = tuple(stages)
         self._transform_ids[pass_id] = normalized_transform_ids
         self._editor_specs[pass_id] = editor_spec
+        self._implementation_requirements[pass_id] = implementation_requirement
         if public:
             self._public.add(pass_id)
 
@@ -360,6 +372,7 @@ class PassRegistry:
         stages: tuple[ExecutionStageDescriptor, ...] = (),
         transform_ids: tuple[str, ...] = (),
         editor_spec: PassEditorSpec | None = None,
+        implementation_requirement: PassImplementationRequirement | None = None,
         public: bool = True,
     ) -> None:
         """Register ``pass_factory`` under ``pass_id``."""
@@ -373,6 +386,7 @@ class PassRegistry:
             stages=stages,
             transform_ids=transform_ids,
             editor_spec=editor_spec,
+            implementation_requirement=implementation_requirement,
             public=public,
             config_aware=False,
         )
@@ -387,6 +401,7 @@ class PassRegistry:
         stages: tuple[ExecutionStageDescriptor, ...] = (),
         transform_ids: tuple[str, ...] = (),
         editor_spec: PassEditorSpec | None = None,
+        implementation_requirement: PassImplementationRequirement | None = None,
         public: bool = True,
     ) -> None:
         """Register a pass factory that is built from its ``PipelineConfig``."""
@@ -400,6 +415,7 @@ class PassRegistry:
             stages=stages,
             transform_ids=transform_ids,
             editor_spec=editor_spec,
+            implementation_requirement=implementation_requirement,
             public=public,
             config_aware=True,
         )
@@ -434,6 +450,13 @@ class PassRegistry:
         """Return the closed config-v2 editor contract for one pass."""
         self.config_template_for(pass_id)
         return self._editor_specs[pass_id]
+
+    def implementation_requirement_for(
+        self, pass_id: str
+    ) -> PassImplementationRequirement | None:
+        """Return static optional-provider metadata for one registered pass."""
+        self.config_template_for(pass_id)
+        return self._implementation_requirements[pass_id]
 
     def is_configured(self, pass_id: str) -> bool:
         self.config_template_for(pass_id)

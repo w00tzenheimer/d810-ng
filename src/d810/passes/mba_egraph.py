@@ -13,6 +13,7 @@ from d810.core.pass_editor_spec import (
     PassEditorSectionSpec,
     PassEditorSpec,
 )
+from d810.core.plugins import PassImplementationRequirement
 from d810.core.plugins import (
     PassImplementationCandidate,
     PassImplementationMisdeclared,
@@ -646,6 +647,11 @@ def register_mba_egraph_pass(registry: PassRegistry) -> PassRegistry:
         ),
         stages=mba_egraph_stages(),
         editor_spec=mba_egraph_editor_spec(),
+        implementation_requirement=PassImplementationRequirement(
+            distribution="d810-egglog",
+            backend_name="egglog",
+            activation_required=True,
+        ),
     )
     return registry
 
