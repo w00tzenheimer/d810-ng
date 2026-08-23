@@ -1202,6 +1202,7 @@ def _derive_inputs(
         raise TypeError("candidate_inventory must be SemanticGraphInventory")
     model.validate_semantic_graph_inventory(source_inventory)
     model.validate_semantic_graph_inventory(candidate_inventory)
+    terminal_cycle_phase_results = []
     if phase in {
         model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
@@ -1265,6 +1266,17 @@ def _derive_inputs(
                     raise ValueError("retirement binder result is not carried by source facts")
                 if actual_projected != expected_projected:
                     raise ValueError("candidate retirement facts drifted from binder result")
+            elif type(claim) is model.TerminalCycleBreakClaim:
+                terminal_binding = authority_bind.bind_terminal_cycle_break_claim(
+                    claim=claim,
+                    proposal=proposal,
+                    source_inventory=source_inventory,
+                    candidate_inventory=candidate_inventory,
+                    phase=phase,
+                )
+                terminal_cycle_phase_results.append(
+                    terminal_binding.phase_result,
+                )
     if type(phase_build_metrics) is not model.PhaseBuildMetrics:
         raise TypeError("phase_build_metrics must be PhaseBuildMetrics")
     model.validate_phase_build_metrics(phase_build_metrics)
@@ -1322,6 +1334,9 @@ def _derive_inputs(
         preparation_metrics=preparation_metrics,
         phase_build_metrics=phase_build_metrics,
         corridor_coverage_phase_result=corridor_coverage_phase_result,
+        terminal_cycle_phase_results=tuple(sorted(
+            terminal_cycle_phase_results, key=lambda item: item.result_id,
+        )),
     )
 
 

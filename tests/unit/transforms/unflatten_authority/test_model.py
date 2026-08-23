@@ -296,6 +296,7 @@ def test_derived_inputs_exposes_only_transaction_facts() -> None:
         "candidate_route_assessment", "generic_gate_facts",
             "conditional_relations", "patch_step_facts", "preparation_metrics",
             "phase_build_metrics", "corridor_coverage_phase_result",
+            "terminal_cycle_phase_results",
     }
     for removed in (
         "source_subjects", "candidate_subjects", "source_bindings",
@@ -304,6 +305,203 @@ def test_derived_inputs_exposes_only_transaction_facts() -> None:
         "patch_step_evidence", "generic_gates",
     ):
         assert removed not in fields
+
+
+def _terminal_cycle_phase_result(model):
+    residue = (block_ref("b0"), block_ref("b1"))
+    source_edges = ((residue[0], residue[1]), (residue[1], residue[0]))
+    candidate_edges = ((residue[0], residue[1]),)
+    route = (block_ref("z-carrier"), block_ref("a-terminal"))
+    cycle_subject = _subject(
+        model, model.SemanticSubjectKind.CORRIDOR,
+        model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
+        model.CorridorSubjectLocator(
+            authority_id("terminal-cycle-corridor"), residue[0], 0x1000,
+            residue, (0x1000, 0x1100),
+        ),
+    )
+    cleanup_subject = _subject(
+        model, model.SemanticSubjectKind.BLOCK,
+        model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+        model.BlockSubjectLocator(residue[1], 0x1100),
+    )
+    carrier_subject = _subject(
+        model, model.SemanticSubjectKind.BLOCK,
+        model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        model.BlockSubjectLocator(route[0], 0x1900),
+    )
+    terminal_subject = _subject(
+        model, model.SemanticSubjectKind.TERMINAL,
+        model.SemanticSubjectRole.TERMINAL_SITE,
+        model.TerminalSubjectLocator(route[1], 0x2000, model.TerminalKind.STOP, 0x2000),
+    )
+    residue_subject = _subject(
+        model, model.SemanticSubjectKind.BLOCK,
+        model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+        model.BlockSubjectLocator(residue[0], 0x1000),
+    )
+    subjects = (cycle_subject, cleanup_subject, carrier_subject, terminal_subject, residue_subject)
+    bound_subject_ids = tuple(sorted(subject.subject_id for subject in subjects))
+    source_fingerprint = authority_id("terminal-cycle-source")
+    candidate_fingerprint = authority_id("terminal-cycle-candidate")
+    def bindings(phase, fingerprint, generation, serial_offset):
+        return tuple(sorted((
+            model.PhaseSubjectBinding(
+                subject, phase, subject.block_ref, fingerprint, generation,
+                model.SubjectBindingStatus.UNIQUE, serial_offset + index,
+                subject.anchor_ea, (subject.anchor_ea,), subject.role,
+            )
+            for index, subject in enumerate(subjects)
+        ), key=lambda item: item.subject.subject_id))
+    source_bindings = bindings(model.UnflattenAuthorityPhase.PRODUCER_FORECAST, source_fingerprint, 3, 0)
+    candidate_bindings = bindings(model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, candidate_fingerprint, 7, 10)
+    fields = dict(
+        claim_id=authority_id("terminal-cycle-claim"),
+        terminal_route_proof_id=authority_id("terminal-cycle-proof"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        source_fingerprint=source_fingerprint,
+        candidate_fingerprint=candidate_fingerprint,
+        source_generation=3,
+        candidate_generation=7,
+        bound_subject_ids=bound_subject_ids,
+        source_binding_digest=canonical_authority_id(source_bindings),
+        candidate_binding_digest=canonical_authority_id(candidate_bindings),
+        residue_refs=residue,
+        source_cycle_edges=source_edges,
+        candidate_cycle_edges=candidate_edges,
+        source_bindings=source_bindings,
+        candidate_bindings=candidate_bindings,
+        terminal_source_ref=block_ref("bsource"),
+        cleanup_source_ref=residue[1],
+        terminal_carrier_ref=route[0],
+        terminal_route_refs=route,
+        terminal_subject_id=terminal_subject.subject_id,
+        terminal_subject_ref=route[-1],
+    )
+    result_id = canonical_authority_id((
+        "unflatten.terminal-cycle-phase.v1", fields["claim_id"],
+        fields["terminal_route_proof_id"], fields["phase"],
+        fields["source_fingerprint"], fields["candidate_fingerprint"],
+        fields["source_generation"], fields["candidate_generation"],
+        fields["bound_subject_ids"], fields["source_binding_digest"],
+        fields["candidate_binding_digest"], fields["residue_refs"],
+        fields["source_cycle_edges"], fields["candidate_cycle_edges"],
+        fields["terminal_source_ref"], fields["cleanup_source_ref"],
+        fields["terminal_carrier_ref"], fields["terminal_route_refs"],
+        fields["terminal_subject_id"], fields["terminal_subject_ref"],
+    ))
+    return model.TerminalCyclePhaseResult(
+        result_id=result_id,
+        **fields,
+    )
+
+
+def test_terminal_cycle_phase_result_recomputes_id_and_allows_independent_generations() -> None:
+    model = import_authority_model()
+    result = _terminal_cycle_phase_result(model)
+    assert result.source_generation == 3
+    assert result.candidate_generation == 7
+    with pytest.raises(ValueError, match="result_id|source bindings"):
+        replace(result, source_fingerprint=authority_id("drifted"))
+
+
+def test_terminal_cycle_phase_result_preserves_route_path_order() -> None:
+    model = import_authority_model()
+    result = _terminal_cycle_phase_result(model)
+    # The carrier/terminal path is intentionally not structural-ref order.
+    assert result.terminal_route_refs == (
+        block_ref("z-carrier"),
+        block_ref("a-terminal"),
+    )
+
+
+def test_terminal_cycle_phase_result_rejects_foreign_cycle_edges() -> None:
+    model = import_authority_model()
+    result = _terminal_cycle_phase_result(model)
+    foreign = block_ref("foreign")
+    with pytest.raises(ValueError, match="edge endpoints"):
+        model.TerminalCyclePhaseResult(
+            **{
+                **{name: getattr(result, name) for name in result.__dataclass_fields__ if name != "result_id"},
+                "result_id": canonical_authority_id((
+                    "unflatten.terminal-cycle-phase.v1", result.claim_id,
+                    result.terminal_route_proof_id, result.phase,
+                    result.source_fingerprint, result.candidate_fingerprint,
+                    result.source_generation, result.candidate_generation,
+                    result.bound_subject_ids, result.source_binding_digest,
+                    result.candidate_binding_digest, result.residue_refs,
+                    ((foreign, result.residue_refs[0]),), result.candidate_cycle_edges,
+                    result.terminal_source_ref, result.cleanup_source_ref,
+                    result.terminal_carrier_ref, result.terminal_route_refs,
+                    result.terminal_subject_id, result.terminal_subject_ref,
+                )),
+                "source_cycle_edges": ((foreign, result.residue_refs[0]),),
+            }
+        )
+
+
+def test_terminal_cycle_evidence_payload_is_registered_and_result_bound() -> None:
+    model = import_authority_model()
+    result = _terminal_cycle_phase_result(model)
+    payload = model.TerminalCycleEvidencePayload(
+        phase_result_id=result.result_id,
+        claim_id=result.claim_id,
+        terminal_route_proof_id=result.terminal_route_proof_id,
+        phase=result.phase,
+        source_fingerprint=result.source_fingerprint,
+        candidate_fingerprint=result.candidate_fingerprint,
+        source_generation=result.source_generation,
+        candidate_generation=result.candidate_generation,
+        bound_subject_ids=result.bound_subject_ids,
+        source_binding_digest=result.source_binding_digest,
+        candidate_binding_digest=result.candidate_binding_digest,
+        residue_refs=result.residue_refs,
+        source_cycle_edges=result.source_cycle_edges,
+        candidate_cycle_edges=result.candidate_cycle_edges,
+        source_bindings=result.source_bindings,
+        candidate_bindings=result.candidate_bindings,
+        terminal_source_ref=result.terminal_source_ref,
+        cleanup_source_ref=result.cleanup_source_ref,
+        terminal_carrier_ref=result.terminal_carrier_ref,
+        terminal_route_refs=result.terminal_route_refs,
+        terminal_subject_id=result.terminal_subject_id,
+        terminal_subject_ref=result.terminal_subject_ref,
+    )
+    evidence = _evidence_factory(
+        model.AuthorityEvidence,
+        model.AuthorityEvidenceKind.TERMINAL_CYCLE,
+        result.source_bindings[0].subject,
+        result.phase,
+        payload,
+    )
+    assert evidence.payload is payload
+
+
+def _terminal_cycle_evidence_payload(model, result):
+    return model.TerminalCycleEvidencePayload(
+        phase_result_id=result.result_id,
+        claim_id=result.claim_id,
+        terminal_route_proof_id=result.terminal_route_proof_id,
+        phase=result.phase,
+        source_fingerprint=result.source_fingerprint,
+        candidate_fingerprint=result.candidate_fingerprint,
+        source_generation=result.source_generation,
+        candidate_generation=result.candidate_generation,
+        bound_subject_ids=result.bound_subject_ids,
+        source_binding_digest=result.source_binding_digest,
+        candidate_binding_digest=result.candidate_binding_digest,
+        residue_refs=result.residue_refs,
+        source_cycle_edges=result.source_cycle_edges,
+        candidate_cycle_edges=result.candidate_cycle_edges,
+        source_bindings=result.source_bindings,
+        candidate_bindings=result.candidate_bindings,
+        terminal_source_ref=result.terminal_source_ref,
+        cleanup_source_ref=result.cleanup_source_ref,
+        terminal_carrier_ref=result.terminal_carrier_ref,
+        terminal_route_refs=result.terminal_route_refs,
+        terminal_subject_id=result.terminal_subject_id,
+        terminal_subject_ref=result.terminal_subject_ref,
+    )
 
 
 def test_locator_tuples_are_normalized_and_duplicate_checked() -> None:
@@ -620,6 +818,9 @@ def test_every_evidence_kind_accepts_only_its_exact_payload_class() -> None:
             subject.subject_id, authority_id("forecast"), authority_id("phase-result"),
             (authority_id("path"),), (), (), True, (),
         ),
+        model.AuthorityEvidenceKind.TERMINAL_CYCLE: _terminal_cycle_evidence_payload(
+            model, _terminal_cycle_phase_result(model),
+        ),
         model.AuthorityEvidenceKind.PATCH_STEP: model.PatchStepEvidencePayload(
             authority_id("plan"), 0, "redirect", b0, authority_id("step"), 0x1004, 1, 4,
         ),
@@ -874,6 +1075,24 @@ def test_proposal_is_valid_but_rejects_incoherent_authority_inputs() -> None:
                 state_identity(),
             ),
         })
+
+
+def test_terminal_cycle_only_partial_rewrite_proposal_is_valid() -> None:
+    from .test_bind import _terminal_cycle_fixture
+
+    model = import_authority_model()
+    proposal, claim = _terminal_cycle_fixture()
+    terminal_only = replace(proposal, claims=(claim,))
+    assert terminal_only.plan_inputs.shape is model.UnflattenPlanShape.PARTIAL_REWRITE
+
+
+def test_derived_inputs_require_one_phase_result_per_terminal_claim() -> None:
+    from .test_bind import _terminal_cycle_fixture
+    from .test_evaluate import _complete_inputs
+
+    proposal, _claim = _terminal_cycle_fixture()
+    with pytest.raises(ValueError, match="exactly one terminal-cycle phase result"):
+        _complete_inputs(source_subjects=(), proposal=proposal)
 
 
 def test_closed_unions_reject_local_alias_and_subclass_smuggling() -> None:

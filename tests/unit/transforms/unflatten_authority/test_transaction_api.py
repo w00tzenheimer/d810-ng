@@ -17,9 +17,85 @@ from d810.transforms.unflatten_authority.model import (
 from d810.transforms.unflatten_authority.transaction_api import select_plan_route
 from d810.transforms.unflatten_authority.ids import authority_id
 
-from .helpers import exact_fixture, import_authority_model, authority_id as helper_authority_id
+from .helpers import (
+    authority_id as helper_authority_id,
+    block_ref,
+    exact_fixture,
+    import_authority_model,
+)
 from .test_model import _valid_proposal
 from .test_proposal import _shadow
+
+
+def test_transaction_derivation_rejects_a_residual_terminal_cycle() -> None:
+    """The transaction consumes the same topology-aware terminal binder."""
+
+    from d810.transforms.unflatten_authority import transaction_api
+    from .test_bind import _terminal_cycle_inventory_fixture
+
+    proposal, _claim, fixture, source, _candidate, residual = (
+        _terminal_cycle_inventory_fixture()
+    )
+    with pytest.raises(ValueError, match="residual cycle"):
+        transaction_api._derive_inputs(
+            source,
+            residual,
+            object(),
+            proposal,
+            None,
+            phase_build_metrics=fixture.phase_build_metrics,
+            preparation_metrics=fixture.preparation_metrics,
+            candidate_generation=source.generation,
+        )
+
+
+def test_transaction_derivation_carries_terminal_cycle_phase_result() -> None:
+    """The transaction carries the canonical binder result unchanged."""
+
+    from d810.transforms.unflatten_authority import bind, transaction_api
+    from .test_bind import _terminal_cycle_inventory_fixture
+
+    proposal, claim, fixture, source, candidate, _residual = (
+        _terminal_cycle_inventory_fixture()
+    )
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=authority_id("terminal-cycle-carry-snapshot"),
+        source_generation=source.generation,
+        steps=tuple(
+            PatchRedirectBranch(
+                owner,
+                block_ref("b1")
+                if owner == block_ref("b0")
+                else block_ref("b0"),
+                block_ref("b2"),
+            )
+            for owner in proposal.use_def_witness.redirect_owner_refs
+        ),
+        source_coordinates=tuple(
+            (block.block_ref, block.serial)
+            for block in source.blocks if block.block_ref is not None
+        ),
+        unflatten_proposal=proposal,
+    )
+    direct = bind.bind_terminal_cycle_break_claim(
+        claim=claim,
+        proposal=proposal,
+        source_inventory=source,
+        candidate_inventory=candidate,
+        phase=fixture.phase_build_metrics.phase,
+    )
+    inputs = transaction_api._derive_inputs(
+        source,
+        candidate,
+        plan,
+        proposal,
+        None,
+        phase_build_metrics=fixture.phase_build_metrics,
+        preparation_metrics=fixture.preparation_metrics,
+        candidate_generation=candidate.generation,
+    )
+    assert inputs.terminal_cycle_phase_results == (direct.phase_result,)
 
 
 def _full_corridor_fixture():

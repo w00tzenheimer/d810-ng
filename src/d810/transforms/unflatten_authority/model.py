@@ -337,6 +337,7 @@ class AuthorityEvidenceKind(str, Enum):
     REACHABILITY = "reachability"
     USE_DEF_AUDIT = "use_def_audit"
     CORRIDOR_COVERAGE = "corridor_coverage"
+    TERMINAL_CYCLE = "terminal_cycle"
     PATCH_STEP = "patch_step"
     GENERIC_CFG_GATE = "generic_cfg_gate"
 
@@ -855,6 +856,357 @@ class CorridorCoveragePhaseResult:
             and not self.residual_path_ids
             and not self.drifted_path_ids
         )
+
+
+def _terminal_cycle_refs(
+    values: object, label: str, *, nonempty: bool = True,
+) -> tuple[NativeBlockRef | LogicalBlockRef, ...]:
+    if type(values) is not tuple:
+        raise TypeError(f"{label} must be an exact tuple")
+    refs = tuple(_authority_ref(value, f"{label} item") for value in values)
+    if nonempty and not refs:
+        raise ValueError(f"{label} must not be empty")
+    if len(set(refs)) != len(refs):
+        raise ValueError(f"{label} must be unique")
+    if refs != tuple(sorted(refs, key=_structural_key)):
+        raise ValueError(f"{label} must be in canonical order")
+    return refs
+
+
+def _terminal_cycle_edges(
+    values: object, label: str, residue: tuple[NativeBlockRef | LogicalBlockRef, ...],
+) -> tuple[tuple[NativeBlockRef | LogicalBlockRef, NativeBlockRef | LogicalBlockRef], ...]:
+    if type(values) is not tuple:
+        raise TypeError(f"{label} must be an exact tuple")
+    edges = []
+    residue_set = set(residue)
+    for index, edge in enumerate(values):
+        if type(edge) is not tuple or len(edge) != 2:
+            raise TypeError(f"{label}[{index}] must be a ref pair")
+        source, target = (
+            _authority_ref(edge[0], f"{label}[{index}] source"),
+            _authority_ref(edge[1], f"{label}[{index}] target"),
+        )
+        if source not in residue_set or target not in residue_set:
+            raise ValueError(f"{label} edge endpoints must belong to the residue")
+        edges.append((source, target))
+    result = tuple(edges)
+    if len(set(result)) != len(result):
+        raise ValueError(f"{label} must be unique")
+    if result != tuple(sorted(result, key=lambda edge: (_structural_key(edge[0]), _structural_key(edge[1])))):
+        raise ValueError(f"{label} must be in canonical order")
+    return result
+
+
+def _terminal_cycle_exists(
+    residue: tuple[NativeBlockRef | LogicalBlockRef, ...],
+    edges: tuple[tuple[NativeBlockRef | LogicalBlockRef, NativeBlockRef | LogicalBlockRef], ...],
+) -> bool:
+    successors = {ref: set() for ref in residue}
+    for source, target in edges:
+        successors[source].add(target)
+    active: set[NativeBlockRef | LogicalBlockRef] = set()
+    complete: set[NativeBlockRef | LogicalBlockRef] = set()
+
+    def visit(ref: NativeBlockRef | LogicalBlockRef) -> bool:
+        if ref in active:
+            return True
+        if ref in complete:
+            return False
+        active.add(ref)
+        if any(visit(target) for target in successors[ref]):
+            return True
+        active.remove(ref)
+        complete.add(ref)
+        return False
+
+    return any(visit(ref) for ref in residue)
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalCyclePhaseResult:
+    """One transaction-owned terminal-cycle binding result for a phase."""
+
+    result_id: str
+    claim_id: str
+    terminal_route_proof_id: str
+    phase: UnflattenAuthorityPhase
+    source_fingerprint: str
+    candidate_fingerprint: str
+    source_generation: int
+    candidate_generation: int
+    bound_subject_ids: tuple[str, ...]
+    source_binding_digest: str
+    candidate_binding_digest: str
+    residue_refs: tuple[NativeBlockRef | LogicalBlockRef, ...]
+    source_cycle_edges: tuple[tuple[NativeBlockRef | LogicalBlockRef, NativeBlockRef | LogicalBlockRef], ...]
+    candidate_cycle_edges: tuple[tuple[NativeBlockRef | LogicalBlockRef, NativeBlockRef | LogicalBlockRef], ...]
+    source_bindings: tuple[PhaseSubjectBinding, ...]
+    candidate_bindings: tuple[PhaseSubjectBinding, ...]
+    terminal_source_ref: NativeBlockRef | LogicalBlockRef
+    cleanup_source_ref: NativeBlockRef | LogicalBlockRef
+    terminal_carrier_ref: NativeBlockRef | LogicalBlockRef
+    terminal_route_refs: tuple[NativeBlockRef | LogicalBlockRef, ...]
+    terminal_subject_id: str
+    terminal_subject_ref: NativeBlockRef | LogicalBlockRef
+
+    def __post_init__(self) -> None:
+        _id(self.result_id, "result_id")
+        _id(self.claim_id, "claim_id")
+        _id(self.terminal_route_proof_id, "terminal_route_proof_id")
+        _enum(self.phase, UnflattenAuthorityPhase, "phase")
+        _id(self.source_fingerprint, "source_fingerprint")
+        _id(self.candidate_fingerprint, "candidate_fingerprint")
+        _generation(self.source_generation, "source_generation")
+        _generation(self.candidate_generation, "candidate_generation")
+        bound_subject_ids = _strict_id_tuple(self.bound_subject_ids, "bound_subject_ids")
+        object.__setattr__(self, "bound_subject_ids", bound_subject_ids)
+        _id(self.source_binding_digest, "source_binding_digest")
+        _id(self.candidate_binding_digest, "candidate_binding_digest")
+        residue = _terminal_cycle_refs(self.residue_refs, "residue_refs")
+        object.__setattr__(self, "residue_refs", residue)
+        source_edges = _terminal_cycle_edges(self.source_cycle_edges, "source_cycle_edges", residue)
+        candidate_edges = _terminal_cycle_edges(self.candidate_cycle_edges, "candidate_cycle_edges", residue)
+        if not _terminal_cycle_exists(residue, source_edges):
+            raise ValueError("source cycle edges must contain a directed cycle")
+        if _terminal_cycle_exists(residue, candidate_edges):
+            raise ValueError("candidate cycle edges must be acyclic")
+        object.__setattr__(self, "source_cycle_edges", source_edges)
+        object.__setattr__(self, "candidate_cycle_edges", candidate_edges)
+        for name in ("source_bindings", "candidate_bindings"):
+            bindings = getattr(self, name)
+            if type(bindings) is not tuple or any(type(item) is not PhaseSubjectBinding for item in bindings):
+                raise TypeError(f"{name} must contain PhaseSubjectBinding values")
+            if tuple(sorted(bindings, key=lambda item: item.subject.subject_id)) != bindings:
+                raise ValueError(f"{name} must be in canonical subject order")
+            if tuple(item.subject.subject_id for item in bindings) != bound_subject_ids:
+                raise ValueError(f"{name} must exactly cover bound_subject_ids")
+        if any(
+            item.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST
+            or item.graph_fingerprint != self.source_fingerprint
+            or item.generation != self.source_generation
+            for item in self.source_bindings
+        ):
+            raise ValueError("source bindings do not match terminal-cycle source coordinates")
+        if any(
+            item.phase is not self.phase
+            or item.graph_fingerprint != self.candidate_fingerprint
+            or item.generation != self.candidate_generation
+            for item in self.candidate_bindings
+        ):
+            raise ValueError("candidate bindings do not match terminal-cycle candidate coordinates")
+        if self.source_binding_digest != authority_id(self.source_bindings):
+            raise ValueError("source_binding_digest does not match source_bindings")
+        if self.candidate_binding_digest != authority_id(self.candidate_bindings):
+            raise ValueError("candidate_binding_digest does not match candidate_bindings")
+        for name in ("terminal_source_ref", "cleanup_source_ref", "terminal_carrier_ref", "terminal_subject_ref"):
+            _authority_ref(getattr(self, name), name)
+        if self.cleanup_source_ref not in residue:
+            raise ValueError("cleanup_source_ref must belong to residue_refs")
+        if type(self.terminal_route_refs) is not tuple:
+            raise TypeError("terminal_route_refs must be an exact tuple")
+        route = tuple(
+            _authority_ref(value, "terminal_route_refs item")
+            for value in self.terminal_route_refs
+        )
+        if not route or len(set(route)) != len(route):
+            raise ValueError("terminal_route_refs must be non-empty and unique")
+        if route[0] != self.terminal_carrier_ref:
+            raise ValueError("terminal route must begin at terminal_carrier_ref")
+        if route[-1] != self.terminal_subject_ref:
+            raise ValueError("terminal route must end at terminal_subject_ref")
+        object.__setattr__(self, "terminal_route_refs", route)
+        _id(self.terminal_subject_id, "terminal_subject_id")
+        if self.terminal_subject_id not in bound_subject_ids:
+            raise ValueError("terminal subject must be one of the bound subjects")
+        if self.result_id != authority_id((
+            "unflatten.terminal-cycle-phase.v1", self.claim_id,
+            self.terminal_route_proof_id, self.phase, self.source_fingerprint,
+            self.candidate_fingerprint, self.source_generation,
+            self.candidate_generation, self.bound_subject_ids,
+            self.source_binding_digest, self.candidate_binding_digest,
+            self.residue_refs, self.source_cycle_edges,
+            self.candidate_cycle_edges, self.terminal_source_ref,
+            self.cleanup_source_ref, self.terminal_carrier_ref,
+            self.terminal_route_refs, self.terminal_subject_id,
+            self.terminal_subject_ref,
+        )):
+            raise ValueError("result_id does not match canonical terminal-cycle phase result content")
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalCycleEvidencePayload:
+    """Evidence payload that carries one exact terminal-cycle phase result."""
+
+    phase_result_id: str
+    claim_id: str
+    terminal_route_proof_id: str
+    phase: UnflattenAuthorityPhase
+    source_fingerprint: str
+    candidate_fingerprint: str
+    source_generation: int
+    candidate_generation: int
+    bound_subject_ids: tuple[str, ...]
+    source_binding_digest: str
+    candidate_binding_digest: str
+    residue_refs: tuple[NativeBlockRef | LogicalBlockRef, ...]
+    source_cycle_edges: tuple[tuple[NativeBlockRef | LogicalBlockRef, NativeBlockRef | LogicalBlockRef], ...]
+    candidate_cycle_edges: tuple[tuple[NativeBlockRef | LogicalBlockRef, NativeBlockRef | LogicalBlockRef], ...]
+    source_bindings: tuple[PhaseSubjectBinding, ...]
+    candidate_bindings: tuple[PhaseSubjectBinding, ...]
+    terminal_source_ref: NativeBlockRef | LogicalBlockRef
+    cleanup_source_ref: NativeBlockRef | LogicalBlockRef
+    terminal_carrier_ref: NativeBlockRef | LogicalBlockRef
+    terminal_route_refs: tuple[NativeBlockRef | LogicalBlockRef, ...]
+    terminal_subject_id: str
+    terminal_subject_ref: NativeBlockRef | LogicalBlockRef
+
+    def __post_init__(self) -> None:
+        result = TerminalCyclePhaseResult(
+            self.phase_result_id, self.claim_id, self.terminal_route_proof_id,
+            self.phase, self.source_fingerprint, self.candidate_fingerprint,
+            self.source_generation, self.candidate_generation,
+            self.bound_subject_ids, self.source_binding_digest,
+            self.candidate_binding_digest, self.residue_refs,
+            self.source_cycle_edges, self.candidate_cycle_edges,
+            self.source_bindings, self.candidate_bindings,
+            self.terminal_source_ref, self.cleanup_source_ref,
+            self.terminal_carrier_ref, self.terminal_route_refs,
+            self.terminal_subject_id, self.terminal_subject_ref,
+        )
+        object.__setattr__(self, "phase_result_id", result.result_id)
+
+
+def _validate_terminal_cycle_phase_results(
+    results: object,
+    claims: tuple[UnflattenClaim, ...],
+    *,
+    phase: UnflattenAuthorityPhase,
+    source_fingerprint: str,
+    candidate_fingerprint: str,
+    source_generation: int,
+    candidate_generation: int,
+    expected_source_bindings: tuple[PhaseSubjectBinding, ...],
+    expected_candidate_bindings: tuple[PhaseSubjectBinding, ...],
+    source_inventory: SemanticGraphInventory,
+    candidate_inventory: SemanticGraphInventory,
+) -> tuple[TerminalCyclePhaseResult, ...]:
+    if type(results) is not tuple:
+        raise TypeError("terminal_cycle_phase_results must be an exact tuple")
+    values = tuple(results)
+    if any(type(value) is not TerminalCyclePhaseResult for value in values):
+        raise TypeError("terminal_cycle_phase_results must contain closed results")
+    if values != tuple(sorted(values, key=lambda item: item.result_id)):
+        raise ValueError("terminal_cycle_phase_results must be in canonical result order")
+    terminal_claims = tuple(
+        claim for claim in claims if type(claim) is TerminalCycleBreakClaim
+    )
+    if len(values) != len(terminal_claims):
+        raise ValueError("there must be exactly one terminal-cycle phase result per claim")
+    claim_by_id = {claim.claim_id: claim for claim in terminal_claims}
+    if len(claim_by_id) != len(terminal_claims):
+        raise ValueError("terminal-cycle claims must have unique IDs")
+    for result in values:
+        result.__post_init__()
+        claim = claim_by_id.get(result.claim_id)
+        if claim is None:
+            raise ValueError("terminal-cycle phase result claim is foreign")
+        if (
+            result.terminal_route_proof_id not in claim.terminal_route_proof_ids
+            or result.phase is not phase
+            or result.source_fingerprint != source_fingerprint
+            or result.candidate_fingerprint != candidate_fingerprint
+            or result.source_generation != source_generation
+            or result.candidate_generation != candidate_generation
+            or result.source_bindings != tuple(
+                binding for binding in expected_source_bindings
+                if binding.subject.subject_id in set(result.bound_subject_ids)
+            )
+            or result.candidate_bindings != tuple(
+                binding for binding in expected_candidate_bindings
+                if binding.subject.subject_id in set(result.bound_subject_ids)
+            )
+        ):
+            raise ValueError("terminal-cycle phase result coordinates are not sealed")
+        cycle = claim.cycle_subject.locator
+        cleanup = claim.cleanup_source_subject.locator
+        terminal = claim.terminal_subject.locator
+        if type(cycle) is not CorridorSubjectLocator or type(cleanup) is not BlockSubjectLocator or type(terminal) is not TerminalSubjectLocator:
+            raise ValueError("terminal-cycle claim locators are not closed")
+        if (
+            result.residue_refs != cycle.member_refs
+            or result.cleanup_source_ref != cleanup.block_ref
+            or result.terminal_subject_id != claim.terminal_subject.subject_id
+            or result.terminal_subject_ref != terminal.block_ref
+            or not {
+                claim.cycle_subject.subject_id,
+                claim.cleanup_source_subject.subject_id,
+                claim.terminal_subject.subject_id,
+            } <= set(result.bound_subject_ids)
+        ):
+            raise ValueError("terminal-cycle phase result does not match claim subjects")
+        _validate_terminal_cycle_phase_result_inventories(
+            result, claim, source_inventory, candidate_inventory,
+        )
+    return values
+
+
+def _validate_terminal_cycle_evidence(
+    results: tuple[TerminalCyclePhaseResult, ...],
+    evidence: tuple[AuthorityEvidence, ...],
+    claims: tuple[UnflattenClaim, ...],
+    phase: UnflattenAuthorityPhase,
+) -> None:
+    """Require a bijective, case-owned evidence row for each phase result."""
+
+    terminal_rows = tuple(
+        item for item in evidence
+        if item.kind is AuthorityEvidenceKind.TERMINAL_CYCLE
+    )
+    if len(terminal_rows) != len(results):
+        raise ValueError(
+            "terminal-cycle evidence must be bijective with phase results"
+        )
+    rows_by_result_id = {
+        item.payload.phase_result_id: item for item in terminal_rows
+    }
+    if len(rows_by_result_id) != len(terminal_rows):
+        raise ValueError("terminal-cycle evidence contains duplicate phase results")
+    result_by_id = {result.result_id: result for result in results}
+    if set(rows_by_result_id) != set(result_by_id):
+        raise ValueError(
+            "terminal-cycle evidence contains a foreign or missing phase result"
+        )
+    claims_by_id = {
+        claim.claim_id: claim
+        for claim in claims
+        if type(claim) is TerminalCycleBreakClaim
+    }
+    for result in results:
+        row = rows_by_result_id[result.result_id]
+        claim = claims_by_id.get(result.claim_id)
+        if claim is None:
+            raise ValueError("terminal-cycle evidence claim is foreign")
+        expected_payload = TerminalCycleEvidencePayload(
+            result.result_id, result.claim_id, result.terminal_route_proof_id,
+            result.phase, result.source_fingerprint, result.candidate_fingerprint,
+            result.source_generation, result.candidate_generation,
+            result.bound_subject_ids, result.source_binding_digest,
+            result.candidate_binding_digest, result.residue_refs,
+            result.source_cycle_edges, result.candidate_cycle_edges,
+            result.source_bindings, result.candidate_bindings,
+            result.terminal_source_ref, result.cleanup_source_ref,
+            result.terminal_carrier_ref, result.terminal_route_refs,
+            result.terminal_subject_id, result.terminal_subject_ref,
+        )
+        if (
+            row.phase is not phase
+            or row.subject != claim.cycle_subject
+            or row.payload != expected_payload
+        ):
+            raise ValueError(
+                "terminal-cycle evidence does not match case-owned phase result"
+            )
 
 
 SemanticSubjectLocator: TypeAlias = (
@@ -1865,6 +2217,7 @@ AuthorityEvidencePayload: TypeAlias = (
     | StructuralLineageEvidencePayload | SemanticRouteEvidencePayload
     | EffectSiteEvidencePayload | ReachabilityEvidencePayload
     | UseDefAuditEvidencePayload | CorridorCoverageEvidencePayload
+    | TerminalCycleEvidencePayload
     | PatchStepEvidencePayload | GenericCfgGateEvidencePayload
 )
 
@@ -1877,6 +2230,7 @@ _PAYLOAD_BY_KIND = {
     AuthorityEvidenceKind.REACHABILITY: ReachabilityEvidencePayload,
     AuthorityEvidenceKind.USE_DEF_AUDIT: UseDefAuditEvidencePayload,
     AuthorityEvidenceKind.CORRIDOR_COVERAGE: CorridorCoverageEvidencePayload,
+    AuthorityEvidenceKind.TERMINAL_CYCLE: TerminalCycleEvidencePayload,
     AuthorityEvidenceKind.PATCH_STEP: PatchStepEvidencePayload,
     AuthorityEvidenceKind.GENERIC_CFG_GATE: GenericCfgGateEvidencePayload,
 }
@@ -2260,6 +2614,10 @@ class TerminalCycleBreakClaim:
         proofs = _tuple(self.terminal_route_proof_ids, "terminal_route_proof_ids", sort=True)
         for proof in proofs:
             _id(proof, "terminal_route_proof_ids item")
+        if len(proofs) != 1:
+            raise ValueError(
+                "terminal route proof selection must contain exactly one proof"
+            )
         object.__setattr__(self, "terminal_route_proof_ids", proofs)
         if self.claim_id != claim_id(self):
             raise ValueError("claim_id does not match canonical claim content")
@@ -2905,8 +3263,9 @@ class ProposedUnflattenContract:
             if not claim_kinds.intersection({
                 UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
                 UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
+                UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
             }):
-                raise ValueError("partial rewrite requires route or retirement claims")
+                raise ValueError("partial rewrite requires route, retirement, or terminal-cycle claims")
             if not dispatcher_member_refs - retired_refs:
                 raise ValueError("partial rewrite requires retained dispatcher members")
         elif self.plan_inputs.shape is UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT:
@@ -3857,6 +4216,175 @@ def validate_semantic_graph_inventory(value: object) -> SemanticGraphInventory:
     return value
 
 
+def _validate_terminal_cycle_phase_result_inventories(
+    result: TerminalCyclePhaseResult,
+    claim: TerminalCycleBreakClaim,
+    source_inventory: SemanticGraphInventory,
+    candidate_inventory: SemanticGraphInventory,
+) -> None:
+    """Replay one terminal-cycle result against the exact immutable graphs."""
+
+    validate_semantic_graph_inventory(source_inventory)
+    validate_semantic_graph_inventory(candidate_inventory)
+    cycle = claim.cycle_subject.locator
+    terminal = claim.terminal_subject.locator
+    if (
+        type(cycle) is not CorridorSubjectLocator
+        or type(terminal) is not TerminalSubjectLocator
+    ):
+        raise ValueError("terminal-cycle inventory replay requires closed locators")
+
+    def exact_binding(
+        bindings: tuple[PhaseSubjectBinding, ...],
+        *,
+        subject_id: str | None = None,
+        block_ref: NativeBlockRef | LogicalBlockRef | None = None,
+        role: SemanticSubjectRole | None = None,
+    ) -> PhaseSubjectBinding:
+        rows = tuple(
+            binding for binding in bindings
+            if (subject_id is None or binding.subject.subject_id == subject_id)
+            and (block_ref is None or binding.subject.block_ref == block_ref)
+            and (role is None or binding.subject.role is role)
+        )
+        if (
+            len(rows) != 1
+            or rows[0].status is not SubjectBindingStatus.UNIQUE
+            or rows[0].serial is None
+        ):
+            raise ValueError(
+                "terminal-cycle inventory relation lacks one exact binding"
+            )
+        return rows[0]
+
+    def residue_edges(
+        inventory: SemanticGraphInventory,
+        bindings: tuple[PhaseSubjectBinding, ...],
+    ) -> tuple[tuple[NativeBlockRef | LogicalBlockRef, NativeBlockRef | LogicalBlockRef], ...]:
+        ref_by_serial = {
+            exact_binding(
+                bindings,
+                block_ref=ref,
+                role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+            ).serial: ref
+            for ref in result.residue_refs
+        }
+        edges = {
+            (ref_by_serial[row.owner_serial], ref_by_serial[row.peer_serial])
+            for row in inventory.topology
+            if row.kind is TopologyIncidenceKind.SUCCESSOR
+            and row.owner_serial in ref_by_serial
+            and row.peer_serial in ref_by_serial
+        }
+        return tuple(sorted(
+            edges,
+            key=lambda edge: (_structural_key(edge[0]), _structural_key(edge[1])),
+        ))
+
+    replayed_source_edges = residue_edges(
+        source_inventory, result.source_bindings,
+    )
+    replayed_candidate_edges = residue_edges(
+        candidate_inventory, result.candidate_bindings,
+    )
+    if (
+        replayed_source_edges != result.source_cycle_edges
+        or replayed_candidate_edges != result.candidate_cycle_edges
+    ):
+        raise ValueError(
+            "terminal-cycle phase result residue topology differs from inventories"
+        )
+    source_entry = exact_binding(
+        result.source_bindings,
+        block_ref=cycle.entry_ref,
+        role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+    )
+    if source_entry.serial not in set(source_inventory.reachable_serials):
+        raise ValueError("terminal-cycle source residue is not source-reachable")
+
+    route_source = exact_binding(
+        result.candidate_bindings,
+        block_ref=result.terminal_source_ref,
+        role=SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+    )
+    cleanup = exact_binding(
+        result.candidate_bindings,
+        subject_id=claim.cleanup_source_subject.subject_id,
+    )
+    carrier = exact_binding(
+        result.candidate_bindings,
+        block_ref=result.terminal_carrier_ref,
+        role=SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+    )
+    terminal_binding = exact_binding(
+        result.candidate_bindings,
+        subject_id=claim.terminal_subject.subject_id,
+    )
+    candidate_blocks = {
+        block.serial: block for block in candidate_inventory.blocks
+    }
+    if (
+        tuple(candidate_blocks[route_source.serial].successor_serials)
+        != (carrier.serial,)
+        or tuple(candidate_blocks[cleanup.serial].successor_serials)
+        != (carrier.serial,)
+    ):
+        raise ValueError(
+            "terminal-cycle redirect topology differs from the phase result"
+        )
+
+    reachable = set(candidate_inventory.reachable_serials)
+    if (
+        route_source.serial not in reachable
+        or carrier.serial not in reachable
+        or terminal_binding.serial not in reachable
+    ):
+        raise ValueError("terminal-cycle terminal route is not candidate-reachable")
+    serial = carrier.serial
+    seen: set[int] = set()
+    route_refs: list[NativeBlockRef | LogicalBlockRef] = []
+    while serial not in seen:
+        seen.add(serial)
+        block = candidate_blocks.get(serial)
+        if block is None or type(block.block_ref) not in (
+            NativeBlockRef, LogicalBlockRef,
+        ):
+            raise ValueError("terminal-cycle route contains an unbound block")
+        route_refs.append(block.block_ref)
+        successors = tuple(
+            successor for successor in block.successor_serials
+            if successor in reachable
+        )
+        if serial == terminal_binding.serial:
+            if successors:
+                raise ValueError(
+                    "terminal-cycle route endpoint has a live successor"
+                )
+            break
+        if len(successors) != 1:
+            raise ValueError("terminal-cycle route is not one exact corridor")
+        serial = successors[0]
+    else:
+        raise ValueError("terminal-cycle terminal route contains a cycle")
+    if tuple(route_refs) != result.terminal_route_refs:
+        raise ValueError(
+            "terminal-cycle terminal path differs from the phase result"
+        )
+
+    terminal_rows = tuple(
+        row for row in candidate_inventory.terminals
+        if row.owner_serial == terminal_binding.serial
+        and row.owner_ref == terminal.block_ref
+        and row.owner_anchor_ea == terminal.anchor_ea
+        and row.terminal_kind is terminal.terminal_kind
+        and row.instruction_ea == terminal.instruction_ea
+    )
+    if len(terminal_rows) != 1:
+        raise ValueError(
+            "terminal-cycle exact terminal site differs from the inventory"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class PreparationBuildMetrics:
     source_inventory_builds: int
@@ -4141,6 +4669,7 @@ class DerivedUnflattenPreparationInputs:
     preparation_metrics: PreparationBuildMetrics
     phase_build_metrics: PhaseBuildMetrics
     corridor_coverage_phase_result: CorridorCoveragePhaseResult | None = None
+    terminal_cycle_phase_results: tuple[TerminalCyclePhaseResult, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.proposal) is not ProposedUnflattenContract:
@@ -4215,6 +4744,20 @@ class DerivedUnflattenPreparationInputs:
                 raise ValueError("corridor phase result coordinates are not sealed to inventories and receipt")
         elif self.proposal.corridor_coverage_forecast is not None:
             raise ValueError("typed corridor forecast requires a bound phase result")
+        terminal_results = _validate_terminal_cycle_phase_results(
+            self.terminal_cycle_phase_results,
+            self.claims,
+            phase=self.phase_build_metrics.phase,
+            source_fingerprint=self.source_inventory.graph_fingerprint,
+            candidate_fingerprint=self.candidate_inventory.graph_fingerprint,
+            source_generation=self.source_inventory.generation,
+            candidate_generation=self.candidate_inventory.generation,
+            expected_source_bindings=self.source_inventory.bindings,
+            expected_candidate_bindings=self.candidate_inventory.bindings,
+            source_inventory=self.source_inventory,
+            candidate_inventory=self.candidate_inventory,
+        )
+        object.__setattr__(self, "terminal_cycle_phase_results", terminal_results)
         has_retirement = any(
             type(claim) is RetiredDispatcherInfrastructureClaim for claim in self.claims
         )
@@ -4281,10 +4824,12 @@ class SemanticSafetyCase:
     obligation_index: ObligationEvidenceIndex
     phase_metrics: SemanticPhaseMetrics
     source_inventory: SemanticGraphInventory
+    candidate_inventory: SemanticGraphInventory
     source_subject_ids: tuple[str, ...] = ()
     source_bindings: tuple[PhaseSubjectBinding, ...] = ()
     retirement_catalog: RetirementAuthorityCatalog | None = None
     corridor_coverage_phase_result: CorridorCoveragePhaseResult | None = None
+    terminal_cycle_phase_results: tuple[TerminalCyclePhaseResult, ...] = ()
 
     def __post_init__(self) -> None:
         _id(self.case_id, "case_id")
@@ -4294,6 +4839,7 @@ class SemanticSafetyCase:
             raise TypeError("preparation_receipt must be PreparationAuthorityReceipt")
         PreparationAuthorityReceipt.__post_init__(self.preparation_receipt)
         validate_semantic_graph_inventory(self.source_inventory)
+        validate_semantic_graph_inventory(self.candidate_inventory)
         forecast = self.preparation_receipt.corridor_coverage_forecast
         if forecast is not None and forecast.function_ea != self.source_inventory.function_ea:
             raise ValueError("case corridor forecast function EA differs from source inventory")
@@ -4319,6 +4865,20 @@ class SemanticSafetyCase:
                 raise ValueError("case corridor phase result coordinates are not sealed")
         elif self.preparation_receipt.corridor_coverage_forecast is not None:
             raise ValueError("typed corridor forecast requires a case-owned phase result")
+        terminal_results = _validate_terminal_cycle_phase_results(
+            self.terminal_cycle_phase_results,
+            self.claims,
+            phase=self.phase,
+            source_fingerprint=self.source_fingerprint,
+            candidate_fingerprint=self.candidate_fingerprint,
+            source_generation=self.preparation_receipt.source_generation,
+            candidate_generation=self.candidate_generation,
+            expected_source_bindings=self.source_inventory.bindings,
+            expected_candidate_bindings=self.candidate_inventory.bindings,
+            source_inventory=self.source_inventory,
+            candidate_inventory=self.candidate_inventory,
+        )
+        object.__setattr__(self, "terminal_cycle_phase_results", terminal_results)
         has_retirement = any(
             type(claim) is RetiredDispatcherInfrastructureClaim for claim in self.claims
         )
@@ -4369,6 +4929,12 @@ class SemanticSafetyCase:
             raise ValueError("evidence must be in canonical evidence-id order")
         if tuple(sorted(self.justifications, key=lambda item: item.justification_id)) != self.justifications:
             raise ValueError("justifications must be in canonical justification-id order")
+        _validate_terminal_cycle_evidence(
+            self.terminal_cycle_phase_results,
+            self.evidence,
+            self.claims,
+            self.phase,
+        )
         if type(self.obligation_index) is not ObligationEvidenceIndex:
             raise TypeError("obligation_index must be an ObligationEvidenceIndex")
         if type(self.phase_metrics) is not SemanticPhaseMetrics:
@@ -4384,6 +4950,20 @@ class SemanticSafetyCase:
             raise ValueError("source_inventory generation does not match preparation_receipt")
         if self.source_inventory.inventory_digest != self.preparation_receipt.source_inventory_digest:
             raise ValueError("source_inventory digest does not match preparation_receipt")
+        if type(self.candidate_inventory) is not SemanticGraphInventory:
+            raise TypeError("candidate_inventory must be SemanticGraphInventory")
+        validate_semantic_graph_inventory(self.candidate_inventory)
+        if (
+            self.candidate_inventory.graph_fingerprint
+            != self.preparation_receipt.candidate_fingerprint
+            or self.candidate_inventory.generation
+            != self.preparation_receipt.candidate_generation
+            or self.candidate_inventory.inventory_digest
+            != self.preparation_receipt.candidate_inventory_digest
+        ):
+            raise ValueError(
+                "candidate_inventory does not match preparation receipt"
+            )
         if any(
             claim.source_generation != self.source_inventory.generation
             for claim in self.claims

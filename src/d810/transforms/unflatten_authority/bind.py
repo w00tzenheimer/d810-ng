@@ -185,6 +185,626 @@ def _retirement_binding_seal(result: RetiredInfrastructureBindingResult) -> str:
     ))).hexdigest()
 
 
+def terminal_cycle_binding_subjects(
+    proposal: model.ProposedUnflattenContract,
+    claim: model.TerminalCycleBreakClaim,
+) -> tuple[model.SemanticSubjectRef, ...]:
+    """Return the one closed subject set owned by a terminal-cycle claim."""
+
+    if type(proposal) is not model.ProposedUnflattenContract:
+        raise TypeError("terminal-cycle subjects require a closed proposal")
+    if type(claim) is not model.TerminalCycleBreakClaim:
+        raise TypeError("terminal-cycle subjects require a closed claim")
+    if claim not in proposal.claims:
+        raise ValueError("terminal-cycle claim is foreign to the proposal")
+    cycle_locator = claim.cycle_subject.locator
+    if type(cycle_locator) is not model.CorridorSubjectLocator:
+        raise ValueError("terminal-cycle corridor binding is not closed")
+    residue_refs = tuple(cycle_locator.member_refs)
+    residue_anchors = tuple(cycle_locator.member_anchor_eas)
+    if (
+        not residue_refs
+        or len(set(residue_refs)) != len(residue_refs)
+        or len(residue_refs) != len(residue_anchors)
+        or cycle_locator.entry_ref
+        != proposal.plan_inputs.dispatcher_entry_ref
+        or not set(residue_refs)
+        <= set(proposal.plan_inputs.dispatcher_member_refs)
+        or claim.cleanup_source_subject.block_ref not in set(residue_refs)
+    ):
+        raise ValueError("terminal-cycle residue is not an exact plan subset")
+    catalog_by_ref = {
+        item.block_ref: item for item in proposal.source_identity_catalog.blocks
+    }
+    residue_subjects: list[model.SemanticSubjectRef] = []
+    for ref, anchor in zip(residue_refs, residue_anchors):
+        witness = catalog_by_ref.get(ref)
+        if witness is None or witness.anchor_ea != anchor:
+            raise ValueError(
+                "terminal-cycle residue member is foreign to the source catalog"
+            )
+        residue_subjects.append(
+            claim.cleanup_source_subject
+            if ref == claim.cleanup_source_subject.block_ref
+            else _subject_factory(
+                model.SemanticSubjectRef,
+                kind=model.SemanticSubjectKind.BLOCK,
+                role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                block_ref=ref,
+                anchor_ea=anchor,
+                locator=model.BlockSubjectLocator(ref, anchor),
+            )
+        )
+    cleanup = catalog_by_ref.get(claim.cleanup_source_subject.block_ref)
+    terminal = catalog_by_ref.get(claim.terminal_subject.block_ref)
+    if (
+        cleanup is None
+        or cleanup.anchor_ea != claim.cleanup_source_subject.anchor_ea
+        or terminal is None
+        or terminal.anchor_ea != claim.terminal_subject.anchor_ea
+        or claim.terminal_subject.locator.instruction_ea
+        not in terminal.native_instruction_eas
+    ):
+        raise ValueError("terminal-cycle endpoint is foreign to the source catalog")
+    proof = next(
+        (
+            item
+            for item in proposal.route_evidence.route_proofs
+            if item.proof_id == claim.terminal_route_proof_ids[0]
+        ),
+        None,
+    )
+    if proof is None:
+        raise ValueError("terminal-cycle route proof is absent from canonical evidence")
+    terminal_destinations = tuple(
+        destination for destination in proof.destinations if destination.terminal
+    )
+    if len(terminal_destinations) != 1:
+        raise ValueError(
+            "terminal-cycle route proof does not bind one terminal carrier"
+        )
+    destination = terminal_destinations[0]
+    carrier_witnesses = tuple(
+        witness for witness in proposal.source_identity_catalog.blocks
+        if witness.anchor_ea == destination.target_anchor_ea
+        and destination.target_anchor_ea in witness.native_instruction_eas
+        and (
+            type(witness.block_ref) is not NativeBlockRef
+            or witness.block_ref.identity == destination.target_identity
+        )
+    )
+    if len(carrier_witnesses) != 1:
+        raise ValueError(
+            "terminal-cycle route proof carrier is foreign or ambiguous"
+        )
+    carrier = carrier_witnesses[0]
+    source_witnesses = tuple(
+        witness for witness in proposal.source_identity_catalog.blocks
+        if witness.anchor_ea == proof.source_anchor_ea
+        and proof.source_anchor_ea in witness.native_instruction_eas
+        and (
+            type(witness.block_ref) is not NativeBlockRef
+            or witness.block_ref.identity == proof.source_identity
+        )
+    )
+    if len(source_witnesses) != 1:
+        raise ValueError(
+            "terminal-cycle route proof source is foreign or ambiguous"
+        )
+    route_source = source_witnesses[0]
+    if route_source.block_ref == claim.cleanup_source_subject.block_ref:
+        raise ValueError("terminal route source aliases the cleanup source")
+    route_source_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=route_source.block_ref,
+        anchor_ea=route_source.anchor_ea,
+        locator=model.BlockSubjectLocator(
+            route_source.block_ref, route_source.anchor_ea,
+        ),
+    )
+    carrier_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=carrier.block_ref,
+        anchor_ea=carrier.anchor_ea,
+        locator=model.BlockSubjectLocator(carrier.block_ref, carrier.anchor_ea),
+    )
+    return tuple(
+        sorted(
+            {
+                item.subject_id: item
+                for item in (
+                    claim.cycle_subject,
+                    claim.cleanup_source_subject,
+                    claim.terminal_subject,
+                    route_source_subject,
+                    carrier_subject,
+                    *residue_subjects,
+                )
+            }.values(),
+            key=lambda item: item.subject_id,
+        )
+    )
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class TerminalCycleBindingResult:
+    """Exact source/projected binding for one terminal-cycle allowance."""
+
+    claim: model.TerminalCycleBreakClaim
+    proposal: model.ProposedUnflattenContract
+    source_bindings: tuple[model.PhaseSubjectBinding, ...]
+    projected_bindings: tuple[model.PhaseSubjectBinding, ...]
+    residue_refs: tuple[object, ...]
+    source_cycle_edges: tuple[tuple[object, object], ...]
+    projected_cycle_edges: tuple[tuple[object, object], ...]
+    terminal_route_refs: tuple[object, ...]
+    generation: int
+    projected_generation: int
+    phase_result: model.TerminalCyclePhaseResult
+    _content_seal: str = field(init=False, repr=False, compare=False)
+
+    def __new__(cls, *args: object, **kwargs: object):
+        raise TypeError("TerminalCycleBindingResult can only be minted by bind_terminal_cycle_break_claim")
+
+    @property
+    def claim_id(self) -> str:
+        return self.claim.claim_id
+
+    def _validate_fields(self) -> None:
+        if type(self.claim) is not model.TerminalCycleBreakClaim:
+            raise TypeError("claim must be a closed terminal-cycle claim")
+        if type(self.proposal) is not model.ProposedUnflattenContract:
+            raise TypeError("proposal must be a closed proposal")
+        validate_canonical_roundtrip(self.claim, model.TerminalCycleBreakClaim)
+        validate_canonical_roundtrip(self.proposal, model.ProposedUnflattenContract)
+        if self.claim not in self.proposal.claims:
+            raise ValueError("terminal-cycle claim is foreign to the proposal")
+        if self.generation != self.proposal.source_identity_catalog.generation:
+            raise ValueError("terminal-cycle binding generation is stale")
+        if type(self.phase_result) is not model.TerminalCyclePhaseResult:
+            raise TypeError("terminal-cycle binding must carry one closed phase result")
+        self.phase_result.__post_init__()
+        expected_subjects = terminal_cycle_binding_subjects(
+            self.proposal, self.claim,
+        )
+        expected = {
+            subject.subject_id: subject for subject in expected_subjects
+        }
+        cycle_locator = self.claim.cycle_subject.locator
+        if tuple(self.residue_refs) != tuple(cycle_locator.member_refs):
+            raise ValueError("terminal-cycle residue refs drifted from corridor locator")
+        source = {item.subject.subject_id: item for item in self.source_bindings}
+        projected = {item.subject.subject_id: item for item in self.projected_bindings}
+        if set(source) != set(expected) or set(projected) != set(expected):
+            raise ValueError("terminal-cycle bindings do not cover the exact claim subjects")
+        expected_order = tuple(sorted(expected))
+        if (
+            tuple(item.subject.subject_id for item in self.source_bindings)
+            != expected_order
+            or tuple(item.subject.subject_id for item in self.projected_bindings)
+            != expected_order
+        ):
+            raise ValueError("terminal-cycle bindings must preserve canonical subject order")
+        catalog_by_ref = {
+            item.block_ref: item
+            for item in self.proposal.source_identity_catalog.blocks
+        }
+        for subject_id, subject in expected.items():
+            witness = catalog_by_ref[subject.block_ref]
+            source_row = source[subject_id]
+            if (
+                source_row.subject != subject
+                or source_row.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+                or source_row.status is not model.SubjectBindingStatus.UNIQUE
+                or source_row.generation != self.generation
+                or source_row.block_ref != subject.block_ref
+                or source_row.anchor_ea != subject.anchor_ea
+                or tuple(source_row.native_instruction_eas)
+                != tuple(witness.native_instruction_eas)
+            ):
+                raise ValueError("terminal-cycle source binding is not catalog-bound")
+            projected_row = projected[subject_id]
+            if (
+                projected_row.subject != subject
+                or projected_row.phase not in {
+                    model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                    model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+                }
+                or projected_row.generation != self.projected_generation
+            ):
+                raise ValueError("terminal-cycle projected binding is not phase-bound")
+            if subject is self.claim.terminal_subject:
+                if (
+                    projected_row.status is not model.SubjectBindingStatus.UNIQUE
+                    or projected_row.block_ref != subject.block_ref
+                    or projected_row.anchor_ea != subject.anchor_ea
+                    or tuple(projected_row.native_instruction_eas)
+                    != tuple(witness.native_instruction_eas)
+                ):
+                    raise ValueError("terminal subject must remain projected-reachable by identity")
+        if not _contains_directed_cycle(
+            self.residue_refs, self.source_cycle_edges,
+        ):
+            raise ValueError("terminal-cycle source residue is not cyclic")
+        if _contains_directed_cycle(
+            self.residue_refs, self.projected_cycle_edges,
+        ):
+            raise ValueError("terminal-cycle residual cycle remains projected")
+        carrier = next(
+            subject for subject in expected_subjects
+            if subject.role
+            is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
+        )
+        if (
+            not self.terminal_route_refs
+            or self.terminal_route_refs[0] != carrier.block_ref
+            or self.terminal_route_refs[-1]
+            != self.claim.terminal_subject.block_ref
+        ):
+            raise ValueError(
+                "terminal-cycle route does not join its carrier to its terminal"
+            )
+        phase_result = self.phase_result
+        if (
+            phase_result.claim_id != self.claim.claim_id
+            or phase_result.terminal_route_proof_id
+            != self.claim.terminal_route_proof_ids[0]
+            or phase_result.source_bindings != self.source_bindings
+            or phase_result.candidate_bindings != self.projected_bindings
+            or phase_result.residue_refs != self.residue_refs
+            or phase_result.source_cycle_edges != self.source_cycle_edges
+            or phase_result.candidate_cycle_edges != self.projected_cycle_edges
+            or phase_result.terminal_route_refs != self.terminal_route_refs
+            or phase_result.source_generation != self.generation
+            or phase_result.candidate_generation != self.projected_generation
+        ):
+            raise ValueError("terminal-cycle phase result drifted from binder facts")
+
+
+def _terminal_cycle_binding_seal(result: TerminalCycleBindingResult) -> str:
+    return "sha256:" + hashlib.sha256(canonical_bytes((
+        result.claim, result.proposal, result.source_bindings,
+        result.projected_bindings, result.residue_refs, result.generation,
+        result.projected_generation, result.source_cycle_edges,
+        result.projected_cycle_edges, result.terminal_route_refs,
+        result.phase_result,
+    ))).hexdigest()
+
+
+def _contains_directed_cycle(
+    member_refs: Sequence[object],
+    edges: Sequence[tuple[object, object]],
+) -> bool:
+    members = set(member_refs)
+    successors = {ref: set() for ref in members}
+    for source_ref, target_ref in edges:
+        if source_ref in members and target_ref in members:
+            successors[source_ref].add(target_ref)
+    active: set[object] = set()
+    complete: set[object] = set()
+
+    def visit(ref: object) -> bool:
+        if ref in active:
+            return True
+        if ref in complete:
+            return False
+        active.add(ref)
+        if any(visit(target) for target in successors[ref]):
+            return True
+        active.remove(ref)
+        complete.add(ref)
+        return False
+
+    return any(visit(ref) for ref in tuple(members))
+
+
+def _terminal_cycle_edges(
+    inventory: model.SemanticGraphInventory,
+    *,
+    residue_subjects: Mapping[object, model.SemanticSubjectRef],
+) -> tuple[tuple[object, object], ...]:
+    bindings = {
+        binding.subject.subject_id: binding for binding in inventory.bindings
+    }
+    ref_by_serial: dict[int, object] = {}
+    for ref, subject in residue_subjects.items():
+        binding = bindings.get(subject.subject_id)
+        if (
+            binding is not None
+            and binding.status is model.SubjectBindingStatus.UNIQUE
+        ):
+            ref_by_serial[binding.serial] = ref
+    edges = {
+        (ref_by_serial[row.owner_serial], ref_by_serial[row.peer_serial])
+        for row in inventory.topology
+        if row.kind is model.TopologyIncidenceKind.SUCCESSOR
+        and row.owner_serial in ref_by_serial
+        and row.peer_serial in ref_by_serial
+    }
+    return tuple(
+        sorted(
+            edges,
+            key=lambda edge: (
+                model._structural_key(edge[0]),
+                model._structural_key(edge[1]),
+            ),
+        )
+    )
+
+
+def _terminal_route_refs(
+    inventory: model.SemanticGraphInventory,
+    *,
+    carrier_binding: model.PhaseSubjectBinding,
+    terminal_binding: model.PhaseSubjectBinding,
+) -> tuple[object, ...]:
+    """Return one exact reachable one-way carrier-to-terminal corridor."""
+
+    if (
+        carrier_binding.status is not model.SubjectBindingStatus.UNIQUE
+        or terminal_binding.status is not model.SubjectBindingStatus.UNIQUE
+        or carrier_binding.serial is None
+        or terminal_binding.serial is None
+    ):
+        raise ValueError("terminal carrier and terminal must bind uniquely")
+    reachable = set(inventory.reachable_serials)
+    if (
+        carrier_binding.serial not in reachable
+        or terminal_binding.serial not in reachable
+    ):
+        raise ValueError("terminal route endpoints must remain reachable")
+    blocks = {block.serial: block for block in inventory.blocks}
+    current = carrier_binding.serial
+    terminal_serial = terminal_binding.serial
+    seen: set[int] = set()
+    route: list[object] = []
+    while current not in seen:
+        seen.add(current)
+        block = blocks.get(current)
+        if block is None or block.block_ref is None:
+            raise ValueError("terminal route contains an unbound helper block")
+        route.append(block.block_ref)
+        successors = tuple(
+            successor for successor in block.successor_serials
+            if successor in reachable
+        )
+        if current == terminal_serial:
+            if successors:
+                raise ValueError("terminal route endpoint has a live successor")
+            return tuple(route)
+        if len(successors) != 1:
+            raise ValueError("terminal route is not one exact one-way corridor")
+        current = successors[0]
+    raise ValueError("terminal route corridor is cyclic")
+
+
+def bind_terminal_cycle_break_claim(
+    *,
+    claim: model.TerminalCycleBreakClaim,
+    proposal: model.ProposedUnflattenContract,
+    source_inventory: model.SemanticGraphInventory,
+    candidate_inventory: model.SemanticGraphInventory,
+    phase: model.UnflattenAuthorityPhase,
+) -> TerminalCycleBindingResult:
+    """Bind one exact reachable cycle break from canonical phase inventories."""
+
+    subjects = terminal_cycle_binding_subjects(proposal, claim)
+    if type(source_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("terminal-cycle source inventory must be closed")
+    if type(candidate_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("terminal-cycle candidate inventory must be closed")
+    model.validate_semantic_graph_inventory(source_inventory)
+    model.validate_semantic_graph_inventory(candidate_inventory)
+    if (
+        claim.source_generation != source_inventory.generation
+        or source_inventory.generation
+        != proposal.source_identity_catalog.generation
+    ):
+        raise ValueError("terminal-cycle claim and source catalog generations differ")
+    if type(phase) is not model.UnflattenAuthorityPhase or phase not in {
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    }:
+        raise ValueError("terminal-cycle binding phase must be projected or observed")
+    if (
+        source_inventory.phase
+        is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+        or candidate_inventory.phase is not phase
+    ):
+        raise ValueError("terminal-cycle inventories are bound to the wrong phase")
+    cycle_locator = claim.cycle_subject.locator
+    subject_ids = {subject.subject_id for subject in subjects}
+    source_bindings = tuple(
+        binding for binding in source_inventory.bindings
+        if binding.subject.subject_id in subject_ids
+    )
+    projected_bindings = tuple(
+        binding for binding in candidate_inventory.bindings
+        if binding.subject.subject_id in subject_ids
+    )
+    residue_subjects = {
+        subject.block_ref: subject
+        for subject in subjects
+        if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
+        and subject.block_ref in set(cycle_locator.member_refs)
+    }
+    if set(residue_subjects) != set(cycle_locator.member_refs):
+        raise ValueError("terminal-cycle residue subjects are incomplete")
+    source_cycle_edges = _terminal_cycle_edges(
+        source_inventory, residue_subjects=residue_subjects,
+    )
+    projected_cycle_edges = _terminal_cycle_edges(
+        candidate_inventory, residue_subjects=residue_subjects,
+    )
+    if _contains_directed_cycle(cycle_locator.member_refs, projected_cycle_edges):
+        raise ValueError("terminal-cycle residual cycle remains projected")
+    source_binding_by_id = {
+        binding.subject.subject_id: binding for binding in source_bindings
+    }
+    source_entry_binding = source_binding_by_id[
+        residue_subjects[cycle_locator.entry_ref].subject_id
+    ]
+    if (
+        source_entry_binding.status is not model.SubjectBindingStatus.UNIQUE
+        or source_entry_binding.serial
+        not in set(source_inventory.reachable_serials)
+    ):
+        raise ValueError("terminal-cycle source residue is not source-reachable")
+    terminal_binding = next(
+        (
+            binding for binding in projected_bindings
+            if binding.subject == claim.terminal_subject
+        ),
+        None,
+    )
+    if (
+        terminal_binding is None
+        or terminal_binding.status is not model.SubjectBindingStatus.UNIQUE
+        or terminal_binding.serial not in set(candidate_inventory.reachable_serials)
+    ):
+        raise ValueError("terminal subject is not candidate-reachable by identity")
+    carrier_binding = next(
+        (
+            binding for binding in projected_bindings
+            if binding.subject.role
+            is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
+        ),
+        None,
+    )
+    if carrier_binding is None:
+        raise ValueError("terminal route carrier binding is absent")
+    route_source_binding = next(
+        (
+            binding for binding in projected_bindings
+            if binding.subject.role
+            is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
+        ),
+        None,
+    )
+    cleanup_binding = next(
+        (
+            binding for binding in projected_bindings
+            if binding.subject == claim.cleanup_source_subject
+        ),
+        None,
+    )
+    if (
+        route_source_binding is None
+        or cleanup_binding is None
+        or route_source_binding.status is not model.SubjectBindingStatus.UNIQUE
+        or cleanup_binding.status is not model.SubjectBindingStatus.UNIQUE
+        or carrier_binding.status is not model.SubjectBindingStatus.UNIQUE
+        or route_source_binding.serial
+        not in set(candidate_inventory.reachable_serials)
+    ):
+        raise ValueError(
+            "terminal cycle redirects lack exact source, cleanup, or carrier bindings"
+        )
+    candidate_blocks = {
+        block.serial: block for block in candidate_inventory.blocks
+    }
+    if (
+        tuple(candidate_blocks[route_source_binding.serial].successor_serials)
+        != (carrier_binding.serial,)
+        or tuple(candidate_blocks[cleanup_binding.serial].successor_serials)
+        != (carrier_binding.serial,)
+    ):
+        raise ValueError(
+            "terminal source and cleanup do not converge on the exact carrier"
+        )
+    terminal_route_refs = _terminal_route_refs(
+        candidate_inventory,
+        carrier_binding=carrier_binding,
+        terminal_binding=terminal_binding,
+    )
+    source_bindings = tuple(sorted(
+        source_bindings, key=lambda item: item.subject.subject_id,
+    ))
+    projected_bindings = tuple(sorted(
+        projected_bindings, key=lambda item: item.subject.subject_id,
+    ))
+    bound_subject_ids = tuple(
+        binding.subject.subject_id for binding in source_bindings
+    )
+    phase_result_values = {
+        "claim_id": claim.claim_id,
+        "terminal_route_proof_id": claim.terminal_route_proof_ids[0],
+        "phase": phase,
+        "source_fingerprint": source_inventory.graph_fingerprint,
+        "candidate_fingerprint": candidate_inventory.graph_fingerprint,
+        "source_generation": source_inventory.generation,
+        "candidate_generation": candidate_inventory.generation,
+        "bound_subject_ids": bound_subject_ids,
+        "source_binding_digest": authority_id(source_bindings),
+        "candidate_binding_digest": authority_id(projected_bindings),
+        "residue_refs": tuple(cycle_locator.member_refs),
+        "source_cycle_edges": source_cycle_edges,
+        "candidate_cycle_edges": projected_cycle_edges,
+        "source_bindings": source_bindings,
+        "candidate_bindings": projected_bindings,
+        "terminal_source_ref": route_source_binding.block_ref,
+        "cleanup_source_ref": cleanup_binding.block_ref,
+        "terminal_carrier_ref": carrier_binding.block_ref,
+        "terminal_route_refs": terminal_route_refs,
+        "terminal_subject_id": claim.terminal_subject.subject_id,
+        "terminal_subject_ref": terminal_binding.block_ref,
+    }
+    phase_result_id = authority_id((
+        "unflatten.terminal-cycle-phase.v1",
+        phase_result_values["claim_id"],
+        phase_result_values["terminal_route_proof_id"],
+        phase_result_values["phase"],
+        phase_result_values["source_fingerprint"],
+        phase_result_values["candidate_fingerprint"],
+        phase_result_values["source_generation"],
+        phase_result_values["candidate_generation"],
+        phase_result_values["bound_subject_ids"],
+        phase_result_values["source_binding_digest"],
+        phase_result_values["candidate_binding_digest"],
+        phase_result_values["residue_refs"],
+        phase_result_values["source_cycle_edges"],
+        phase_result_values["candidate_cycle_edges"],
+        phase_result_values["terminal_source_ref"],
+        phase_result_values["cleanup_source_ref"],
+        phase_result_values["terminal_carrier_ref"],
+        phase_result_values["terminal_route_refs"],
+        phase_result_values["terminal_subject_id"],
+        phase_result_values["terminal_subject_ref"],
+    ))
+    phase_result = model.TerminalCyclePhaseResult(
+        result_id=phase_result_id, **phase_result_values,
+    )
+    result = object.__new__(TerminalCycleBindingResult)
+    for name, value in {
+        "claim": claim, "proposal": proposal,
+        "source_bindings": source_bindings,
+        "projected_bindings": projected_bindings,
+        "residue_refs": tuple(cycle_locator.member_refs),
+        "source_cycle_edges": source_cycle_edges,
+        "projected_cycle_edges": projected_cycle_edges,
+        "terminal_route_refs": terminal_route_refs,
+        "generation": source_inventory.generation,
+        "projected_generation": candidate_inventory.generation,
+        "phase_result": phase_result,
+    }.items():
+        object.__setattr__(result, name, value)
+    object.__setattr__(result, "_content_seal", _terminal_cycle_binding_seal(result))
+    result._validate_fields()
+    return result
+
+
+def validate_terminal_cycle_binding_result(result: TerminalCycleBindingResult) -> None:
+    if type(result) is not TerminalCycleBindingResult:
+        raise TypeError("terminal-cycle result must be closed")
+    if result._content_seal != _terminal_cycle_binding_seal(result):
+        raise ValueError("terminal-cycle binding content seal does not match")
+    result._validate_fields()
+
+
 def bind_corridor_coverage_forecast(
     *,
     proposal: model.ProposedUnflattenContract,
@@ -1435,9 +2055,13 @@ del _graph_bind_exact_effect_claim
 __all__ = [
     "ExactEffectBindingResult",
     "RetiredInfrastructureBindingResult",
+    "TerminalCycleBindingResult",
     "bind_retired_dispatcher_infrastructure_claim",
+    "bind_terminal_cycle_break_claim",
+    "terminal_cycle_binding_subjects",
     "validate_exact_effect_binding_result",
     "validate_retired_infrastructure_binding_result",
+    "validate_terminal_cycle_binding_result",
     "bind_subjects",
     "bind_source_subjects",
     "bind_projected_subjects",

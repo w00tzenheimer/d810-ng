@@ -572,6 +572,30 @@ def test_retirement_attachment_routes_present_family_keys_and_rejects_malformed_
             state_identity=proposal.plan_inputs.state_identity, use_def_witness=witness,
         )
 
+    terminal_template = PatchPlan(
+        plan_id=proposal.plan_id, snapshot_id=authority_id("terminal-attach-none"),
+        source_generation=1,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+        metadata=((DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA, {
+            "terminal_switch_cycle_break": None,
+        }),),
+    )
+    terminal_manifest = canonical_redirect_manifest(terminal_template)
+    terminal_witness = replace(
+        proposal.use_def_witness,
+        redirect_owner_refs=terminal_manifest.owner_refs,
+        redirect_digest=terminal_manifest.digest,
+    )
+    with pytest.raises(ValueError, match="terminal proof conversion"):
+        attach_typed_proposal(
+            terminal_template, source=source, block_refs_by_serial=refs,
+            canonical_route_evidence=proposal.route_evidence,
+            exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
+            dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+            state_identity=proposal.plan_inputs.state_identity,
+            use_def_witness=terminal_witness,
+        )
+
 
 def test_producer_exact_effect_claim_correlates_all_canonical_dimensions() -> None:
     from d810.analyses.control_flow.effect_branch_exclusion import ExactStateBranchEffectExclusion

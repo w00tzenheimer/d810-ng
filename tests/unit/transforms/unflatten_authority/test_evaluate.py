@@ -600,7 +600,7 @@ def _receipt_fixture(**kwargs: object) -> model.PreparationAuthorityReceipt:
 def _binding(subject: model.SemanticSubjectRef, phase: model.UnflattenAuthorityPhase, generation: int = 3, *, status: model.SubjectBindingStatus = model.SubjectBindingStatus.UNIQUE, fingerprint: str | None = None) -> model.PhaseSubjectBinding:
     if subject.block_ref is None:
         status = model.SubjectBindingStatus.MISSING
-    serial_by_proxy = {"b0": 0, "b1": 1, "b2": 2}
+    serial_by_proxy = {"b0": 0, "b1": 1, "b2": 2, "b3": 3, "b4": 4}
     serial = serial_by_proxy.get(getattr(subject.block_ref, "proxy_token", ""), 0)
     return model.PhaseSubjectBinding(
         subject=subject, phase=phase, block_ref=subject.block_ref if status is model.SubjectBindingStatus.UNIQUE else None,
@@ -3842,3 +3842,241 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
     )
     assert len(effect_rows) == 1
     assert evaluate_case(case).reason is not model.UnflattenAuthorityReason.ACCEPTED
+
+
+def test_terminal_cycle_claim_cannot_discharge_effect_or_handler_cells() -> None:
+    """A terminal cycle break is structural/terminal authority only."""
+
+    from .test_bind import _terminal_cycle_derived_inputs
+
+    proposal, claim, inputs, source, _candidate, _residual = (
+        _terminal_cycle_derived_inputs()
+    )
+    cycle = claim.cycle_subject
+    cleanup = claim.cleanup_source_subject
+    terminal = claim.terminal_subject
+    terminal_effect = next(
+        subject for subject in source.subjects
+        if subject.role is model.SemanticSubjectRole.EFFECT_SITE
+        and subject.block_ref.proxy_token == "b2"
+    )
+    handler = next(
+        subject for subject in source.subjects
+        if subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER
+        and subject.block_ref.proxy_token == "b2"
+    )
+    assert len(inputs.terminal_cycle_phase_results) == 1
+    case = build_semantic_case(
+        authority_id=authority_id("terminal-cycle-scope"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    by_key = {cell.key: cell for cell in case.obligation_index.cells}
+
+    cycle_cell = by_key[
+        model.ObligationKey(cycle, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+    ]
+    assert cycle_cell.state is model.ObligationState.SATISFIED
+    assert any(
+        item.claim_id == claim.claim_id
+        for item in case.justifications
+        if item.conclusion == cycle_cell.key
+    )
+    cleanup_cell = by_key[
+        model.ObligationKey(cleanup, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+    ]
+    assert cleanup_cell.state is model.ObligationState.SATISFIED
+    assert not any(
+        item.claim_id == claim.claim_id
+        for item in case.justifications
+        if item.conclusion == cleanup_cell.key
+    )
+    terminal_cell = by_key[
+        model.ObligationKey(terminal, model.SafetyDimension.TERMINAL_REACHABILITY)
+    ]
+    assert terminal_cell.state is model.ObligationState.SATISFIED
+    assert not any(
+        item.claim_id == claim.claim_id
+        for item in case.justifications
+        if item.conclusion == terminal_cell.key
+    )
+    terminal_effect_cell = by_key[
+        model.ObligationKey(terminal_effect, model.SafetyDimension.EFFECT_PRESERVATION)
+    ]
+    assert terminal_effect_cell.state is model.ObligationState.SATISFIED
+    assert not any(
+        item.claim_id == claim.claim_id
+        for item in case.justifications
+        if item.conclusion == terminal_effect_cell.key
+    )
+    handler_cell = by_key[
+        model.ObligationKey(handler, model.SafetyDimension.HANDLER_REACHABILITY)
+    ]
+    assert not any(
+        item.claim_id == claim.claim_id
+        for item in case.justifications
+        if item.conclusion == handler_cell.key
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="exactly one terminal-cycle phase result per claim",
+    ):
+        replace(inputs, terminal_cycle_phase_results=())
+
+
+def test_terminal_cycle_evidence_must_match_case_owned_phase_result() -> None:
+    """A reminted terminal payload cannot replace the transaction result."""
+
+    from d810.transforms.unflatten_authority.evaluate import _build_obligation_index
+    from .test_bind import _terminal_cycle_derived_inputs
+
+    _proposal, claim, inputs, _source, _candidate, _residual = (
+        _terminal_cycle_derived_inputs()
+    )
+    case = build_semantic_case(
+        authority_id=authority_id("terminal-cycle-evidence-binding"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    terminal_evidence = next(
+        item for item in case.evidence
+        if item.kind is model.AuthorityEvidenceKind.TERMINAL_CYCLE
+    )
+    payload_fields = {
+        name: getattr(terminal_evidence.payload, name)
+        for name in terminal_evidence.payload.__dataclass_fields__
+        if name != "phase_result_id"
+    }
+    payload_fields["terminal_source_ref"] = block_ref("b0")
+    forged_phase_result_id = canonical_authority_id((
+        "unflatten.terminal-cycle-phase.v1",
+        payload_fields["claim_id"], payload_fields["terminal_route_proof_id"],
+        payload_fields["phase"], payload_fields["source_fingerprint"],
+        payload_fields["candidate_fingerprint"], payload_fields["source_generation"],
+        payload_fields["candidate_generation"], payload_fields["bound_subject_ids"],
+        payload_fields["source_binding_digest"], payload_fields["candidate_binding_digest"],
+        payload_fields["residue_refs"], payload_fields["source_cycle_edges"],
+        payload_fields["candidate_cycle_edges"], payload_fields["terminal_source_ref"],
+        payload_fields["cleanup_source_ref"], payload_fields["terminal_carrier_ref"],
+        payload_fields["terminal_route_refs"], payload_fields["terminal_subject_id"],
+        payload_fields["terminal_subject_ref"],
+    ))
+    forged_payload = model.TerminalCycleEvidencePayload(
+        phase_result_id=forged_phase_result_id,
+        **payload_fields,
+    )
+    forged_evidence = _evidence_factory(
+        model.AuthorityEvidence,
+        model.AuthorityEvidenceKind.TERMINAL_CYCLE,
+        terminal_evidence.subject,
+        case.phase,
+        forged_payload,
+    )
+    terminal_justification = next(
+        item for item in case.justifications
+        if item.claim_id == claim.claim_id
+        and item.rule is model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN
+    )
+    justification_values = {
+        name: getattr(terminal_justification, name)
+        for name in terminal_justification.__dataclass_fields__
+        if name != "justification_id"
+    }
+    justification_values["premise_ids"] = (forged_evidence.evidence_id,)
+    forged_justification = _justification_factory(
+        model.AuthorityJustification, **justification_values,
+    )
+    evidence = tuple(sorted(
+        (
+            forged_evidence
+            if item.evidence_id == terminal_evidence.evidence_id
+            else item
+            for item in case.evidence
+        ),
+        key=lambda item: item.evidence_id,
+    ))
+    justifications = tuple(sorted(
+        (
+            forged_justification
+            if item.justification_id == terminal_justification.justification_id
+            else item
+            for item in case.justifications
+        ),
+        key=lambda item: item.justification_id,
+    ))
+    case_values = {
+        name: getattr(case, name)
+        for name in case.__dataclass_fields__
+        if name != "case_id"
+    }
+    case_values["evidence"] = evidence
+    case_values["justifications"] = justifications
+    case_values["obligation_index"] = _build_obligation_index(
+        case.required_obligations, justifications, case.phase,
+    )
+    with pytest.raises(ValueError, match="terminal-cycle evidence"):
+        _case_factory(model.SemanticSafetyCase, **case_values)
+
+
+def test_terminal_cycle_result_replays_exact_inventory_topology_and_path() -> None:
+    """Copied coordinates cannot authorize a different candidate graph."""
+
+    from d810.transforms.unflatten_authority import transaction_api
+    from .test_bind import _terminal_cycle_derived_inputs
+
+    proposal, _claim, inputs, source, _candidate, residual = (
+        _terminal_cycle_derived_inputs()
+    )
+    receipt = transaction_api._receipt(
+        proposal,
+        inputs.preparation_metrics,
+        source_inventory=source,
+        candidate_inventory=residual,
+        generic_gate_facts=inputs.generic_gate_facts,
+        route_assessments=tuple(
+            item for item in (
+                inputs.source_route_assessment,
+                inputs.candidate_route_assessment,
+            )
+            if item is not None
+        ),
+        conditional_relations=inputs.conditional_relations,
+        patch_step_facts=inputs.patch_step_facts,
+    )
+    with pytest.raises(ValueError, match="residue topology"):
+        replace(
+            inputs,
+            candidate_inventory=residual,
+            preparation_receipt=receipt,
+        )
+
+    result = inputs.terminal_cycle_phase_results[0]
+    false_route = (
+        result.terminal_carrier_ref,
+        result.terminal_source_ref,
+        result.terminal_subject_ref,
+    )
+    fields = {
+        name: getattr(result, name)
+        for name in result.__dataclass_fields__
+        if name != "result_id"
+    }
+    fields["terminal_route_refs"] = false_route
+    reminted_id = canonical_authority_id((
+        "unflatten.terminal-cycle-phase.v1", fields["claim_id"],
+        fields["terminal_route_proof_id"], fields["phase"],
+        fields["source_fingerprint"], fields["candidate_fingerprint"],
+        fields["source_generation"], fields["candidate_generation"],
+        fields["bound_subject_ids"], fields["source_binding_digest"],
+        fields["candidate_binding_digest"], fields["residue_refs"],
+        fields["source_cycle_edges"], fields["candidate_cycle_edges"],
+        fields["terminal_source_ref"], fields["cleanup_source_ref"],
+        fields["terminal_carrier_ref"], fields["terminal_route_refs"],
+        fields["terminal_subject_id"], fields["terminal_subject_ref"],
+    ))
+    false_result = model.TerminalCyclePhaseResult(
+        result_id=reminted_id, **fields,
+    )
+    with pytest.raises(ValueError, match="terminal path"):
+        replace(inputs, terminal_cycle_phase_results=(false_result,))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import inspect
+from dataclasses import replace
 
 import pytest
 
@@ -17,6 +18,7 @@ from d810.transforms.unflatten_authority.model import (
     UnflattenAuthorityReason,
     UnflattenPlanRoute,
 )
+from d810.transforms.unflatten_authority import model
 from d810.transforms.unflatten_authority.proposal import LEGACY_UNFLATTEN_KEYS
 from d810.transforms.unflatten_authority.legacy_keys import EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA
 from d810.transforms.unflatten_authority.ids import authority_id
@@ -1044,3 +1046,104 @@ def test_legacy_retirement_conversion_is_serial_free_and_exact() -> None:
             retirement_claim_from_legacy_proof(
                 malformed, proposal=proposal, block_refs_by_serial=refs,
             )
+
+
+def test_terminal_cycle_conversion_binds_terminal_route_and_actual_stop() -> None:
+    from d810.transforms.unflatten_authority.legacy_codec import (
+        terminal_cycle_claim_from_legacy_proof,
+    )
+    from .test_bind import _terminal_cycle_fixture
+
+    proposal, _existing_claim = _terminal_cycle_fixture()
+    route = proposal.route_evidence.route_proofs[0]
+    refs = {
+        int(witness.block_ref.proxy_token[1:]): witness.block_ref
+        for witness in proposal.source_identity_catalog.blocks
+    }
+
+    def anchor(serial: int, ea: int) -> dict[str, object]:
+        return {"serial": serial, "ea": ea, "label": f"blk{serial}@0x{ea:x}"}
+
+    dispatcher = anchor(0, 0x1000)
+    cleanup = anchor(1, 0x1300)
+    carrier = anchor(2, 0x1100)
+    terminal_source = anchor(3, 0x1400)
+    terminal = anchor(4, 0x1500)
+    proof = {
+        "function_ea": 0x1000,
+        "dispatcher": dispatcher,
+        "proof_status": "rejected",
+        "reason": "untyped_lost_block",
+        "authoritative_handlers": (carrier,),
+        "post_reachable_handlers": (carrier,),
+        "pre_reachable_terminals": (terminal,),
+        "post_reachable_terminals": (terminal,),
+        "retired_infrastructure": (),
+        "lost_blocks": (dispatcher, cleanup),
+        "state_plumbing": (),
+        "producer_safety": None,
+        "coverage_enumeration_complete": True,
+        "residual_corridor_count": 0,
+    }
+    payload = {
+        "validation_status": "accepted",
+        "reason": "terminal_switch_cycle_break",
+        "proof": proof,
+        "terminal_switch_cycle_break": {
+            "dispatcher": dispatcher,
+            "terminal_source": terminal_source,
+            "shared_merge": cleanup,
+            "terminal_target": carrier,
+            "terminal_stop": terminal,
+            "retired_residue": (dispatcher, cleanup),
+        },
+    }
+    claim = terminal_cycle_claim_from_legacy_proof(
+        payload,
+        proposal=proposal,
+        block_refs_by_serial=refs,
+    )
+    assert claim.cycle_subject.locator.member_refs == tuple(
+        sorted(
+            (refs[0], refs[1]),
+            key=model._structural_key,
+        )
+    )
+    assert claim.cleanup_source_subject.block_ref == refs[1]
+    assert claim.terminal_subject.block_ref == refs[4]
+    assert claim.terminal_subject.locator.instruction_ea == 0x1500
+    assert claim.terminal_route_proof_ids == (route.proof_id,)
+
+    nonterminal_route = replace(
+        proposal,
+        route_evidence=replace(
+            proposal.route_evidence,
+            route_proofs=(replace(
+                route,
+                destinations=tuple(
+                    replace(destination, terminal=False)
+                    for destination in route.destinations
+                ),
+            ),),
+        ),
+    )
+    with pytest.raises(ValueError, match="canonical route"):
+        terminal_cycle_claim_from_legacy_proof(
+            payload,
+            proposal=nonterminal_route,
+            block_refs_by_serial=refs,
+        )
+
+    wrong_source = {
+        **payload,
+        "terminal_switch_cycle_break": {
+            **payload["terminal_switch_cycle_break"],
+            "terminal_source": carrier,
+        },
+    }
+    with pytest.raises(ValueError, match="canonical route"):
+        terminal_cycle_claim_from_legacy_proof(
+            wrong_source,
+            proposal=proposal,
+            block_refs_by_serial=refs,
+        )

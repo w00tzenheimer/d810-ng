@@ -11,6 +11,7 @@ from d810.ir.block_identity import StableBlockIdentity
 from d810.transforms.cfg_transaction import NativeBlockRef, PlanBlockRef
 
 from . import model
+from . import bind as authority_bind
 from . import gates
 from . import producer_api
 from .ids import _case_factory, _evidence_factory, _justification_factory, authority_id as _authority_id_digest
@@ -328,7 +329,7 @@ _JUSTIFICATION_RULE_SPECS: dict[model.UnflattenJustificationRule, _Justification
     model.UnflattenJustificationRule.EQUIVALENT_ROUTE_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.ROUTE_EQUIVALENCE, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.SEMANTIC_ROUTE,)),
     model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE, model.AuthorityEvidenceKind.SEMANTIC_ROUTE), min_premises=2, max_premises=2),
     model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE, model.AuthorityEvidenceKind.PATCH_STEP, model.AuthorityEvidenceKind.PHASE_BINDING, model.AuthorityEvidenceKind.REACHABILITY), min_premises=4, max_premises=4),
-    model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.TERMINAL_REACHABILITY, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, model.AuthorityEvidenceKind.REACHABILITY), min_premises=2, max_premises=2),
+    model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.TERMINAL_CYCLE,)),
     model.UnflattenJustificationRule.ROUTE_MISSING_OR_DRIFTED: _rule(model.SafetyDimension.ROUTE_EQUIVALENCE, polarity=model.EvidencePolarity.REFUTES, evidence=(model.AuthorityEvidenceKind.SEMANTIC_ROUTE,)),
     model.UnflattenJustificationRule.EFFECT_PRESERVED: _rule(model.SafetyDimension.EFFECT_PRESERVATION, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE,)),
     model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED: _rule(model.SafetyDimension.EFFECT_PRESERVATION, polarity=model.EvidencePolarity.REFUTES, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE,)),
@@ -393,6 +394,20 @@ def _claim_subjects(claim: model.UnflattenClaim) -> tuple[model.SemanticSubjectR
     if type(claim) is model.TerminalCycleBreakClaim:
         return (claim.cycle_subject, claim.cleanup_source_subject, claim.terminal_subject)
     raise TypeError("claims must contain closed UnflattenClaim values")
+
+
+def _validate_terminal_cycle_claim_scope(
+    claim: model.TerminalCycleBreakClaim,
+    proposal: model.ProposedUnflattenContract,
+) -> None:
+    """Bind a terminal-cycle claim to one canonical terminal route.
+
+    The cycle cleanup is a narrow structural allowance.  It is not an
+    effect/handler receipt and cannot be minted from a bare serial or an
+    unqualified legacy reason string.
+    """
+
+    authority_bind.terminal_cycle_binding_subjects(proposal, claim)
 
 
 def _validate_route_assessment_pair(
@@ -536,8 +551,18 @@ def _dimensions(
             for subject in claim.member_subjects
         )
     }
+    terminal_cycle_structural_ids = {
+        claim.cycle_subject.subject_id
+        for claim in claims
+        if type(claim) is model.TerminalCycleBreakClaim
+    }
     for subject in subjects:
         dimensions = list(REQUIRED_DIMENSIONS[subject.role])
+        if (
+            subject.subject_id in terminal_cycle_structural_ids
+            and model.SafetyDimension.STRUCTURAL_ACCOUNTING not in dimensions
+        ):
+            dimensions.append(model.SafetyDimension.STRUCTURAL_ACCOUNTING)
         if (
             subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
             and subject.block_ref in retired_dispatcher_entry_refs
@@ -727,8 +752,8 @@ def _validate_justification_graph(
                         if target.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
                         else 1
                     )
-                    ):
-                        raise ValueError("nonunique identity refutation lacks a mismatch condition")
+                ):
+                    raise ValueError("nonunique identity refutation lacks a mismatch condition")
             if item.rule in {
                 model.UnflattenJustificationRule.USE_DEF_AUDIT_CLEAN,
                 model.UnflattenJustificationRule.USE_DEF_AUDIT_UNAVAILABLE,
@@ -775,11 +800,14 @@ def _validate_justification_graph(
             model.AuthorityEvidenceKind.SEMANTIC_ROUTE,
         ):
             raise ValueError("exact-effect justification requires one effect and one route premise")
-        if item.rule is model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN and tuple(sorted(premise_kinds, key=lambda kind: kind.value)) != (
-            model.AuthorityEvidenceKind.REACHABILITY,
-            model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,
+        if (
+            item.rule
+            is model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN
+            and premise_kinds != (model.AuthorityEvidenceKind.TERMINAL_CYCLE,)
         ):
-            raise ValueError("terminal claim requires lineage and reachability premises")
+            raise ValueError(
+                "terminal claim requires one sealed terminal-cycle phase result"
+            )
         if item.rule is model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN and Counter(premise_kinds) != Counter({
             model.AuthorityEvidenceKind.EFFECT_SITE: 1,
             model.AuthorityEvidenceKind.PATCH_STEP: 1,
@@ -830,6 +858,9 @@ def _validate_justification_graph(
                 ) or (
                     type(payload) is model.CorridorCoverageEvidencePayload
                     and payload.corridor_subject_id == target
+                ) or (
+                    type(payload) is model.TerminalCycleEvidencePayload
+                    and target in payload.bound_subject_ids
                 ) or (
                     type(payload) is model.PatchStepEvidencePayload
                     and by_evidence_id[premise].subject.subject_id == target
@@ -918,11 +949,12 @@ def _validate_justification_graph(
                     )
                 elif type(claim) is model.TerminalCycleBreakClaim:
                     correlated = (
-                        type(payload) is model.StructuralLineageEvidencePayload
+                        type(payload) is model.TerminalCycleEvidencePayload
                         and payload.claim_id == claim.claim_id
-                    ) or (
-                        type(payload) is model.ReachabilityEvidencePayload
-                        and payload.target_subject_id == claim.terminal_subject.subject_id
+                        and payload.terminal_route_proof_id
+                        in claim.terminal_route_proof_ids
+                        and payload.terminal_subject_id
+                        == claim.terminal_subject.subject_id
                     )
                 if not correlated:
                     raise ValueError("claim premise is outside exact claim evidence scope")
@@ -1034,7 +1066,18 @@ def _identity_support(
         return exact_subject_binding and owner(locator.source_ref, locator.source_anchor_ea) and owner(locator.target_ref, locator.target_anchor_ea)
     if type(locator) is model.EffectSubjectLocator:
         return exact_subject_binding and owner(locator.owner_ref, locator.owner_anchor_ea)
-    if type(locator) is model.HandlerSubjectLocator or type(locator) is model.TerminalSubjectLocator:
+    if type(locator) is model.TerminalSubjectLocator:
+        # SemanticGraphInventory already resolves terminal-site bindings
+        # against the exact block/instruction rows. Requiring a second BLOCK
+        # role for the same owner would reconstruct that authority here.
+        return exact_subject_binding and any(
+            binding.subject == subject
+            and binding.block_ref == locator.block_ref
+            and binding.anchor_ea == locator.anchor_ea
+            and locator.instruction_ea in binding.native_instruction_eas
+            for binding in valid
+        )
+    if type(locator) is model.HandlerSubjectLocator:
         return exact_subject_binding and owner(locator.block_ref, locator.anchor_ea)
     if type(locator) is model.CorridorSubjectLocator:
         return exact_subject_binding and owner(locator.entry_ref, locator.entry_anchor_ea) and all(
@@ -1893,6 +1936,9 @@ def _evaluator_fact_evidence(
         claim = next((claim for claim in inputs.claims
                       if type(claim) is model.RetiredDispatcherInfrastructureClaim
                       and subject.subject_id in {item.subject_id for item in claim.member_subjects}), None)
+        terminal_claim = next((claim for claim in inputs.claims
+                               if type(claim) is model.TerminalCycleBreakClaim
+                               and subject.subject_id == claim.cycle_subject.subject_id), None)
         retirement_authorized = (
             claim is not None
             and phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
@@ -1957,7 +2003,10 @@ def _evaluator_fact_evidence(
                     exact_origins = tuple(sorted(candidate_origins))
             lineage = model.StructuralLineageEvidencePayload(
                 subject.subject_id, lineage_candidate_ids, disposition,
-                exact_origins, claim.claim_id if claim is not None else None, source_group,
+                exact_origins,
+                (claim.claim_id if claim is not None else
+                 terminal_claim.claim_id if terminal_claim is not None else None),
+                source_group,
             )
             evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, subject, phase, lineage))
         if subject.role not in topology_roles:
@@ -1966,8 +2015,14 @@ def _evaluator_fact_evidence(
         observed = tuple(item for item in candidate_topology if subject.subject_id in (item.source_subject_id, item.target_subject_id))
         topology = model.TopologyEvidencePayload(
             subject.subject_id,
-            tuple(sorted(item.source_subject_id for item in expected if item.target_subject_id == subject.subject_id)),
-            tuple(sorted(item.target_subject_id for item in expected if item.source_subject_id == subject.subject_id)),
+            tuple(sorted({
+                item.source_subject_id for item in expected
+                if item.target_subject_id == subject.subject_id
+            })),
+            tuple(sorted({
+                item.target_subject_id for item in expected
+                if item.source_subject_id == subject.subject_id
+            })),
             has_reciprocal_edges(expected), _authority_id_digest(expected), _authority_id_digest(observed), expected, observed,
         )
         evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.TOPOLOGY, subject, phase, topology))
@@ -2178,6 +2233,9 @@ def build_semantic_case(
         for claim in inputs.claims
     ):
         raise ValueError("derived claims must preserve producer claims and closed transaction-derived claims")
+    for claim in inputs.claims:
+        if type(claim) is model.TerminalCycleBreakClaim:
+            _validate_terminal_cycle_claim_scope(claim, proposal)
     if source_generation != proposal.source_identity_catalog.generation:
         raise ValueError("source generation does not match proposal")
     if not source_subjects:
@@ -2579,7 +2637,36 @@ def build_semantic_case(
             model.EvidencePolarity.SUPPORTS if supports else model.EvidencePolarity.REFUTES, phase,
             premises,
         )
-    evidence = tuple(sorted((*evidence_rows, *lineage_evidence, *patch_step_evidence), key=lambda item: item.evidence_id))
+    terminal_cycle_evidence = tuple(
+        _evidence_factory(
+            model.AuthorityEvidence,
+            model.AuthorityEvidenceKind.TERMINAL_CYCLE,
+            next(
+                claim.cycle_subject for claim in inputs.claims
+                if type(claim) is model.TerminalCycleBreakClaim
+                and claim.claim_id == result.claim_id
+            ),
+            phase,
+            model.TerminalCycleEvidencePayload(
+                result.result_id, result.claim_id,
+                result.terminal_route_proof_id, result.phase,
+                result.source_fingerprint, result.candidate_fingerprint,
+                result.source_generation, result.candidate_generation,
+                result.bound_subject_ids, result.source_binding_digest,
+                result.candidate_binding_digest, result.residue_refs,
+                result.source_cycle_edges, result.candidate_cycle_edges,
+                result.source_bindings, result.candidate_bindings,
+                result.terminal_source_ref, result.cleanup_source_ref,
+                result.terminal_carrier_ref, result.terminal_route_refs,
+                result.terminal_subject_id, result.terminal_subject_ref,
+            ),
+        )
+        for result in inputs.terminal_cycle_phase_results
+    )
+    evidence = tuple(sorted((
+        *evidence_rows, *lineage_evidence, *patch_step_evidence,
+        *terminal_cycle_evidence,
+    ), key=lambda item: item.evidence_id))
     known_subjects = {subject.subject_id: subject for subject in subjects}
     known_subject_ids = set(known_subjects)
     topology_rows = {
@@ -3002,6 +3089,25 @@ def build_semantic_case(
             if payload.disposition is model.StructuralDisposition.AUTHORIZED_RETIREMENT:
                 targets = ()
                 continue
+            terminal_cycle_claim = next(
+                (
+                    claim
+                    for claim in inputs.claims
+                    if type(claim) is model.TerminalCycleBreakClaim
+                    and payload.claim_id == claim.claim_id
+                    and payload.source_subject_id
+                    == claim.cycle_subject.subject_id
+                    and payload.disposition
+                    is model.StructuralDisposition.UNACCOUNTED_LOSS
+                    and not payload.candidate_subject_ids
+                ),
+                None,
+            )
+            if terminal_cycle_claim is not None:
+                # Keep the raw missing-lineage observation, but let the exact
+                # terminal-cycle rule below provide the sole classification.
+                targets = ()
+                continue
             passed = payload.disposition in {
                 model.StructuralDisposition.PRESERVED,
                 model.StructuralDisposition.SPLIT,
@@ -3328,21 +3434,22 @@ def build_semantic_case(
                 targets = ((effect_target, model.SafetyDimension.EFFECT_PRESERVATION),)
             rule = model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN
         elif type(claim) is model.TerminalCycleBreakClaim:
-            matching_lineage = tuple(
+            matching_phase_result = tuple(
                 item for item in evidence
-                if type(item.payload) is model.StructuralLineageEvidencePayload
+                if type(item.payload) is model.TerminalCycleEvidencePayload
                 and item.payload.claim_id == claim.claim_id
-                and item.payload.source_subject_id == claim.cycle_subject.subject_id
+                and item.payload.phase is phase
+                and item.payload.terminal_route_proof_id
+                in claim.terminal_route_proof_ids
+                and item.payload.terminal_subject_id
+                == claim.terminal_subject.subject_id
             )
-            matching_reach = tuple(
-                item for item in evidence
-                if type(item.payload) is model.ReachabilityEvidencePayload
-                and item.payload.target_subject_id == claim.terminal_subject.subject_id
-                and item.payload.reachable
-            )
-            if matching_lineage and matching_reach:
-                claim_evidence = tuple(item.evidence_id for item in (*matching_lineage, *matching_reach))
-                targets = ((claim.cycle_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING), (claim.terminal_subject, model.SafetyDimension.TERMINAL_REACHABILITY))
+            if len(matching_phase_result) == 1:
+                claim_evidence = (matching_phase_result[0].evidence_id,)
+                targets = ((
+                    claim.cycle_subject,
+                    model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+                ),)
             rule = model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN
         for subject, dimension in targets:
             key = model.ObligationKey(subject, dimension)
@@ -3399,10 +3506,12 @@ def build_semantic_case(
             inputs.phase_build_metrics,
         ),
         "source_inventory": source_inventory,
+        "candidate_inventory": candidate_inventory,
         "source_subject_ids": tuple(item.subject_id for item in source_subjects),
         "source_bindings": tuple(source_inventory.bindings),
         "retirement_catalog": inputs.proposal.retirement_catalog,
         "corridor_coverage_phase_result": inputs.corridor_coverage_phase_result,
+        "terminal_cycle_phase_results": inputs.terminal_cycle_phase_results,
     }
     return _case_factory(model.SemanticSafetyCase, **values)
 

@@ -58,6 +58,19 @@ class CorridorCoverageView:
     justification_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalCycleView:
+    """The narrow structural/terminal projection of one cycle-break claim."""
+
+    claim_id: str
+    cycle_subject_id: str
+    cleanup_source_subject_id: str
+    terminal_subject_id: str
+    route_proof_ids: tuple[str, ...]
+    structural_justification_ids: tuple[str, ...]
+    terminal_justification_ids: tuple[str, ...]
+
+
 def corridor_coverage_rows(case: model.SemanticSafetyCase) -> CorridorCoverageView:
     """Project the sole aggregate corridor result without recomputation."""
 
@@ -146,6 +159,58 @@ def retired_infrastructure_view(
     ))
     return RetiredInfrastructureView(
         claim_id, retired, retained, structural, justifications,
+    )
+
+
+def terminal_cycle_rows(
+    case: model.SemanticSafetyCase, claim_id: str | None = None,
+) -> TerminalCycleView:
+    """Project exact cycle/terminal claim conclusions without widening scope."""
+
+    _check_case(case)
+    claims = tuple(
+        item for item in case.claims
+        if type(item) is model.TerminalCycleBreakClaim
+        and (claim_id is None or item.claim_id == claim_id)
+    )
+    if len(claims) != 1:
+        raise ValueError("terminal-cycle rows require one unambiguous claim")
+    claim = claims[0]
+    keys = {
+        "cycle": model.ObligationKey(
+            claim.cycle_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+        ),
+        "terminal": model.ObligationKey(
+            claim.terminal_subject, model.SafetyDimension.TERMINAL_REACHABILITY,
+        ),
+    }
+    if any(key not in {cell.key for cell in case.obligation_index.cells} for key in keys.values()):
+        raise ValueError("terminal-cycle claim lacks exact obligation cells")
+    structural = tuple(
+        item.justification_id for item in case.justifications
+        if item.claim_id == claim.claim_id and item.conclusion == keys["cycle"]
+    )
+    terminal = tuple(
+        item.justification_id for item in case.justifications
+        if item.claim_id is None
+        and item.rule is model.UnflattenJustificationRule.SUBJECT_REACHABLE
+        and item.conclusion == keys["terminal"]
+    )
+    foreign_scope = tuple(
+        item for item in case.justifications
+        if item.claim_id == claim.claim_id
+        and item.conclusion not in {keys["cycle"], keys["terminal"]}
+    )
+    if foreign_scope:
+        raise ValueError("terminal-cycle claim widened beyond cycle and terminal conclusions")
+    return TerminalCycleView(
+        claim.claim_id,
+        claim.cycle_subject.subject_id,
+        claim.cleanup_source_subject.subject_id,
+        claim.terminal_subject.subject_id,
+        claim.terminal_route_proof_ids,
+        tuple(sorted(structural)),
+        tuple(sorted(terminal)),
     )
 
 
@@ -404,7 +469,7 @@ diagnostic_view = evidence_ids
 
 
 __all__ = [
-    "VIEW_GRAPH_TRAVERSALS", "ViewMetrics", "ExactEffectLossView", "RetiredInfrastructureView", "CorridorCoverageView", "corridor_coverage_rows", "obligation_states",
+    "VIEW_GRAPH_TRAVERSALS", "ViewMetrics", "ExactEffectLossView", "RetiredInfrastructureView", "CorridorCoverageView", "TerminalCycleView", "corridor_coverage_rows", "terminal_cycle_rows", "obligation_states",
     "failed_obligations", "evidence_ids", "justification_ids", "view_metrics",
     "exact_effect_loss_view", "retired_infrastructure_view", "retirement_rows", "semantic_loss_ledger", "observed_only_loss",
     "loss_view", "coverage_view", "diagnostic_view",

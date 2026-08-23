@@ -560,6 +560,31 @@ def attach_typed_proposal(
             # A supported retirement family is authority input once present;
             # malformed rows fail closed instead of silently becoming a shadow.
             raise ValueError("legacy retirement proof conversion failed") from exc
+    terminal_payload_present = (
+        isinstance(retirement_payload, dict)
+        and "terminal_switch_cycle_break" in retirement_payload
+    )
+    if terminal_payload_present:
+        from .legacy_codec import terminal_cycle_claim_from_legacy_proof
+
+        try:
+            if retirement_payload.get("validation_status") != "accepted" or retirement_payload.get("reason") != "terminal_switch_cycle_break":
+                raise ValueError("legacy terminal proof validation status is not accepted")
+            terminal_claim = terminal_cycle_claim_from_legacy_proof(
+                retirement_payload,
+                proposal=proposal,
+                block_refs_by_serial=block_refs_by_serial,
+            )
+            proposal = replace(
+                proposal,
+                claims=tuple(sorted((*proposal.claims, terminal_claim), key=lambda item: item.claim_id)),
+                plan_inputs=replace(
+                    proposal.plan_inputs,
+                    shape=UnflattenPlanShape.PARTIAL_REWRITE,
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("legacy terminal proof conversion failed") from exc
     if (
         proposal.retirement_catalog is not None
         or any(type(claim) is RetiredDispatcherInfrastructureClaim for claim in proposal.claims)

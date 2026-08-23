@@ -167,9 +167,11 @@ from d810.transforms.exit_path_effect_emission import (
 )
 from d810.transforms.dispatcher_corridor_coverage import (
     DETACHED_DEAD_HANDLER_COMPONENT_METADATA,
+    DispatcherRemovalPreflightValidation,
     analyze_dispatcher_corridor_coverage,
     build_dispatcher_removal_preflight_proof,
     build_detached_dead_handler_component_proof,
+    validate_terminal_switch_cycle_break_allowance,
 )
 from d810.transforms.use_def_redirect_filter import (
     audit_use_def_severances,
@@ -9546,8 +9548,22 @@ def emit_minimal_unflatten(
                 ",".join(anchor.label for anchor in proof.lost_block_anchors)
                 or "none",
             )
+        validation = validate_terminal_switch_cycle_break_allowance(
+            flow_graph,
+            post_graph=projected.graph,
+            patch_plan=plan,
+            removal_validation=DispatcherRemovalPreflightValidation(
+                passed=proof.passed,
+                reason=proof.reason,
+                proof=proof,
+            ),
+        )
         metadata: dict[str, object] = {
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata()
+            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: (
+                validation.to_payload()
+                if validation.terminal_switch_cycle_break is not None
+                else proof.to_metadata()
+            )
         }
         dead_component = build_detached_dead_handler_component_proof(
             flow_graph,

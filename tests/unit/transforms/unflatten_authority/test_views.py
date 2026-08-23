@@ -21,6 +21,28 @@ def test_views_export_read_only_case_projections() -> None:
     assert "case" in __import__("inspect").signature(views.exact_effect_loss_view).parameters
     assert "retirement_rows" in views.__all__
     assert "corridor_coverage_rows" in views.__all__
+    assert "terminal_cycle_rows" in views.__all__
+
+
+def test_terminal_cycle_view_projects_only_cycle_and_terminal_authority() -> None:
+    from .test_bind import _terminal_cycle_derived_inputs
+
+    _proposal, claim, inputs, _source, _candidate, _residual = (
+        _terminal_cycle_derived_inputs()
+    )
+    case = build_semantic_case(
+        authority_id=authority_id("terminal-cycle-view"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    view = views.terminal_cycle_rows(case, claim.claim_id)
+    assert view.claim_id == claim.claim_id
+    assert view.cycle_subject_id == claim.cycle_subject.subject_id
+    assert view.cleanup_source_subject_id == claim.cleanup_source_subject.subject_id
+    assert view.terminal_subject_id == claim.terminal_subject.subject_id
+    assert view.route_proof_ids == claim.terminal_route_proof_ids
+    assert view.structural_justification_ids
+    assert view.terminal_justification_ids
 
 
 def test_corridor_coverage_view_projects_the_case_owned_aggregate() -> None:

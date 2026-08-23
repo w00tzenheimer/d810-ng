@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.transforms.unflatten_authority import bind
 from d810.transforms.unflatten_authority import model
 from d810.transforms.cfg_transaction import LogicalBlockRef
@@ -16,6 +19,363 @@ def _fixture():
     proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
     catalog = proposal.source_identity_catalog
     return proposal, catalog
+
+
+def _terminal_cycle_fixture():
+    from .test_evaluate import _role_subject
+
+    values = _valid_proposal(model)
+    native_key = values["source_identity_catalog"].native_key
+    route_source_ref = block_ref("b3")
+    terminal_ref = block_ref("b4")
+    route_proof = values["route_evidence"].route_proofs[0]
+    route_source_identity = StableBlockIdentity.from_instruction_eas(
+        (0x1400,), native_key=native_key,
+    )
+    values["route_evidence"] = replace(
+        values["route_evidence"],
+        route_proofs=(replace(
+            route_proof,
+            source_identity=route_source_identity,
+            source_anchor_ea=0x1400,
+            delivery_region=NativeEaInterval(0x1400, 0x1401),
+            destinations=tuple(
+                replace(destination, terminal=True)
+                for destination in route_proof.destinations
+            ),
+        ),),
+    )
+    values["source_identity_catalog"] = model.SourceIdentityCatalog(
+        native_key,
+        3,
+        (
+            *values["source_identity_catalog"].blocks,
+            model.SourceBlockIdentityWitness(
+                route_source_ref, 0x1400, (0x1400,),
+            ),
+            model.SourceBlockIdentityWitness(
+                terminal_ref, 0x1500, (0x1500,),
+            ),
+        ),
+    )
+    values["plan_inputs"] = replace(
+        values["plan_inputs"], source_entry_ref=route_source_ref,
+    )
+    cycle = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.CORRIDOR,
+        role=model.SemanticSubjectRole.DISPATCHER_CORRIDOR,
+        block_ref=block_ref("b0"),
+        anchor_ea=0x1000,
+        locator=model.CorridorSubjectLocator(
+            authority_id("terminal-cycle"),
+            block_ref("b0"),
+            0x1000,
+            (block_ref("b0"), block_ref("b1")),
+            (0x1000, 0x1300),
+        ),
+    )
+    cleanup = _role_subject(
+        model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1"
+    )
+    terminal = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.TERMINAL,
+        role=model.SemanticSubjectRole.TERMINAL_SITE,
+        block_ref=terminal_ref,
+        anchor_ea=0x1500,
+        locator=model.TerminalSubjectLocator(
+            terminal_ref, 0x1500, model.TerminalKind.STOP, 0x1500,
+        ),
+    )
+    claim = _claim_factory(
+        model.TerminalCycleBreakClaim,
+        model.UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
+        cycle,
+        cleanup,
+        terminal,
+        (values["route_evidence"].route_proofs[0].proof_id,),
+        3,
+    )
+    canonical_proof = values["route_evidence"].route_proofs[0]
+    atomic_group_id = values["claims"][0].atomic_group_id
+    route_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.ROUTE,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=route_source_ref,
+        anchor_ea=0x1400,
+        locator=model.RouteSubjectLocator(
+            canonical_proof.proof_id,
+            atomic_group_id,
+            route_source_ref,
+            0x1400,
+            (block_ref("b2"),),
+            (0x1100,),
+        ),
+    )
+    route_source_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=route_source_ref,
+        anchor_ea=0x1400,
+        locator=model.BlockSubjectLocator(route_source_ref, 0x1400),
+    )
+    route_destination_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=block_ref("b2"),
+        anchor_ea=0x1100,
+        locator=model.BlockSubjectLocator(block_ref("b2"), 0x1100),
+    )
+    equivalent_route = _claim_factory(
+        model.EquivalentSemanticRouteClaim,
+        model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
+        route_subject,
+        route_subject,
+        route_source_subject,
+        (route_destination_subject,),
+        (canonical_proof.proof_id,),
+        atomic_group_id,
+        3,
+    )
+    values["claims"] = (equivalent_route, claim)
+    return model.ProposedUnflattenContract(**values), claim
+
+
+def _rewire_inventory(inventory, successors, *, generation=3, entry_serial=None):
+    entry_serial = inventory.entry_serial if entry_serial is None else entry_serial
+    predecessor_by_serial = {serial: [] for serial in successors}
+    for owner, peers in successors.items():
+        for peer in peers:
+            predecessor_by_serial[peer].append(owner)
+    blocks = tuple(
+        replace(
+            block,
+            predecessor_serials=tuple(sorted(predecessor_by_serial[block.serial])),
+            successor_serials=tuple(successors[block.serial]),
+        )
+        for block in inventory.blocks
+    )
+    topology = tuple(sorted(
+        (
+            model.InventoryTopologyIncidence(
+                kind,
+                owner if kind is model.TopologyIncidenceKind.SUCCESSOR else peer,
+                peer if kind is model.TopologyIncidenceKind.SUCCESSOR else owner,
+                None,
+            )
+            for owner, peers in successors.items()
+            for peer in peers
+            for kind in (
+                model.TopologyIncidenceKind.SUCCESSOR,
+                model.TopologyIncidenceKind.PREDECESSOR,
+            )
+        ),
+        key=lambda item: (item.kind.value, item.owner_serial, item.peer_serial),
+    ))
+    bindings = tuple(
+        replace(binding, generation=generation)
+        for binding in inventory.bindings
+    )
+    reachable = set()
+    pending = [entry_serial]
+    while pending:
+        serial = pending.pop()
+        if serial in reachable:
+            continue
+        reachable.add(serial)
+        pending.extend(successors[serial])
+    reachable_serials = tuple(sorted(reachable))
+    digest = semantic_graph_inventory_digest(
+        inventory.phase,
+        inventory.graph_fingerprint,
+        generation,
+        blocks,
+        inventory.subjects,
+        bindings,
+        inventory.effects,
+        inventory.terminals,
+        topology,
+        reachable_serials,
+        entry_serial,
+        inventory.source_subject_ids,
+        inventory.function_ea,
+    )
+    return replace(
+        inventory,
+        generation=generation,
+        blocks=blocks,
+        bindings=bindings,
+        topology=topology,
+        reachable_serials=reachable_serials,
+        entry_serial=entry_serial,
+        inventory_digest=digest,
+    )
+
+
+def _terminal_cycle_inventory_fixture():
+    from .test_evaluate import _complete_inputs, _role_subject
+
+    proposal, claim = _terminal_cycle_fixture()
+    route_source = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=block_ref("b3"),
+        anchor_ea=0x1400,
+        locator=model.BlockSubjectLocator(block_ref("b3"), 0x1400),
+    )
+    terminal_route_destination = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=block_ref("b2"),
+        anchor_ea=0x1100,
+        locator=model.BlockSubjectLocator(block_ref("b2"), 0x1100),
+    )
+    carrier_effect = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.EFFECT,
+        role=model.SemanticSubjectRole.EFFECT_SITE,
+        block_ref=block_ref("b2"),
+        anchor_ea=0x1100,
+        locator=model.EffectSubjectLocator(
+            block_ref("b2"), 0x1100, 0x1100,
+            model.EffectSiteKind.CALL,
+        ),
+    )
+    source_entry = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SOURCE_ENTRY,
+        block_ref=block_ref("b3"),
+        anchor_ea=0x1400,
+        locator=model.BlockSubjectLocator(block_ref("b3"), 0x1400),
+    )
+    cycle_entry = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+        block_ref=block_ref("b0"),
+        anchor_ea=0x1000,
+        locator=model.BlockSubjectLocator(block_ref("b0"), 0x1000),
+    )
+    inputs = _complete_inputs(
+        source_subjects=(
+            source_entry,
+            route_source,
+            terminal_route_destination,
+            claim.cycle_subject,
+            claim.cleanup_source_subject,
+            claim.terminal_subject,
+            carrier_effect,
+        ),
+        candidate_subjects=(
+            source_entry,
+            route_source,
+            _role_subject(model.SemanticSubjectRole.DISPATCHER_ENTRY, "0"),
+            cycle_entry,
+            claim.cycle_subject,
+            claim.cleanup_source_subject,
+            claim.terminal_subject,
+            terminal_route_destination,
+            carrier_effect,
+        ),
+        # Build the closed graph inventories first. The transaction-owned
+        # terminal-cycle phase result is minted from these inventories and is
+        # only then admitted into DerivedUnflattenPreparationInputs.
+        claims=tuple(
+            item for item in proposal.claims
+            if type(item) is not model.TerminalCycleBreakClaim
+        ),
+        proposal=proposal,
+    )
+    source = _rewire_inventory(
+        inputs.source_inventory,
+        {0: (1,), 1: (0, 2), 2: (4,), 3: (0,), 4: ()},
+        entry_serial=3,
+    )
+    candidate = _rewire_inventory(
+        inputs.candidate_inventory,
+        {0: (1,), 1: (2,), 2: (4,), 3: (2,), 4: ()},
+        generation=4,
+        entry_serial=3,
+    )
+    residual = _rewire_inventory(
+        inputs.candidate_inventory,
+        {0: (1,), 1: (0, 2), 2: (4,), 3: (2,), 4: ()},
+        generation=4,
+        entry_serial=3,
+    )
+    return proposal, claim, inputs, source, candidate, residual
+
+
+def _terminal_cycle_derived_inputs():
+    """Run the transaction boundary over the realistic terminal fixture."""
+
+    from d810.transforms.plan import PatchPlan, PatchRedirectBranch
+    from d810.transforms.unflatten_authority import transaction_api
+
+    proposal, claim, fixture, source, candidate, residual = (
+        _terminal_cycle_inventory_fixture()
+    )
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=authority_id("terminal-cycle-snapshot"),
+        source_generation=source.generation,
+        steps=tuple(
+            PatchRedirectBranch(
+                owner,
+                block_ref("b1")
+                if owner == block_ref("b0") else block_ref("b0"),
+                block_ref("b2"),
+            )
+            for owner in proposal.use_def_witness.redirect_owner_refs
+        ),
+        source_coordinates=tuple(
+            (block.block_ref, block.serial)
+            for block in source.blocks if block.block_ref is not None
+        ),
+        unflatten_proposal=proposal,
+    )
+    inputs = transaction_api._derive_inputs(
+        source, candidate, plan, proposal, None,
+        phase_build_metrics=fixture.phase_build_metrics,
+        preparation_metrics=fixture.preparation_metrics,
+        candidate_generation=candidate.generation,
+    )
+    return proposal, claim, inputs, source, candidate, residual
+
+
+def test_terminal_cycle_binding_requires_exact_reachable_cycle_break() -> None:
+    proposal, claim, _inputs, source, candidate, residual = (
+        _terminal_cycle_inventory_fixture()
+    )
+    result = bind.bind_terminal_cycle_break_claim(
+        claim=claim,
+        proposal=proposal,
+        source_inventory=source,
+        candidate_inventory=candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    bind.validate_terminal_cycle_binding_result(result)
+    assert result.source_cycle_edges
+    assert not bind._contains_directed_cycle(
+        result.residue_refs, result.projected_cycle_edges,
+    )
+    assert result.generation == 3
+    assert result.projected_generation == 4
+    with pytest.raises(ValueError, match="residual cycle"):
+        bind.bind_terminal_cycle_break_claim(
+            claim=claim,
+            proposal=proposal,
+            source_inventory=source,
+            candidate_inventory=residual,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
 
 
 # Existing binding tests use the original private spelling as a compatibility

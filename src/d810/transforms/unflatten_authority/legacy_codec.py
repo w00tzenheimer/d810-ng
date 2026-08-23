@@ -17,6 +17,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from d810.core.typing import Any, Literal, TypeAlias
 from d810.ir.flowgraph import FlowGraph
+from d810.ir.block_identity import StableBlockIdentity
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.plan import PatchPlan, normalized_metadata_items
 from d810.ir.storage_identity import storage_identity_from_record
@@ -46,6 +47,9 @@ from .model import (
     RetirementProofFamily,
     RetirementProofRecord,
     RetiredDispatcherInfrastructureClaim,
+    TerminalCycleBreakClaim,
+    TerminalKind,
+    TerminalSubjectLocator,
     SemanticSubjectRef,
     SemanticSubjectKind,
     SemanticSubjectRole,
@@ -800,6 +804,156 @@ def retirement_claim_from_legacy_proof(
         retirement_proof_ids=(proof.proof_id,),
         source_generation=proposal.source_identity_catalog.generation,
         retirement_catalog=retirement_catalog,
+    )
+
+
+def terminal_cycle_claim_from_legacy_proof(
+    payload: object,
+    *,
+    proposal: ProposedUnflattenContract,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
+) -> TerminalCycleBreakClaim:
+    """Adapt the current transaction preflight terminal proof to a typed claim.
+
+    Only ``DispatcherRemovalPreflightValidation.to_payload`` is accepted.  In
+    particular, a legacy reason, serial allowance, or ad-hoc proof spelling is
+    never sufficient to mint terminal authority.
+    """
+    if type(payload) is not dict or set(payload) != {
+        "validation_status", "reason", "proof", "terminal_switch_cycle_break",
+    }:
+        raise ValueError("legacy terminal proof schema is unsupported")
+    if payload["validation_status"] != "accepted" or payload["reason"] != "terminal_switch_cycle_break":
+        raise ValueError("legacy terminal proof validation status is not accepted")
+    proof_payload = payload["proof"]
+    if type(proof_payload) is not dict or set(proof_payload) != {
+        "function_ea", "dispatcher", "proof_status", "reason",
+        "authoritative_handlers", "post_reachable_handlers",
+        "pre_reachable_terminals", "post_reachable_terminals",
+        "retired_infrastructure", "lost_blocks", "state_plumbing",
+        "producer_safety", "coverage_enumeration_complete",
+        "residual_corridor_count",
+    }:
+        raise ValueError("legacy terminal proof lacks the current removal proof")
+    raw = payload["terminal_switch_cycle_break"]
+    if type(raw) is not dict or set(raw) != {
+        "dispatcher", "terminal_source", "shared_merge", "terminal_target",
+        "terminal_stop", "retired_residue",
+    }:
+        raise ValueError("legacy terminal proof is not the current transaction schema")
+    if type(proposal) is not ProposedUnflattenContract or type(block_refs_by_serial) is not dict:
+        raise TypeError("terminal conversion requires closed proposal and serial map")
+    catalog = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+
+    def anchor(value: object, label: str) -> tuple[NativeBlockRef | LogicalBlockRef, int]:
+        if type(value) is not dict or set(value) != {"serial", "ea", "label"}:
+            raise ValueError(f"legacy terminal {label} anchor is malformed")
+        serial, ea = value["serial"], value["ea"]
+        if (
+            type(serial) is not int or serial < 0
+            or type(ea) is not int or ea < 0
+            or type(value["label"]) is not str
+            or value["label"] != f"blk{serial}@0x{ea:x}"
+        ):
+            raise ValueError(f"legacy terminal {label} anchor is malformed")
+        ref = block_refs_by_serial.get(serial)
+        witness = catalog.get(ref)
+        if ref is None or witness is None or witness.anchor_ea != ea:
+            raise ValueError(f"legacy terminal {label} anchor is foreign")
+        return ref, ea
+
+    dispatcher_ref, dispatcher_ea = anchor(raw["dispatcher"], "dispatcher")
+    if dispatcher_ref != proposal.plan_inputs.dispatcher_entry_ref:
+        raise ValueError("legacy terminal dispatcher is not the plan dispatcher")
+    terminal_source_ref, terminal_source_ea = anchor(
+        raw["terminal_source"], "source",
+    )
+    merge_ref, merge_ea = anchor(raw["shared_merge"], "merge")
+    target_ref, target_ea = anchor(raw["terminal_target"], "target")
+    stop_ref, stop_ea = anchor(raw["terminal_stop"], "stop")
+    residue = raw["retired_residue"]
+    if type(residue) not in (tuple, list) or not residue:
+        raise ValueError("legacy terminal residue must be non-empty")
+    residue_rows = tuple(anchor(item, "residue") for item in residue)
+    residue_refs = tuple(ref for ref, _ea in residue_rows)
+    if len(set(residue_refs)) != len(residue_refs) or merge_ref not in residue_refs:
+        raise ValueError("legacy terminal residue is not an exact closed set")
+    plan_members = set(proposal.plan_inputs.dispatcher_member_refs)
+    if not set(residue_refs) <= plan_members:
+        raise ValueError("legacy terminal residue is outside the plan member set")
+    lost_rows = proof_payload["lost_blocks"]
+    if type(lost_rows) not in (tuple, list):
+        raise ValueError("legacy terminal proof lost-block rows are malformed")
+    lost = tuple(anchor(item, "lost") for item in lost_rows)
+    if tuple(lost) != tuple(residue_rows):
+        raise ValueError("legacy terminal residue disagrees with the removal proof")
+    terminal_identity = (
+        target_ref.identity
+        if type(target_ref) is NativeBlockRef
+        else StableBlockIdentity.from_instruction_eas(
+            catalog[target_ref].native_instruction_eas,
+            native_key=proposal.source_identity_catalog.native_key,
+        )
+    )
+    terminal_source_identity = (
+        terminal_source_ref.identity
+        if type(terminal_source_ref) is NativeBlockRef
+        else StableBlockIdentity.from_instruction_eas(
+            catalog[terminal_source_ref].native_instruction_eas,
+            native_key=proposal.source_identity_catalog.native_key,
+        )
+    )
+    terminal_proofs = tuple(
+        proof for proof in proposal.route_evidence.route_proofs
+        if proof.source_identity == terminal_source_identity
+        and proof.source_anchor_ea == terminal_source_ea
+        and sum(
+            destination.terminal
+            and destination.target_identity == terminal_identity
+            and destination.target_anchor_ea == target_ea
+            for destination in proof.destinations
+        ) == 1
+    )
+    if len(terminal_proofs) != 1:
+        raise ValueError("legacy terminal proof does not bind one canonical route")
+    cycle = _subject_factory(
+        SemanticSubjectRef,
+        kind=SemanticSubjectKind.CORRIDOR,
+        role=SemanticSubjectRole.DISPATCHER_CORRIDOR,
+        block_ref=dispatcher_ref,
+        anchor_ea=dispatcher_ea,
+        locator=CorridorSubjectLocator(
+            authority_id(("unflatten.terminal-cycle.v1", proposal.plan_id, residue_refs)),
+            dispatcher_ref, dispatcher_ea, residue_refs,
+            tuple(catalog[ref].anchor_ea for ref in residue_refs),
+        ),
+    )
+    cleanup = _subject_factory(
+        SemanticSubjectRef,
+        kind=SemanticSubjectKind.BLOCK,
+        role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+        block_ref=merge_ref,
+        anchor_ea=merge_ea,
+        locator=BlockSubjectLocator(merge_ref, merge_ea),
+    )
+    terminal = _subject_factory(
+        SemanticSubjectRef,
+        kind=SemanticSubjectKind.TERMINAL,
+        role=SemanticSubjectRole.TERMINAL_SITE,
+        block_ref=stop_ref,
+        anchor_ea=stop_ea,
+        locator=TerminalSubjectLocator(
+            stop_ref, stop_ea, TerminalKind.STOP, stop_ea,
+        ),
+    )
+    return _claim_factory(
+        TerminalCycleBreakClaim,
+        kind=UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
+        cycle_subject=cycle,
+        cleanup_source_subject=cleanup,
+        terminal_subject=terminal,
+        terminal_route_proof_ids=(terminal_proofs[0].proof_id,),
+        source_generation=proposal.source_identity_catalog.generation,
     )
 
 

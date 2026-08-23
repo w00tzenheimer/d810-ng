@@ -410,10 +410,12 @@ def _ensure_registries() -> None:
         model.CorridorCoveragePathNode, model.CorridorSemanticExclusion, model.CorridorCoveragePath,
         model.CorridorCoverageForecast, model.CorridorSemanticExclusionCorrelation,
         model.CorridorCoveragePhaseResult,
+        model.TerminalCyclePhaseResult,
         model.PhaseSubjectBinding, model.PhaseBindingEvidencePayload, model.TopologyEdgeRelation, model.TopologyEvidencePayload,
         model.StructuralLineageEvidencePayload, model.SemanticRouteEvidencePayload,
         model.EffectSiteEvidencePayload, model.ReachabilityEvidencePayload,
         model.UseDefAuditEvidencePayload, model.CorridorCoverageEvidencePayload,
+        model.TerminalCycleEvidencePayload,
         model.PatchStepEvidencePayload, model.GenericCfgGateEvidencePayload, model.AuthorityEvidence,
         model.GenericCfgGateResult, model.ProviderConsensusWitness,
         model.RetiredDispatcherInfrastructureClaim, model.EquivalentSemanticRouteClaim,
@@ -466,6 +468,7 @@ def _ensure_registries() -> None:
         model.CorridorCoverageForecast: ("forecast_id", "plan_id", "function_ea", "source_native_key", "source_generation", "dispatcher_ref", "dispatcher_anchor_ea", "paths", "covered_path_ids", "residual_path_ids", "enumeration_complete", "semantic_exclusion_digests", "semantic_exclusions", "semantic_exclusion_path_ids"),
             model.CorridorSemanticExclusionCorrelation: ("exclusion_id", "exclusion_digest", "path_id", "claim_id", "proof_id", "ordered_prefix", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "phase_result_id"),
             model.CorridorCoveragePhaseResult: ("result_id", "forecast_id", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "covered_path_ids", "residual_path_ids", "drifted_path_ids", "enumeration_complete", "matched_semantic_exclusion_ids", "source_dispatcher_reachable", "candidate_dispatcher_reachable", "semantic_exclusion_correlations"),
+            model.TerminalCyclePhaseResult: ("result_id", "claim_id", "terminal_route_proof_id", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "bound_subject_ids", "source_binding_digest", "candidate_binding_digest", "residue_refs", "source_cycle_edges", "candidate_cycle_edges", "source_bindings", "candidate_bindings", "terminal_source_ref", "cleanup_source_ref", "terminal_carrier_ref", "terminal_route_refs", "terminal_subject_id", "terminal_subject_ref"),
         model.SemanticSubjectRef: ("kind", "role", "subject_id", "block_ref", "anchor_ea", "locator"),
         model.PhaseSubjectBinding: ("subject", "phase", "block_ref", "graph_fingerprint", "generation", "status", "serial", "anchor_ea", "native_instruction_eas", "role"),
         model.PhaseBindingEvidencePayload: ("binding",),
@@ -477,6 +480,7 @@ def _ensure_registries() -> None:
         model.ReachabilityEvidencePayload: ("root_subject_id", "target_subject_id", "reachable", "path_subject_ids"),
         model.UseDefAuditEvidencePayload: ("fragment_id", "state_identity", "executed", "fragment_atomic", "actionable_non_state_severance_count", "violation_ids"),
         model.CorridorCoverageEvidencePayload: ("corridor_subject_id", "forecast_id", "phase_result_id", "covered_path_ids", "residual_path_ids", "drifted_path_ids", "enumeration_complete", "matched_semantic_exclusion_ids", "source_dispatcher_reachable", "candidate_dispatcher_reachable"),
+        model.TerminalCycleEvidencePayload: ("phase_result_id", "claim_id", "terminal_route_proof_id", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "bound_subject_ids", "source_binding_digest", "candidate_binding_digest", "residue_refs", "source_cycle_edges", "candidate_cycle_edges", "source_bindings", "candidate_bindings", "terminal_source_ref", "cleanup_source_ref", "terminal_carrier_ref", "terminal_route_refs", "terminal_subject_id", "terminal_subject_ref"),
         model.PatchStepEvidencePayload: ("plan_id", "step_index", "step_type", "owner_ref", "step_digest", "host_ea", "host_opcode", "value_size"),
         model.GenericCfgGateEvidencePayload: ("gate", "passed", "affected_subject_ids", "reason_code"),
         model.AuthorityEvidence: ("evidence_id", "kind", "subject", "phase", "payload"),
@@ -515,8 +519,8 @@ def _ensure_registries() -> None:
         model.SemanticGraphInventory: ("phase", "graph_fingerprint", "generation", "blocks", "subjects", "bindings", "effects", "terminals", "topology", "inventory_digest", "reachable_serials", "entry_serial", "source_subject_ids", "function_ea"),
         model.ConditionalSubjectRelation: ("source_subject_id", "target_subject_id", "dimension", "provenance_id"),
             model.PreparationAuthorityReceipt: ("receipt_id", "proposal_id", "plan_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "source_inventory_digest", "candidate_inventory_digest", "source_binding_digest", "candidate_binding_digest", "route_expansion_digest", "effect_catalog_digest", "terminal_catalog_digest", "plan_input_digest", "dispatcher_member_digest", "planned_helper_digest", "patch_step_digest", "conditional_relation_digest", "metrics", "generic_gate_facts_digest", "route_assessment_digest", "retirement_catalog", "corridor_coverage_forecast"),
-            model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_inventory", "candidate_inventory", "source_route_assessment", "candidate_route_assessment", "generic_gate_facts", "conditional_relations", "patch_step_facts", "preparation_metrics", "phase_build_metrics", "corridor_coverage_phase_result"),
-        model.SemanticSafetyCase: ("case_id", "authority_id", "preparation_receipt_id", "preparation_receipt", "phase", "source_fingerprint", "candidate_fingerprint", "candidate_generation", "claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications", "obligation_index", "phase_metrics", "source_inventory", "source_subject_ids", "source_bindings", "retirement_catalog", "corridor_coverage_phase_result"),
+            model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_inventory", "candidate_inventory", "source_route_assessment", "candidate_route_assessment", "generic_gate_facts", "conditional_relations", "patch_step_facts", "preparation_metrics", "phase_build_metrics", "corridor_coverage_phase_result", "terminal_cycle_phase_results"),
+        model.SemanticSafetyCase: ("case_id", "authority_id", "preparation_receipt_id", "preparation_receipt", "phase", "source_fingerprint", "candidate_fingerprint", "candidate_generation", "claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications", "obligation_index", "phase_metrics", "source_inventory", "candidate_inventory", "source_subject_ids", "source_bindings", "retirement_catalog", "corridor_coverage_phase_result", "terminal_cycle_phase_results"),
         model.UnflattenAuthorityVerdict: ("accepted", "phase", "reason", "authority_id", "binding_id", "case_id", "candidate_fingerprint", "safety_case", "failed_obligations"),
     })
     _EXTERNAL_TYPES.update({
@@ -1073,9 +1077,17 @@ def _case_factory(cls: type[object], **kwargs: object) -> object:
     names = _RECORD_FIELDS.get(cls)
     if cls.__name__ != "SemanticSafetyCase" or names is None:
         raise TypeError("case factory requires SemanticSafetyCase")
-    payload = {name: kwargs[name] for name in names if name != "case_id"}
-    if set(kwargs) != set(payload):
+    optional_defaults = {"terminal_cycle_phase_results": ()}
+    payload_names = tuple(name for name in names if name != "case_id")
+    required_names = set(payload_names) - set(optional_defaults)
+    if set(kwargs) - set(payload_names) or required_names - set(kwargs):
         raise TypeError("case factory accepts only non-ID fields")
+    payload = {
+        name: kwargs.get(name, optional_defaults[name])
+        if name in optional_defaults
+        else kwargs[name]
+        for name in payload_names
+    }
     raw = object.__new__(cls)
     for name, value in payload.items():
         object.__setattr__(raw, name, value)
