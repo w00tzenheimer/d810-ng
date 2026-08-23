@@ -7,7 +7,8 @@ from dataclasses import dataclass
 import re
 
 from d810.analyses.control_flow import semantic_route_evidence as route_model
-from d810.transforms.cfg_transaction import PlanBlockRef
+from d810.ir.block_identity import StableBlockIdentity
+from d810.transforms.cfg_transaction import NativeBlockRef, PlanBlockRef
 
 from . import model
 from . import gates
@@ -186,7 +187,12 @@ def _classify_effect_site(
         claim is not None
         and route_assessment is not None
         and route_assessment.accepted
-        and tuple(claim.route_proof_ids) == tuple(route_assessment.proof_ids)
+        and len(claim.route_proof_ids) == 1
+        and claim.route_proof_ids[0] in route_assessment.proof_ids
+        and (
+            not hasattr(claim, "atomic_group_id")
+            or claim.atomic_group_id == route_assessment.evidence.atomic_group_id
+        )
     )
     raw_facts = None if generic_gate_facts is None else generic_gate_facts.effectful_raw
     effective_facts = None if generic_gate_facts is None else generic_gate_facts.effectful_effective
@@ -387,6 +393,73 @@ def _claim_subjects(claim: model.UnflattenClaim) -> tuple[model.SemanticSubjectR
     if type(claim) is model.TerminalCycleBreakClaim:
         return (claim.cycle_subject, claim.cleanup_source_subject, claim.terminal_subject)
     raise TypeError("claims must contain closed UnflattenClaim values")
+
+
+def _validate_route_assessment_pair(
+    inputs: model.DerivedUnflattenPreparationInputs,
+    phase: model.UnflattenAuthorityPhase,
+    claim: model.EquivalentSemanticRouteClaim,
+) -> None:
+    """Require one selected route in both sealed source/candidate assessments."""
+
+    source = inputs.source_route_assessment
+    candidate = inputs.candidate_route_assessment
+    if source is None or candidate is None:
+        raise ValueError("equivalent route requires source and candidate assessments")
+    route_model.validate_canonical_route_assessment(source)
+    route_model.validate_canonical_route_assessment(candidate)
+    if not source.accepted or not candidate.accepted:
+        raise ValueError("equivalent route requires accepted source and candidate assessments")
+    if source.phase is not route_model.CanonicalRouteAssessmentPhase.SOURCE:
+        raise ValueError("equivalent route source assessment has the wrong phase")
+    expected_phase = {
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT: route_model.CanonicalRouteAssessmentPhase.PROJECTED,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY: route_model.CanonicalRouteAssessmentPhase.OBSERVED,
+    }.get(phase)
+    if candidate.phase is not expected_phase:
+        raise ValueError("equivalent route candidate assessment has the wrong phase")
+    if source.evidence is not inputs.proposal.route_evidence or candidate.evidence is not inputs.proposal.route_evidence:
+        raise ValueError("equivalent route assessment evidence is foreign")
+    if source.evidence != candidate.evidence or source.evidence_id != candidate.evidence_id:
+        raise ValueError("equivalent route assessment evidence content differs")
+    if (
+        source.evidence.atomic_group_id != claim.atomic_group_id
+        or candidate.evidence.atomic_group_id != claim.atomic_group_id
+        or source.generation != claim.source_generation
+    ):
+        raise ValueError("equivalent route assessment claim coordinates differ")
+    if (
+        source.graph_fingerprint != inputs.source_inventory.graph_fingerprint
+        or candidate.graph_fingerprint != inputs.candidate_inventory.graph_fingerprint
+        or source.generation != inputs.source_inventory.generation
+        or candidate.generation != inputs.candidate_inventory.generation
+    ):
+        raise ValueError("equivalent route assessment inventory coordinates differ")
+    if len(claim.route_proof_ids) != 1:
+        raise ValueError("equivalent route claim must select exactly one proof")
+    proof_id = claim.route_proof_ids[0]
+    if proof_id not in source.proof_ids or proof_id not in candidate.proof_ids:
+        raise ValueError("equivalent route proof is outside an assessment")
+    if source.bound_evidence is None or candidate.bound_evidence is None:
+        raise ValueError("equivalent route assessment lacks bound route content")
+    proposal_proofs = tuple(
+        proof for proof in inputs.proposal.route_evidence.route_proofs
+        if proof.proof_id == proof_id
+    )
+    if len(proposal_proofs) != 1:
+        raise ValueError("equivalent route proof is not unique in proposal evidence")
+    source_routes = tuple(
+        route for route in source.bound_evidence.routes
+        if route.evidence.proof_id == proof_id
+    )
+    candidate_routes = tuple(
+        route for route in candidate.bound_evidence.routes
+        if route.evidence.proof_id == proof_id
+    )
+    if len(source_routes) != 1 or source_routes[0].evidence != proposal_proofs[0]:
+        raise ValueError("source assessment does not contain one selected route")
+    if len(candidate_routes) != 1 or candidate_routes[0].evidence != proposal_proofs[0]:
+        raise ValueError("candidate assessment does not contain one selected route")
 
 
 def _make_justification(
@@ -1144,6 +1217,128 @@ def derive_corridor_coverage_evidence(
     ), None)
     if result is None or corridor is None:
         return None
+    forecast = inputs.proposal.corridor_coverage_forecast
+    if forecast is None:
+        if result.semantic_exclusion_correlations:
+            raise ValueError("semantic exclusion correlation lacks a forecast")
+    else:
+        expected_pairs = {
+            (exclusion_id, path_id)
+            for exclusion_id, path_ids in forecast.semantic_exclusion_path_ids
+            for path_id in path_ids
+        }
+        actual_pairs = {
+            (item.exclusion_id, item.path_id)
+            for item in result.semantic_exclusion_correlations
+        }
+        if actual_pairs != expected_pairs:
+            raise ValueError(
+                "semantic exclusion correlations do not cover the exact forecast universe"
+            )
+    if result.semantic_exclusion_correlations:
+        assert forecast is not None
+        exclusions = {item.exclusion_id: item for item in forecast.semantic_exclusions}
+        claims = {
+            claim.claim_id: claim
+            for claim in inputs.proposal.claims
+            if type(claim) is model.EquivalentSemanticRouteClaim
+        }
+        proofs = {
+            proof.proof_id: proof
+            for proof in inputs.proposal.route_evidence.route_proofs
+        }
+        source_catalog = {
+            witness.block_ref: witness
+            for witness in inputs.proposal.source_identity_catalog.blocks
+        }
+        for correlation in result.semantic_exclusion_correlations:
+            exclusion = exclusions.get(correlation.exclusion_id)
+            claim = claims.get(correlation.claim_id)
+            proof = proofs.get(correlation.proof_id)
+            if exclusion is None or claim is None or proof is None:
+                raise ValueError("semantic exclusion correlation has foreign authority")
+            if correlation.exclusion_digest != exclusion.digest or correlation.path_id not in result.covered_path_ids:
+                raise ValueError("semantic exclusion correlation digest/path drifted")
+            if claim.route_proof_ids != (correlation.proof_id,):
+                raise ValueError("semantic exclusion correlation proof scope drifted")
+            _validate_route_assessment_pair(inputs, phase, claim)
+            source_assessment = inputs.source_route_assessment
+            candidate_assessment = inputs.candidate_route_assessment
+            if source_assessment is None or candidate_assessment is None:
+                raise ValueError("semantic exclusion correlation lacks route assessments")
+            if (
+                correlation.source_fingerprint != source_assessment.graph_fingerprint
+                or correlation.candidate_fingerprint != candidate_assessment.graph_fingerprint
+                or correlation.source_generation != source_assessment.generation
+                or correlation.candidate_generation != candidate_assessment.generation
+            ):
+                raise ValueError("semantic exclusion correlation inventory coordinates drifted")
+            path = next((item for item in forecast.paths if item.path_id == correlation.path_id), None)
+            if path is None or tuple(correlation.ordered_prefix) != path.nodes:
+                raise ValueError("semantic exclusion correlation prefix drifted")
+            linked_path_ids = next(
+                (
+                    path_ids for exclusion_id, path_ids
+                    in forecast.semantic_exclusion_path_ids
+                    if exclusion_id == correlation.exclusion_id
+                ),
+                (),
+            )
+            if correlation.path_id not in linked_path_ids:
+                raise ValueError("semantic exclusion correlation path is not forecast-linked")
+            source_witness = source_catalog.get(exclusion.source.block_ref)
+            if (
+                source_witness is None
+                or source_witness.anchor_ea != exclusion.source.anchor_ea
+            ):
+                raise ValueError("semantic exclusion correlation source is foreign")
+            expected_source_identity = (
+                source_witness.block_ref.identity
+                if type(source_witness.block_ref) is NativeBlockRef
+                else StableBlockIdentity.from_instruction_eas(
+                    source_witness.native_instruction_eas,
+                    native_key=inputs.proposal.source_identity_catalog.native_key,
+                )
+            )
+            matching_destinations = tuple(
+                destination
+                for destination in proof.destinations
+                if destination.state_constant == exclusion.normalized_state
+            )
+            claim_destination_pairs = {
+                (subject.block_ref, subject.anchor_ea)
+                for subject in claim.destination_subjects
+            }
+            destination_matches = []
+            if len(matching_destinations) == 1:
+                destination = matching_destinations[0]
+                for block_ref, anchor_ea in claim_destination_pairs:
+                    witness = source_catalog.get(block_ref)
+                    if witness is None or witness.anchor_ea != anchor_ea:
+                        continue
+                    expected_identity = (
+                        witness.block_ref.identity
+                        if type(witness.block_ref) is NativeBlockRef
+                        else StableBlockIdentity.from_instruction_eas(
+                            witness.native_instruction_eas,
+                            native_key=inputs.proposal.source_identity_catalog.native_key,
+                        )
+                    )
+                    if (
+                        anchor_ea == destination.target_anchor_ea
+                        and expected_identity == destination.target_identity
+                    ):
+                        destination_matches.append((block_ref, anchor_ea))
+            if (
+                proof.source_identity
+                != expected_source_identity
+                or proof.source_anchor_ea != exclusion.source.anchor_ea
+                or proof.state_write is None
+                or proof.state_write.state_variable != exclusion.state_identity
+                or proof.state_write.state_constant != exclusion.normalized_state
+                or len(destination_matches) != 1
+            ):
+                raise ValueError("semantic exclusion correlation route semantics drifted")
     if result.phase is not phase:
         raise ValueError("corridor phase result differs from requested phase")
     return model.CorridorCoverageEvidencePayload(
@@ -1845,12 +2040,44 @@ def _evaluator_fact_evidence(
                  and item.block_ref == ref and item.anchor_ea == anchor)
             for ref, anchor in zip(locator.destination_refs, locator.destination_anchor_eas)
         )
+        route_claim = next(
+            (
+                claim for claim in inputs.claims
+                if (
+                    type(claim) is model.EquivalentSemanticRouteClaim
+                    and claim.retired_route_subject.subject_id == subject.subject_id
+                ) or (
+                    type(claim) is model.ExactInfeasibleEffectClaim
+                    and locator.proof_id in claim.route_proof_ids
+                )
+            ),
+            None,
+        )
+        route_pair_valid = False
+        if type(route_claim) is model.EquivalentSemanticRouteClaim:
+            try:
+                _validate_route_assessment_pair(inputs, phase, route_claim)
+                route_pair_valid = True
+            except (TypeError, ValueError):
+                route_pair_valid = False
+        elif type(route_claim) is model.ExactInfeasibleEffectClaim:
+            route_pair_valid = bool(
+                assessment is not None
+                and assessment.accepted
+                and locator.proof_id in assessment.proof_ids
+            )
         route_payload = model.SemanticRouteEvidencePayload(
             subject.subject_id, (locator.proof_id,), locator.atomic_group_id,
             next((item.subject_id for item in source_subjects
                   if item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
                   and item.block_ref == locator.source_ref and item.anchor_ea == locator.source_anchor_ea), subject.subject_id),
-            destinations, bool(assessment is not None and assessment.accepted and locator.proof_id in assessment.proof_ids),
+            destinations,
+            bool(
+                route_pair_valid
+                and assessment is not None
+                and assessment.accepted
+                and locator.proof_id in assessment.proof_ids
+            ),
         )
         evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.SEMANTIC_ROUTE, subject, phase, route_payload))
 
@@ -2505,8 +2732,14 @@ def build_semantic_case(
                 raise ValueError("lineage evidence targets a foreign candidate")
         elif type(payload) is model.SemanticRouteEvidencePayload:
             header_target = payload.route_subject_id
-            proposal_proof_ids = tuple(sorted(proof.proof_id for proof in proposal.route_evidence.route_proofs))
-            if payload.proof_ids != proposal_proof_ids or payload.atomic_group_id != proposal.route_evidence.atomic_group_id:
+            proposal_proof_ids = {
+                proof.proof_id for proof in proposal.route_evidence.route_proofs
+            }
+            if (
+                not payload.proof_ids
+                or not set(payload.proof_ids).issubset(proposal_proof_ids)
+                or payload.atomic_group_id != proposal.route_evidence.atomic_group_id
+            ):
                 raise ValueError("route evidence is outside the proposal proof scope")
             route_claim = next(
                 (
@@ -2937,18 +3170,40 @@ def build_semantic_case(
                 )
             rule = model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
         elif type(claim) is model.EquivalentSemanticRouteClaim:
-            matching_route = tuple(
-                item for item in evidence
-                if type(item.payload) is model.SemanticRouteEvidencePayload
-                and item.payload.route_subject_id == claim.retired_route_subject.subject_id
-                and item.payload.source_subject_id == claim.source_subject.subject_id
-                and item.payload.destination_subject_ids == _route_destination_ids(claim.retired_route_subject, source_subjects)
-                and item.payload.atomic_group_id == claim.atomic_group_id
-                and item.payload.matched
-            )
+            try:
+                _validate_route_assessment_pair(inputs, phase, claim)
+            except (TypeError, ValueError):
+                matching_route = ()
+            else:
+                matching_route = tuple(
+                    item for item in evidence
+                    if type(item.payload) is model.SemanticRouteEvidencePayload
+                    and item.payload.route_subject_id == claim.retired_route_subject.subject_id
+                    and item.payload.source_subject_id == claim.source_subject.subject_id
+                    and item.payload.destination_subject_ids == _route_destination_ids(claim.retired_route_subject, source_subjects)
+                    and item.payload.atomic_group_id == claim.atomic_group_id
+                    and item.payload.matched
+                )
             if matching_route:
                 claim_evidence = tuple(item.evidence_id for item in matching_route)
-                targets = ((claim.retired_route_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING), (claim.source_subject, model.SafetyDimension.ROUTE_EQUIVALENCE)) + tuple((item, model.SafetyDimension.ROUTE_EQUIVALENCE) for item in claim.destination_subjects)
+                targets = (
+                    (
+                        claim.retired_route_subject,
+                        model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+                    ),
+                    (
+                        claim.retired_route_subject,
+                        model.SafetyDimension.ROUTE_EQUIVALENCE,
+                    ),
+                    (
+                        claim.source_subject,
+                        model.SafetyDimension.ROUTE_EQUIVALENCE,
+                    ),
+                    *tuple(
+                        (item, model.SafetyDimension.ROUTE_EQUIVALENCE)
+                        for item in claim.destination_subjects
+                    ),
+                )
             rule = model.UnflattenJustificationRule.EQUIVALENT_ROUTE_PROVEN
         elif type(claim) is model.ExactInfeasibleEffectClaim:
             matching_effect = tuple(

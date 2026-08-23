@@ -12,6 +12,7 @@ from d810.analyses.control_flow.effect_branch_exclusion import (
     validate_exact_state_branch_effect_exclusion,
 )
 from d810.ir.flowgraph import FlowGraph
+from d810.ir.block_identity import StableBlockIdentity
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef
 from . import model, producer_api
 from .ids import (
@@ -274,6 +275,119 @@ def bind_corridor_coverage_forecast(
     residual: list[str] = []
     drifted: list[str] = []
     matched_exclusions: list[str] = []
+    correlation_specs: list[tuple[object, ...]] = []
+    exclusions_by_id = {
+        exclusion.exclusion_id: exclusion
+        for exclusion in forecast.semantic_exclusions
+    }
+    route_proofs = {
+        proof.proof_id: proof for proof in proposal.route_evidence.route_proofs
+    }
+
+    source_catalog_by_ref = {
+        witness.block_ref: witness
+        for witness in proposal.source_identity_catalog.blocks
+    }
+
+    def exact_native_identity(node: model.CorridorCoveragePathNode) -> StableBlockIdentity:
+        witness = source_catalog_by_ref.get(node.block_ref)
+        if witness is None or witness.anchor_ea != node.anchor_ea:
+            raise ValueError("corridor semantic exclusion node is absent from source catalog")
+        if type(witness.block_ref) is NativeBlockRef:
+            expected = witness.block_ref.identity
+        else:
+            expected = StableBlockIdentity.from_instruction_eas(
+                witness.native_instruction_eas,
+                native_key=proposal.source_identity_catalog.native_key,
+            )
+        if expected.exact_instruction_eas != frozenset(witness.native_instruction_eas):
+            raise ValueError("corridor semantic exclusion identity differs from source catalog")
+        return expected
+
+    def bind_semantic_exclusion(
+        exclusion_id: str,
+        path_id: str,
+        ordered_prefix: tuple[model.CorridorCoveragePathNode, ...],
+    ) -> None:
+        exclusion = exclusions_by_id.get(exclusion_id)
+        if exclusion is None:
+            raise ValueError("corridor semantic exclusion is absent from forecast")
+        exact_suffix = tuple(
+            node for node in (
+                exclusion.source, exclusion.feeder, exclusion.prefix, exclusion.root,
+            )
+            if node is not None
+        )
+        if (
+            len(exact_suffix) > len(ordered_prefix)
+            or ordered_prefix[-len(exact_suffix):] != exact_suffix
+            or exclusion.root.block_ref != forecast.dispatcher_ref
+            or exclusion.root.anchor_ea != forecast.dispatcher_anchor_ea
+        ):
+            raise ValueError("corridor semantic exclusion topology differs from forecast path")
+        suffix_serials = tuple(source_inventory.serial_by_ref[node.block_ref] for node in exact_suffix)
+        if any(edge not in source_edges for edge in zip(suffix_serials, suffix_serials[1:])):
+            raise ValueError("corridor semantic exclusion suffix is absent from source topology")
+        source_identity = exact_native_identity(exclusion.source)
+        candidates = []
+        for claim in proposal.claims:
+            if type(claim) is not model.EquivalentSemanticRouteClaim:
+                continue
+            if len(claim.route_proof_ids) != 1:
+                continue
+            proof = route_proofs.get(claim.route_proof_ids[0])
+            if proof is None:
+                continue
+            source_match = (
+                proof.source_anchor_ea == exclusion.source.anchor_ea
+                and proof.source_identity == source_identity
+            )
+            matching_destinations = tuple(
+                destination
+                for destination in proof.destinations
+                if destination.state_constant == exclusion.normalized_state
+            )
+            state_route_match = (
+                proof.state_write is not None
+                and proof.state_write.state_variable == exclusion.state_identity
+                and proof.state_write.state_constant == exclusion.normalized_state
+                and len(matching_destinations) == 1
+            )
+            if source_match and state_route_match:
+                destination = matching_destinations[0]
+                destination_pairs = {
+                    (subject.block_ref, subject.anchor_ea)
+                    for subject in claim.destination_subjects
+                }
+                exact_destination_nodes = tuple(
+                    model.CorridorCoveragePathNode(block_ref, anchor_ea)
+                    for block_ref, anchor_ea in destination_pairs
+                    if anchor_ea == destination.target_anchor_ea
+                    and exact_native_identity(
+                        model.CorridorCoveragePathNode(block_ref, anchor_ea)
+                    ) == destination.target_identity
+                )
+                destination_match = (
+                    len(exact_destination_nodes) == 1
+                    and (
+                        exact_destination_nodes[0].block_ref,
+                        exact_destination_nodes[0].anchor_ea,
+                    ) in destination_pairs
+                )
+            else:
+                destination_match = False
+            if source_match and state_route_match and destination_match:
+                candidates.append(claim)
+        if len(candidates) != 1:
+            raise ValueError("corridor semantic exclusion has zero or multiple route links")
+        matched_exclusions.append(exclusion_id)
+        claim = candidates[0]
+        correlation_specs.append((
+            exclusion_id, exclusion.digest, path_id, claim.claim_id, claim.route_proof_ids[0],
+            ordered_prefix, source_fp, candidate_fp,
+            source_inventory.generation, candidate_inventory.generation,
+        ))
+
     for path in forecast.paths:
         source_serials: list[int] = []
         candidate_serials: list[int] = []
@@ -339,7 +453,11 @@ def bind_corridor_coverage_forecast(
         if not source_path_exists:
             drifted.append(path.path_id)
         elif path.disposition is model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED:
-            raise ValueError("semantic exclusion coverage requires a bound route proof")
+            if not path.semantic_exclusion_ids:
+                raise ValueError("semantic exclusion path has no typed exclusion IDs")
+            for exclusion_id in path.semantic_exclusion_ids:
+                bind_semantic_exclusion(exclusion_id, path.path_id, tuple(path.nodes))
+            covered.append(path.path_id)
         elif path.disposition is model.CorridorPathDisposition.RESIDUAL:
             if not candidate_path_exists or candidate_state_hard_failure:
                 raise ValueError(
@@ -352,6 +470,9 @@ def bind_corridor_coverage_forecast(
             covered.append(path.path_id)
             if path.semantic_exclusion_ids:
                 raise ValueError("structural corridor coverage cannot carry semantic exclusions")
+    correlation_content = tuple(
+        sorted(correlation_specs, key=lambda item: (item[0], item[2]))
+    )
     result_id = authority_id((
         "unflatten.corridor-coverage-phase.v1", forecast.forecast_id, phase,
         source_fp, candidate_fp, source_inventory.generation,
@@ -359,23 +480,26 @@ def bind_corridor_coverage_forecast(
         tuple(sorted(residual)), tuple(sorted(drifted)),
         forecast.enumeration_complete, tuple(sorted(set(matched_exclusions))),
         source_dispatcher_reachable, candidate_dispatcher_reachable,
+        correlation_content,
     ))
-    expected_covered = {
-        path_id for path_id in forecast.covered_path_ids
-        if next(path for path in forecast.paths if path.path_id == path_id).disposition is not model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED
-    }
+    expected_covered = set(forecast.covered_path_ids)
     if (
         (not candidate_dispatcher_reachable and set(covered) != expected_covered)
         or set(covered) & set(residual)
         or set(covered) | set(residual) | set(drifted) != forecast_path_ids
     ):
         raise ValueError("corridor phase classification disagrees with sealed forecast partition")
+    correlations = tuple(
+        model.CorridorSemanticExclusionCorrelation(*spec, phase_result_id=result_id)
+        for spec in correlation_content
+    )
     return model.CorridorCoveragePhaseResult(
         result_id, forecast.forecast_id, phase, source_fp, candidate_fp,
         source_inventory.generation, candidate_inventory.generation,
         tuple(sorted(covered)), tuple(sorted(residual)), tuple(sorted(drifted)),
         forecast.enumeration_complete, tuple(sorted(set(matched_exclusions))),
         source_dispatcher_reachable, candidate_dispatcher_reachable,
+        correlations,
     )
 
 

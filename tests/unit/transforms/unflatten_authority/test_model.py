@@ -398,6 +398,127 @@ def test_source_block_witness_anchor_must_be_one_of_native_origins() -> None:
         model.SourceBlockIdentityWitness(block_ref("b0"), 0x2000, (0x1000,))
 
 
+def _candidate_prefix_correlation_fixture(model, *, include_second: bool = True):
+    exclusion_id = authority_id("candidate-prefix-exclusion")
+    proof_id = authority_id("candidate-prefix-proof")
+    claim_id = authority_id("candidate-prefix-claim")
+    forecast_id = authority_id("candidate-prefix-forecast")
+    path_ids = (authority_id("candidate-prefix-path-a"), authority_id("candidate-prefix-path-b"))
+    prefixes = (
+        (model.CorridorCoveragePathNode(block_ref("b0"), 0x1000),
+         model.CorridorCoveragePathNode(block_ref("b1"), 0x1100)),
+        (model.CorridorCoveragePathNode(block_ref("b2"), 0x1200),
+         model.CorridorCoveragePathNode(block_ref("b1"), 0x1100)),
+    )
+    common = dict(
+        exclusion_id=exclusion_id,
+        exclusion_digest=authority_id("candidate-prefix-exclusion-digest"),
+        claim_id=claim_id,
+        proof_id=proof_id,
+        source_fingerprint=authority_id("candidate-prefix-source"),
+        candidate_fingerprint=authority_id("candidate-prefix-candidate"),
+        source_generation=3,
+        candidate_generation=4,
+        phase_result_id=authority_id("candidate-prefix-result"),
+    )
+    correlation_a = model.CorridorSemanticExclusionCorrelation(
+        path_id=path_ids[0], ordered_prefix=prefixes[0], **common,
+    )
+    correlation_b = model.CorridorSemanticExclusionCorrelation(
+        path_id=path_ids[1], ordered_prefix=prefixes[1], **common,
+    )
+    correlations = tuple(sorted((correlation_a, correlation_b), key=lambda item: (item.exclusion_id, item.path_id)))
+    if not include_second:
+        correlations = correlations[:1]
+    path_ids = tuple(sorted(path_ids))
+    result_id = canonical_authority_id((
+        "unflatten.corridor-coverage-phase.v1", forecast_id,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        common["source_fingerprint"], common["candidate_fingerprint"],
+        common["source_generation"], common["candidate_generation"],
+        path_ids, (), (), True, (exclusion_id,), True, False,
+        tuple(item.content_key for item in correlations),
+    ))
+    correlation_a = replace(correlation_a, phase_result_id=result_id)
+    correlation_b = replace(correlation_b, phase_result_id=result_id)
+    result = model.CorridorCoveragePhaseResult(
+        result_id, forecast_id, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        common["source_fingerprint"], common["candidate_fingerprint"], 3, 4,
+        path_ids, (), (), True, (exclusion_id,), True, False,
+        tuple(replace(item, phase_result_id=result_id) for item in correlations),
+    )
+    return result, result.semantic_exclusion_correlations[0], (
+        result.semantic_exclusion_correlations[1]
+        if len(result.semantic_exclusion_correlations) > 1 else None
+    )
+
+
+def test_candidate_prefix_correlation_supports_two_paths_with_unique_pair_keys() -> None:
+    model = import_authority_model()
+    result, first, second = _candidate_prefix_correlation_fixture(model)
+    assert len(result.semantic_exclusion_correlations) == 2
+    assert first.exclusion_id == second.exclusion_id
+    assert first.path_id != second.path_id
+    assert first.content_key != second.content_key
+    assert all(
+        not hasattr(item, name)
+        for item in (first, second)
+        for name in (
+            "effect_subject", "handler_subject", "terminal_subject",
+            "use_def_witness", "route_subject",
+        )
+    )
+
+
+def test_equivalent_route_claim_requires_one_proof_and_one_stable_route_subject() -> None:
+    """Route authority must not fan out across proofs or route subjects."""
+
+    model = import_authority_model()
+    valid = _valid_proposal(model)
+    claim = valid["claims"][0]
+    proof_id = claim.route_proof_ids[0]
+
+    with pytest.raises(ValueError, match="exactly one proof"):
+        replace(
+            claim,
+            route_proof_ids=tuple(sorted((proof_id, authority_id("second-proof")))),
+        )
+
+    alternate_locator = replace(
+        claim.retired_route_subject.locator,
+        atomic_group_id=authority_id("other-route-group"),
+    )
+    alternate_retired = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=claim.retired_route_subject.kind,
+        role=claim.retired_route_subject.role,
+        block_ref=claim.retired_route_subject.block_ref,
+        anchor_ea=claim.retired_route_subject.anchor_ea,
+        locator=alternate_locator,
+    )
+    with pytest.raises(ValueError, match="one stable route subject"):
+        replace(claim, retired_route_subject=alternate_retired)
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda model, result, a, b: replace(result, semantic_exclusion_correlations=(a, replace(b, path_id=a.path_id))),
+    lambda model, result, a, b: replace(result, semantic_exclusion_correlations=(b, a)),
+    lambda model, result, a, b: replace(result, semantic_exclusion_correlations=(replace(a, exclusion_digest=authority_id("wrong")), b)),
+    lambda model, result, a, b: replace(result, semantic_exclusion_correlations=(replace(a, claim_id=authority_id("wrong")), b)),
+    lambda model, result, a, b: replace(result, semantic_exclusion_correlations=(replace(a, proof_id=authority_id("wrong")), b)),
+    lambda model, result, a, b: replace(result, semantic_exclusion_correlations=(replace(a, phase_result_id=authority_id("wrong")), b)),
+    lambda model, result, a, b: replace(result, semantic_exclusion_correlations=(replace(a, source_fingerprint=authority_id("wrong")), b)),
+    lambda model, result, a, b: replace(result, semantic_exclusion_correlations=(replace(a, candidate_fingerprint=authority_id("wrong")), b)),
+    lambda model, result, a, b: replace(result, semantic_exclusion_correlations=(replace(a, source_generation=99), b)),
+    lambda model, result, a, b: replace(result, semantic_exclusion_correlations=(replace(a, candidate_generation=99), b)),
+])
+def test_candidate_prefix_correlation_rejects_identity_digest_order_and_phase_drift(mutation) -> None:
+    model = import_authority_model()
+    result, first, second = _candidate_prefix_correlation_fixture(model)
+    with pytest.raises((TypeError, ValueError)):
+        mutation(model, result, first, second)
+
+
 def test_use_def_fragment_witness_rejects_ids_without_actionable_severance() -> None:
     model = import_authority_model()
     with pytest.raises(ValueError, match="violation"):
@@ -541,10 +662,6 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
                                                b0, 0x1000, (b1,), (0x1100,))
     route = _subject(model, model.SemanticSubjectKind.ROUTE,
                      model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, route_locator)
-    route2 = _subject(model, model.SemanticSubjectKind.ROUTE,
-                      model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
-                      model.RouteSubjectLocator(authority_id("route2"), authority_id("group"),
-                                                b0, 0x1000, (b1,), (0x1100,)))
     source = _subject(model, model.SemanticSubjectKind.BLOCK,
                       model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
                       model.BlockSubjectLocator(b0, 0x1000))
@@ -569,7 +686,7 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
         ),
         _claim_factory(model.EquivalentSemanticRouteClaim,
             model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
-            route, route2, source, (destination,), (authority_id("route-proof"),),
+            route, route, source, (destination,), (authority_id("route"),),
             authority_id("group"), 0,
         ),
         _claim_factory(model.ExactInfeasibleEffectClaim,
@@ -598,7 +715,7 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
     with pytest.raises(ValueError):
         _claim_factory(model.EquivalentSemanticRouteClaim,
             model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
-            route, route2, destination, (destination,), (authority_id("proof"),), authority_id("group"), 0,
+            route, route, destination, (destination,), (authority_id("route"),), authority_id("group"), 0,
         )
     with pytest.raises(ValueError):
         _claim_factory(model.ExactInfeasibleEffectClaim,
@@ -676,25 +793,18 @@ def test_retirement_and_route_claims_preserve_cross_field_membership() -> None:
             (authority_id("proof-route"),), authority_id("group-x"), 0,
         )
 
+    mismatched_group_route = _subject(
+        model, model.SemanticSubjectKind.ROUTE,
+        model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        model.RouteSubjectLocator(
+            authority_id("proof-route"), authority_id("other-group"),
+            b0, 0x1000, (b1,), (0x1100,),
+        ),
+    )
     with pytest.raises(ValueError, match="atomic_group_id"):
         _claim_factory(model.EquivalentSemanticRouteClaim,
             model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
-            _subject(
-                model, model.SemanticSubjectKind.ROUTE,
-                model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
-                model.RouteSubjectLocator(
-                    authority_id("retired-group-mismatch"), authority_id("other-group"),
-                    b0, 0x1000, (b1,), (0x1100,),
-                ),
-            ),
-            _subject(
-                model, model.SemanticSubjectKind.ROUTE,
-                model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
-                model.RouteSubjectLocator(
-                    authority_id("replacement-group-mismatch"), authority_id("other-group"),
-                    b0, 0x1000, (b1,), (0x1100,),
-                ),
-            ),
+            mismatched_group_route, mismatched_group_route,
             source,
             (destination,),
             (authority_id("proof-route"),), authority_id("group-x"), 0,
@@ -711,13 +821,11 @@ def test_proposal_is_valid_but_rejects_incoherent_authority_inputs() -> None:
     foreign_evidence, _ = _canonical_evidence(model, native_key=foreign_key)
     with pytest.raises(ValueError):
         model.ProposedUnflattenContract(**{**valid, "route_evidence": foreign_evidence})
-    proof_mismatch = model.ProposedUnflattenContract(**{
-        **valid,
-        "claims": (
-                _reissued_claim(valid["claims"][0], route_proof_ids=(authority_id("missing-proof"),)),
-        ),
-    })
-    assert proof_mismatch.claims[0].route_proof_ids == (authority_id("missing-proof"),)
+    with pytest.raises(ValueError, match="atomic_group_id"):
+        _reissued_claim(
+            valid["claims"][0],
+            route_proof_ids=(authority_id("missing-proof"),),
+        )
     with pytest.raises(ValueError):
         b0, b1 = block_ref("b0"), block_ref("b1")
         cycle = _subject(model, model.SemanticSubjectKind.CORRIDOR,

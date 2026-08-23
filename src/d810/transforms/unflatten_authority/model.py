@@ -741,6 +741,44 @@ class CorridorCoverageForecast:
 
 
 @dataclass(frozen=True, slots=True)
+class CorridorSemanticExclusionCorrelation:
+    """One binder-owned route linkage for a candidate-prefix exclusion."""
+
+    exclusion_id: str
+    exclusion_digest: str
+    path_id: str
+    claim_id: str
+    proof_id: str
+    ordered_prefix: tuple[CorridorCoveragePathNode, ...]
+    source_fingerprint: str
+    candidate_fingerprint: str
+    source_generation: int
+    candidate_generation: int
+    phase_result_id: str
+
+    def __post_init__(self) -> None:
+        for name in ("exclusion_id", "exclusion_digest", "path_id", "claim_id", "proof_id", "phase_result_id"):
+            _id(getattr(self, name), name)
+        if type(self.ordered_prefix) is not tuple or not self.ordered_prefix:
+            raise TypeError("ordered_prefix must be a non-empty tuple")
+        if any(type(node) is not CorridorCoveragePathNode for node in self.ordered_prefix):
+            raise TypeError("ordered_prefix must contain closed path nodes")
+        _id(self.source_fingerprint, "source_fingerprint")
+        _id(self.candidate_fingerprint, "candidate_fingerprint")
+        _generation(self.source_generation, "source_generation")
+        _generation(self.candidate_generation, "candidate_generation")
+
+    @property
+    def content_key(self) -> tuple[object, ...]:
+        return (
+            self.exclusion_id, self.exclusion_digest, self.path_id, self.claim_id, self.proof_id,
+            self.ordered_prefix, self.source_fingerprint,
+            self.candidate_fingerprint, self.source_generation,
+            self.candidate_generation,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CorridorCoveragePhaseResult:
     """Transaction/binder result consumed by the evaluator as one aggregate fact."""
 
@@ -758,6 +796,7 @@ class CorridorCoveragePhaseResult:
     matched_semantic_exclusion_ids: tuple[str, ...]
     source_dispatcher_reachable: bool = False
     candidate_dispatcher_reachable: bool = False
+    semantic_exclusion_correlations: tuple[CorridorSemanticExclusionCorrelation, ...] = ()
 
     def __post_init__(self) -> None:
         _id(self.result_id, "result_id")
@@ -776,6 +815,26 @@ class CorridorCoveragePhaseResult:
             raise TypeError("enumeration_complete must be an exact bool")
         if type(self.source_dispatcher_reachable) is not bool or type(self.candidate_dispatcher_reachable) is not bool:
             raise TypeError("dispatcher reachability flags must be exact bools")
+        correlations = tuple(self.semantic_exclusion_correlations)
+        if any(type(item) is not CorridorSemanticExclusionCorrelation for item in correlations):
+            raise TypeError("semantic exclusion correlations must be closed rows")
+        if correlations != tuple(sorted(correlations, key=lambda item: (item.exclusion_id, item.path_id))):
+            raise ValueError("semantic exclusion correlations must be canonically ordered")
+        if len({(item.exclusion_id, item.path_id) for item in correlations}) != len(correlations):
+            raise ValueError("semantic exclusion correlations must be unique by exclusion/path")
+        if {item.exclusion_id for item in correlations} != set(self.matched_semantic_exclusion_ids):
+            raise ValueError("semantic exclusion correlations must match matched IDs")
+        if any(
+            item.phase_result_id != self.result_id
+            or item.source_fingerprint != self.source_fingerprint
+            or item.candidate_fingerprint != self.candidate_fingerprint
+            or item.source_generation != self.source_generation
+            or item.candidate_generation != self.candidate_generation
+            or item.path_id not in self.covered_path_ids
+            for item in correlations
+        ):
+            raise ValueError("semantic exclusion correlation coordinates are stale")
+        object.__setattr__(self, "semantic_exclusion_correlations", correlations)
         if self.result_id != authority_id((
             "unflatten.corridor-coverage-phase.v1", self.forecast_id,
             self.phase, self.source_fingerprint, self.candidate_fingerprint,
@@ -783,6 +842,7 @@ class CorridorCoveragePhaseResult:
             self.covered_path_ids, self.residual_path_ids, self.drifted_path_ids,
             self.enumeration_complete, self.matched_semantic_exclusion_ids,
             self.source_dispatcher_reachable, self.candidate_dispatcher_reachable,
+            tuple(item.content_key for item in correlations),
         )):
             raise ValueError("result_id does not match canonical phase result content")
 
@@ -2057,6 +2117,8 @@ class EquivalentSemanticRouteClaim:
         proofs = _tuple(self.route_proof_ids, "route_proof_ids", sort=True)
         for proof in proofs:
             _id(proof, "route_proof_ids item")
+        if len(proofs) != 1:
+            raise ValueError("equivalent route claim must select exactly one proof")
         _id(self.atomic_group_id, "atomic_group_id")
         object.__setattr__(self, "destination_subjects", destinations)
         object.__setattr__(self, "route_proof_ids", proofs)
@@ -2064,6 +2126,10 @@ class EquivalentSemanticRouteClaim:
         destination_pairs = tuple(_subject_block_pair(subject) for subject in destinations)
         retired_pairs = _route_pairs(self.retired_route_subject)
         replacement_pairs = _route_pairs(self.replacement_route_subject)
+        if self.retired_route_subject != self.replacement_route_subject:
+            raise ValueError(
+                "equivalent route claim must use one stable route subject"
+            )
         if (
             retired_pairs[0] != source_pair
             or replacement_pairs[0] != source_pair
@@ -2074,6 +2140,8 @@ class EquivalentSemanticRouteClaim:
         if (
             self.atomic_group_id != self.retired_route_subject.locator.atomic_group_id
             or self.atomic_group_id != self.replacement_route_subject.locator.atomic_group_id
+            or proofs[0] != self.retired_route_subject.locator.proof_id
+            or proofs[0] != self.replacement_route_subject.locator.proof_id
         ):
             raise ValueError("route claim atomic_group_id must match route locators")
         if self.claim_id != claim_id(self):
@@ -2677,11 +2745,6 @@ class ProposedUnflattenContract:
                 raise TypeError("corridor_coverage_forecast must be CorridorCoverageForecast or None")
             self.corridor_coverage_forecast.__post_init__()
             forecast = self.corridor_coverage_forecast
-            if forecast.semantic_exclusions or any(
-                path.disposition is CorridorPathDisposition.SEMANTICALLY_EXCLUDED
-                for path in forecast.paths
-            ):
-                raise ValueError("semantic exclusion corridor authority is reserved for Task15")
             if forecast.plan_id != self.plan_id:
                 raise ValueError("corridor forecast belongs to a foreign plan")
             if forecast.source_native_key != self.source_identity_catalog.native_key:
@@ -2694,6 +2757,30 @@ class ProposedUnflattenContract:
             dispatcher = source_blocks.get(forecast.dispatcher_ref)
             if dispatcher is None or dispatcher.anchor_ea != forecast.dispatcher_anchor_ea:
                 raise ValueError("corridor forecast dispatcher anchor differs from source catalog")
+            forecast_nodes = tuple(
+                node for path in forecast.paths for node in path.nodes
+            ) + tuple(
+                node
+                for exclusion in forecast.semantic_exclusions
+                for node in (
+                    exclusion.source,
+                    exclusion.feeder,
+                    exclusion.prefix,
+                    exclusion.root,
+                )
+                if node is not None
+            )
+            if any(
+                (witness := source_blocks.get(node.block_ref)) is None
+                or witness.anchor_ea != node.anchor_ea
+                for node in forecast_nodes
+            ):
+                raise ValueError("corridor forecast node differs from source catalog")
+            if any(
+                exclusion.state_identity != self.plan_inputs.state_identity
+                for exclusion in forecast.semantic_exclusions
+            ):
+                raise ValueError("corridor semantic exclusion state identity differs from plan")
         if (
             not self.use_def_witness.executed
             or not self.use_def_witness.fragment_atomic

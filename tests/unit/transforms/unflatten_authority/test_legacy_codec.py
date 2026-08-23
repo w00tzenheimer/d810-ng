@@ -259,6 +259,152 @@ def test_legacy_corridor_semantic_exclusions_are_reserved_and_fail_closed() -> N
         )
 
 
+def _legacy_route_proposal(*, duplicate: bool = False):
+    from dataclasses import replace
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+    from d810.transforms.unflatten_authority import producer_api
+
+    source, original, exclusion, refs = exact_fixture()
+    proof = original.route_evidence.route_proofs[0]
+    proof = replace(
+        proof,
+        diagnostic_provenance=proof.diagnostic_provenance + (
+            ("source_kinds", "legacy"),
+            ("fact_id", "legacy-fact"),
+        ),
+    )
+    evidence = replace(original.route_evidence, route_proofs=(proof,))
+    if duplicate:
+        sibling = replace(proof, proof_id=authority_id("legacy-duplicate-proof"))
+        evidence = replace(evidence, route_proofs=(proof, sibling))
+        selected = tuple(item.proof_id for item in evidence.route_proofs)
+    else:
+        selected = (proof.proof_id,)
+    proposal = producer_api.build_proposal(
+        plan_id=original.plan_id,
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=1,
+        canonical_route_evidence=evidence,
+        selected_route_proof_ids=selected,
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=original.plan_inputs.state_identity,
+        use_def_witness=original.use_def_witness,
+    )
+    return source, proposal, refs, proof
+
+
+def test_legacy_route_selector_requires_exact_provenance_and_cardinality() -> None:
+    codec = _codec()
+    _source, proposal, refs, proof = _legacy_route_proposal()
+    native_row = {
+        "fact_id": "legacy-fact",
+        "native_ea": 0x1000,
+        "native_ea_hex": "0x1000",
+        "current_block": "blk0@0x1000",
+        "state": 7,
+        "target": 2,
+        "target_block": "blk2@0x3000",
+    }
+    assert codec.equivalent_route_claims_from_legacy_metadata(
+        [native_row], proposal=proposal,
+        key="native_bound_transition_route_receipts", block_refs_by_serial=refs,
+    )
+    concrete_row = {
+        "site": "entry", "normalized_state": 7, "target_handler": 2,
+        "source_kinds": ("legacy",),
+    }
+    assert codec.equivalent_route_claims_from_legacy_metadata(
+        [concrete_row], proposal=proposal,
+        key="concrete_state_route_provenance", block_refs_by_serial=refs,
+    )
+
+    with pytest.raises(ValueError):
+        codec.equivalent_route_claims_from_legacy_metadata(
+            [{**native_row, "state": 0x100000007}], proposal=proposal,
+            key="native_bound_transition_route_receipts", block_refs_by_serial=refs,
+        )
+    for field, value in (("fact_id", "forged"), ("current_block", "foreign"), ("target_block", "foreign")):
+        with pytest.raises(ValueError):
+            codec.equivalent_route_claims_from_legacy_metadata(
+                [{**native_row, field: value}], proposal=proposal,
+                key="native_bound_transition_route_receipts", block_refs_by_serial=refs,
+            )
+    with pytest.raises(ValueError):
+        codec.equivalent_route_claims_from_legacy_metadata(
+            [concrete_row, concrete_row], proposal=proposal,
+            key="concrete_state_route_provenance", block_refs_by_serial=refs,
+        )
+
+    _source, ambiguous, refs, _proof = _legacy_route_proposal(duplicate=True)
+    with pytest.raises(ValueError, match="multiple"):
+        codec.equivalent_route_claims_from_legacy_metadata(
+            [native_row], proposal=ambiguous,
+            key="native_bound_transition_route_receipts", block_refs_by_serial=refs,
+        )
+
+
+def test_legacy_decode_selects_row_proof_ids_before_building_proposal(monkeypatch) -> None:
+    """Legacy transport rows must not promote every canonical proof first."""
+
+    from dataclasses import replace
+    from d810.transforms.unflatten_authority import producer_api
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+
+    source, original, _exclusion, refs = exact_fixture()
+    proof = replace(
+        original.route_evidence.route_proofs[0],
+        diagnostic_provenance=(
+            *original.route_evidence.route_proofs[0].diagnostic_provenance,
+            ("fact_id", "legacy-fact"),
+        ),
+    )
+    sibling = replace(
+        proof,
+        proof_id=authority_id("legacy-sibling-proof"),
+        diagnostic_provenance=tuple(
+            (key, "sibling-fact" if key == "fact_id" else value)
+            for key, value in proof.diagnostic_provenance
+        ),
+    )
+    evidence = replace(original.route_evidence, route_proofs=(proof, sibling))
+    proposal = producer_api.build_proposal(
+        plan_id=original.plan_id, source=source, block_refs_by_serial=refs,
+        source_generation=1, canonical_route_evidence=evidence,
+        selected_route_proof_ids=(proof.proof_id, sibling.proof_id),
+        exact_state_effect_exclusions=(), dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+        state_identity=original.plan_inputs.state_identity,
+        use_def_witness=original.use_def_witness,
+    )
+    codec = _codec()
+    context = codec.LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, 1, tuple(sorted(refs.items())), evidence,
+        proposal.plan_inputs, proposal.use_def_witness,
+    )
+    row = {
+        "fact_id": "legacy-fact", "native_ea": 0x1000,
+        "native_ea_hex": "0x1000", "current_block": "blk0@0x1000",
+        "state": 7, "target": 2, "target_block": "blk2@0x3000",
+    }
+    captured: list[tuple[str, ...]] = []
+    original_builder = producer_api.build_proposal
+
+    def spy(*args, **kwargs):
+        captured.append(tuple(kwargs.get("selected_route_proof_ids", ())))
+        return original_builder(*args, **kwargs)
+
+    monkeypatch.setattr(producer_api, "build_proposal", spy)
+    result = codec.decode_legacy_unflatten_contract(
+        (("native_bound_transition_route_receipts", [row]),), context=context,
+    )
+    assert captured == [(proof.proof_id,)]
+    assert result.route is UnflattenPlanRoute.LEGACY_ADAPTED
+
+
 def test_shadow_envelope_replays_each_payload_byte_for_byte() -> None:
     """Replay preserves every nested container shape and exact wire bytes."""
 

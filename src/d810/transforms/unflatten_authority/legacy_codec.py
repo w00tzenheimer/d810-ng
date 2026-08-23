@@ -9,7 +9,7 @@ the same closed canonical wire format used by authority records.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 
 from d810.analyses.control_flow.semantic_route_evidence import (
@@ -37,6 +37,7 @@ from .model import (
     CorridorSemanticExclusion,
     CorridorPathDisposition,
     CorridorSubjectLocator,
+    EquivalentSemanticRouteClaim,
     LegacyShadowEntry,
     LegacyUnflattenShadowEnvelope,
     ProposedUnflattenContract,
@@ -58,6 +59,175 @@ from .ids import _claim_factory, _subject_factory, authority_id, canonical_bytes
 # Keep one owner for this set.  In particular, the exact-effect spelling is
 # imported through proposal.py from its producer rather than copied here.
 LEGACY_RESERVED_KEYS = LEGACY_UNFLATTEN_KEYS
+
+
+def _legacy_block_label(value: str, label: str) -> tuple[int, int]:
+    """Decode the exact ``blk<serial>@0x<EA>`` diagnostic coordinate."""
+
+    if not value.startswith("blk") or "@0x" not in value:
+        raise ValueError(f"legacy {label} label is malformed")
+    serial_text, ea_text = value[3:].split("@0x", 1)
+    try:
+        serial = int(serial_text, 10)
+        anchor_ea = int(ea_text, 16)
+    except ValueError as exc:
+        raise ValueError(f"legacy {label} label is malformed") from exc
+    if serial < 0 or anchor_ea < 0 or value != f"blk{serial}@0x{anchor_ea:X}":
+        raise ValueError(f"legacy {label} label is not canonical")
+    return serial, anchor_ea
+
+
+def _route_diagnostic_values(proof: object, key: str) -> tuple[str, ...]:
+    return tuple(
+        value
+        for name, value in getattr(proof, "diagnostic_provenance", ())
+        if name == key
+    )
+
+
+def select_route_proof_ids_from_legacy_metadata(
+    payload: object,
+    *,
+    route_evidence: CanonicalSemanticEvidence,
+    key: str,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
+) -> tuple[str, ...]:
+    """Validate one legacy route family against canonical route evidence.
+
+    The legacy rows are selectors only.  They never become authority and are
+    discarded after exact state/target/source matching against the already
+    sealed canonical route proofs.
+    """
+
+    if type(payload) not in (tuple, list) or not payload:
+        raise ValueError("legacy route metadata must be a non-empty sequence")
+    if key not in {
+        "concrete_state_route_provenance",
+        "native_bound_transition_route_receipts",
+    }:
+        raise ValueError("unknown legacy route family")
+    refs_by_serial = dict(block_refs_by_serial)
+    matched_ids: list[str] = []
+    for row in payload:
+        if type(row) is not dict:
+            raise ValueError("legacy route row must be an exact mapping")
+        if key == "concrete_state_route_provenance":
+            required = {"site", "normalized_state", "target_handler", "source_kinds"}
+            if set(row) != required or row["site"] != "entry":
+                raise ValueError("legacy concrete route row is malformed")
+            state = row["normalized_state"]
+            target_serial = row["target_handler"]
+            sources = row["source_kinds"]
+            if type(state) is not int or type(target_serial) is not int:
+                raise ValueError("legacy concrete route scalar is malformed")
+            if type(sources) is not tuple or any(type(item) is not str for item in sources):
+                raise ValueError("legacy concrete route provenance is malformed")
+            if not sources or sources != tuple(sorted(set(sources))):
+                raise ValueError("legacy concrete route provenance is not canonical")
+            source_ea = None
+            source_label = None
+            target_label = None
+            fact_id = None
+        else:
+            required = {
+                "fact_id", "native_ea", "native_ea_hex", "current_block", "state",
+                "target", "target_block",
+            }
+            if set(row) != required:
+                raise ValueError("legacy native-bound route row is malformed")
+            state = row["state"]
+            target_serial = row["target"]
+            source_ea = row["native_ea"]
+            if (
+                type(row["fact_id"]) is not str
+                or type(source_ea) is not int
+                or type(row["native_ea_hex"]) is not str
+                or type(row["current_block"]) is not str
+                or type(state) is not int
+                or type(target_serial) is not int
+                or type(row["target_block"]) is not str
+            ):
+                raise ValueError("legacy native-bound route scalar is malformed")
+            if row["native_ea_hex"] != f"0x{source_ea:X}":
+                raise ValueError("legacy native-bound route EA is inconsistent")
+            if not 0 <= state <= 0xFFFFFFFF:
+                raise ValueError("legacy native-bound route state is not exact 32-bit")
+            source_label = _legacy_block_label(row["current_block"], "source block")
+            target_label = _legacy_block_label(row["target_block"], "target block")
+            fact_id = row["fact_id"].strip()
+            if not fact_id or fact_id != row["fact_id"]:
+                raise ValueError("legacy native-bound route fact id is malformed")
+            if target_label[0] != target_serial:
+                raise ValueError("legacy native-bound route target label is inconsistent")
+        target_ref = refs_by_serial.get(target_serial)
+        if type(target_ref) is not NativeBlockRef:
+            raise ValueError("legacy route target is foreign")
+        if target_label is not None and not target_ref.identity.native_ranges.contains(
+            target_label[1]
+        ):
+            raise ValueError("legacy route target label is foreign")
+        candidates = []
+        for proof in route_evidence.route_proofs:
+            if source_ea is not None:
+                write = proof.state_write
+                if write is None or write.instruction_ea != source_ea:
+                    continue
+                source_ref = refs_by_serial.get(source_label[0])
+                if (
+                    type(source_ref) is not NativeBlockRef
+                    or write.identity != source_ref.identity
+                    or not source_ref.identity.native_ranges.contains(source_label[1])
+                    or _route_diagnostic_values(proof, "fact_id") != (fact_id,)
+                ):
+                    continue
+            elif _route_diagnostic_values(proof, "source_kinds") != (
+                "|".join(sources),
+            ):
+                continue
+            for destination in proof.destinations:
+                if (
+                    destination.state_constant == state
+                    and destination.target_identity == target_ref.identity
+                    and (
+                        target_label is None
+                        or destination.target_anchor_ea == target_label[1]
+                    )
+                ):
+                    candidates.append(proof)
+        if len({proof.proof_id for proof in candidates}) != 1:
+            raise ValueError("legacy route row has zero or multiple canonical matches")
+        matched_ids.append(candidates[0].proof_id)
+    if len(matched_ids) != len(set(matched_ids)):
+        raise ValueError("legacy route rows select the same canonical proof more than once")
+    return tuple(matched_ids)
+
+
+def equivalent_route_claims_from_legacy_metadata(
+    payload: object,
+    *,
+    proposal: ProposedUnflattenContract,
+    key: str,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
+) -> tuple[object, ...]:
+    """Resolve nominal legacy selectors to exact already-minted route claims."""
+
+    matched_ids = select_route_proof_ids_from_legacy_metadata(
+        payload,
+        route_evidence=proposal.route_evidence,
+        key=key,
+        block_refs_by_serial=block_refs_by_serial,
+    )
+    matched_id_set = set(matched_ids)
+    claims = tuple(
+        claim
+        for claim in proposal.claims
+        if type(claim) is EquivalentSemanticRouteClaim
+        and len(claim.route_proof_ids) == 1
+        and claim.route_proof_ids[0] in matched_id_set
+    )
+    if len(claims) != len(matched_id_set):
+        raise ValueError("legacy route rows did not resolve to canonical claims")
+    return claims
 
 
 def exact_state_branch_effect_exclusion_from_metadata(
@@ -290,8 +460,6 @@ def corridor_coverage_forecast_from_legacy_metadata(
     raw_exclusion_payloads = payload.get("semantic_exclusions", [])
     if type(raw_exclusion_payloads) is not list:
         raise TypeError("legacy semantic exclusions must be an exact list")
-    if raw_exclusion_payloads:
-        raise ValueError("semantic exclusion corridor authority is reserved for Task15")
     for raw in raw_exclusion_payloads:
         if type(raw) is not dict or set(raw) != {"normalized_state", "source", "feeder", "prefix", "root", "state_identity"}:
             raise ValueError("legacy semantic exclusion shape is not exact")
@@ -1214,6 +1382,72 @@ def decode_legacy_unflatten_contract(
             )
         return LegacyUnflattenDecoded(UnflattenPlanRoute.LEGACY_ADAPTED, proposal)
 
+    route_keys = {
+        "concrete_state_route_provenance",
+        "native_bound_transition_route_receipts",
+    }
+    route_keys_present = tuple(
+        key for key in reserved
+        if key in route_keys
+    )
+    if route_keys_present:
+        if len(reserved) != 1 or reserved[0] not in route_keys:
+            return LegacyUnflattenRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                reserved[0],
+                "legacy_route_mixed_reserved_families",
+            )
+        if context.plan_inputs is None or context.use_def_witness is None:
+            return LegacyUnflattenRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                reserved[0],
+                "legacy_route_not_enabled",
+            )
+        try:
+            from .producer_api import build_proposal
+
+            refs_by_serial = dict(context.block_refs_by_serial)
+            serial_by_ref = {ref: serial for serial, ref in refs_by_serial.items()}
+            plan_inputs = context.plan_inputs
+            selected_ids = select_route_proof_ids_from_legacy_metadata(
+                dict(items)[reserved[0]],
+                route_evidence=context.canonical_route_evidence,
+                key=reserved[0],
+                block_refs_by_serial=refs_by_serial,
+            )
+            proposal = build_proposal(
+                plan_id=context.plan_id,
+                source=context.source,
+                block_refs_by_serial=refs_by_serial,
+                source_generation=context.source_generation,
+                canonical_route_evidence=context.canonical_route_evidence,
+                exact_state_effect_exclusions=(),
+                dispatcher_entry_serial=serial_by_ref[plan_inputs.dispatcher_entry_ref],
+                dispatcher_member_serials=tuple(
+                    sorted(serial_by_ref[ref] for ref in plan_inputs.dispatcher_member_refs)
+                ),
+                authoritative_handler_serials=tuple(
+                    sorted(serial_by_ref[handler.block_ref] for handler in plan_inputs.authoritative_handlers)
+                ),
+                state_identity=plan_inputs.state_identity,
+                use_def_witness=context.use_def_witness,
+                selected_route_proof_ids=selected_ids,
+            )
+            matched_claims = equivalent_route_claims_from_legacy_metadata(
+                dict(items)[reserved[0]],
+                proposal=proposal,
+                key=reserved[0],
+                block_refs_by_serial=refs_by_serial,
+            )
+            proposal = replace(proposal, claims=tuple(matched_claims))
+        except Exception:
+            return LegacyUnflattenRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                reserved[0],
+                "legacy_route_payload_invalid",
+            )
+        return LegacyUnflattenDecoded(UnflattenPlanRoute.LEGACY_ADAPTED, proposal)
+
     # Family adapters are intentionally owned by later vertical tasks.
     detail_code = _family_detail(reserved[0])
     if detail_code is None:
@@ -1240,8 +1474,10 @@ __all__ = [
     "capture_legacy_unflatten_shadow",
     "decode_legacy_canonical_payload",
     "decode_legacy_unflatten_contract",
+    "equivalent_route_claims_from_legacy_metadata",
     "legacy_canonical_bytes",
     "legacy_canonical_decode",
     "retirement_claim_from_legacy_proof",
     "replay_legacy_unflatten_shadow",
+    "select_route_proof_ids_from_legacy_metadata",
 ]

@@ -13,6 +13,10 @@ from d810.analyses.control_flow.semantic_route_evidence import BoundCanonicalSem
 from d810.analyses.control_flow.semantic_route_evidence import BoundSemanticBlock
 from d810.analyses.control_flow.semantic_route_evidence import BoundSemanticRoute
 from d810.analyses.control_flow.semantic_route_evidence import BoundSemanticRouteDestination
+from d810.analyses.control_flow.semantic_route_evidence import (
+    CanonicalRouteAssessmentPhase, CanonicalRouteMaterialization,
+    assess_canonical_route,
+)
 from d810.ir.maturity import MaturityEnvelope
 from d810.transforms.unflatten_authority import model
 from d810.transforms.unflatten_authority import gates
@@ -27,6 +31,347 @@ from d810.transforms.plan import PatchPlan
 from d810.transforms.unflatten_authority.ids import _case_factory, _claim_factory, _evidence_factory, _justification_factory, _subject_factory, authority_id as canonical_authority_id, bound_unflatten_binding_id, canonical_bytes, canonical_decode, content_id, receipt_id, semantic_graph_inventory_digest
 from .helpers import authority_id, block_ref, state_identity
 from .test_model import _minimal_corridor_forecast, _retirement_catalog, _valid_proposal
+
+
+def test_equivalent_route_claim_uses_closed_subject_roles_and_reciprocal_topology() -> None:
+    """Every canonical route must become one closed, topology-bound claim."""
+
+    from d810.transforms.unflatten_authority import producer_api
+    from .helpers import exact_fixture
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    proof = proposal.route_evidence.route_proofs[0]
+    route_claims = producer_api.build_equivalent_route_claims(
+        source=source,
+        source_catalog=proposal.source_identity_catalog,
+        route_evidence=proposal.route_evidence,
+        selected_proof_ids=(proof.proof_id,),
+    )
+    assert len(route_claims) == 1
+    claim = route_claims[0]
+    assert claim.route_proof_ids == (proof.proof_id,)
+    assert claim.atomic_group_id == proof.atomic_group_id
+    assert claim.source_subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
+    assert all(
+        item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
+        for item in claim.destination_subjects
+    )
+    assert claim.source_generation == proposal.source_identity_catalog.generation
+    route_proposal = replace(
+        proposal,
+        claims=(claim,),
+        plan_inputs=replace(
+            proposal.plan_inputs,
+            shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
+        ),
+    )
+    assert producer_api.resolve_equivalent_route_claim(
+        source=source,
+        proposal=route_proposal,
+        claim=claim,
+        block_refs_by_serial=refs,
+    ) is claim
+
+
+def test_equivalent_route_requires_one_accepted_source_and_projected_assessment_pair() -> None:
+    """A route claim is not authority until both phase assessments close it."""
+
+    from d810.transforms.unflatten_authority import producer_api
+
+    source, proposal, _exclusion, refs = __import__(
+        "tests.unit.transforms.unflatten_authority.helpers", fromlist=["exact_fixture"],
+    ).exact_fixture()
+    proof = proposal.route_evidence.route_proofs[0]
+    claim = producer_api.build_equivalent_route_claims(
+        source=source,
+        source_catalog=proposal.source_identity_catalog,
+        route_evidence=proposal.route_evidence,
+        selected_proof_ids=(proof.proof_id,),
+    )[0]
+    source_assessment = assess_canonical_route(
+        CanonicalRouteMaterialization.capture(
+            source, generation=1, phase=CanonicalRouteAssessmentPhase.SOURCE,
+        ), proposal.route_evidence,
+    )
+    projected_assessment = assess_canonical_route(
+        CanonicalRouteMaterialization.capture(
+            source, generation=1, phase=CanonicalRouteAssessmentPhase.PROJECTED,
+        ), proposal.route_evidence,
+    )
+    inputs = SimpleNamespace(
+        proposal=proposal,
+        source_route_assessment=source_assessment,
+        candidate_route_assessment=projected_assessment,
+        source_inventory=SimpleNamespace(
+            graph_fingerprint=source_assessment.graph_fingerprint, generation=1,
+        ),
+        candidate_inventory=SimpleNamespace(
+            graph_fingerprint=projected_assessment.graph_fingerprint, generation=1,
+        ),
+    )
+    inputs.proposal = replace(
+        proposal,
+        claims=(claim,),
+        plan_inputs=replace(
+            proposal.plan_inputs,
+            shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
+        ),
+    )
+    from d810.transforms.unflatten_authority.evaluate import _validate_route_assessment_pair
+    _validate_route_assessment_pair(
+        inputs,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        claim,
+    )
+
+    # Candidate observations may legitimately be a later graph generation;
+    # the assessment and candidate inventory, rather than the source claim,
+    # own that generation coordinate.
+    candidate_generation_four = assess_canonical_route(
+        CanonicalRouteMaterialization.capture(
+            source, generation=4, phase=CanonicalRouteAssessmentPhase.PROJECTED,
+        ), proposal.route_evidence,
+    )
+    inputs.candidate_route_assessment = candidate_generation_four
+    inputs.candidate_inventory.generation = 4
+    _validate_route_assessment_pair(
+        inputs,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        claim,
+    )
+    inputs.candidate_route_assessment = projected_assessment
+    inputs.candidate_inventory.generation = 1
+
+    observed_assessment = assess_canonical_route(
+        CanonicalRouteMaterialization.capture(
+            source, generation=1, phase=CanonicalRouteAssessmentPhase.OBSERVED,
+        ), proposal.route_evidence,
+    )
+    inputs.candidate_route_assessment = observed_assessment
+    with pytest.raises(ValueError, match="wrong phase"):
+        _validate_route_assessment_pair(
+            inputs,
+            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            claim,
+        )
+    inputs.candidate_route_assessment = projected_assessment
+    object.__setattr__(projected_assessment, "graph_fingerprint", authority_id("foreign-candidate"))
+    with pytest.raises((TypeError, ValueError)):
+        _validate_route_assessment_pair(
+            inputs,
+            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            claim,
+        )
+    object.__setattr__(projected_assessment, "graph_fingerprint", source_assessment.graph_fingerprint)
+    object.__setattr__(projected_assessment, "generation", 99)
+    with pytest.raises(ValueError, match="seal|immutable"):
+        _validate_route_assessment_pair(
+            inputs,
+            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            claim,
+        )
+    object.__setattr__(projected_assessment, "generation", 1)
+    object.__setattr__(projected_assessment, "bound_evidence", None)
+    with pytest.raises((TypeError, ValueError)):
+        _validate_route_assessment_pair(
+            inputs,
+            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            claim,
+        )
+
+
+def test_equivalent_route_positive_marks_one_stable_subject_route_equivalence() -> None:
+    """One assessed route satisfies every exact cell on its stable subjects."""
+
+    from d810.analyses.control_flow.graph_checks import (
+        check_effectful_reachability_preserved,
+        check_entry_reachability_not_collapsed,
+        check_terminal_reachability_preserved,
+    )
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.plan import PatchPlan, PatchRedirectGoto
+    from d810.transforms.unflatten_authority import producer_api
+    from d810.transforms.unflatten_authority import transaction_api
+    from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    proof = proposal.route_evidence.route_proofs[0]
+    claim = producer_api.build_equivalent_route_claims(
+        source=source,
+        source_catalog=proposal.source_identity_catalog,
+        route_evidence=proposal.route_evidence,
+        selected_proof_ids=(proof.proof_id,),
+    )[0]
+    proposal = replace(
+        proposal,
+        claims=(claim,),
+        plan_inputs=replace(
+            proposal.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
+        ),
+    )
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=authority_id("route-positive-snapshot"),
+        source_generation=proposal.source_identity_catalog.generation,
+        steps=(
+            PatchRedirectGoto(refs[0], refs[1], refs[2]),
+            PatchRedirectGoto(refs[1], refs[2], refs[0]),
+        ),
+        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+    )
+    manifest = canonical_redirect_manifest(plan)
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+    projection = CfgProjection(plan.plan_id, plan.snapshot_id, source)
+    generic = GenericCfgGateBundle(
+        check_entry_reachability_not_collapsed(source, post_cfg=source),
+        check_effectful_reachability_preserved(source, post_cfg=source),
+        check_effectful_reachability_preserved(source, post_cfg=source),
+        check_terminal_reachability_preserved(source, post_cfg=source),
+    )
+    inputs = transaction_api.derive_unflatten_preparation_inputs(
+        source, projection, plan, proposal, generic,
+    )
+    case = build_semantic_case(
+        authority_id=authority_id("route-positive-case"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    assert claim.retired_route_subject == claim.replacement_route_subject
+    assert len(claim.route_proof_ids) == 1
+    route_subjects = {
+        claim.retired_route_subject,
+        claim.source_subject,
+        *claim.destination_subjects,
+    }
+    route_cells = tuple(
+        cell for cell in case.obligation_index.cells
+        if cell.key.subject in route_subjects
+    )
+    assert route_cells
+    assert all(cell.state is model.ObligationState.SATISFIED for cell in route_cells)
+    assert any(
+        cell.key.subject == claim.retired_route_subject
+        and cell.key.dimension is model.SafetyDimension.ROUTE_EQUIVALENCE
+        and cell.supporting_justification_ids
+        for cell in route_cells
+    )
+
+
+def test_evaluator_rejects_empty_or_incomplete_exclusion_path_correlations() -> None:
+    """Evaluator correlation transport must close the exact forecast pair universe."""
+
+    from tests.unit.transforms.unflatten_authority.test_model import (
+        _candidate_prefix_correlation_fixture,
+    )
+
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "correlation-universe")
+    corridor = _role_subject(model.SemanticSubjectRole.DISPATCHER_CORRIDOR, "correlation-corridor")
+    inputs = _complete_inputs(source_subjects=(source_entry, corridor))
+    result, first, second = _candidate_prefix_correlation_fixture(model)
+    source_ref = block_ref("b1")
+    dispatcher_ref = inputs.proposal.plan_inputs.dispatcher_entry_ref
+    source_node = model.CorridorCoveragePathNode(source_ref, 0x1300)
+    dispatcher_node = model.CorridorCoveragePathNode(dispatcher_ref, 0x1000)
+    alternate_node = model.CorridorCoveragePathNode(block_ref("b2"), 0x1100)
+    path_nodes = ((source_node, dispatcher_node), (alternate_node, dispatcher_node))
+    exclusion_state = inputs.proposal.plan_inputs.state_identity
+    exclusion_typed = (
+        "unflatten.corridor-semantic-exclusion.v1", 7, exclusion_state,
+        source_node, alternate_node, source_node, dispatcher_node,
+    )
+    exclusion_id = canonical_authority_id(exclusion_typed)
+    exclusion_digest = canonical_authority_id((
+        "unflatten.corridor-semantic-exclusion-digest.v1", exclusion_typed,
+    ))
+    exclusion = model.CorridorSemanticExclusion(
+        exclusion_id, exclusion_digest, 7, exclusion_state,
+        source_node, alternate_node, source_node, dispatcher_node,
+    )
+    paths = tuple(
+        model.CorridorCoveragePath(
+            canonical_authority_id((
+                "unflatten.corridor-coverage-path.v1", nodes, None,
+                model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED,
+                (exclusion_id,),
+            )),
+            nodes, None, model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED,
+            (exclusion_id,),
+        )
+        for nodes in path_nodes
+    )
+    path_ids = tuple(path.path_id for path in paths)
+    forecast_id = canonical_authority_id((
+        "unflatten.corridor-coverage-forecast.v1", inputs.proposal.plan_id,
+        inputs.source_inventory.function_ea,
+        inputs.proposal.source_identity_catalog.native_key,
+        inputs.source_inventory.generation, dispatcher_ref, 0x1000,
+        paths, path_ids, (), True, ((exclusion_id, exclusion_digest),),
+        (exclusion,), ((exclusion_id, path_ids),),
+    ))
+    forecast = model.CorridorCoverageForecast(
+        forecast_id, inputs.proposal.plan_id, inputs.source_inventory.function_ea,
+        inputs.proposal.source_identity_catalog.native_key,
+        inputs.source_inventory.generation, dispatcher_ref, 0x1000,
+        paths, path_ids, (), True, ((exclusion_id, exclusion_digest),),
+        (exclusion,), ((exclusion_id, path_ids),),
+    )
+    object.__setattr__(inputs.proposal, "corridor_coverage_forecast", forecast)
+    object.__setattr__(inputs.preparation_receipt, "corridor_coverage_forecast", forecast)
+    object.__setattr__(inputs.preparation_receipt, "receipt_id", receipt_id(inputs.preparation_receipt))
+
+    for correlations in ((first,),):
+        correlations = tuple(
+            replace(
+                item,
+                exclusion_id=exclusion_id,
+                exclusion_digest=exclusion_digest,
+                path_id=path_ids[0],
+                ordered_prefix=paths[0].nodes,
+                source_fingerprint=inputs.source_inventory.graph_fingerprint,
+                candidate_fingerprint=inputs.candidate_inventory.graph_fingerprint,
+            )
+            for item in correlations
+        )
+        result_id = canonical_authority_id((
+            "unflatten.corridor-coverage-phase.v1", forecast_id,
+            result.phase, inputs.source_inventory.graph_fingerprint,
+            inputs.candidate_inventory.graph_fingerprint,
+            result.source_generation, result.candidate_generation,
+            path_ids, (), (), True, (exclusion_id,),
+            result.source_dispatcher_reachable,
+            result.candidate_dispatcher_reachable,
+            tuple(item.content_key for item in correlations),
+        ))
+        reminted_correlations = tuple(
+            replace(item, phase_result_id=result_id) for item in correlations
+        )
+        reminted_result = model.CorridorCoveragePhaseResult(
+            result_id, forecast_id, result.phase,
+            inputs.source_inventory.graph_fingerprint,
+            inputs.candidate_inventory.graph_fingerprint,
+            result.source_generation, result.candidate_generation,
+            path_ids, (), (), True, (exclusion_id,),
+            result.source_dispatcher_reachable,
+            result.candidate_dispatcher_reachable,
+            reminted_correlations,
+        )
+        object.__setattr__(inputs, "corridor_coverage_phase_result", reminted_result)
+        with pytest.raises(ValueError, match="exact forecast universe"):
+            derive_corridor_coverage_evidence(
+                inputs,
+                model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            )
+
 
 
 def _role_subject(role: model.SemanticSubjectRole, token: str) -> model.SemanticSubjectRef:

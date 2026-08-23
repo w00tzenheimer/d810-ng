@@ -2102,7 +2102,7 @@ def test_bind_corridor_residual_and_incomplete_results_remain_nonfull() -> None:
     assert incomplete.covered_path_ids == incomplete_proposal.corridor_coverage_forecast.covered_path_ids
 
 
-def test_bind_corridor_semantic_exclusion_is_rejected_at_closed_proposal_boundary() -> None:
+def test_bind_corridor_semantic_exclusion_requires_one_canonical_route_link() -> None:
     from dataclasses import replace
 
     proposal, _source, _candidate = _corridor_inventories()
@@ -2111,7 +2111,7 @@ def test_bind_corridor_semantic_exclusion_is_rejected_at_closed_proposal_boundar
     exclusion_state = state_identity()
     typed = (
         "unflatten.corridor-semantic-exclusion.v1", 7, exclusion_state,
-        base.nodes[0], base.nodes[-2], base.nodes[0], base.nodes[0],
+        base.nodes[0], None, base.nodes[1], base.nodes[2],
     )
     exclusion_id = authority_id(typed)
     exclusion_digest = authority_id((
@@ -2119,7 +2119,7 @@ def test_bind_corridor_semantic_exclusion_is_rejected_at_closed_proposal_boundar
     ))
     exclusion = model.CorridorSemanticExclusion(
         exclusion_id, exclusion_digest, 7, exclusion_state,
-        base.nodes[0], base.nodes[-2], base.nodes[0], base.nodes[0],
+        base.nodes[0], None, base.nodes[1], base.nodes[2],
     )
     path_id = authority_id((
         "unflatten.corridor-coverage-path.v1", base.nodes, None,
@@ -2143,8 +2143,153 @@ def test_bind_corridor_semantic_exclusion_is_rejected_at_closed_proposal_boundar
         True, ((exclusion_id, exclusion_digest),), (exclusion,),
         ((exclusion_id, (path_id,)),),
     )
-    # Task14 intentionally leaves semantic-exclusion authority to Task15;
-    # this assertion validates the closed proposal boundary before any binder
-    # call, without corrupting a frozen forecast via object.__setattr__.
-    with pytest.raises(ValueError, match="semantic exclusion"):
-        replace(proposal, corridor_coverage_forecast=excluded_forecast)
+    excluded_proposal = replace(
+        proposal, corridor_coverage_forecast=excluded_forecast,
+    )
+    with pytest.raises(ValueError, match="zero or multiple route links"):
+        bind.bind_corridor_coverage_forecast(
+            proposal=excluded_proposal,
+            source_inventory=_source,
+            candidate_inventory=_candidate,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+def test_bind_corridor_semantic_exclusion_emits_exact_route_correlation() -> None:
+    """A linked semantic path is covered by one transaction-owned correlation."""
+
+    from dataclasses import replace
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        SemanticRouteDestination, SemanticRouteProof, SemanticStateWriteDeliveryKind,
+        SemanticStateWriteProof,
+    )
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+
+    proposal, source, candidate = _corridor_inventories()
+    forecast = proposal.corridor_coverage_forecast
+    base = forecast.paths[0]
+    proof = proposal.route_evidence.route_proofs[0]
+    source_identity = StableBlockIdentity.from_instruction_eas(
+        (0x1300,), native_key=proposal.route_evidence.native_key,
+    )
+    target_identity = StableBlockIdentity.from_instruction_eas(
+        (0x1100,), native_key=proposal.route_evidence.native_key,
+    )
+    write = SemanticStateWriteProof(
+        source_identity, 0x1300, state_identity(), 4, 1,
+        (0x1300,), None, (),
+        SemanticStateWriteDeliveryKind.DIRECT,
+    )
+    proof = SemanticRouteProof(
+        proof.proof_id, proof.atomic_group_id, proof.proof_kind, proof.shape,
+        source_identity, 0x1300,
+        (SemanticRouteDestination(
+            proof.destinations[0].role, 1, target_identity, 0x1100,
+        ),),
+        NativeEaInterval(0x1300, 0x1301), state_write=write,
+    )
+    route_evidence = replace(
+        proposal.route_evidence,
+        route_proofs=(proof,),
+    )
+    source_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=base.nodes[0].block_ref, anchor_ea=base.nodes[0].anchor_ea,
+        locator=model.BlockSubjectLocator(
+            base.nodes[0].block_ref, base.nodes[0].anchor_ea,
+        ),
+    )
+    destination_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        block_ref=base.nodes[1].block_ref, anchor_ea=base.nodes[1].anchor_ea,
+        locator=model.BlockSubjectLocator(
+            base.nodes[1].block_ref, base.nodes[1].anchor_ea,
+        ),
+    )
+    route_locator = model.RouteSubjectLocator(
+        proof.proof_id, proof.atomic_group_id,
+        base.nodes[0].block_ref, base.nodes[0].anchor_ea,
+        (base.nodes[1].block_ref,), (base.nodes[1].anchor_ea,),
+    )
+    route_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.ROUTE,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=base.nodes[0].block_ref, anchor_ea=base.nodes[0].anchor_ea,
+        locator=route_locator,
+    )
+    claim = _claim_factory(
+        model.EquivalentSemanticRouteClaim,
+        kind=model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
+        retired_route_subject=route_subject,
+        replacement_route_subject=route_subject,
+        source_subject=source_subject,
+        destination_subjects=(destination_subject,),
+        route_proof_ids=(proof.proof_id,),
+        atomic_group_id=proof.atomic_group_id,
+        source_generation=proposal.source_identity_catalog.generation,
+    )
+    proposal = replace(
+        proposal, route_evidence=route_evidence, claims=(claim,),
+    )
+    exclusion_source = base.nodes[0]
+    typed = (
+        "unflatten.corridor-semantic-exclusion.v1", 1, state_identity(),
+        exclusion_source, None, base.nodes[1], base.nodes[2],
+    )
+    exclusion_id = authority_id(typed)
+    exclusion_digest = authority_id((
+        "unflatten.corridor-semantic-exclusion-digest.v1", typed,
+    ))
+    exclusion = model.CorridorSemanticExclusion(
+        exclusion_id, exclusion_digest, 1, state_identity(),
+        exclusion_source, None, base.nodes[1], base.nodes[2],
+    )
+    path_id = authority_id((
+        "unflatten.corridor-coverage-path.v1", base.nodes, None,
+        model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED, (exclusion_id,),
+    ))
+    path = model.CorridorCoveragePath(
+        path_id, base.nodes, None,
+        model.CorridorPathDisposition.SEMANTICALLY_EXCLUDED, (exclusion_id,),
+    )
+    forecast_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", forecast.plan_id,
+        forecast.function_ea, forecast.source_native_key,
+        forecast.source_generation, forecast.dispatcher_ref,
+        forecast.dispatcher_anchor_ea, (path,), (path_id,), (), True,
+        ((exclusion_id, exclusion_digest),), (exclusion,),
+        ((exclusion_id, (path_id,)),),
+    ))
+    proposal = replace(
+        proposal,
+        corridor_coverage_forecast=model.CorridorCoverageForecast(
+            forecast_id, forecast.plan_id, forecast.function_ea,
+            forecast.source_native_key, forecast.source_generation,
+            forecast.dispatcher_ref, forecast.dispatcher_anchor_ea, (path,),
+            (path_id,), (), True, ((exclusion_id, exclusion_digest),),
+            (exclusion,), ((exclusion_id, (path_id,)),),
+        ),
+    )
+
+    result = bind.bind_corridor_coverage_forecast(
+        proposal=proposal, source_inventory=source,
+        candidate_inventory=candidate,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+
+    assert result is not None
+    assert result.covered_path_ids == (path_id,)
+    assert result.matched_semantic_exclusion_ids == (exclusion_id,)
+    assert len(result.semantic_exclusion_correlations) == 1
+    correlation = result.semantic_exclusion_correlations[0]
+    assert (correlation.exclusion_id, correlation.path_id) == (
+        exclusion_id, path_id,
+    )
+    assert correlation.claim_id == proposal.claims[0].claim_id
+    assert correlation.proof_id == proof.proof_id
+    assert correlation.ordered_prefix == path.nodes

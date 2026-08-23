@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import replace
 from types import SimpleNamespace
@@ -714,6 +715,33 @@ def _native_bound_route(
     if row_kind is not None:
         values["row_kind"] = row_kind
     return NativeBoundTransitionRoute(**values)
+
+
+def test_native_bound_transition_keys_correlate_write_and_via_sources() -> None:
+    direct = StateWriteTransition(10, 0x10, 20, False, None)
+    through_via = StateWriteTransition(11, 0x20, 30, False, None, via_block=12)
+    unrelated = StateWriteTransition(13, 0x30, 40, False, None, via_block=14)
+
+    assert minimal_unflatten_emit_module._native_bound_transition_keys(
+        (direct, through_via, unrelated),
+        (
+            _native_bound_route(source=10, state=0x10, target=20, fact_id="direct"),
+            _native_bound_route(source=12, state=0x20, target=30, fact_id="via"),
+        ),
+    ) == frozenset({(10, 0x10, 20), (11, 0x20, 30)})
+
+
+def test_native_bound_transition_keys_reject_ambiguous_shared_via_owner() -> None:
+    transitions = (
+        StateWriteTransition(10, 0x10, 20, False, None, via_block=12),
+        StateWriteTransition(11, 0x10, 20, False, None, via_block=12),
+    )
+
+    with pytest.raises(ValueError, match="exactly one state-write transition"):
+        minimal_unflatten_emit_module._native_bound_transition_keys(
+            transitions,
+            (_native_bound_route(source=12, state=0x10, target=20),),
+        )
 
 
 def test_native_bound_route_enriches_unresolved_entry_transition() -> None:
@@ -13169,3 +13197,20 @@ def test_candidate_prefix_not_applicable_keeps_legacy_endpoint_bridge(
     )
 
     assert RedirectGoto(403, 15, 101) in graph_modifications(plan)
+
+
+def test_emitter_does_not_expose_independent_interval_or_plumbing_route_authority() -> None:
+    """Route selections must arrive through the typed authority/preflight result."""
+
+    parameters = inspect.signature(
+        minimal_unflatten_emit_module.emit_minimal_unflatten,
+    ).parameters
+    assert "interval_route_proofs" not in parameters
+    assert "state_transition_plumbing_route_proofs" not in parameters
+
+
+def test_emitter_does_not_deduplicate_family_route_authority_by_plain_set() -> None:
+    """Collision evidence must remain observable until the authority binder decides."""
+
+    implementation = inspect.getsource(minimal_unflatten_emit_module.emit_minimal_unflatten)
+    assert "selected_route_proof_ids: set[str]" not in implementation
