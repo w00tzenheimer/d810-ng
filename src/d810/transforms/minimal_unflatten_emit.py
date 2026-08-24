@@ -77,7 +77,6 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     route_current_u32_decision_forest,
     observe_candidate_scoped_prefix_authority,
     transition_uses_terminal_stack_alias_guard,
-    transitions_use_terminal_stack_alias_guard,
     resolve_materialized_indirect_transfer_targets,
     _storage_dest_locator,
     build_current_u32_decision_forest,
@@ -154,10 +153,7 @@ from d810.transforms.graph_modification import (
     ZeroStateWrite,
 )
 from d810.transforms.plan import (
-    PatchConvertToGoto,
     PatchPlan,
-    PatchRedirectBranch,
-    PatchRedirectGoto,
     compile_patch_plan,
 )
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
@@ -166,26 +162,15 @@ from d810.transforms.exit_path_effect_emission import (
     plan_state_exit_path_effect_lowerings,
 )
 from d810.transforms.dispatcher_corridor_coverage import (
-    DETACHED_DEAD_HANDLER_COMPONENT_METADATA,
-    DispatcherRemovalPreflightValidation,
     analyze_dispatcher_corridor_coverage,
+    build_detached_dead_handler_component_analysis,
     build_dispatcher_removal_preflight_proof,
-    build_detached_dead_handler_component_proof,
+    DispatcherRemovalPreflightValidation,
     validate_terminal_switch_cycle_break_allowance,
 )
 from d810.transforms.use_def_redirect_filter import (
     audit_use_def_severances,
     severance_bail_enabled,
-)
-from d810.transforms.unflatten_authority.legacy_keys import (
-    CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
-    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
-    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-    EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
-    FULL_UNFLATTENING_CLAIM_METADATA,
-    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
-    UNFLATTEN_COMPLETION_STATUS_METADATA,
-    USE_DEF_SEVERANCE_AUDIT_METADATA,
 )
 from d810.transforms.unflatten_authority.ids import content_id
 from d810.transforms.unflatten_authority.producer_api import (
@@ -230,8 +215,6 @@ __all__ = [
     "lower_conditional_transition_candidates",
     "TERMINAL_CARRIER_CONVERGENCE_METADATA",
     "TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA",
-    "NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA",
-    "CONCRETE_STATE_ROUTE_PROVENANCE_METADATA",
 ]
 
 
@@ -242,15 +225,6 @@ class ConcreteStateEntryRouteProof:
     normalized_state: int
     target_handler: int
     source_kinds: tuple[str, ...]
-
-    def to_metadata(self) -> dict[str, object]:
-        return {
-            "site": "entry",
-            "normalized_state": int(self.normalized_state),
-            "target_handler": int(self.target_handler),
-            "source_kinds": tuple(self.source_kinds),
-        }
-
 
 @dataclass(frozen=True, slots=True)
 class ConditionalStateTransitionCandidate:
@@ -6189,11 +6163,16 @@ def _merge_effect_safe_source_keyed_redirect_group(
         )
     ]
     candidate = [*candidate_base, *source_keyed_modifications]
-    newly_lost = _incremental_effect_loss_for_redirect_group(
+    base_effects = check_effectful_reachability_preserved(
         flow_graph,
-        base_modifications,
-        candidate,
-        project_modifications=project_modifications,
+        post_cfg=project_modifications(tuple(base_modifications)),
+    )
+    candidate_effects = check_effectful_reachability_preserved(
+        flow_graph,
+        post_cfg=project_modifications(tuple(candidate)),
+    )
+    newly_lost = (
+        candidate_effects.lost_block_serials - base_effects.lost_block_serials
     )
     if newly_lost:
         if logger.info_on:
@@ -6207,33 +6186,6 @@ def _merge_effect_safe_source_keyed_redirect_group(
             )
         return list(base_modifications), False
     return candidate, True
-
-
-def _incremental_effect_loss_for_redirect_group(
-    flow_graph,
-    base_modifications: list[object],
-    candidate_modifications: list[object],
-    *,
-    project_modifications: Callable[[tuple[object, ...]], object],
-) -> frozenset[int]:
-    """Return effects lost only after replacing a base redirect group.
-
-    Optional refinements such as conditional-arm or source-keyed redirects are
-    fragment-atomic.  An already unsafe base remains the final transaction
-    gate's responsibility; this helper attributes only new loss introduced by
-    the candidate group.
-    """
-    base_effects = check_effectful_reachability_preserved(
-        flow_graph,
-        post_cfg=project_modifications(tuple(base_modifications)),
-    )
-    candidate_effects = check_effectful_reachability_preserved(
-        flow_graph,
-        post_cfg=project_modifications(tuple(candidate_modifications)),
-    )
-    return frozenset(
-        candidate_effects.lost_block_serials - base_effects.lost_block_serials
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -9341,9 +9293,9 @@ def emit_minimal_unflatten(
     """
 
     # These facts are intentionally false until the *final* whole-fragment
-    # audit has run.  A plan can still be a normal partial unflatten, but it
-    # cannot obtain the narrow dispatcher-retirement allowance from an absent
-    # capability, an environment toggle, or a per-redirect filtering pass.
+    # audit has run. A plan cannot obtain the narrow dispatcher-retirement
+    # allowance from an absent capability, an environment toggle, or a
+    # per-redirect filtering pass.
     dispatcher_removal_safety: dict[str, bool] = {
         "fragment_atomic": False,
         "non_state_use_def_veto": False,
@@ -9351,119 +9303,11 @@ def emit_minimal_unflatten(
         "non_state_use_def_severances_zero": False,
     }
     dispatcher_state_plumbing_serials: frozenset[int] = frozenset()
-    native_bound_route_receipts: tuple[dict[str, object], ...] = ()
     concrete_state_entry_route_proofs: tuple[ConcreteStateEntryRouteProof, ...] = ()
     exact_state_effect_exclusions: tuple[
         ExactStateBranchEffectExclusion, ...
     ] = ()
     entry_route_resolution: _EntryStateRouteResolution | None = None
-
-    def _native_bound_route_receipt(
-        route: NativeBoundTransitionRoute,
-    ) -> dict[str, object]:
-        return {
-            "fact_id": str(route.fact_id),
-            "native_ea": int(route.source_instruction_ea),
-            "native_ea_hex": f"0x{int(route.source_instruction_ea):X}",
-            "current_block": _format_block_label(
-                flow_graph, int(route.source_block_serial)
-            ),
-            "state": int(route.state_constant) & 0xFFFFFFFF,
-            "target": int(route.target_handler_serial),
-            "target_block": _format_block_label(
-                flow_graph, int(route.target_handler_serial)
-            ),
-        }
-
-    def attach_native_bound_route_receipts(plan: PatchPlan) -> PatchPlan:
-        if (
-            not native_bound_route_receipts
-            or (not plan.steps and not plan.new_blocks)
-        ):
-            return plan
-        source_coordinates = dict(plan.source_coordinates)
-
-        def _step_operation_key(step: object):
-            if isinstance(step, PatchRedirectBranch):
-                mutation_kind = "block_target_change"
-                source_ref = step.from_serial
-                old_target_ref = step.old_target
-                target_ref = step.new_target
-            elif isinstance(step, PatchRedirectGoto):
-                mutation_kind = "block_goto_change"
-                source_ref = step.from_serial
-                old_target_ref = step.old_target
-                target_ref = step.new_target
-            elif isinstance(step, PatchConvertToGoto):
-                mutation_kind = "block_convert_to_goto"
-                source_ref = step.block_serial
-                old_target_ref = None
-                target_ref = step.goto_target
-            else:
-                return None
-            source_serial = source_coordinates.get(source_ref)
-            target_serial = source_coordinates.get(target_ref)
-            old_target_serial = (
-                None
-                if old_target_ref is None
-                else source_coordinates.get(old_target_ref)
-            )
-            if source_serial is None or target_serial is None:
-                return None
-            if old_target_ref is not None and old_target_serial is None:
-                return None
-            return (
-                mutation_kind,
-                int(source_serial),
-                None if old_target_serial is None else int(old_target_serial),
-                int(target_serial),
-            )
-
-        keyed_receipts: list[dict[str, object]] = []
-        step_keys = tuple(_step_operation_key(step) for step in plan.steps)
-        for route_receipt, route in zip(
-            native_bound_route_receipts,
-            accepted_native_bound_routes,
-        ):
-            target_serial = route_receipt.get("target")
-            if not isinstance(target_serial, int):
-                continue
-            source_serials = {int(route.source_block_serial)}
-            for transition in transitions:
-                proof = getattr(transition, "proof", None)
-                if (
-                    transition.next_state == int(route.state_constant)
-                    and transition.target_handler == int(route.target_handler_serial)
-                    and type(proof) is TransitionProof
-                    and proof.trusted
-                ):
-                    source_serials.add(int(transition.write_block))
-                    if transition.via_block is not None:
-                        source_serials.add(int(transition.via_block))
-            candidates = tuple(
-                key
-                for key in step_keys
-                if key is not None
-                and key[1] in source_serials
-                and key[3] == int(target_serial)
-            )
-            if len(candidates) != 1:
-                continue
-            keyed_receipts.append(
-                {
-                    **route_receipt,
-                    "operation_key": candidates[0],
-                }
-            )
-        if not keyed_receipts:
-            return plan
-        return plan.with_metadata(
-            **{
-                NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA: (
-                    tuple(keyed_receipts)
-                )
-            }
-        )
 
     def compile_modifications(modifications) -> PatchPlan:
         authority_plan_id = None
@@ -9495,18 +9339,20 @@ def emit_minimal_unflatten(
             snapshot_id=plan.snapshot_id,
         ).graph
 
-    def attach_dispatcher_removal_preflight_proof(
+    def build_dispatcher_removal_validation(
         plan: PatchPlan,
         coverage,
-    ) -> PatchPlan:
-        """Attach a fail-closed exact proof for intended router removal.
+    ) -> DispatcherRemovalPreflightValidation:
+        """Build the fail-closed exact proof for intended router removal.
 
         This does not relax any producer safety gate.  It merely gives the
         transaction preflight enough typed topology evidence to distinguish a
         removed comparison forest from a lost handler/body island.
         """
         if dispatcher_entry_serial is None:
-            return plan
+            return DispatcherRemovalPreflightValidation(
+                passed=False, reason="dispatcher_entry_missing"
+            )
         projected = project_patch_plan(
             flow_graph,
             plan,
@@ -9558,33 +9404,21 @@ def emit_minimal_unflatten(
                 proof=proof,
             ),
         )
-        metadata: dict[str, object] = {
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: (
-                validation.to_payload()
-                if validation.terminal_switch_cycle_break is not None
-                else proof.to_metadata()
-            )
-        }
-        dead_component = build_detached_dead_handler_component_proof(
+        detached = build_detached_dead_handler_component_analysis(
             flow_graph,
             post_graph=projected.graph,
             coverage=coverage,
             authoritative_handler_serials=authoritative_handlers,
             patch_plan=plan,
         )
-        if dead_component is not None:
-            metadata[DETACHED_DEAD_HANDLER_COMPONENT_METADATA] = (
-                dead_component.to_payload()
+        if detached is not None:
+            validation = DispatcherRemovalPreflightValidation(
+                passed=True,
+                reason="detached_dead_handler_component",
+                proof=proof,
+                detached_dead_handler_component=detached,
             )
-            if logger.info_on:
-                logger.info(
-                    "unflat detached dead-handler component: handlers=%s "
-                    "blocks=%d effects=%s",
-                    ",".join(item.label for item in dead_component.dead_handlers),
-                    len(dead_component.component),
-                    ",".join(item.label for item in dead_component.lost_effects),
-                )
-        return plan.with_metadata(**metadata)
+        return validation
 
     def log_dispatcher_coverage(coverage) -> None:
         if not logger.info_on:
@@ -9606,41 +9440,7 @@ def emit_minimal_unflatten(
         )
 
     def compile_with_dispatcher_coverage(modifications) -> PatchPlan:
-        coverage = analyze_dispatcher_corridor_coverage(
-            flow_graph,
-            modifications=tuple(modifications),
-            dispatcher_entry_serial=dispatcher_entry_serial,
-        )
-        plan = compile_modifications(modifications)
-        plan = attach_native_bound_route_receipts(plan)
-        if concrete_state_entry_route_proofs:
-            plan = plan.with_metadata(
-                **{
-                    CONCRETE_STATE_ROUTE_PROVENANCE_METADATA: tuple(
-                        proof.to_metadata()
-                        for proof in concrete_state_entry_route_proofs
-                    )
-                }
-            )
-        if exact_state_effect_exclusions:
-            plan = plan.with_metadata(
-                **{
-                    EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA: tuple(
-                        proof.to_metadata()
-                        for proof in exact_state_effect_exclusions
-                    )
-                }
-            )
-        plan = plan.with_metadata(
-            **{
-                DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-                UNFLATTEN_COMPLETION_STATUS_METADATA: coverage.completion_status,
-                FULL_UNFLATTENING_CLAIM_METADATA: coverage.full_unflattening_claim,
-            }
-        )
-        plan = attach_dispatcher_removal_preflight_proof(plan, coverage)
-        log_dispatcher_coverage(coverage)
-        return plan
+        return compile_modifications(modifications)
 
     if dispatcher_entry_serial is None:
         return compile_with_dispatcher_coverage(())
@@ -10123,9 +9923,6 @@ def emit_minimal_unflatten(
             conditional_bridge_mods.extend(entry_lowerings)
         else:
             conditional_entry_bridge = None
-    terminal_carrier_convergence = transitions_use_terminal_stack_alias_guard(
-        transitions
-    )
     # C3b (ticket llr-1szn / d81-t9ok): each transition carries a typed
     # ``TransitionProof`` naming the oracle and resolution shape. Observe-only --
     # the distribution surfaces how many edges resolved by global fold vs the
@@ -10429,9 +10226,6 @@ def emit_minimal_unflatten(
                 *accepted_native_bound_entry_routes,
             )
         )
-    )
-    native_bound_route_receipts = tuple(
-        _native_bound_route_receipt(route) for route in accepted_native_bound_routes
     )
     mods = build_state_write_redirects(
         flow_graph,
@@ -10758,24 +10552,6 @@ def emit_minimal_unflatten(
         state_var_stkoff=_soff,
         state_var_reg=state_var_reg,
     )
-    if arm_mods:
-        newly_lost_arm_effects = _incremental_effect_loss_for_redirect_group(
-            flow_graph,
-            mods,
-            [*mods, *arm_mods],
-            project_modifications=project_modifications,
-        )
-        if newly_lost_arm_effects:
-            if logger.info_on:
-                logger.info(
-                    "unflat conditional-arm: abstain group "
-                    "reason=incremental_effect_loss lost=%s",
-                    ",".join(
-                        _format_block_label(flow_graph, int(serial))
-                        for serial in sorted(newly_lost_arm_effects)
-                    ),
-                )
-            arm_mods = []
     guard_candidates = build_loop_carrier_guard_transitions(
         flow_graph,
         dispatcher,
@@ -10951,7 +10727,6 @@ def emit_minimal_unflatten(
         handler_transitions,
         dispatcher_entry_serial=int(dispatcher_entry_serial),
     )
-    pre_shared_merge_mods = list(mods)
     if cond_suppressed:
         mods = [
             m
@@ -10981,26 +10756,6 @@ def emit_minimal_unflatten(
             if key not in _existing:
                 mods = list(mods) + [m]
                 _existing.add(key)
-    if cond_redirects or cond_suppressed:
-        newly_lost_shared_merge_effects = (
-            _incremental_effect_loss_for_redirect_group(
-                flow_graph,
-                pre_shared_merge_mods,
-                mods,
-                project_modifications=project_modifications,
-            )
-        )
-        if newly_lost_shared_merge_effects:
-            if logger.info_on:
-                logger.info(
-                    "unflat shared-merge conditional: abstain group "
-                    "reason=incremental_effect_loss lost=%s",
-                    ",".join(
-                        _format_block_label(flow_graph, int(serial))
-                        for serial in sorted(newly_lost_shared_merge_effects)
-                    ),
-                )
-            mods = pre_shared_merge_mods
     # Loop-guard exit (ticket d81-c733): a ``while(state != K)`` flattener with no
     # dispatcher default routes its terminal through the guard's exit arm.  Wire
     # the sentinel-writing handler to that exit corridor so severing the
@@ -11061,9 +10816,6 @@ def emit_minimal_unflatten(
             use_def_audit.executed and use_def_audit.severance_count == 0
         ),
     }
-    use_def_audit_metadata = use_def_audit.to_metadata(
-        function_ea=int(flow_graph.func_ea)
-    )
     coverage = analyze_dispatcher_corridor_coverage(
         flow_graph,
         modifications=tuple(mods),
@@ -11071,10 +10823,9 @@ def emit_minimal_unflatten(
         semantic_exclusions=candidate_prefix_alternate_corridor_proofs,
     )
     # Once canonical route evidence is supplied, this is the typed authority
-    # path.  Its fragment-wide witness is decisive: an unavailable audit and
+    # path. Its fragment-wide witness is decisive: an unavailable audit and
     # an actionable non-state severance both reject the complete fragment,
-    # regardless of the legacy environment toggles.  Plans without typed
-    # route evidence retain the historical shadow/ordinary behavior.
+    # regardless of environment toggles.
     typed_authority = canonical_route_evidence is not None
     if (
         typed_authority and not use_def_audit.clean
@@ -11088,9 +10839,7 @@ def emit_minimal_unflatten(
                 "rejected %d non-state use-def severance(s)",
                 use_def_audit.severance_count,
             )
-        return compile_with_dispatcher_coverage(()).with_metadata(
-            **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
-        )
+        return compile_with_dispatcher_coverage(())
     if not use_def_audit.clean and logger.info_on:
         logger.info(
             "unflat minimal unflatten: narrow dispatcher-retirement proof "
@@ -11099,56 +10848,21 @@ def emit_minimal_unflatten(
             use_def_audit.severance_count,
             use_def_audit.failure_reason or "none",
         )
-    plan = attach_native_bound_route_receipts(
-        compile_modifications(list(mods))
-    ).with_metadata(
-        **{
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-            UNFLATTEN_COMPLETION_STATUS_METADATA: coverage.completion_status,
-            FULL_UNFLATTENING_CLAIM_METADATA: coverage.full_unflattening_claim,
-            USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata,
-        }
-    )
-    if concrete_state_entry_route_proofs:
-        plan = plan.with_metadata(
-            **{
-                CONCRETE_STATE_ROUTE_PROVENANCE_METADATA: tuple(
-                    proof.to_metadata()
-                    for proof in concrete_state_entry_route_proofs
-                )
-            }
-        )
-    if exact_state_effect_exclusions:
-        plan = plan.with_metadata(
-            **{
-                EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA: tuple(
-                    proof.to_metadata() for proof in exact_state_effect_exclusions
-                )
-            }
-        )
-    plan = attach_dispatcher_removal_preflight_proof(plan, coverage)
-    log_dispatcher_coverage(coverage)
-    if terminal_carrier_convergence:
-        plan = plan.with_metadata(
-            **{
-                TERMINAL_CARRIER_CONVERGENCE_METADATA: True,
-                TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA: (
-                    "region_partitioned_fixpoint:stack_address_alias_terminal_guard"
-                ),
-            }
-        )
+    if typed_authority:
+        # Typed proposals receive the producer's closed analysis values below.
+        plan = compile_modifications(list(mods))
+    else:
+        plan = compile_modifications(list(mods))
+        build_dispatcher_removal_validation(plan, coverage)
+        log_dispatcher_coverage(coverage)
     if typed_authority:
         if not block_refs_by_serial:
-            return compile_with_dispatcher_coverage(()).with_metadata(
-                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
-            )
+            return compile_with_dispatcher_coverage(())
         dispatcher_member_serials = tuple(
             sorted(int(serial) for serial in dispatcher_region_serials)
         )
         if int(dispatcher_entry_serial) not in dispatcher_member_serials:
-            return compile_with_dispatcher_coverage(()).with_metadata(
-                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
-            )
+            return compile_with_dispatcher_coverage(())
         state_identity = (
             StorageIdentity(StorageIdentityKind.STACK, int(state_var_stkoff))
             if state_var_stkoff is not None
@@ -11157,9 +10871,7 @@ def emit_minimal_unflatten(
             else None
         )
         if state_identity is None:
-            return compile_with_dispatcher_coverage(()).with_metadata(
-                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
-            )
+            return compile_with_dispatcher_coverage(())
         try:
             if source_generation is not None and int(source_generation) != int(canonical_route_evidence.generation):
                 raise ValueError("canonical route generation differs from source plan generation")
@@ -11257,9 +10969,7 @@ def emit_minimal_unflatten(
                     ),
                 )
         except (TypeError, ValueError):
-            return compile_with_dispatcher_coverage(()).with_metadata(
-                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
-            )
+            return compile_with_dispatcher_coverage(())
         try:
             manifest = canonical_redirect_manifest(plan)
             fragment_id = content_id(
@@ -11276,10 +10986,11 @@ def emit_minimal_unflatten(
         except (TypeError, ValueError):
             use_def_witness = None
         if use_def_witness is None:
-            return compile_with_dispatcher_coverage(()).with_metadata(
-                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
-            )
+            return compile_with_dispatcher_coverage(())
         try:
+            dispatcher_removal_validation = build_dispatcher_removal_validation(
+                plan, coverage
+            )
             plan = attach_typed_proposal(
                 plan,
                 source=flow_graph,
@@ -11292,11 +11003,11 @@ def emit_minimal_unflatten(
                 authoritative_handler_serials=authoritative_handler_serials,
                 state_identity=state_identity,
                 use_def_witness=use_def_witness,
+                corridor_coverage=coverage,
+                dispatcher_removal_validation=dispatcher_removal_validation,
             )
         except (TypeError, ValueError):
-            return compile_with_dispatcher_coverage(()).with_metadata(
-                **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
-            )
+            return compile_with_dispatcher_coverage(())
     return plan
 
 

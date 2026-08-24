@@ -8,9 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
-from d810.analyses.control_flow.minimal_state_recovery import (
-    CandidatePrefixAlternateCorridorProof,
-)
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
     BlockKind,
@@ -22,28 +19,18 @@ from d810.ir.flowgraph import (
     OperandKind,
     PredicateKind,
 )
-from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms import dispatcher_corridor_coverage as corridor_module
 from d810.transforms import minimal_unflatten_emit as emit_module
 from d810.transforms.dispatcher_corridor_coverage import (
-    DETACHED_DEAD_HANDLER_COMPONENT_METADATA,
-    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
-    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-    USE_DEF_SEVERANCE_AUDIT_METADATA,
     DispatcherRemovalPreflightProof,
-    DispatcherRemovalPreflightValidation,
     analyze_dispatcher_corridor_coverage,
+    build_detached_dead_handler_component_analysis,
     build_dispatcher_removal_preflight_proof,
-    build_detached_dead_handler_component_proof,
-    canonicalize_observed_dispatcher_graph,
     collect_dispatcher_corridor_coverage_observations,
     collect_dispatcher_corridor_coverage_observations_from_metadata,
-    collect_dispatcher_removal_preflight_proof_observations_from_metadata,
     collect_use_def_severance_observations_from_metadata,
-    validate_dispatcher_corridor_coverage_metadata,
-    validate_dispatcher_removal_preflight_proof,
 )
-from d810.transforms.edit_simulator import project_patch_plan
+from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
 from d810.transforms.graph_modification import (
     EdgeRedirectViaPredSplit,
     LowerConditionalStateTransition,
@@ -85,6 +72,18 @@ def _block(
     )
 
 
+def test_transaction_replay_validator_seams_are_not_exported() -> None:
+    """The corridor module exposes producer proofs, not a second authority."""
+
+    removed = (
+        "validate_dispatcher_corridor_coverage_metadata",
+        "validate_dispatcher_removal_preflight_proof",
+        "validated_exact_effect_exclusion_serials",
+        "has_unreachable_cyclic_switch_dispatcher_residue",
+    )
+    assert all(name not in vars(corridor_module) for name in removed)
+
+
 def test_coverage_projects_predecessor_scoped_feeder_clone() -> None:
     """A pred-split clone cuts only its exact original dispatcher corridor."""
 
@@ -120,201 +119,8 @@ def test_coverage_projects_predecessor_scoped_feeder_clone() -> None:
     assert coverage.residual_corridors == ()
 
 
-def test_preflight_proof_accepts_exact_planned_stop_relocation() -> None:
-    """A typed clone plan may move the unique STOP without losing its route."""
-
-    base_graph, _, _, _ = _state_transition_plumbing_fixture()
-    blocks = dict(base_graph.blocks)
-    blocks[0] = replace(blocks[0], succs=(*blocks[0].succs, 30))
-    blocks.update(
-        {
-            30: _block(30, (300,), (0,), 0x1400, kind=BlockKind.ONE_WAY),
-            50: _block(50, (300,), (51,), 0x1500, kind=BlockKind.ONE_WAY),
-            51: _block(51, (50,), (), 0x1510, kind=BlockKind.ONE_WAY),
-            300: _block(300, (), (30, 50), 0x1600, kind=BlockKind.STOP),
-        }
-    )
-    graph = FlowGraph(
-        blocks=blocks,
-        entry_serial=base_graph.entry_serial,
-        func_ea=base_graph.func_ea,
-    )
-    modifications = (
-        RedirectGoto(from_serial=10, old_target=123, new_target=20),
-        RedirectGoto(from_serial=12, old_target=112, new_target=21),
-        EdgeRedirectViaPredSplit(
-            src_block=50,
-            old_target=300,
-            new_target=30,
-            via_pred=51,
-            clone_until=50,
-        ),
-    )
-    plan = compile_patch_plan(modifications, graph)
-    projected = project_patch_plan(graph, plan, snapshot_id=plan.snapshot_id).graph
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=modifications,
-        dispatcher_entry_serial=4,
-    )
-
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=projected,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({10, 12, 20, 21}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety={
-            "fragment_atomic": True,
-            "non_state_use_def_veto": True,
-            "non_state_use_def_checked": True,
-            "non_state_use_def_severances_zero": True,
-        },
-        state_plumbing_serials=frozenset({3, 112, 123}),
-        patch_plan=plan,
-    )
-
-    assert not proof.passed
-    assert proof.reason == "untyped_lost_block"
-    assert proof.pre_reachable_terminals == proof.post_reachable_terminals
-    assert tuple(anchor.serial for anchor in proof.post_reachable_terminals) == (
-        20,
-        21,
-        300,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=projected,
-        plan_metadata={
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
-        },
-        patch_plan=plan,
-    )
-
-    assert validation.passed
-    assert validation.reason == "state_transition_plumbing_retirement"
-
-    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
-        proof.to_metadata(),
-        coverage_metadata=coverage.to_metadata(),
-        maturity="MMAT_GLBOPT1",
-        phase="patch_transaction",
-        application_status="applied",
-        projected_validation=validation,
-        observed_validation=validation,
-        plan_id=plan.plan_id,
-        attempt_id="attempt-stop-relocation",
-    )
-    assert len(observations) == 1
-    assert observations[0].payload["proof_status"] == "accepted"
-
-    relocated_stop_serial = 300 + len(plan.new_blocks)
-    relocated_stop = projected.get_block(relocated_stop_serial)
-    assert relocated_stop is not None
-    drifted = FlowGraph(
-        blocks={
-            **projected.blocks,
-            relocated_stop_serial: replace(
-                relocated_stop,
-                start_ea=relocated_stop.start_ea + 1,
-            ),
-        },
-        entry_serial=projected.entry_serial,
-        func_ea=projected.func_ea,
-    )
-    drifted_validation = validate_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=drifted,
-        plan_metadata={
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
-        },
-        patch_plan=plan,
-    )
-    assert not drifted_validation.passed
 
 
-def test_coverage_excludes_exact_candidate_prefix_alternate_partition() -> None:
-    """An exact alternate prefix partition is not a residual root corridor."""
-
-    prefix_branch = InsnSnapshot(
-        opcode=0x4A,
-        ea=0x1035,
-        operands=(),
-        l=MopSnapshot(kind=OperandKind.STACK, stkoff=0x44, size=4),
-        r=MopSnapshot(kind=OperandKind.NUMBER, value=0x423C3FEB, size=4),
-        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=40, size=0),
-        kind=InsnKind.COND_JUMP,
-        branch_predicate=PredicateKind.SLE,
-        is_conditional_jump=True,
-    )
-    graph = FlowGraph(
-        blocks={
-            10: _block(10, (20,), (), 0x1010, kind=BlockKind.ONE_WAY),
-            20: _block(20, (30,), (10,), 0x1020, kind=BlockKind.ONE_WAY),
-            30: _block(
-                30,
-                (40, 50),
-                (20,),
-                0x1030,
-                kind=BlockKind.TWO_WAY,
-                insns=(prefix_branch,),
-                tail_kind=InsnKind.COND_JUMP,
-            ),
-            40: _block(40, (), (30,), 0x1040, kind=BlockKind.ZERO_WAY),
-            50: _block(50, (), (30,), 0x1050, kind=BlockKind.ZERO_WAY),
-        },
-        entry_serial=10,
-        func_ea=0x1000,
-    )
-    proof = CandidatePrefixAlternateCorridorProof(
-        normalized_state=0x70000000,
-        source_serial=10,
-        source_ea=0x1010,
-        feeder_serial=20,
-        feeder_ea=0x1020,
-        prefix_serial=30,
-        prefix_ea=0x1030,
-        root_serial=40,
-        root_ea=0x1040,
-        state_identity=StorageIdentity(StorageIdentityKind.STACK, 0x44),
-    )
-
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(),
-        dispatcher_entry_serial=40,
-        semantic_exclusions=(proof,),
-    )
-
-    assert tuple(corridor.label for corridor in coverage.covered_corridors) == (
-        "blk10@0x1010 -> blk20@0x1020 -> blk30@0x1030 -> blk40@0x1040",
-    )
-    assert coverage.residual_corridors == ()
-
-    validation = validate_dispatcher_corridor_coverage_metadata(
-        graph,
-        post_graph=graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-        },
-    )
-    assert validation.passed
-
-    stale = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(),
-        dispatcher_entry_serial=40,
-        semantic_exclusions=(replace(proof, source_ea=0xDEAD),),
-    )
-    assert stale.covered_corridors == ()
-    assert tuple(corridor.label for corridor in stale.residual_corridors) == (
-        "blk10@0x1010 -> blk20@0x1020 -> blk30@0x1030 -> blk40@0x1040",
-    )
-    assert stale.semantic_exclusions == ()
 
 
 def _conditional_observation_fixture(
@@ -505,353 +311,6 @@ def _replace_observed_edges(
     )
 
 
-@pytest.mark.parametrize(
-    ("helper_kind", "helper_tail"),
-    (
-        (BlockKind.STOP, InsnKind.GOTO),
-        (BlockKind.TWO_WAY, InsnKind.COND_JUMP),
-        (BlockKind.ONE_WAY, InsnKind.COND_JUMP),
-    ),
-)
-def test_observed_collapsed_helper_requires_one_way_goto(
-    helper_kind: BlockKind,
-    helper_tail: InsnKind,
-) -> None:
-    _pre, observed, plan = _conditional_observation_fixture()
-    observed = _replace_observed_edges(
-        observed,
-        {serial: block.succs for serial, block in observed.blocks.items()},
-        overrides={11: {"kind": helper_kind, "tail_kind": helper_tail}},
-    )
-
-    with pytest.raises(ValueError, match="helper"):
-        canonicalize_observed_dispatcher_graph(_pre, observed, plan)
-
-
-@pytest.mark.parametrize(
-    ("source_kind", "source_tail"),
-    (
-        (BlockKind.ONE_WAY, InsnKind.GOTO),
-        (BlockKind.TWO_WAY, InsnKind.GOTO),
-    ),
-)
-def test_observed_lowering_source_requires_two_way_conditional_tail(
-    source_kind: BlockKind,
-    source_tail: InsnKind | None,
-) -> None:
-    _pre, observed, plan = _conditional_observation_fixture()
-    observed = _replace_observed_edges(
-        observed,
-        {serial: block.succs for serial, block in observed.blocks.items()},
-        overrides={
-            10: {"kind": source_kind, "tail_kind": source_tail},
-        },
-    )
-
-    with pytest.raises(ValueError, match="source"):
-        canonicalize_observed_dispatcher_graph(_pre, observed, plan)
-
-
-@pytest.mark.parametrize("true_is_taken", (True, False))
-def test_observed_lowering_validates_physical_fallthrough_taken_order(
-    true_is_taken: bool,
-) -> None:
-    condition = PreserveLivePredicateCondition(
-        predicate_ea=0x1005,
-        true_is_taken=true_is_taken,
-    )
-    pre, observed, plan = _conditional_observation_fixture(
-        true_is_taken=true_is_taken,
-        condition_operand=condition,
-    )
-    canonical = canonicalize_observed_dispatcher_graph(pre, observed, plan)
-    assert canonical.blocks[10].succs == (30, 40)
-
-    fallthrough_target = 31 if true_is_taken else 41
-    taken_target = 41 if true_is_taken else 31
-    swapped = _replace_observed_edges(
-        observed,
-        {
-            **{
-                serial: block.succs
-                for serial, block in observed.blocks.items()
-                if serial not in {10, 11}
-            },
-            10: (11, fallthrough_target),
-            11: (taken_target,),
-        },
-    )
-    assert swapped.blocks[10].succs == (11, fallthrough_target)
-    with pytest.raises(ValueError, match="arms|helper"):
-        canonicalize_observed_dispatcher_graph(pre, swapped, plan)
-
-
-def test_observed_lowering_defaults_true_is_taken_to_true() -> None:
-    pre, observed, plan = _conditional_observation_fixture()
-    canonical = canonicalize_observed_dispatcher_graph(pre, observed, plan)
-
-    assert canonical.blocks[10].succs == (30, 40)
-
-
-def test_observed_lowering_disambiguates_cloned_native_starts_by_stable_serial() -> (
-    None
-):
-    pre, observed, plan = _conditional_observation_fixture()
-    pre = replace(
-        pre,
-        blocks={
-            **pre.blocks,
-            30: replace(pre.blocks[30], start_ea=pre.blocks[10].start_ea),
-        },
-    )
-    observed = replace(
-        observed,
-        blocks={
-            **observed.blocks,
-            31: replace(observed.blocks[31], start_ea=observed.blocks[10].start_ea),
-        },
-    )
-
-    canonical = canonicalize_observed_dispatcher_graph(pre, observed, plan)
-
-    assert canonical.blocks[10].succs == (30, 40)
-
-
-def test_observed_lowering_uses_first_native_instruction_for_generated_block() -> None:
-    pre, observed, plan = _conditional_observation_fixture()
-    generated_insn = InsnSnapshot(
-        opcode=1,
-        ea=0xFFFFFFFFFFFFFFFF,
-        native_ea=0x1300,
-        operands=(),
-        kind=InsnKind.GOTO,
-    )
-    pre = replace(
-        pre,
-        blocks={
-            **pre.blocks,
-            40: replace(
-                pre.blocks[40],
-                start_ea=0xFFFFFFFFFFFFFFFF,
-                insn_snapshots=(generated_insn,),
-            ),
-        },
-    )
-    observed = replace(
-        observed,
-        blocks={
-            **observed.blocks,
-            41: replace(
-                observed.blocks[41],
-                start_ea=0xFFFFFFFFFFFFFFFF,
-                insn_snapshots=(generated_insn,),
-            ),
-        },
-    )
-
-    canonical = canonicalize_observed_dispatcher_graph(pre, observed, plan)
-
-    assert canonical.blocks[10].succs == (30, 40)
-
-
-def test_observed_lowering_matches_one_unique_addressless_terminal_sentinel() -> None:
-    pre, observed, plan = _conditional_observation_fixture()
-    pre = replace(
-        pre,
-        blocks={
-            **pre.blocks,
-            40: replace(pre.blocks[40], start_ea=0xFFFFFFFFFFFFFFFF),
-        },
-    )
-    observed = replace(
-        observed,
-        blocks={
-            **observed.blocks,
-            41: replace(observed.blocks[41], start_ea=0xFFFFFFFFFFFFFFFF),
-        },
-    )
-
-    canonical = canonicalize_observed_dispatcher_graph(pre, observed, plan)
-
-    assert canonical.blocks[10].succs == (30, 40)
-
-
-def test_observed_predecessor_mismatch_is_not_repaired() -> None:
-    pre, observed, plan = _conditional_observation_fixture()
-    corrupted = _replace_observed_edges(
-        observed,
-        {serial: block.succs for serial, block in observed.blocks.items()},
-        overrides={31: {"preds": (10,)}},
-    )
-
-    with pytest.raises(ValueError, match="CFG_50858"):
-        canonicalize_observed_dispatcher_graph(pre, corrupted, plan)
-
-
-def test_observed_lowering_requires_exact_helper_inventory_and_ownership() -> None:
-    pre, direct_arms, plan = _conditional_observation_fixture()
-    zero_helpers = _replace_observed_edges(
-        direct_arms,
-        {
-            **{
-                serial: block.succs
-                for serial, block in direct_arms.blocks.items()
-                if serial not in {10, 11}
-            },
-            10: (31, 41),
-            11: (),
-        },
-    )
-    with pytest.raises(ValueError, match="helper"):
-        canonicalize_observed_dispatcher_graph(pre, zero_helpers, plan)
-
-    _pre, stateful, stateful_plan = _conditional_observation_fixture(stateful=True)
-    one_helper_stateful = _replace_observed_edges(
-        stateful,
-        {
-            **{serial: block.succs for serial, block in stateful.blocks.items()},
-            10: (11, 41),
-            11: (31,),
-            12: (41,),
-        },
-    )
-    with pytest.raises(ValueError, match="helper"):
-        canonicalize_observed_dispatcher_graph(_pre, one_helper_stateful, stateful_plan)
-
-    multi_hop = _replace_observed_edges(
-        stateful,
-        {
-            **{serial: block.succs for serial, block in stateful.blocks.items()},
-            10: (11, 12),
-            11: (12,),
-            12: (31,),
-        },
-    )
-    with pytest.raises(ValueError, match="helper"):
-        canonicalize_observed_dispatcher_graph(_pre, multi_hop, stateful_plan)
-
-    shared = _replace_observed_edges(
-        direct_arms,
-        {
-            **{serial: block.succs for serial, block in direct_arms.blocks.items()},
-            10: (11, 11),
-            11: (31,),
-        },
-    )
-    with pytest.raises(ValueError, match="helper|CFG_50858"):
-        canonicalize_observed_dispatcher_graph(pre, shared, plan)
-
-
-def test_observed_lowering_requires_predicate_and_rewrite_identity() -> None:
-    condition = PreserveLivePredicateCondition(
-        predicate_ea=0x1005,
-        true_is_taken=True,
-    )
-    pre, observed, plan = _conditional_observation_fixture(
-        condition_operand=condition,
-    )
-    canonical = canonicalize_observed_dispatcher_graph(pre, observed, plan)
-    assert canonical.blocks[10].tail_kind is InsnKind.COND_JUMP
-
-    wrong_predicate_step = replace(
-        plan.steps[0],
-        rewrite_from_ea=0x1006,
-        condition_operand=replace(condition, predicate_ea=0x1006),
-    )
-    wrong_predicate_plan = SimpleNamespace(
-        steps=(wrong_predicate_step,),
-        source_coordinates=(),
-    )
-    with pytest.raises(ValueError, match="identity"):
-        canonicalize_observed_dispatcher_graph(pre, observed, wrong_predicate_plan)
-
-    source = observed.blocks[10]
-    untyped_predicate = replace(
-        source.insn_snapshots[0],
-        predicate_kind=None,
-        branch_predicate=None,
-    )
-    missing_identity = FlowGraph(
-        blocks={
-            **observed.blocks,
-            10: replace(source, insn_snapshots=(untyped_predicate,)),
-        },
-        entry_serial=observed.entry_serial,
-        func_ea=observed.func_ea,
-    )
-    with pytest.raises(ValueError, match="identity"):
-        canonicalize_observed_dispatcher_graph(pre, missing_identity, plan)
-
-    changed_semantics = replace(
-        source.insn_snapshots[0],
-        opcode=0x72,
-        raw_opcode=0x72,
-        predicate_kind=PredicateKind.EQ,
-        branch_predicate=PredicateKind.EQ,
-    )
-    wrong_semantics = replace(
-        observed,
-        blocks={
-            **observed.blocks,
-            10: replace(source, insn_snapshots=(changed_semantics,)),
-        },
-    )
-    with pytest.raises(ValueError, match="identity"):
-        canonicalize_observed_dispatcher_graph(pre, wrong_semantics, plan)
-
-
-def test_observed_stateful_helpers_require_exact_adjacent_state_writes() -> None:
-    pre, observed, plan = _conditional_observation_fixture(stateful=True)
-    assert canonicalize_observed_dispatcher_graph(pre, observed, plan)
-
-    empty_helpers = replace(
-        observed,
-        blocks={
-            **observed.blocks,
-            11: replace(observed.blocks[11], insn_snapshots=()),
-            12: replace(observed.blocks[12], insn_snapshots=()),
-        },
-    )
-    with pytest.raises(ValueError, match="state write"):
-        canonicalize_observed_dispatcher_graph(pre, empty_helpers, plan)
-
-    bad_write = replace(
-        observed.blocks[12].insn_snapshots[0],
-        l=MopSnapshot(kind=OperandKind.NUMBER, value=0x99, size=4),
-    )
-    wrong_value = replace(
-        observed,
-        blocks={
-            **observed.blocks,
-            12: replace(
-                observed.blocks[12],
-                insn_snapshots=(bad_write, observed.blocks[12].insn_snapshots[1]),
-            ),
-        },
-    )
-    with pytest.raises(ValueError, match="state write"):
-        canonicalize_observed_dispatcher_graph(pre, wrong_value, plan)
-
-    successors = {serial: block.succs for serial, block in observed.blocks.items()}
-    moved_blocks = dict(observed.blocks)
-    moved_blocks[99] = replace(
-        moved_blocks.pop(12),
-        serial=99,
-        preds=(10,),
-    )
-    successors.pop(12)
-    successors[10] = (11, 99)
-    successors[99] = moved_blocks[99].succs
-    moved = FlowGraph(
-        blocks=moved_blocks,
-        entry_serial=observed.entry_serial,
-        func_ea=observed.func_ea,
-    )
-    moved = _replace_observed_edges(moved, successors)
-    with pytest.raises(ValueError, match="adjacent"):
-        canonicalize_observed_dispatcher_graph(pre, moved, plan)
-
-
 def _nested_merge_corridor_graph() -> FlowGraph:
     """The two real MMORPG residual corridors, in portable CFG form."""
     return FlowGraph(
@@ -909,6 +368,7 @@ def _dispatcher_self_reentry_corridor_graph(
         blocks[0] = _block(0, (1, 8), (8,), 0x1000)
         blocks[8] = _block(8, (0,), (0,), 0x1080)
     return FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
+
 
 
 def test_dispatcher_self_reentry_corridor_is_enumerated_completely() -> None:
@@ -1020,520 +480,6 @@ def _executed_fragment_safety() -> dict[str, bool]:
     }
 
 
-def _interval_state_normalizer_fixture(
-    *,
-    extra_normalizer_operation: bool = False,
-    carrier_register: int = 8,
-    feeder_state_stkoff: int = 452,
-    normalized_value: int = 0x37E2E8EF,
-    semantic_normalizer_predecessor: bool = False,
-    retain_dynamic_corridor: bool = False,
-    downstream_state_carrier: bool = False,
-    carrier_effectful: bool = False,
-    downstream_carrier_reg: int = 8,
-    downstream_carrier_size: int = 4,
-    duplicate_carrier_destination: bool = False,
-    carrier_branch_is_call: bool = False,
-    state_write_prefix_dispatcher: bool = False,
-    routed_target_authoritative: bool = True,
-    source_owned_predecessor_route: bool = False,
-    source_route_assignment: str = "exact",
-    source_route_value: int | None = None,
-    source_route_projected_successors: tuple[int, ...] = (6,),
-    source_route_handler_root: bool = False,
-    normalizer_effectful: bool = False,
-    lose_unrelated_handler: bool = False,
-) -> tuple[FlowGraph, FlowGraph, object, object]:
-    """One strict interval-normalizer plus a predecessor-partitioned state merge."""
-
-    def move(
-        ea: int,
-        source: MopSnapshot,
-        destination: MopSnapshot,
-    ) -> InsnSnapshot:
-        return InsnSnapshot(
-            opcode=4,
-            ea=ea,
-            operands=(),
-            l=source,
-            d=destination,
-            kind=InsnKind.MOV,
-        )
-
-    state = MopSnapshot(kind=OperandKind.STACK, stkoff=452, size=4)
-    feeder_state = MopSnapshot(
-        kind=OperandKind.STACK,
-        stkoff=feeder_state_stkoff,
-        size=4,
-    )
-    carrier = MopSnapshot(kind=OperandKind.REGISTER, reg=carrier_register, size=4)
-    source_route_value = (
-        normalized_value + 1
-        if source_route_value is None and source_owned_predecessor_route
-        else normalized_value
-        if source_route_value is None
-        else source_route_value
-    )
-    normalizer_insns = (
-        move(
-            0x1450,
-            MopSnapshot(
-                kind=OperandKind.NUMBER,
-                value=normalized_value,
-                size=4,
-            ),
-            MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=4),
-        ),
-    )
-    if extra_normalizer_operation:
-        normalizer_insns += (
-            move(
-                0x1451,
-                MopSnapshot(kind=OperandKind.NUMBER, value=0x99, size=4),
-                MopSnapshot(kind=OperandKind.REGISTER, reg=10, size=4),
-            ),
-        )
-    if normalizer_effectful:
-        normalizer_insns += (
-            InsnSnapshot(
-                opcode=0x41,
-                ea=0x1451,
-                operands=(),
-                kind=InsnKind.CALL,
-                is_call=True,
-            ),
-        )
-    normalizer_insns += (
-        InsnSnapshot(
-            opcode=55,
-            ea=0x1452,
-            operands=(),
-            l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
-            kind=InsnKind.GOTO,
-        ),
-    )
-    dispatcher_branch = InsnSnapshot(
-        opcode=42,
-        ea=0x1200,
-        operands=(),
-        l=state,
-        r=MopSnapshot(
-            kind=OperandKind.NUMBER,
-            value=(
-                normalized_value + 1
-                if downstream_state_carrier
-                else 0x37E2E8EF
-            ),
-            size=4,
-        ),
-        d=MopSnapshot(
-            kind=OperandKind.BLOCK,
-            block_ref=(
-                6
-                if source_owned_predecessor_route
-                else 70
-                if downstream_state_carrier
-                else 43
-            ),
-        ),
-        kind=InsnKind.COND_JUMP,
-        predicate_kind=PredicateKind.EQ,
-        is_call=carrier_branch_is_call,
-    )
-    carrier_operand = MopSnapshot(
-        kind=OperandKind.REGISTER,
-        reg=downstream_carrier_reg,
-        size=downstream_carrier_size,
-    )
-    secondary_dispatcher_branch = InsnSnapshot(
-        opcode=42,
-        ea=0x1210,
-        operands=(),
-        l=carrier_operand if downstream_state_carrier else state,
-        r=MopSnapshot(
-            kind=OperandKind.NUMBER,
-            value=normalized_value if downstream_state_carrier else 0x22222222,
-            size=4,
-        ),
-        d=MopSnapshot(
-            kind=OperandKind.BLOCK,
-            block_ref=43 if downstream_state_carrier else 70,
-        ),
-        kind=InsnKind.COND_JUMP,
-        predicate_kind=PredicateKind.EQ,
-    )
-    source_route_entry_branch = InsnSnapshot(
-        opcode=42,
-        ea=0x1220,
-        operands=(),
-        l=carrier_operand,
-        r=MopSnapshot(
-            kind=OperandKind.NUMBER,
-            value=source_route_value + 1,
-            size=4,
-        ),
-        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=71),
-        kind=InsnKind.COND_JUMP,
-        predicate_kind=PredicateKind.EQ,
-    )
-    source_route_terminal_branch = InsnSnapshot(
-        opcode=42,
-        ea=0x1228,
-        operands=(),
-        l=carrier_operand,
-        r=MopSnapshot(
-            kind=OperandKind.NUMBER,
-            value=source_route_value,
-            size=4,
-        ),
-        d=MopSnapshot(
-            kind=OperandKind.BLOCK,
-            block_ref=72 if source_route_handler_root else 43,
-        ),
-        kind=InsnKind.COND_JUMP,
-        predicate_kind=PredicateKind.EQ,
-    )
-    dispatcher_insns: tuple[InsnSnapshot, ...] = (dispatcher_branch,)
-    if downstream_state_carrier:
-        carrier_xdu = InsnSnapshot(
-            opcode=9,
-            ea=0x1201,
-            operands=(),
-            l=state,
-            d=MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=8),
-            kind=InsnKind.XDU,
-            value_op_kind=ValueOpKind.ZEXT,
-        )
-        if carrier_effectful:
-            carrier_xdu = InsnSnapshot(
-                opcode=9,
-                ea=0x1201,
-                operands=(),
-                l=MopSnapshot(kind=OperandKind.GLOBAL, gaddr=0x140003000, size=4),
-                d=MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=8),
-                kind=InsnKind.XDU,
-                value_op_kind=ValueOpKind.ZEXT,
-            )
-        dispatcher_insns = (carrier_xdu, dispatcher_branch)
-        if duplicate_carrier_destination:
-            dispatcher_insns = (carrier_xdu, replace(carrier_xdu, ea=0x1202), dispatcher_branch)
-    unrelated_handler_branch = InsnSnapshot(
-        opcode=42,
-        ea=0x1710,
-        operands=(),
-        l=MopSnapshot(kind=OperandKind.GLOBAL, gaddr=0x140003000, size=4),
-        r=MopSnapshot(kind=OperandKind.NUMBER, value=0, size=4),
-        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=89),
-        kind=InsnKind.COND_JUMP,
-        predicate_kind=PredicateKind.NE,
-    )
-    semantic_handler = move(
-        0x1600,
-        MopSnapshot(kind=OperandKind.NUMBER, value=7, size=4),
-        MopSnapshot(kind=OperandKind.REGISTER, reg=11, size=4),
-    )
-    dynamic_state_write = InsnSnapshot(
-        opcode=21,
-        ea=0x1500,
-        operands=(),
-        l=MopSnapshot(kind=OperandKind.REGISTER, reg=24, size=4),
-        r=MopSnapshot(kind=OperandKind.REGISTER, reg=16, size=4),
-        d=state,
-        kind=InsnKind.UNKNOWN,
-        value_op_kind=ValueOpKind.XOR,
-    )
-    source_route_destination = carrier
-    source_route_source = MopSnapshot(
-        kind=OperandKind.NUMBER,
-        value=source_route_value,
-        size=4,
-    )
-    if source_route_assignment == "wrong_carrier":
-        source_route_destination = MopSnapshot(
-            kind=OperandKind.REGISTER,
-            reg=carrier_register + 1,
-            size=4,
-        )
-    elif source_route_assignment == "wrong_width":
-        source_route_destination = MopSnapshot(
-            kind=OperandKind.REGISTER,
-            reg=carrier_register,
-            size=8,
-        )
-        source_route_source = replace(source_route_source, size=8)
-    source_route_insns: tuple[InsnSnapshot, ...] = ()
-    if source_route_assignment != "absent":
-        if source_route_assignment == "unknown_expression":
-            source_route_insns = (
-                InsnSnapshot(
-                    opcode=21,
-                    ea=0x1300,
-                    operands=(),
-                    l=source_route_source,
-                    r=MopSnapshot(kind=OperandKind.REGISTER, reg=31, size=4),
-                    d=source_route_destination,
-                    kind=InsnKind.UNKNOWN,
-                    value_op_kind=ValueOpKind.XOR,
-                ),
-            )
-        elif source_route_assignment == "effectful_expression":
-            source_route_insns = (
-                move(
-                    0x1300,
-                    MopSnapshot(
-                        kind=OperandKind.GLOBAL,
-                        gaddr=0x140009000,
-                        size=4,
-                    ),
-                    source_route_destination,
-                ),
-            )
-        else:
-            source_route_insns = (
-                move(0x1300, source_route_source, source_route_destination),
-            )
-    if source_route_assignment == "later_clobber":
-        source_route_insns += (
-            move(
-                0x1301,
-                MopSnapshot(kind=OperandKind.REGISTER, reg=30, size=4),
-                carrier,
-            ),
-        )
-    if source_route_assignment == "preserved_effect":
-        source_route_insns = (
-            InsnSnapshot(
-                opcode=0x41,
-                ea=0x12FF,
-                operands=(),
-                kind=InsnKind.CALL,
-            ),
-            *source_route_insns,
-        )
-    if source_route_assignment == "effect_after_assignment":
-        source_route_insns += (
-            InsnSnapshot(
-                opcode=0x41,
-                ea=0x1301,
-                operands=(),
-                kind=InsnKind.CALL,
-            ),
-        )
-    if source_route_assignment == "unknown_after_assignment":
-        source_route_insns += (
-            InsnSnapshot(
-                opcode=0x7FFF,
-                ea=0x1301,
-                operands=(),
-                kind=InsnKind.UNKNOWN,
-            ),
-        )
-    entry_successors = (
-        (10, 12, 99)
-        if semantic_normalizer_predecessor
-        else (10, 12, 73)
-        if lose_unrelated_handler
-        else (10, 12)
-    )
-    normalizer_predecessors = (5, 99) if semantic_normalizer_predecessor else (5,)
-    blocks = {
-        0: _block(0, entry_successors, (), 0x1000, kind=BlockKind.N_WAY),
-        3: _block(
-            3,
-            (4,),
-            (10, 50),
-            0x1100,
-            kind=BlockKind.ONE_WAY,
-            insns=(move(0x1100, carrier, feeder_state),),
-            tail_kind=(None if state_write_prefix_dispatcher else InsnKind.GOTO),
-        ),
-        4: _block(
-            4,
-            (
-                (5, 6)
-                if source_owned_predecessor_route
-                else (5, 70 if downstream_state_carrier else 43)
-            ),
-            (3, 65),
-            0x1200,
-            kind=BlockKind.TWO_WAY,
-            insns=dispatcher_insns,
-            tail_kind=InsnKind.COND_JUMP,
-        ),
-        5: _block(
-            5,
-            (50, 43 if downstream_state_carrier else 70),
-            (4,),
-            0x1210,
-            kind=BlockKind.TWO_WAY,
-            insns=(secondary_dispatcher_branch,),
-            tail_kind=InsnKind.COND_JUMP,
-        ),
-        6: _block(
-            6,
-            (7, 71),
-            (4,) if source_owned_predecessor_route else (),
-            0x1220,
-            kind=BlockKind.TWO_WAY,
-            insns=(source_route_entry_branch,),
-            tail_kind=InsnKind.COND_JUMP,
-        ),
-        7: _block(
-            7,
-            (71, 72 if source_route_handler_root else 43),
-            (6,) if source_owned_predecessor_route else (),
-            0x1228,
-            kind=BlockKind.TWO_WAY,
-            insns=(source_route_terminal_branch,),
-            tail_kind=InsnKind.COND_JUMP,
-        ),
-        10: _block(
-            10,
-            (3,),
-            (0,),
-            0x1300,
-            kind=BlockKind.ONE_WAY,
-            insns=(
-                source_route_insns
-                if source_owned_predecessor_route or state_write_prefix_dispatcher
-                else ()
-            ),
-        ),
-        12: _block(12, (65,), (0,), 0x1350, kind=BlockKind.ONE_WAY),
-        43: _block(
-            43,
-            (88,),
-            (4, 71),
-            0x1400,
-            kind=BlockKind.ONE_WAY,
-            insns=(semantic_handler,),
-        ),
-        50: _block(
-            50,
-            (3,),
-            normalizer_predecessors,
-            0x1450,
-            kind=BlockKind.ONE_WAY,
-            insns=normalizer_insns,
-            tail_kind=InsnKind.GOTO,
-        ),
-        65: _block(
-            65,
-            (4,),
-            (12,),
-            0x1500,
-            kind=BlockKind.ONE_WAY,
-            insns=(dynamic_state_write,),
-            tail_kind=InsnKind.GOTO,
-        ),
-        70: _block(
-            70,
-            (71,),
-            (5,),
-            0x1680,
-            kind=BlockKind.ONE_WAY,
-            tail_kind=InsnKind.GOTO,
-        ),
-        71: _block(
-            71,
-            (43, 89),
-            (70,),
-            0x1710,
-            kind=BlockKind.TWO_WAY,
-            insns=(unrelated_handler_branch,),
-            tail_kind=InsnKind.COND_JUMP,
-        ),
-        72: _block(
-            72,
-            (88,),
-            (7,) if source_route_handler_root else (),
-            0x1720,
-            kind=BlockKind.ONE_WAY,
-            tail_kind=InsnKind.GOTO,
-        ),
-        73: _block(
-            73,
-            (88,),
-            (0,) if lose_unrelated_handler else (),
-            0x1730,
-            kind=BlockKind.ONE_WAY,
-            insns=(
-                InsnSnapshot(
-                    opcode=0x41,
-                    ea=0x1730,
-                    operands=(),
-                    kind=InsnKind.CALL,
-                    is_call=True,
-                ),
-            ),
-        ),
-        88: _block(88, (), (43,), 0x1780, kind=BlockKind.STOP),
-        89: _block(89, (), (71,), 0x1790, kind=BlockKind.STOP),
-    }
-    if semantic_normalizer_predecessor:
-        blocks[99] = _block(99, (50,), (0,), 0x1800, kind=BlockKind.ONE_WAY)
-    pre_graph = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
-    pre_graph = _replace_observed_edges(
-        pre_graph,
-        {serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()},
-    )
-    dispatcher_entry_serial = 3 if state_write_prefix_dispatcher else 4
-    modifications = []
-    if source_owned_predecessor_route:
-        modifications.append(
-            RedirectGoto(
-                from_serial=10,
-                old_target=3,
-                new_target=source_route_projected_successors[0],
-            )
-        )
-    else:
-        modifications.append(
-            RedirectGoto(from_serial=10, old_target=3, new_target=43)
-        )
-    if not retain_dynamic_corridor:
-        modifications.append(RedirectGoto(from_serial=12, old_target=65, new_target=71))
-    if lose_unrelated_handler:
-        modifications.append(RedirectGoto(from_serial=0, old_target=73, new_target=12))
-    coverage = analyze_dispatcher_corridor_coverage(
-        pre_graph,
-        modifications=tuple(modifications),
-        dispatcher_entry_serial=dispatcher_entry_serial,
-    )
-    post_successors = {
-        serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()
-    }
-    post_successors[10] = (
-        source_route_projected_successors
-        if source_owned_predecessor_route
-        else (43,)
-    )
-    if not retain_dynamic_corridor:
-        post_successors[12] = (71,)
-    if lose_unrelated_handler:
-        post_successors[0] = tuple(
-            12 if int(target) == 73 else int(target)
-            for target in post_successors[0]
-        )
-    post_graph = _replace_observed_edges(pre_graph, post_successors)
-    authoritative_handlers = (
-        {43, 50, 71} if routed_target_authoritative else {50, 71}
-    )
-    if source_route_handler_root:
-        authoritative_handlers.add(72)
-    if lose_unrelated_handler:
-        authoritative_handlers.add(73)
-    proof = build_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=dispatcher_entry_serial,
-        authoritative_handler_serials=frozenset(authoritative_handlers),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-        state_plumbing_serials=frozenset({3, 50, 65}),
-    )
-    return pre_graph, post_graph, coverage, proof
 
 
 def _state_transition_plumbing_fixture(
@@ -1660,54 +606,6 @@ def _state_transition_plumbing_fixture(
     return pre_graph, post_graph, coverage, proof
 
 
-def test_state_transition_plumbing_retirement_is_independently_proven() -> None:
-    pre_graph, post_graph, coverage, proof = _state_transition_plumbing_fixture()
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "state_transition_plumbing_retirement"
-    payload = validation.to_payload()["state_transition_plumbing_retirement"]
-    assert {
-        (item["role"], item["anchor"]["serial"])
-        for item in payload["retired_state_plumbing"]
-    } == {
-        ("state_expression", 123),
-        ("dispatcher_state_writer", 3),
-        ("dispatcher_state_writer", 112),
-    }
-    assert {
-        (route["source"]["serial"], route["routed_handler"]["serial"])
-        for route in payload["routes"]
-    } == {(10, 20), (12, 21)}
-
-    collect_proof_observations = (
-        collect_dispatcher_removal_preflight_proof_observations_from_metadata
-    )
-    observations = collect_proof_observations(
-        proof.to_metadata(),
-        coverage_metadata=coverage.to_metadata(),
-        maturity="MMAT_GLBOPT1",
-        phase="patch_transaction",
-        application_status="applied",
-        projected_validation=validation,
-        observed_validation=validation,
-        plan_id="state-plumbing-plan",
-        attempt_id="state-plumbing-attempt",
-    )
-    assert len(observations) == 1
-    persisted = observations[0].payload["observed_validation"]
-    assert persisted["reason"] == "state_transition_plumbing_retirement"
-    assert persisted["state_transition_plumbing_retirement"]["routes"][0]["source"][
-        "ea"
-    ] in {0x1010, 0x1020}
 
 
 @pytest.mark.parametrize(
@@ -1717,26 +615,6 @@ def test_state_transition_plumbing_retirement_is_independently_proven() -> None:
         {"missing_state_write": True},
     ),
 )
-def test_state_transition_plumbing_retirement_rejects_near_misses(
-    fixture_overrides: dict[str, bool],
-) -> None:
-    pre_graph, post_graph, coverage, proof = _state_transition_plumbing_fixture(
-        **fixture_overrides
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-    assert validation.reason == "dispatcher_removal_proof_drift"
-    assert validation.proof is not None
-    assert validation.proof.reason == "untyped_lost_block"
 
 
 def _partitioned_state_transition_retirement_fixture(
@@ -2241,1034 +1119,54 @@ def _partitioned_state_transition_retirement_fixture(
     return pre_graph, post_graph, coverage, proof
 
 
-def test_partitioned_state_transition_retirement_routes_actual_comparison_entries() -> None:
-    pre_graph, post_graph, coverage, proof = (
-        _partitioned_state_transition_retirement_fixture()
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "state_transition_plumbing_retirement"
-    payload = validation.to_payload()["state_transition_plumbing_retirement"]
-    assert {
-        (route["source"]["serial"], route["routed_handler"]["serial"])
-        for route in payload["routes"]
-    } == {(10, 100), (11, 101), (12, 102), (13, 104)}
-    assert {
-        (item["role"], item["anchor"]["serial"])
-        for item in payload["retired_state_plumbing"]
-    } == {
-        ("dispatcher_state_writer", 30),
-        ("dispatcher_state_writer", 31),
-        ("dispatcher_state_writer", 32),
-        ("state_comparison_corridor", 70),
-        ("state_comparison_corridor", 71),
-        ("state_comparison_corridor", 72),
-    }
-    route_paths = {
-        route["source"]["serial"]: tuple(
-            anchor["serial"] for anchor in route["path"]
-        )
-        for route in payload["routes"]
-    }
-    assert route_paths[10] == (30, 50)
-    assert route_paths[11] == (31, 51)
-    assert route_paths[12] == (32, 70, 71)
-    assert route_paths[13] == (32, 70, 72)
-
-
-def test_partitioned_retirement_accepts_only_bound_exact_effect_loss() -> None:
-    pre_graph, observed_graph, coverage, proof = (
-        _partitioned_state_transition_retirement_fixture(
-            observed_discards_exact_effect=True
-        )
-    )
-    metadata = {
-        "dispatcher_corridor_coverage": coverage.to_metadata(),
-        "dispatcher_removal_preflight_proof": proof.to_metadata(),
-    }
-
-    without_bound_exclusion = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=observed_graph,
-        plan_metadata=metadata,
-    )
-    with_bound_exclusion = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=observed_graph,
-        plan_metadata=metadata,
-        validated_exact_effect_exclusion_serials=frozenset({92}),
-    )
-
-    assert not without_bound_exclusion.passed
-    assert with_bound_exclusion.passed
-    assert with_bound_exclusion.reason == "state_transition_plumbing_retirement"
-    assert with_bound_exclusion.proof is not None
-    assert 92 in with_bound_exclusion.proof.lost_blocks
-
-
-def test_partitioned_state_transition_retirement_reuses_current_decision_forest() -> None:
-    """A state-writing handler leaf must not invalidate the comparison DAG."""
-
-    pre_graph, post_graph, coverage, proof = (
-        _partitioned_state_transition_retirement_fixture(
-            state_carrier_handler_leaf=True
-        )
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "state_transition_plumbing_retirement"
-    payload = validation.to_payload()["state_transition_plumbing_retirement"]
-    assert {
-        (route["source"]["serial"], route["routed_handler"]["serial"])
-        for route in payload["routes"]
-    } == {(10, 100), (11, 101), (12, 102), (13, 104)}
-
-
-def test_partitioned_state_transition_retirement_excludes_live_foreign_secondary_forest() -> None:
-    """A live foreign-state forest must not enlarge retired U32 comparisons."""
-
-    pre_graph, post_graph, coverage, proof = (
-        _partitioned_state_transition_retirement_fixture(
-            secondary_foreign_comparison_leaf=True
-        )
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "state_transition_plumbing_retirement"
-    payload = validation.to_payload()["state_transition_plumbing_retirement"]
-    retired = {
-        item["anchor"]["serial"] for item in payload["retired_state_plumbing"]
-    }
-    assert retired == {30, 31, 32, 70, 71, 72}
-    assert 107 not in retired
-
-
-def test_partitioned_state_transition_retirement_routes_post_intermediate_forest() -> None:
-    """A replacement comparison must replay to the same exact handler."""
-
-    pre_graph, post_graph, coverage, proof = (
-        _partitioned_state_transition_retirement_fixture(
-            intermediate_post_route=True
-        )
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "state_transition_plumbing_retirement"
-    payload = validation.to_payload()["state_transition_plumbing_retirement"]
-    source_route = next(
-        route for route in payload["routes"] if route["source"]["serial"] == 10
-    )
-    assert source_route["routed_handler"]["serial"] == 100
-
-
-def test_partitioned_state_transition_retirement_preserves_same_semantic_endpoint() -> None:
-    """An exact bypass may retain the same live non-dispatcher continuation."""
-
-    pre_graph, post_graph, coverage, proof = (
-        _partitioned_state_transition_retirement_fixture(
-            same_nonhandler_endpoint=True
-        )
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "state_transition_plumbing_retirement"
-    payload = validation.to_payload()["state_transition_plumbing_retirement"]
-    source_route = next(
-        route for route in payload["routes"] if route["source"]["serial"] == 10
-    )
-    assert source_route["routed_handler"]["serial"] == 80
-
-
-def test_partitioned_state_transition_retirement_rejects_post_intermediate_drift() -> None:
-    pre_graph, post_graph, coverage, proof = (
-        _partitioned_state_transition_retirement_fixture(
-            intermediate_post_route=True,
-            mismatched_intermediate_post_route=True,
-        )
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-    assert validation.reason == "dispatcher_removal_proof_drift"
-
-
-def test_partitioned_state_transition_retirement_routes_through_goto_alias() -> None:
-    pre_graph, post_graph, coverage, proof = (
-        _partitioned_state_transition_retirement_fixture(internal_goto_alias=True)
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "state_transition_plumbing_retirement"
-    payload = validation.to_payload()["state_transition_plumbing_retirement"]
-    route = next(
-        item for item in payload["routes"] if item["source"]["serial"] == 14
-    )
-    assert tuple(anchor["serial"] for anchor in route["path"]) == (
-        33,
-        50,
-        60,
-        51,
-    )
-
-
-def test_partitioned_state_transition_retirement_rejects_effectful_goto_alias() -> None:
-    pre_graph, post_graph, coverage, proof = (
-        _partitioned_state_transition_retirement_fixture(
-            internal_goto_alias=True,
-            effectful_internal_alias=True,
-        )
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-    assert validation.reason == "dispatcher_removal_proof_drift"
-
-
-@pytest.mark.parametrize(
-    "fixture_overrides",
-    (
-        {"mismatched_internal_target": True},
-        {"mismatched_secondary_target": True},
-        {"effectful_secondary_comparison": True},
-    ),
-)
-def test_partitioned_state_transition_retirement_rejects_inexact_routes(
-    fixture_overrides: dict[str, bool],
-) -> None:
-    pre_graph, post_graph, coverage, proof = (
-        _partitioned_state_transition_retirement_fixture(**fixture_overrides)
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-    assert validation.reason == "dispatcher_removal_proof_drift"
-    assert validation.proof is not None
-    assert validation.proof.reason == "untyped_lost_block"
-
-def test_applied_normalizer_observation_projects_observed_verdict() -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture()
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-    assert validation.passed
-
-    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
-        proof.to_metadata(),
-        coverage_metadata=coverage.to_metadata(),
-        maturity="MMAT_GLBOPT1",
-        phase="lower_state_machine",
-        application_status="applied",
-        projected_validation=validation,
-        observed_validation=validation,
-    )
-
-    payload = observations[0].payload
-    assert payload["proof_status"] == "accepted"
-    assert payload["reason"] == "interval_state_normalizer_retirement"
-    assert payload["producer_proof_status"] == "rejected"
-    assert payload["producer_reason"] == "authoritative_handler_lost"
-
-
-@pytest.mark.parametrize("application_status", ("pending", "failed"))
-def test_unobserved_normalizer_projection_keeps_producer_verdict(
-    application_status: str,
-) -> None:
-    _, _, coverage, proof = _interval_state_normalizer_fixture()
-    projected_validation = DispatcherRemovalPreflightValidation(
-        passed=True,
-        reason="projected_only_normalizer_retirement",
-    )
-
-    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
-        proof.to_metadata(),
-        coverage_metadata=coverage.to_metadata(),
-        maturity="MMAT_GLBOPT1",
-        phase="lower_state_machine",
-        application_status=application_status,
-        projected_validation=projected_validation,
-    )
-
-    payload = observations[0].payload
-    assert payload["proof_status"] == "rejected"
-    assert payload["reason"] == "authoritative_handler_lost"
-    assert "producer_proof_status" not in payload
-    assert "producer_reason" not in payload
-
-
-def test_applied_unobserved_proof_does_not_claim_applied_removal() -> None:
-    _, _, coverage, proof = _interval_state_normalizer_fixture()
-    projected_validation = DispatcherRemovalPreflightValidation(
-        passed=True,
-        reason="projected_only_normalizer_retirement",
-    )
-
-    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
-        proof.to_metadata(),
-        coverage_metadata=coverage.to_metadata(),
-        maturity="MMAT_GLBOPT1",
-        phase="patch_transaction",
-        application_status="applied",
-        projected_validation=projected_validation,
-    )
-
-    assert observations == ()
-
-
-def test_pending_observed_acceptance_keeps_producer_verdict() -> None:
-    _, _, coverage, proof = _interval_state_normalizer_fixture()
-    observed_validation = DispatcherRemovalPreflightValidation(
-        passed=True,
-        reason="interval_state_normalizer_retirement",
-    )
-
-    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
-        proof.to_metadata(),
-        coverage_metadata=coverage.to_metadata(),
-        maturity="MMAT_GLBOPT1",
-        phase="lower_state_machine",
-        application_status="pending",
-        observed_validation=observed_validation,
-    )
-
-    payload = observations[0].payload
-    assert payload["proof_status"] == "rejected"
-    assert payload["reason"] == "authoritative_handler_lost"
-    assert "producer_proof_status" not in payload
-    assert "producer_reason" not in payload
-
-
-def test_applied_observed_rejection_overrides_accepted_producer() -> None:
-    _, _, coverage, proof = _interval_state_normalizer_fixture()
-    producer_metadata = proof.to_metadata()
-    producer_metadata["proof_status"] = "accepted"
-    producer_metadata["reason"] = "typed_dispatcher_infrastructure_removed"
-    observed_validation = DispatcherRemovalPreflightValidation(
-        passed=False,
-        reason="observed_reachability_drift",
-    )
-
-    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
-        producer_metadata,
-        coverage_metadata=coverage.to_metadata(),
-        maturity="MMAT_GLBOPT1",
-        phase="lower_state_machine",
-        application_status="applied",
-        observed_validation=observed_validation,
-    )
-
-    payload = observations[0].payload
-    assert payload["proof_status"] == "rejected"
-    assert payload["reason"] == "observed_reachability_drift"
-    assert payload["producer_proof_status"] == "accepted"
-    assert payload["producer_reason"] == "typed_dispatcher_infrastructure_removed"
-
-
-def test_interval_state_normalizer_retirement_accepts_typed_state_carrier() -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        normalized_value=0x1939CB36,
-    )
-
-    assert not proof.passed
-    assert proof.reason == "authoritative_handler_lost"
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "interval_state_normalizer_retirement"
-    payload = validation.to_payload()["interval_state_normalizer_retirement"]
-    normalizer = payload["normalizers"][0]
-    assert normalizer["normalized_value"] == 0x1939CB36
-    assert normalizer["routed_handler"] == {
-        "serial": 43,
-        "ea": 0x1400,
-        "label": "blk43@0x1400",
-    }
-    assert {item["serial"] for item in payload["semantic_handlers"]} == {43, 71}
-
-
-def _stable_semantic_route_target_fixture() -> tuple[
-    FlowGraph,
-    FlowGraph,
-    frozenset[int],
-    frozenset[int],
-    frozenset[int],
-]:
-    pre_graph, post_graph, _coverage, _proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        routed_target_authoritative=False,
-        normalized_value=0x1939CB36,
-    )
-    resolution = corridor_module._resolve_dispatcher_state_comparison_entry(
-        pre_graph,
-        dispatcher_entry_serial=3,
-    )
-    assert resolution is not None
-    comparison_region = corridor_module._state_dispatcher_comparison_region(
-        pre_graph,
-        dispatcher_entry_serial=resolution.comparison_entry_serial,
-        state_identity=resolution.state_identity,
-    )
-    pre_reachable = corridor_module._reachable_from_entry(
-        pre_graph.as_adjacency_dict(),
-        pre_graph.entry_serial,
-    )
-    post_reachable = corridor_module._reachable_from_entry(
-        post_graph.as_adjacency_dict(),
-        post_graph.entry_serial,
-    )
-    return (
-        pre_graph,
-        post_graph,
-        comparison_region,
-        frozenset(pre_reachable - post_reachable),
-        post_reachable,
-    )
-
-
-def test_stable_semantic_route_target_rejects_anchor_drift() -> None:
-    pre_graph, post_graph, comparison_region, lost, post_reachable = (
-        _stable_semantic_route_target_fixture()
-    )
-    drifted_post = _replace_observed_edges(
-        post_graph,
-        {serial: tuple(block.succs) for serial, block in post_graph.blocks.items()},
-        overrides={43: {"start_ea": 0x1401}},
-    )
-
-    assert not corridor_module._is_stable_post_reachable_semantic_route_target(
-        pre_graph,
-        post_graph=drifted_post,
-        serial=43,
-        comparison_region=comparison_region,
-        lost=lost,
-        post_reachable=post_reachable,
-    )
-
-
-def test_stable_semantic_route_target_rejects_unreachable_lost_target() -> None:
-    pre_graph, post_graph, comparison_region, lost, post_reachable = (
-        _stable_semantic_route_target_fixture()
-    )
-
-    assert not corridor_module._is_stable_post_reachable_semantic_route_target(
-        pre_graph,
-        post_graph=post_graph,
-        serial=43,
-        comparison_region=comparison_region,
-        lost=lost | {43},
-        post_reachable=post_reachable - {43},
-    )
-
-
-def test_stable_semantic_route_target_rejects_effect_free_router() -> None:
-    pre_graph, post_graph, comparison_region, lost, post_reachable = (
-        _stable_semantic_route_target_fixture()
-    )
-    successors = {
-        serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()
-    }
-    router_pre = _replace_observed_edges(
-        pre_graph,
-        successors,
-        overrides={43: {"insn_snapshots": ()}},
-    )
-    router_post = _replace_observed_edges(
-        post_graph,
-        {serial: tuple(block.succs) for serial, block in post_graph.blocks.items()},
-        overrides={43: {"insn_snapshots": ()}},
-    )
-
-    assert not corridor_module._is_stable_post_reachable_semantic_route_target(
-        router_pre,
-        post_graph=router_post,
-        serial=43,
-        comparison_region=comparison_region,
-        lost=lost,
-        post_reachable=post_reachable,
-    )
-
-
-def test_interval_state_normalizer_retirement_accepts_state_write_prefix_dispatcher() -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        normalized_value=0x1939CB36,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "interval_state_normalizer_retirement"
-    payload = validation.to_payload()["interval_state_normalizer_retirement"]
-    assert payload["normalizers"][0]["routed_handler"] == {
-        "serial": 43,
-        "ea": 0x1400,
-        "label": "blk43@0x1400",
-    }
-    # The proof receipt retains the original prefix anchor even though the
-    # interval proof traverses the comparison forest at blk4.
-    assert payload["dispatcher"] == {
-        "serial": 3,
-        "ea": 0x1100,
-        "label": "blk3@0x1100",
-    }
-
-
-def test_interval_state_normalizer_accepts_stable_semantic_route_target() -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        routed_target_authoritative=False,
-        normalized_value=0x1939CB36,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "interval_state_normalizer_retirement"
-    payload = validation.to_payload()["interval_state_normalizer_retirement"]
-    normalizer = payload["normalizers"][0]
-    assert normalizer["normalizer"]["serial"] == 50
-    assert normalizer["routed_handler"] == {
-        "serial": 43,
-        "ea": 0x1400,
-        "label": "blk43@0x1400",
-    }
-    assert {item["serial"] for item in payload["semantic_handlers"]} == {43, 71}
-
-
-@pytest.mark.parametrize("assignment", ("exact", "preserved_effect"))
-def test_interval_state_normalizer_accepts_source_owned_route_through_surviving_router(
-    assignment: str,
-) -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        routed_target_authoritative=False,
-        normalized_value=0x1939CB36,
-        source_owned_predecessor_route=True,
-        source_route_assignment=assignment,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "interval_state_normalizer_retirement"
-    payload = validation.to_payload()["interval_state_normalizer_retirement"]
-    assert payload["source_routes"] == [
-        {
-            "source": {"serial": 10, "ea": 0x1300, "label": "blk10@0x1300"},
-            "state_feeder": {
-                "serial": 3,
-                "ea": 0x1100,
-                "label": "blk3@0x1100",
-            },
-            "state_value": 0x1939CB37,
-            "projected_successor": {
-                "serial": 6,
-                "ea": 0x1220,
-                "label": "blk6@0x1220",
-            },
-            "routed_handler": {
-                "serial": 43,
-                "ea": 0x1400,
-                "label": "blk43@0x1400",
-            },
-            "retired_normalizers": [],
-        }
-    ]
-    retired_serials = {
-        item["anchor"]["serial"] for item in payload["retired_state_plumbing"]
-    }
-    assert 10 not in retired_serials
-
-
-def test_interval_state_normalizer_accepts_source_route_via_retired_normalizer() -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        routed_target_authoritative=False,
-        normalized_value=0x1939CB36,
-        source_owned_predecessor_route=True,
-        source_route_value=0x1939CB38,
-        source_route_projected_successors=(43,),
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    payload = validation.to_payload()["interval_state_normalizer_retirement"]
-    assert payload["source_routes"][0]["routed_handler"]["serial"] == 43
-    assert payload["source_routes"][0]["retired_normalizers"] == [
-        {"serial": 50, "ea": 0x1450, "label": "blk50@0x1450"}
-    ]
-
-
-def test_interval_state_normalizer_accepts_exact_authoritative_handler_root_receipt() -> None:
-    """Retain the exact handler root even when pure exit glue follows it.
-
-    Target C's state ``0x6CF816C1`` is redirected to authoritative handler
-    ``blk7``.  That handler is itself a pure one-way root of the termination
-    corridor, so a generic comparison-region walk continues past it.  The
-    source-owned route receipt must bind the exact projected handler anchor
-    without reclassifying the handler as retired plumbing.
-    """
-
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        normalized_value=0x1939CB36,
-        source_owned_predecessor_route=True,
-        source_route_handler_root=True,
-        source_route_projected_successors=(72,),
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "interval_state_normalizer_retirement"
-    payload = validation.to_payload()["interval_state_normalizer_retirement"]
-    assert payload["source_routes"][0]["projected_successor"] == {
-        "serial": 72,
-        "ea": 0x1720,
-        "label": "blk72@0x1720",
-    }
-    assert payload["source_routes"][0]["routed_handler"] == {
-        "serial": 72,
-        "ea": 0x1720,
-        "label": "blk72@0x1720",
-    }
-    retired = {
-        item["anchor"]["serial"]
-        for item in payload["retired_state_plumbing"]
-    }
-    assert 72 not in retired
-
-
-@pytest.mark.parametrize(
-    ("projected_successors", "drift_handler_anchor"),
-    (
-        ((88,), False),  # no exact authoritative-handler receipt
-        ((71,), False),  # route/target mismatch
-        ((72,), True),  # exact serial with a stale native-EA anchor
-    ),
-)
-def test_interval_state_normalizer_rejects_forged_authoritative_handler_root_receipt(
-    projected_successors: tuple[int, ...],
-    drift_handler_anchor: bool,
-) -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        normalized_value=0x1939CB36,
-        source_owned_predecessor_route=True,
-        source_route_handler_root=True,
-        source_route_projected_successors=projected_successors,
-    )
-    if drift_handler_anchor:
-        post_graph = _replace_observed_edges(
-            post_graph,
-            {
-                serial: tuple(block.succs)
-                for serial, block in post_graph.blocks.items()
-            },
-            overrides={72: {"start_ea": 0x1721}},
-        )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-
-
-@pytest.mark.parametrize(
-    "fixture_override",
-    (
-        {"normalizer_effectful": True},
-        {"extra_normalizer_operation": True},
-        {"carrier_register": 9},
-        {"feeder_state_stkoff": 453},
-        {"lose_unrelated_handler": True},
-    ),
-)
-def test_authoritative_handler_root_receipt_cannot_widen_normalizer_retirement(
-    fixture_override: dict[str, object],
-) -> None:
-    """The handler-root receipt proves one route, never arbitrary loss."""
-
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        normalized_value=0x1939CB36,
-        source_owned_predecessor_route=True,
-        source_route_handler_root=True,
-        source_route_projected_successors=(72,),
-        **fixture_override,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-
-
-@pytest.mark.parametrize(
-    "assignment",
-    (
-        "absent",
-        "wrong_carrier",
-        "wrong_width",
-        "later_clobber",
-        "unknown_expression",
-        "effectful_expression",
-        "effect_after_assignment",
-        "unknown_after_assignment",
-    ),
-)
-def test_interval_state_normalizer_source_owned_route_rejects_unproved_state_value(
-    assignment: str,
-) -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        routed_target_authoritative=False,
-        normalized_value=0x1939CB36,
-        source_owned_predecessor_route=True,
-        source_route_assignment=assignment,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-
-
-def test_interval_state_normalizer_source_owned_route_rejects_intermediate_anchor_drift() -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        routed_target_authoritative=False,
-        normalized_value=0x1939CB36,
-        source_owned_predecessor_route=True,
-    )
-    post_graph = _replace_observed_edges(
-        post_graph,
-        {
-            serial: tuple(block.succs)
-            for serial, block in post_graph.blocks.items()
-        },
-        overrides={7: {"start_ea": 0x2228}},
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-
-
-@pytest.mark.parametrize("projected_successors", ((70,), (6, 43)))
-def test_interval_state_normalizer_source_owned_route_rejects_wrong_post_shape(
-    projected_successors: tuple[int, ...],
-) -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        state_write_prefix_dispatcher=True,
-        routed_target_authoritative=False,
-        normalized_value=0x1939CB36,
-        source_owned_predecessor_route=True,
-        source_route_projected_successors=projected_successors,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-
-
-def test_retired_normalizer_route_resolution_rejects_cycle_and_unproved_loss() -> None:
-    assert (
-        corridor_module._resolve_retired_normalizer_route_target(
-            50,
-            routes={50: 51, 51: 50},
-            lost=frozenset({50, 51}),
-        )
-        is None
-    )
-    assert (
-        corridor_module._resolve_retired_normalizer_route_target(
-            50,
-            routes={},
-            lost=frozenset({50}),
-        )
-        is None
-    )
-
-
-@pytest.mark.parametrize("near_miss", ("extra_value", "multiple_successors", "identity_mismatch", "multi_hop"))
-def test_state_write_prefix_resolver_rejects_structural_near_misses(
-    near_miss: str,
-) -> None:
-    fixture_kwargs: dict[str, object] = {
-        "downstream_state_carrier": True,
-        "state_write_prefix_dispatcher": True,
-    }
-    if near_miss == "identity_mismatch":
-        fixture_kwargs["feeder_state_stkoff"] = 453
-    pre_graph, _post_graph, _coverage, _proof = _interval_state_normalizer_fixture(
-        **fixture_kwargs,
-    )
-
-    if near_miss == "extra_value":
-        prefix = pre_graph.get_block(3)
-        assert prefix is not None
-        pre_graph = _replace_observed_edges(
-            pre_graph,
-            {serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()},
-            overrides={
-                3: {
-                    "insn_snapshots": prefix.insn_snapshots
-                    + (prefix.insn_snapshots[0],),
-                }
-            },
-        )
-    elif near_miss == "multiple_successors":
-        pre_graph = _replace_observed_edges(
-            pre_graph,
-            {
-                serial: ((4, 65) if serial == 3 else tuple(block.succs))
-                for serial, block in pre_graph.blocks.items()
-            },
-            overrides={3: {"kind": BlockKind.TWO_WAY}},
-        )
-    elif near_miss == "multi_hop":
-        pre_graph = _replace_observed_edges(
-            pre_graph,
-            {
-                serial: ((5,) if serial == 3 else tuple(block.succs))
-                for serial, block in pre_graph.blocks.items()
-            },
-        )
-
-    assert (
-        corridor_module._resolve_dispatcher_state_comparison_entry(
-            pre_graph,
-            dispatcher_entry_serial=3,
-        )
-        is None
-    )
-
-
-def test_interval_state_normalizer_retirement_rejects_foreign_state_carrier() -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        downstream_carrier_reg=9,
-        normalized_value=0x1939CB36,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-
-
-def test_interval_state_normalizer_retirement_rejects_effectful_state_carrier() -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        carrier_effectful=True,
-        normalized_value=0x1939CB36,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-
-
-def test_interval_state_normalizer_retirement_rejects_mixed_width_state_carrier() -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        downstream_carrier_size=8,
-        normalized_value=0x1939CB36,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 @pytest.mark.parametrize(
@@ -3278,86 +1176,8 @@ def test_interval_state_normalizer_retirement_rejects_mixed_width_state_carrier(
         {"carrier_branch_is_call": True},
     ),
 )
-def test_interval_state_normalizer_retirement_rejects_unsafe_carrier_router_shapes(
-    fixture_overrides: dict[str, object],
-) -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        downstream_state_carrier=True,
-        normalized_value=0x1939CB36,
-        **fixture_overrides,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
 
 
-def test_interval_state_normalizer_retirement_is_independently_proven() -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture()
-
-    assert not proof.passed
-    assert proof.reason == "authoritative_handler_lost"
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "interval_state_normalizer_retirement"
-    payload = validation.to_payload()["interval_state_normalizer_retirement"]
-    assert payload["normalizers"] == [
-        {
-            "normalizer": {"serial": 50, "ea": 0x1450, "label": "blk50@0x1450"},
-            "state_feeder": {"serial": 3, "ea": 0x1100, "label": "blk3@0x1100"},
-            "normalized_value": 0x37E2E8EF,
-            "routed_handler": {"serial": 43, "ea": 0x1400, "label": "blk43@0x1400"},
-        }
-    ]
-    assert {
-        (item["role"], item["anchor"]["serial"])
-        for item in payload["retired_state_plumbing"]
-    } == {
-        ("dispatcher_state_feeder", 3),
-        ("state_normalizer", 50),
-        ("dispatcher_state_merge", 65),
-    }
-
-    observations = (
-        collect_dispatcher_removal_preflight_proof_observations_from_metadata(
-            proof.to_metadata(),
-            coverage_metadata=coverage.to_metadata(),
-            maturity="MMAT_GLBOPT1",
-            phase="lower_state_machine",
-            application_status="applied",
-            projected_validation=validation,
-            observed_validation=validation,
-            plan_id="interval-normalizer-plan",
-            attempt_id="interval-normalizer-attempt",
-        )
-    )
-    assert len(observations) == 1
-    persisted_payload = observations[0].payload
-    assert persisted_payload["projected_validation"]["reason"] == (
-        "interval_state_normalizer_retirement"
-    )
-    assert persisted_payload["observed_validation"][
-        "interval_state_normalizer_retirement"
-    ]["normalizers"][0]["normalizer"] == {
-        "serial": 50,
-        "ea": 0x1450,
-        "label": "blk50@0x1450",
-    }
 
 
 @pytest.mark.parametrize(
@@ -3371,23 +1191,6 @@ def test_interval_state_normalizer_retirement_is_independently_proven() -> None:
         {"retain_dynamic_corridor": True},
     ),
 )
-def test_interval_state_normalizer_retirement_rejects_unsafe_near_misses(
-    fixture_overrides: dict[str, object],
-) -> None:
-    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
-        **fixture_overrides
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
 
 
 def _nested_merge_behind_shared_feeder_graph() -> FlowGraph:
@@ -3540,32 +1343,7 @@ def test_target_shape_advisory_and_explicit_veto_preserve_exact_counts(
         live_function=object(),
     )
     assert len(graph_modifications(advisory_plan)) == 25
-    advisory = advisory_plan.metadata_dict()[USE_DEF_SEVERANCE_AUDIT_METADATA]
-    assert advisory["severance_count"] == 3
-    assert advisory["enforced"] is False
-    assert len(advisory["violations"]) == 3
-    assert {
-        (
-            violation["use"]["serial"],
-            violation["use"]["ea"],
-            violation["use"]["label"],
-            violation["use_instruction_ea"],
-        )
-        for violation in advisory["violations"]
-    } == {(45, 0x700200, "blk45@0x700200", 0x7002AA)}
-    observations = collect_use_def_severance_observations_from_metadata(
-        advisory,
-        maturity="MMAT_GLBOPT1",
-        phase="lower_state_machine",
-    )
-    assert len(observations) == 4
-    assert sum(item.kind == "UnflattenUseDefSeverance" for item in observations) == 3
-    assert all(
-        item.payload["use"] == {"serial": 45, "ea": 0x700200, "label": "blk45@0x700200"}
-        and item.payload["use_instruction_ea"] == 0x7002AA
-        for item in observations
-        if item.kind == "UnflattenUseDefSeverance"
-    )
+    assert not set(advisory_plan.metadata_dict()).intersection(LEGACY_UNFLATTEN_KEYS)
 
     monkeypatch.setenv("D810_USE_DEF_VETO", "1")
     enforced_plan = emit_minimal_unflatten(
@@ -3577,10 +1355,7 @@ def test_target_shape_advisory_and_explicit_veto_preserve_exact_counts(
         live_function=object(),
     )
     assert graph_modifications(enforced_plan) == []
-    enforced = enforced_plan.metadata_dict()[USE_DEF_SEVERANCE_AUDIT_METADATA]
-    assert enforced["severance_count"] == 3
-    assert enforced["enforced"] is True
-    assert enforced["enforcement_status"] == "fragment_rejected"
+    assert not set(enforced_plan.metadata_dict()).intersection(LEGACY_UNFLATTEN_KEYS)
 
 
 def test_partial_use_def_audit_metadata_and_collection_report_unavailable_safety():
@@ -3627,25 +1402,6 @@ def test_coverage_descends_one_shared_merge_behind_a_shared_feeder() -> None:
     } == {123}
 
 
-def test_coverage_validation_preserves_shared_merge_paths_from_flowgraph() -> None:
-    """Validation must normalize list-valued FlowGraph adjacency at the boundary."""
-    graph = _nested_merge_behind_shared_feeder_graph()
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(),
-        dispatcher_entry_serial=4,
-    )
-
-    validation = validate_dispatcher_corridor_coverage_metadata(
-        graph,
-        post_graph=graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-        },
-    )
-
-    assert validation.passed
-    assert validation.reason == "dispatcher_corridor_coverage_matches_observed"
 
 
 def test_coverage_reports_each_reachable_nested_dispatcher_corridor() -> None:
@@ -3824,145 +1580,8 @@ def test_dispatcher_removal_proof_accepts_only_typed_infrastructure_loss() -> No
     }
 
 
-def test_dispatcher_removal_proof_types_control_only_upstream_corridors_from_coverage() -> None:
-    """Covered multi-forest paths may retire only their verified control nodes."""
-    graph = _nested_merge_corridor_graph()
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
-        dispatcher_entry_serial=4,
-    )
-
-    # The committed projection bypasses both forests at the entry, so the
-    # source nodes 45 and 122 are lost alongside the shared merge/feeder and
-    # dispatcher.  Their exact covered paths are the only source of authority.
-    post_graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            0: _block(0, (121, 34), (), 0x7FF859C06F60),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-
-    assert proof.passed
-    assert proof.lost_blocks == {3, 4, 45, 122, 123}
-    assert {
-        (entry.role, entry.anchor.serial) for entry in proof.retired_infrastructure
-    } >= {
-        ("comparison_corridor", 45),
-        ("comparison_corridor", 122),
-    }
-    validation = validate_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-    assert validation.passed
-    assert validation.reason == "comparison_corridor_retirement"
 
 
-def test_dispatcher_removal_validation_rejects_mixed_comparison_and_semantic_loss() -> None:
-    """The retirement exception cannot hide an unrelated lost block.
-
-    The producer proof is intentionally rejected when a semantic block is lost
-    alongside the covered comparison corridors.  The validator must retain
-    that same boundary when it independently rebuilds the proof from the
-    projected CFG; a forged ``accepted`` producer payload must not turn the
-    mixed loss into a valid corridor retirement.
-    """
-    base = _nested_merge_corridor_graph()
-    semantic = InsnSnapshot(
-        opcode=4,
-        ea=0x7FF859C09000,
-        operands=(),
-        kind=InsnKind.MOV,
-    )
-    pre_blocks = dict(base.blocks)
-    pre_blocks[0] = _block(
-        0,
-        (45, 122, 200),
-        (),
-        0x7FF859C06F60,
-    )
-    pre_blocks[200] = _block(
-        200,
-        (34,),
-        (0,),
-        0x7FF859C09000,
-        kind=BlockKind.ONE_WAY,
-        insns=(semantic,),
-        tail_kind=InsnKind.GOTO,
-    )
-    pre_graph = FlowGraph(
-        blocks=pre_blocks,
-        entry_serial=0,
-        func_ea=base.func_ea,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        pre_graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
-        dispatcher_entry_serial=4,
-    )
-    post_blocks = dict(pre_blocks)
-    post_blocks[0] = _block(0, (121, 34), (), 0x7FF859C06F60)
-    post_blocks[45] = _block(45, (121,), (0,), 0x7FF859C07656)
-    post_blocks[122] = _block(122, (34,), (0,), 0x7FF859C08BFE)
-    post_blocks.pop(200)
-    post_graph = FlowGraph(
-        blocks=post_blocks,
-        entry_serial=0,
-        func_ea=base.func_ea,
-    )
-
-    proof = build_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-
-    assert not proof.passed
-    assert proof.reason == "untyped_lost_block"
-    assert 200 in proof.lost_blocks
-
-    forged = proof.to_metadata()
-    forged["proof_status"] = "accepted"
-    forged["reason"] = "typed_dispatcher_infrastructure_removed"
-    forged["producer_safety"] = _executed_fragment_safety()
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": forged,
-        },
-    )
-
-    assert not validation.passed
-    assert validation.reason == "dispatcher_removal_proof_drift"
 
 
 def _populated_router_block(*operands: MopSnapshot) -> BlockSnapshot:
@@ -4012,75 +1631,6 @@ def test_effect_free_dispatcher_router_rejects_effectful_or_unresolved_operands(
     )
 
 
-def test_dispatcher_removal_proof_rejects_semantic_upstream_corridor_fragment() -> None:
-    """One value/effect instruction vetoes retirement of every sibling path."""
-    graph = _nested_merge_corridor_graph()
-    semantic = InsnSnapshot(
-        opcode=4,
-        ea=0x7FF859C07656,
-        operands=(),
-        kind=InsnKind.MOV,
-    )
-    graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            45: _block(
-                45,
-                (123,),
-                (0,),
-                0x7FF859C07656,
-                insns=(semantic,),
-            ),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
-        dispatcher_entry_serial=4,
-    )
-    post_graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            0: _block(0, (121, 34), (), 0x7FF859C06F60),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-
-    assert not proof.passed
-    assert proof.reason == "untyped_lost_block"
-    assert all(
-        entry.role != "comparison_corridor"
-        for entry in proof.retired_infrastructure
-    )
-    forged = proof.to_metadata()
-    forged["proof_status"] = "accepted"
-    forged["reason"] = "typed_dispatcher_infrastructure_removed"
-    forged["producer_safety"] = _executed_fragment_safety()
-    validation = validate_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": forged,
-        },
-    )
-    assert not validation.passed
 
 
 def test_dispatcher_removal_proof_skips_direct_corridor_in_mixed_coverage() -> None:
@@ -4169,181 +1719,6 @@ def test_dispatcher_removal_proof_rejects_lost_handler_near_miss() -> None:
     assert not proof.passed
     assert proof.reason == "authoritative_handler_lost"
 
-
-def _detached_dead_handler_component_fixture(
-    *, external_ingress: bool = False
-) -> tuple[FlowGraph, FlowGraph, object]:
-    state = MopSnapshot(kind=OperandKind.STACK, stkoff=40, size=4)
-    branch = InsnSnapshot(
-        opcode=42,
-        ea=0x1200,
-        operands=(),
-        l=state,
-        r=MopSnapshot(kind=OperandKind.NUMBER, value=7, size=4),
-        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=21),
-        kind=InsnKind.COND_JUMP,
-        predicate_kind=PredicateKind.EQ,
-    )
-    dead_local_write = InsnSnapshot(
-        opcode=1,
-        ea=0x1310,
-        operands=(),
-        l=MopSnapshot(kind=OperandKind.NUMBER, value=1, size=4),
-        d=MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=4),
-        kind=InsnKind.MOV,
-        value_op_kind=ValueOpKind.MOVE,
-    )
-    move_state = InsnSnapshot(
-        opcode=2,
-        ea=0x1320,
-        operands=(),
-        l=MopSnapshot(kind=OperandKind.NUMBER, value=9, size=4),
-        d=state,
-        kind=InsnKind.MOV,
-        value_op_kind=ValueOpKind.MOVE,
-    )
-    entry_succs = (10, 12, 21) if external_ingress else (10, 12)
-    root_preds = (4, 0) if external_ingress else (4,)
-    pre_graph = FlowGraph(
-        blocks={
-            0: _block(0, entry_succs, (), 0x1000, kind=BlockKind.N_WAY),
-            10: _block(10, (123,), (0,), 0x1010, kind=BlockKind.ONE_WAY),
-            12: _block(12, (112,), (0,), 0x1020, kind=BlockKind.ONE_WAY),
-            123: _block(123, (3,), (10,), 0x1100, kind=BlockKind.ONE_WAY),
-            3: _block(3, (4,), (123,), 0x1110, kind=BlockKind.ONE_WAY),
-            112: _block(112, (4,), (12,), 0x1120, kind=BlockKind.ONE_WAY),
-            4: _block(
-                4,
-                (20, 21),
-                (3, 112, 113),
-                0x1200,
-                kind=BlockKind.TWO_WAY,
-                insns=(branch,),
-            ),
-            20: _block(20, (), (4,), 0x1300, kind=BlockKind.STOP),
-            21: _block(
-                21,
-                (113,),
-                root_preds,
-                0x1310,
-                kind=BlockKind.ONE_WAY,
-                insns=(dead_local_write,),
-            ),
-            113: _block(
-                113,
-                (4,),
-                (21,),
-                0x1320,
-                kind=BlockKind.ONE_WAY,
-                insns=(move_state,),
-            ),
-        },
-        entry_serial=0,
-        func_ea=0x1000,
-    )
-    modifications = (
-        RedirectGoto(from_serial=10, old_target=123, new_target=20),
-        RedirectGoto(from_serial=12, old_target=112, new_target=20),
-        RedirectGoto(from_serial=21, old_target=113, new_target=20),
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        pre_graph,
-        modifications=modifications,
-        dispatcher_entry_serial=4,
-    )
-    post_graph = _replace_observed_edges(
-        pre_graph,
-        {
-            **{serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()},
-            0: (10, 12),
-            10: (20,),
-            12: (20,),
-            21: (20,),
-        },
-    )
-    return pre_graph, post_graph, coverage
-
-
-def test_detached_dead_handler_component_accepts_closed_dispatcher_only_island() -> None:
-    pre_graph, post_graph, coverage = _detached_dead_handler_component_fixture()
-
-    proof = build_detached_dead_handler_component_proof(
-        pre_graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        authoritative_handler_serials=frozenset({20, 21}),
-    )
-
-    assert proof is not None
-    assert {item.serial for item in proof.dead_handlers} == {21}
-    assert {item.serial for item in proof.component} == {21, 113}
-    assert not proof.lost_effects
-
-    removal = build_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({20, 21}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-    validation = validate_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        plan_metadata={
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: removal.to_metadata(),
-            DETACHED_DEAD_HANDLER_COMPONENT_METADATA: proof.to_payload(),
-        },
-    )
-    assert validation.passed
-    assert validation.reason == "detached_dead_handler_component_retirement"
-
-
-def test_detached_dead_handler_component_rejects_non_dispatcher_ingress() -> None:
-    pre_graph, post_graph, coverage = _detached_dead_handler_component_fixture(
-        external_ingress=True
-    )
-    assert (
-        build_detached_dead_handler_component_proof(
-            pre_graph,
-            post_graph=post_graph,
-            coverage=coverage,
-            authoritative_handler_serials=frozenset({20, 21}),
-        )
-        is None
-    )
-
-
-def test_detached_dead_handler_component_rejects_lost_call() -> None:
-    pre_graph, post_graph, coverage = _detached_dead_handler_component_fixture()
-    call = InsnSnapshot(opcode=1, ea=0x1310, operands=(), kind=InsnKind.CALL)
-    call_graph = FlowGraph(
-        blocks={
-            **pre_graph.blocks,
-            21: _block(
-                21,
-                (113,),
-                (4,),
-                0x1310,
-                kind=BlockKind.ONE_WAY,
-                insns=(call,),
-            ),
-        },
-        entry_serial=pre_graph.entry_serial,
-        func_ea=pre_graph.func_ea,
-    )
-
-    assert (
-        build_detached_dead_handler_component_proof(
-            call_graph,
-            post_graph=post_graph,
-            coverage=coverage,
-            authoritative_handler_serials=frozenset({20, 21}),
-        )
-        is None
-    )
 
 def test_dispatcher_removal_proof_rejects_empty_authoritative_handlers() -> None:
     graph = _nested_merge_corridor_graph()
@@ -4459,273 +1834,12 @@ def test_dispatcher_removal_proof_rejects_linear_semantic_body_labeled_merge() -
     assert coverage.covered_corridors[0].state_merge is None
 
 
-def test_dispatcher_removal_validation_rejects_handler_ea_drift() -> None:
-    graph = _nested_merge_corridor_graph()
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
-        dispatcher_entry_serial=4,
-    )
-    projected = FlowGraph(
-        blocks={
-            **graph.blocks,
-            45: _block(45, (121,), (0,), 0x7FF859C07656),
-            122: _block(122, (34,), (0,), 0x7FF859C08BFE),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=projected,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-    observed = FlowGraph(
-        blocks={
-            **projected.blocks,
-            121: _block(121, (), (4,), 0xDEADBEEF),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=observed,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-    assert validation.reason == "dispatcher_removal_proof_coverage_drift" or (
-        validation.proof is not None
-        and validation.proof.reason == "authoritative_handler_identity_drift"
-    )
 
 
-def test_dispatcher_removal_validation_rejects_terminal_shape_drift() -> None:
-    original = _nested_merge_corridor_graph()
-    graph = FlowGraph(
-        blocks={
-            **original.blocks,
-            34: _block(34, (), (4,), 0x7FF859C0747A, kind=BlockKind.STOP),
-            121: _block(121, (), (4,), 0x7FF859C08B37, kind=BlockKind.STOP),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
-        dispatcher_entry_serial=4,
-    )
-    projected = FlowGraph(
-        blocks={
-            **graph.blocks,
-            45: _block(45, (121,), (0,), 0x7FF859C07656),
-            122: _block(122, (34,), (0,), 0x7FF859C08BFE),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=projected,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-    observed = FlowGraph(
-        blocks={
-            **projected.blocks,
-            34: _block(
-                34,
-                (121,),
-                (4,),
-                0x7FF859C0747A,
-                kind=BlockKind.ONE_WAY,
-            ),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=observed,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-    assert validation.reason == "dispatcher_removal_proof_coverage_drift" or (
-        validation.proof is not None
-        and validation.proof.reason == "reachable_terminal_lost"
-    )
 
 
-def test_dispatcher_removal_validation_rejects_terminal_ea_drift() -> None:
-    original = _nested_merge_corridor_graph()
-    graph = FlowGraph(
-        blocks={
-            **original.blocks,
-            34: _block(34, (), (4,), 0x7FF859C0747A, kind=BlockKind.STOP),
-            121: _block(121, (), (4,), 0x7FF859C08B37, kind=BlockKind.STOP),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
-        dispatcher_entry_serial=4,
-    )
-    projected = FlowGraph(
-        blocks={
-            **graph.blocks,
-            45: _block(45, (121,), (0,), 0x7FF859C07656),
-            122: _block(122, (34,), (0,), 0x7FF859C08BFE),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=projected,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-    observed = FlowGraph(
-        blocks={
-            **projected.blocks,
-            34: _block(34, (), (4,), 0xDEADBEEF, kind=BlockKind.STOP),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-
-    validation = validate_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=observed,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proof.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-    assert validation.reason == "dispatcher_removal_proof_drift"
-    assert validation.proof is not None
-    assert validation.proof.reason == "reachable_terminal_identity_drift"
 
 
-def test_dispatcher_removal_proof_requires_typed_plumbing_for_effectful_feeder() -> (
-    None
-):
-    graph = _nested_merge_corridor_graph()
-    effectful = InsnSnapshot(
-        opcode=4,
-        ea=0x7FF859C070C0,
-        operands=(),
-        kind=InsnKind.MOV,
-    )
-    graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            3: _block(
-                3,
-                (4,),
-                (123,),
-                0x7FF859C070C0,
-                insns=(effectful,),
-            ),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
-        dispatcher_entry_serial=4,
-    )
-    post_graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            45: _block(45, (121,), (0,), 0x7FF859C07656),
-            122: _block(122, (34,), (0,), 0x7FF859C08BFE),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-
-    unavailable = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-    proved = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-        state_plumbing_serials=frozenset({3}),
-    )
-
-    assert not unavailable.passed
-    assert unavailable.reason == "untyped_lost_block"
-    assert proved.passed
-    assert [anchor.serial for anchor in proved.state_plumbing] == [3]
-
-    # A plan payload can self-label the effectful feeder as plumbing and stamp
-    # producer-safety booleans.  The transaction validator has no bound
-    # use-def/plumbing authority, so those metadata fields must not unlock the
-    # narrow entry-count exception.
-    validation = validate_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": proved.to_metadata(),
-        },
-    )
-
-    assert not validation.passed
-    assert validation.reason == "dispatcher_removal_proof_drift"
-    assert validation.proof is not None
-    assert validation.proof.reason == "untyped_lost_block"
-    assert validation.proof.state_plumbing == ()
 
 
 def test_dispatcher_removal_proof_rejects_effectful_state_merge() -> None:
@@ -4786,65 +1900,131 @@ def test_dispatcher_removal_proof_rejects_effectful_state_merge() -> None:
     assert 123 in proof.lost_blocks
 
 
-def test_dispatcher_removal_validator_rejects_forged_comparison_role_metadata() -> None:
-    graph = FlowGraph(
+def _detached_dead_handler_component_fixture() -> tuple[FlowGraph, FlowGraph, object]:
+    """One typed producer candidate with a retained and a dead handler."""
+    state = MopSnapshot(kind=OperandKind.STACK, stkoff=40, size=4)
+    branch = InsnSnapshot(
+        opcode=42,
+        ea=0x1200,
+        operands=(),
+        l=state,
+        r=MopSnapshot(kind=OperandKind.NUMBER, value=7, size=4),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=21),
+        kind=InsnKind.COND_JUMP,
+        predicate_kind=PredicateKind.EQ,
+    )
+    dead_local_write = InsnSnapshot(
+        opcode=1,
+        ea=0x1310,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.NUMBER, value=1, size=4),
+        d=MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=4),
+        kind=InsnKind.MOV,
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    move_state = InsnSnapshot(
+        opcode=2,
+        ea=0x1320,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.NUMBER, value=9, size=4),
+        d=state,
+        kind=InsnKind.MOV,
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    pre_graph = FlowGraph(
         blocks={
-            0: _block(0, (1,), (), 0x1000),
-            1: _block(1, (2,), (0,), 0x1001),
-            2: _block(2, (3,), (1,), 0x1002),
-            3: _block(3, (4,), (2,), 0x1003),
-            4: _block(4, (), (3,), 0x1004),
+            0: _block(0, (10, 12), (), 0x1000, kind=BlockKind.N_WAY),
+            10: _block(10, (123,), (0,), 0x1010, kind=BlockKind.ONE_WAY),
+            12: _block(12, (112,), (0,), 0x1020, kind=BlockKind.ONE_WAY),
+            123: _block(123, (3,), (10,), 0x1100, kind=BlockKind.ONE_WAY),
+            3: _block(3, (4,), (123,), 0x1110, kind=BlockKind.ONE_WAY),
+            112: _block(112, (4,), (12,), 0x1120, kind=BlockKind.ONE_WAY),
+            4: _block(
+                4,
+                (20, 21),
+                (3, 112, 113),
+                0x1200,
+                kind=BlockKind.TWO_WAY,
+                insns=(branch,),
+            ),
+            20: _block(20, (), (4,), 0x1300, kind=BlockKind.STOP),
+            21: _block(
+                21, (113,), (4,), 0x1310, kind=BlockKind.ONE_WAY,
+                insns=(dead_local_write,),
+            ),
+            113: _block(
+                113, (4,), (21,), 0x1320, kind=BlockKind.ONE_WAY,
+                insns=(move_state,),
+            ),
         },
         entry_serial=0,
         func_ea=0x1000,
     )
     coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(RedirectGoto(from_serial=0, old_target=1, new_target=4),),
-        dispatcher_entry_serial=3,
+        pre_graph,
+        modifications=(
+            RedirectGoto(from_serial=10, old_target=123, new_target=20),
+            RedirectGoto(from_serial=12, old_target=112, new_target=20),
+            RedirectGoto(from_serial=21, old_target=113, new_target=20),
+        ),
+        dispatcher_entry_serial=4,
     )
-    post_graph = FlowGraph(
-        blocks={**graph.blocks, 0: _block(0, (4,), (), 0x1000)},
-        entry_serial=0,
-        func_ea=0x1000,
+    post_graph = _replace_observed_edges(
+        pre_graph,
+        {
+            **{serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()},
+            0: (10, 12), 10: (20,), 12: (20,), 21: (20,),
+        },
     )
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
+    return pre_graph, post_graph, coverage
+
+
+def test_detached_component_analysis_uses_state_aware_decision_forest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The typed producer recovers a state-aware forest if structural routing abstains."""
+    pre_graph, post_graph, coverage = _detached_dead_handler_component_fixture()
+    monkeypatch.setattr(
+        corridor_module,
+        "_independent_comparison_dispatcher_region",
+        lambda *_args, **_kwargs: frozenset(),
+    )
+
+    analysis = build_detached_dead_handler_component_analysis(
+        pre_graph,
         post_graph=post_graph,
         coverage=coverage,
-        dispatcher_entry_serial=3,
-        authoritative_handler_serials=frozenset({4}),
-        dispatcher_region_serials=frozenset({3}),
-        producer_safety=_executed_fragment_safety(),
+        authoritative_handler_serials=frozenset({20, 21}),
     )
-    forged = proof.to_metadata()
-    forged["proof_status"] = "accepted"
-    forged["reason"] = "typed_dispatcher_infrastructure_removed"
-    forged["retired_infrastructure"] = [
-        {
-            "role": "comparison_dispatcher",
-            "anchor": {"serial": 1, "ea": 0x1001, "label": "blk1@0x1001"},
-        },
-        {
-            "role": "dispatcher_feeder",
-            "anchor": {"serial": 2, "ea": 0x1002, "label": "blk2@0x1002"},
-        },
-        {
-            "role": "comparison_dispatcher",
-            "anchor": {"serial": 3, "ea": 0x1003, "label": "blk3@0x1003"},
-        },
-    ]
 
-    validation = validate_dispatcher_removal_preflight_proof(
-        graph,
+    assert analysis is not None
+    assert {item.serial for item in analysis.dead_handlers} == {21}
+    assert {item.serial for item in analysis.component} == {21, 113}
+
+
+def test_detached_component_analysis_uses_pure_control_fallback_for_wrapper_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A strict forest abstention still permits only the bounded pure-control walk."""
+    pre_graph, post_graph, coverage = _detached_dead_handler_component_fixture()
+    monkeypatch.setattr(
+        corridor_module,
+        "_independent_comparison_dispatcher_region",
+        lambda *_args, **_kwargs: frozenset(),
+    )
+    monkeypatch.setattr(
+        corridor_module,
+        "build_current_u32_decision_forest",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+
+    analysis = build_detached_dead_handler_component_analysis(
+        pre_graph,
         post_graph=post_graph,
-        plan_metadata={
-            "dispatcher_corridor_coverage": coverage.to_metadata(),
-            "dispatcher_removal_preflight_proof": forged,
-        },
+        coverage=coverage,
+        authoritative_handler_serials=frozenset({20, 21}),
     )
 
-    assert not validation.passed
-    assert validation.reason == "dispatcher_removal_proof_drift"
-    assert validation.proof is not None
-    assert validation.proof.reason == "untyped_lost_block"
+    assert analysis is not None
+    assert {item.serial for item in analysis.component} == {21, 113}

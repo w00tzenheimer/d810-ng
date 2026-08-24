@@ -18,30 +18,63 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 from .helpers import import_authority_model
 from .helpers import authority_id, block_ref, edge_role, state_identity
 from d810.transforms.unflatten_authority.ids import _subject_factory, _claim_factory, _evidence_factory, subject_id, authority_id as canonical_authority_id, canonical_bytes
-from d810.transforms.unflatten_authority.legacy_wire import encode_legacy_value
+
+
+def test_detached_dead_handler_claim_kind_is_closed_canonical_vocabulary() -> None:
+    model = import_authority_model()
+
+    assert (
+        model.UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT.value
+        == "detached_dead_handler_component"
+    )
+
+
+def test_detached_component_phase_result_precedes_its_evidence() -> None:
+    """The sealed result ID has no dependency on a downstream evidence ID."""
+
+    model = import_authority_model()
+    values = (
+        authority_id("detached-claim"),
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        authority_id("corridor-result"),
+        authority_id("source"), authority_id("candidate"), 1, 2, True,
+        authority_id("detached-source-result"),
+    )
+    result = model.DetachedDeadHandlerComponentPhaseResult(
+        canonical_authority_id(("unflatten.detached-dead-handler-component-phase.v1", *values)),
+        *values,
+    )
+    payload = model.DetachedComponentEvidencePayload(
+        result.result_id, result.claim_id, result.corridor_coverage_result_id,
+        result.phase, result.source_fingerprint, result.candidate_fingerprint,
+        result.source_generation, result.candidate_generation, result.accepted,
+        (authority_id("subject"),),
+    )
+    assert payload.phase_result_id == result.result_id
+
+
+def test_detached_component_justification_has_its_closed_loss_kind() -> None:
+    model = import_authority_model()
+
+    rule = model.UnflattenJustificationRule.DETACHED_COMPONENT_PROVEN
+    assert model._LOSS_RULE_KIND[rule] is model.SemanticLossKind.DETACHED_DEAD_HANDLER_COMPONENT
+    assert model._LOSS_RULE_CLAIMS[rule] == (model.DetachedDeadHandlerComponentClaim,)
 
 
 def _retirement_catalog(model, refs, anchors, generation=3):
-    canonical_payload = encode_legacy_value({
-        "family": "retired_infrastructure",
-        "source_generation": generation,
-        "members": tuple({
-            "ref": canonical_bytes(ref), "anchor_ea": anchor,
-            "retired": True, "role": "comparison_dispatcher",
-        } for ref, anchor in zip(refs, anchors)),
-        "family_payload": {
-            "retired_infrastructure": tuple({
-                "role": "comparison_dispatcher",
-                "anchor_ea": anchor,
-                "retired": True,
-            } for anchor in anchors),
-        },
-    })
-    roles = tuple("comparison_dispatcher" for _ in refs)
-    proof = model.RetirementProofRecord(
-        canonical_authority_id(("unflatten.retirement-proof.v3", canonical_payload)),
+    content = model.RetirementProofContent(
         model.RetirementProofFamily.RETIRED_INFRASTRUCTURE,
-        canonical_payload, tuple(refs), tuple(anchors), generation, roles,
+        generation,
+        tuple(
+            model.RetirementProofMember(
+                ref, anchor, True, "comparison_dispatcher"
+            )
+            for ref, anchor in zip(refs, anchors)
+        ),
+    )
+    proof = model.RetirementProofRecord(
+        canonical_authority_id(("unflatten.retirement-proof.v3", canonical_bytes(content))),
+        content,
     )
     rows = tuple(
         model.RetirementMemberCatalogRow(ref, anchor, (anchor,), generation, True, (proof,))
@@ -51,6 +84,30 @@ def _retirement_catalog(model, refs, anchors, generation=3):
         canonical_authority_id(("unflatten.retirement-catalog.v1", generation, rows, (proof,))),
         generation, rows, (proof,),
     )
+
+
+def test_retirement_proof_content_is_typed_and_authority_model_is_wire_free() -> None:
+    model = import_authority_model()
+    ref = block_ref("retirement-content")
+    content = model.RetirementProofContent(
+        model.RetirementProofFamily.RETIRED_INFRASTRUCTURE,
+        3,
+        (model.RetirementProofMember(ref, 0x401000, True, "comparison_dispatcher"),),
+    )
+    proof = model.RetirementProofRecord(
+        canonical_authority_id(("unflatten.retirement-proof.v3", canonical_bytes(content))),
+        content,
+    )
+    assert proof.member_refs == (ref,)
+    assert proof.member_anchor_eas == (0x401000,)
+    assert proof.source_generation == 3
+    assert proof.roles == ("comparison_dispatcher",)
+    assert proof._decoded_retired_flags == (True,)
+    assert proof.canonical_payload == canonical_bytes(content)
+    assert proof.content_digest == "sha256:" + __import__("hashlib").sha256(
+        canonical_bytes(content)
+    ).hexdigest()
+    assert "legacy_wire" not in __import__("inspect").getsource(model.RetirementProofRecord)
 
 
 def _subject(model, kind, role, locator):
@@ -292,10 +349,13 @@ def test_derived_inputs_exposes_only_transaction_facts() -> None:
     fields = set(inspect.signature(model.DerivedUnflattenPreparationInputs).parameters)
     assert fields == {
         "proposal", "claims", "preparation_receipt", "source_inventory",
-        "candidate_inventory", "source_route_assessment",
-        "candidate_route_assessment", "generic_gate_facts",
+            "candidate_inventory", "source_route_assessment",
+            "projected_topology_reference",
+            "candidate_route_assessment", "generic_gate_facts",
             "conditional_relations", "patch_step_facts", "preparation_metrics",
             "phase_build_metrics", "corridor_coverage_phase_result",
+            "detached_dead_handler_component_source_results",
+            "detached_dead_handler_component_phase_results",
             "terminal_cycle_phase_results",
     }
     for removed in (
@@ -818,9 +878,15 @@ def test_every_evidence_kind_accepts_only_its_exact_payload_class() -> None:
             subject.subject_id, authority_id("forecast"), authority_id("phase-result"),
             (authority_id("path"),), (), (), True, (),
         ),
-        model.AuthorityEvidenceKind.TERMINAL_CYCLE: _terminal_cycle_evidence_payload(
-            model, _terminal_cycle_phase_result(model),
-        ),
+            model.AuthorityEvidenceKind.TERMINAL_CYCLE: _terminal_cycle_evidence_payload(
+                model, _terminal_cycle_phase_result(model),
+            ),
+            model.AuthorityEvidenceKind.DETACHED_COMPONENT: model.DetachedComponentEvidencePayload(
+                authority_id("detached-result"), authority_id("detached-claim"),
+                authority_id("corridor-result"), model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+                authority_id("source"), authority_id("candidate"), 1, 2, True,
+                (subject.subject_id,),
+            ),
         model.AuthorityEvidenceKind.PATCH_STEP: model.PatchStepEvidencePayload(
             authority_id("plan"), 0, "redirect", b0, authority_id("step"), 0x1004, 1, 4,
         ),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -350,6 +351,50 @@ def _terminal_cycle_derived_inputs():
     return proposal, claim, inputs, source, candidate, residual
 
 
+def _retirement_inventories(
+    *, physically_present_retired=False,
+    phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+):
+    """Build retirement inventories through the transaction-owned inventory builder."""
+
+    from .test_transaction_api import _full_corridor_fixture
+    from d810.transforms.unflatten_authority import transaction_api
+
+    source, plan, projected, _gates = _full_corridor_fixture()
+    proposal = plan.unflatten_proposal
+    source_inventory = transaction_api._build_semantic_graph_inventory(
+        source, proposal, plan, source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+    candidate_graph = projected
+    if physically_present_retired:
+        retired_ref = proposal.retirement_catalog.members[1].block_ref
+        retired_serial = next(
+            serial for ref, serial in plan.source_coordinates
+            if ref == retired_ref
+        )
+        blocks = {
+            serial: replace(
+                block,
+                preds=tuple(peer for peer in block.preds if peer != retired_serial),
+                succs=tuple(peer for peer in block.succs if peer != retired_serial),
+            )
+            for serial, block in source.blocks.items()
+        }
+        blocks[retired_serial] = replace(blocks[retired_serial], preds=(), succs=())
+        candidate_graph = type(source)(blocks, source.entry_serial, source.func_ea)
+    projected_inventory = transaction_api._build_semantic_graph_inventory(
+        candidate_graph, proposal, plan, source=False,
+        phase=phase,
+        source_subjects=source_inventory.subjects,
+    )
+    claim = next(
+        claim for claim in proposal.claims
+        if type(claim) is model.RetiredDispatcherInfrastructureClaim
+    )
+    return proposal, claim, source_inventory, projected_inventory
+
+
 def test_terminal_cycle_binding_requires_exact_reachable_cycle_break() -> None:
     proposal, claim, _inputs, source, candidate, residual = (
         _terminal_cycle_inventory_fixture()
@@ -580,6 +625,667 @@ def _branch_corridor_inventories():
     ), source, candidate
 
 
+def _detached_subject(
+    role: model.SemanticSubjectRole,
+    serial: int,
+) -> model.SemanticSubjectRef:
+    ref = block_ref(f"detached-{serial}")
+    anchor = 0x2000 + serial * 0x10
+    if role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER:
+        kind = model.SemanticSubjectKind.HANDLER
+        locator = model.HandlerSubjectLocator(ref, anchor, (serial + 1,))
+    else:
+        kind = model.SemanticSubjectKind.BLOCK
+        locator = model.BlockSubjectLocator(ref, anchor)
+    return _subject_factory(
+        model.SemanticSubjectRef,
+        kind=kind,
+        role=role,
+        block_ref=ref,
+        anchor_ea=anchor,
+        locator=locator,
+    )
+
+
+def _detached_inventory(
+    *,
+    phase: model.UnflattenAuthorityPhase,
+    fingerprint: str,
+    generation: int,
+    subjects: tuple[model.SemanticSubjectRef, ...],
+    successors: dict[int, tuple[int, ...]],
+    ambiguous_subject_ids: frozenset[str] = frozenset(),
+    missing_subject_ids: frozenset[str] = frozenset(),
+    instruction_kinds: dict[int, model.InsnKind] | None = None,
+    stop_serial: int = 6,
+) -> model.SemanticGraphInventory:
+    instruction_kinds = {} if instruction_kinds is None else instruction_kinds
+    predecessors = {serial: [] for serial in successors}
+    for owner, targets in successors.items():
+        for target in targets:
+            predecessors[target].append(owner)
+    bindings = []
+    for subject in subjects:
+        serial = int(subject.block_ref.proxy_token.rsplit("-", 1)[-1])
+        if subject.subject_id in ambiguous_subject_ids:
+            bindings.append(model.PhaseSubjectBinding(
+                subject, phase, None, fingerprint, generation,
+                model.SubjectBindingStatus.AMBIGUOUS, None, None, (), subject.role,
+            ))
+        elif subject.subject_id in missing_subject_ids:
+            bindings.append(model.PhaseSubjectBinding(
+                subject, phase, None, fingerprint, generation,
+                model.SubjectBindingStatus.MISSING, None, None, (), subject.role,
+            ))
+        else:
+            bindings.append(model.PhaseSubjectBinding(
+                subject, phase, subject.block_ref, fingerprint, generation,
+                model.SubjectBindingStatus.UNIQUE, serial, subject.anchor_ea,
+                (subject.anchor_ea,), subject.role,
+            ))
+    bindings = tuple(sorted(bindings, key=lambda item: item.subject.subject_id))
+    subject_by_serial = {}
+    for subject in subjects:
+        serial = int(subject.block_ref.proxy_token.rsplit("-", 1)[-1])
+        subject_by_serial.setdefault(serial, subject)
+    blocks = []
+    for serial in sorted(successors):
+        subject = subject_by_serial.get(serial)
+        ref = subject.block_ref if subject is not None else block_ref(f"detached-{serial}")
+        anchor = subject.anchor_ea if subject is not None else 0x2000 + serial * 0x10
+        kind = instruction_kinds.get(serial, model.InsnKind.NOP)
+        observation = model.InventoryInstructionObservation(
+            0, anchor, 0, 1 if kind in {model.InsnKind.CALL, model.InsnKind.STORE} else 0,
+            kind, None, kind is model.InsnKind.CALL, None,
+        )
+        blocks.append(model.InventoryBlockObservation(
+            serial, ref, anchor, (anchor,), tuple(sorted(predecessors[serial])),
+            tuple(sorted(successors[serial])), None, (observation,),
+            model.BlockKind.STOP if serial == stop_serial else model.BlockKind.UNKNOWN,
+            anchor,
+        ))
+    blocks = tuple(blocks)
+    effects = tuple(sorted(
+        (
+            effect
+            for block in blocks
+            for effect in model.resolve_inventory_block_sites(
+                serial=block.serial,
+                owner_ref=block.block_ref,
+                owner_anchor_ea=block.anchor_ea,
+                block_kind=block.block_kind,
+                successor_serials=block.successor_serials,
+                instruction_observations=block.instruction_observations,
+            )[0]
+        ),
+        key=lambda item: (
+            item.owner_serial, item.instruction_ordinal,
+            item.instruction_ea, item.effect_kind.value,
+        ),
+    ))
+    terminals = tuple(sorted(
+        (
+            terminal
+            for block in blocks
+            for terminal in model.resolve_inventory_block_sites(
+                serial=block.serial,
+                owner_ref=block.block_ref,
+                owner_anchor_ea=block.anchor_ea,
+                block_kind=block.block_kind,
+                successor_serials=block.successor_serials,
+                instruction_observations=block.instruction_observations,
+            )[1]
+        ),
+        key=lambda item: (
+            item.owner_serial, item.instruction_ordinal is None,
+            item.instruction_ordinal if item.instruction_ordinal is not None else -1,
+            item.instruction_ea, item.terminal_kind.value,
+        ),
+    ))
+    topology = tuple(sorted(
+        (
+            incidence
+            for owner, targets in successors.items()
+            for target in targets
+            for incidence in (
+                model.InventoryTopologyIncidence(
+                    model.TopologyIncidenceKind.SUCCESSOR, owner, target, None,
+                ),
+                model.InventoryTopologyIncidence(
+                    model.TopologyIncidenceKind.PREDECESSOR, target, owner, None,
+                ),
+            )
+        ),
+        key=lambda item: (item.kind.value, item.owner_serial, item.peer_serial),
+    ))
+    reachable = set()
+    pending = [0]
+    while pending:
+        serial = pending.pop()
+        if serial in reachable:
+            continue
+        reachable.add(serial)
+        pending.extend(successors[serial])
+    reachable_serials = tuple(sorted(reachable))
+    canonical_subjects = tuple(sorted(subjects, key=lambda item: item.subject_id))
+    digest = semantic_graph_inventory_digest(
+        phase, fingerprint, generation, blocks, canonical_subjects, bindings,
+        effects, terminals, topology, reachable_serials, 0,
+        tuple(item.subject_id for item in canonical_subjects), 0x2000,
+    )
+    return model.SemanticGraphInventory(
+        phase, fingerprint, generation, blocks, canonical_subjects, bindings,
+        effects, terminals, topology, digest, reachable_serials, 0,
+        tuple(item.subject_id for item in canonical_subjects), 0x2000,
+    )
+
+
+def _detached_binding_fixture(
+    *,
+    source_successors: dict[int, tuple[int, ...]] | None = None,
+    candidate_successors: dict[int, tuple[int, ...]] | None = None,
+    candidate_phase: model.UnflattenAuthorityPhase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    candidate_fingerprint: str | None = None,
+    candidate_generation: int = 4,
+    ambiguous_subject_ids: frozenset[str] = frozenset(),
+    source_instruction_kinds: dict[int, model.InsnKind] | None = None,
+    candidate_stop_serial: int = 6,
+    component_serials: tuple[int, ...] = (2, 3),
+):
+    dispatcher = _detached_subject(model.SemanticSubjectRole.DISPATCHER_ENTRY, 1)
+    dead = _detached_subject(model.SemanticSubjectRole.AUTHORITATIVE_HANDLER, 2)
+    retained = _detached_subject(model.SemanticSubjectRole.AUTHORITATIVE_HANDLER, 4)
+    components = tuple(
+        _detached_subject(
+            model.SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT, serial,
+        )
+        for serial in component_serials
+    )
+    terminal_ref = block_ref("detached-6")
+    terminal_anchor = 0x2060
+    terminal = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.TERMINAL,
+        role=model.SemanticSubjectRole.TERMINAL_SITE,
+        block_ref=terminal_ref,
+        anchor_ea=terminal_anchor,
+        locator=model.TerminalSubjectLocator(
+            terminal_ref, terminal_anchor, model.TerminalKind.STOP,
+            terminal_anchor,
+        ),
+    )
+    source_instruction_kinds = (
+        {} if source_instruction_kinds is None else source_instruction_kinds
+    )
+    effect_subjects = []
+    for serial, kind in source_instruction_kinds.items():
+        if kind not in {model.InsnKind.CALL, model.InsnKind.STORE}:
+            continue
+        ref = block_ref(f"detached-{serial}")
+        anchor = 0x2000 + serial * 0x10
+        effect_subjects.append(_subject_factory(
+            model.SemanticSubjectRef,
+            kind=model.SemanticSubjectKind.EFFECT,
+            role=model.SemanticSubjectRole.EFFECT_SITE,
+            block_ref=ref,
+            anchor_ea=anchor,
+            locator=model.EffectSubjectLocator(
+                ref, anchor, anchor,
+                model.EffectSiteKind.CALL
+                if kind is model.InsnKind.CALL
+                else model.EffectSiteKind.STORE,
+            ),
+        ))
+    claim = _claim_factory(
+        model.DetachedDeadHandlerComponentClaim,
+        kind=model.UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT,
+        dispatcher_subject=dispatcher,
+        dead_handler_subjects=(dead,),
+        retained_handler_subjects=(retained,),
+        component_subjects=components,
+        source_generation=3,
+    )
+    subjects = tuple(sorted(
+        {
+            item.subject_id: item
+            for item in (
+                dispatcher, dead, retained, *components, terminal,
+                *effect_subjects,
+            )
+        }.values(),
+        key=lambda item: item.subject_id,
+    ))
+    source_successors = source_successors or {
+        0: (1,), 1: (2, 4, 7), 2: (3,), 3: (1,),
+        4: (5,), 5: (6,), 6: (), 7: (1,),
+    }
+    candidate_successors = candidate_successors or {
+        0: (4,), 1: (2, 4, 7), 2: (3,), 3: (1,),
+        4: (5,), 5: (6,), 6: (), 7: (1,),
+    }
+    source = _detached_inventory(
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        fingerprint=authority_id("detached-source"), generation=3,
+        subjects=subjects, successors=source_successors,
+        instruction_kinds=source_instruction_kinds,
+    )
+    candidate = _detached_inventory(
+        phase=candidate_phase,
+        fingerprint=candidate_fingerprint or authority_id(
+            f"detached-{candidate_phase.value}"
+        ),
+        generation=candidate_generation, subjects=subjects,
+        successors=candidate_successors,
+        ambiguous_subject_ids=ambiguous_subject_ids,
+        missing_subject_ids=frozenset({
+            *(subject.subject_id for subject in effect_subjects),
+            *(() if candidate_stop_serial == 6 else (terminal.subject_id,)),
+        }),
+        stop_serial=candidate_stop_serial,
+    )
+    path_id = authority_id("detached-corridor-path")
+    forecast_id = authority_id("detached-corridor-forecast")
+    comparison_ids = (dispatcher.subject_id,)
+    content = (
+        "unflatten.corridor-coverage-phase.v1", forecast_id, candidate_phase,
+        source.graph_fingerprint, candidate.graph_fingerprint,
+        source.generation, candidate.generation, (path_id,), (), (), True, (),
+        True, False, (), comparison_ids, dispatcher.subject_id,
+    )
+    corridor = model.CorridorCoveragePhaseResult(
+        authority_id(content), forecast_id, candidate_phase,
+        source.graph_fingerprint, candidate.graph_fingerprint,
+        source.generation, candidate.generation, (path_id,), (), (), True, (),
+        True, False, (), comparison_ids, dispatcher.subject_id,
+    )
+    return claim, source, candidate, corridor
+
+
+def test_detached_binding_mints_projected_source_once_and_reuses_it_observed() -> None:
+    """Only the public binder owns detached source/phase mint capability."""
+
+    assert not hasattr(bind, "_mint_detached_source_result")
+    assert not hasattr(bind, "_mint_detached_phase_result")
+    assert "bind_detached_dead_handler_component_claim" in bind.__all__
+    claim, source, projected, projected_corridor = _detached_binding_fixture()
+    projected_binding = bind.bind_detached_dead_handler_component_claim(
+        claim=claim,
+        source_inventory=source,
+        candidate_inventory=projected,
+        corridor_result=projected_corridor,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert projected_binding.phase_result.accepted
+    assert projected_binding.phase_result.source_result_id == projected_binding.source_result.result_id
+    assert set(projected_binding.source_result.component_block_refs) == {
+        subject.block_ref for subject in claim.component_subjects
+    }
+
+    _, _, observed, observed_corridor = _detached_binding_fixture(
+        candidate_phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        candidate_fingerprint=authority_id("detached-observed"),
+        candidate_generation=5,
+    )
+    observed_binding = bind.bind_detached_dead_handler_component_claim(
+        claim=claim,
+        source_inventory=source,
+        candidate_inventory=observed,
+        corridor_result=observed_corridor,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        source_result=projected_binding.source_result,
+    )
+    assert observed_binding.source_result is projected_binding.source_result
+    assert observed_binding.phase_result.accepted
+
+
+def test_detached_binding_rejects_ambiguous_loss_and_foreign_dispatcher() -> None:
+    claim, source, _candidate, _corridor = _detached_binding_fixture()
+    ambiguous_id = claim.dead_handler_subjects[0].subject_id
+    _, _, ambiguous, ambiguous_corridor = _detached_binding_fixture(
+        ambiguous_subject_ids=frozenset({ambiguous_id}),
+    )
+    with pytest.raises(ValueError, match="ambiguous"):
+        bind.bind_detached_dead_handler_component_claim(
+            claim=claim, source_inventory=source,
+            candidate_inventory=ambiguous, corridor_result=ambiguous_corridor,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+    wrong_dispatcher = claim.retained_handler_subjects[0].subject_id
+    content = (
+        "unflatten.corridor-coverage-phase.v1",
+        ambiguous_corridor.forecast_id, ambiguous_corridor.phase,
+        ambiguous_corridor.source_fingerprint,
+        ambiguous_corridor.candidate_fingerprint,
+        ambiguous_corridor.source_generation,
+        ambiguous_corridor.candidate_generation,
+        ambiguous_corridor.covered_path_ids, (), (), True, (), True, False, (),
+        tuple(sorted((claim.dispatcher_subject.subject_id, wrong_dispatcher))),
+        wrong_dispatcher,
+    )
+    foreign = model.CorridorCoveragePhaseResult(
+        authority_id(content), ambiguous_corridor.forecast_id,
+        ambiguous_corridor.phase, ambiguous_corridor.source_fingerprint,
+        ambiguous_corridor.candidate_fingerprint,
+        ambiguous_corridor.source_generation,
+        ambiguous_corridor.candidate_generation,
+        ambiguous_corridor.covered_path_ids, (), (), True, (), True, False, (),
+        tuple(sorted((claim.dispatcher_subject.subject_id, wrong_dispatcher))),
+        wrong_dispatcher,
+    )
+    with pytest.raises(ValueError, match="dispatcher"):
+        bind.bind_detached_dead_handler_component_claim(
+            claim=claim, source_inventory=source,
+            candidate_inventory=ambiguous, corridor_result=foreign,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+@pytest.mark.parametrize(
+    ("source_successors", "component_serials", "reason"),
+    (
+        (
+            {0: (1, 3), 1: (2, 4, 7), 2: (3,), 3: (1,),
+             4: (5,), 5: (6,), 6: (), 7: (1,)},
+            (2, 3),
+            "external semantic ingress",
+        ),
+        (
+            {0: (1,), 1: (2, 4, 7), 2: (3,), 3: (1,),
+             4: (5,), 5: (6,), 6: (), 7: (1,)},
+            (2,),
+            "exact source/candidate walk",
+        ),
+        (
+            {0: (1,), 1: (2, 4), 2: (3,), 3: (7,), 4: (6,),
+             6: (), 7: (8,), 8: (9,), 9: (1,)},
+            (2, 3, 7, 8, 9),
+            "strict minority",
+        ),
+    ),
+)
+def test_detached_binding_rejects_topology_component_and_minority_drift(
+    source_successors,
+    component_serials,
+    reason,
+) -> None:
+    candidate_successors = {
+        serial: ((4,) if serial == 0 else targets)
+        for serial, targets in source_successors.items()
+    }
+    claim, source, candidate, corridor = _detached_binding_fixture(
+        source_successors=source_successors,
+        candidate_successors=candidate_successors,
+        component_serials=component_serials,
+    )
+    with pytest.raises(ValueError, match=reason):
+        bind.bind_detached_dead_handler_component_claim(
+            claim=claim, source_inventory=source,
+            candidate_inventory=candidate, corridor_result=corridor,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+@pytest.mark.parametrize(
+    ("source_successors", "source_instruction_kinds", "candidate_stop", "reason"),
+    (
+        (None, {2: model.InsnKind.CALL}, 6, "CALL or STORE"),
+        (None, {7: model.InsnKind.STORE}, 6, "remainder contains CALL or STORE"),
+        (
+            {0: (1,), 1: (2, 4, 7), 2: (3,), 3: (1,),
+             4: (5,), 5: (6,), 6: (), 7: ()},
+            None, 6, "remainder contains a terminal block",
+        ),
+        (
+            {0: (1,), 1: (2, 4, 7), 2: (3,), 3: (1,),
+             4: (5,), 5: (6,), 6: (), 7: (0,)},
+            None, 6, "remainder escapes",
+        ),
+        (None, None, 99, "terminal identity drifted"),
+    ),
+)
+def test_detached_binding_rejects_effect_terminal_and_remainder_drift(
+    source_successors,
+    source_instruction_kinds,
+    candidate_stop,
+    reason,
+) -> None:
+    claim, source, candidate, corridor = _detached_binding_fixture(
+        source_successors=source_successors,
+        source_instruction_kinds=source_instruction_kinds,
+        candidate_stop_serial=candidate_stop,
+    )
+    with pytest.raises(ValueError, match=reason):
+        bind.bind_detached_dead_handler_component_claim(
+            claim=claim, source_inventory=source,
+            candidate_inventory=candidate, corridor_result=corridor,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+def test_detached_observed_binding_rejects_handler_and_component_drift() -> None:
+    claim, source, projected, projected_corridor = _detached_binding_fixture()
+    projected_binding = bind.bind_detached_dead_handler_component_claim(
+        claim=claim, source_inventory=source,
+        candidate_inventory=projected, corridor_result=projected_corridor,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    observed_successors = {
+        0: (2, 4), 1: (2, 4, 7), 2: (3,), 3: (4,),
+        4: (5,), 5: (6,), 6: (), 7: (1,),
+    }
+    _, _, observed, observed_corridor = _detached_binding_fixture(
+        candidate_phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        candidate_fingerprint=authority_id("detached-observed-drift"),
+        candidate_generation=5,
+        candidate_successors=observed_successors,
+    )
+    with pytest.raises(
+        ValueError,
+        match="detached dead-handler partition remains candidate-reachable",
+    ):
+        bind.bind_detached_dead_handler_component_claim(
+            claim=claim, source_inventory=source,
+            candidate_inventory=observed, corridor_result=observed_corridor,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            source_result=projected_binding.source_result,
+        )
+
+
+def test_detached_observed_binding_rejects_reissued_source_authority() -> None:
+    claim, source, projected, projected_corridor = _detached_binding_fixture()
+    projected_binding = bind.bind_detached_dead_handler_component_claim(
+        claim=claim, source_inventory=source,
+        candidate_inventory=projected, corridor_result=projected_corridor,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    sealed = projected_binding.source_result
+    values = (
+        sealed.claim_id, sealed.corridor_forecast_id,
+        sealed.corridor_coverage_result_id, sealed.source_fingerprint,
+        sealed.source_generation, sealed.dispatcher_subject_id,
+        sealed.dispatcher_block_ref, sealed.dead_handler_subject_ids,
+        sealed.retained_handler_subject_ids, sealed.component_subject_ids,
+        sealed.comparison_region_subject_ids,
+        sealed.source_reachable_subject_ids, sealed.dead_handler_block_refs,
+        sealed.retained_handler_block_refs, sealed.comparison_region_block_refs,
+        sealed.terminal_digest, sealed.effect_digest, sealed.topology_digest,
+        sealed.source_reachable_block_refs, sealed.component_block_refs,
+        sealed.remainder_block_refs, (), sealed.effect_site_keys,
+        sealed.source_blocks,
+    )
+    reissued = model.DetachedDeadHandlerComponentSourceResult(
+        authority_id((
+            "unflatten.detached-dead-handler-component-source.v2", *values,
+        )),
+        *values,
+    )
+    _, _, observed, observed_corridor = _detached_binding_fixture(
+        candidate_phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        candidate_fingerprint=authority_id("detached-reissued-observed"),
+        candidate_generation=5,
+    )
+    with pytest.raises(ValueError, match="not minted by the transaction binder"):
+        bind.bind_detached_dead_handler_component_claim(
+            claim=claim, source_inventory=source,
+            candidate_inventory=observed, corridor_result=observed_corridor,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            source_result=reissued,
+        )
+
+
+def test_detached_binding_rejects_reissued_phase_result_at_observed_coordinates() -> None:
+    """A forged observed acceptance cannot override the binder's rejected partition."""
+
+    claim, source, projected, projected_corridor = _detached_binding_fixture()
+    projected_binding = bind.bind_detached_dead_handler_component_claim(
+        claim=claim,
+        source_inventory=source,
+        candidate_inventory=projected,
+        corridor_result=projected_corridor,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    observed_successors = {
+        0: (2, 4), 1: (2, 4, 7), 2: (3,), 3: (4,),
+        4: (5,), 5: (6,), 6: (), 7: (1,),
+    }
+    _, _, observed, observed_corridor = _detached_binding_fixture(
+        candidate_phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        candidate_fingerprint=authority_id("detached-reissued-phase-observed"),
+        candidate_generation=5,
+        candidate_successors=observed_successors,
+    )
+    values = (
+        claim.claim_id,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        observed_corridor.result_id,
+        source.graph_fingerprint,
+        observed.graph_fingerprint,
+        source.generation,
+        observed.generation,
+        True,
+        projected_binding.source_result.result_id,
+    )
+    reissued = model.DetachedDeadHandlerComponentPhaseResult(
+        authority_id((
+            "unflatten.detached-dead-handler-component-phase.v1", *values,
+        )),
+        *values,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="detached dead-handler partition remains candidate-reachable",
+    ):
+        bind.bind_detached_dead_handler_component_claim(
+            claim=claim,
+            source_inventory=source,
+            candidate_inventory=observed,
+            corridor_result=observed_corridor,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            source_result=projected_binding.source_result,
+        )
+
+    with pytest.raises(ValueError, match="not minted by the transaction binder"):
+        bind.DetachedDeadHandlerComponentBindingResult(
+            projected_binding.source_result,
+            reissued,
+        )
+
+
+def test_detached_stable_site_keys_do_not_drop_generated_reachable_owners() -> None:
+    """Defense in depth; nominal candidate inventories reject these sites below."""
+    effect = model.InventoryEffectSite(
+        8, None, 0x2080, 0, 0x2080, model.EffectSiteKind.CALL, 0, 1,
+    )
+    terminal = model.InventoryTerminalSite(
+        9, None, 0x2090, None, 0x2090, model.TerminalKind.STOP,
+    )
+    inventory = SimpleNamespace(
+        reachable_serials=(8, 9), effects=(effect,), terminals=(terminal,),
+    )
+    assert bind._stable_effect_keys(inventory) == (
+        (("generated", 8, 0x2080), 0x2080, model.EffectSiteKind.CALL),
+    )
+    assert bind._stable_terminal_keys(inventory) == (
+        (("generated", 9, 0x2090), 0x2090, model.TerminalKind.STOP),
+    )
+
+
+def test_candidate_inventory_rejects_unmapped_generated_reachable_call_site() -> None:
+    """The inventory boundary forbids the nominal generated-CALL case.
+
+    Candidate semantic sites must have typed subjects, and those subjects require
+    stable CFG references.  Therefore an unmapped reachable CALL cannot reach
+    detached binding; the generated-key helper remains defense in depth.
+    """
+
+    _claim, _source, candidate, _corridor = _detached_binding_fixture()
+    target = next(block for block in candidate.blocks if block.serial == 5)
+    call = model.InventoryInstructionObservation(
+        0, target.anchor_ea, 0, 1, model.InsnKind.CALL, None, True, None,
+    )
+    blocks = tuple(
+        replace(
+            block,
+            block_ref=None,
+            instruction_observations=(call,),
+        ) if block.serial == target.serial else block
+        for block in candidate.blocks
+    )
+    effects = tuple(sorted(
+        (
+            effect
+            for block in blocks
+            for effect in model.resolve_inventory_block_sites(
+                serial=block.serial,
+                owner_ref=block.block_ref,
+                owner_anchor_ea=block.anchor_ea or 0,
+                block_kind=block.block_kind,
+                successor_serials=block.successor_serials,
+                instruction_observations=block.instruction_observations,
+            )[0]
+        ),
+        key=lambda item: (
+            item.owner_serial, item.instruction_ordinal,
+            item.instruction_ea, item.effect_kind.value,
+        ),
+    ))
+    terminals = tuple(sorted(
+        (
+            terminal
+            for block in blocks
+            for terminal in model.resolve_inventory_block_sites(
+                serial=block.serial,
+                owner_ref=block.block_ref,
+                owner_anchor_ea=block.anchor_ea or 0,
+                block_kind=block.block_kind,
+                successor_serials=block.successor_serials,
+                instruction_observations=block.instruction_observations,
+            )[1]
+        ),
+        key=lambda item: (
+            item.owner_serial, item.instruction_ordinal is None,
+            item.instruction_ordinal if item.instruction_ordinal is not None else -1,
+            item.instruction_ea, item.terminal_kind.value,
+        ),
+    ))
+    digest = semantic_graph_inventory_digest(
+        candidate.phase, candidate.graph_fingerprint, candidate.generation,
+        blocks, candidate.subjects, candidate.bindings, effects, terminals,
+        candidate.topology, candidate.reachable_serials, candidate.entry_serial,
+        candidate.source_subject_ids, candidate.function_ea,
+    )
+    with pytest.raises(ValueError, match="candidate reachable effects are missing subjects"):
+        model.SemanticGraphInventory(
+            candidate.phase, candidate.graph_fingerprint, candidate.generation,
+            blocks, candidate.subjects, candidate.bindings, effects, terminals,
+            candidate.topology, digest, candidate.reachable_serials,
+            candidate.entry_serial, candidate.source_subject_ids,
+            candidate.function_ea,
+        )
+
+
 def test_bind_subjects_requires_exact_catalog_identity_and_generation() -> None:
     proposal, catalog = _fixture()
     subjects = (
@@ -799,17 +1505,56 @@ def test_inventory_site_family_swaps_are_typed_rejections() -> None:
 
 
 def test_retirement_binding_requires_retained_members_and_seals_post_bind_mutation() -> None:
-    from dataclasses import replace
+    from d810.transforms.unflatten_authority import transaction_api
+    from d810.transforms.unflatten_authority.bind import validate_retired_infrastructure_binding_result
 
-    from d810.transforms.unflatten_authority.ids import authority_id
-    from d810.transforms.unflatten_authority import model
-    from d810.transforms.unflatten_authority.legacy_codec import retirement_claim_from_legacy_proof
-    from .test_model import _valid_proposal
+    proposal, claim, source_inventory, projected_inventory = _retirement_inventories()
+    result = bind.bind_retired_dispatcher_infrastructure_claim(
+        claim=claim, proposal=proposal,
+        source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+    )
+    retained = next(
+        item for item in result.projected_bindings
+        if item.subject.block_ref == claim.retirement_catalog.members[0].block_ref
+    )
+    assert retained.status is model.SubjectBindingStatus.UNIQUE
+    assert not hasattr(result, "candidate_reachable_serials")
+    object.__setattr__(result, "generation", source_inventory.generation + 1)
+    with pytest.raises(ValueError, match="content seal|generation"):
+        validate_retired_infrastructure_binding_result(result)
+
+
+def test_retirement_binding_accepts_physically_present_but_unreachable_retired_member() -> None:
+    """Retirement is a reachability fact, even when the block remains indexed."""
+
+    proposal, claim, source_inventory, projected_inventory = _retirement_inventories(
+        physically_present_retired=True,
+    )
+    retired_ref = claim.retirement_catalog.members[1].block_ref
+    retained_ref = claim.retirement_catalog.members[0].block_ref
+    result = bind.bind_retired_dispatcher_infrastructure_claim(
+        claim=claim, proposal=proposal,
+        source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+    )
+
+    retired = next(item for item in result.projected_bindings if item.subject.block_ref == retired_ref)
+    retained = next(item for item in result.projected_bindings if item.subject.block_ref == retained_ref)
+    assert retired.status is model.SubjectBindingStatus.UNIQUE
+    assert retired.serial == 6
+    assert retained.status is model.SubjectBindingStatus.UNIQUE
+    assert retained.serial == 5
+    assert projected_inventory.reachable_serials == (0, 1, 2, 3, 4, 5)
+
+
+def test_retirement_binding_rejects_naked_caller_reachability_authority() -> None:
+    """Reachability must come from a closed projected inventory, not a tuple."""
 
     base = model.ProposedUnflattenContract(**_valid_proposal(model))
-    catalog = base.source_identity_catalog
-    member_refs = base.plan_inputs.dispatcher_member_refs
-    refs = {index: item.block_ref for index, item in enumerate(catalog.blocks)}
+    refs = {index: item.block_ref for index, item in enumerate(base.source_identity_catalog.blocks)}
+    from d810.transforms.unflatten_authority.legacy_codec import retirement_claim_from_legacy_proof
+
     claim = retirement_claim_from_legacy_proof(
         {"retired_infrastructure": (
             {"role": "comparison_dispatcher", "anchor": {"serial": 0, "ea": 0x1000}, "retired": True},
@@ -824,259 +1569,42 @@ def test_retirement_binding_requires_retained_members_and_seals_post_bind_mutati
         retirement_catalog=claim.retirement_catalog,
         corridor_coverage_forecast=_minimal_corridor_forecast(model, base),
     )
-    from d810.transforms.unflatten_authority.bind import (
-        bind_retired_dispatcher_infrastructure_claim,
-        validate_retired_infrastructure_binding_result,
-    )
-
-    source_rows = {item.block_ref: index for index, item in enumerate(catalog.blocks)}
-    projected_rows = {member_refs[-1]: 0}
-    result = bind_retired_dispatcher_infrastructure_claim(
-        claim=claim, proposal=proposal,
-        source_serial_by_ref=source_rows,
-        projected_serial_by_ref=projected_rows,
-        source_graph_fingerprint=authority_id("source-retirement-bind"),
-        projected_graph_fingerprint=authority_id("projected-retirement-bind"),
-        generation=catalog.generation,
-    )
-    retained = next(
-        item for item in result.projected_bindings
-        if item.subject.block_ref == member_refs[-1]
-    )
-    assert retained.status is model.SubjectBindingStatus.UNIQUE
-    object.__setattr__(result, "generation", catalog.generation + 1)
-    with pytest.raises(ValueError, match="content seal|generation"):
-        validate_retired_infrastructure_binding_result(result)
+    with pytest.raises(TypeError):
+        bind.bind_retired_dispatcher_infrastructure_claim(
+            claim=claim,
+            proposal=proposal,
+            source_serial_by_ref={item.block_ref: index for index, item in enumerate(base.source_identity_catalog.blocks)},
+            projected_serial_by_ref={claim.retirement_catalog.members[1].block_ref: 0},
+            candidate_reachable_serials=(0,),
+            source_graph_fingerprint=authority_id("naked-reachability-source"),
+            projected_graph_fingerprint=authority_id("naked-reachability-projector"),
+            generation=base.source_identity_catalog.generation,
+        )
 
 
 def test_retirement_binding_observed_phase_validates_exact_source_and_candidate_rows() -> None:
     """Observed rebinding accepts only the exact catalog-correlated rows."""
 
-    from dataclasses import replace
-
-    from d810.transforms.unflatten_authority.legacy_codec import retirement_claim_from_legacy_proof
-    from d810.transforms.unflatten_authority.bind import bind_retired_dispatcher_infrastructure_claim
-
-    base = model.ProposedUnflattenContract(**_valid_proposal(model))
-    catalog = base.source_identity_catalog
-    refs = {index: item.block_ref for index, item in enumerate(catalog.blocks)}
-    claim = retirement_claim_from_legacy_proof(
-        {"retired_infrastructure": (
-            {"role": "comparison_dispatcher", "anchor": {"serial": 0, "ea": 0x1000}, "retired": True},
-            {"role": "comparison_dispatcher", "anchor": {"serial": 1, "ea": 0x1300}, "retired": False},
-        )},
-        proposal=base, block_refs_by_serial=refs,
-    )
-    proposal = replace(
-        base,
-        claims=(claim,),
-        plan_inputs=replace(base.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE),
-        retirement_catalog=claim.retirement_catalog,
-        corridor_coverage_forecast=_minimal_corridor_forecast(model, base),
-    )
-    rows = claim.retirement_catalog.members
-    subjects = tuple(
-        next(
-            (subject for subject in claim.member_subjects if subject.block_ref == row.block_ref),
-            _subject_factory(
-                model.SemanticSubjectRef,
-                kind=model.SemanticSubjectKind.BLOCK,
-                role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
-                block_ref=row.block_ref,
-                anchor_ea=row.anchor_ea,
-                locator=model.BlockSubjectLocator(row.block_ref, row.anchor_ea),
-            ),
-        )
-        for row in rows
-    )
-    source_fp = authority_id("retirement-observed-source")
-    observed_fp = authority_id("retirement-observed-candidate")
-    source_serials = {item.block_ref: index for index, item in enumerate(catalog.blocks)}
-    retained_ref = next(row.block_ref for row in rows if not row.retired)
-    candidate_serials = {retained_ref: 0}
-    source_bindings = bind.bind_source_subjects(
-        subjects, catalog=catalog,
-        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
-        graph_fingerprint=source_fp, generation=catalog.generation,
-        serial_by_ref=source_serials,
-    )
-    observed_bindings = bind.bind_projected_subjects(
-        subjects, catalog=catalog,
+    proposal, claim, source_inventory, observed_inventory = _retirement_inventories(
         phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
-        graph_fingerprint=observed_fp, generation=catalog.generation,
-        serial_by_ref=candidate_serials,
     )
-
-    def bind_with(source_rows=source_bindings, candidate_rows=observed_bindings):
-        return bind_retired_dispatcher_infrastructure_claim(
-            claim=claim, proposal=proposal,
-            source_graph_fingerprint=source_fp,
-            projected_graph_fingerprint=observed_fp,
-            generation=catalog.generation,
-            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
-            source_subject_bindings=source_rows,
-            projected_subject_bindings=candidate_rows,
-        )
-
-    result = bind_with()
-    assert {
-        row.status for row in result.projected_bindings if row.subject.block_ref == retained_ref
-    } == {model.SubjectBindingStatus.UNIQUE}
-    assert {
-        row.status for row in result.projected_bindings if row.subject.block_ref != retained_ref
-    } == {model.SubjectBindingStatus.MISSING}
-
-    source_first = source_bindings[0]
-    candidate_first = observed_bindings[0]
-    source_mutations = (
-        replace(source_first, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT),
-        replace(source_first, graph_fingerprint=authority_id("wrong-source-fingerprint")),
-        replace(source_first, generation=catalog.generation + 1),
+    result = bind.bind_retired_dispatcher_infrastructure_claim(
+        claim=claim,
+        proposal=proposal,
+        source_inventory=source_inventory,
+        projected_inventory=observed_inventory,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
     )
-    candidate_mutations = (
-        replace(candidate_first, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT),
-        replace(candidate_first, graph_fingerprint=source_fp),
-        replace(candidate_first, generation=catalog.generation + 1),
+    assert result.projected_inventory is observed_inventory
+    assert all(
+        row.phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+        for row in result.projected_bindings
     )
-    for mutated in source_mutations:
-        with pytest.raises(ValueError):
-            bind_with((mutated,) + source_bindings[1:])
-    for mutated in candidate_mutations:
-        with pytest.raises(ValueError):
-            bind_with(candidate_rows=(mutated,) + observed_bindings[1:])
-
-    retained_source = next(
-        row for row in source_bindings
-        if row.subject.block_ref == retained_ref
-    )
-    retained_candidate = next(
-        row for row in observed_bindings
-        if row.subject.block_ref == retained_ref
-    )
-    source_native_drift = replace(
-        retained_source,
-        native_instruction_eas=(retained_source.anchor_ea, retained_source.anchor_ea + 4),
-    )
-    with pytest.raises(ValueError, match="retirement source binding is not catalog-bound"):
-        bind_with(
-            source_rows=tuple(
-                source_native_drift if row is retained_source else row
-                for row in source_bindings
-            ),
-        )
-    candidate_native_drift = replace(
-        retained_candidate,
-        native_instruction_eas=(retained_candidate.anchor_ea, retained_candidate.anchor_ea + 4),
-    )
-    with pytest.raises(ValueError, match="retained projected binding drifted from catalog"):
-        bind_with(
-            candidate_rows=tuple(
-                candidate_native_drift if row is retained_candidate else row
-                for row in observed_bindings
-            ),
-        )
-
-    foreign_subject = _subject_factory(
-        model.SemanticSubjectRef,
-        kind=model.SemanticSubjectKind.BLOCK,
-        role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
-        block_ref=source_bindings[1].subject.block_ref,
-        anchor_ea=source_bindings[1].subject.anchor_ea,
-        locator=model.BlockSubjectLocator(
-            source_bindings[1].subject.block_ref,
-            source_bindings[1].subject.anchor_ea,
-        ),
-    )
-    swapped = replace(
-        source_first,
-        subject=foreign_subject,
-        block_ref=foreign_subject.block_ref,
-        anchor_ea=foreign_subject.anchor_ea,
-        serial=source_bindings[1].serial,
-        native_instruction_eas=source_bindings[1].native_instruction_eas,
-    )
+    object.__setattr__(observed_inventory, "reachable_serials", ())
     with pytest.raises(ValueError):
-        bind_with((swapped,) + source_bindings[1:])
+        bind.validate_retired_infrastructure_binding_result(result)
+    return
 
-    # Ref substitution is coupled to subject identity by the canonical
-    # binding model; retain a valid row shape and assert the exact catalog-row
-    # coverage rejection at the binder boundary.
-    source_ref_substitution = replace(
-        retained_source,
-        subject=source_bindings[0].subject,
-        block_ref=source_bindings[0].block_ref,
-        anchor_ea=source_bindings[0].anchor_ea,
-        serial=source_bindings[0].serial,
-        native_instruction_eas=source_bindings[0].native_instruction_eas,
-    )
-    with pytest.raises(ValueError, match="rows do not cover the exact member catalog"):
-        bind_with(
-            source_rows=tuple(
-                source_ref_substitution if row is retained_source else row
-                for row in source_bindings
-            ),
-        )
-    candidate_ref_substitution = replace(
-        retained_candidate,
-        subject=observed_bindings[0].subject,
-        block_ref=observed_bindings[0].block_ref,
-        anchor_ea=observed_bindings[0].anchor_ea,
-        serial=observed_bindings[0].serial,
-        native_instruction_eas=observed_bindings[0].native_instruction_eas,
-        status=observed_bindings[0].status,
-    )
-    with pytest.raises(ValueError, match="rows do not cover the exact member catalog"):
-        bind_with(
-            candidate_rows=tuple(
-                candidate_ref_substitution if row is retained_candidate else row
-                for row in observed_bindings
-            ),
-        )
-
-    source_anchor = retained_source.anchor_ea + 4
-    source_anchor_subject = _subject_factory(
-        model.SemanticSubjectRef,
-        kind=model.SemanticSubjectKind.BLOCK,
-        role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
-        block_ref=retained_ref,
-        anchor_ea=source_anchor,
-        locator=model.BlockSubjectLocator(retained_ref, source_anchor),
-    )
-    source_anchor_drift = replace(
-        retained_source,
-        subject=source_anchor_subject,
-        anchor_ea=source_anchor,
-        native_instruction_eas=(source_anchor,),
-    )
-    with pytest.raises(ValueError, match="rows do not cover the exact member catalog"):
-        bind_with(
-            source_rows=tuple(
-                source_anchor_drift if row is retained_source else row
-                for row in source_bindings
-            ),
-        )
-    candidate_anchor = retained_candidate.anchor_ea + 4
-    candidate_anchor_subject = _subject_factory(
-        model.SemanticSubjectRef,
-        kind=model.SemanticSubjectKind.BLOCK,
-        role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
-        block_ref=retained_ref,
-        anchor_ea=candidate_anchor,
-        locator=model.BlockSubjectLocator(retained_ref, candidate_anchor),
-    )
-    candidate_anchor_drift = replace(
-        retained_candidate,
-        subject=candidate_anchor_subject,
-        anchor_ea=candidate_anchor,
-        native_instruction_eas=(candidate_anchor,),
-    )
-    with pytest.raises(ValueError, match="rows do not cover the exact member catalog"):
-        bind_with(
-            candidate_rows=tuple(
-                candidate_anchor_drift if row is retained_candidate else row
-                for row in observed_bindings
-            ),
-        )
 @pytest.mark.parametrize("site_kind", (model.EffectSiteKind.STORE, model.TerminalKind.RETURN))
 def test_inventory_binding_rejects_site_rows_outside_owned_native_origins(site_kind: object) -> None:
     _proposal, catalog = _fixture()

@@ -13,7 +13,6 @@ import pytest
 
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.transforms.cfg_transaction import LogicalBlockRef
-from d810.transforms.plan import PatchPlan
 
 from d810.transforms.unflatten_authority.model import (
     UnflattenAuthorityReason,
@@ -37,18 +36,22 @@ def _metadata():
     return (("ordinary", ["keep", ("shape",)]), *values.items())
 
 
-def _shadow_plan(metadata):
+def _persistence_envelope(metadata, *, plan_id="plan", snapshot_id="snapshot", generation=3):
     codec = _codec()
-    cleaned, shadow = codec.capture_legacy_unflatten_shadow(
-        plan_id="plan", snapshot_id="snapshot", source_generation=3,
-        metadata=metadata,
+    ordinary = []
+    entries = []
+    for key, value in metadata:
+        if key not in LEGACY_UNFLATTEN_KEYS:
+            ordinary.append((key, value))
+            continue
+        payload = codec.legacy_canonical_bytes(value)
+        entries.append(model.LegacyShadowEntry(
+            key, payload, hashlib.sha256(payload).hexdigest(),
+        ))
+    envelope = model.LegacyUnflattenShadowEnvelope(
+        1, plan_id, snapshot_id, generation, tuple(sorted(entries, key=lambda item: item.key)),
     )
-    plan = PatchPlan(
-        plan_id="plan", snapshot_id="snapshot", source_generation=3,
-        metadata=cleaned,
-    )
-    object.__setattr__(plan, "legacy_unflatten_shadow", shadow)
-    return plan, shadow
+    return tuple(ordinary), envelope
 
 
 def _decode_context(codec, *, evidence=None, generation=3, ref=None):
@@ -508,57 +511,9 @@ def test_legacy_decode_selects_row_proof_ids_before_building_proposal(monkeypatc
     assert result.route is UnflattenPlanRoute.LEGACY_ADAPTED
 
 
-def test_shadow_envelope_replays_each_payload_byte_for_byte() -> None:
-    """Replay preserves every nested container shape and exact wire bytes."""
-
-    codec = _codec()
-    assert callable(codec.capture_legacy_unflatten_shadow)
-    assert callable(codec.replay_legacy_unflatten_shadow)
-    ordinary = (("ordinary", ["keep", ("shape",)]),)
-    cleaned, shadow = codec.capture_legacy_unflatten_shadow(
-        plan_id="plan", snapshot_id="snapshot", source_generation=3,
-        metadata=(*ordinary, ("dispatcher_corridor_coverage", {"x": [1, (2,)]})),
-    )
-    assert cleaned == ordinary
-    plan = PatchPlan(
-        plan_id="plan", snapshot_id="snapshot", source_generation=3,
-        metadata=cleaned,
-    )
-    object.__setattr__(plan, "legacy_unflatten_shadow", shadow)
-    view = codec.replay_legacy_unflatten_shadow(plan)
-    assert dict(view.metadata)["dispatcher_corridor_coverage"] == {
-        "x": [1, (2,)]
-    }
-    assert dict(view.metadata)["ordinary"] == ["keep", ("shape",)]
-    assert view.metadata_value("dispatcher_corridor_coverage") == {"x": [1, (2,)]}
-    assert view.metadata_dict()["ordinary"] == ["keep", ("shape",)]
-    assert view.steps == plan.steps
-    assert shadow.entries[0].canonical_payload == codec.legacy_canonical_bytes(
-        {"x": [1, (2,)]}
-    )
-
-
-def test_capture_pins_all_current_reserved_keys_and_preserves_ordinary_pairs() -> None:
-    codec = _codec()
-    cleaned, shadow = codec.capture_legacy_unflatten_shadow(
-        plan_id="plan", snapshot_id="snapshot", source_generation=3,
-        metadata=_metadata(),
-    )
-    assert cleaned == (("ordinary", ["keep", ("shape",)]),)
-    assert shadow is not None
-    assert tuple(entry.key for entry in shadow.entries) == tuple(sorted(LEGACY_UNFLATTEN_KEYS))
-    assert all(
-        entry.payload_sha256 == hashlib.sha256(entry.canonical_payload).hexdigest()
-        for entry in shadow.entries
-    )
-
-
 def test_shadow_codec_receipt_requires_each_reserved_key_exactly_once() -> None:
     codec = _codec()
-    _cleaned, shadow = codec.capture_legacy_unflatten_shadow(
-        plan_id="plan", snapshot_id="snapshot", source_generation=3,
-        metadata=_metadata(),
-    )
+    _cleaned, shadow = _persistence_envelope(_metadata())
     assert shadow is not None
     receipt = codec.LegacyShadowCodecReceipt(
         shadow,
@@ -588,13 +543,15 @@ def test_shadow_codec_receipt_requires_each_reserved_key_exactly_once() -> None:
 def test_full_shadow_adapter_mints_receipt_for_all_eight_families_and_rejects_mutations() -> None:
     codec = _codec()
     proposal, context, metadata = _real_full_shadow_fixture()
-    _ordinary, shadow = codec.capture_legacy_unflatten_shadow(
-        plan_id=proposal.plan_id, snapshot_id="snapshot", source_generation=1,
-        metadata=tuple((key, copy.deepcopy(value)) for key, value in metadata.items()),
+    _ordinary, shadow = _persistence_envelope(
+        tuple((key, copy.deepcopy(value)) for key, value in metadata.items()),
+        plan_id=proposal.plan_id, generation=1,
     )
     assert shadow is not None
     receipt = codec.adapt_legacy_unflatten_shadow(shadow, context=context)
-    assert receipt.consumed_keys == tuple(sorted(LEGACY_UNFLATTEN_KEYS))
+    assert receipt.consumed_keys == tuple(sorted(
+        LEGACY_UNFLATTEN_KEYS - {"detached_dead_handler_component"}
+    ))
     assert receipt.payloads == tuple(
         (entry.key, entry.canonical_payload, entry.payload_sha256)
         for entry in shadow.entries
@@ -606,9 +563,8 @@ def test_full_shadow_adapter_mints_receipt_for_all_eight_families_and_rejects_mu
             "dispatcher_removal_preflight_proof",
         )
     )
-    _ordinary, subset_shadow = codec.capture_legacy_unflatten_shadow(
-        plan_id=proposal.plan_id, snapshot_id="snapshot", source_generation=1,
-        metadata=subset,
+    _ordinary, subset_shadow = _persistence_envelope(
+        subset, plan_id=proposal.plan_id, generation=1,
     )
     assert subset_shadow is not None
     subset_receipt = codec.adapt_legacy_unflatten_shadow(subset_shadow, context=context)
@@ -616,9 +572,8 @@ def test_full_shadow_adapter_mints_receipt_for_all_eight_families_and_rejects_mu
     exact_only = (
         ("exact_state_branch_effect_exclusions", copy.deepcopy(metadata["exact_state_branch_effect_exclusions"])),
     )
-    _ordinary, exact_shadow = codec.capture_legacy_unflatten_shadow(
-        plan_id=proposal.plan_id, snapshot_id="snapshot", source_generation=1,
-        metadata=exact_only,
+    _ordinary, exact_shadow = _persistence_envelope(
+        exact_only, plan_id=proposal.plan_id, generation=1,
     )
     assert exact_shadow is not None
     exact_receipt = codec.adapt_legacy_unflatten_shadow(exact_shadow, context=context)
@@ -645,9 +600,9 @@ def test_full_shadow_adapter_mints_receipt_for_all_eight_families_and_rejects_mu
     for key, mutate in mutations.items():
         mutated = dict(metadata)
         mutated[key] = mutate(mutated[key])
-        _ordinary, mutated_shadow = codec.capture_legacy_unflatten_shadow(
-            plan_id=proposal.plan_id, snapshot_id="snapshot", source_generation=1,
-            metadata=tuple((name, copy.deepcopy(value)) for name, value in mutated.items()),
+        _ordinary, mutated_shadow = _persistence_envelope(
+            tuple((name, copy.deepcopy(value)) for name, value in mutated.items()),
+            plan_id=proposal.plan_id, generation=1,
         )
         assert mutated_shadow is not None
         with pytest.raises((TypeError, ValueError), match="legacy|canonical|claim|coverage|proof|family"):
@@ -657,9 +612,9 @@ def test_full_shadow_adapter_mints_receipt_for_all_eight_families_and_rejects_mu
 def test_full_shadow_adapter_uses_direct_sealed_family_adapters_once(monkeypatch) -> None:
     codec = _codec()
     proposal, context, metadata = _real_full_shadow_fixture()
-    _ordinary, shadow = codec.capture_legacy_unflatten_shadow(
-        plan_id=proposal.plan_id, snapshot_id="snapshot", source_generation=1,
-        metadata=tuple((key, copy.deepcopy(value)) for key, value in metadata.items()),
+    _ordinary, shadow = _persistence_envelope(
+        tuple((key, copy.deepcopy(value)) for key, value in metadata.items()),
+        plan_id=proposal.plan_id, generation=1,
     )
     assert shadow is not None
     from d810.transforms.unflatten_authority import legacy_codec
@@ -704,71 +659,6 @@ def test_full_shadow_adapter_uses_direct_sealed_family_adapters_once(monkeypatch
     assert route_calls == route_entry_count
     assert exact_calls == exact_row_count
     assert receipt.consumed_keys == tuple(entry.key for entry in shadow.entries)
-
-
-def test_capture_rejects_duplicate_reserved_and_hostile_values() -> None:
-    codec = _codec()
-    with pytest.raises(ValueError, match="more than once"):
-        codec.capture_legacy_unflatten_shadow(
-            plan_id="plan", snapshot_id="snapshot", source_generation=0,
-            metadata=(("use_def_severance_audit", 1), ("use_def_severance_audit", 2)),
-        )
-    with pytest.raises(TypeError, match="exact str"):
-        codec.capture_legacy_unflatten_shadow(
-            plan_id="plan", snapshot_id="snapshot", source_generation=0,
-            metadata=((type("Alias", (str,), {})("use_def_severance_audit"), 1),),
-        )
-    with pytest.raises(TypeError):
-        codec.capture_legacy_unflatten_shadow(
-            plan_id="plan", snapshot_id="snapshot", source_generation=0,
-            metadata=(("use_def_severance_audit", object()),),
-        )
-
-
-def test_capture_accepts_patchplan_one_shot_metadata_and_rejects_mapping_subclass_value() -> None:
-    codec = _codec()
-    one_shot = iter((
-        ("ordinary", ["kept", (1,)]),
-        ("dispatcher_corridor_coverage", {"ok": True}),
-    ))
-    cleaned, shadow = codec.capture_legacy_unflatten_shadow(
-        plan_id="plan", snapshot_id="snapshot", source_generation=0,
-        metadata=one_shot,
-    )
-    assert cleaned == (("ordinary", ["kept", (1,)]),)
-    assert shadow is not None
-
-    class MappingDict(dict):
-        pass
-
-    with pytest.raises(TypeError):
-        codec.capture_legacy_unflatten_shadow(
-            plan_id="plan", snapshot_id="snapshot", source_generation=0,
-            metadata=(("dispatcher_corridor_coverage", MappingDict(ok=True)),),
-        )
-
-
-def test_replay_rejects_payload_digest_identity_and_noncanonical_wire_tampering() -> None:
-    codec = _codec()
-    plan, shadow = _shadow_plan(
-        (("dispatcher_corridor_coverage", {"nested": [1, (2,)]}),)
-    )
-    assert shadow is not None
-    original = shadow.entries[0].canonical_payload
-    tampered = bytearray(original)
-    tampered[-2] = ord("3") if tampered[-2] != ord("3") else ord("4")
-    object.__setattr__(shadow.entries[0], "canonical_payload", bytes(tampered))
-    with pytest.raises(ValueError):
-        codec.replay_legacy_unflatten_shadow(plan)
-    object.__setattr__(shadow.entries[0], "canonical_payload", original)
-    object.__setattr__(shadow.entries[0], "payload_sha256", "0" * 64)
-    with pytest.raises(ValueError):
-        codec.replay_legacy_unflatten_shadow(plan)
-
-    object.__setattr__(shadow.entries[0], "payload_sha256", hashlib.sha256(original).hexdigest())
-    object.__setattr__(shadow, "plan_id", "other")
-    with pytest.raises(ValueError, match="plan_id"):
-        codec.replay_legacy_unflatten_shadow(plan)
 
 
 def test_decode_is_absent_without_reserved_and_requires_route_evidence() -> None:
@@ -994,11 +884,6 @@ def test_r2_requires_dedicated_lossless_wire_and_neutral_key_owner() -> None:
     assert keys.LEGACY_UNFLATTEN_KEYS == LEGACY_UNFLATTEN_KEYS
 
 
-def test_shadow_view_metadata_is_explicit_and_wire_revalidation_is_required() -> None:
-    codec = _codec()
-    assert isinstance(codec.LegacyShadowPlanView.metadata, property)
-
-
 @pytest.mark.parametrize(
     "value",
     [None, False, True, 0, -1, 2**130, -2**130, -0.0, 1.25, "utf-8 cafe", b"raw", [], (),
@@ -1148,23 +1033,6 @@ def test_context_rejects_bool_source_block_serial() -> None:
         )
 
 
-def test_shadow_view_hides_transport_and_revalidates_metadata_on_access() -> None:
-    codec = _codec()
-    plan, shadow = _shadow_plan((
-        ("dispatcher_corridor_coverage", {"nested": [1, (2,)]}),
-    ))
-    view = codec.replay_legacy_unflatten_shadow(plan)
-    with pytest.raises(AttributeError):
-        _ = view.legacy_unflatten_shadow
-
-    class KeySubclass(str):
-        pass
-
-    object.__setattr__(view, "replay_metadata", ((KeySubclass("ordinary"), 1),))
-    with pytest.raises((TypeError, ValueError)):
-        _ = view.metadata
-
-
 def test_deep_route_validation_is_typed_rejection() -> None:
     codec = _codec()
     from .test_model import _canonical_evidence, import_authority_model
@@ -1217,28 +1085,6 @@ def test_decode_genuine_no_route_context_still_reports_route_missing() -> None:
     assert result.reason is UnflattenAuthorityReason.LEGACY_ROUTE_EVIDENCE_MISSING
 
 
-def test_shadow_boundaries_reject_equal_valued_plan_identity_subclasses() -> None:
-    codec = _codec()
-    plan, shadow = _shadow_plan(
-        (("dispatcher_corridor_coverage", {"value": 1}),)
-    )
-    assert shadow is not None
-
-    class TextSubclass(str):
-        pass
-
-    from d810.transforms.unflatten_authority.proposal import validate_shadow_for_plan
-
-    for field in ("plan_id", "snapshot_id"):
-        object.__setattr__(plan, field, TextSubclass(getattr(plan, field)))
-        with pytest.raises(ValueError):
-            codec.replay_legacy_unflatten_shadow(plan)
-        rejected = validate_shadow_for_plan(plan, shadow)
-        assert rejected.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
-        assert rejected.detail_code == "shadow_plan_identity_invalid"
-        object.__setattr__(plan, field, field.replace("_id", ""))
-
-
 def test_decode_scans_all_nested_generation_values() -> None:
     codec = _codec()
     from .test_model import _canonical_evidence, import_authority_model
@@ -1250,23 +1096,6 @@ def test_decode_scans_all_nested_generation_values() -> None:
         context=_decode_context(codec, evidence=evidence, ref=NativeBlockRef(identity)),
     )
     assert result.detail_code == "legacy_source_generation_mismatch"
-
-
-def test_shadow_model_and_plan_validation_reject_exactness_mutations() -> None:
-    plan, shadow = _shadow_plan((("dispatcher_corridor_coverage", {"x": 1}),))
-    from d810.transforms.unflatten_authority.proposal import validate_shadow_for_plan
-
-    object.__setattr__(shadow, "schema_version", True)
-    rejected = validate_shadow_for_plan(plan, shadow)
-    assert rejected.detail_code == "shadow_invariants_invalid"
-    object.__setattr__(shadow, "schema_version", 1)
-
-    class KeySubclass(str):
-        pass
-
-    object.__setattr__(shadow.entries[0], "key", KeySubclass(shadow.entries[0].key))
-    rejected = validate_shadow_for_plan(plan, shadow)
-    assert rejected.detail_code == "shadow_invariants_invalid"
 
 
 def test_legacy_retirement_conversion_is_serial_free_and_exact() -> None:

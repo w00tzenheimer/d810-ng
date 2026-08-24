@@ -10,7 +10,7 @@ from d810.transforms.cfg_transaction import TransactionAttemptId
 
 from . import model
 from .legacy_codec import LegacyShadowCodecReceipt
-from .views import ViewMetrics, observed_only_loss, semantic_loss_ledger
+from .views import ViewMetrics, compatibility_projection, observed_only_loss, semantic_loss_ledger
 
 
 @dataclass(frozen=True, slots=True)
@@ -503,9 +503,100 @@ def phase_observation(
     )
 
 
+def dispatcher_outcome_observations(
+    *,
+    projected_verdict: model.UnflattenAuthorityVerdict | None,
+    observed_verdict: model.UnflattenAuthorityVerdict | None,
+    function_ea: int,
+    maturity: str,
+    application_status: str,
+    outcome_reason: str | None,
+    plan_id: str,
+    attempt_id: str | None,
+) -> tuple[FactObservation, ...]:
+    """Project canonical phase verdicts into legacy dispatcher fact rows.
+
+    These rows keep existing observability subscribers live, but every field
+    is derived from the canonical verdict and pure compatibility view.  No
+    plan metadata or CFG is parsed on this path.
+    """
+
+    for name, verdict in (
+        ("projected_verdict", projected_verdict),
+        ("observed_verdict", observed_verdict),
+    ):
+        if verdict is not None and type(verdict) is not model.UnflattenAuthorityVerdict:
+            raise TypeError(f"{name} must be an UnflattenAuthorityVerdict or None")
+    primary = observed_verdict or projected_verdict
+    if primary is None:
+        return ()
+    projected_views = {
+        kind: None if projected_verdict is None else compatibility_projection(projected_verdict, kind).to_payload()
+        for kind in ("coverage", "removal")
+    }
+    observed_views = {
+        kind: None if observed_verdict is None else compatibility_projection(observed_verdict, kind).to_payload()
+        for kind in ("coverage", "removal")
+    }
+    rows: list[FactObservation] = []
+    for kind, fact_kind, label in (
+        ("coverage", "UnflattenDispatcherCorridorCoverageSummary", "coverage"),
+        ("removal", "UnflattenDispatcherRemovalPreflightProof", "removal"),
+    ):
+        view = compatibility_projection(primary, kind)
+        payload = view.to_payload()
+        payload.update({
+            "function_ea": int(function_ea),
+            "application_status": application_status,
+            "outcome_reason": outcome_reason,
+            "plan_id": plan_id,
+            "attempt_id": attempt_id,
+            "canonical": True,
+        })
+        if kind == "coverage":
+            payload.update({
+                "projected_coverage_validation": projected_views[kind],
+                "observed_coverage_validation": observed_views[kind],
+            })
+        else:
+            payload.update({
+                "projected_validation": projected_views[kind],
+                "observed_validation": observed_views[kind],
+            })
+        authority = primary.authority_id or f"plan:{plan_id}"
+        fact_id = (
+            f"unflatten-dispatcher-{label}:{application_status}:"
+            f"func=0x{int(function_ea):x}:{authority}"
+        )
+        evidence = tuple(
+            item for item in (
+                view.authority_id,
+                view.binding_id,
+                view.case_id,
+                *view.subject_ids,
+            ) if item is not None
+        )
+        rows.append(FactObservation(
+            fact_id=fact_id,
+            kind=fact_kind,
+            semantic_key=f"unflatten_dispatcher_{label}:func=0x{int(function_ea):x}:{authority}",
+            maturity=str(maturity),
+            phase=primary.phase.value,
+            confidence=1.0,
+            source_block=None,
+            source_ea=int(function_ea),
+            block_fingerprint=primary.candidate_fingerprint,
+            mop_signature=None,
+            payload=payload,
+            evidence=evidence,
+        ))
+    return tuple(rows)
+
+
 __all__ = [
     "LegacyPhaseOutcome", "LegacyCanonicalParityRow", "PhaseTimings",
     "ShadowParityCounters", "ShadowParityPayload",
     "build_phase_payload", "compare_shadow_parity", "parity_projection",
     "project_shadow_parity", "require_shadow_parity", "phase_observation",
+    "dispatcher_outcome_observations",
 ]

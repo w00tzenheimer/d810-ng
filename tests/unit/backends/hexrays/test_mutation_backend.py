@@ -11,10 +11,6 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
     SemanticFragmentBlockOwner,
 )
-from d810.analyses.control_flow.effect_branch_exclusion import (
-    EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
-    build_exact_state_branch_effect_exclusion,
-)
 from d810.ir.expressions import ValueOpKind
 from d810.backends.hexrays.mutation.backend import (
     HexRaysMutationBackend,
@@ -34,7 +30,6 @@ from d810.hexrays.mutation.patch_transaction import (
     PatchTransactionPostObservationRejected,
     PatchTransactionPreflightRejected,
     _patch_plan_observation_items,
-    _requires_observed_identity_canonicalization,
 )
 from d810.hexrays.mutation.semantic_ownership import (
     PatchPlanSemanticOwnershipOverlap,
@@ -77,16 +72,15 @@ from d810.transforms.cfg_transaction import (
     PreparedCfgTransaction,
 )
 from d810.transforms.unflatten_authority.ids import authority_id
+from d810.transforms.unflatten_authority.ids import claim_id
 from d810.transforms.unflatten_authority import model as authority_model
 from d810.transforms.unflatten_authority import views as authority_views
-from d810.transforms.unflatten_authority.proposal import TypedProposalRoute
-from d810.transforms.unflatten_authority.transaction_api import select_plan_route
 from d810.transforms.dispatcher_corridor_coverage import (
     DISPATCHER_CORRIDOR_COVERAGE_METADATA,
     DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+    DispatcherRemovalPreflightValidation,
     analyze_dispatcher_corridor_coverage,
     build_dispatcher_removal_preflight_proof,
-    canonicalize_observed_dispatcher_graph,
 )
 from d810.transforms.edit_simulator import project_patch_plan
 from d810.transforms.fragment_plan import (
@@ -552,6 +546,9 @@ def test_apply_rejects_plan_that_orphans_reachable_terminal() -> None:
     assert planned[0].items[0].target_serial == 1
     assert translator.lower_calls == []
     assert translator.lift_count == 0
+    assert backend.last_patch_failure is not None
+    assert backend.last_patch_failure.unflatten_verdict is None
+    assert not backend._mutation_gateway.mutation_started
     assert [event.phase for event in phases] == [
         CfgTransactionPhase.PLANNED,
         CfgTransactionPhase.PROJECTED,
@@ -585,6 +582,9 @@ def test_apply_rejects_plan_that_collapses_entry_reachability() -> None:
     assert result is cfg
     assert translator.lower_calls == []
     assert translator.lift_count == 1
+    assert backend.last_patch_failure is not None
+    assert backend.last_patch_failure.unflatten_verdict is None
+    assert not backend._mutation_gateway.mutation_started
 
 
 def _comparison_dispatcher_forest_cfg() -> FlowGraph:
@@ -631,11 +631,151 @@ def _comparison_dispatcher_forest_observed_cfg(
     )
 
 
-def _comparison_dispatcher_forest_plan(
+def _typed_bootstrap_authority_plan(
     cfg: FlowGraph,
     *,
-    authoritative_handlers: frozenset[int],
+    template: PatchPlan,
+    dispatcher_entry_serial: int,
+    dispatcher_member_serials: tuple[int, ...],
+    authoritative_handler_serials: tuple[int, ...],
+    coverage,
+    removal_validation=None,
+    route_edge: tuple[int, int] | None = None,
+    route_terminal: bool = False,
 ) -> PatchPlan:
+    """Build a typed proposal around the plan's direct semantic route."""
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        CanonicalSemanticEvidence,
+        SemanticRouteDestination,
+        SemanticRouteProof,
+        SemanticRouteProofKind,
+        SemanticRouteShape,
+        SemanticStateWriteDeliveryKind,
+        SemanticStateWriteProof,
+    )
+    from d810.ir.block_identity import NativeEaInterval
+    from d810.transforms.unflatten_authority.model import UseDefFragmentWitness
+    from d810.transforms.unflatten_authority.proposal import (
+        attach_typed_proposal,
+        canonical_redirect_manifest,
+    )
+
+    state = StorageIdentity(StorageIdentityKind.STACK, 4)
+    if route_edge is None:
+        route_edge = next(
+            (serial, block.succs[0])
+            for serial, block in sorted(cfg.blocks.items())
+            if len(block.succs) == 1
+        )
+    source_serial, target_serial = route_edge
+    source_block = cfg.blocks[source_serial]
+    if len(source_block.succs) != 1:
+        raise ValueError("typed bootstrap route source must be one-way")
+    projected = project_patch_plan(cfg, template, snapshot_id=template.snapshot_id)
+    projected_source = projected.graph.blocks.get(source_serial)
+    if projected_source is None or tuple(projected_source.succs) != (target_serial,):
+        raise ValueError("typed bootstrap route must match projected topology")
+    source_blocks = {}
+    for serial, block in cfg.blocks.items():
+        if serial == source_serial:
+            instruction = InsnSnapshot(
+                opcode=0,
+                ea=block.start_ea,
+                native_ea=block.start_ea,
+                operands=(),
+                l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+                d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=4, stack_refs=(4,)),
+                kind=InsnKind.MOV,
+                value_op_kind=ValueOpKind.MOVE,
+            )
+        else:
+            instruction = InsnSnapshot(
+                opcode=0,
+                ea=block.start_ea,
+                native_ea=block.start_ea,
+                operands=(),
+                kind=InsnKind.NOP,
+            )
+        source_blocks[serial] = replace(block, insn_snapshots=(instruction,))
+    object.__setattr__(cfg, "blocks", source_blocks)
+
+    refs = {serial: _native_ref(serial) for serial in sorted(cfg.blocks)}
+    source_ref = refs[source_serial]
+    target_ref = refs[target_serial]
+    source_ea = source_block.start_ea
+    target_ea = cfg.blocks[target_serial].start_ea
+    state_write = SemanticStateWriteProof(
+        source_ref.identity,
+        source_ea,
+        state,
+        4,
+        1,
+        (source_ea,),
+        None,
+        (),
+        SemanticStateWriteDeliveryKind.DIRECT,
+    )
+    route = SemanticRouteProof(
+        authority_id(("typed-bootstrap-route", template.plan_id, source_serial, target_serial)),
+        authority_id(("typed-bootstrap-group", template.plan_id)),
+        SemanticRouteProofKind.BOOTSTRAP,
+        SemanticRouteShape.DIRECT,
+        source_ref.identity,
+        source_ea,
+        (SemanticRouteDestination(
+            SemanticEdgeRole.DIRECT, 1, target_ref.identity, target_ea,
+            terminal=route_terminal,
+        ),),
+        NativeEaInterval(source_ea, source_ea + 1),
+        state_write=state_write,
+    )
+    evidence = CanonicalSemanticEvidence(
+        NATIVE_KEY,
+        1,
+        route.atomic_group_id,
+        (route,),
+    )
+    template = replace(
+        template,
+        plan_id=authority_id(("typed-bootstrap-plan", template.plan_id)),
+        snapshot_id=authority_id(("typed-bootstrap-snapshot", template.snapshot_id)),
+        source_generation=1,
+        source_coordinates=tuple((refs[serial], serial) for serial in sorted(refs)),
+        metadata=(),
+    )
+    manifest = canonical_redirect_manifest(template)
+    witness = UseDefFragmentWitness(
+        authority_id("typed-bootstrap-witness"),
+        state,
+        manifest.owner_refs,
+        manifest.digest,
+        True,
+        True,
+        0,
+        (),
+    )
+    return attach_typed_proposal(
+        template,
+        source=cfg,
+        block_refs_by_serial=refs,
+        canonical_route_evidence=evidence,
+        selected_route_proof_ids=(route.proof_id,),
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        dispatcher_member_serials=dispatcher_member_serials,
+        authoritative_handler_serials=authoritative_handler_serials,
+        state_identity=state,
+        use_def_witness=witness,
+        corridor_coverage=coverage,
+        dispatcher_removal_validation=removal_validation,
+    )
+
+
+def test_apply_rejects_unbound_comparison_dispatcher_removal_below_raw_threshold(
+    monkeypatch,
+) -> None:
+    """Stamped producer metadata cannot bypass the generic entry-count gate."""
+    cfg = _comparison_dispatcher_forest_cfg()
     plan = _ordinary_plan(
         PatchRedirectGoto,
         serials=(1, 2, 3),
@@ -654,35 +794,16 @@ def _comparison_dispatcher_forest_plan(
         post_graph=projected.graph,
         coverage=coverage,
         dispatcher_entry_serial=2,
-        authoritative_handler_serials=authoritative_handlers,
+        authoritative_handler_serials=frozenset({3, 4}),
         dispatcher_region_serials=frozenset({2, *range(5, 32)}),
         producer_safety=_executed_fragment_safety(),
     )
-    return plan.with_metadata(
+    plan = plan.with_metadata(
         **{
             DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
             DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
         }
     )
-
-
-def test_apply_rejects_unbound_comparison_dispatcher_removal_below_raw_threshold(
-    monkeypatch,
-) -> None:
-    """Stamped producer metadata cannot bypass the generic entry-count gate."""
-    cfg = _comparison_dispatcher_forest_cfg()
-    plan = _comparison_dispatcher_forest_plan(
-        cfg,
-        authoritative_handlers=frozenset({3, 4}),
-    )
-    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
-    assert proof["proof_status"] == "accepted"
-    assert [anchor["ea"] for anchor in proof["pre_reachable_terminals"]] == [
-        0x1004
-    ]
-    assert [anchor["ea"] for anchor in proof["post_reachable_terminals"]] == [
-        0x1004
-    ]
 
     translator = _FakeTranslator(cfg)
     observed_outcomes = []
@@ -702,35 +823,52 @@ def test_apply_rejects_unbound_comparison_dispatcher_removal_below_raw_threshold
     assert translator.lower_calls == []
     assert translator.lift_count == 1
     assert len(observed_outcomes) == 1
-    rejected_payloads = [
-        observation.payload
+    assert observed_outcomes[0]["observations"]
+    assert all(
+        observation.payload["canonical"]
         for observation in observed_outcomes[0]["observations"]
-    ]
-    assert {payload["application_status"] for payload in rejected_payloads} == {
-        "rejected_preflight"
-    }
-    rejected_proof = next(
-        observation.payload
-        for observation in observed_outcomes[0]["observations"]
-        if observation.kind == "UnflattenDispatcherRemovalPreflightProof"
     )
-    projected_validation = rejected_proof["projected_validation"]
-    assert projected_validation["validation_status"] == "rejected"
-    assert projected_validation["reason"] == "dispatcher_removal_proof_drift"
-    assert projected_validation["proof"]["reason"] == "producer_safety_missing"
 
 
 def test_apply_rejects_dispatcher_removal_proof_when_one_handler_is_lost(
     monkeypatch,
 ) -> None:
     cfg = _comparison_dispatcher_forest_cfg()
-    plan = _comparison_dispatcher_forest_plan(
-        cfg,
-        authoritative_handlers=frozenset({3, 4, 5}),
+    raw_plan = _ordinary_plan(
+        PatchRedirectGoto,
+        serials=(1, 2, 3),
+        from_serial=1,
+        old_target=2,
+        new_target=3,
     )
-    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
-    assert proof["proof_status"] == "rejected"
-    assert proof["reason"] == "authoritative_handler_lost"
+    coverage = analyze_dispatcher_corridor_coverage(
+        cfg,
+        modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
+        dispatcher_entry_serial=2,
+    )
+    projected = project_patch_plan(cfg, raw_plan, snapshot_id=raw_plan.snapshot_id)
+    proof = build_dispatcher_removal_preflight_proof(
+        cfg,
+        post_graph=projected.graph,
+        coverage=coverage,
+        dispatcher_entry_serial=2,
+        authoritative_handler_serials=frozenset({3, 4, 5}),
+        dispatcher_region_serials=frozenset({2, *range(5, 32)}),
+        producer_safety=_executed_fragment_safety(),
+    )
+    assert not proof.passed
+    assert proof.reason == "authoritative_handler_lost"
+    plan = _typed_bootstrap_authority_plan(
+        cfg,
+        template=raw_plan,
+        dispatcher_entry_serial=2,
+        coverage=coverage,
+        dispatcher_member_serials=(1, 2, *range(5, 32)),
+        authoritative_handler_serials=(1,),
+        removal_validation=DispatcherRemovalPreflightValidation(
+            proof.passed, proof.reason, proof,
+        ),
+    )
 
     translator = _FakeTranslator(cfg)
     observed_outcomes = []
@@ -758,41 +896,17 @@ def test_apply_rejects_dispatcher_removal_proof_when_one_handler_is_lost(
         "rejected_preflight"
     }
     assert any(
-        payload.get("proof_status") == "rejected"
-        and payload.get("reason") == "authoritative_handler_lost"
+        payload.get("projected_validation", {}).get("reason")
+        == "obligation_violated"
         for payload in rejected_payloads
     )
-
-
-def test_apply_rejects_dispatcher_removal_when_coverage_metadata_is_stale() -> None:
-    """The preflight must rederive residual corridors from the actual projection."""
-    cfg = _comparison_dispatcher_forest_cfg()
-    plan = _comparison_dispatcher_forest_plan(
-        cfg,
-        authoritative_handlers=frozenset({3, 4}),
+    projected = next(
+        payload["projected_validation"]
+        for payload in rejected_payloads
+        if "projected_validation" in payload
     )
-    stale_coverage = dict(
-        plan.metadata_dict()[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
-    )
-    stale_coverage["covered_corridors"] = []
-    stale_plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: stale_coverage}
-    )
-
-    translator = _FakeTranslator(cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, stale_plan),
-        translator=translator,
-    )
-
-    result = backend.apply(
-        stale_plan,
-        live_source=SimpleNamespace(qty=cfg.num_blocks),
-    )
-
-    assert result is cfg
-    assert translator.lower_calls == []
-    assert translator.lift_count == 1
+    assert projected["failed_obligation_states"] == ("violated",)
+    assert projected["retirement_subject_ids"] == ()
 
 
 def test_apply_rejects_recomputed_stale_dispatcher_coverage_proof(
@@ -800,35 +914,30 @@ def test_apply_rejects_recomputed_stale_dispatcher_coverage_proof(
 ) -> None:
     """A plan cannot relabel an actual residual corridor out of existence."""
     cfg = _comparison_dispatcher_forest_cfg()
-    plan = _comparison_dispatcher_forest_plan(
+    template = _ordinary_plan(
+        PatchRedirectGoto,
+        serials=(1, 2, 3),
+        from_serial=1,
+        old_target=2,
+        new_target=3,
+    )
+    coverage = analyze_dispatcher_corridor_coverage(
         cfg,
-        authoritative_handlers=frozenset({3, 4}),
+        modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
+        dispatcher_entry_serial=2,
     )
     stale_coverage = replace(
-        analyze_dispatcher_corridor_coverage(
-            cfg,
-            modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
-            dispatcher_entry_serial=2,
-        ),
+        coverage,
         covered_corridors=(),
         residual_corridors=(),
     )
-    projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
-    stale_proof = build_dispatcher_removal_preflight_proof(
+    stale_plan = _typed_bootstrap_authority_plan(
         cfg,
-        post_graph=projected.graph,
-        coverage=stale_coverage,
+        template=template,
         dispatcher_entry_serial=2,
-        authoritative_handler_serials=frozenset({3, 4}),
-        dispatcher_region_serials=frozenset({2, *range(5, 32)}),
-        producer_safety=_executed_fragment_safety(),
-    )
-    assert stale_proof.passed
-    stale_plan = plan.with_metadata(
-        **{
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA: stale_coverage.to_metadata(),
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: stale_proof.to_metadata(),
-        }
+        dispatcher_member_serials=(1, 2, *range(5, 32)),
+        authoritative_handler_serials=(1,),
+        coverage=stale_coverage,
     )
 
     translator = _FakeTranslator(cfg)
@@ -855,23 +964,18 @@ def test_apply_rejects_recomputed_stale_dispatcher_coverage_proof(
     assert {
         observation.payload["outcome_reason"]
         for observation in observed_outcomes[0]["observations"]
-    } == {
-        "projected reachability rejected: terminal=; "
-        "entry=entry reachability collapsed; "
-        "dispatcher_removal=dispatcher_removal_proof_coverage_drift; "
-        "dispatcher_coverage=dispatcher_corridor_coverage_drift"
-    }
+    } == {"projected unflatten authority rejected"}
 
 
 def test_small_full_retirement_poisons_when_observed_graph_differs_from_projection(
     monkeypatch,
 ) -> None:
-    """Ordinary preflight never weakens exact observed-coverage validation."""
+    """Projected retirement may lower, but an unchanged live CFG poisons it."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
         stop_serials=(4,),
     )
-    plan = _ordinary_plan(
+    template = _ordinary_plan(
         PatchRedirectGoto,
         serials=(1, 2, 3),
         from_serial=1,
@@ -883,7 +987,7 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
         modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
         dispatcher_entry_serial=2,
     )
-    projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
+    projected = project_patch_plan(cfg, template, snapshot_id=template.snapshot_id)
     proof = build_dispatcher_removal_preflight_proof(
         cfg,
         post_graph=projected.graph,
@@ -894,11 +998,17 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
         producer_safety=_executed_fragment_safety(),
     )
     assert proof.passed
-    plan = plan.with_metadata(
-        **{
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
-        }
+    plan = _typed_bootstrap_authority_plan(
+        cfg,
+        template=template,
+        dispatcher_entry_serial=2,
+        dispatcher_member_serials=(1, 2, 5),
+        authoritative_handler_serials=(3,),
+        coverage=coverage,
+        route_edge=(1, 3),
+        removal_validation=DispatcherRemovalPreflightValidation(
+            proof.passed, proof.reason, proof,
+        ),
     )
     outcomes = []
     monkeypatch.setattr(
@@ -913,7 +1023,7 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
             plan,
             lifecycle_authority=SessionFragmentPublicationLifecycleAuthority(
                 native_key=NATIVE_KEY,
-                state=NativePreanalysisSessionState(evidence_generation=0),
+                state=NativePreanalysisSessionState(evidence_generation=1),
             ),
         ),
         # The fake translator deliberately leaves the dispatcher unchanged
@@ -921,27 +1031,31 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
         translator=translator,
     )
 
-    with pytest.raises(CfgGenerationPoisoned):
+    from d810.hexrays.mutation.patch_transaction import PatchTransactionPoisoned
+
+    with pytest.raises(PatchTransactionPoisoned) as raised:
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
-    assert backend.last_patch_failure is not None
-    assert "dispatcher_corridor_coverage_drift" in str(backend.last_patch_failure)
-    assert translator.lower_calls == [plan]
+    assert isinstance(raised.value.__cause__, PatchTransactionPostObservationRejected)
+    assert translator.lower_calls
     assert translator.lift_count == 2
+    observed_verdict = backend.last_patch_failure.unflatten_verdict
+    assert observed_verdict is not None
+    assert observed_verdict.phase is authority_model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+    assert observed_verdict.accepted is False
     payloads = [item.payload for item in outcomes[0]["observations"]]
-    assert {payload["application_status"] for payload in payloads} == {
-        "poisoned_restart_required"
-    }
-    proof_payload = next(
-        payload
+    assert payloads
+    observed = next(
+        payload["observed_validation"]
         for payload in payloads
-        if payload.get("observed_coverage_validation") is not None
+        if "observed_validation" in payload
     )
-    assert proof_payload["observed_coverage_validation"][
-        "validation_status"
-    ] == "rejected"
-    assert proof_payload["observed_coverage_validation"]["reason"] == (
-        "dispatcher_corridor_coverage_drift"
+    assert observed["phase"] == "observed_post_apply"
+    assert observed["reason"] == "live_binding_failed"
+    assert observed["authority_id"].startswith("sha256:")
+    assert all(
+        payload["application_status"] == "poisoned_restart_required"
+        for payload in payloads
     )
 
 
@@ -953,7 +1067,7 @@ def test_partial_coverage_drift_never_publishes_nonexistent_applied_corridor(
         [(0, 1), (0, 5), (1, 2), (5, 2), (2, 3), (2, 4)],
         stop_serials=(3, 4),
     )
-    plan = _ordinary_plan(
+    template = _ordinary_plan(
         PatchRedirectGoto,
         serials=(1, 2, 3),
         from_serial=1,
@@ -967,21 +1081,14 @@ def test_partial_coverage_drift_never_publishes_nonexistent_applied_corridor(
     )
     assert len(coverage.covered_corridors) == 1
     assert len(coverage.residual_corridors) == 1
-    projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
-    proof = build_dispatcher_removal_preflight_proof(
+    plan = _typed_bootstrap_authority_plan(
         cfg,
-        post_graph=projected.graph,
-        coverage=coverage,
+        template=template,
         dispatcher_entry_serial=2,
-        authoritative_handler_serials=frozenset({3, 4}),
-        dispatcher_region_serials=frozenset({2}),
-        producer_safety=_executed_fragment_safety(),
-    )
-    plan = plan.with_metadata(
-        **{
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
-        }
+        dispatcher_member_serials=(1, 2, 5),
+        authoritative_handler_serials=(3,),
+        coverage=coverage,
+        route_edge=(1, 3),
     )
     outcomes = []
     monkeypatch.setattr(
@@ -995,141 +1102,27 @@ def test_partial_coverage_drift_never_publishes_nonexistent_applied_corridor(
             plan,
             lifecycle_authority=SessionFragmentPublicationLifecycleAuthority(
                 native_key=NATIVE_KEY,
-                state=NativePreanalysisSessionState(evidence_generation=0),
+                state=NativePreanalysisSessionState(evidence_generation=1),
             ),
         ),
         # The planned 0 -> 1 -> 2 corridor remains live after lower().
-        translator=_FakeTranslator(cfg),
+        translator=(translator := _FakeTranslator(cfg)),
     )
 
-    with pytest.raises(CfgGenerationPoisoned):
-        backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
+    assert backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks)) is cfg
 
-    corridor_payloads = [
-        item.payload
-        for item in outcomes[0]["observations"]
-        if item.kind == "UnflattenDispatcherCorridorCoverage"
-    ]
-    assert {
-        (
-            payload["planned_coverage"],
-            payload["coverage"],
-            payload["application_status"],
-        )
-        for payload in corridor_payloads
-    } == {
-        ("covered", "residual", "poisoned_restart_required"),
-        ("residual", "residual", "poisoned_restart_required"),
-    }
-    assert {
-        payload["observed_coverage_validation"]["reason"]
-        for payload in corridor_payloads
-    } == {"dispatcher_corridor_coverage_drift"}
-    assert all(payload["coverage"] != "covered" for payload in corridor_payloads)
-
-
-def test_lower_conditional_coverage_uses_the_logical_post_topology() -> None:
-    """A conditional-state lowering must not drift only because it inserts a helper."""
-    cfg = _make_cfg(
-        [(0, 1), (0, 5), (1, 2), (5, 2), (2, 3)],
-        stop_serials=(3, 4),
+    assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
+    assert translator.lower_calls == []
+    assert translator.lift_count == 1
+    payloads = [item.payload for item in outcomes[0]["observations"]]
+    projected = next(
+        payload["projected_validation"]
+        for payload in payloads
+        if "projected_validation" in payload
     )
-    post_cfg = _make_cfg(
-        [(0, 1), (0, 6), (1, 2), (1, 5), (2, 4), (6, 3), (3, 4)],
-        stop_serials=(4, 5),
-    )
-    post_anchors = {
-        0: 0x1000,
-        1: 0x1001,
-        2: 0x9002,
-        3: 0x1002,
-        4: 0x1003,
-        5: 0x1004,
-        6: 0x1005,
-    }
-    post_blocks = {
-        serial: replace(
-            block,
-            start_ea=post_anchors[serial],
-            native_start_ea=post_anchors[serial],
-        )
-        for serial, block in post_cfg.blocks.items()
-    }
-    post_blocks[2] = replace(
-        post_blocks[2],
-        kind=BlockKind.ONE_WAY,
-        tail_kind=InsnKind.GOTO,
-    )
-    post_blocks[1] = replace(
-        post_blocks[1],
-        insn_snapshots=(
-            InsnSnapshot(
-                opcode=0x71,
-                ea=0x1001,
-                native_ea=0x1001,
-                operands=(),
-                l=MopSnapshot(kind=OperandKind.REGISTER, reg=9, size=4),
-                r=MopSnapshot(kind=OperandKind.NUMBER, value=0, size=4),
-                kind=InsnKind.COND_JUMP,
-                predicate_kind=PredicateKind.NE,
-            ),
-        ),
-    )
-    post_cfg = replace(post_cfg, blocks=post_blocks)
-    refs = {serial: _native_ref(serial) for serial in cfg.blocks}
-    lowering = LowerConditionalStateTransition(
-        source_serial=1,
-        old_dispatcher_serial=2,
-        rewrite_from_ea=0x1001,
-        condition_operand=SyntheticRegisterNonzeroCondition(9, 4),
-        false_target_serial=3,
-        true_target_serial=4,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        cfg,
-        modifications=(lowering,),
-        dispatcher_entry_serial=2,
-    )
-    assert len(coverage.covered_corridors) == 1
-    assert len(coverage.residual_corridors) == 1
-    plan = PatchPlan(
-        source_maturity=MaturityEnvelope(
-            ir=None,
-            provider="hexrays",
-            provider_id=0,
-        ),
-        source_generation=0,
-        snapshot_id="lower-conditional-coverage",
-        steps=(
-            PatchLowerConditionalStateTransition(
-                source_serial=refs[1],
-                old_dispatcher_serial=refs[2],
-                rewrite_from_ea=0x1001,
-                condition_operand=SyntheticRegisterNonzeroCondition(9, 4),
-                false_target_serial=refs[3],
-                true_target_serial=refs[4],
-            ),
-        ),
-        source_coordinates=tuple((refs[serial], serial) for serial in (1, 2, 3, 4)),
-    ).with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata()}
-    )
-
-    class _LogicalPostTranslator(_FakeTranslator):
-        def lift(self, _live_source: object) -> FlowGraph:
-            self.lift_count += 1
-            return post_cfg if self.lower_calls else cfg
-
-    translator = _LogicalPostTranslator(cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
-        translator=translator,
-    )
-
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert result is post_cfg
-    assert translator.lower_calls == [plan]
+    assert projected["phase"] == "projected_preflight"
+    assert projected["reason"] == "obligation_violated"
+    assert projected["authority_id"].startswith("sha256:")
 
 
 def test_project_patch_plan_lowers_conditional_state_to_canonical_two_way() -> None:
@@ -1283,112 +1276,6 @@ def test_conditional_lowering_coordinate_outside_snapshot_is_rejected_cleanly() 
     assert "conditional state lowering" in str(backend.last_patch_failure)
 
 
-def _shifted_conditional_lowering_observed_graph() -> FlowGraph:
-    """A helper at the function entry shifts the later live block serials."""
-    observed = _make_cfg(
-        [(0, 1), (1, 2), (1, 5), (2, 4), (3, 6)],
-        stop_serials=(4, 5, 6),
-    )
-    starts = {
-        0: 0x1000,
-        1: 0x1001,
-        2: 0x1000,  # synthetic adjacent fall-through helper
-        3: 0x1002,
-        4: 0x1003,
-        5: 0x1004,
-        6: 0x1005,
-    }
-    blocks = {
-        serial: replace(
-            block,
-            start_ea=starts[serial],
-            native_start_ea=starts[serial],
-        )
-        for serial, block in observed.blocks.items()
-    }
-    blocks[1] = replace(
-        blocks[1],
-        insn_snapshots=(
-            InsnSnapshot(
-                opcode=0x71,
-                ea=0x1001,
-                native_ea=0x1001,
-                operands=(),
-                l=MopSnapshot(kind=OperandKind.REGISTER, reg=9, size=4),
-                r=MopSnapshot(kind=OperandKind.NUMBER, value=0, size=4),
-                kind=InsnKind.COND_JUMP,
-                predicate_kind=PredicateKind.NE,
-            ),
-        ),
-    )
-    blocks[2] = replace(
-        blocks[2],
-        kind=BlockKind.ONE_WAY,
-        tail_kind=InsnKind.GOTO,
-    )
-    return replace(observed, blocks=blocks)
-
-
-def _conditional_lowering_plan_with_coverage(cfg: FlowGraph) -> PatchPlan:
-    refs = {serial: _native_ref(serial) for serial in cfg.blocks}
-    lowering = LowerConditionalStateTransition(
-        source_serial=1,
-        old_dispatcher_serial=2,
-        rewrite_from_ea=0x1001,
-        condition_operand=SyntheticRegisterNonzeroCondition(9, 4),
-        false_target_serial=3,
-        true_target_serial=4,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        cfg,
-        modifications=(lowering,),
-        dispatcher_entry_serial=2,
-    )
-    return PatchPlan(
-        source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
-        source_generation=0,
-        snapshot_id="shifted-lower-observation",
-        steps=(
-            PatchLowerConditionalStateTransition(
-                source_serial=refs[1],
-                old_dispatcher_serial=refs[2],
-                rewrite_from_ea=0x1001,
-                condition_operand=SyntheticRegisterNonzeroCondition(9, 4),
-                false_target_serial=refs[3],
-                true_target_serial=refs[4],
-            ),
-        ),
-        source_coordinates=tuple((refs[serial], serial) for serial in (1, 2, 3, 4)),
-        metadata=((DISPATCHER_CORRIDOR_COVERAGE_METADATA, coverage.to_metadata()),),
-    )
-
-
-def test_observed_lowering_with_helper_serial_shift_does_not_poison() -> None:
-    """Observed coverage is checked after mapping synthetic helpers to stable EAs."""
-    cfg = _make_cfg(
-        [(0, 1), (1, 2), (2, 5)],
-        stop_serials=(3, 4, 5),
-    )
-    plan = _conditional_lowering_plan_with_coverage(cfg)
-    observed = _shifted_conditional_lowering_observed_graph()
-
-    class _ShiftedObservationTranslator(_FakeTranslator):
-        def lift(self, _live_source: object) -> FlowGraph:
-            self.lift_count += 1
-            return cfg if self.lift_count == 1 else observed
-
-    translator = _ShiftedObservationTranslator(cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
-        translator=translator,
-    )
-
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert result is observed
-    assert translator.lower_calls == [plan]
-
-
 def test_observed_native_call_serial_shift_does_not_poison() -> None:
     """Post-observation effect checks bind native effects, not old serials."""
     call = InsnSnapshot(
@@ -1444,162 +1331,6 @@ def test_observed_native_call_serial_shift_does_not_poison() -> None:
     assert translator.lower_calls == [plan]
 
 
-def test_observed_lowering_canonicalizes_helper_topology_onto_pre_snapshot() -> None:
-    """Physical helper serials are removed from the semantic observation graph."""
-    cfg = _make_cfg(
-        [(0, 1), (1, 2), (2, 5)],
-        stop_serials=(3, 4, 5),
-    )
-    plan = _conditional_lowering_plan_with_coverage(cfg)
-    observed = _shifted_conditional_lowering_observed_graph()
-
-    canonical = canonicalize_observed_dispatcher_graph(cfg, observed, plan)
-
-    assert canonical.blocks[1].succs == (3, 4)
-    assert canonical.blocks[1].kind is BlockKind.TWO_WAY
-    assert canonical.blocks[1].tail_kind is InsnKind.COND_JUMP
-    assert canonical.blocks[3].succs == ()
-    assert canonical.blocks[4].succs == ()
-    assert canonical.blocks[5].succs == ()
-
-
-def test_observed_terminal_kind_drift_is_not_hidden_by_canonicalization() -> None:
-    """Serial normalization must not restore STOP kinds lost by live lowering."""
-    cfg = _make_cfg(
-        [(0, 1), (1, 2), (2, 5)],
-        stop_serials=(3, 4, 5),
-    )
-    plan = _conditional_lowering_plan_with_coverage(cfg)
-    observed = _shifted_conditional_lowering_observed_graph()
-    observed = replace(
-        observed,
-        blocks={
-            serial: replace(
-                block,
-                kind=BlockKind.ZERO_WAY,
-                tail_kind=None,
-            )
-            if serial in {4, 5, 6}
-            else block
-            for serial, block in observed.blocks.items()
-        },
-    )
-
-    class _DriftedTerminalTranslator(_FakeTranslator):
-        def lift(self, _live_source: object) -> FlowGraph:
-            self.lift_count += 1
-            return cfg if self.lift_count == 1 else observed
-
-    translator = _DriftedTerminalTranslator(cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
-        translator=translator,
-    )
-
-    with pytest.raises(CfgGenerationPoisoned):
-        backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert translator.lower_calls == [plan]
-
-
-def test_observed_lowering_transaction_uses_canonical_identity_boundary(monkeypatch) -> None:
-    """The transaction caller must route observed validation through one seam."""
-    from d810.transforms import dispatcher_corridor_coverage as coverage_module
-
-    cfg = _make_cfg(
-        [(0, 1), (1, 2), (2, 5)],
-        stop_serials=(3, 4, 5),
-    )
-    plan = _conditional_lowering_plan_with_coverage(cfg)
-    observed = _shifted_conditional_lowering_observed_graph()
-    calls = []
-    original = coverage_module.canonicalize_observed_dispatcher_graph
-
-    def record_call(pre_graph, observed_graph, patch_plan):
-        calls.append((pre_graph, observed_graph, patch_plan))
-        return original(pre_graph, observed_graph, patch_plan)
-
-    monkeypatch.setattr(
-        coverage_module,
-        "canonicalize_observed_dispatcher_graph",
-        record_call,
-        raising=False,
-    )
-
-    class _ShiftedObservationTranslator(_FakeTranslator):
-        def lift(self, _live_source: object) -> FlowGraph:
-            self.lift_count += 1
-            return cfg if self.lift_count == 1 else observed
-
-    translator = _ShiftedObservationTranslator(cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
-        translator=translator,
-    )
-
-    assert backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks)) is observed
-    assert calls == [(cfg, observed, plan)]
-
-
-def test_generic_fallthrough_helper_requires_observed_identity_canonicalization() -> None:
-    """Ordinary branch helpers shift serials just like typed lowerings do."""
-    plan = PatchPlan(
-        source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
-        source_generation=0,
-        snapshot_id="generic-helper-observation",
-        steps=(
-            PatchRedirectBranch(
-                from_serial=_native_ref(1),
-                old_target=_native_ref(2),
-                new_target=_native_ref(3),
-                fallthrough_helper_block_id=_ref(4),
-            ),
-        ),
-        source_coordinates=tuple(
-            (_native_ref(serial), serial) for serial in (1, 2, 3)
-        ),
-    )
-
-    assert _requires_observed_identity_canonicalization(plan)
-
-
-def test_observed_lowering_identity_drift_still_poisoned() -> None:
-    """A changed stable block-start EA cannot be hidden by serial canonicalization."""
-    cfg = _make_cfg(
-        [(0, 1), (1, 2), (2, 5)],
-        stop_serials=(3, 4, 5),
-    )
-    plan = _conditional_lowering_plan_with_coverage(cfg)
-    observed = _shifted_conditional_lowering_observed_graph()
-    observed = replace(
-        observed,
-        blocks={
-            **observed.blocks,
-            5: replace(
-                observed.blocks[5],
-                start_ea=0x1999,
-                native_start_ea=0x1999,
-            ),
-        },
-    )
-
-    class _DriftedObservationTranslator(_FakeTranslator):
-        def lift(self, _live_source: object) -> FlowGraph:
-            self.lift_count += 1
-            return cfg if self.lift_count == 1 else observed
-
-    translator = _DriftedObservationTranslator(cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
-        translator=translator,
-    )
-
-    with pytest.raises(CfgGenerationPoisoned):
-        backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert translator.lower_calls == [plan]
-
-
 def test_partial_coverage_without_proof_never_publishes_nonexistent_applied_corridor(
     monkeypatch,
 ) -> None:
@@ -1608,7 +1339,7 @@ def test_partial_coverage_without_proof_never_publishes_nonexistent_applied_corr
         [(0, 1), (0, 5), (1, 2), (5, 2), (2, 3), (2, 4)],
         stop_serials=(3, 4),
     )
-    plan = _ordinary_plan(
+    template = _ordinary_plan(
         PatchRedirectGoto,
         serials=(1, 2, 3),
         from_serial=1,
@@ -1622,8 +1353,14 @@ def test_partial_coverage_without_proof_never_publishes_nonexistent_applied_corr
     )
     assert len(coverage.covered_corridors) == 1
     assert len(coverage.residual_corridors) == 1
-    plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata()}
+    plan = _typed_bootstrap_authority_plan(
+        cfg,
+        template=template,
+        dispatcher_entry_serial=2,
+        dispatcher_member_serials=(1, 2, 5),
+        authoritative_handler_serials=(3,),
+        coverage=coverage,
+        route_edge=(1, 3),
     )
     outcomes = []
     monkeypatch.setattr(
@@ -1631,199 +1368,34 @@ def test_partial_coverage_without_proof_never_publishes_nonexistent_applied_corr
         "observe_unflatten_dispatcher_corridor_coverage",
         lambda **kwargs: outcomes.append(kwargs),
     )
+    translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(
             cfg,
             plan,
             lifecycle_authority=SessionFragmentPublicationLifecycleAuthority(
                 native_key=NATIVE_KEY,
-                state=NativePreanalysisSessionState(evidence_generation=0),
+                state=NativePreanalysisSessionState(evidence_generation=1),
             ),
         ),
         # The live CFG remains unchanged after the planned redirect.
-        translator=_FakeTranslator(cfg),
-    )
-
-    with pytest.raises(CfgGenerationPoisoned):
-        backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    corridor_payloads = [
-        item.payload
-        for item in outcomes[0]["observations"]
-        if item.kind == "UnflattenDispatcherCorridorCoverage"
-    ]
-    assert {
-        (
-            payload["planned_coverage"],
-            payload["coverage"],
-            payload["application_status"],
-        )
-        for payload in corridor_payloads
-    } == {
-        ("covered", "residual", "poisoned_restart_required"),
-        ("residual", "residual", "poisoned_restart_required"),
-    }
-
-
-def test_stale_partial_coverage_rejects_before_mutation(monkeypatch) -> None:
-    """A stale partial corridor inventory is a clean preflight failure."""
-    cfg = _make_cfg(
-        [(0, 1), (0, 5), (1, 2), (5, 2), (2, 3), (2, 4)],
-        stop_serials=(3, 4),
-    )
-    plan = _ordinary_plan(
-        PatchRedirectGoto,
-        serials=(1, 2, 3),
-        from_serial=1,
-        old_target=2,
-        new_target=3,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        cfg,
-        modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
-        dispatcher_entry_serial=2,
-    )
-    stale_coverage = coverage.to_metadata()
-    stale_coverage["covered_corridors"] = []
-    plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: stale_coverage}
-    )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
-    translator = _FakeTranslator(cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
         translator=translator,
     )
 
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert result is cfg
+    assert backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks)) is cfg
     assert translator.lower_calls == []
-    assert translator.lift_count == 1
-    corridor_payloads = [
-        item.payload
-        for item in outcomes[0]["observations"]
-        if item.kind == "UnflattenDispatcherCorridorCoverage"
-    ]
-    assert {payload["application_status"] for payload in corridor_payloads} == {
-        "rejected_preflight"
-    }
-    assert {
-        payload["projected_coverage_validation"]["reason"]
-        for payload in corridor_payloads
-    } == {"dispatcher_corridor_coverage_drift"}
 
-
-def test_non_dict_dispatcher_coverage_metadata_rejects_before_lowering(
-    monkeypatch,
-) -> None:
-    """A present malformed coverage claim is a fail-closed transaction input."""
-    cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
-    plan = _ordinary_plan(
-        PatchConvertToGoto,
-        serials=(1, 2),
-        block_serial=1,
-        goto_target=2,
-    ).with_metadata(**{DISPATCHER_CORRIDOR_COVERAGE_METADATA: []})
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
+    rejected = [item.payload for item in outcomes[0]["observations"]]
+    assert rejected
+    assert all(payload["application_status"] == "rejected_preflight" for payload in rejected)
+    projected = next(
+        payload["projected_validation"]
+        for payload in rejected
+        if "projected_validation" in payload
     )
-    translator = _FakeTranslator(cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
-        translator=translator,
-    )
-
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert result is cfg
-    assert translator.lower_calls == []
-    assert translator.lift_count == 1
-    assert backend.last_patch_failure is not None
-    assert "dispatcher_corridor_coverage_missing" in str(backend.last_patch_failure)
-    assert len(outcomes) == 1
-    rejected_payloads = [
-        observation.payload for observation in outcomes[0]["observations"]
-    ]
-    assert rejected_payloads
-    assert all(
-        payload["application_status"] == "rejected_preflight"
-        for payload in rejected_payloads
-    )
-    assert any(
-        payload.get("projected_coverage_validation", {}).get("reason")
-        == "dispatcher_corridor_coverage_missing"
-        for payload in rejected_payloads
-    )
-
-
-def test_scalar_nested_dispatcher_coverage_metadata_rejects_with_typed_reason(
-    monkeypatch,
-) -> None:
-    """Nested coverage shape errors never reach obligation derivation or lowering."""
-    cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
-    malformed_coverage = {
-        "function_ea": cfg.func_ea,
-        "dispatcher": {
-            "serial": 1,
-            "ea": 0x1001,
-            "label": "blk1@0x1001",
-        },
-        "enumeration_complete": True,
-        "covered_corridors": [],
-        "residual_corridors": 7,
-    }
-    plan = _ordinary_plan(
-        PatchConvertToGoto,
-        serials=(1, 2),
-        block_serial=1,
-        goto_target=2,
-    ).with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: malformed_coverage}
-    )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
-    translator = _FakeTranslator(cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
-        translator=translator,
-    )
-
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert result is cfg
-    assert translator.lower_calls == []
-    assert backend.last_patch_failure is not None
-    assert "dispatcher_corridor_coverage_malformed" in str(
-        backend.last_patch_failure
-    )
-    assert "TypeError" not in str(backend.last_patch_failure)
-    assert len(outcomes) == 1
-    rejected_payloads = [
-        observation.payload for observation in outcomes[0]["observations"]
-    ]
-    assert rejected_payloads
-    assert all(
-        payload["application_status"] == "rejected_preflight"
-        for payload in rejected_payloads
-    )
-    assert any(
-        payload.get("projected_coverage_validation", {}).get("reason")
-        == "dispatcher_corridor_coverage_malformed"
-        for payload in rejected_payloads
-    )
+    assert projected["phase"] == "projected_preflight"
+    assert projected["reason"] == "obligation_violated"
+    assert projected["authority_id"].startswith("sha256:")
 
 
 def test_clean_binding_failure_publishes_terminal_dispatcher_outcome(
@@ -1843,14 +1415,6 @@ def test_clean_binding_failure_publishes_terminal_dispatcher_outcome(
         old_target=2,
         new_target=3,
     )
-    coverage = analyze_dispatcher_corridor_coverage(
-        cfg,
-        modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
-        dispatcher_entry_serial=2,
-    )
-    plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata()}
-    )
     outcomes = []
     monkeypatch.setattr(
         observability_preanalysis,
@@ -1869,11 +1433,7 @@ def test_clean_binding_failure_publishes_terminal_dispatcher_outcome(
     with pytest.raises(RuntimeError, match="binding boom"):
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
-    payloads = [item.payload for item in outcomes[0]["observations"]]
-    assert {payload["application_status"] for payload in payloads} == {
-        "rejected_clean"
-    }
-    assert {payload["outcome_reason"] for payload in payloads} == {"binding boom"}
+    assert outcomes == []
 
 
 def test_same_plan_clean_retries_publish_distinct_transaction_attempt_ids(
@@ -1890,14 +1450,6 @@ def test_same_plan_clean_retries_publish_distinct_transaction_attempt_ids(
         from_serial=1,
         old_target=2,
         new_target=3,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        cfg,
-        modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
-        dispatcher_entry_serial=2,
-    )
-    plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata()}
     )
     outcomes = []
     monkeypatch.setattr(
@@ -1923,18 +1475,7 @@ def test_same_plan_clean_retries_publish_distinct_transaction_attempt_ids(
         with pytest.raises(RuntimeError, match=reason):
             backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
-    payloads = [
-        item.payload
-        for outcome in outcomes
-        for item in outcome["observations"]
-        if item.kind == "UnflattenDispatcherCorridorCoverage"
-    ]
-    attempt_by_reason = {
-        payload["outcome_reason"]: payload["attempt_id"] for payload in payloads
-    }
-    assert set(attempt_by_reason) == {"binding retry one", "binding retry two"}
-    assert "unknown" not in set(attempt_by_reason.values())
-    assert len(set(attempt_by_reason.values())) == 2
+    assert outcomes == []
 
 
 def test_early_transaction_failure_publishes_minted_attempt_id(monkeypatch) -> None:
@@ -1949,14 +1490,6 @@ def test_early_transaction_failure_publishes_minted_attempt_id(monkeypatch) -> N
         from_serial=1,
         old_target=2,
         new_target=3,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        cfg,
-        modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
-        dispatcher_entry_serial=2,
-    )
-    plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata()}
     )
     outcomes = []
     monkeypatch.setattr(
@@ -1980,95 +1513,7 @@ def test_early_transaction_failure_publishes_minted_attempt_id(monkeypatch) -> N
     with pytest.raises(RuntimeError, match="early transaction setup failure"):
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
-    payloads = [
-        item.payload
-        for item in outcomes[0]["observations"]
-        if item.kind == "UnflattenDispatcherCorridorCoverage"
-    ]
-    assert {payload["application_status"] for payload in payloads} == {
-        "rejected_clean"
-    }
-    assert {payload["attempt_id"] for payload in payloads} != {None}
-    assert "unknown" not in {payload["attempt_id"] for payload in payloads}
-
-
-def test_preflight_rejection_persists_projected_proof_validation(monkeypatch) -> None:
-    """A stale plan records the recomputed projected proof, not its optimism."""
-    cfg = _comparison_dispatcher_forest_cfg()
-    plan = _comparison_dispatcher_forest_plan(
-        cfg,
-        authoritative_handlers=frozenset({3, 4}),
-    )
-    stale_coverage = dict(plan.metadata_dict()[DISPATCHER_CORRIDOR_COVERAGE_METADATA])
-    stale_coverage["covered_corridors"] = []
-    stale_plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: stale_coverage}
-    )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, stale_plan),
-        translator=_FakeTranslator(cfg),
-    )
-
-    assert backend.apply(stale_plan, live_source=SimpleNamespace(qty=cfg.num_blocks)) is cfg
-
-    proof_payload = next(
-        item.payload
-        for item in outcomes[0]["observations"]
-        if item.kind == "UnflattenDispatcherRemovalPreflightProof"
-    )
-    projected_validation = proof_payload["projected_validation"]
-    assert projected_validation["validation_status"] == "rejected"
-    assert projected_validation["reason"] == "dispatcher_removal_proof_coverage_drift"
-    assert projected_validation["proof"] is None
-
-
-def test_malformed_proof_evidence_does_not_mask_clean_preflight_rejection(
-    monkeypatch,
-) -> None:
-    """Malformed diagnostic-only evidence cannot replace the typed rejection."""
-    cfg = _comparison_dispatcher_forest_cfg()
-    plan = _comparison_dispatcher_forest_plan(
-        cfg,
-        authoritative_handlers=frozenset({3, 4}),
-    )
-    malformed_proof = dict(
-        plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
-    )
-    malformed_proof["lost_blocks"] = 7
-    malformed_plan = plan.with_metadata(
-        **{DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: malformed_proof}
-    )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
-    translator = _FakeTranslator(cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, malformed_plan),
-        translator=translator,
-    )
-
-    assert (
-        backend.apply(malformed_plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-        is cfg
-    )
-
-    assert translator.lower_calls == []
-    assert backend.last_patch_failure is not None
-    proof_payload = next(
-        observation.payload
-        for observation in outcomes[0]["observations"]
-        if observation.kind == "UnflattenDispatcherRemovalPreflightProof"
-    )
-    assert proof_payload["lost_blocks_malformed"] is True
+    assert outcomes == []
 
 
 def test_apply_lowers_plan_when_reachability_is_preserved() -> None:
@@ -2768,62 +2213,10 @@ def _typed_alias_backend(
     )
 
 
-def _attach_exact_effect_shadow(source: FlowGraph, plan: PatchPlan) -> PatchPlan:
-    """Attach a real exact-effect shadow matching the proposal's claim."""
-
-    from d810.transforms.unflatten_authority.legacy_codec import (
-        capture_legacy_unflatten_shadow,
-    )
-
-    claim = next(
-        claim for claim in plan.unflatten_proposal.claims
-        if type(claim) is authority_model.ExactInfeasibleEffectClaim
-    )
-    serial_by_ref = {ref: serial for ref, serial in plan.source_coordinates}
-    source_locator = claim.source_subject.locator
-    predicate_locator = claim.predicate_subject.locator
-    target_locator = claim.selected_target_subject.locator
-    effect_locator = claim.discarded_effect_subject.locator
-    metadata = {
-        "exact_state_branch_effect_exclusions": ({
-            "normalized_state": claim.normalized_state,
-            "source": {
-                "serial": serial_by_ref[source_locator.block_ref],
-                "ea": source_locator.anchor_ea,
-                "write_ea": claim.source_write_ea,
-            },
-            "predicate": {
-                "serial": serial_by_ref[predicate_locator.block_ref],
-                "ea": predicate_locator.anchor_ea,
-                "branch_ea": claim.predicate_branch_ea,
-            },
-            "selected_target": {
-                "serial": serial_by_ref[target_locator.block_ref],
-                "ea": target_locator.anchor_ea,
-            },
-            "discarded_effect": {
-                "serial": serial_by_ref[effect_locator.owner_ref],
-                "ea": effect_locator.instruction_ea,
-            },
-            "state_identity": claim.state_identity.to_record(),
-        },),
-    }
-    _ordinary, shadow = capture_legacy_unflatten_shadow(
-        plan_id=plan.plan_id,
-        snapshot_id=plan.snapshot_id,
-        source_generation=plan.source_generation,
-        metadata=tuple(metadata.items()),
-    )
-    assert shadow is not None
-    object.__setattr__(plan, "legacy_unflatten_shadow", shadow)
-    return plan
-
-
-def test_backend_typed_shadow_uses_one_receipt_for_both_phase_payloads(monkeypatch) -> None:
-    """A live typed shadow carries receipt-only projected and final observed parity."""
+def test_backend_typed_authority_emits_two_canonical_phase_payloads(monkeypatch) -> None:
+    """Typed authority records projected and observed canonical verdicts."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
     observed_cfg = _observed_typed_local_alias_cfg(pre_cfg)
     backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
     import d810.hexrays.observability as authority_observability
@@ -2841,30 +2234,91 @@ def test_backend_typed_shadow_uses_one_receipt_for_both_phase_payloads(monkeypat
     assert result is observed_cfg
     assert backend.last_patch_execution is not None
     execution = backend.last_patch_execution
-    assert execution.shadow_parity_payload is not None
-    assert execution.shadow_parity_payload.parity_ok is True
+    assert execution.projected_unflatten_verdict is not None
+    assert execution.observed_unflatten_verdict is not None
     assert len(phase_observations) == 2
     projected_payload, observed_payload = (
         item.payload for item in phase_observations
     )
-    assert "parity" not in projected_payload
-    assert "parity" in observed_payload
-    assert tuple(
-        projected_payload[key] for key in ("plan_id", "attempt_id", "session_id")
-    ) == tuple(
-        observed_payload[key] for key in ("plan_id", "attempt_id", "session_id")
-    )
-    projected_receipt = projected_payload["codec"]
-    observed_receipt = observed_payload["codec"]
-    observed_parity = observed_payload["parity"]["codec"]
-    assert projected_receipt == observed_receipt == observed_parity
+    assert projected_payload["phase"] == execution.projected_unflatten_verdict.phase.value
+    assert observed_payload["phase"] == execution.observed_unflatten_verdict.phase.value
+    assert projected_payload["authority_id"] == execution.projected_unflatten_verdict.authority_id
+    assert observed_payload["authority_id"] == execution.observed_unflatten_verdict.authority_id
+    assert projected_payload["case_id"] == execution.projected_unflatten_verdict.case_id
+    assert observed_payload["case_id"] == execution.observed_unflatten_verdict.case_id
 
 
-def test_backend_shadow_canonical_projected_rejection_is_decisive(monkeypatch) -> None:
-    """A canonical preflight rejection is fatal even with a legacy shadow."""
+def test_typed_canonical_acceptance_does_not_reapply_failed_generic_gate(monkeypatch) -> None:
+    """The accepted typed verdict is final at the transaction boundary."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
+    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg)
+    backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
+    from d810.analyses.control_flow.graph_checks import EntryReachabilityResult
+    from d810.hexrays.mutation import patch_transaction
+    from d810.transforms.unflatten_authority import transaction_api
+
+    failed_entry = EntryReachabilityResult(
+        passed=False,
+        pre_reachable_count=10,
+        post_reachable_count=0,
+        retained_ratio=0.0,
+        min_pre_reachable=0,
+        min_retained_ratio=1.0,
+        reason="forced_test_failure",
+    )
+    captured = {}
+    real_prepare = transaction_api.prepare_unflatten_authority_timed
+    real_entry_check = patch_transaction.check_entry_reachability_not_collapsed
+    entry_check_calls = 0
+
+    def staged_entry_check(*args, **kwargs):
+        nonlocal entry_check_calls
+        entry_check_calls += 1
+        if entry_check_calls == 1:
+            return failed_entry
+        return real_entry_check(*args, **kwargs)
+
+    monkeypatch.setattr(
+        patch_transaction,
+        "check_entry_reachability_not_collapsed",
+        staged_entry_check,
+    )
+
+    def capture_prepare(**kwargs):
+        captured["generic_gates"] = kwargs["generic_gates"]
+        accepted_gates = replace(
+            kwargs["generic_gates"],
+            entry=real_entry_check(
+                kwargs["source"],
+                post_adj=kwargs["projection"].graph.as_adjacency_dict(),
+            ),
+        )
+        result = real_prepare(**{**kwargs, "generic_gates": accepted_gates})
+        captured["result"] = result
+        return result
+
+    monkeypatch.setattr(
+        transaction_api, "prepare_unflatten_authority_timed", capture_prepare,
+    )
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+    assert result is observed_cfg
+    assert backend.last_patch_failure is None
+    assert backend._translator.lower_calls
+    gates = captured["generic_gates"]
+    assert gates.entry is failed_entry
+    assert isinstance(
+        captured["result"], transaction_api.TimedUnflattenAuthorityResult,
+    )
+    assert captured["result"].result.__class__ is authority_model.UnflattenAuthorityPreparationAccepted
+
+
+def test_backend_canonical_projected_rejection_is_decisive(monkeypatch) -> None:
+    """A canonical preflight rejection is fatal before mutation."""
+
+    pre_cfg, plan = _typed_local_alias_fixture()
     observed_cfg = pre_cfg
     backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
     from d810.transforms.unflatten_authority import transaction_api
@@ -2873,8 +2327,8 @@ def test_backend_shadow_canonical_projected_rejection_is_decisive(monkeypatch) -
         False,
         authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
-        authority_id("shadow-projected-rejection"), None, None,
-        authority_id("shadow-projected-candidate"), None, (),
+        authority_id("canonical-projected-rejection"), None, None,
+        authority_id("canonical-projected-candidate"), None, (),
     )
     monkeypatch.setattr(
         transaction_api,
@@ -2897,7 +2351,6 @@ def test_backend_applicable_unflatten_not_applicable_is_decisive(monkeypatch) ->
     """An applicable unflatten route may not fall through as ordinary."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
     from d810.transforms.unflatten_authority import transaction_api
 
@@ -2926,108 +2379,8 @@ def test_backend_applicable_unflatten_not_applicable_is_decisive(monkeypatch) ->
     assert backend._translator.lower_calls == []
 
 
-def test_backend_canonical_commit_records_rejecting_legacy_replay(monkeypatch) -> None:
-    """Canonical acceptance commits while legacy replay mismatch stays diagnostic."""
-
+def test_backend_canonical_projected_prepare_exception_is_decisive(monkeypatch) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
-    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg)
-    backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
-    from d810.hexrays.mutation import patch_transaction
-
-    original_replay = patch_transaction._validated_exact_effect_exclusions
-
-    def reject_replay(*args, **kwargs):
-        replay = original_replay(*args, **kwargs)
-        return patch_transaction._LegacyEffectReplay(False, replay.effect_serials)
-
-    monkeypatch.setattr(
-        patch_transaction,
-        "_validated_exact_effect_exclusions",
-        reject_replay,
-    )
-
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
-
-    assert result is observed_cfg
-    assert backend.last_patch_execution is not None
-    execution = backend.last_patch_execution
-    assert execution.projected_unflatten_verdict is not None
-    assert execution.projected_unflatten_verdict.accepted
-    assert execution.observed_unflatten_verdict is not None
-    assert execution.observed_unflatten_verdict.accepted
-    assert execution.shadow_parity_payload is not None
-    assert execution.shadow_parity_payload.parity_ok is False
-    assert execution.shadow_parity_payload.projected.accepted_equal is False
-    assert execution.shadow_parity_payload.observed.accepted_equal is False
-    assert not execution.shadow_parity_payload.projected.legacy.accepted
-    assert (
-        execution.shadow_parity_payload.projected.legacy.reason_scope
-        is authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED
-    )
-    assert not execution.shadow_parity_payload.observed.legacy.accepted
-    assert (
-        execution.shadow_parity_payload.observed.legacy.reason_scope
-        is authority_model.UnflattenAuthorityReason.LIVE_BINDING_FAILED
-    )
-
-
-def test_legacy_gate_diagnostics_keep_raw_losses_without_deciding_canonical() -> None:
-    """Every former legacy gate remains observable beside accepted authority."""
-
-    pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
-    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg)
-    backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
-
-    assert result is observed_cfg
-    execution = backend.last_patch_execution
-    assert execution is not None
-    assert execution.projected_unflatten_verdict is not None
-    assert execution.projected_unflatten_verdict.accepted
-    assert execution.shadow_parity_payload is not None
-
-    from d810.analyses.control_flow.graph_checks import EffectfulReachabilityResult
-    from d810.hexrays.mutation import patch_transaction
-
-    source_inventory = execution.projected_unflatten_verdict.safety_case.source_inventory
-    anchor = next(block for block in source_inventory.blocks if block.anchor_ea is not None)
-    serial, anchor_ea = anchor.serial, int(anchor.anchor_ea)
-    raw_effect = EffectfulReachabilityResult(
-        passed=False,
-        pre_effectful_block_serials=frozenset({serial}),
-        post_reachable_effectful_block_serials=frozenset(),
-        lost_block_serials=frozenset({serial}),
-        reason="diagnostic fixture",
-    )
-    replay = patch_transaction._LegacyEffectReplay(True, frozenset())
-    for failed_gate in ("terminal", "effect", "entry", "coverage"):
-        decision = patch_transaction._legacy_gate_decision(
-            authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-            replay,
-            terminal_passed=failed_gate != "terminal",
-            effectful_passed=failed_gate != "effect",
-            entry_passed=failed_gate != "entry",
-            entry_allowance_passed=False,
-            dispatcher_removal_rejected=False,
-            coverage_rejected=failed_gate == "coverage",
-        )
-        outcome = patch_transaction._legacy_phase_outcome(
-            authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-            source_inventory,
-            raw_effect,
-            None,
-            decision,
-        )
-        assert not outcome.accepted
-        assert outcome.reason_scope is authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED
-        assert outcome.anchored_losses == ((serial, anchor_ea),)
-
-
-def test_backend_shadow_canonical_projected_prepare_exception_is_decisive(monkeypatch) -> None:
-    pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
     from d810.transforms.unflatten_authority import transaction_api
 
@@ -3041,23 +2394,8 @@ def test_backend_shadow_canonical_projected_prepare_exception_is_decisive(monkey
     assert backend.last_patch_execution is None
 
 
-def test_backend_non_shadow_propagates_projected_canonical_prepare_exception(monkeypatch) -> None:
+def test_backend_malformed_projected_canonical_prepare_is_decisive(monkeypatch) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
-    backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
-    from d810.transforms.unflatten_authority import transaction_api
-
-    def raise_prepare(**_kwargs):
-        raise RuntimeError("projected canonical prepare exploded")
-
-    monkeypatch.setattr(transaction_api, "prepare_unflatten_authority_timed", raise_prepare)
-
-    with pytest.raises(RuntimeError, match="projected canonical prepare exploded"):
-        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
-
-
-def test_backend_shadow_malformed_projected_canonical_prepare_is_decisive(monkeypatch) -> None:
-    pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
     from d810.transforms.unflatten_authority import transaction_api
 
@@ -3068,11 +2406,10 @@ def test_backend_shadow_malformed_projected_canonical_prepare_is_decisive(monkey
     assert backend.last_patch_execution is None
 
 
-def test_backend_shadow_canonical_observed_rejection_is_decisive(monkeypatch) -> None:
+def test_backend_canonical_observed_rejection_is_decisive(monkeypatch) -> None:
     """A canonical post-apply rejection poisons after mutation."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
     observed_cfg = pre_cfg
     backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
     from d810.transforms.unflatten_authority import transaction_api
@@ -3083,8 +2420,8 @@ def test_backend_shadow_canonical_observed_rejection_is_decisive(monkeypatch) ->
                 False,
                 authority_model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
                 authority_model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
-                authority_id("shadow-observed-rejection"), None, None,
-                authority_id("shadow-observed-candidate"), None, (),
+                authority_id("canonical-observed-rejection"), None, None,
+                authority_id("canonical-observed-candidate"), None, (),
             ),
             transaction_api.PhaseTimings(inventory_ms=1.0, binding_ms=1.0, evaluation_ms=1.0),
         )
@@ -3101,9 +2438,8 @@ def test_backend_shadow_canonical_observed_rejection_is_decisive(monkeypatch) ->
     assert raised.value.__cause__.unflatten_verdict is not None
 
 
-def test_backend_shadow_canonical_observed_revalidate_exception_is_decisive(monkeypatch) -> None:
+def test_backend_canonical_observed_revalidate_exception_is_decisive(monkeypatch) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
     from d810.transforms.unflatten_authority import transaction_api
 
@@ -3122,30 +2458,10 @@ def test_backend_shadow_canonical_observed_revalidate_exception_is_decisive(monk
         backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
 
 
-def test_backend_non_shadow_poisoned_when_observed_canonical_revalidate_raises(monkeypatch) -> None:
-    pre_cfg, plan = _typed_local_alias_fixture()
-    backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
-    from d810.transforms.unflatten_authority import transaction_api
-    from d810.hexrays.mutation.patch_transaction import PatchTransactionPoisoned
-
-    def raise_revalidate(**_kwargs):
-        raise RuntimeError("observed canonical revalidate exploded")
-
-    monkeypatch.setattr(
-        transaction_api,
-        "revalidate_observed_unflatten_authority_timed",
-        raise_revalidate,
-    )
-
-    with pytest.raises(PatchTransactionPoisoned, match="observed canonical revalidate exploded"):
-        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
-
-
-def test_backend_shadow_canonical_bind_rejection_is_decisive(monkeypatch) -> None:
-    """A bind-only canonical rejection cleanly aborts despite a shadow."""
+def test_backend_canonical_bind_rejection_is_decisive(monkeypatch) -> None:
+    """A bind-only canonical rejection cleanly aborts before mutation."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
     observed_cfg = pre_cfg
     backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
     from d810.transforms.unflatten_authority import transaction_api
@@ -3154,8 +2470,8 @@ def test_backend_shadow_canonical_bind_rejection_is_decisive(monkeypatch) -> Non
         False,
         authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
-        authority_id("shadow-bind-rejection"), None, None,
-        authority_id("shadow-bind-candidate"), None, (),
+        authority_id("canonical-bind-rejection"), None, None,
+        authority_id("canonical-bind-candidate"), None, (),
     )
     monkeypatch.setattr(
         transaction_api,
@@ -3171,9 +2487,8 @@ def test_backend_shadow_canonical_bind_rejection_is_decisive(monkeypatch) -> Non
     assert backend.last_patch_failure.unflatten_verdict is rejected
 
 
-def test_backend_shadow_canonical_bind_exception_is_decisive(monkeypatch) -> None:
+def test_backend_canonical_bind_exception_is_decisive(monkeypatch) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
     from d810.transforms.unflatten_authority import transaction_api
 
@@ -3187,11 +2502,10 @@ def test_backend_shadow_canonical_bind_exception_is_decisive(monkeypatch) -> Non
     assert backend.last_patch_execution is None
 
 
-def test_backend_shadow_canonical_observed_provenance_drift_is_decisive(monkeypatch) -> None:
-    """Observed provenance drift poisons after mutation despite a shadow."""
+def test_backend_canonical_observed_provenance_drift_is_decisive(monkeypatch) -> None:
+    """Observed provenance drift poisons after mutation."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
-    plan = _attach_exact_effect_shadow(pre_cfg, plan)
     observed_cfg = pre_cfg
     backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
     from d810.transforms.unflatten_authority import transaction_api
@@ -3200,7 +2514,7 @@ def test_backend_shadow_canonical_observed_provenance_drift_is_decisive(monkeypa
         prepared = kwargs["prepared"]
         patch_binding = kwargs["patch_binding"]
         authority = object.__new__(authority_model.BoundUnflattenAuthority)
-        object.__setattr__(authority, "binding_id", authority_id("shadow-bind"))
+        object.__setattr__(authority, "binding_id", authority_id("canonical-bind"))
         object.__setattr__(authority, "prepared", prepared)
         object.__setattr__(authority, "attempt_id", patch_binding.attempt_id)
         object.__setattr__(authority, "session_id", patch_binding.session_id)
@@ -3294,50 +2608,6 @@ def test_backend_accepts_exact_reachable_local_alias_store_scalarization(monkeyp
         )
 
 
-def test_backend_typed_lowering_observe_bypasses_legacy_canonicalizer(monkeypatch) -> None:
-    """Typed lower observation uses the real projected graph and no legacy canonicalizer."""
-
-    from d810.transforms import dispatcher_corridor_coverage as coverage_module
-
-    source, plan = _typed_lowering_fixture()
-    assert isinstance(select_plan_route(plan), TypedProposalRoute)
-    assert _requires_observed_identity_canonicalization(plan)
-    projected = project_patch_plan(source, plan, snapshot_id=plan.snapshot_id)
-    calls: list[object] = []
-
-    def fail_legacy(*_args, **_kwargs):
-        calls.append(True)
-        raise AssertionError("typed lifecycle must not invoke legacy canonicalizer")
-
-    monkeypatch.setattr(coverage_module, "canonicalize_observed_dispatcher_graph", fail_legacy)
-
-    class _TypedLowerTranslator(_FakeTranslator):
-        def lift(self, _live_source: object) -> FlowGraph:
-            self.lift_count += 1
-            return source if self.lift_count == 1 else projected.graph
-
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(
-            source,
-            plan,
-            native_key=next(
-                ref.identity.native_key
-                for ref, _serial in plan.source_coordinates
-                if isinstance(ref, NativeBlockRef)
-            ),
-        ),
-        translator=_TypedLowerTranslator(source),
-    )
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=source.num_blocks))
-
-    assert result is projected.graph
-    assert calls == []
-    execution = backend.last_patch_execution
-    assert execution is not None
-    verdict = execution.observed_unflatten_verdict
-    assert verdict is not None and verdict.accepted
-
-
 def test_backend_accepts_two_typed_local_alias_hosts_in_one_owner() -> None:
     pre_cfg, plan = _typed_local_alias_fixture(two_hosts=True)
     observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
@@ -3354,49 +2624,6 @@ def test_backend_accepts_two_typed_local_alias_hosts_in_one_owner() -> None:
         "blk2@0x3000", "blk2@0x3000",
     )
     assert len({row.claim_ids for row in ledger.rows}) == 2
-    assert all(
-        row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
-        for row in ledger.rows
-    )
-
-
-def test_backend_preserves_unclaimed_typed_local_alias_sibling_store() -> None:
-    pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
-    plan = replace(full_plan, steps=full_plan.steps[:-1])
-    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
-    observed = replace(
-        observed,
-        blocks={
-            **observed.blocks,
-            2: replace(
-                observed.blocks[2],
-                insn_snapshots=(
-                    observed.blocks[2].insn_snapshots[0],
-                    replace(
-                        pre_cfg.blocks[2].insn_snapshots[1],
-                        display_text="store %var_alias2",
-                    ),
-                ),
-            ),
-        },
-    )
-    backend = _typed_alias_backend(pre_cfg, plan, observed)
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
-    assert result is observed
-    execution = backend.last_patch_execution
-    assert execution is not None
-    verdict = execution.observed_unflatten_verdict
-    assert verdict is not None and verdict.safety_case is not None
-    ledger = authority_views.semantic_loss_ledger(verdict.safety_case)
-    assert len(ledger.rows) == 1
-    alias_claim = next(
-        claim for claim in verdict.safety_case.claims
-        if type(claim) is authority_model.LocalAliasEffectScalarizationClaim
-    )
-    assert ledger.rows[0].claim_ids == (alias_claim.claim_id,)
-
-
-def test_backend_reports_unclaimed_typed_local_alias_sibling_store_loss() -> None:
     pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
     plan = replace(full_plan, steps=full_plan.steps[:-1])
     observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
@@ -3804,183 +3031,57 @@ def test_backend_does_not_widen_local_alias_effect_scalarization(
     assert backend.last_patch_execution is None
 
 
-def _exact_state_effect_exclusion_cfg() -> FlowGraph:
-    """Small faithful source -> state compare -> private effect-arm shape."""
-
-    cfg = _make_cfg(
-        [
-            (0, 1),
-            (1, 2),
-            (2, 3),
-            (2, 4),
-            (3, 5),
-            (4, 5),
-            (6, 2),
-        ],
-        stop_serials=(5, 7),
-    )
-    state = MopSnapshot(
-        kind=OperandKind.STACK,
-        size=4,
-        stkoff=1724,
-        stack_refs=(1724,),
-    )
-    number = MopSnapshot(
-        kind=OperandKind.NUMBER,
-        size=4,
-        value=0x40131868,
-    )
-    blocks = dict(cfg.blocks)
-    blocks[1] = replace(
-        blocks[1],
-        native_start_ea=0x1001,
-        insn_snapshots=(
-            InsnSnapshot(
-                opcode=4,
-                ea=0x1101,
-                native_ea=0x1101,
-                operands=(),
-                l=number,
-                d=state,
-                kind=InsnKind.MOV,
-                value_op_kind=ValueOpKind.MOVE,
-            ),
-            InsnSnapshot(
-                opcode=55,
-                ea=0x1102,
-                native_ea=0x1102,
-                operands=(),
-                l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
-                kind=InsnKind.GOTO,
-            ),
-        ),
-    )
-    blocks[2] = replace(
-        blocks[2],
-        native_start_ea=0x1002,
-        insn_snapshots=(
-            InsnSnapshot(
-                opcode=43,
-                ea=0x1201,
-                native_ea=0x1201,
-                operands=(),
-                l=state,
-                r=number,
-                d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
-                kind=InsnKind.COND_JUMP,
-                branch_predicate=PredicateKind.NE,
-                is_conditional_jump=True,
-            ),
-        ),
-    )
-    blocks[4] = replace(
-        blocks[4],
-        native_start_ea=0x1004,
-        insn_snapshots=(
-            InsnSnapshot(
-                opcode=57,
-                ea=0x1401,
-                native_ea=0x1401,
-                operands=(),
-                kind=InsnKind.CALL,
-                is_call=True,
-            ),
-        ),
-    )
-    return replace(cfg, blocks=blocks)
-
-
 def test_backend_accepts_only_replayed_exact_infeasible_effect_loss() -> None:
-    """Post-observation may drop only the exact private non-selected effect."""
+    """A typed exact-effect claim authorizes only its replayed effect loss."""
 
-    pre_cfg = _exact_state_effect_exclusion_cfg()
-    plan = _ordinary_plan(
-        PatchRedirectGoto,
-        serials=(3, 5, 7),
-        from_serial=3,
-        old_target=5,
-        new_target=7,
-    )
-    projected = project_patch_plan(pre_cfg, plan, snapshot_id=plan.snapshot_id).graph
-    proof = build_exact_state_branch_effect_exclusion(
-        pre_cfg,
-        projected,
-        normalized_state=0x40131868,
-        source_serial=1,
-        predicate_serial=2,
-        selected_target_serial=3,
-        discarded_effect_serial=4,
-        state_identity=StorageIdentity(StorageIdentityKind.STACK, 1724),
-    )
-    assert proof is not None
-    assert (proof.source_serial, proof.source_ea, proof.source_write_ea) == (
-        1,
-        0x1001,
-        0x1101,
-    )
-    assert (proof.predicate_serial, proof.predicate_ea, proof.predicate_branch_ea) == (
-        2,
-        0x1002,
-        0x1201,
-    )
-    assert (proof.selected_target_serial, proof.selected_target_ea) == (3, 0x1003)
-    # The proof carries the discarded instruction EA, not its block anchor.
-    assert (proof.discarded_effect_serial, proof.discarded_effect_ea) == (4, 0x1401)
-    plan = plan.with_metadata(
-        **{
-            EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA: (
-                proof.to_metadata(),
-            )
-        }
-    )
-    observed_cfg = _make_cfg([(0, 1), (1, 3), (3, 7)], stop_serials=(5, 7))
+    pre_cfg, plan = _typed_lowering_fixture()
+    observed_cfg = project_patch_plan(
+        pre_cfg, plan, snapshot_id=plan.snapshot_id,
+    ).graph
+    backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
 
-    class _FoldingTranslator(_FakeTranslator):
-        def lift(self, _live_source: object) -> FlowGraph:
-            self.lift_count += 1
-            return observed_cfg if self.lower_calls else pre_cfg
-
-    gateway = _ordinary_gateway(pre_cfg, plan)
-    translator = _FoldingTranslator(pre_cfg)
-    backend = HexRaysMutationBackend(
-        mutation_gateway=gateway,
-        translator=translator,
-    )
-
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
-
-    assert result is observed_cfg
-    assert translator.lower_calls == [plan]
-    assert not gateway.generation_poisoned
+    assert backend.apply(
+        plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks),
+    ) is observed_cfg
     assert backend.last_patch_execution is not None
+    execution = backend.last_patch_execution
+    assert execution.projected_unflatten_verdict is not None
+    assert execution.projected_unflatten_verdict.accepted
+    assert execution.observed_unflatten_verdict is not None
+    assert execution.observed_unflatten_verdict.accepted
+    assert any(
+        type(claim) is authority_model.ExactInfeasibleEffectClaim
+        for claim in execution.projected_unflatten_verdict.safety_case.claims
+    )
 
 
 def test_backend_rejects_forged_effect_exclusion_before_mutation() -> None:
-    pre_cfg = _exact_state_effect_exclusion_cfg()
-    plan = _ordinary_plan(
-        PatchRedirectGoto,
-        serials=(3, 5, 7),
-        from_serial=3,
-        old_target=5,
-        new_target=7,
+    pre_cfg, plan = _typed_lowering_fixture()
+    proposal = plan.unflatten_proposal
+    assert proposal is not None
+    claim = next(
+        claim for claim in proposal.claims
+        if type(claim) is authority_model.ExactInfeasibleEffectClaim
     )
-    projected = project_patch_plan(pre_cfg, plan, snapshot_id=plan.snapshot_id).graph
-    proof = build_exact_state_branch_effect_exclusion(
-        pre_cfg,
-        projected,
-        normalized_state=0x40131868,
-        source_serial=1,
-        predicate_serial=2,
-        selected_target_serial=3,
-        discarded_effect_serial=4,
-        state_identity=StorageIdentity(StorageIdentityKind.STACK, 1724),
+    forged_claim = object.__new__(type(claim))
+    for field_name in claim.__dataclass_fields__:
+        object.__setattr__(
+            forged_claim,
+            field_name,
+            claim.normalized_state + 1
+            if field_name == "normalized_state"
+            else getattr(claim, field_name),
+        )
+    object.__setattr__(forged_claim, "claim_id", claim_id(forged_claim))
+    forged_claim.__post_init__()
+    forged_proposal = replace(
+        proposal,
+        claims=tuple(
+            forged_claim if item is claim else item
+            for item in proposal.claims
+        ),
     )
-    assert proof is not None
-    payload = proof.to_metadata()
-    payload["normalized_state"] = 0x40131869
-    plan = plan.with_metadata(
-        **{EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA: (payload,)}
-    )
+    plan = replace(plan, unflatten_proposal=forged_proposal)
     translator = _FakeTranslator(pre_cfg)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(pre_cfg, plan),
@@ -3992,7 +3093,6 @@ def test_backend_rejects_forged_effect_exclusion_before_mutation() -> None:
     assert result is pre_cfg
     assert translator.lower_calls == []
     assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
-    assert "effect exclusion" in str(backend.last_patch_failure)
 
 
 def test_backend_rejects_foreign_native_binding_before_lowering() -> None:
@@ -4055,9 +3155,6 @@ def test_backend_persists_observed_dispatcher_verdict_after_late_contract_poison
         dispatcher_entry_serial=2,
     )
     assert coverage.planned_completion_status == "planned_partial_residual_dispatcher"
-    plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata()}
-    )
     projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
 
     class _ProjectedTranslator(_FakeTranslator):
@@ -4095,80 +3192,7 @@ def test_backend_persists_observed_dispatcher_verdict_after_late_contract_poison
     with pytest.raises(CfgGenerationPoisoned):
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
-    coverage_payload = next(
-        observation.payload
-        for observation in outcomes[0]["observations"]
-        if observation.kind == "UnflattenDispatcherCorridorCoverageSummary"
-    )
-    assert coverage_payload["observed_coverage_validation"]["validation_status"] == (
-        "accepted"
-    )
-
-
-def test_dispatcher_outcome_publisher_failure_never_masks_poisoned_transaction(
-    monkeypatch,
-) -> None:
-    """Diagnostic construction failure preserves the original poison exception."""
-    cfg = _make_cfg(
-        [(0, 1), (0, 5), (1, 2), (5, 2), (2, 3), (2, 4)],
-        stop_serials=(3, 4),
-    )
-    plan = _ordinary_plan(
-        PatchRedirectGoto,
-        serials=(1, 2, 3),
-        from_serial=1,
-        old_target=2,
-        new_target=3,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        cfg,
-        modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
-        dispatcher_entry_serial=2,
-    )
-    plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata()}
-    )
-    projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
-
-    class _ProjectedTranslator(_FakeTranslator):
-        def lift(self, _live_source: object) -> FlowGraph:
-            self.lift_count += 1
-            return projected.graph if self.lower_calls else cfg
-
-    class _LateFailingContract:
-        def __init__(self) -> None:
-            self.projection_checks = 0
-
-        def verify_projection(self, _projection: object, *, scope: str) -> None:
-            self.projection_checks += 1
-            if self.projection_checks == 2:
-                raise RuntimeError("late post-observation contract failure")
-
-        def verify(self, _mba: object, *, projection: object, phase: str) -> None:
-            assert projection is not None
-            assert phase == "pre"
-
-    from d810.transforms import dispatcher_corridor_coverage as coverage_module
-
-    def fail_diagnostic_construction(*_args: object, **_kwargs: object) -> tuple[object, ...]:
-        raise RuntimeError("malformed diagnostic payload")
-
-    monkeypatch.setattr(
-        coverage_module,
-        "collect_unflatten_dispatcher_outcome_observations_from_metadata",
-        fail_diagnostic_construction,
-    )
-    translator = _ProjectedTranslator(cfg)
-    translator.contract = _LateFailingContract()
-    backend = HexRaysMutationBackend(
-        mutation_gateway=_ordinary_gateway(cfg, plan),
-        translator=translator,
-    )
-
-    with pytest.raises(CfgGenerationPoisoned) as raised:
-        backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert "late post-observation contract failure" in str(raised.value)
+    assert outcomes == []
 
 
 def test_backend_commits_the_complete_ordinary_patch_transaction_timeline() -> None:
@@ -4647,12 +3671,12 @@ def test_default_fragment_backend_receives_native_body_materializer(
 
 
 def test_full_dispatcher_retirement_uses_ordinary_contract_when_entry_reachability_passes():
-    """A small full retirement need not synthesize missing proof authority."""
+    """A small full retirement uses the typed removal authority contract."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
         stop_serials=(4,),
     )
-    plan = _ordinary_plan(
+    template = _ordinary_plan(
         PatchRedirectGoto,
         serials=(1, 2, 3),
         from_serial=1,
@@ -4665,8 +3689,28 @@ def test_full_dispatcher_retirement_uses_ordinary_contract_when_entry_reachabili
         dispatcher_entry_serial=2,
     )
     assert coverage.planned_completion_status == "planned_dispatcher_corridors_covered"
-    plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata()}
+    projected = project_patch_plan(cfg, template, snapshot_id=template.snapshot_id)
+    proof = build_dispatcher_removal_preflight_proof(
+        cfg,
+        post_graph=projected.graph,
+        coverage=coverage,
+        dispatcher_entry_serial=2,
+        authoritative_handler_serials=frozenset({3, 4}),
+        dispatcher_region_serials=frozenset({2}),
+        producer_safety=_executed_fragment_safety(),
+    )
+    assert proof.passed
+    plan = _typed_bootstrap_authority_plan(
+        cfg,
+        template=template,
+        dispatcher_entry_serial=2,
+        dispatcher_member_serials=(1, 2, 5),
+        authoritative_handler_serials=(3,),
+        coverage=coverage,
+        route_edge=(1, 3),
+        removal_validation=DispatcherRemovalPreflightValidation(
+            proof.passed, proof.reason, proof,
+        ),
     )
     projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
 
@@ -4685,7 +3729,8 @@ def test_full_dispatcher_retirement_uses_ordinary_contract_when_entry_reachabili
 
     assert result is projected.graph
     assert translator.lower_calls == [plan]
-    assert backend.last_patch_failure is None
+    assert backend.last_patch_execution is not None
+    assert backend.last_patch_execution.projected_unflatten_verdict.accepted
 
 
 def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proof(
@@ -4719,11 +3764,17 @@ def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proo
         producer_safety={},
     )
     assert not proof.passed
-    plan = plan.with_metadata(
-        **{
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
-        }
+    plan = _typed_bootstrap_authority_plan(
+        cfg,
+        template=plan,
+        dispatcher_entry_serial=2,
+        dispatcher_member_serials=(1, 2, 5),
+        authoritative_handler_serials=(3,),
+        coverage=coverage,
+        route_edge=(1, 3),
+        removal_validation=DispatcherRemovalPreflightValidation(
+            proof.passed, proof.reason, proof,
+        ),
     )
     class _ProjectedTranslator(_FakeTranslator):
         def lift(self, _live_source: object) -> FlowGraph:
@@ -4744,18 +3795,141 @@ def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proo
 
     result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
-    assert result is projected.graph
-    assert translator.lower_calls == [plan]
-    assert translator.lift_count == 2
-    assert backend.last_patch_failure is None
-    proof_payload = next(
-        observation.payload
-        for observation in outcomes[0]["observations"]
-        if observation.kind == "UnflattenDispatcherRemovalPreflightProof"
+    assert result is cfg
+    assert translator.lower_calls == []
+    assert translator.lift_count == 1
+    assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
+    assert outcomes
+    removal = next(
+        item.payload["projected_validation"]
+        for item in outcomes[0]["observations"]
+        if "projected_validation" in item.payload
     )
-    assert proof_payload["application_status"] == "applied"
-    assert proof_payload["proof_status"] == "accepted"
-    assert proof_payload["reason"] == "transaction_reachability_contract"
+    assert removal["phase"] == "projected_preflight"
+    assert removal["reason"] == "obligation_violated"
+
+def test_backend_reports_unclaimed_typed_local_alias_sibling_store_loss() -> None:
+    pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
+    plan = replace(full_plan, steps=full_plan.steps[:-1])
+    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            2: replace(
+                observed.blocks[2],
+                insn_snapshots=(
+                    observed.blocks[2].insn_snapshots[0],
+                    replace(
+                        observed.blocks[2].insn_snapshots[1],
+                        kind=InsnKind.NOP,
+                        display_text="nop",
+                    ),
+                ),
+            ),
+        },
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    with pytest.raises(CfgGenerationPoisoned) as caught:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    verdict = caught.value.unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    case = verdict.safety_case
+    _assert_typed_effect_cell(
+        case,
+        ea=0x3000,
+        state=authority_model.ObligationState.SATISFIED,
+        rule=authority_model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN,
+    )
+    _assert_typed_effect_cell(
+        case,
+        ea=0x3001,
+        state=authority_model.ObligationState.VIOLATED,
+        rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
+    )
+    ledger = authority_views.semantic_loss_ledger(case)
+    sibling_subject = _typed_effect_subject(case, 0x3001)
+    sibling_row = next(row for row in ledger.rows if row.source_subject == sibling_subject)
+    assert sibling_row.kind is authority_model.SemanticLossKind.UNCLASSIFIED
+    assert sibling_row.claim_ids == ()
+
+
+
+def test_backend_preserves_unclaimed_typed_local_alias_sibling_store() -> None:
+    pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
+    plan = replace(full_plan, steps=full_plan.steps[:-1])
+    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            2: replace(
+                observed.blocks[2],
+                insn_snapshots=(
+                    observed.blocks[2].insn_snapshots[0],
+                    replace(
+                        pre_cfg.blocks[2].insn_snapshots[1],
+                        display_text="store %var_alias2",
+                    ),
+                ),
+            ),
+        },
+    )
+    backend = _typed_alias_backend(pre_cfg, plan, observed)
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    assert result is observed
+    execution = backend.last_patch_execution
+    assert execution is not None
+    verdict = execution.observed_unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    ledger = authority_views.semantic_loss_ledger(verdict.safety_case)
+    assert len(ledger.rows) == 1
+    alias_claim = next(
+        claim for claim in verdict.safety_case.claims
+        if type(claim) is authority_model.LocalAliasEffectScalarizationClaim
+    )
+    assert ledger.rows[0].claim_ids == (alias_claim.claim_id,)
+
+
+
+def test_observed_lowering_identity_drift_still_poisoned() -> None:
+    """Typed observed identity drift remains a decisive rejection."""
+    cfg, plan = _typed_lowering_fixture()
+    observed = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id).graph
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            1: replace(
+                observed.blocks[1],
+                start_ea=0x1999,
+                native_start_ea=0x1999,
+            ),
+        },
+    )
+
+    class _DriftedObservationTranslator(_FakeTranslator):
+        def lift(self, _live_source: object) -> FlowGraph:
+            self.lift_count += 1
+            return cfg if self.lift_count == 1 else observed
+
+    translator = _DriftedObservationTranslator(cfg)
+    native_key = next(
+        ref.identity.native_key
+        for ref, _serial in plan.source_coordinates
+        if isinstance(ref, NativeBlockRef)
+    )
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(cfg, plan, native_key=native_key),
+        translator=translator,
+    )
+
+    with pytest.raises(CfgGenerationPoisoned):
+        backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
+
+    assert translator.lower_calls == [plan]
+
+
 
 
 def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
@@ -4789,7 +3963,7 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
             modification.new_target,
         )
     }
-    plan = PatchPlan(
+    template = PatchPlan(
         source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
         source_generation=0,
         steps=tuple(
@@ -4809,7 +3983,7 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
         modifications=modifications,
         dispatcher_entry_serial=2,
     )
-    projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
+    projected = project_patch_plan(cfg, template, snapshot_id=template.snapshot_id)
     proof = build_dispatcher_removal_preflight_proof(
         cfg,
         post_graph=projected.graph,
@@ -4820,11 +3994,17 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
         producer_safety={},
     )
     assert proof.reason == "untyped_lost_block"
-    plan = plan.with_metadata(
-        **{
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
-        }
+    plan = _typed_bootstrap_authority_plan(
+        cfg,
+        template=template,
+        dispatcher_entry_serial=2,
+        dispatcher_member_serials=(2, 3, 4, 5, 6, 7, 8),
+        authoritative_handler_serials=(4,),
+        coverage=coverage,
+        route_edge=(3, 4),
+        removal_validation=DispatcherRemovalPreflightValidation(
+            False, proof.reason, proof,
+        ),
     )
     translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(
@@ -4839,8 +4019,7 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
 
     assert result is cfg
     assert translator.lower_calls == []
-    assert backend.last_patch_failure is not None
-    assert "untyped_lost_block" in str(backend.last_patch_failure)
+    assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
 
 
 def test_small_switch_retirement_accepts_exact_terminal_cycle_break(
@@ -4868,7 +4047,7 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break(
         RedirectGoto(from_serial=5, old_target=8, new_target=6),
         RedirectGoto(from_serial=8, old_target=2, new_target=6),
     )
-    plan = PatchPlan(
+    template = PatchPlan(
         source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
         source_generation=0,
         steps=tuple(
@@ -4899,7 +4078,7 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break(
         modifications=modifications,
         dispatcher_entry_serial=2,
     )
-    projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
+    projected = project_patch_plan(cfg, template, snapshot_id=template.snapshot_id)
     proof = build_dispatcher_removal_preflight_proof(
         cfg,
         post_graph=projected.graph,
@@ -4912,11 +4091,34 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break(
     assert coverage.planned_completion_status == "planned_dispatcher_corridors_covered"
     assert not proof.passed
     assert proof.reason == "untyped_lost_block"
-    plan = plan.with_metadata(
-        **{
-            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
-        }
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor,
+        TerminalSwitchCycleBreakProof,
+    )
+    anchor = lambda serial: DispatcherBlockAnchor(serial, cfg.blocks[serial].start_ea)
+    terminal = TerminalSwitchCycleBreakProof(
+        dispatcher=anchor(2),
+        terminal_source=anchor(3),
+        shared_merge=anchor(8),
+        terminal_target=anchor(4),
+        terminal_stop=anchor(9),
+        retired_residue=(anchor(2), anchor(7), anchor(8)),
+    )
+    plan = _typed_bootstrap_authority_plan(
+        cfg,
+        template=template,
+        dispatcher_entry_serial=2,
+        dispatcher_member_serials=(2, 7, 8),
+        authoritative_handler_serials=(4,),
+        coverage=coverage,
+        route_edge=(3, 4),
+        route_terminal=True,
+        removal_validation=DispatcherRemovalPreflightValidation(
+            True,
+            "terminal_switch_cycle_break",
+            proof,
+            terminal_switch_cycle_break=terminal,
+        ),
     )
 
     class _ProjectedTranslator(_FakeTranslator):
@@ -4941,32 +4143,14 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break(
         live_source=SimpleNamespace(qty=max(cfg.blocks) + 1),
     )
 
-    assert result is projected.graph
-    assert translator.lower_calls == [plan]
-    assert backend.last_patch_failure is None
+    assert result is cfg
+    assert translator.lower_calls == []
+    assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
     assert len(outcomes) == 1
-    proof_payload = next(
-        observation.payload
+    assert all(
+        observation.payload["canonical"]
         for observation in outcomes[0]["observations"]
-        if observation.kind == "UnflattenDispatcherRemovalPreflightProof"
     )
-    projected_validation = proof_payload["projected_validation"]
-    assert projected_validation["validation_status"] == "accepted"
-    assert projected_validation["reason"] == "terminal_switch_cycle_break"
-    observed_validation = proof_payload["observed_validation"]
-    assert observed_validation["validation_status"] == "accepted"
-    assert observed_validation["reason"] == "terminal_switch_cycle_break"
-    cycle_break = observed_validation["terminal_switch_cycle_break"]
-    assert cycle_break["dispatcher"] == {
-        "serial": 2,
-        "ea": 0x1002,
-        "label": "blk2@0x1002",
-    }
-    assert cycle_break["shared_merge"] == {
-        "serial": 8,
-        "ea": 0x1008,
-        "label": "blk8@0x1008",
-    }
 
 
 def test_below_threshold_dispatcher_retirement_still_requires_narrow_proof(
@@ -5007,17 +4191,17 @@ def test_below_threshold_dispatcher_retirement_still_requires_narrow_proof(
     assert result is cfg
     assert translator.lower_calls == []
     assert backend.last_patch_failure is not None
-    assert "dispatcher_removal_proof_missing" in str(backend.last_patch_failure)
-    assert len(outcomes) == 1
+    assert "projected unflatten authority rejected" in str(backend.last_patch_failure)
+    assert outcomes
 
 
-def test_observed_corridor_coverage_drift_remains_fatal(monkeypatch):
-    """Coverage drift rejects even when the ordinary entry gate itself passes."""
+def test_corridor_coverage_drift_is_rejected_by_stronger_projected_obligation():
+    """An impossible downstream drift case fails at the stronger projected gate."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
         stop_serials=(4,),
     )
-    plan = _ordinary_plan(
+    template = _ordinary_plan(
         PatchRedirectGoto,
         serials=(1, 2, 3),
         from_serial=1,
@@ -5029,31 +4213,27 @@ def test_observed_corridor_coverage_drift_remains_fatal(monkeypatch):
         modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
         dispatcher_entry_serial=2,
     )
-    stale_coverage = dict(coverage.to_metadata())
-    stale_coverage["covered_corridors"] = []
-    stale_coverage["residual_corridors"] = []
-    plan = plan.with_metadata(
-        **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: stale_coverage}
-    )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
+    plan = _typed_bootstrap_authority_plan(
+        cfg,
+        template=template,
+        dispatcher_entry_serial=2,
+        dispatcher_member_serials=(1, 2, 5),
+        authoritative_handler_serials=(3,),
+        coverage=coverage,
+        route_edge=(1, 3),
     )
     translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, plan),
         translator=translator,
     )
-
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert result is cfg
+    assert backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks)) is cfg
     assert translator.lower_calls == []
-    assert backend.last_patch_failure is not None
-    assert "dispatcher_coverage=dispatcher_corridor_coverage_drift" in str(
-        backend.last_patch_failure
+    verdict = backend.last_patch_failure.unflatten_verdict
+    assert verdict is not None
+    assert verdict.phase is authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+    assert verdict.reason is authority_model.UnflattenAuthorityReason.OBLIGATION_VIOLATED
+    assert any(
+        item.key.dimension is authority_model.SafetyDimension.ENTRY_REACHABILITY
+        for item in verdict.failed_obligations
     )
-    assert "dispatcher_removal=" not in str(backend.last_patch_failure)
-    assert len(outcomes) == 1

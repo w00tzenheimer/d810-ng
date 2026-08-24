@@ -112,19 +112,17 @@ from d810.transforms.minimal_unflatten_emit import (
     build_source_keyed_handler_redirects,
     build_state_write_redirects,
     enrich_native_bound_transition_routes,
-    CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
-    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
-)
-from d810.transforms.dispatcher_corridor_coverage import (
-    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
-    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-    FULL_UNFLATTENING_CLAIM_METADATA,
-    UNFLATTEN_COMPLETION_STATUS_METADATA,
 )
 from tests.native_preanalysis import make_native_key
 from tests.typed_patch_authority import emit_minimal_unflatten, graph_modifications
 
 NATIVE_KEY = make_native_key()
+
+
+def _assert_no_legacy_plan_metadata(plan) -> None:
+    from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
+
+    assert not set(plan.metadata_dict()).intersection(LEGACY_UNFLATTEN_KEYS)
 
 _OP_MOV = 4
 _T_NUM, _T_STK, _T_REG = 2, 4, 1
@@ -876,24 +874,12 @@ def test_native_bound_route_receipt_identifies_accepted_current_route(
             native_bound_transition_routes=(route,),
         )
 
-    receipt = plan.metadata_dict()[NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA]
+    _assert_no_legacy_plan_metadata(plan)
     assert (10, 2, 20) in {
         (mod.from_serial, mod.old_target, mod.new_target)
         for mod in graph_modifications(plan)
         if isinstance(mod, RedirectGoto)
     }
-    assert receipt == (
-        {
-            "fact_id": "transition:receipt",
-            "native_ea": 0x7FF855576BA0 + 10,
-            "native_ea_hex": "0x7FF855576BAA",
-            "current_block": "blk[10]@0x1280",
-            "state": 0x20,
-            "target": 20,
-            "target_block": "blk[20]@0x1500",
-            "operation_key": ("block_goto_change", 10, 2, 20),
-        },
-    )
     assert not any(
         "native-bound transition route receipt:" in record.getMessage()
         for record in caplog.records
@@ -990,18 +976,7 @@ def test_native_bound_entry_route_receipt_identifies_exact_redirect(monkeypatch)
         for mod in graph_modifications(plan)
         if isinstance(mod, RedirectGoto)
     }
-    assert plan.metadata_dict()[NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA] == (
-        {
-            "fact_id": "entry:receipt",
-            "native_ea": 0x7FF855576BA0 + 1,
-            "native_ea_hex": "0x7FF855576BA1",
-            "current_block": "blk[1]@0x1040",
-            "state": state,
-            "target": 10,
-            "target_block": "blk[10]@0x1280",
-            "operation_key": ("block_goto_change", 1, 2, 10),
-        },
-    )
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_native_bound_interval_range_cannot_bypass_function_entry() -> None:
@@ -1129,7 +1104,7 @@ def test_native_bound_route_receipt_is_not_logged_before_entry_bridge_bail(
     assert not any(
         "native-bound transition route receipt:" in message for message in messages
     )
-    assert NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA not in plan.metadata_dict()
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_native_bound_route_recovers_initial_state_and_entry_bridge(monkeypatch):
@@ -1239,12 +1214,7 @@ def test_native_bound_routes_seed_missing_current_backedge_transition(
         if isinstance(mod, RedirectGoto)
     }
     assert gotos >= {(1, 2, 10), (11, 2, 20)}
-    assert {
-        receipt["fact_id"]
-        for receipt in plan.metadata_dict()[
-            NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA
-        ]
-    } == {"entry", "backedge"}
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_native_bound_route_receipt_is_absent_after_use_def_veto(
@@ -1293,7 +1263,7 @@ def test_native_bound_route_receipt_is_absent_after_use_def_veto(
     )
 
     assert graph_modifications(plan) == []
-    assert NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA not in plan.metadata_dict()
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_materialized_state_route_rebinds_to_exact_imported_handler_owner() -> None:
@@ -1520,22 +1490,10 @@ def test_emitter_reports_reachable_dispatcher_corridors_as_partial_not_complete(
         dispatcher_entry_serial=2,
     )
 
-    metadata = plan.metadata_dict()
-    assert metadata[UNFLATTEN_COMPLETION_STATUS_METADATA] == "pending_patch_application"
-    assert metadata[FULL_UNFLATTENING_CLAIM_METADATA] is False
-    coverage = metadata[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
-    assert coverage["planned_completion_status"] == "planned_partial_residual_dispatcher"
-    assert coverage["residual_corridors"]
-    assert any(
-        "blk10@0x7ff859c08d35" in corridor["label"]
-        and "blk2@0x7ff859c070c4" in corridor["label"]
-        for corridor in coverage["residual_corridors"]
-    )
-    assert any(
+    _assert_no_legacy_plan_metadata(plan)
+    assert not any(
         message.startswith("unflat dispatcher corridor coverage:")
-        and args[:2]
-        == ("pending_patch_application", "planned_partial_residual_dispatcher")
-        for message, args in log_capture.calls
+        for message, _args in log_capture.calls
     ), log_capture.calls
     assert not any(" unresolved=%d " in message for message, _args in log_capture.calls)
 
@@ -1576,14 +1534,8 @@ def test_emitter_proof_uses_caller_authoritative_handlers_not_dispatcher_rows(
         live_function=object(),
     )
 
-    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
-    assert {item["serial"] for item in proof["authoritative_handlers"]} == {
-        10,
-        20,
-        30,
-    }
-    assert proof["proof_status"] == "rejected"
-    assert proof["reason"] == "authoritative_handler_lost"
+    _assert_no_legacy_plan_metadata(plan)
+    assert len(graph_modifications(plan)) == 4
 
 
 def _complete_two_handler_dispatcher_graph() -> FlowGraph:
@@ -1612,10 +1564,7 @@ def test_emitter_narrow_proof_requires_executed_whole_fragment_use_def_check(
         authoritative_handler_serials=frozenset({10, 20}),
     )
 
-    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
-    assert proof["proof_status"] == "rejected"
-    assert proof["reason"] == "producer_safety_missing"
-    assert proof["producer_safety"]["non_state_use_def_checked"] is False
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_emitter_narrow_proof_abstains_when_use_def_capability_raises(
@@ -1641,16 +1590,8 @@ def test_emitter_narrow_proof_abstains_when_use_def_capability_raises(
         live_function=object(),
     )
 
-    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
-    assert proof["proof_status"] == "rejected"
-    assert proof["reason"] == "producer_safety_missing"
-    assert proof["producer_safety"]["non_state_use_def_checked"] is False
-    assert proof["producer_safety"]["non_state_use_def_severances_zero"] is False
+    _assert_no_legacy_plan_metadata(plan)
     assert len(graph_modifications(plan)) == 3
-    audit = plan.metadata_dict()["use_def_severance_audit"]
-    assert audit["executed"] is False
-    assert audit["clean"] is False
-    assert audit["enforcement_status"] == "safety_unavailable"
 
 
 def test_partial_use_def_audit_retains_fragment_and_reports_unavailable_safety(
@@ -1686,13 +1627,7 @@ def test_partial_use_def_audit_retains_fragment_and_reports_unavailable_safety(
     )
 
     assert len(graph_modifications(plan)) == 3
-    audit = plan.metadata_dict()["use_def_severance_audit"]
-    assert audit["executed"] is False
-    assert audit["clean"] is False
-    assert audit["severance_count"] == 1
-    assert audit["enforced"] is True
-    assert audit["enforcement_status"] == "safety_unavailable"
-    assert len(audit["violations"]) == 1
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_emitter_keeps_siblings_for_advisory_use_def_severance(
@@ -1720,12 +1655,7 @@ def test_emitter_keeps_siblings_for_advisory_use_def_severance(
     )
 
     assert len(graph_modifications(plan)) == 3
-    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
-    assert proof["proof_status"] == "rejected"
-    assert proof["reason"] == "producer_safety_missing"
-    assert proof["producer_safety"]["fragment_atomic"] is False
-    assert proof["producer_safety"]["non_state_use_def_checked"] is True
-    assert proof["producer_safety"]["non_state_use_def_severances_zero"] is False
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_confirmed_use_def_severance_rejects_partial_fragment_atomically() -> None:
@@ -1759,14 +1689,7 @@ def test_emitter_narrow_proof_accepts_clean_executed_use_def_check(_seam) -> Non
         live_function=object(),
     )
 
-    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
-    assert proof["proof_status"] == "accepted"
-    assert proof["producer_safety"] == {
-        "fragment_atomic": True,
-        "non_state_use_def_checked": True,
-        "non_state_use_def_severances_zero": True,
-        "non_state_use_def_veto": True,
-    }
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_emitter_scans_imported_materialized_handler_root(_seam) -> None:
@@ -3894,16 +3817,6 @@ def test_source_keyed_group_abstains_when_last_default_effect_route_is_lost(
         minimal_unflatten_emit_module,
         "_merge_effect_safe_source_keyed_redirect_group",
     )
-    incremental_effect_loss = getattr(
-        minimal_unflatten_emit_module,
-        "_incremental_effect_loss_for_redirect_group",
-    )
-    assert incremental_effect_loss(
-        fg,
-        base,
-        [*base, *source_keyed],
-        project_modifications=project,
-    ) == frozenset({546})
     safe = RedirectGoto(610, 611, 612)
     merged, accepted = merge_group(
         fg,
@@ -4130,7 +4043,9 @@ def test_intermediate_stage_carries_exact_infeasible_effect_proof(_seam) -> None
     assert proof.selected_target_serial == 79
     assert proof.selected_target_ea == 0x23C0
     assert proof.discarded_effect_serial == 546
-    assert proof.discarded_effect_ea == 0x18002CF19
+    # The exclusion binds the exact effect site; block diagnostics continue to
+    # render the independently anchored blk546@0x18002CF19 identity.
+    assert proof.discarded_effect_ea == 0x18002CF2E
 
 
 def test_source_keyed_route_does_not_override_exact_live_edge(_seam) -> None:
@@ -10615,11 +10530,7 @@ def test_default_use_def_findings_are_advisory_and_keep_all_sibling_redirects(
     assert len(graph_modifications(heuristic_plan)) == len(
         graph_modifications(clean_plan)
     )
-    proof = heuristic_plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
-    assert proof["producer_safety"]["fragment_atomic"] is False
-    audit = heuristic_plan.metadata_dict()["use_def_severance_audit"]
-    assert audit["enforced"] is False
-    assert len(audit["violations"]) >= 1
+    _assert_no_legacy_plan_metadata(heuristic_plan)
 
 
 def test_legacy_s1a_severance_bail_rejects_the_whole_fragment(
@@ -10656,11 +10567,7 @@ def test_legacy_s1a_severance_bail_rejects_the_whole_fragment(
     )
 
     assert graph_modifications(plan) == []
-    audit = plan.metadata_dict()["use_def_severance_audit"]
-    assert audit["executed"] is True
-    assert audit["clean"] is False
-    assert audit["enforced"] is True
-    assert audit["enforcement_status"] == "fragment_rejected"
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_legacy_s1a_severance_bail_ignores_state_variable_findings(
@@ -10686,10 +10593,7 @@ def test_legacy_s1a_severance_bail_ignores_state_variable_findings(
     )
 
     assert len(graph_modifications(plan)) == 3
-    audit = plan.metadata_dict()["use_def_severance_audit"]
-    assert audit["executed"] is True
-    assert audit["clean"] is True
-    assert audit["severance_count"] == 0
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_explicit_use_def_veto_rejects_the_whole_fragment_atomically(
@@ -10725,9 +10629,7 @@ def test_explicit_use_def_veto_rejects_the_whole_fragment_atomically(
     )
 
     assert graph_modifications(plan) == []
-    audit = plan.metadata_dict()["use_def_severance_audit"]
-    assert audit["enforced"] is True
-    assert audit["enforcement_status"] == "fragment_rejected"
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_switch_retirement_breaks_unique_terminal_dispatcher_cycle() -> None:
@@ -10857,11 +10759,7 @@ def test_switch_emitter_breaks_terminal_dispatcher_cycle_before_compiling_plan(
         (5, 8, 6),
         (8, 2, 6),
     }
-    coverage = plan.metadata_dict()[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
-    assert coverage["planned_completion_status"] == (
-        "planned_dispatcher_corridors_covered"
-    )
-    assert coverage["full_unflattening_claim"] is False
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def _interval_entry_flow_graph() -> FlowGraph:
@@ -11247,7 +11145,7 @@ def test_entry_native_receipts_follow_recovered_initial_state(
     receipts = plan.metadata_dict().get(
         "native_bound_transition_route_receipts", ()
     )
-    assert {receipt["fact_id"] for receipt in receipts} == {"recovered"}
+    assert receipts == ()
 
 
 def test_scalar_entry_route_agrees_with_native_bound_evidence_and_provenance(
@@ -11297,9 +11195,7 @@ def test_scalar_entry_route_agrees_with_native_bound_evidence_and_provenance(
         if isinstance(modification, RedirectGoto)
         and (modification.from_serial, modification.old_target) == (1, 2)
     ] == [RedirectGoto(from_serial=1, old_target=2, new_target=10)]
-    (provenance,) = plan.metadata_dict()["concrete_state_route_provenance"]
-    assert provenance["target_handler"] == 10
-    assert set(provenance["source_kinds"]) == {"interval", "native_bound"}
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_unrelated_native_bound_entry_route_does_not_veto_scalar_entry(
@@ -11348,8 +11244,7 @@ def test_unrelated_native_bound_entry_route_does_not_veto_scalar_entry(
         if isinstance(modification, RedirectGoto)
         and (modification.from_serial, modification.old_target) == (1, 2)
     ] == [RedirectGoto(from_serial=1, old_target=2, new_target=10)]
-    (provenance,) = plan.metadata_dict()["concrete_state_route_provenance"]
-    assert provenance["target_handler"] == 10
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_empty_handler_set_rejects_broad_interval_entry_and_back_edge() -> None:
@@ -11472,14 +11367,7 @@ def test_interval_route_source_kinds_are_retained_in_accepted_entry_proof(_seam)
         condition_chain_handlers=frozenset({10, 13}),
     )
 
-    assert plan.metadata_dict()["concrete_state_route_provenance"] == (
-        {
-            "site": "entry",
-            "normalized_state": state,
-            "target_handler": 10,
-            "source_kinds": ("interval",),
-        },
-    )
+    _assert_no_legacy_plan_metadata(plan)
 
 
 @pytest.mark.parametrize(
@@ -11780,13 +11668,7 @@ def test_exact_source_carrier_dag_route_authorizes_default_entry_leaf(
     assert RedirectGoto(from_serial=1, old_target=3, new_target=10) in (
         graph_modifications(plan)
     )
-    (receipt,) = plan.metadata_dict()[CONCRETE_STATE_ROUTE_PROVENANCE_METADATA]
-    assert receipt == {
-        "site": "entry",
-        "normalized_state": initial_state,
-        "target_handler": 10,
-        "source_kinds": ("interval", "source_carrier_decision_dag"),
-    }
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def _task5_trusted_entry_transition(
@@ -11938,13 +11820,7 @@ def test_nested_source_scoped_entry_route_uses_reconciled_transition(
         modification.from_serial == 222
         for modification in graph_modifications(plan)
     )
-    (receipt,) = plan.metadata_dict()[CONCRETE_STATE_ROUTE_PROVENANCE_METADATA]
-    assert receipt == {
-        "site": "entry",
-        "normalized_state": 0x704FAFF6,
-        "target_handler": 304,
-        "source_kinds": ("decision_dag", "source_scoped_transition"),
-    }
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_nested_source_scoped_entry_route_conflict_abstains_atomically(
@@ -12837,11 +12713,7 @@ def test_candidate_prefix_plan_suppresses_all_legacy_root_entry_bridges(
         if isinstance(modification, (RedirectGoto, RedirectBranch))
     )
     assert RedirectGoto(495, 15, 101) not in redirects
-    semantic_exclusions = plan.metadata_dict()[
-        DISPATCHER_CORRIDOR_COVERAGE_METADATA
-    ]["semantic_exclusions"]
-    assert tuple(item["source"]["serial"] for item in semantic_exclusions) == (401,)
-    assert semantic_exclusions[0]["normalized_state"] == _PREFIX_ALTERNATE_STATE
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_candidate_prefix_preserved_feeder_uses_existing_pred_split_clone(
@@ -12961,16 +12833,7 @@ def test_candidate_prefix_incomplete_feeder_partition_stays_residual(
         for modification in graph_modifications(plan)
         if isinstance(modification, (RedirectGoto, RedirectBranch))
     )
-    metadata = plan.metadata_dict()
-    coverage = metadata[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
-    assert coverage["planned_completion_status"] == (
-        "planned_partial_residual_dispatcher"
-    )
-    assert coverage["residual_corridors"]
-    assert (
-        metadata[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]["proof_status"]
-        == "rejected"
-    )
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def _candidate_prefix_captured_incomplete_emitter_fixture(
@@ -13146,13 +13009,7 @@ def test_candidate_prefix_concrete_alternate_rows_reach_reconciliation(
         for modification in graph_modifications(plan)
         if isinstance(modification, (RedirectGoto, RedirectBranch))
     )
-    metadata = plan.metadata_dict()
-    coverage = metadata[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
-    assert coverage["planned_completion_status"] == (
-        "planned_partial_residual_dispatcher"
-    )
-    assert coverage["residual_corridors"]
-    assert metadata[FULL_UNFLATTENING_CLAIM_METADATA] is False
+    _assert_no_legacy_plan_metadata(plan)
 
 
 def test_candidate_prefix_not_applicable_keeps_legacy_endpoint_bridge(

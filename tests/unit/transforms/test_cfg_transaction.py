@@ -68,7 +68,7 @@ def test_ordinary_patch_plan_keeps_typed_authority_channels_optional() -> None:
     assert plan.steps == ()
     assert plan.metadata == ()
     assert plan.unflatten_proposal is None
-    assert plan.legacy_unflatten_shadow is None
+    assert not hasattr(plan, "legacy_unflatten_shadow")
 
 
 def test_ordinary_patch_plan_does_not_import_authority_model() -> None:
@@ -95,6 +95,17 @@ def test_ordinary_patch_plan_does_not_import_authority_model() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_patch_transaction_delegates_detached_authority_to_canonical_stage3_route() -> None:
+    """The generic participant must not grow a detached replay side channel."""
+
+    from d810.hexrays.mutation import patch_transaction
+
+    source = inspect.getsource(patch_transaction)
+    assert "detached" not in source.lower()
+    assert "metadata" not in source.lower()
+    assert "replay" not in source.lower()
 
 
 def test_plan_local_refs_are_nominal_and_replay_stable() -> None:

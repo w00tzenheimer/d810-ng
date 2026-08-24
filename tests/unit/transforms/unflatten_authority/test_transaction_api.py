@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from inspect import signature
 
 import pytest
 
-from d810.transforms.plan import PatchBlockSpec, PatchEdgeRef, PatchPlan, PatchRedirectBranch
+from d810.transforms.plan import (
+    PatchBlockSpec,
+    PatchEdgeRef,
+    PatchPlan,
+    PatchRedirectBranch,
+    PatchRedirectGoto,
+)
 from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef, TransactionAttemptId
 from d810.transforms.unflatten_authority.model import (
     UnflattenAuthorityReason,
@@ -24,7 +30,6 @@ from .helpers import (
     import_authority_model,
 )
 from .test_model import _valid_proposal
-from .test_proposal import _shadow
 
 
 def test_transaction_derivation_rejects_a_residual_terminal_cycle() -> None:
@@ -47,6 +52,200 @@ def test_transaction_derivation_rejects_a_residual_terminal_cycle() -> None:
             preparation_metrics=fixture.preparation_metrics,
             candidate_generation=source.generation,
         )
+
+
+def test_topology_reference_is_not_caller_selectable() -> None:
+    from inspect import signature
+    from d810.transforms.unflatten_authority import transaction_api
+
+    assert "projected_topology_reference" not in signature(
+        transaction_api._derive_inputs
+    ).parameters
+    assert "projected_topology_reference" not in signature(
+        transaction_api._receipt
+    ).parameters
+
+
+def test_new_plan_has_no_legacy_metadata_or_shadow_transport_after_cutover() -> None:
+    """Task20 removes transaction-local legacy synchronization seams."""
+
+    from d810.hexrays.mutation import patch_transaction
+    from d810.transforms.unflatten_authority import transaction_api, views
+    from d810.transforms.unflatten_authority.proposal import reserved_metadata_keys
+
+    # PatchPlan is the typed authority carrier after cutover; the temporary
+    # shadow is not a dormant compatibility field or an attribute channel.
+    assert "legacy_unflatten_shadow" not in {
+        item.name for item in fields(PatchPlan)
+    }
+    new_plan = PatchPlan(plan_id="task20-plan", snapshot_id="task20-snapshot")
+    assert not hasattr(new_plan, "legacy_unflatten_shadow")
+    assert reserved_metadata_keys(new_plan) == ()
+
+    # The decisive transaction path must not retain a replay/capture branch or
+    # call any of the legacy graph validators/canonicalizer.
+    transaction_source = __import__(
+        "inspect", fromlist=["getsource"]
+    ).getsource(patch_transaction)
+    authority_source = __import__(
+        "inspect", fromlist=["getsource"]
+    ).getsource(transaction_api)
+    for source in (transaction_source, authority_source):
+        assert "_validated_exact_effect_exclusions" not in source
+        assert "validate_dispatcher_corridor_coverage_metadata" not in source
+        assert "validate_dispatcher_removal_preflight_proof" not in source
+        assert "validate_terminal_switch_cycle_break_allowance" not in source
+        assert "canonicalize_observed_dispatcher_graph" not in source
+        assert "_LegacyEffectReplay" not in source
+        assert "_LegacyGateDecision" not in source
+        assert "_legacy_phase_outcome" not in source
+        assert "_validated_effect_exclusion_serials" not in source
+        assert "legacy_shadow" not in source
+        assert "shadow_parity" not in source
+
+    # Compatibility names are projections, never independently assigned
+    # validation objects.  The views module remains graph-free by contract.
+    compatibility_names = (
+        "projected_dispatcher_removal_validation",
+        "projected_dispatcher_coverage_validation",
+        "observed_dispatcher_removal_validation",
+        "observed_dispatcher_coverage_validation",
+    )
+    for owner in (
+        patch_transaction.PatchTransactionExecution,
+        patch_transaction.PatchTransactionPreflightRejected,
+        patch_transaction.PatchTransactionPostObservationRejected,
+        patch_transaction.PatchTransactionPoisoned,
+    ):
+        for name in compatibility_names:
+            assert isinstance(getattr(owner, name, None), property)
+        assert views.VIEW_GRAPH_TRAVERSALS == 0
+
+
+def test_compatibility_properties_project_the_exact_canonical_verdict() -> None:
+    from d810.hexrays.mutation.patch_transaction import (
+        PatchTransactionExecution,
+        PatchTransactionPoisoned,
+        PatchTransactionPostObservationRejected,
+        PatchTransactionPreflightRejected,
+    )
+    from d810.transforms.cfg_transaction import (
+        CfgProjection,
+        CfgTransactionFailure,
+        CfgTransactionPhase,
+    )
+    from d810.transforms.unflatten_authority import model, views
+    from d810.transforms.unflatten_authority import transaction_api
+    source, plan, projected, gates = _full_corridor_fixture()
+    attempt = TransactionAttemptId(
+        plan.plan_id, authority_id("compatibility-session"), 1,
+        authority_id("compatibility-attempt"),
+    )
+    prepared = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=attempt,
+        generic_gates=gates,
+    )
+    assert prepared.prepared is not None
+    projected_accepted = prepared.verdict
+    from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+    from d810.hexrays.mutation.patch_binding import bind_patch_plan
+
+    refs = {
+        block.block_ref: block
+        for block in plan.unflatten_proposal.source_identity_catalog.blocks
+    }
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=attempt.generation,
+        maturity=None,
+        native_key=next(iter(refs)).identity.native_key,
+        snapshot_id=plan.snapshot_id,
+        session_id=attempt.session_id,
+        bindings=tuple((ref.identity, serial) for ref, serial in plan.source_coordinates),
+    )
+    index.begin_transaction(attempt, quantity=len(source.blocks))
+    bound = transaction_api.bind_prepared_unflatten_authority(
+        prepared=prepared.prepared,
+        patch_binding=bind_patch_plan(plan, index, attempt).bound_plan,
+    )
+    assert bound.authority is not None
+    observed_accepted = transaction_api.revalidate_observed_unflatten_authority(
+        authority=bound.authority,
+        observed=projected,
+        observed_generation=attempt.generation,
+        generic_gates=gates,
+    )
+    assert observed_accepted.accepted
+    rejected_projected = model.UnflattenAuthorityVerdict(
+        False,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        authority_id("compatibility-rejected-projected"),
+        None,
+        None,
+        authority_id("compatibility-rejected-candidate"),
+        None,
+        (),
+    )
+    rejected_observed = model.UnflattenAuthorityVerdict(
+        False,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+        authority_id("compatibility-rejected-observed"),
+        authority_id("compatibility-rejected-binding"),
+        None,
+        authority_id("compatibility-rejected-observed-candidate"),
+        None,
+        (),
+    )
+    projected_view = views.compatibility_projection(projected_accepted, "removal")
+    observed_view = views.compatibility_projection(observed_accepted, "removal")
+    execution = PatchTransactionExecution(
+        applied_count=1,
+        graph=projected,
+        receipt=object(),
+        projected_unflatten_verdict=projected_accepted,
+        observed_unflatten_verdict=observed_accepted,
+    )
+    assert execution.projected_dispatcher_removal_validation.to_payload() == projected_view.to_payload()
+    assert execution.observed_dispatcher_removal_validation.to_payload() == observed_view.to_payload()
+    assert execution.projected_dispatcher_removal_validation.phase == "projected_preflight"
+    assert execution.observed_dispatcher_removal_validation.phase == "observed_post_apply"
+    assert execution.projected_dispatcher_removal_validation.authority_id == execution.observed_dispatcher_removal_validation.authority_id
+    assert execution.projected_dispatcher_removal_validation.binding_id != execution.observed_dispatcher_removal_validation.binding_id
+    assert execution.projected_dispatcher_removal_validation.case_id != execution.observed_dispatcher_removal_validation.case_id
+    with pytest.raises((AttributeError, TypeError)):
+        execution.observed_dispatcher_removal_validation = None
+
+    preflight_view = views.compatibility_projection(rejected_projected, "removal")
+    observed_rejection_view = views.compatibility_projection(rejected_observed, "coverage")
+    preflight = PatchTransactionPreflightRejected(
+        "preflight", unflatten_verdict=rejected_projected,
+    )
+    observed = PatchTransactionPostObservationRejected(
+        "observed", unflatten_verdict=rejected_observed,
+    )
+    failure = CfgTransactionFailure(
+        TransactionAttemptId(
+            "compatibility-plan", "compatibility-session", 1,
+            "compatibility-attempt",
+        ),
+        CfgTransactionPhase.POISONED_RESTART_REQUIRED,
+        "poisoned",
+        True,
+        failure_phase="post_observation_contract",
+    )
+    poisoned = PatchTransactionPoisoned(failure, unflatten_verdict=rejected_observed)
+    assert preflight.projected_dispatcher_removal_validation.to_payload() == preflight_view.to_payload()
+    assert preflight.observed_dispatcher_removal_validation is None
+    assert observed.observed_dispatcher_coverage_validation.to_payload() == observed_rejection_view.to_payload()
+    assert observed.projected_dispatcher_removal_validation is None
+    assert poisoned.observed_dispatcher_removal_validation.to_payload() == (
+        views.compatibility_projection(rejected_observed, "removal").to_payload()
+    )
+    assert observed.unflatten_verdict is poisoned.unflatten_verdict is rejected_observed
 
 
 def test_transaction_derivation_carries_terminal_cycle_phase_result() -> None:
@@ -117,10 +316,6 @@ def _full_corridor_fixture():
         attach_typed_proposal,
         canonical_redirect_manifest,
     )
-    from d810.transforms.unflatten_authority.legacy_keys import (
-        DISPATCHER_CORRIDOR_COVERAGE_METADATA,
-        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-    )
     from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
 
     source, base, exclusion, refs = exact_fixture()
@@ -161,15 +356,45 @@ def _full_corridor_fixture():
         source_generation=1,
         steps=(PatchRedirectBranch(refs[5], refs[6], refs[0]),),
         source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
-        metadata=(
-            (DISPATCHER_CORRIDOR_COVERAGE_METADATA, coverage.to_metadata()),
-            (DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA, {
-                "retired_infrastructure": tuple({
-                    "role": "comparison_dispatcher",
-                    "anchor": {"serial": serial, "ea": {5: 0x6000, 6: 0x7000}[serial]},
-                    "retired": serial == 6,
-                } for serial in (5, 6)),
-            }),
+    )
+    projected_template = project_patch_plan(
+        source, template, snapshot_id=template.snapshot_id,
+    )
+    projected_blocks = {
+        serial: block for serial, block in projected_template.graph.blocks.items()
+        if serial != 6
+    }
+    projected_blocks[0] = replace(projected_blocks[0], preds=(5,))
+    projected_blocks[5] = replace(
+        projected_blocks[5], succs=(0,), kind=BlockKind.ONE_WAY,
+    )
+    projected_for_proof = type(projected_template.graph)(
+        projected_blocks, projected_template.graph.entry_serial,
+        projected_template.graph.func_ea,
+    )
+    removal_proof = dispatcher_corridor_coverage.build_dispatcher_removal_preflight_proof(
+        source,
+        post_graph=projected_for_proof,
+        coverage=coverage,
+        dispatcher_entry_serial=6,
+        authoritative_handler_serials=frozenset({2}),
+        dispatcher_region_serials=frozenset({5, 6}),
+        producer_safety={
+            "fragment_atomic": True,
+            "non_state_use_def_veto": True,
+            "non_state_use_def_checked": True,
+            "non_state_use_def_severances_zero": True,
+        },
+        state_plumbing_serials=frozenset(),
+        patch_plan=template,
+    )
+    removal_validation = dispatcher_corridor_coverage.validate_terminal_switch_cycle_break_allowance(
+        source,
+        post_graph=projected_template.graph,
+        patch_plan=template,
+        removal_validation=dispatcher_corridor_coverage.DispatcherRemovalPreflightValidation(
+            passed=removal_proof.passed, reason=removal_proof.reason,
+            proof=removal_proof,
         ),
     )
     manifest = canonical_redirect_manifest(template)
@@ -184,6 +409,8 @@ def _full_corridor_fixture():
         exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=6,
         dispatcher_member_serials=(5, 6), authoritative_handler_serials=(2,),
         state_identity=base.plan_inputs.state_identity, use_def_witness=witness,
+        corridor_coverage=coverage,
+        dispatcher_removal_validation=removal_validation,
     )
     projected = project_patch_plan(source, plan, snapshot_id=plan.snapshot_id).graph
     projected_blocks = {
@@ -219,14 +446,6 @@ def test_full_corridor_public_lifecycle_uses_sealed_nonempty_forecast(monkeypatc
     monkeypatch.setattr(
         dispatcher_corridor_coverage, "analyze_dispatcher_corridor_coverage",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("analyzer called after attachment")),
-    )
-    monkeypatch.setattr(
-        dispatcher_corridor_coverage, "validate_dispatcher_corridor_coverage_metadata",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy validator called")),
-    )
-    monkeypatch.setattr(
-        dispatcher_corridor_coverage, "canonicalize_observed_dispatcher_graph",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy parser called")),
     )
     prepared_result = transaction_api.prepare_unflatten_authority(
         source=source, projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
@@ -289,38 +508,6 @@ def test_full_corridor_public_lifecycle_uses_sealed_nonempty_forecast(monkeypatc
     assert observed_phase.full
 
 
-def test_timed_prepare_and_prepared_shadow_adapter_mint_one_receipt() -> None:
-    """The owner facade times preparation and adapts the exact prepared shadow."""
-
-    from d810.transforms.unflatten_authority import transaction_api
-
-    source, plan, projected, gates = _full_corridor_fixture()
-    attempt = TransactionAttemptId(
-        plan.plan_id, authority_id("timed-shadow-session"), 1,
-        authority_id("timed-shadow-attempt"),
-    )
-    timed = transaction_api.prepare_unflatten_authority_timed(
-        source=source,
-        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
-        plan=plan,
-        attempt_id=attempt,
-        generic_gates=gates,
-    )
-    assert isinstance(timed, transaction_api.TimedUnflattenAuthorityResult)
-    assert timed.timings.inventory_ms is not None
-    assert timed.timings.binding_ms is not None
-    assert timed.timings.evaluation_ms is not None
-    assert timed.timings.total_authority_ms is None
-    assert timed.result.prepared is not None
-    receipt = transaction_api.adapt_plan_legacy_shadow(
-        source=source, prepared=timed.result.prepared,
-    )
-    assert receipt is not None
-    assert receipt.consumed_keys == tuple(
-        entry.key for entry in plan.legacy_unflatten_shadow.entries
-    )
-
-
 def test_public_prepare_rejects_reminted_forecast_function_ea_drift() -> None:
     """A validly reminted forecast cannot change the source function identity."""
 
@@ -372,20 +559,49 @@ def test_full_corridor_retained_feeder_topology_drift_is_not_coverage_exempt() -
     blocks[5] = replace(blocks[5], succs=(0, 2), kind=BlockKind.TWO_WAY)
     blocks[2] = replace(blocks[2], preds=tuple(sorted(set(blocks[2].preds + (5,)))))
     drifted = type(projected)(blocks, projected.entry_serial, projected.func_ea)
-    result = transaction_api.prepare_unflatten_authority(
+    attempt = TransactionAttemptId(
+        plan.plan_id, authority_id("retained-feeder-drift-session"), 1,
+        authority_id("retained-feeder-drift-attempt"),
+    )
+    prepared_result = transaction_api.prepare_unflatten_authority(
         source=source,
-        projection=CfgProjection(plan.plan_id, plan.snapshot_id, drifted),
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
         plan=plan,
-        attempt_id=TransactionAttemptId(
-            plan.plan_id, authority_id("retained-feeder-drift-session"), 1,
-            authority_id("retained-feeder-drift-attempt"),
-        ),
+        attempt_id=attempt,
         generic_gates=gates,
     )
-    assert getattr(result, "prepared", None) is None
+    assert prepared_result.prepared is not None
+    from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+    from d810.hexrays.mutation.patch_binding import bind_patch_plan
+    refs = {
+        block.block_ref: block
+        for block in plan.unflatten_proposal.source_identity_catalog.blocks
+    }
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=attempt.generation,
+        maturity=None,
+        native_key=next(iter(refs)).identity.native_key,
+        snapshot_id=plan.snapshot_id,
+        session_id=attempt.session_id,
+        bindings=tuple((ref.identity, serial) for ref, serial in plan.source_coordinates),
+    )
+    index.begin_transaction(attempt, quantity=len(source.blocks))
+    patch_binding = bind_patch_plan(plan, index, attempt).bound_plan
+    bound_result = transaction_api.bind_prepared_unflatten_authority(
+        prepared=prepared_result.prepared,
+        patch_binding=patch_binding,
+    )
+    assert bound_result.authority is not None
+    result = transaction_api.revalidate_observed_unflatten_authority(
+        authority=bound_result.authority,
+        observed=drifted,
+        observed_generation=attempt.generation,
+        generic_gates=gates,
+    )
+    assert not result.accepted
     failed = {
         (item.key.subject.role, item.key.subject.anchor_ea, item.key.dimension)
-        for item in result.verdict.failed_obligations
+        for item in result.failed_obligations
     }
     assert (
         model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
@@ -394,72 +610,33 @@ def test_full_corridor_retained_feeder_topology_drift_is_not_coverage_exempt() -
     ) in failed
 
 
-def test_retirement_public_prepare_reports_only_t14_corridor_obligation(monkeypatch) -> None:
-    """A partial retirement keeps T13 structural proof but refutes aggregate coverage."""
+def test_retirement_public_prepare_projects_canonical_case_obligations(monkeypatch) -> None:
+    """A typed partial retirement preserves its case-owned structural rows."""
 
-    from d810.transforms.unflatten_authority import transaction_api
-    from d810.transforms.unflatten_authority.legacy_keys import (
-        DISPATCHER_CORRIDOR_COVERAGE_METADATA,
-        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-    )
-    from d810.transforms.dispatcher_corridor_coverage import analyze_dispatcher_corridor_coverage
-    from d810.transforms.unflatten_authority.proposal import attach_typed_proposal, canonical_redirect_manifest
-
-    model = import_authority_model()
-    source, base, _exclusion, refs = exact_fixture()
-    coverage_metadata = analyze_dispatcher_corridor_coverage(
-        source, modifications=(), dispatcher_entry_serial=1,
-    ).to_metadata()
-    template = PatchPlan(
-        plan_id=base.plan_id, snapshot_id=authority_id("retirement-public"),
-        source_generation=1,
-        steps=(PatchRedirectBranch(refs[1], refs[2], refs[0]),),
-        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
-        metadata=(
-            (DISPATCHER_CORRIDOR_COVERAGE_METADATA, coverage_metadata),
-            (DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA, {
-            "retired_infrastructure": tuple({
-                "role": "comparison_dispatcher",
-                "anchor": {"serial": serial, "ea": 0x5000 if serial == 4 else 0x1000 if serial == 0 else 0x2000},
-                "retired": serial == 4,
-            } for serial in (4, 1)),
-            }),
-        ),
-    )
-    manifest = canonical_redirect_manifest(template)
-    witness = replace(
-        base.use_def_witness,
-        redirect_owner_refs=manifest.owner_refs,
-        redirect_digest=manifest.digest,
-    )
-    plan = attach_typed_proposal(
-        template, source=source, block_refs_by_serial=refs,
-        canonical_route_evidence=base.route_evidence,
-        exact_state_effect_exclusions=(_exclusion,), dispatcher_entry_serial=1,
-        dispatcher_member_serials=(4, 1), authoritative_handler_serials=(2,),
-        state_identity=base.plan_inputs.state_identity, use_def_witness=witness,
-    )
-    monkeypatch.setattr(
-        "d810.transforms.dispatcher_corridor_coverage.analyze_dispatcher_corridor_coverage",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy analyzer called")),
-    )
-    monkeypatch.setattr(
-        "d810.transforms.dispatcher_corridor_coverage.validate_dispatcher_corridor_coverage_metadata",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy validator called")),
-    )
-    monkeypatch.setattr(
-        "d810.transforms.dispatcher_corridor_coverage.canonicalize_observed_dispatcher_graph",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy parser called")),
-    )
-    projected = type(source)({serial: block for serial, block in source.blocks.items() if serial != 4}, source.entry_serial, source.func_ea)
-    projection = CfgProjection(plan.plan_id, plan.snapshot_id, projected)
+    from d810.transforms.unflatten_authority import transaction_api, views
+    from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
     from d810.analyses.control_flow.graph_checks import (
         check_effectful_reachability_preserved,
         check_entry_reachability_not_collapsed,
         check_terminal_reachability_preserved,
     )
+
+    model = import_authority_model()
+    source, plan, projected, _gates = _full_corridor_fixture()
+    projected = type(projected)(
+        {
+            **projected.blocks,
+            5: replace(projected.blocks[5], succs=(1,)),
+        },
+        projected.entry_serial,
+        projected.func_ea,
+    )
+    monkeypatch.setattr(
+        "d810.transforms.dispatcher_corridor_coverage.analyze_dispatcher_corridor_coverage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy analyzer called")),
+    )
+    projection = CfgProjection(plan.plan_id, plan.snapshot_id, projected)
     from d810.transforms.cfg_transaction import TransactionAttemptId
-    from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
     generic_gates = GenericCfgGateBundle(
         check_entry_reachability_not_collapsed(source, post_cfg=projected),
         check_effectful_reachability_preserved(source, post_cfg=projected),
@@ -474,13 +651,12 @@ def test_retirement_public_prepare_reports_only_t14_corridor_obligation(monkeypa
         source=source, projection=projection, plan=plan,
         attempt_id=attempt, generic_gates=generic_gates,
     )
-    assert getattr(result, "prepared", None) is None
-    assert not result.verdict.accepted
-    assert result.verdict.reason is model.UnflattenAuthorityReason.OBLIGATION_VIOLATED
-    assert result.verdict.case_id is not None
-    assert result.verdict.safety_case is not None
-    case = result.verdict.safety_case
-    from d810.transforms.unflatten_authority import views
+    assert result.prepared is not None
+    assert result.verdict.accepted
+    assert result.verdict.reason is model.UnflattenAuthorityReason.ACCEPTED
+    assert result.verdict.case_id == result.prepared.projected_case.case_id
+    assert result.verdict.safety_case is result.prepared.projected_case
+    case = result.prepared.projected_case
     retirement_view = views.retirement_rows(case)
     assert retirement_view.retired_member_subject_ids
     assert retirement_view.retained_member_subject_ids
@@ -512,23 +688,9 @@ def test_retirement_public_prepare_reports_only_t14_corridor_obligation(monkeypa
         )
         for row in retired_rows
     )
-    failed_cells = tuple(
-        (cell.key.subject.subject_id, cell.key.subject.role, cell.key.dimension)
-        for cell in case.obligation_index.cells
-        if cell.state is not model.ObligationState.SATISFIED
-    )
-    entry_subject = next(
-        subject for subject in case.subjects
-        if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
-    )
-    assert len(failed_cells) == 1
-    assert failed_cells[0][1] is model.SemanticSubjectRole.DISPATCHER_CORRIDOR
-    assert failed_cells[0][2] is model.SafetyDimension.CORRIDOR_COVERAGE
-    assert entry_subject.subject_id not in {
-        cell.key.subject.subject_id
-        for cell in case.obligation_index.cells
-        if cell.key.dimension is model.SafetyDimension.CORRIDOR_COVERAGE
-    }
+    coverage_view = views.corridor_coverage_rows(case)
+    assert coverage_view.state is model.ObligationState.SATISFIED
+    assert not result.verdict.failed_obligations
 
 
 def test_helper_and_resegmentation_lineage_is_derived_before_case_builder(monkeypatch) -> None:
@@ -699,122 +861,347 @@ def test_helper_and_resegmentation_lineage_is_derived_before_case_builder(monkey
         },
         source.entry_serial, source.func_ea,
     )
-    from d810.transforms import dispatcher_corridor_coverage
-    monkeypatch.setattr(
-        dispatcher_corridor_coverage,
-        "canonicalize_observed_dispatcher_graph",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("typed observed authority must not canonicalize")
-        ),
-    )
     observed_result = transaction_api.revalidate_observed_unflatten_authority(
         authority=bound_result.authority, observed=live_observed,
         observed_generation=attempt.generation, generic_gates=generic_gates,
     )
     assert observed_result.accepted
-    unused_source_collision = replace(
-        patch_binding,
-        bindings=tuple(
-            (ref, 3 if ref == helper else serial)
-            for ref, serial in patch_binding.bindings
+
+
+def test_transaction_transport_reuses_detached_source_authority_across_phases() -> None:
+    """The transaction transport owns one detached source result per claim."""
+
+    from d810.transforms.unflatten_authority import model, transaction_api
+    from .test_bind import _detached_binding_fixture
+
+    claim, source, projected, projected_corridor = _detached_binding_fixture()
+    projected_sources, projected_phases = transaction_api._bind_detached_authority_results(
+        claims=(claim,), source_inventory=source, candidate_inventory=projected,
+        corridor_result=projected_corridor,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert len(projected_sources) == len(projected_phases) == 1
+    assert projected_phases[0].accepted
+    assert projected_phases[0].source_result_id == projected_sources[0].result_id
+    _, _, observed, observed_corridor = _detached_binding_fixture(
+        candidate_phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        candidate_fingerprint=authority_id("detached-transaction-observed"),
+        candidate_generation=5,
+    )
+    observed_sources, observed_phases = transaction_api._bind_detached_authority_results(
+        claims=(claim,), source_inventory=source, candidate_inventory=observed,
+        corridor_result=observed_corridor,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        prior_source_results=projected_sources,
+    )
+    assert observed_sources[0] is projected_sources[0]
+    assert observed_phases[0].accepted
+
+    with pytest.raises(ValueError, match="exactly one projected source result"):
+        transaction_api._bind_detached_authority_results(
+            claims=(claim,), source_inventory=source, candidate_inventory=observed,
+            corridor_result=observed_corridor,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            prior_source_results=(),
+        )
+    with pytest.raises(ValueError, match="duplicate projected source result"):
+        transaction_api._bind_detached_authority_results(
+            claims=(claim,), source_inventory=source, candidate_inventory=observed,
+            corridor_result=observed_corridor,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            prior_source_results=(*projected_sources, *projected_sources),
+        )
+    with pytest.raises(ValueError, match="foreign projected source result"):
+        transaction_api._bind_detached_authority_results(
+            claims=(), source_inventory=source, candidate_inventory=observed,
+            corridor_result=observed_corridor,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            prior_source_results=projected_sources,
+        )
+
+
+def test_derived_detached_authority_reuses_projected_source_across_observation() -> None:
+    """Derived inputs keep one source result while each phase binds its corridor."""
+
+    from d810.transforms.unflatten_authority import model, transaction_api
+    from d810.transforms.unflatten_authority.ids import (
+        _subject_factory,
+        semantic_graph_inventory_digest,
+    )
+    from .test_bind import _detached_binding_fixture
+
+    claim, source, projected, _ = _detached_binding_fixture()
+
+    def with_plan_catalog_subjects(inventory):
+        blocks = {item.serial: item for item in inventory.blocks}
+        subject_specs = (
+            (model.SemanticSubjectRole.SOURCE_ENTRY, 0),
+            (model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, 0),
+            (model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, 1),
+        )
+        added_subjects = tuple(
+            _subject_factory(
+                model.SemanticSubjectRef,
+                kind=model.SemanticSubjectKind.BLOCK,
+                role=role,
+                block_ref=blocks[serial].block_ref,
+                anchor_ea=blocks[serial].anchor_ea,
+                locator=model.BlockSubjectLocator(
+                    blocks[serial].block_ref, blocks[serial].anchor_ea,
+                ),
+            )
+            for role, serial in subject_specs
+        )
+        subjects = tuple(sorted(
+            (*inventory.subjects, *added_subjects), key=lambda item: item.subject_id,
+        ))
+        bindings = tuple(sorted((
+            *inventory.bindings,
+            *(
+                model.PhaseSubjectBinding(
+                    subject, inventory.phase, blocks[serial].block_ref,
+                    inventory.graph_fingerprint, inventory.generation,
+                    model.SubjectBindingStatus.UNIQUE, blocks[serial].serial,
+                    blocks[serial].anchor_ea, blocks[serial].native_instruction_eas,
+                    subject.role,
+                )
+                for subject, (_role, serial) in zip(added_subjects, subject_specs)
+            ),
+        ), key=lambda item: item.subject.subject_id))
+        source_subject_ids = tuple(sorted(
+            (*inventory.source_subject_ids,
+             *(subject.subject_id for subject in added_subjects)),
+        ))
+        digest = semantic_graph_inventory_digest(
+            inventory.phase, inventory.graph_fingerprint, inventory.generation,
+            inventory.blocks, subjects, bindings, inventory.effects,
+            inventory.terminals, inventory.topology, inventory.reachable_serials,
+            inventory.entry_serial, source_subject_ids, inventory.function_ea,
+        )
+        return model.SemanticGraphInventory(
+            inventory.phase, inventory.graph_fingerprint, inventory.generation,
+            inventory.blocks, subjects, bindings, inventory.effects,
+            inventory.terminals, inventory.topology, digest,
+            inventory.reachable_serials, inventory.entry_serial,
+            source_subject_ids, inventory.function_ea,
+        )
+
+    source = with_plan_catalog_subjects(source)
+    projected = with_plan_catalog_subjects(projected)
+    base = model.ProposedUnflattenContract(**_valid_proposal(model))
+    catalog = model.SourceIdentityCatalog(
+        base.source_identity_catalog.native_key,
+        source.generation,
+        tuple(
+            model.SourceBlockIdentityWitness(
+                block.block_ref, block.anchor_ea, block.native_instruction_eas,
+            )
+            for block in source.blocks
+            if block.block_ref in {
+                subject.block_ref for subject in source.subjects
+                if subject.block_ref is not None
+            }
         ),
     )
-    collision_authority = transaction_api.bind_prepared_unflatten_authority(
-        prepared=prepared_result.prepared, patch_binding=unused_source_collision,
+    by_ref = {block.block_ref: block for block in source.blocks}
+    entry_ref = by_ref[block_ref("detached-0")].block_ref
+    dispatcher_ref = claim.dispatcher_subject.block_ref
+    assert entry_ref is not None
+    assert dispatcher_ref is not None
+    path_nodes = (
+        model.CorridorCoveragePathNode(
+            entry_ref, by_ref[entry_ref].anchor_ea,
+        ),
+        model.CorridorCoveragePathNode(
+            dispatcher_ref, by_ref[dispatcher_ref].anchor_ea,
+        ),
     )
-    assert getattr(collision_authority, "authority", None) is not None
-    builder_calls = []
-    case_calls = []
-    with monkeypatch.context() as collision_patch:
-        collision_patch.setattr(
-            transaction_api,
-            "_build_semantic_graph_inventory",
-            lambda *_args, **_kwargs: builder_calls.append(True),
-        )
-        collision_patch.setattr(
-            transaction_api,
-            "build_semantic_case",
-            lambda *_args, **_kwargs: case_calls.append(True),
-        )
-        collision_observed = transaction_api.revalidate_observed_unflatten_authority(
-            authority=collision_authority.authority, observed=live_observed,
-            observed_generation=attempt.generation, generic_gates=generic_gates,
-        )
-    assert not collision_observed.accepted
-    assert builder_calls == []
-    assert case_calls == []
-    missing_helper = transaction_api.revalidate_observed_unflatten_authority(
-        authority=bound_result.authority, observed=projected,
-        observed_generation=attempt.generation, generic_gates=generic_gates,
+    path_id = authority_id((
+        "unflatten.corridor-coverage-path.v1", path_nodes, None,
+        model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
+    ))
+    path = model.CorridorCoveragePath(
+        path_id, path_nodes, None,
+        model.CorridorPathDisposition.STRUCTURALLY_COVERED, (),
     )
-    assert not missing_helper.accepted
+    forecast_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", base.plan_id,
+        source.function_ea, catalog.native_key, source.generation,
+        dispatcher_ref, by_ref[dispatcher_ref].anchor_ea, (path,), (path_id,),
+        (), True, (), (), (),
+    ))
+    forecast = model.CorridorCoverageForecast(
+        forecast_id, base.plan_id, source.function_ea, catalog.native_key,
+        source.generation, dispatcher_ref, by_ref[dispatcher_ref].anchor_ea,
+        (path,), (path_id,), (), True, (), (), (),
+    )
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        CanonicalSemanticEvidence,
+        SemanticRouteDestination,
+        SemanticRouteProof,
+        SemanticRouteProofKind,
+        SemanticRouteShape,
+    )
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.semantic_edge import SemanticEdgeRole
 
-    original_spec, second_spec = plan.new_blocks
-    mutations = {
-        "block_id": PlanBlockRef(plan.plan_id, "different-helper"),
-        "kind": "changed-kind",
-        "template_block": refs[3],
-        "incoming_edge": PatchEdgeRef(refs[0], refs[1]),
-        "outgoing_edges": (PatchEdgeRef(refs[1], refs[2]),),
-        "instructions": (source.blocks[0].insn_snapshots[0],),
-        "captured_body": object(),
-    }
-    for field, value in mutations.items():
-        object.__setattr__(
-            plan, "new_blocks", (replace(original_spec, **{field: value}), second_spec),
-        )
-        mutated_result = transaction_api.bind_prepared_unflatten_authority(
-            prepared=prepared_result.prepared, patch_binding=patch_binding,
-        )
-        assert getattr(mutated_result, "authority", None) is None, field
-        observed_mutation = transaction_api.revalidate_observed_unflatten_authority(
-            authority=bound_result.authority, observed=live_observed,
-            observed_generation=attempt.generation, generic_gates=generic_gates,
-        )
-        assert not observed_mutation.accepted, field
-        object.__setattr__(plan, "new_blocks", (original_spec, second_spec))
-    object.__setattr__(plan, "new_blocks", (second_spec, original_spec))
-    reordered_result = transaction_api.bind_prepared_unflatten_authority(
-        prepared=prepared_result.prepared, patch_binding=patch_binding,
+    route_destination_ref = claim.retained_handler_subjects[0].block_ref
+    route_source = by_ref[entry_ref]
+    route_destination = by_ref[route_destination_ref]
+    route_proof = SemanticRouteProof(
+        authority_id("derived-detached-route"),
+        authority_id("derived-detached-route-group"),
+        SemanticRouteProofKind.BOOTSTRAP, SemanticRouteShape.DIRECT,
+        StableBlockIdentity.from_instruction_eas(
+            route_source.native_instruction_eas, native_key=catalog.native_key,
+        ),
+        route_source.anchor_ea,
+        (SemanticRouteDestination(
+            SemanticEdgeRole.DIRECT, 0,
+            StableBlockIdentity.from_instruction_eas(
+                route_destination.native_instruction_eas,
+                native_key=catalog.native_key,
+            ),
+            route_destination.anchor_ea,
+        ),),
+        NativeEaInterval(route_source.anchor_ea, route_source.anchor_ea + 1),
     )
-    assert getattr(reordered_result, "authority", None) is None
-    object.__setattr__(plan, "new_blocks", (original_spec, second_spec))
+    route_evidence = CanonicalSemanticEvidence(
+        catalog.native_key, source.generation,
+        authority_id("derived-detached-route-group"), (route_proof,),
+    )
 
-    shifted_bindings = tuple(
-        (ref, 99 if ref == helper else serial)
-        for ref, serial in patch_binding.bindings
-    )
-    shifted_binding = replace(patch_binding, bindings=shifted_bindings)
-    shifted_result = transaction_api.bind_prepared_unflatten_authority(
-        prepared=prepared_result.prepared, patch_binding=shifted_binding,
-    )
-    assert shifted_result.authority is not None
-    shifted_observed = transaction_api.revalidate_observed_unflatten_authority(
-        authority=shifted_result.authority, observed=live_observed,
-        observed_generation=attempt.generation, generic_gates=generic_gates,
-    )
-    assert not shifted_observed.accepted
+    def with_route_expansion(inventory):
+        route_subject = _subject_factory(
+            model.SemanticSubjectRef,
+            kind=model.SemanticSubjectKind.ROUTE,
+            role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+            block_ref=entry_ref, anchor_ea=route_source.anchor_ea,
+            locator=model.RouteSubjectLocator(
+                route_proof.proof_id, route_proof.atomic_group_id,
+                entry_ref, route_source.anchor_ea, (route_destination_ref,),
+                (route_destination.anchor_ea,),
+            ),
+        )
+        destination_subject = _subject_factory(
+            model.SemanticSubjectRef,
+            kind=model.SemanticSubjectKind.BLOCK,
+            role=model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+            block_ref=route_destination_ref,
+            anchor_ea=route_destination.anchor_ea,
+            locator=model.BlockSubjectLocator(
+                route_destination_ref, route_destination.anchor_ea,
+            ),
+        )
+        added = (route_subject, destination_subject)
+        serial_by_ref = {block.block_ref: block for block in inventory.blocks}
+        subjects = tuple(sorted((*inventory.subjects, *added), key=lambda item: item.subject_id))
+        bindings = tuple(sorted((
+            *inventory.bindings,
+            *(model.PhaseSubjectBinding(
+                subject, inventory.phase, subject.block_ref,
+                inventory.graph_fingerprint, inventory.generation,
+                model.SubjectBindingStatus.UNIQUE,
+                serial_by_ref[subject.block_ref].serial, subject.anchor_ea,
+                serial_by_ref[subject.block_ref].native_instruction_eas, subject.role,
+            ) for subject in added),
+        ), key=lambda item: item.subject.subject_id))
+        source_subject_ids = tuple(sorted(
+            (*inventory.source_subject_ids, *(subject.subject_id for subject in added)),
+        ))
+        digest = semantic_graph_inventory_digest(
+            inventory.phase, inventory.graph_fingerprint, inventory.generation,
+            inventory.blocks, subjects, bindings, inventory.effects,
+            inventory.terminals, inventory.topology, inventory.reachable_serials,
+            inventory.entry_serial, source_subject_ids, inventory.function_ea,
+        )
+        return model.SemanticGraphInventory(
+            inventory.phase, inventory.graph_fingerprint, inventory.generation,
+            inventory.blocks, subjects, bindings, inventory.effects,
+            inventory.terminals, inventory.topology, digest,
+            inventory.reachable_serials, inventory.entry_serial,
+            source_subject_ids, inventory.function_ea,
+        )
 
-    original_bindings = patch_binding.bindings
-    object.__setattr__(
-        patch_binding, "bindings",
-        tuple((ref, 0 if ref == helper else serial) for ref, serial in original_bindings),
+    source = with_route_expansion(source)
+    projected = with_route_expansion(projected)
+    proposal = model.ProposedUnflattenContract(
+        schema_version=1,
+        rule_set_version=1,
+        plan_id=base.plan_id,
+        route_evidence=route_evidence,
+        source_identity_catalog=catalog,
+        use_def_witness=model.UseDefFragmentWitness(
+            authority_id("derived-detached-fragment"),
+            base.plan_inputs.state_identity,
+            (entry_ref,),
+            authority_id("derived-detached-redirect"), True, True, 0, (),
+        ),
+        claims=(claim,),
+        plan_inputs=model.UnflattenPlanInputCatalog(
+            model.UnflattenPlanShape.PARTIAL_REWRITE,
+            entry_ref, dispatcher_ref, (entry_ref, dispatcher_ref),
+            tuple(sorted(
+                (
+                    model.AuthoritativeHandlerInput(
+                        subject.block_ref, subject.anchor_ea, (index + 1,),
+                    )
+                    for index, subject in enumerate((
+                        *claim.dead_handler_subjects,
+                        *claim.retained_handler_subjects,
+                    ))
+                ),
+                key=lambda item: item.anchor_ea,
+            )),
+            base.plan_inputs.state_identity,
+        ),
+        corridor_coverage_forecast=forecast,
     )
-    colliding_observed = transaction_api.revalidate_observed_unflatten_authority(
-        authority=bound_result.authority, observed=live_observed,
-        observed_generation=attempt.generation, generic_gates=generic_gates,
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=authority_id("derived-detached-snapshot"),
+        source_generation=source.generation,
+        steps=(PatchRedirectGoto(entry_ref, dispatcher_ref, route_destination_ref),),
     )
-    assert not colliding_observed.accepted
-    object.__setattr__(patch_binding, "bindings", original_bindings)
-    object.__setattr__(
-        patch_binding, "bindings", original_bindings + ((helper, 5),),
+    projected_metrics = model.PhaseBuildMetrics(
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT, 1, 1, 0.0,
     )
-    duplicate_observed = transaction_api.revalidate_observed_unflatten_authority(
-        authority=bound_result.authority, observed=live_observed,
-        observed_generation=attempt.generation, generic_gates=generic_gates,
+    preparation_metrics = model.PreparationBuildMetrics(1, 1, 0.0)
+    projected_inputs = transaction_api._derive_inputs(
+        source, projected, plan, proposal, None,
+        phase_build_metrics=projected_metrics,
+        preparation_metrics=preparation_metrics,
     )
-    assert not duplicate_observed.accepted
-    object.__setattr__(patch_binding, "bindings", original_bindings)
+    _, _, observed, _ = _detached_binding_fixture(
+        candidate_phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        candidate_fingerprint=authority_id("derived-detached-observed"),
+        candidate_generation=5,
+    )
+    observed = with_route_expansion(with_plan_catalog_subjects(observed))
+    observed_inputs = transaction_api._derive_inputs(
+        source, observed, plan, proposal, None,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        candidate_generation=observed.generation,
+        phase_build_metrics=model.PhaseBuildMetrics(
+            model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY, 0, 1, 0.0,
+        ),
+        preparation_metrics=preparation_metrics,
+        preparation_inputs=projected_inputs,
+    )
+
+    projected_corridor = projected_inputs.corridor_coverage_phase_result
+    observed_corridor = observed_inputs.corridor_coverage_phase_result
+    assert projected_corridor is not None and observed_corridor is not None
+    assert projected_corridor.forecast_id == observed_corridor.forecast_id == forecast_id
+    assert projected_corridor.result_id != observed_corridor.result_id
+    assert (
+        observed_inputs.detached_dead_handler_component_source_results[0]
+        is projected_inputs.detached_dead_handler_component_source_results[0]
+    )
+    assert observed_inputs.detached_dead_handler_component_phase_results[0].accepted
+
+    model.DerivedUnflattenPreparationInputs.__post_init__(projected_inputs)
+    model.DerivedUnflattenPreparationInputs.__post_init__(observed_inputs)
 
 def _typed_plan() -> PatchPlan:
     model = import_authority_model()
@@ -869,98 +1256,10 @@ def test_reserved_legacy_only_route_requires_explicit_adaptation() -> None:
 
 
 def test_typed_plan_with_reserved_key_rejects_dual_authority() -> None:
-    typed = _typed_plan().with_metadata(
-        concrete_state_route_provenance=("legacy",)
-    )
-    result = select_plan_route(typed)
-    assert result.reason is UnflattenAuthorityReason.DUAL_AUTHORITY_CHANNEL
-    assert result.key == "concrete_state_route_provenance"
-
-
-def test_exact_shadow_is_allowed_but_mapping_lookalike_is_rejected() -> None:
-    typed = _typed_plan()
-    object.__setattr__(typed, "legacy_unflatten_shadow", _shadow(typed.plan_id))
-    selected = select_plan_route(typed)
-    assert selected.route is UnflattenPlanRoute.TYPED_PROPOSAL
-
-    forged = _typed_plan()
-    object.__setattr__(forged, "legacy_unflatten_shadow", {"schema_version": 1})
-    rejected = select_plan_route(forged)
-    assert rejected.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
-    assert rejected.detail_code == "shadow_type_is_not_closed"
-
-
-def test_shadow_plan_snapshot_and_generation_drift_rejects() -> None:
-    for field, value, detail in (
-        ("plan_id", "wrong-plan", "shadow_plan_id_mismatch"),
-        ("snapshot_id", "wrong-snapshot", "shadow_snapshot_id_mismatch"),
-    ):
-        plan = _typed_plan()
-        shadow = _shadow(plan.plan_id)
-        if field == "plan_id":
-            shadow = type(shadow)(1, value, shadow.snapshot_id, shadow.source_generation, shadow.entries)
-        else:
-            shadow = type(shadow)(1, shadow.plan_id, value, shadow.source_generation, shadow.entries)
-        object.__setattr__(plan, "legacy_unflatten_shadow", shadow)
-        result = select_plan_route(plan)
-        assert result.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
-        assert result.detail_code == detail
-
-    plan = _typed_plan()
-    shadow = _shadow(plan.plan_id)
-    object.__setattr__(plan, "legacy_unflatten_shadow", type(shadow)(
-        1, shadow.plan_id, shadow.snapshot_id, 4, shadow.entries
-    ))
-    result = select_plan_route(plan)
-    assert result.detail_code == "shadow_source_generation_mismatch"
-
-
-def test_shadow_is_the_single_legacy_transport_at_transaction_boundary() -> None:
-    typed = _typed_plan()
-    shadow = _shadow(typed.plan_id)
-    object.__setattr__(typed, "legacy_unflatten_shadow", shadow)
-    assert typed.metadata == ()
-    selected = select_plan_route(typed)
-    assert selected.route is UnflattenPlanRoute.TYPED_PROPOSAL
-    assert selected.proposal is not None
-    assert selected.proposal.plan_id == typed.plan_id
-
-
-def test_exact_effect_shadow_preserves_payload_and_typed_route() -> None:
-    from dataclasses import replace
-    from d810.transforms.plan import PatchRedirectGoto
-    from d810.transforms.unflatten_authority.legacy_keys import EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA
-    from d810.transforms.unflatten_authority.legacy_codec import replay_legacy_unflatten_shadow
-    from d810.transforms.unflatten_authority.proposal import attach_typed_proposal, canonical_redirect_manifest
-    from .test_bind import _exact_fixture
-
-    source, proposal, exclusion, refs = _exact_fixture()
-    plan = PatchPlan(
-        plan_id=proposal.plan_id, snapshot_id="snapshot-exact", source_generation=1,
-        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
-        metadata=((EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA, (exclusion.to_metadata(),)),),
-    )
-    manifest = canonical_redirect_manifest(plan)
-    proposal = replace(proposal, use_def_witness=replace(
-        proposal.use_def_witness, redirect_owner_refs=manifest.owner_refs,
-        redirect_digest=manifest.digest,
-    ))
-    attached = attach_typed_proposal(
-        plan, source=source, block_refs_by_serial=refs,
-        canonical_route_evidence=proposal.route_evidence,
-        exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
-        dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
-        state_identity=proposal.plan_inputs.state_identity,
-        use_def_witness=proposal.use_def_witness,
-    )
-    selected = select_plan_route(attached)
-    assert selected.route is UnflattenPlanRoute.TYPED_PROPOSAL
-    assert selected.proposal == proposal
-    replayed = replay_legacy_unflatten_shadow(attached)
-    assert attached.metadata == ()
-    assert replayed.metadata_value(EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA) == (
-        exclusion.to_metadata(),
-    )
+    with pytest.raises(ValueError, match="reserved legacy metadata"):
+        _typed_plan().with_metadata(
+            concrete_state_route_provenance=("legacy",)
+        )
 
 
 def test_mapping_proposal_is_rejected_without_truthy_authority() -> None:
@@ -1209,42 +1508,6 @@ def test_prepare_derives_closed_inputs_and_bind_consumes_exact_bound_patch_plan(
     )
     assert observed_distinct.candidate_fingerprint != prepared_result.prepared.projected_fingerprint
 
-    valid_shadow = replace(
-        _shadow(plan.plan_id, plan.snapshot_id),
-        source_generation=plan.source_generation,
-    )
-    object.__setattr__(plan, "legacy_unflatten_shadow", valid_shadow)
-    shadow_prepared_result = transaction_api.prepare_unflatten_authority(
-        source=source, projection=projection, plan=plan,
-        attempt_id=attempt, generic_gates=generic_gates,
-    )
-    assert getattr(shadow_prepared_result, "prepared", None) is not None
-    shadow_bound_result = transaction_api.bind_prepared_unflatten_authority(
-        prepared=shadow_prepared_result.prepared,
-        patch_binding=patch_binding,
-    )
-    assert shadow_bound_result.authority is not None
-    shadow_clone = replace(valid_shadow)
-    object.__setattr__(plan, "legacy_unflatten_shadow", shadow_clone)
-    assert getattr(
-        transaction_api.bind_prepared_unflatten_authority(
-            prepared=shadow_prepared_result.prepared,
-            patch_binding=patch_binding,
-        ),
-        "authority",
-        None,
-    ) is None
-    object.__setattr__(plan, "legacy_unflatten_shadow", valid_shadow)
-    object.__setattr__(plan, "legacy_unflatten_shadow", shadow_clone)
-    observed_shadow_result = transaction_api.revalidate_observed_unflatten_authority(
-        authority=shadow_bound_result.authority,
-        observed=source,
-        observed_generation=attempt.generation,
-        generic_gates=generic_gates,
-    )
-    assert not observed_shadow_result.accepted
-    object.__setattr__(plan, "legacy_unflatten_shadow", None)
-
     def observed_authority_rejected() -> None:
         result = transaction_api.revalidate_observed_unflatten_authority(
             authority=bound_result.authority,
@@ -1264,18 +1527,6 @@ def test_prepare_derives_closed_inputs_and_bind_consumes_exact_bound_patch_plan(
     object.__setattr__(proposal, "schema_version", True)
     observed_authority_rejected()
     object.__setattr__(proposal, "schema_version", 1)
-
-    object.__setattr__(plan, "legacy_unflatten_shadow", valid_shadow)
-    object.__setattr__(valid_shadow, "source_generation", True)
-    shadow_corruption_result = transaction_api.revalidate_observed_unflatten_authority(
-        authority=shadow_bound_result.authority,
-        observed=source,
-        observed_generation=attempt.generation,
-        generic_gates=generic_gates,
-    )
-    assert not shadow_corruption_result.accepted
-    object.__setattr__(valid_shadow, "source_generation", 1)
-    object.__setattr__(plan, "legacy_unflatten_shadow", None)
 
     forged = SimpleNamespace(
         plan=patch_binding.plan,
@@ -1651,8 +1902,6 @@ def test_prepare_rejects_projected_route_predicate_erasure() -> None:
 
     assert getattr(result, "prepared", None) is None
     assert result.verdict.reason.name == "PROJECTED_BINDING_FAILED"
-
-
 def test_local_alias_claim_is_derived_before_authority_id() -> None:
     """A scalarization step is transaction authority, not producer metadata."""
 
@@ -1816,108 +2065,3 @@ def test_prepare_rejects_projected_route_carrier_interference() -> None:
 
     assert getattr(result, "prepared", None) is None
     assert result.verdict.reason.name == "PROJECTED_BINDING_FAILED"
-
-
-def test_canonical_acceptance_is_decisive_while_exact_shadow_replay_remains_observed() -> None:
-    """A rejecting legacy result is observable without overriding acceptance."""
-
-    from d810.transforms.unflatten_authority import transaction_api
-    from d810.transforms.unflatten_authority.diagnostics import (
-        LegacyPhaseOutcome,
-        ShadowParityCounters,
-    )
-    from d810.transforms.unflatten_authority.legacy_codec import (
-        LegacyFamilyAdaptation,
-        LegacyShadowCodecReceipt,
-    )
-
-    source, plan, projected, gates = _full_corridor_fixture()
-    attempt = TransactionAttemptId(
-        plan.plan_id, authority_id("parity-session"), 1,
-        authority_id("parity-attempt"),
-    )
-    prepared_result = transaction_api.prepare_unflatten_authority(
-        source=source,
-        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
-        plan=plan,
-        attempt_id=attempt,
-        generic_gates=gates,
-    )
-    assert prepared_result.prepared is not None
-    projected_canonical = prepared_result.verdict
-
-    assert projected_canonical.safety_case is not None
-    from d810.ir.maturity import MaturityEnvelope
-    from d810.transforms.patch_binding import BoundPatchPlan
-    from d810.transforms.unflatten_authority.model import UnflattenAuthorityPhase
-
-    refs_by_serial = {
-        serial: ref for ref, serial in plan.source_coordinates
-    }
-    patch_binding = BoundPatchPlan(
-        plan=plan,
-        attempt_id=attempt,
-        session_id=attempt.session_id,
-        generation=attempt.generation,
-        maturity=MaturityEnvelope(ir=None, provider="test", provider_id=0),
-        bindings=tuple(
-            (refs_by_serial[serial], serial)
-            for serial in (5, 6, 0)
-        ),
-    )
-    bound_result = transaction_api.bind_prepared_unflatten_authority(
-        prepared=prepared_result.prepared,
-        patch_binding=patch_binding,
-    )
-    assert bound_result.authority is not None
-    observed_result = transaction_api.revalidate_observed_unflatten_authority(
-        authority=bound_result.authority,
-        observed=projected,
-        observed_generation=attempt.generation,
-        generic_gates=gates,
-    )
-    assert observed_result.accepted
-    observed_canonical = observed_result
-    assert observed_canonical.phase is UnflattenAuthorityPhase.OBSERVED_POST_APPLY
-    assert observed_canonical.case_id != projected_canonical.case_id
-
-    shadow = _shadow(plan.plan_id, plan.snapshot_id)
-    entry = shadow.entries[0]
-    receipt = LegacyShadowCodecReceipt(
-        shadow,
-        (
-            LegacyFamilyAdaptation(
-                entry.key, "test", ("legacy-reject",),
-                entry.canonical_payload, entry.payload_sha256,
-            ),
-        ),
-    )
-    projected_legacy = LegacyPhaseOutcome(
-        projected_canonical.phase,
-        False,
-        UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
-        (),
-    )
-    observed_legacy = LegacyPhaseOutcome(
-        observed_canonical.phase,
-        False,
-        UnflattenAuthorityReason.LIVE_BINDING_FAILED,
-        (),
-    )
-    parity = transaction_api.project_shadow_parity(
-        projected_legacy,
-        projected_canonical,
-        observed_legacy,
-        observed_canonical,
-        projected_counters=ShadowParityCounters.from_case(
-            projected_canonical.safety_case,
-        ),
-        observed_counters=ShadowParityCounters.from_case(
-            observed_canonical.safety_case,
-        ),
-        codec_receipt=receipt,
-    )
-    assert projected_canonical.accepted and observed_canonical.accepted
-    assert parity.parity_ok is False
-    assert parity.projected.accepted_equal is False
-    assert parity.observed.accepted_equal is False

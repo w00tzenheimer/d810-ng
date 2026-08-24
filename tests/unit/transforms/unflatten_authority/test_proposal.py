@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 from dataclasses import replace
 
 import pytest
@@ -232,7 +231,7 @@ def _proposal_and_plan_ids():
     return proposal, proposal.plan_id
 
 
-def _typed_plan(proposal, *, legacy_shadow=None):
+def _typed_plan(proposal):
     from d810.transforms.plan import PatchRedirectGoto
     from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
 
@@ -256,25 +255,308 @@ def _typed_plan(proposal, *, legacy_shadow=None):
             redirect_digest=manifest.digest,
         ),
     )
-    return replace(plan, unflatten_proposal=proposal, legacy_unflatten_shadow=legacy_shadow), proposal
+    return replace(plan, unflatten_proposal=proposal), proposal
 
 
-def _shadow(plan_id: str, snapshot_id: str = "snapshot-1"):
-    from d810.transforms.unflatten_authority.legacy_wire import encode_legacy_value
-    from d810.transforms.unflatten_authority.model import (
-        LegacyShadowEntry,
-        LegacyUnflattenShadowEnvelope,
+def test_rejected_dispatcher_removal_proof_mints_no_authority_claims() -> None:
+    """A failed producer receipt is evidence of rejection, never authority."""
+
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor,
+        DispatcherRemovalPreflightProof,
+        DispatcherRemovalPreflightValidation,
+        RetiredDispatcherInfrastructure,
+    )
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    proof = DispatcherRemovalPreflightProof(
+        function_ea=source.func_ea,
+        dispatcher=DispatcherBlockAnchor(1, source.blocks[1].start_ea),
+        authoritative_handlers=(),
+        post_reachable_handlers=(),
+        pre_reachable_terminals=(),
+        post_reachable_terminals=(),
+        retired_infrastructure=(RetiredDispatcherInfrastructure(
+            "comparison_dispatcher",
+            DispatcherBlockAnchor(0, source.blocks[0].start_ea),
+        ),),
+        lost_blocks=frozenset({0}),
+        lost_block_anchors=(DispatcherBlockAnchor(0, source.blocks[0].start_ea),),
+        state_plumbing=(),
+        producer_safety=(),
+        coverage_enumeration_complete=True,
+        residual_corridor_count=0,
+        passed=False,
+        reason="authoritative_handler_lost",
     )
 
-    payload = encode_legacy_value({"legacy": True})
-    entry = LegacyShadowEntry(
-        "dispatcher_corridor_coverage",
-        payload,
-        hashlib.sha256(payload).hexdigest(),
+    assert proposal_api.claims_from_dispatcher_removal_validation(
+        DispatcherRemovalPreflightValidation(False, proof.reason, proof),
+        proposal=proposal,
+        block_refs_by_serial=refs,
+    ) == ()
+
+
+def test_detached_component_analysis_mints_only_catalog_bound_claim() -> None:
+    """Detached producer anchors cannot cross the proposal boundary by serial alone."""
+
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DetachedDeadHandlerComponentAnalysis,
+        DispatcherBlockAnchor,
+        DispatcherRemovalPreflightProof,
+        DispatcherRemovalPreflightValidation,
     )
-    return LegacyUnflattenShadowEnvelope(
-        1, plan_id, snapshot_id, 3, (entry,)
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+    from .helpers import exact_fixture
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    from d810.transforms.unflatten_authority.model import AuthoritativeHandlerInput
+    proposal = replace(
+        proposal,
+        plan_inputs=replace(
+            proposal.plan_inputs,
+            authoritative_handlers=tuple(sorted(
+                (*proposal.plan_inputs.authoritative_handlers,
+                 AuthoritativeHandlerInput(refs[3], source.blocks[3].start_ea, (8,))),
+                key=lambda item: item.anchor_ea,
+            )),
+        ),
     )
+    anchors = {
+        serial: DispatcherBlockAnchor(serial, source.blocks[serial].start_ea)
+        for serial in (1, 2, 3)
+    }
+    analysis = DetachedDeadHandlerComponentAnalysis(
+        dispatcher=anchors[1], dead_handlers=(anchors[2],),
+        retained_handlers=(anchors[3],), component=(anchors[2],),
+    )
+    validation = DispatcherRemovalPreflightValidation(
+        passed=True, reason="detached_dead_handler_component",
+        proof=DispatcherRemovalPreflightProof(
+            function_ea=source.func_ea, dispatcher=anchors[1],
+            authoritative_handlers=(anchors[2], anchors[3]),
+            post_reachable_handlers=(anchors[3],),
+            pre_reachable_terminals=(), post_reachable_terminals=(),
+            retired_infrastructure=(), lost_blocks=frozenset({2}),
+            lost_block_anchors=(anchors[2],), state_plumbing=(), producer_safety=(),
+            coverage_enumeration_complete=True, residual_corridor_count=0,
+            passed=False, reason="untyped_lost_block",
+        ),
+        detached_dead_handler_component=analysis,
+    )
+
+    claims = proposal_api.claims_from_dispatcher_removal_validation(
+        validation, proposal=proposal, block_refs_by_serial=refs,
+    )
+
+    assert len(claims) == 1
+    assert claims[0].kind.value == "detached_dead_handler_component"
+    assert claims[0].dead_handler_subjects[0].block_ref == refs[2]
+
+
+def _terminal_cycle_fixture():
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor,
+        DispatcherRemovalPreflightProof,
+        DispatcherRemovalPreflightValidation,
+        RetiredDispatcherInfrastructure,
+        TerminalSwitchCycleBreakProof,
+    )
+    from .test_model import import_authority_model, _valid_proposal
+
+    model = import_authority_model()
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    route = proposal.route_evidence.route_proofs[0]
+    route = replace(
+        route,
+        destinations=(replace(route.destinations[0], terminal=True),),
+    )
+    proposal = replace(
+        proposal,
+        route_evidence=replace(proposal.route_evidence, route_proofs=(route,)),
+    )
+    refs = {
+        serial: block.block_ref
+        for serial, block in enumerate(proposal.source_identity_catalog.blocks)
+    }
+    anchors = {
+        serial: DispatcherBlockAnchor(serial, block.anchor_ea)
+        for serial, block in enumerate(proposal.source_identity_catalog.blocks)
+    }
+    inner = DispatcherRemovalPreflightProof(
+        function_ea=0x5000,
+        dispatcher=anchors[0],
+        authoritative_handlers=(anchors[2],),
+        post_reachable_handlers=(anchors[2],),
+        pre_reachable_terminals=(),
+        post_reachable_terminals=(),
+        retired_infrastructure=(
+            RetiredDispatcherInfrastructure("comparison_dispatcher", anchors[1]),
+        ),
+        lost_blocks=frozenset({0, 1}),
+        lost_block_anchors=(anchors[0], anchors[1]),
+        state_plumbing=(),
+        producer_safety=(),
+        coverage_enumeration_complete=True,
+        residual_corridor_count=0,
+        passed=False,
+        reason="untyped_lost_block",
+    )
+    terminal = TerminalSwitchCycleBreakProof(
+        dispatcher=anchors[0],
+        terminal_source=anchors[0],
+        shared_merge=anchors[1],
+        terminal_target=anchors[2],
+        terminal_stop=anchors[2],
+        retired_residue=(anchors[0], anchors[1]),
+    )
+    validation = DispatcherRemovalPreflightValidation(
+        passed=True,
+        reason="terminal_switch_cycle_break",
+        proof=inner,
+        terminal_switch_cycle_break=terminal,
+    )
+    return proposal, refs, route, terminal, validation
+
+
+def test_terminal_cycle_wrapper_mints_only_terminal_claim() -> None:
+    """A terminal allowance consumes its rejected inner removal receipt."""
+
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+    from .test_model import import_authority_model
+
+    proposal, refs, route, terminal, validation = _terminal_cycle_fixture()
+    model = import_authority_model()
+    claims = proposal_api.claims_from_dispatcher_removal_validation(
+        validation,
+        proposal=proposal,
+        block_refs_by_serial=refs,
+    )
+
+    assert len(claims) == 1
+    assert isinstance(claims[0], model.TerminalCycleBreakClaim)
+    assert not any(
+        isinstance(claim, model.RetiredDispatcherInfrastructureClaim)
+        for claim in claims
+    )
+    assert proposal.retirement_catalog is None
+    assert claims[0].cleanup_source_subject.block_ref == refs[1]
+    assert claims[0].terminal_subject.block_ref == refs[2]
+    assert claims[0].terminal_route_proof_ids == (route.proof_id,)
+    locator = claims[0].cycle_subject.locator
+    assert locator.member_refs == (refs[0], refs[1])
+    assert locator.member_anchor_eas == (0x1000, 0x1300)
+
+
+def test_terminal_cycle_rejects_matching_route_that_is_not_selected() -> None:
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+
+    proposal, refs, route, _terminal, validation = _terminal_cycle_fixture()
+    route = replace(route, proof_id="sha256:" + "a" * 64)
+    proposal = replace(
+        proposal,
+        route_evidence=replace(proposal.route_evidence, route_proofs=(route,)),
+    )
+    with pytest.raises(ValueError, match="route proof is not selected"):
+        proposal_api.claims_from_dispatcher_removal_validation(
+            validation, proposal=proposal, block_refs_by_serial=refs,
+        )
+
+
+def test_terminal_cycle_rejects_ambiguous_selected_route_proofs() -> None:
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+    from d810.transforms.unflatten_authority.ids import _claim_factory, _subject_factory
+    from .helpers import authority_id
+    from .test_model import import_authority_model
+
+    proposal, refs, route, _terminal, validation = _terminal_cycle_fixture()
+    model = import_authority_model()
+    route_two = replace(
+        route,
+        proof_id=authority_id("ambiguous-terminal-route"),
+    )
+    original_claim = proposal.claims[0]
+    retired_locator = replace(
+        original_claim.retired_route_subject.locator,
+        proof_id=route_two.proof_id,
+    )
+    replacement_locator = replace(
+        original_claim.replacement_route_subject.locator,
+        proof_id=route_two.proof_id,
+    )
+    retired_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.ROUTE,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=original_claim.retired_route_subject.block_ref,
+        anchor_ea=original_claim.retired_route_subject.anchor_ea,
+        locator=retired_locator,
+    )
+    replacement_subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.ROUTE,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=original_claim.replacement_route_subject.block_ref,
+        anchor_ea=original_claim.replacement_route_subject.anchor_ea,
+        locator=replacement_locator,
+    )
+    second_claim = _claim_factory(
+        model.EquivalentSemanticRouteClaim,
+        kind=original_claim.kind,
+        retired_route_subject=retired_subject,
+        replacement_route_subject=replacement_subject,
+        source_subject=original_claim.source_subject,
+        destination_subjects=original_claim.destination_subjects,
+        route_proof_ids=(route_two.proof_id,),
+        atomic_group_id=original_claim.atomic_group_id,
+        source_generation=original_claim.source_generation,
+    )
+    proposal = replace(
+        proposal,
+        route_evidence=replace(
+            proposal.route_evidence,
+            route_proofs=(route, route_two),
+        ),
+        claims=(original_claim, second_claim),
+    )
+    with pytest.raises(ValueError, match="absent or ambiguous"):
+        proposal_api.claims_from_dispatcher_removal_validation(
+            validation, proposal=proposal, block_refs_by_serial=refs,
+        )
+
+
+def test_terminal_cycle_rejects_residue_mismatch_and_missing_merge() -> None:
+    from d810.transforms.unflatten_authority import proposal as proposal_api
+
+    proposal, refs, _route, terminal, validation = _terminal_cycle_fixture()
+    mismatched = replace(
+        validation,
+        terminal_switch_cycle_break=replace(
+            terminal, retired_residue=(terminal.retired_residue[0],),
+        ),
+    )
+    with pytest.raises(ValueError, match="residue"):
+        proposal_api.claims_from_dispatcher_removal_validation(
+            mismatched, proposal=proposal, block_refs_by_serial=refs,
+        )
+    missing_merge = replace(
+        validation,
+        proof=replace(
+            validation.proof,
+            lost_blocks=frozenset({0, 2}),
+            lost_block_anchors=(terminal.dispatcher, terminal.terminal_target),
+        ),
+        terminal_switch_cycle_break=replace(
+            terminal,
+            retired_residue=(terminal.retired_residue[0], terminal.terminal_target),
+        ),
+    )
+    with pytest.raises(ValueError, match="residue"):
+        proposal_api.claims_from_dispatcher_removal_validation(
+            missing_merge, proposal=proposal, block_refs_by_serial=refs,
+        )
 
 
 def test_redirect_manifest_is_canonical_and_plan_bound() -> None:
@@ -391,47 +673,35 @@ def test_redirect_manifest_rejects_subclasses_and_invalid_typed_targets() -> Non
     assert canonical_redirect_manifest(valid).owner_refs == (refs[0],)
 
 
-def test_explicit_shadow_envelope_is_the_only_dual_channel_exception() -> None:
-    """A typed plan may carry only the exact temporary shadow transport."""
+def test_typed_plan_has_no_parallel_shadow_transport() -> None:
+    """A typed plan has only the canonical proposal channel."""
 
     # Direct construction still exercises the independent dual-channel guard.
-    assert "unflatten_proposal" in inspect.signature(PatchPlan).parameters
-    assert "legacy_unflatten_shadow" in inspect.signature(PatchPlan).parameters
+    from dataclasses import fields
+    assert "unflatten_proposal" in {item.name for item in fields(PatchPlan)}
+    assert "legacy_unflatten_shadow" not in {item.name for item in fields(PatchPlan)}
     from d810.transforms.unflatten_authority.transaction_api import select_plan_route
 
     proposal, plan_id = _proposal_and_plan_ids()
-    envelope = _shadow(plan_id)
-    typed, proposal = _typed_plan(proposal, legacy_shadow=envelope)
+    typed, proposal = _typed_plan(proposal)
     selected = select_plan_route(typed)
     from d810.transforms.unflatten_authority.model import (
-        UnflattenAuthorityReason,
         UnflattenPlanRoute,
     )
 
     assert selected.route is UnflattenPlanRoute.TYPED_PROPOSAL
 
-    dual = replace(typed, metadata=(("dispatcher_corridor_coverage", {"legacy": True}),))
-    rejected = select_plan_route(dual)
-    assert rejected.reason is UnflattenAuthorityReason.DUAL_AUTHORITY_CHANNEL
+    with pytest.raises(ValueError, match="reserved legacy metadata"):
+        replace(typed, metadata=(("dispatcher_corridor_coverage", {"legacy": True}),))
 
-    with pytest.raises(TypeError, match="shadow"):
-        PatchPlan(
-            plan_id=plan_id,
-            snapshot_id="snapshot-1",
-            source_generation=3,
-            unflatten_proposal=proposal,
-            legacy_unflatten_shadow={"schema_version": 1},
-        )
+    assert not hasattr(typed, "legacy_unflatten_shadow")
 
 
-def test_first_typed_effect_plan_moves_all_legacy_keys_into_shadow() -> None:
-    """The first typed proposal must capture every legacy family once."""
+def test_first_typed_effect_plan_removes_reserved_legacy_metadata() -> None:
+    """The first typed proposal leaves no parallel metadata channel."""
 
     from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
     from d810.transforms.unflatten_authority.proposal import attach_typed_proposal
-    from d810.transforms.unflatten_authority.transaction_api import select_plan_route
-    from .helpers import import_authority_model
-    model = import_authority_model()
     from .test_bind import _exact_fixture
     source, proposal, exclusion, refs = _exact_fixture()
     from d810.transforms.plan import PatchRedirectGoto
@@ -445,31 +715,23 @@ def test_first_typed_effect_plan_moves_all_legacy_keys_into_shadow() -> None:
     from d810.transforms.unflatten_authority.legacy_keys import DISPATCHER_CORRIDOR_COVERAGE_METADATA
     values = tuple((key, {"family": key}) for key in LEGACY_UNFLATTEN_KEYS if key != DISPATCHER_CORRIDOR_COVERAGE_METADATA)
     plan = replace(plan_template, metadata=values, unflatten_proposal=None)
-    attached = attach_typed_proposal(
-        plan,
-        source=source, block_refs_by_serial=refs,
-        canonical_route_evidence=proposal.route_evidence,
-        exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
-        dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
-        state_identity=proposal.plan_inputs.state_identity, use_def_witness=witness,
-    )
-    selected = select_plan_route(attached)
-    assert getattr(selected, "route", None) is model.UnflattenPlanRoute.TYPED_PROPOSAL
-    assert attached.legacy_unflatten_shadow is not None
-    assert attached.metadata == ()
-    assert tuple(entry.key for entry in attached.legacy_unflatten_shadow.entries) == tuple(sorted(key for key in LEGACY_UNFLATTEN_KEYS if key != DISPATCHER_CORRIDOR_COVERAGE_METADATA))
+    with pytest.raises(ValueError, match="reserved legacy metadata"):
+        attach_typed_proposal(
+            plan,
+            source=source, block_refs_by_serial=refs,
+            canonical_route_evidence=proposal.route_evidence,
+            exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
+            dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+            state_identity=proposal.plan_inputs.state_identity, use_def_witness=witness,
+        )
 
 
 def test_typed_attachment_keeps_dispatcher_entry_when_not_a_redirect_owner() -> None:
-    from .helpers import import_authority_model
     from .test_bind import _exact_fixture
     from d810.transforms.plan import PatchRedirectGoto
     from d810.transforms.unflatten_authority.proposal import attach_typed_proposal, canonical_redirect_manifest
     from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
     from d810.transforms.unflatten_authority.legacy_keys import DISPATCHER_CORRIDOR_COVERAGE_METADATA
-    from d810.transforms.unflatten_authority.transaction_api import select_plan_route
-
-    model = import_authority_model()
     source, proposal, exclusion, refs = _exact_fixture()
     steps = (PatchRedirectGoto(refs[0], refs[2], refs[1]),)
     plan = PatchPlan(
@@ -480,15 +742,14 @@ def test_typed_attachment_keeps_dispatcher_entry_when_not_a_redirect_owner() -> 
     )
     manifest = canonical_redirect_manifest(plan)
     witness = replace(proposal.use_def_witness, redirect_owner_refs=manifest.owner_refs, redirect_digest=manifest.digest)
-    attached = attach_typed_proposal(
-        plan,
-        source=source, block_refs_by_serial=refs,
-        canonical_route_evidence=proposal.route_evidence,
-        exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
-        dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
-        state_identity=proposal.plan_inputs.state_identity, use_def_witness=witness,
-    )
-    assert select_plan_route(attached).route is model.UnflattenPlanRoute.TYPED_PROPOSAL
+    with pytest.raises(ValueError, match="reserved legacy metadata"):
+        attach_typed_proposal(
+            plan, source=source, block_refs_by_serial=refs,
+            canonical_route_evidence=proposal.route_evidence,
+            exact_state_effect_exclusions=(exclusion,), dispatcher_entry_serial=1,
+            dispatcher_member_serials=(0, 1), authoritative_handler_serials=(2,),
+            state_identity=proposal.plan_inputs.state_identity, use_def_witness=witness,
+        )
 
 
 def test_retirement_attachment_routes_present_family_keys_and_rejects_malformed_shapes() -> None:
@@ -539,7 +800,7 @@ def test_retirement_attachment_routes_present_family_keys_and_rejects_malformed_
             redirect_owner_refs=manifest.owner_refs,
             redirect_digest=manifest.digest,
         )
-        with pytest.raises(ValueError, match="retirement proof|retirement families"):
+        with pytest.raises(ValueError, match="reserved legacy metadata"):
             attach_typed_proposal(
                 template, source=source, block_refs_by_serial=refs,
                 canonical_route_evidence=proposal.route_evidence,
@@ -563,7 +824,7 @@ def test_retirement_attachment_routes_present_family_keys_and_rejects_malformed_
         redirect_owner_refs=manifest.owner_refs,
         redirect_digest=manifest.digest,
     )
-    with pytest.raises(ValueError, match="ambiguous|conversion failed"):
+    with pytest.raises(ValueError, match="reserved legacy metadata"):
         attach_typed_proposal(
             template, source=source, block_refs_by_serial=refs,
             canonical_route_evidence=proposal.route_evidence,
@@ -586,7 +847,7 @@ def test_retirement_attachment_routes_present_family_keys_and_rejects_malformed_
         redirect_owner_refs=terminal_manifest.owner_refs,
         redirect_digest=terminal_manifest.digest,
     )
-    with pytest.raises(ValueError, match="terminal proof conversion"):
+    with pytest.raises(ValueError, match="reserved legacy metadata"):
         attach_typed_proposal(
             terminal_template, source=source, block_refs_by_serial=refs,
             canonical_route_evidence=proposal.route_evidence,
@@ -809,16 +1070,6 @@ def test_typed_plan_requires_exact_plan_snapshot_and_generation_correlation() ->
             source_generation=3,
             unflatten_proposal=proposal,
         )
-    with pytest.raises(ValueError, match="shadow snapshot"):
-        PatchPlan(
-            plan_id=plan_id,
-            snapshot_id="different-snapshot",
-            source_generation=3,
-            unflatten_proposal=proposal,
-            legacy_unflatten_shadow=_shadow(plan_id),
-        )
-
-
 def test_mutated_proposal_is_revalidated_at_route_boundary() -> None:
     from d810.transforms.unflatten_authority.model import UnflattenAuthorityReason
     from d810.transforms.unflatten_authority.transaction_api import select_plan_route
@@ -945,44 +1196,6 @@ def test_valid_proposal_has_stable_canonical_roundtrip_and_typed_route() -> None
     assert isinstance(selected, TypedProposalRoute)
 
 
-def test_mutated_shadow_is_revalidated_at_route_boundary() -> None:
-    from d810.transforms.unflatten_authority.model import UnflattenAuthorityReason
-    from d810.transforms.unflatten_authority.transaction_api import select_plan_route
-
-    proposal, plan_id = _proposal_and_plan_ids()
-    plan, _ = _typed_plan(proposal, legacy_shadow=_shadow(plan_id))
-    object.__setattr__(plan.legacy_unflatten_shadow, "schema_version", 2)
-    result = select_plan_route(plan)
-    assert result.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
-    assert result.detail_code == "shadow_invariants_invalid"
-
-    object.__setattr__(plan.legacy_unflatten_shadow, "schema_version", 1)
-    object.__setattr__(plan.legacy_unflatten_shadow.entries[0], "payload_sha256", "0" * 64)
-    result = select_plan_route(plan)
-    assert result.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
-    assert result.detail_code == "shadow_invariants_invalid"
-
-    object.__setattr__(plan.legacy_unflatten_shadow.entries[0], "payload_sha256", hashlib.sha256(
-        plan.legacy_unflatten_shadow.entries[0].canonical_payload
-    ).hexdigest())
-    from d810.transforms.unflatten_authority.legacy_wire import encode_legacy_value
-    from d810.transforms.unflatten_authority.model import LegacyShadowEntry
-
-    payload = encode_legacy_value({"legacy": 2})
-    second = LegacyShadowEntry(
-        "use_def_severance_audit", payload, hashlib.sha256(payload).hexdigest()
-    )
-    object.__setattr__(plan.legacy_unflatten_shadow, "entries", (second, plan.legacy_unflatten_shadow.entries[0]))
-    result = select_plan_route(plan)
-    assert result.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
-    assert result.detail_code == "shadow_invariants_invalid"
-
-    object.__setattr__(plan.legacy_unflatten_shadow, "entries", (plan.legacy_unflatten_shadow.entries[0],) * 2)
-    result = select_plan_route(plan)
-    assert result.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
-    assert result.detail_code == "shadow_invariants_invalid"
-
-
 def test_reserved_metadata_shapes_fail_closed_and_cover_all_keys() -> None:
     from d810.transforms.unflatten_authority.proposal import LEGACY_UNFLATTEN_KEYS
     from d810.transforms.unflatten_authority.model import UnflattenAuthorityReason
@@ -990,27 +1203,24 @@ def test_reserved_metadata_shapes_fail_closed_and_cover_all_keys() -> None:
 
     for index, key in enumerate(sorted(LEGACY_UNFLATTEN_KEYS)):
         proposal, plan_id = _proposal_and_plan_ids()
-        plan = PatchPlan(
+        with pytest.raises(ValueError, match="reserved legacy metadata"):
+            PatchPlan(
+                plan_id=plan_id,
+                snapshot_id="snapshot-1",
+                source_generation=3,
+                unflatten_proposal=proposal,
+                metadata=([key, index],),
+            )
+
+    proposal, plan_id = _proposal_and_plan_ids()
+    with pytest.raises(ValueError, match="reserved legacy metadata"):
+        PatchPlan(
             plan_id=plan_id,
             snapshot_id="snapshot-1",
             source_generation=3,
             unflatten_proposal=proposal,
-            metadata=([key, index],),
+            metadata={"use_def_severance_audit": True},
         )
-        result = select_plan_route(plan)
-        assert result.reason is UnflattenAuthorityReason.DUAL_AUTHORITY_CHANNEL
-        assert result.key == key
-
-    proposal, plan_id = _proposal_and_plan_ids()
-    mapping_shape = PatchPlan(
-        plan_id=plan_id,
-        snapshot_id="snapshot-1",
-        source_generation=3,
-        unflatten_proposal=proposal,
-        metadata={"use_def_severance_audit": True},
-    )
-    result = select_plan_route(mapping_shape)
-    assert result.reason is UnflattenAuthorityReason.DUAL_AUTHORITY_CHANNEL
 
     malformed = PatchPlan(
         plan_id="ordinary",
@@ -1057,7 +1267,6 @@ def test_metadata_generator_is_snapshotted_before_route_selection() -> None:
 
 
 def test_reserved_generator_remains_reserved_before_and_after_metadata_lookup() -> None:
-    from d810.transforms.unflatten_authority.transaction_api import select_plan_route
     proposal, plan_id = _proposal_and_plan_ids()
     calls = []
 
@@ -1065,17 +1274,14 @@ def test_reserved_generator_remains_reserved_before_and_after_metadata_lookup() 
         calls.append("iterated")
         yield ("use_def_severance_audit", True)
 
-    plan = PatchPlan(
-        plan_id=plan_id,
-        snapshot_id="snapshot-1",
-        source_generation=3,
-        metadata=metadata_generator(),
-        unflatten_proposal=proposal,
-    )
-    assert plan.metadata_dict()["use_def_severance_audit"] is True
-    result = select_plan_route(plan)
-    assert result.reason.value == "dual_authority_channel"
-    assert select_plan_route(plan).reason.value == "dual_authority_channel"
+    with pytest.raises(ValueError, match="reserved legacy metadata"):
+        PatchPlan(
+            plan_id=plan_id,
+            snapshot_id="snapshot-1",
+            source_generation=3,
+            metadata=metadata_generator(),
+            unflatten_proposal=proposal,
+        )
     assert len(calls) == 1
 
 
@@ -1105,16 +1311,14 @@ class _ExplodingMapping(dict):
 def test_reserved_scan_precedes_duplicate_collapse_and_aliases_fail_closed() -> None:
     from d810.transforms.unflatten_authority.transaction_api import select_plan_route
     proposal, plan_id = _proposal_and_plan_ids()
-    plan = PatchPlan(
-        plan_id=plan_id,
-        snapshot_id="snapshot-1",
-        source_generation=3,
-        metadata=((_ReservedAlias(), 1), ("use_def_severance_audit", 2)),
-        unflatten_proposal=proposal,
-    )
-    result = select_plan_route(plan)
-    assert result.reason.value == "malformed_proposal"
-    assert result.detail_code == "metadata_key_type_invalid"
+    with pytest.raises(ValueError, match="reserved legacy metadata"):
+        PatchPlan(
+            plan_id=plan_id,
+            snapshot_id="snapshot-1",
+            source_generation=3,
+            metadata=((_ReservedAlias(), 1), ("use_def_severance_audit", 2)),
+            unflatten_proposal=proposal,
+        )
 
     hostile = PatchPlan(plan_id="ordinary", snapshot_id="snapshot")
     object.__setattr__(hostile, "metadata", ((_ExplodingHash(), 1),))
@@ -1152,16 +1356,13 @@ class _LateAlias(str):
 
 
 def test_str_subclass_metadata_key_is_not_authority_routing_input() -> None:
-    from d810.transforms.unflatten_authority.transaction_api import select_plan_route
 
     proposal, plan_id = _proposal_and_plan_ids()
-    plan = PatchPlan(
-        plan_id=plan_id,
-        snapshot_id="snapshot-1",
-        source_generation=3,
-        metadata=((_LateAlias("use_def_severance_audit"), True),),
-        unflatten_proposal=proposal,
-    )
-    result = select_plan_route(plan)
-    assert result.reason.value == "malformed_proposal"
-    assert result.detail_code == "metadata_key_type_invalid"
+    with pytest.raises(ValueError, match="reserved legacy metadata"):
+        PatchPlan(
+            plan_id=plan_id,
+            snapshot_id="snapshot-1",
+            source_generation=3,
+            metadata=((_LateAlias("use_def_severance_audit"), True),),
+            unflatten_proposal=proposal,
+        )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 
 import pytest
@@ -15,11 +16,11 @@ from d810.transforms.unflatten_authority.diagnostics import (
     compare_shadow_parity,
     require_shadow_parity,
     build_phase_payload,
+    dispatcher_outcome_observations,
     phase_observation,
 )
 from d810.transforms.unflatten_authority.legacy_codec import (
     LegacyShadowCodecReceipt,
-    capture_legacy_unflatten_shadow,
     adapt_legacy_unflatten_shadow,
 )
 from d810.transforms.unflatten_authority.evaluate import build_semantic_case, evaluate_case
@@ -32,12 +33,18 @@ def _codec_receipt() -> LegacyShadowCodecReceipt:
     from .test_legacy_codec import _real_full_shadow_fixture
 
     proposal, context, metadata = _real_full_shadow_fixture()
-    _ordinary, shadow = capture_legacy_unflatten_shadow(
-        plan_id=proposal.plan_id, snapshot_id="parity-snapshot",
-        source_generation=1,
-        metadata=tuple((key, value) for key, value in metadata.items()),
+    from d810.transforms.unflatten_authority import legacy_codec
+    entries = tuple(
+        model.LegacyShadowEntry(
+            key,
+            legacy_codec.legacy_canonical_bytes(value),
+            hashlib.sha256(legacy_codec.legacy_canonical_bytes(value)).hexdigest(),
+        )
+        for key, value in sorted(metadata.items())
     )
-    assert shadow is not None
+    shadow = model.LegacyUnflattenShadowEnvelope(
+        1, proposal.plan_id, "parity-snapshot", 1, entries,
+    )
     return adapt_legacy_unflatten_shadow(shadow, context=context)
 
 
@@ -65,6 +72,53 @@ def test_one_anchored_fact_observation_per_authoritative_phase() -> None:
     assert observation.source_ea == 0x401000
     assert observation.block_fingerprint == authority_id("candidate")
     assert build_phase_payload(verdict)["schema"] == "unflatten_authority_phase.v1"
+
+
+def test_dispatcher_outcome_rows_project_exact_verdict_without_metadata() -> None:
+    verdict = model.UnflattenAuthorityVerdict(
+        accepted=False,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        reason=model.UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+        authority_id=None,
+        binding_id=None,
+        case_id=None,
+        candidate_fingerprint=authority_id("diagnostic-candidate"),
+        safety_case=None,
+        failed_obligations=(),
+    )
+
+    rows = dispatcher_outcome_observations(
+        projected_verdict=verdict,
+        observed_verdict=None,
+        function_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        application_status="rejected_preflight",
+        outcome_reason="projected unflatten authority rejected",
+        plan_id="diagnostic-plan",
+        attempt_id="diagnostic-attempt",
+    )
+
+    assert {row.kind for row in rows} == {
+        "UnflattenDispatcherCorridorCoverageSummary",
+        "UnflattenDispatcherRemovalPreflightProof",
+    }
+    for row in rows:
+        assert row.payload["canonical"] is True
+        assert row.payload["application_status"] == "rejected_preflight"
+        assert row.payload["candidate_fingerprint"] == verdict.candidate_fingerprint
+        projected_key = (
+            "projected_coverage_validation"
+            if row.kind == "UnflattenDispatcherCorridorCoverageSummary"
+            else "projected_validation"
+        )
+        observed_key = (
+            "observed_coverage_validation"
+            if row.kind == "UnflattenDispatcherCorridorCoverageSummary"
+            else "observed_validation"
+        )
+        assert row.payload[projected_key]["phase"] == verdict.phase.value
+        assert row.payload[observed_key] is None
+        assert row.phase == verdict.phase.value
 
 
 def test_payload_projects_only_the_semantic_loss_ledger() -> None:

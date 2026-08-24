@@ -230,6 +230,7 @@ class HexRaysMutationBackend:
                 application_status="rejected_preflight",
                 outcome_reason=str(error),
                 attempt_id=attempt_authority.attempt_id,
+                projected_verdict=getattr(error, "unflatten_verdict", None),
                 projected_validation=(error.projected_dispatcher_removal_validation),
                 projected_coverage_validation=(
                     error.projected_dispatcher_coverage_validation
@@ -249,8 +250,10 @@ class HexRaysMutationBackend:
                 "observed_dispatcher_coverage_validation",
                 None,
             )
+            observed_verdict = getattr(error, "unflatten_verdict", None)
             cause = error.__cause__
             if isinstance(cause, PatchTransactionPostObservationRejected):
+                observed_verdict = cause.unflatten_verdict
                 observed_validation = cause.observed_dispatcher_removal_validation
                 observed_coverage_validation = (
                     cause.observed_dispatcher_coverage_validation
@@ -261,6 +264,7 @@ class HexRaysMutationBackend:
                 application_status="poisoned_restart_required",
                 outcome_reason=str(error.failure.reason),
                 attempt_id=attempt_authority.attempt_id,
+                observed_verdict=observed_verdict,
                 observed_validation=observed_validation,
                 observed_coverage_validation=observed_coverage_validation,
             )
@@ -277,6 +281,7 @@ class HexRaysMutationBackend:
                 application_status="rejected_clean",
                 outcome_reason=str(error) or type(error).__name__,
                 attempt_id=attempt_authority.attempt_id,
+                projected_verdict=getattr(error, "unflatten_verdict", None),
                 projected_validation=getattr(
                     error,
                     "projected_dispatcher_removal_validation",
@@ -294,6 +299,16 @@ class HexRaysMutationBackend:
             pre_cfg=pre_cfg,
             application_status="applied",
             attempt_id=attempt_authority.attempt_id,
+            projected_verdict=getattr(
+                self._last_patch_execution,
+                "projected_unflatten_verdict",
+                None,
+            ),
+            observed_verdict=getattr(
+                self._last_patch_execution,
+                "observed_unflatten_verdict",
+                None,
+            ),
             projected_validation=getattr(
                 self._last_patch_execution,
                 "projected_dispatcher_removal_validation",
@@ -330,6 +345,8 @@ class HexRaysMutationBackend:
         application_status: str,
         outcome_reason: str | None = None,
         attempt_id: str | None = None,
+        projected_verdict: object | None = None,
+        observed_verdict: object | None = None,
         observed_validation: object | None = None,
         observed_coverage_validation: object | None = None,
         projected_validation: object | None = None,
@@ -340,27 +357,24 @@ class HexRaysMutationBackend:
             from d810.core.observability_preanalysis import (
                 observe_unflatten_dispatcher_corridor_coverage,
             )
-            from d810.transforms.dispatcher_corridor_coverage import (
-                collect_unflatten_dispatcher_outcome_observations_from_metadata,
+            from d810.transforms.unflatten_authority.diagnostics import (
+                dispatcher_outcome_observations,
             )
 
             envelope = rewrite_plan.source_maturity
             ir = None if envelope is None else getattr(envelope, "ir", None)
             maturity = str(getattr(ir, "value", None) or ir or "unknown")
-            observations = (
-                collect_unflatten_dispatcher_outcome_observations_from_metadata(
-                    rewrite_plan.metadata_dict(),
-                    maturity=maturity,
-                    phase="patch_transaction",
-                    application_status=application_status,
-                    outcome_reason=outcome_reason,
-                    observed_validation=observed_validation,
-                    observed_coverage_validation=observed_coverage_validation,
-                    projected_validation=projected_validation,
-                    projected_coverage_validation=projected_coverage_validation,
-                    plan_id=rewrite_plan.plan_id,
-                    attempt_id=attempt_id,
-                )
+            if projected_verdict is None and observed_verdict is None:
+                return
+            observations = dispatcher_outcome_observations(
+                projected_verdict=projected_verdict,
+                observed_verdict=observed_verdict,
+                function_ea=int(pre_cfg.func_ea),
+                maturity=maturity,
+                application_status=application_status,
+                outcome_reason=outcome_reason,
+                plan_id=rewrite_plan.plan_id,
+                attempt_id=attempt_id,
             )
             if observations:
                 observe_unflatten_dispatcher_corridor_coverage(

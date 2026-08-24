@@ -85,9 +85,6 @@ from d810.analyses.control_flow.transition_builder import (
 from d810.transforms.semantic_regions import plan_semantic_regions
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 from d810.transforms.minimal_unflatten_emit import emit_minimal_unflatten
-from d810.transforms.dispatcher_corridor_coverage import (
-    collect_unflatten_dispatcher_outcome_observations_from_metadata,
-)
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
@@ -3287,20 +3284,6 @@ class LowerStateMachine(PipelinePass):
                 ),
             )
             plan_metadata = plan.metadata_dict()
-            corridor_observations = (
-                collect_unflatten_dispatcher_outcome_observations_from_metadata(
-                    plan_metadata,
-                    maturity=_maturity_label(context),
-                    phase=self.name,
-                    application_status="pending",
-                    plan_id=plan.plan_id,
-                )
-            )
-            if corridor_observations:
-                observe_unflatten_dispatcher_corridor_coverage(
-                    func_ea=int(getattr(context.graph, "func_ea", 0) or 0),
-                    observations=corridor_observations,
-                )
             _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, plan_metadata)
             return PassResult(
                 facts=(PassFact("recovered_cfg_edge", plan_metadata),),

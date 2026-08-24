@@ -79,7 +79,6 @@ from d810.transforms.cfg_transaction import (
 
 if TYPE_CHECKING:
     from d810.transforms.unflatten_authority.model import (
-        LegacyUnflattenShadowEnvelope,
         ProposedUnflattenContract,
     )
 
@@ -1302,7 +1301,6 @@ class PatchPlan:
     semantic_contract: FragmentContractBundle | None = None
     source_coordinates: tuple[tuple[NativeBlockRef | LogicalBlockRef, int], ...] = ()
     unflatten_proposal: ProposedUnflattenContract | None = None
-    legacy_unflatten_shadow: LegacyUnflattenShadowEnvelope | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan_id, str) or not self.plan_id.strip():
@@ -1314,30 +1312,17 @@ class PatchPlan:
         except Exception:
             metadata_snapshot = _MetadataNormalizationFailure()
         object.__setattr__(self, "metadata", metadata_snapshot)
-        if self.unflatten_proposal is not None or self.legacy_unflatten_shadow is not None:
+        if self.unflatten_proposal is not None:
             from d810.transforms.unflatten_authority.model import (
-                LegacyUnflattenShadowEnvelope,
                 ProposedUnflattenContract,
             )
-
-        if self.unflatten_proposal is not None:
             if type(self.unflatten_proposal) is not ProposedUnflattenContract:
                 raise TypeError("unflatten_proposal must be a ProposedUnflattenContract")
             if self.unflatten_proposal.plan_id != self.plan_id:
                 raise ValueError("unflatten proposal authority differs from PatchPlan")
-        if self.legacy_unflatten_shadow is not None:
-            if type(self.legacy_unflatten_shadow) is not LegacyUnflattenShadowEnvelope:
-                raise TypeError(
-                    "legacy_unflatten_shadow must be a LegacyUnflattenShadowEnvelope"
-                )
-            if self.unflatten_proposal is None:
-                raise ValueError("legacy shadow requires an unflatten proposal")
-            if self.legacy_unflatten_shadow.plan_id != self.plan_id:
-                raise ValueError("legacy shadow plan authority differs from PatchPlan")
-            if self.legacy_unflatten_shadow.snapshot_id != self.snapshot_id:
-                raise ValueError("legacy shadow snapshot differs from PatchPlan")
-            if self.source_generation != self.legacy_unflatten_shadow.source_generation:
-                raise ValueError("legacy shadow generation differs from PatchPlan")
+            from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
+            if any(key in LEGACY_UNFLATTEN_KEYS for key, _value in self.metadata):
+                raise ValueError("typed PatchPlan cannot carry reserved legacy metadata")
         if self.source_maturity is not None and not isinstance(
             self.source_maturity, MaturityEnvelope
         ):

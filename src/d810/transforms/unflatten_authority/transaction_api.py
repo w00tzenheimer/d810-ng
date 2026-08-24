@@ -51,13 +51,7 @@ from d810.transforms.unflatten_authority.gates import (
     GenericCfgGateBundle,
     validate_generic_cfg_gate_bundle,
 )
-from d810.transforms.unflatten_authority.legacy_codec import LegacyShadowCodecReceipt
-from d810.transforms.unflatten_authority.diagnostics import (
-    LegacyPhaseOutcome,
-    PhaseTimings,
-    ShadowParityCounters,
-    ShadowParityPayload,
-)
+from d810.transforms.unflatten_authority.diagnostics import PhaseTimings
 
 
 from d810.transforms.unflatten_authority.ids import (
@@ -80,11 +74,9 @@ from .proposal import (
     ProposalAccepted,
     ProposalRejected,
     RejectedPlanRoute,
-    ShadowValidationAccepted,
     TypedProposalRoute,
     reserved_metadata_keys,
     validate_proposal,
-    validate_shadow_for_plan,
 )
 
 
@@ -170,6 +162,9 @@ def _live_binding_failed_verdict() -> model.UnflattenAuthorityVerdict:
 def _claim_subjects(claim):
     if type(claim) is model.RetiredDispatcherInfrastructureClaim:
         return (claim.infrastructure_subject, claim.corridor_subject, *claim.member_subjects)
+    if type(claim) is model.DetachedDeadHandlerComponentClaim:
+        return (claim.dispatcher_subject, *claim.dead_handler_subjects,
+                *claim.retained_handler_subjects, *claim.component_subjects)
     if type(claim) is model.EquivalentSemanticRouteClaim:
         return (claim.retired_route_subject, claim.replacement_route_subject, claim.source_subject, *claim.destination_subjects)
     if type(claim) is model.ExactInfeasibleEffectClaim:
@@ -578,7 +573,7 @@ def _build_semantic_graph_inventory(
 def _receipt(
     proposal, metrics, *, source_inventory, candidate_inventory,
     generic_gate_facts=None, route_assessments=(), conditional_relations=(),
-    patch_step_facts=(),
+    patch_step_facts=(), _preparation_inputs=None,
 ):
     if type(source_inventory) is not model.SemanticGraphInventory:
         raise TypeError("source_inventory must be SemanticGraphInventory")
@@ -586,6 +581,15 @@ def _receipt(
         raise TypeError("candidate_inventory must be SemanticGraphInventory")
     model.validate_semantic_graph_inventory(source_inventory)
     model.validate_semantic_graph_inventory(candidate_inventory)
+    if _preparation_inputs is None:
+        projected_topology_reference = candidate_inventory
+    else:
+        if type(_preparation_inputs) is not model.DerivedUnflattenPreparationInputs:
+            raise TypeError("sealed preparation inputs must be transaction-owned")
+        projected_topology_reference = _preparation_inputs.projected_topology_reference
+        if type(projected_topology_reference) is not model.SemanticGraphInventory:
+            raise TypeError("sealed topology reference must be SemanticGraphInventory")
+        model.validate_semantic_graph_inventory(projected_topology_reference)
     model.validate_preparation_build_metrics(metrics)
     if type(proposal) is not model.ProposedUnflattenContract:
         raise TypeError("proposal must be ProposedUnflattenContract")
@@ -663,6 +667,7 @@ def _receipt(
         ),
         "retirement_catalog": proposal.retirement_catalog,
         "corridor_coverage_forecast": proposal.corridor_coverage_forecast,
+        "projected_topology_reference_digest": projected_topology_reference.inventory_digest,
     }
     return model.PreparationAuthorityReceipt.mint(**values)
 
@@ -1230,6 +1235,102 @@ def _validate_local_alias_step(step: PatchScalarizeLocalAliasAccess) -> None:
         raise TypeError("local-alias value_size must be an exact positive int")
 
 
+def _bind_detached_authority_results(
+    *,
+    claims,
+    source_inventory,
+    candidate_inventory,
+    corridor_result,
+    phase,
+    prior_source_results=(),
+):
+    """Carry one sealed detached source authority through transaction phases."""
+
+    if type(claims) is not tuple:
+        raise TypeError("claims must be an exact tuple")
+    detached_claims = tuple(
+        claim for claim in claims
+        if type(claim) is model.DetachedDeadHandlerComponentClaim
+    )
+    if len({claim.claim_id for claim in detached_claims}) != len(detached_claims):
+        raise ValueError("detached claims must not contain duplicate claim IDs")
+    if type(source_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("source_inventory must be SemanticGraphInventory")
+    if type(candidate_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("candidate_inventory must be SemanticGraphInventory")
+    if type(phase) is not model.UnflattenAuthorityPhase:
+        raise TypeError("phase must be UnflattenAuthorityPhase")
+    if type(prior_source_results) is not tuple:
+        raise TypeError("prior_source_results must be an exact tuple")
+    if any(
+        type(item) is not model.DetachedDeadHandlerComponentSourceResult
+        for item in prior_source_results
+    ):
+        raise TypeError("prior_source_results must contain sealed detached source results")
+    if corridor_result is not None and type(corridor_result) is not model.CorridorCoveragePhaseResult:
+        raise TypeError("corridor_result must be CorridorCoveragePhaseResult or None")
+
+    expected_claim_ids = {claim.claim_id for claim in detached_claims}
+    prior_claim_ids = tuple(item.claim_id for item in prior_source_results)
+    foreign_claim_ids = set(prior_claim_ids) - expected_claim_ids
+    if foreign_claim_ids:
+        raise ValueError("foreign projected source result")
+    if len(set(prior_claim_ids)) != len(prior_claim_ids):
+        raise ValueError("duplicate projected source result")
+    if not detached_claims:
+        return (), ()
+    if corridor_result is None:
+        raise ValueError("detached claim requires sealed corridor coverage")
+
+    if phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+        if prior_source_results:
+            raise ValueError("projected detached claim must mint source authority exactly once")
+        sources = []
+        phase_results = []
+        for claim in detached_claims:
+            binding_result = authority_bind.bind_detached_dead_handler_component_claim(
+                claim=claim,
+                source_inventory=source_inventory,
+                candidate_inventory=candidate_inventory,
+                corridor_result=corridor_result,
+                phase=phase,
+            )
+            sources.append(binding_result.source_result)
+            phase_results.append(binding_result.phase_result)
+        return (
+            tuple(sorted(sources, key=lambda item: item.result_id)),
+            tuple(sorted(phase_results, key=lambda item: item.result_id)),
+        )
+
+    if phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        raise ValueError("detached authority only binds projected or observed phases")
+    prior_by_claim = {item.claim_id: item for item in prior_source_results}
+    if set(prior_by_claim) != expected_claim_ids:
+        raise ValueError("observed detached claim requires exactly one projected source result")
+    sources = []
+    phase_results = []
+    for claim in detached_claims:
+        sealed_source = prior_by_claim[claim.claim_id]
+        binding_result = authority_bind.bind_detached_dead_handler_component_claim(
+            claim=claim,
+            source_inventory=source_inventory,
+            candidate_inventory=candidate_inventory,
+            corridor_result=corridor_result,
+            phase=phase,
+            source_result=sealed_source,
+        )
+        if binding_result.source_result is not sealed_source:
+            raise AssertionError(
+                "observed detached validation did not reuse sealed source authority"
+            )
+        sources.append(sealed_source)
+        phase_results.append(binding_result.phase_result)
+    return (
+        tuple(sorted(sources, key=lambda item: item.result_id)),
+        tuple(sorted(phase_results, key=lambda item: item.result_id)),
+    )
+
+
 def _derive_inputs(
     source_inventory, candidate_inventory, plan, proposal, generic_gates, *,
     phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
@@ -1238,6 +1339,7 @@ def _derive_inputs(
     preparation_metrics,
     source_route_assessment=None,
     candidate_route_assessment=None,
+    preparation_inputs=None,
 ):
     """Assemble immutable facts; semantic evidence belongs to the evaluator."""
 
@@ -1247,47 +1349,37 @@ def _derive_inputs(
         raise TypeError("candidate_inventory must be SemanticGraphInventory")
     model.validate_semantic_graph_inventory(source_inventory)
     model.validate_semantic_graph_inventory(candidate_inventory)
+    if phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        if type(preparation_inputs) is not model.DerivedUnflattenPreparationInputs:
+            raise TypeError(
+                "observed derivation requires transaction-owned preparation inputs"
+            )
+        projected_topology_reference = preparation_inputs.projected_topology_reference
+    else:
+        if preparation_inputs is not None:
+            raise TypeError("preparation inputs are only valid for observed derivation")
+        projected_topology_reference = candidate_inventory
+    if type(projected_topology_reference) is not model.SemanticGraphInventory:
+        raise TypeError("projected topology reference must be SemanticGraphInventory")
+    model.validate_semantic_graph_inventory(projected_topology_reference)
     terminal_cycle_phase_results = []
+    detached_phase_results = []
+    detached_source_results = []
     if phase in {
         model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
     }:
         for claim in proposal.claims:
+            if type(claim) is model.DetachedDeadHandlerComponentClaim:
+                # Coverage is bound once below; defer until that sealed result exists.
+                continue
             if type(claim) is model.RetiredDispatcherInfrastructureClaim:
                 catalog_rows = claim.retirement_catalog.members
-                subjects_by_ref = {
-                    subject.block_ref: subject for subject in claim.member_subjects
-                }
-                exact_subjects = tuple(
-                    subjects_by_ref.get(row.block_ref, _subject_factory(
-                        model.SemanticSubjectRef,
-                        kind=model.SemanticSubjectKind.BLOCK,
-                        role=model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
-                        block_ref=row.block_ref,
-                        anchor_ea=row.anchor_ea,
-                        locator=model.BlockSubjectLocator(row.block_ref, row.anchor_ea),
-                    ))
-                    for row in catalog_rows
-                )
-                exact_subject_ids = {subject.subject_id for subject in exact_subjects}
-                source_retirement_bindings = tuple(
-                    binding for binding in source_inventory.bindings
-                    if binding.subject.subject_id in exact_subject_ids
-                )
-                projected_retirement_bindings = tuple(
-                    binding for binding in candidate_inventory.bindings
-                    if binding.subject.subject_id in exact_subject_ids
-                )
                 binding_result = authority_bind.bind_retired_dispatcher_infrastructure_claim(
                     claim=claim, proposal=proposal,
-                    source_graph_fingerprint=source_inventory.graph_fingerprint,
-                    projected_graph_fingerprint=candidate_inventory.graph_fingerprint,
-                    generation=source_inventory.generation,
+                    source_inventory=source_inventory,
+                    projected_inventory=candidate_inventory,
                     phase=phase,
-                    projected_generation=candidate_generation
-                    if candidate_generation is not None else candidate_inventory.generation,
-                    source_subject_bindings=source_retirement_bindings,
-                    projected_subject_bindings=projected_retirement_bindings,
                 )
                 expected_source = {
                     item.subject.subject_id: item
@@ -1350,6 +1442,19 @@ def _derive_inputs(
         candidate_inventory=candidate_inventory,
         phase=phase,
     )
+    prior_detached_source_results = ()
+    if phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        prior_detached_source_results = (
+            preparation_inputs.detached_dead_handler_component_source_results
+        )
+    detached_source_results, detached_phase_results = _bind_detached_authority_results(
+        claims=proposal.claims,
+        source_inventory=source_inventory,
+        candidate_inventory=candidate_inventory,
+        corridor_result=corridor_coverage_phase_result,
+        phase=phase,
+        prior_source_results=prior_detached_source_results,
+    )
     claims = tuple(sorted((*proposal.claims, *alias_claims), key=lambda item: item.claim_id))
     route_assessments = tuple(
         item for item in (source_route_assessment, candidate_route_assessment)
@@ -1364,6 +1469,7 @@ def _derive_inputs(
         route_assessments=route_assessments,
         conditional_relations=conditional_relations,
         patch_step_facts=patch_step_facts,
+        _preparation_inputs=preparation_inputs,
     )
     return model.DerivedUnflattenPreparationInputs(
         proposal=proposal,
@@ -1379,9 +1485,12 @@ def _derive_inputs(
         preparation_metrics=preparation_metrics,
         phase_build_metrics=phase_build_metrics,
         corridor_coverage_phase_result=corridor_coverage_phase_result,
+        detached_dead_handler_component_source_results=tuple(sorted(detached_source_results, key=lambda item: item.result_id)),
+        detached_dead_handler_component_phase_results=tuple(sorted(detached_phase_results, key=lambda item: item.result_id)),
         terminal_cycle_phase_results=tuple(sorted(
             terminal_cycle_phase_results, key=lambda item: item.result_id,
         )),
+        projected_topology_reference=projected_topology_reference,
     )
 
 
@@ -1565,7 +1674,6 @@ def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generi
                 source_inputs=inputs,
                 source_inventory=source_inventory,
                 preparation_attempt_id=attempt_id,
-                legacy_unflatten_shadow=plan.legacy_unflatten_shadow,
                 source_route_assessment=source_route_assessment,
                 projected_route_assessment=projected_route_assessment,
             )
@@ -1646,8 +1754,6 @@ def revalidate_bound_patch_plan_against_prepared(
         or prepared.source_inputs.conditional_relations != conditional_relations
     ):
         raise ValueError("bound patch plan local-alias authority changed")
-    if bound_plan.plan.legacy_unflatten_shadow is not prepared.legacy_unflatten_shadow:
-        raise ValueError("bound patch plan shadow differs from prepared authority")
     proposal_validation = validate_proposal(
         bound_plan.plan, bound_plan.plan.unflatten_proposal
     )
@@ -1655,12 +1761,6 @@ def revalidate_bound_patch_plan_against_prepared(
         raise ValueError("bound patch plan proposal authority is no longer valid")
     if proposal_validation.proposal is not prepared.proposal:
         raise ValueError("bound patch plan proposal is not the prepared authority object")
-    if bound_plan.plan.legacy_unflatten_shadow is not None:
-        shadow_validation = validate_shadow_for_plan(
-            bound_plan.plan, bound_plan.plan.legacy_unflatten_shadow
-        )
-        if not isinstance(shadow_validation, ShadowValidationAccepted):
-            raise ValueError("bound patch plan shadow authority is no longer valid")
     if prepared.preparation_attempt_id is None:
         raise ValueError("prepared authority has no exact preparation attempt")
     if bound_plan.attempt_id != prepared.preparation_attempt_id:
@@ -1885,6 +1985,7 @@ def _revalidate_observed_unflatten_authority(
             preparation_metrics=prepared_inputs.preparation_metrics,
             source_route_assessment=source_route_assessment,
             candidate_route_assessment=observed_route_assessment,
+            preparation_inputs=prepared_inputs,
         )
         if _timings is not None:
             _timings.binding_ms = (
@@ -1982,12 +2083,6 @@ def select_plan_route(plan: PatchPlan) -> PlanRouteResult:
                 validation.detail_code,
                 validation.key,
             )
-        if plan.legacy_unflatten_shadow is not None:
-            rejection = validate_shadow_for_plan(
-                plan, plan.legacy_unflatten_shadow
-            )
-            if not isinstance(rejection, ShadowValidationAccepted):
-                return rejection
         if not isinstance(validation, ProposalAccepted):
             raise TypeError("proposal validation returned an unknown result")
         return TypedProposalRoute(
@@ -1995,11 +2090,6 @@ def select_plan_route(plan: PatchPlan) -> PlanRouteResult:
             validation.proposal,
         )
 
-    if plan.legacy_unflatten_shadow is not None:
-        return RejectedPlanRoute(
-            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
-            "shadow_without_typed_proposal",
-        )
     if reserved_keys:
         return RejectedPlanRoute(
             UnflattenAuthorityReason.MALFORMED_PROPOSAL,
@@ -2007,70 +2097,10 @@ def select_plan_route(plan: PatchPlan) -> PlanRouteResult:
             reserved_keys[0],
         )
     return UnflattenAuthorityNotApplicable(UnflattenPlanRoute.ORDINARY)
-
-
-def project_shadow_parity(
-    projected_legacy: LegacyPhaseOutcome,
-    projected_canonical: model.UnflattenAuthorityVerdict,
-    observed_legacy: LegacyPhaseOutcome,
-    observed_canonical: model.UnflattenAuthorityVerdict,
-    *,
-    projected_counters: ShadowParityCounters,
-    observed_counters: ShadowParityCounters,
-    codec_receipt: LegacyShadowCodecReceipt,
-) -> ShadowParityPayload:
-    """Project legacy/canonical parity facts as transaction diagnostics.
-
-    The canonical verdict is the transaction decision.  This facade only
-    routes already validated facts to the pure diagnostic comparator.
-    """
-
-    from .diagnostics import compare_shadow_parity
-    if type(codec_receipt) is not LegacyShadowCodecReceipt:
-        raise TypeError("codec_receipt must be LegacyShadowCodecReceipt")
-    return compare_shadow_parity(
-        projected_legacy,
-        projected_canonical,
-        observed_legacy,
-        observed_canonical,
-        projected_counters=projected_counters,
-        observed_counters=observed_counters,
-        codec_receipt=codec_receipt,
-    )
-
-
-compare_shadow_parity = project_shadow_parity
-
-
-def adapt_plan_legacy_shadow(*, source, prepared):
-    """Mint one codec receipt from the exact prepared plan shadow."""
-
-    from .legacy_codec import (
-        LegacyUnflattenDecodeContext,
-        adapt_legacy_unflatten_shadow,
-    )
-    if type(source) is not FlowGraph or type(prepared) is not model.PreparedUnflattenAuthority:
-        raise TypeError("shadow adaptation requires exact source and prepared authority")
-    plan = prepared.owning_plan
-    proposal = prepared.proposal
-    if plan.unflatten_proposal is not proposal:
-        raise ValueError("prepared proposal is not the owning plan proposal")
-    if plan.source_generation != prepared.source_generation:
-        raise ValueError("prepared source generation is not the owning plan generation")
-    refs = dict((serial, ref) for ref, serial in plan.source_coordinates)
-    context = LegacyUnflattenDecodeContext(
-        proposal.plan_id, source, plan.source_generation,
-        tuple(sorted(refs.items())), proposal.route_evidence,
-        proposal.plan_inputs, proposal.use_def_witness, proposal,
-    )
-    return adapt_legacy_unflatten_shadow(plan, context=context)
-
-
 __all__ = [
     "select_plan_route", "derive_unflatten_preparation_inputs",
     "prepare_unflatten_authority",
     "bind_prepared_unflatten_authority", "revalidate_observed_unflatten_authority",
-    "project_shadow_parity", "compare_shadow_parity",
-    "TimedUnflattenAuthorityResult", "prepare_unflatten_authority_timed",
-    "revalidate_observed_unflatten_authority_timed", "adapt_plan_legacy_shadow",
+        "TimedUnflattenAuthorityResult", "prepare_unflatten_authority_timed",
+        "revalidate_observed_unflatten_authority_timed",
 ]

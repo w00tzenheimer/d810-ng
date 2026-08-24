@@ -196,14 +196,11 @@ def _classify_effect_site(
         )
     )
     raw_facts = None if generic_gate_facts is None else generic_gate_facts.effectful_raw
-    effective_facts = None if generic_gate_facts is None else generic_gate_facts.effectful_effective
     owner = effect.owner_serial
     raw_lost = raw_facts is not None and owner in raw_facts.lost_block_serials
     raw_retained = raw_facts is not None and owner in raw_facts.pre_effectful_block_serials and not raw_lost
-    effective_retained = effective_facts is not None and owner in effective_facts.pre_effectful_block_serials and owner not in effective_facts.lost_block_serials
     gate_ok = bool(
         generic_gate_facts is not None
-        and effective_retained
         and (raw_lost or raw_retained)
     )
     authorized = bool(exact and route_ok and gate_ok)
@@ -291,6 +288,10 @@ REQUIRED_DIMENSIONS: dict[model.SemanticSubjectRole, tuple[model.SafetyDimension
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
         model.SafetyDimension.STRUCTURAL_ACCOUNTING,
     ),
+    model.SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT: (
+        model.SafetyDimension.IDENTITY_BINDING,
+        model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+    ),
 }
 
 
@@ -329,7 +330,8 @@ _JUSTIFICATION_RULE_SPECS: dict[model.UnflattenJustificationRule, _Justification
     model.UnflattenJustificationRule.EQUIVALENT_ROUTE_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.ROUTE_EQUIVALENCE, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.SEMANTIC_ROUTE,)),
     model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE, model.AuthorityEvidenceKind.SEMANTIC_ROUTE), min_premises=2, max_premises=2),
     model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE, model.AuthorityEvidenceKind.PATCH_STEP, model.AuthorityEvidenceKind.PHASE_BINDING, model.AuthorityEvidenceKind.REACHABILITY), min_premises=4, max_premises=4),
-    model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.TERMINAL_CYCLE,)),
+    model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.TERMINAL_REACHABILITY, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.TERMINAL_CYCLE,)),
+    model.UnflattenJustificationRule.DETACHED_COMPONENT_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.DETACHED_COMPONENT,)),
     model.UnflattenJustificationRule.ROUTE_MISSING_OR_DRIFTED: _rule(model.SafetyDimension.ROUTE_EQUIVALENCE, polarity=model.EvidencePolarity.REFUTES, evidence=(model.AuthorityEvidenceKind.SEMANTIC_ROUTE,)),
     model.UnflattenJustificationRule.EFFECT_PRESERVED: _rule(model.SafetyDimension.EFFECT_PRESERVATION, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE,)),
     model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED: _rule(model.SafetyDimension.EFFECT_PRESERVATION, polarity=model.EvidencePolarity.REFUTES, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE,)),
@@ -379,6 +381,13 @@ def _claim_subjects(claim: model.UnflattenClaim) -> tuple[model.SemanticSubjectR
 
     if type(claim) is model.RetiredDispatcherInfrastructureClaim:
         return (claim.infrastructure_subject, claim.corridor_subject, *claim.member_subjects)
+    if type(claim) is model.DetachedDeadHandlerComponentClaim:
+        return (
+            claim.dispatcher_subject,
+            *claim.dead_handler_subjects,
+            *claim.retained_handler_subjects,
+            *claim.component_subjects,
+        )
     if type(claim) is model.EquivalentSemanticRouteClaim:
         return (
             claim.retired_route_subject, claim.replacement_route_subject,
@@ -533,6 +542,7 @@ def _dimensions(
     retired_topology_satisfied_ids: frozenset[str] = frozenset(),
     conditional_relations: tuple[model.ConditionalSubjectRelation, ...] = (),
     proposal: model.ProposedUnflattenContract | None = None,
+    detached_dead_handler_ids: frozenset[str] = frozenset(),
 ) -> tuple[model.ObligationKey, ...]:
     result: set[model.ObligationKey] = set()
     relation_dimensions = {(item.target_subject_id, item.dimension) for item in conditional_relations}
@@ -594,6 +604,14 @@ def _dimensions(
                     model.SafetyDimension.CORRIDOR_COVERAGE,
                 }
             ]
+        if subject.subject_id in detached_dead_handler_ids:
+            dimensions = [
+                dimension for dimension in dimensions
+                if dimension not in {
+                    model.SafetyDimension.TOPOLOGY_INTEGRITY,
+                    model.SafetyDimension.HANDLER_REACHABILITY,
+                }
+            ]
         dimensions.extend(
             dimension for target_id, dimension in relation_dimensions
             if target_id == subject.subject_id
@@ -640,6 +658,7 @@ def _validate_justification_graph(
         model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN,
         model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN,
         model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN,
+        model.UnflattenJustificationRule.DETACHED_COMPONENT_PROVEN,
     }
     claim_ids = {claim.claim_id for claim in claims}
     for item in justifications:
@@ -808,6 +827,11 @@ def _validate_justification_graph(
             raise ValueError(
                 "terminal claim requires one sealed terminal-cycle phase result"
             )
+        if (
+            item.rule is model.UnflattenJustificationRule.DETACHED_COMPONENT_PROVEN
+            and premise_kinds != (model.AuthorityEvidenceKind.DETACHED_COMPONENT,)
+        ):
+            raise ValueError("detached claim requires one sealed detached-component phase result")
         if item.rule is model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN and Counter(premise_kinds) != Counter({
             model.AuthorityEvidenceKind.EFFECT_SITE: 1,
             model.AuthorityEvidenceKind.PATCH_STEP: 1,
@@ -862,6 +886,9 @@ def _validate_justification_graph(
                     type(payload) is model.TerminalCycleEvidencePayload
                     and target in payload.bound_subject_ids
                 ) or (
+                    type(payload) is model.DetachedComponentEvidencePayload
+                    and target in payload.authorized_subject_ids
+                ) or (
                     type(payload) is model.PatchStepEvidencePayload
                     and by_evidence_id[premise].subject.subject_id == target
                 ) or (
@@ -883,6 +910,7 @@ def _validate_justification_graph(
                 model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN: type(claim) is model.ExactInfeasibleEffectClaim,
                 model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN: type(claim) is model.LocalAliasEffectScalarizationClaim,
                 model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN: type(claim) is model.TerminalCycleBreakClaim,
+                model.UnflattenJustificationRule.DETACHED_COMPONENT_PROVEN: type(claim) is model.DetachedDeadHandlerComponentClaim,
             }.get(item.rule, False)
             if not allowed:
                 raise ValueError("justification rule does not match its claim")
@@ -891,6 +919,11 @@ def _validate_justification_graph(
                 and item.conclusion.dimension is not model.SafetyDimension.STRUCTURAL_ACCOUNTING
             ):
                 raise ValueError("retirement claim supports structural accounting only")
+            if (
+                type(claim) is model.DetachedDeadHandlerComponentClaim
+                and item.conclusion.dimension is not model.SafetyDimension.STRUCTURAL_ACCOUNTING
+            ):
+                raise ValueError("detached component claim supports structural accounting only")
             claim_targets = {
                 subject.subject_id for subject in _claim_subjects(claim)
             }
@@ -955,6 +988,16 @@ def _validate_justification_graph(
                         in claim.terminal_route_proof_ids
                         and payload.terminal_subject_id
                         == claim.terminal_subject.subject_id
+                    )
+                elif type(claim) is model.DetachedDeadHandlerComponentClaim:
+                    correlated = (
+                        type(payload) is model.DetachedComponentEvidencePayload
+                        and payload.claim_id == claim.claim_id
+                        and payload.accepted
+                        and payload.authorized_subject_ids == tuple(sorted({
+                            *(subject.subject_id for subject in claim.dead_handler_subjects),
+                            *(subject.subject_id for subject in claim.component_subjects),
+                        }))
                     )
                 if not correlated:
                     raise ValueError("claim premise is outside exact claim evidence scope")
@@ -1393,6 +1436,38 @@ def derive_corridor_coverage_evidence(
     )
 
 
+def _select_route_source_subject(
+    route_claim: model.UnflattenClaim | None,
+    locator: model.RouteSubjectLocator,
+    source_subjects: tuple[model.SemanticSubjectRef, ...],
+) -> model.SemanticSubjectRef | None:
+    """Resolve route payload ownership from the exact claim, never first-match."""
+
+    if type(route_claim) is model.EquivalentSemanticRouteClaim:
+        selected = route_claim.source_subject
+    elif type(route_claim) is model.ExactInfeasibleEffectClaim:
+        selected = route_claim.predicate_subject
+    else:
+        candidates = tuple(
+            item for item in source_subjects
+            if item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
+            and item.block_ref == locator.source_ref
+            and item.anchor_ea == locator.source_anchor_ea
+        )
+        if len(candidates) > 1:
+            raise ValueError("route source is ambiguous among co-located subjects")
+        return candidates[0] if candidates else None
+    if (
+        selected.role is not model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
+        or selected.block_ref != locator.source_ref
+        or selected.anchor_ea != locator.source_anchor_ea
+    ):
+        raise ValueError("route claim source is foreign to its route locator")
+    if selected.subject_id not in {item.subject_id for item in source_subjects}:
+        raise ValueError("route claim source is absent from source inventory")
+    return selected
+
+
 def _evaluator_fact_evidence(
     inputs: model.DerivedUnflattenPreparationInputs,
     phase: model.UnflattenAuthorityPhase,
@@ -1718,7 +1793,9 @@ def _evaluator_fact_evidence(
                     ))
         return tuple(sorted(result, key=lambda item: (item.source_subject_id, item.target_subject_id, item.native_edge_anchor_ea)))
 
-    source_topology = topology_relations(source)
+    projected_topology_reference = topology_relations(
+        inputs.projected_topology_reference,
+    )
     candidate_topology = topology_relations(candidate)
 
     def has_reciprocal_edges(relations: tuple[model.TopologyEdgeRelation, ...]) -> bool:
@@ -1943,7 +2020,14 @@ def _evaluator_fact_evidence(
             claim is not None
             and phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
             and candidate_binding is not None
-            and candidate_binding.status is model.SubjectBindingStatus.MISSING
+            and (
+                candidate_binding.status is model.SubjectBindingStatus.MISSING
+                or (
+                    candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+                    and candidate_binding.serial is not None
+                    and candidate_binding.serial not in candidate.reachable_serials
+                )
+            )
             and claim.retirement_catalog is not None
             and any(
                 member.block_ref == subject.block_ref
@@ -2011,7 +2095,7 @@ def _evaluator_fact_evidence(
             evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE, subject, phase, lineage))
         if subject.role not in topology_roles:
             continue
-        expected = tuple(item for item in source_topology if subject.subject_id in (item.source_subject_id, item.target_subject_id))
+        expected = tuple(item for item in projected_topology_reference if subject.subject_id in (item.source_subject_id, item.target_subject_id))
         observed = tuple(item for item in candidate_topology if subject.subject_id in (item.source_subject_id, item.target_subject_id))
         topology = model.TopologyEvidencePayload(
             subject.subject_id,
@@ -2034,6 +2118,10 @@ def _evaluator_fact_evidence(
             or helper.subject_id in source_subject_ids
         ):
             continue
+        expected = tuple(
+            item for item in projected_topology_reference
+            if helper.subject_id in (item.source_subject_id, item.target_subject_id)
+        )
         observed = tuple(
             item for item in candidate_topology
             if helper.subject_id in (item.source_subject_id, item.target_subject_id)
@@ -2045,12 +2133,18 @@ def _evaluator_fact_evidence(
             phase,
             model.TopologyEvidencePayload(
                 helper.subject_id,
-                (),
-                (),
-                has_reciprocal_edges(observed),
-                _authority_id_digest(()),
+                tuple(sorted({
+                    item.source_subject_id for item in expected
+                    if item.target_subject_id == helper.subject_id
+                })),
+                tuple(sorted({
+                    item.target_subject_id for item in expected
+                    if item.source_subject_id == helper.subject_id
+                })),
+                has_reciprocal_edges(expected),
+                _authority_id_digest(expected),
                 _authority_id_digest(observed),
-                (), observed,
+                expected, observed,
             ),
         ))
 
@@ -2121,11 +2215,13 @@ def _evaluator_fact_evidence(
                 and assessment.accepted
                 and locator.proof_id in assessment.proof_ids
             )
+        selected_source_subject = _select_route_source_subject(
+            route_claim, locator, source_subjects,
+        )
         route_payload = model.SemanticRouteEvidencePayload(
             subject.subject_id, (locator.proof_id,), locator.atomic_group_id,
-            next((item.subject_id for item in source_subjects
-                  if item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
-                  and item.block_ref == locator.source_ref and item.anchor_ea == locator.source_anchor_ea), subject.subject_id),
+            selected_source_subject.subject_id
+            if selected_source_subject is not None else subject.subject_id,
             destinations,
             bool(
                 route_pair_valid
@@ -2202,6 +2298,41 @@ def _evaluator_fact_evidence(
     return tuple(sorted(evidence, key=lambda item: item.evidence_id)), patch_evidence, tuple(generic_gates), classifications
 
 
+def _accepted_detached_component_results(
+    inputs: model.DerivedUnflattenPreparationInputs,
+    phase: model.UnflattenAuthorityPhase,
+) -> tuple[tuple[model.DetachedDeadHandlerComponentClaim, model.DetachedDeadHandlerComponentPhaseResult], ...]:
+    """Return only sealed detached allowances at these exact case coordinates."""
+
+    corridor = inputs.corridor_coverage_phase_result
+    if corridor is None:
+        return ()
+    claims = {
+        claim.claim_id: claim
+        for claim in inputs.claims
+        if type(claim) is model.DetachedDeadHandlerComponentClaim
+    }
+    accepted: list[tuple[model.DetachedDeadHandlerComponentClaim, model.DetachedDeadHandlerComponentPhaseResult]] = []
+    for result in inputs.detached_dead_handler_component_phase_results:
+        claim = claims.get(result.claim_id)
+        if claim is None or not result.accepted:
+            continue
+        if (
+            result.phase is not phase
+            or result.corridor_coverage_result_id != corridor.result_id
+            or result.source_fingerprint != inputs.source_inventory.graph_fingerprint
+            or result.candidate_fingerprint != inputs.candidate_inventory.graph_fingerprint
+            or result.source_generation != inputs.source_inventory.generation
+            or result.candidate_generation != inputs.candidate_inventory.generation
+            or claim.source_generation != result.source_generation
+        ):
+            continue
+        accepted.append((claim, result))
+    if len({claim.claim_id for claim, _result in accepted}) != len(accepted):
+        raise ValueError("detached component claim has ambiguous accepted phase results")
+    return tuple(sorted(accepted, key=lambda item: item[0].claim_id))
+
+
 def build_semantic_case(
     *, authority_id: str, phase: model.UnflattenAuthorityPhase,
     inputs: model.DerivedUnflattenPreparationInputs,
@@ -2212,6 +2343,10 @@ def build_semantic_case(
     model._id(authority_id, "authority_id")
     if type(phase) is not model.UnflattenAuthorityPhase:
         raise TypeError("phase must be UnflattenAuthorityPhase")
+    for source_result in inputs.detached_dead_handler_component_source_results:
+        authority_bind.validate_detached_source_result(source_result)
+    for phase_result in inputs.detached_dead_handler_component_phase_results:
+        authority_bind.validate_detached_phase_result(phase_result)
     proposal = inputs.proposal
     source_inventory = inputs.source_inventory
     candidate_inventory = inputs.candidate_inventory
@@ -2241,6 +2376,12 @@ def build_semantic_case(
     if not source_subjects:
         raise ValueError("authority requires a non-empty source inventory")
     _validate_receipt(inputs)
+    accepted_detached_results = _accepted_detached_component_results(inputs, phase)
+    detached_dead_handler_ids = frozenset(
+        subject.subject_id
+        for claim, _result in accepted_detached_results
+        for subject in claim.dead_handler_subjects
+    )
     source_ids = {subject.subject_id for subject in source_subjects}
     candidate_ids = {subject.subject_id for subject in candidate_subjects}
     known_input_subjects = {
@@ -2480,6 +2621,7 @@ def build_semantic_case(
         ),
         conditional_relations=inputs.conditional_relations,
         proposal=inputs.proposal,
+        detached_dead_handler_ids=detached_dead_handler_ids,
     )
     justifications: list[model.AuthorityJustification] = []
     candidate_bindings = {binding.subject.subject_id: binding for binding in candidate_bindings}
@@ -2519,6 +2661,17 @@ def build_semantic_case(
     authorized_loss_subject_ids = {
         subject_id for subject_id, classification in classifications.items()
         if classification.authorized_loss
+    }
+    authorized_generic_gate_keys = {
+        (claim.terminal_subject.subject_id, model.SafetyDimension.TERMINAL_REACHABILITY)
+        for claim in inputs.claims
+        if type(claim) is model.TerminalCycleBreakClaim
+        and any(
+            result.claim_id == claim.claim_id
+            and result.phase is phase
+            and result.terminal_subject_id == claim.terminal_subject.subject_id
+            for result in inputs.terminal_cycle_phase_results
+        )
     }
     supplied_lineage_sources = {
         source_id
@@ -2663,9 +2816,33 @@ def build_semantic_case(
         )
         for result in inputs.terminal_cycle_phase_results
     )
+    detached_component_evidence = tuple(
+        _evidence_factory(
+            model.AuthorityEvidence,
+            model.AuthorityEvidenceKind.DETACHED_COMPONENT,
+            claim.dispatcher_subject,
+            phase,
+            model.DetachedComponentEvidencePayload(
+                result.result_id,
+                result.claim_id,
+                result.corridor_coverage_result_id,
+                result.phase,
+                result.source_fingerprint,
+                result.candidate_fingerprint,
+                result.source_generation,
+                result.candidate_generation,
+                result.accepted,
+                tuple(sorted({
+                    *(subject.subject_id for subject in claim.dead_handler_subjects),
+                    *(subject.subject_id for subject in claim.component_subjects),
+                })),
+            ),
+        )
+        for claim, result in accepted_detached_results
+    )
     evidence = tuple(sorted((
         *evidence_rows, *lineage_evidence, *patch_step_evidence,
-        *terminal_cycle_evidence,
+        *terminal_cycle_evidence, *detached_component_evidence,
     ), key=lambda item: item.evidence_id))
     known_subjects = {subject.subject_id: subject for subject in subjects}
     known_subject_ids = set(known_subjects)
@@ -2958,6 +3135,33 @@ def build_semantic_case(
                 raise ValueError("corridor evidence covered partition drifted from forecast")
             if set(payload.residual_path_ids) != set(forecast.residual_path_ids):
                 raise ValueError("corridor evidence residual partition drifted from forecast")
+        elif type(payload) is model.DetachedComponentEvidencePayload:
+            header_target = item.subject.subject_id
+            matching = tuple(
+                (claim, result)
+                for claim, result in accepted_detached_results
+                if result.result_id == payload.phase_result_id
+            )
+            if len(matching) != 1:
+                raise ValueError("detached evidence lacks one accepted sealed phase result")
+            claim, result = matching[0]
+            authorized = tuple(sorted({
+                *(subject.subject_id for subject in claim.dead_handler_subjects),
+                *(subject.subject_id for subject in claim.component_subjects),
+            }))
+            if (
+                item.subject != claim.dispatcher_subject
+                or payload.claim_id != claim.claim_id
+                or payload.corridor_coverage_result_id != result.corridor_coverage_result_id
+                or payload.phase is not result.phase
+                or payload.source_fingerprint != result.source_fingerprint
+                or payload.candidate_fingerprint != result.candidate_fingerprint
+                or payload.source_generation != result.source_generation
+                or payload.candidate_generation != result.candidate_generation
+                or not payload.accepted
+                or payload.authorized_subject_ids != authorized
+            ):
+                raise ValueError("detached evidence drifted from its sealed phase result")
         elif type(payload) is model.PatchStepEvidencePayload:
             header_target = item.subject.subject_id
             allowed_owner = item.subject.role in {
@@ -3108,6 +3312,15 @@ def build_semantic_case(
                 # terminal-cycle rule below provide the sole classification.
                 targets = ()
                 continue
+            if (
+                payload.source_subject_id in detached_dead_handler_ids
+                and payload.disposition is model.StructuralDisposition.UNACCOUNTED_LOSS
+                and not payload.candidate_subject_ids
+            ):
+                # Retain the raw missing-lineage observation, but a sealed
+                # detached result is its sole structural classification.
+                targets = ()
+                continue
             passed = payload.disposition in {
                 model.StructuralDisposition.PRESERVED,
                 model.StructuralDisposition.SPLIT,
@@ -3226,18 +3439,25 @@ def build_semantic_case(
         elif type(payload) is model.GenericCfgGateEvidencePayload:
             dimension = {model.GenericCfgGateKind.ENTRY_REACHABILITY: model.SafetyDimension.ENTRY_REACHABILITY, model.GenericCfgGateKind.EFFECTFUL_REACHABILITY: model.SafetyDimension.EFFECT_PRESERVATION, model.GenericCfgGateKind.TERMINAL_REACHABILITY: model.SafetyDimension.TERMINAL_REACHABILITY}[payload.gate]
             targets = tuple((target, dimension, payload.passed, model.UnflattenJustificationRule.GENERIC_CFG_GATE_PASSED if payload.passed else model.UnflattenJustificationRule.GENERIC_CFG_GATE_FAILED) for target in payload.affected_subject_ids)
+        elif type(payload) is model.DetachedComponentEvidencePayload:
+            targets = ()
         known_subject_ids = {subject.subject_id for subject in subjects}
         if any(target_id not in known_subject_ids for target_id, _, _, _ in targets):
             raise ValueError("evidence payload targets a foreign subject")
         for target_id, dimension, passed, rule in targets:
             if (
                 not passed
-                and dimension is model.SafetyDimension.EFFECT_PRESERVATION
                 and (
-                    target_id in authorized_loss_subject_ids
+                    (target_id, dimension) in authorized_generic_gate_keys
                     or (
-                        classifications.get(target_id) is not None
-                        and classifications[target_id].preserved
+                        dimension is model.SafetyDimension.EFFECT_PRESERVATION
+                        and (
+                            target_id in authorized_loss_subject_ids
+                            or (
+                                classifications.get(target_id) is not None
+                                and classifications[target_id].preserved
+                            )
+                        )
                     )
                 )
             ):
@@ -3446,11 +3666,30 @@ def build_semantic_case(
             )
             if len(matching_phase_result) == 1:
                 claim_evidence = (matching_phase_result[0].evidence_id,)
-                targets = ((
-                    claim.cycle_subject,
-                    model.SafetyDimension.STRUCTURAL_ACCOUNTING,
-                ),)
+                targets = (
+                    (claim.cycle_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING),
+                    (claim.terminal_subject, model.SafetyDimension.TERMINAL_REACHABILITY),
+                )
             rule = model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN
+        elif type(claim) is model.DetachedDeadHandlerComponentClaim:
+            matching_detached = tuple(
+                item for item in evidence
+                if type(item.payload) is model.DetachedComponentEvidencePayload
+                and item.payload.claim_id == claim.claim_id
+                and item.payload.phase is phase
+                and item.payload.accepted
+                and item.payload.authorized_subject_ids == tuple(sorted({
+                    *(subject.subject_id for subject in claim.dead_handler_subjects),
+                    *(subject.subject_id for subject in claim.component_subjects),
+                }))
+            )
+            if len(matching_detached) == 1:
+                claim_evidence = (matching_detached[0].evidence_id,)
+                targets = tuple(
+                    (subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+                    for subject in (*claim.dead_handler_subjects, *claim.component_subjects)
+                )
+            rule = model.UnflattenJustificationRule.DETACHED_COMPONENT_PROVEN
         for subject, dimension in targets:
             key = model.ObligationKey(subject, dimension)
             if key in required:
@@ -3511,6 +3750,8 @@ def build_semantic_case(
         "source_bindings": tuple(source_inventory.bindings),
         "retirement_catalog": inputs.proposal.retirement_catalog,
         "corridor_coverage_phase_result": inputs.corridor_coverage_phase_result,
+        "detached_dead_handler_component_source_results": inputs.detached_dead_handler_component_source_results,
+        "detached_dead_handler_component_phase_results": inputs.detached_dead_handler_component_phase_results,
         "terminal_cycle_phase_results": inputs.terminal_cycle_phase_results,
     }
     return _case_factory(model.SemanticSafetyCase, **values)

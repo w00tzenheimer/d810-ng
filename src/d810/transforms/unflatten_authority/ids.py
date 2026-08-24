@@ -410,6 +410,9 @@ def _ensure_registries() -> None:
         model.CorridorCoveragePathNode, model.CorridorSemanticExclusion, model.CorridorCoveragePath,
         model.CorridorCoverageForecast, model.CorridorSemanticExclusionCorrelation,
         model.CorridorCoveragePhaseResult,
+        model.DetachedDeadHandlerComponentPhaseResult,
+        model.DetachedDeadHandlerComponentSourceResult,
+        model.DetachedComponentEvidencePayload,
         model.TerminalCyclePhaseResult,
         model.PhaseSubjectBinding, model.PhaseBindingEvidencePayload, model.TopologyEdgeRelation, model.TopologyEvidencePayload,
         model.StructuralLineageEvidencePayload, model.SemanticRouteEvidencePayload,
@@ -418,10 +421,11 @@ def _ensure_registries() -> None:
         model.TerminalCycleEvidencePayload,
         model.PatchStepEvidencePayload, model.GenericCfgGateEvidencePayload, model.AuthorityEvidence,
         model.GenericCfgGateResult, model.ProviderConsensusWitness,
-        model.RetiredDispatcherInfrastructureClaim, model.EquivalentSemanticRouteClaim,
+        model.RetiredDispatcherInfrastructureClaim, model.DetachedDeadHandlerComponentClaim, model.EquivalentSemanticRouteClaim,
         model.ExactInfeasibleEffectClaim, model.LocalAliasEffectScalarizationClaim,
         model.TerminalCycleBreakClaim, model.UseDefFragmentWitness, model.SourceBlockIdentityWitness,
         model.SourceIdentityCatalog, model.AuthoritativeHandlerInput,
+        model.RetirementProofMember, model.RetirementProofContent,
         model.RetirementProofRecord, model.RetirementMemberCatalogRow,
         model.RetirementAuthorityCatalog,
         model.UnflattenPlanInputCatalog, model.ProposedUnflattenContract,
@@ -440,6 +444,7 @@ def _ensure_registries() -> None:
     _RECORD_TYPES.update({DigestFixture, MopRecord, InsnRecord, BlockRecord, GraphRecord, *model_records})
     _CLAIM_TYPES.update({
         model.RetiredDispatcherInfrastructureClaim,
+        model.DetachedDeadHandlerComponentClaim,
         model.EquivalentSemanticRouteClaim,
         model.ExactInfeasibleEffectClaim,
         model.LocalAliasEffectScalarizationClaim,
@@ -467,7 +472,10 @@ def _ensure_registries() -> None:
         model.CorridorCoveragePath: ("path_id", "nodes", "state_merge", "disposition", "semantic_exclusion_ids"),
         model.CorridorCoverageForecast: ("forecast_id", "plan_id", "function_ea", "source_native_key", "source_generation", "dispatcher_ref", "dispatcher_anchor_ea", "paths", "covered_path_ids", "residual_path_ids", "enumeration_complete", "semantic_exclusion_digests", "semantic_exclusions", "semantic_exclusion_path_ids"),
             model.CorridorSemanticExclusionCorrelation: ("exclusion_id", "exclusion_digest", "path_id", "claim_id", "proof_id", "ordered_prefix", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "phase_result_id"),
-            model.CorridorCoveragePhaseResult: ("result_id", "forecast_id", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "covered_path_ids", "residual_path_ids", "drifted_path_ids", "enumeration_complete", "matched_semantic_exclusion_ids", "source_dispatcher_reachable", "candidate_dispatcher_reachable", "semantic_exclusion_correlations"),
+            model.CorridorCoveragePhaseResult: ("result_id", "forecast_id", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "covered_path_ids", "residual_path_ids", "drifted_path_ids", "enumeration_complete", "matched_semantic_exclusion_ids", "source_dispatcher_reachable", "candidate_dispatcher_reachable", "semantic_exclusion_correlations", "comparison_region_subject_ids", "dispatcher_subject_id"),
+            model.DetachedDeadHandlerComponentSourceResult: ("result_id", "claim_id", "corridor_forecast_id", "corridor_coverage_result_id", "source_fingerprint", "source_generation", "dispatcher_subject_id", "dispatcher_block_ref", "dead_handler_subject_ids", "retained_handler_subject_ids", "component_subject_ids", "comparison_region_subject_ids", "source_reachable_subject_ids", "dead_handler_block_refs", "retained_handler_block_refs", "comparison_region_block_refs", "terminal_digest", "effect_digest", "topology_digest", "source_reachable_block_refs", "component_block_refs", "remainder_block_refs", "terminal_site_keys", "effect_site_keys", "source_blocks"),
+            model.DetachedDeadHandlerComponentPhaseResult: ("result_id", "claim_id", "phase", "corridor_coverage_result_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "accepted", "source_result_id"),
+            model.DetachedComponentEvidencePayload: ("phase_result_id", "claim_id", "corridor_coverage_result_id", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "accepted", "authorized_subject_ids"),
             model.TerminalCyclePhaseResult: ("result_id", "claim_id", "terminal_route_proof_id", "phase", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "bound_subject_ids", "source_binding_digest", "candidate_binding_digest", "residue_refs", "source_cycle_edges", "candidate_cycle_edges", "source_bindings", "candidate_bindings", "terminal_source_ref", "cleanup_source_ref", "terminal_carrier_ref", "terminal_route_refs", "terminal_subject_id", "terminal_subject_ref"),
         model.SemanticSubjectRef: ("kind", "role", "subject_id", "block_ref", "anchor_ea", "locator"),
         model.PhaseSubjectBinding: ("subject", "phase", "block_ref", "graph_fingerprint", "generation", "status", "serial", "anchor_ea", "native_instruction_eas", "role"),
@@ -487,6 +495,7 @@ def _ensure_registries() -> None:
         model.GenericCfgGateResult: ("gate", "passed", "supported_subject_ids", "refuted_subject_ids", "reason_code"),
         model.ProviderConsensusWitness: ("mode", "provider_ids"),
         model.RetiredDispatcherInfrastructureClaim: ("claim_id", "kind", "infrastructure_subject", "corridor_subject", "member_subjects", "retirement_proof_ids", "source_generation", "retirement_catalog"),
+        model.DetachedDeadHandlerComponentClaim: ("claim_id", "kind", "dispatcher_subject", "dead_handler_subjects", "retained_handler_subjects", "component_subjects", "source_generation"),
         model.EquivalentSemanticRouteClaim: ("claim_id", "kind", "retired_route_subject", "replacement_route_subject", "source_subject", "destination_subjects", "route_proof_ids", "atomic_group_id", "source_generation"),
         model.ExactInfeasibleEffectClaim: ("claim_id", "kind", "effect_subject", "source_subject", "predicate_subject", "selected_target_subject", "discarded_effect_subject", "normalized_state", "state_identity", "width", "source_write_ea", "predicate_branch_ea", "discarded_effect_ea", "selected_edge_role", "route_proof_ids", "consensus", "source_generation"),
         model.LocalAliasEffectScalarizationClaim: ("claim_id", "kind", "owner_subject", "step_index", "host_ea", "host_opcode", "alias_token", "base_token", "host_text_sha1", "value_size", "step_digest", "source_generation"),
@@ -494,7 +503,9 @@ def _ensure_registries() -> None:
         model.UseDefFragmentWitness: ("fragment_id", "state_identity", "redirect_owner_refs", "redirect_digest", "executed", "fragment_atomic", "actionable_non_state_severance_count", "violation_ids"),
         model.SourceBlockIdentityWitness: ("block_ref", "anchor_ea", "native_instruction_eas"),
         model.SourceIdentityCatalog: ("native_key", "generation", "blocks"),
-        model.RetirementProofRecord: ("proof_id", "family", "canonical_payload", "member_refs", "member_anchor_eas", "source_generation", "roles"),
+        model.RetirementProofMember: ("block_ref", "anchor_ea", "retired", "role"),
+        model.RetirementProofContent: ("family", "source_generation", "members"),
+        model.RetirementProofRecord: ("proof_id", "content"),
         model.RetirementMemberCatalogRow: ("block_ref", "anchor_ea", "native_instruction_eas", "source_generation", "retired", "proofs"),
         model.RetirementAuthorityCatalog: ("catalog_id", "source_generation", "members", "proofs"),
         model.AuthoritativeHandlerInput: ("block_ref", "anchor_ea", "normalized_states"),
@@ -518,9 +529,9 @@ def _ensure_registries() -> None:
         model.InventoryTopologyIncidence: ("kind", "owner_serial", "peer_serial", "source_transfer_ea"),
         model.SemanticGraphInventory: ("phase", "graph_fingerprint", "generation", "blocks", "subjects", "bindings", "effects", "terminals", "topology", "inventory_digest", "reachable_serials", "entry_serial", "source_subject_ids", "function_ea"),
         model.ConditionalSubjectRelation: ("source_subject_id", "target_subject_id", "dimension", "provenance_id"),
-            model.PreparationAuthorityReceipt: ("receipt_id", "proposal_id", "plan_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "source_inventory_digest", "candidate_inventory_digest", "source_binding_digest", "candidate_binding_digest", "route_expansion_digest", "effect_catalog_digest", "terminal_catalog_digest", "plan_input_digest", "dispatcher_member_digest", "planned_helper_digest", "patch_step_digest", "conditional_relation_digest", "metrics", "generic_gate_facts_digest", "route_assessment_digest", "retirement_catalog", "corridor_coverage_forecast"),
-            model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_inventory", "candidate_inventory", "source_route_assessment", "candidate_route_assessment", "generic_gate_facts", "conditional_relations", "patch_step_facts", "preparation_metrics", "phase_build_metrics", "corridor_coverage_phase_result", "terminal_cycle_phase_results"),
-        model.SemanticSafetyCase: ("case_id", "authority_id", "preparation_receipt_id", "preparation_receipt", "phase", "source_fingerprint", "candidate_fingerprint", "candidate_generation", "claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications", "obligation_index", "phase_metrics", "source_inventory", "candidate_inventory", "source_subject_ids", "source_bindings", "retirement_catalog", "corridor_coverage_phase_result", "terminal_cycle_phase_results"),
+                model.PreparationAuthorityReceipt: ("receipt_id", "proposal_id", "plan_id", "source_fingerprint", "candidate_fingerprint", "source_generation", "candidate_generation", "source_inventory_digest", "candidate_inventory_digest", "source_binding_digest", "candidate_binding_digest", "route_expansion_digest", "effect_catalog_digest", "terminal_catalog_digest", "plan_input_digest", "dispatcher_member_digest", "planned_helper_digest", "patch_step_digest", "conditional_relation_digest", "projected_topology_reference_digest", "metrics", "generic_gate_facts_digest", "route_assessment_digest", "retirement_catalog", "corridor_coverage_forecast"),
+        model.DerivedUnflattenPreparationInputs: ("proposal", "claims", "preparation_receipt", "source_inventory", "candidate_inventory", "projected_topology_reference", "source_route_assessment", "candidate_route_assessment", "generic_gate_facts", "conditional_relations", "patch_step_facts", "preparation_metrics", "phase_build_metrics", "corridor_coverage_phase_result", "detached_dead_handler_component_source_results", "detached_dead_handler_component_phase_results", "terminal_cycle_phase_results"),
+        model.SemanticSafetyCase: ("case_id", "authority_id", "preparation_receipt_id", "preparation_receipt", "phase", "source_fingerprint", "candidate_fingerprint", "candidate_generation", "claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications", "obligation_index", "phase_metrics", "source_inventory", "candidate_inventory", "source_subject_ids", "source_bindings", "retirement_catalog", "corridor_coverage_phase_result", "detached_dead_handler_component_source_results", "detached_dead_handler_component_phase_results", "terminal_cycle_phase_results"),
         model.UnflattenAuthorityVerdict: ("accepted", "phase", "reason", "authority_id", "binding_id", "case_id", "candidate_fingerprint", "safety_case", "failed_obligations"),
     })
     _EXTERNAL_TYPES.update({
@@ -1077,7 +1088,10 @@ def _case_factory(cls: type[object], **kwargs: object) -> object:
     names = _RECORD_FIELDS.get(cls)
     if cls.__name__ != "SemanticSafetyCase" or names is None:
         raise TypeError("case factory requires SemanticSafetyCase")
-    optional_defaults = {"terminal_cycle_phase_results": ()}
+    optional_defaults = {
+        "detached_dead_handler_component_phase_results": (),
+        "terminal_cycle_phase_results": (),
+    }
     payload_names = tuple(name for name in names if name != "case_id")
     required_names = set(payload_names) - set(optional_defaults)
     if set(kwargs) - set(payload_names) or required_names - set(kwargs):

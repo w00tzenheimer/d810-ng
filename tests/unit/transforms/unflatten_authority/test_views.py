@@ -8,7 +8,7 @@ from .test_evaluate import _complete_inputs, _role_subject, authority_id
 from d810.transforms.unflatten_authority.evaluate import build_semantic_case
 from d810.transforms.unflatten_authority.ids import _subject_factory
 import pytest
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 
 
 def test_views_export_read_only_case_projections() -> None:
@@ -22,6 +22,75 @@ def test_views_export_read_only_case_projections() -> None:
     assert "retirement_rows" in views.__all__
     assert "corridor_coverage_rows" in views.__all__
     assert "terminal_cycle_rows" in views.__all__
+    assert "detached_component_rows" in views.__all__
+    assert callable(views.detached_component_rows)
+
+
+def test_compatibility_projection_is_immutable_and_phase_anchored() -> None:
+    projected = model.UnflattenAuthorityVerdict(
+        False,
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        authority_id("compat-projected-authority"),
+        None,
+        None,
+        authority_id("compat-projected-candidate"),
+        None,
+        (),
+    )
+    observed = model.UnflattenAuthorityVerdict(
+        False,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+        authority_id("compat-observed-authority"),
+        authority_id("compat-observed-binding"),
+        None,
+        authority_id("compat-observed-candidate"),
+        None,
+        (),
+    )
+
+    projected_view = views.compatibility_projection(projected, "removal")
+    observed_view = views.compatibility_projection(observed, "coverage")
+    assert projected_view is not None and observed_view is not None
+    assert projected_view.phase == "projected_preflight"
+    assert projected_view.authority_id == projected.authority_id
+    assert observed_view.phase == "observed_post_apply"
+    assert observed_view.authority_id == observed.authority_id
+    assert observed_view.binding_id == observed.binding_id
+    assert observed_view.to_payload()["validation_status"] == "rejected"
+    assert observed_view.to_payload()["candidate_fingerprint"] == observed.candidate_fingerprint
+    with pytest.raises(FrozenInstanceError):
+        projected_view.passed = False
+    assert views.VIEW_GRAPH_TRAVERSALS == 0
+
+
+def test_compatibility_projection_preserves_case_owned_ids_and_failed_states() -> None:
+    from d810.transforms.unflatten_authority import transaction_api
+    from d810.transforms.cfg_transaction import CfgProjection, TransactionAttemptId
+    from .test_transaction_api import _full_corridor_fixture
+
+    source, plan, projected, gates = _full_corridor_fixture()
+    attempt = TransactionAttemptId(
+        plan.plan_id,
+        authority_id("compat-case-session"),
+        1,
+        authority_id("compat-case-attempt"),
+    )
+    result = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=attempt,
+        generic_gates=gates,
+    )
+    assert result.prepared is not None
+    view = views.compatibility_projection(result.verdict, "coverage")
+    assert view is not None
+    assert view.case_id == result.verdict.case_id
+    assert view.candidate_fingerprint == result.verdict.candidate_fingerprint
+    assert view.failed_obligation_states == ()
+    assert view.to_payload()["case_id"] == result.verdict.case_id
 
 
 def test_terminal_cycle_view_projects_only_cycle_and_terminal_authority() -> None:
@@ -43,6 +112,17 @@ def test_terminal_cycle_view_projects_only_cycle_and_terminal_authority() -> Non
     assert view.route_proof_ids == claim.terminal_route_proof_ids
     assert view.structural_justification_ids
     assert view.terminal_justification_ids
+    terminal_justifications = {
+        item.justification_id: item
+        for item in case.justifications
+        if item.justification_id in view.terminal_justification_ids
+    }
+    assert terminal_justifications
+    assert all(
+        item.claim_id == claim.claim_id
+        and item.rule is model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN
+        for item in terminal_justifications.values()
+    )
 
 
 def test_corridor_coverage_view_projects_the_case_owned_aggregate() -> None:
@@ -107,6 +187,7 @@ def test_semantic_loss_ledger_and_observed_delta_are_closed_projections() -> Non
         model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT,
         model.SemanticLossKind.TERMINAL_CYCLE_BREAK,
         model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION,
+        model.SemanticLossKind.DETACHED_DEAD_HANDLER_COMPONENT,
         model.SemanticLossKind.UNCLASSIFIED,
         model.SemanticLossKind.CONFLICTING,
     )

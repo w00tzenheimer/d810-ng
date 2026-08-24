@@ -42,7 +42,6 @@ from .ids import (
     authority_id,
     bound_unflatten_binding_id,
     canonical_bytes,
-    canonical_decode,
     validate_canonical_roundtrip,
     case_id,
     claim_id,
@@ -52,7 +51,6 @@ from .ids import (
     semantic_graph_inventory_digest,
 )
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
-from .legacy_wire import decode_legacy_value, encode_legacy_value
 from .gates import GenericCfgGateFacts
 
 
@@ -161,6 +159,7 @@ def _structural_key(value: object):
         return ("subject", value.subject_id)
     if type(value) in (
         RetiredDispatcherInfrastructureClaim,
+        DetachedDeadHandlerComponentClaim,
         EquivalentSemanticRouteClaim,
         ExactInfeasibleEffectClaim,
         LocalAliasEffectScalarizationClaim,
@@ -227,6 +226,7 @@ class SemanticSubjectRole(str, Enum):
     NON_STATE_VALUE_FLOW = "non_state_value_flow"
     DISPATCHER_CORRIDOR = "dispatcher_corridor"
     PLANNED_HELPER = "planned_helper"
+    DETACHED_DEAD_HANDLER_COMPONENT = "detached_dead_handler_component"
 
 
 class SafetyDimension(str, Enum):
@@ -262,6 +262,7 @@ class SemanticLossKind(str, Enum):
     EXACT_INFEASIBLE_EFFECT = "exact_infeasible_effect"
     TERMINAL_CYCLE_BREAK = "terminal_cycle_break"
     LOCAL_ALIAS_SCALARIZATION = "local_alias_scalarization"
+    DETACHED_DEAD_HANDLER_COMPONENT = "detached_dead_handler_component"
     UNCLASSIFIED = "unclassified"
     CONFLICTING = "conflicting"
 
@@ -279,6 +280,7 @@ class UnflattenClaimKind(str, Enum):
     EXACT_INFEASIBLE_EFFECT = "exact_infeasible_effect"
     LOCAL_ALIAS_EFFECT_SCALARIZATION = "local_alias_effect_scalarization"
     TERMINAL_CYCLE_BREAK = "terminal_cycle_break"
+    DETACHED_DEAD_HANDLER_COMPONENT = "detached_dead_handler_component"
 
 
 class ProviderConsensusMode(str, Enum):
@@ -340,6 +342,7 @@ class AuthorityEvidenceKind(str, Enum):
     TERMINAL_CYCLE = "terminal_cycle"
     PATCH_STEP = "patch_step"
     GENERIC_CFG_GATE = "generic_cfg_gate"
+    DETACHED_COMPONENT = "detached_component"
 
 
 class UnflattenJustificationRule(str, Enum):
@@ -370,6 +373,7 @@ class UnflattenJustificationRule(str, Enum):
     RESEGMENTATION_LINEAGE_PROVEN = "resegmentation_lineage_proven"
     GENERIC_CFG_GATE_PASSED = "generic_cfg_gate_passed"
     GENERIC_CFG_GATE_FAILED = "generic_cfg_gate_failed"
+    DETACHED_COMPONENT_PROVEN = "detached_component_proven"
 
 
 class UnflattenAuthorityReason(str, Enum):
@@ -798,6 +802,8 @@ class CorridorCoveragePhaseResult:
     source_dispatcher_reachable: bool = False
     candidate_dispatcher_reachable: bool = False
     semantic_exclusion_correlations: tuple[CorridorSemanticExclusionCorrelation, ...] = ()
+    comparison_region_subject_ids: tuple[str, ...] = ()
+    dispatcher_subject_id: str | None = None
 
     def __post_init__(self) -> None:
         _id(self.result_id, "result_id")
@@ -836,7 +842,16 @@ class CorridorCoveragePhaseResult:
         ):
             raise ValueError("semantic exclusion correlation coordinates are stale")
         object.__setattr__(self, "semantic_exclusion_correlations", correlations)
-        if self.result_id != authority_id((
+        comparison_region = _strict_id_tuple(
+            self.comparison_region_subject_ids,
+            "comparison_region_subject_ids",
+        )
+        object.__setattr__(self, "comparison_region_subject_ids", comparison_region)
+        if self.dispatcher_subject_id is not None:
+            _id(self.dispatcher_subject_id, "dispatcher_subject_id")
+            if self.dispatcher_subject_id not in comparison_region:
+                raise ValueError("dispatcher subject must belong to comparison region")
+        canonical_content = (
             "unflatten.corridor-coverage-phase.v1", self.forecast_id,
             self.phase, self.source_fingerprint, self.candidate_fingerprint,
             self.source_generation, self.candidate_generation,
@@ -844,7 +859,12 @@ class CorridorCoveragePhaseResult:
             self.enumeration_complete, self.matched_semantic_exclusion_ids,
             self.source_dispatcher_reachable, self.candidate_dispatcher_reachable,
             tuple(item.content_key for item in correlations),
-        )):
+        )
+        if self.comparison_region_subject_ids:
+            canonical_content = (*canonical_content, self.comparison_region_subject_ids)
+        if self.dispatcher_subject_id is not None:
+            canonical_content = (*canonical_content, self.dispatcher_subject_id)
+        if self.result_id != authority_id(canonical_content):
             raise ValueError("result_id does not match canonical phase result content")
 
     @property
@@ -856,6 +876,182 @@ class CorridorCoveragePhaseResult:
             and not self.residual_path_ids
             and not self.drifted_path_ids
         )
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class DetachedDeadHandlerComponentSourceResult:
+    """Immutable source-side proof material for a detached handler exception.
+
+    This is minted while preparing the projected transaction and is deliberately
+    reused by observed verification; a post-apply graph must never become the
+    source of this allowance.
+    """
+
+    result_id: str
+    claim_id: str
+    corridor_forecast_id: str
+    corridor_coverage_result_id: str
+    source_fingerprint: str
+    source_generation: int
+    dispatcher_subject_id: str
+    dispatcher_block_ref: CfgBlockRef
+    dead_handler_subject_ids: tuple[str, ...]
+    retained_handler_subject_ids: tuple[str, ...]
+    component_subject_ids: tuple[str, ...]
+    comparison_region_subject_ids: tuple[str, ...]
+    source_reachable_subject_ids: tuple[str, ...]
+    dead_handler_block_refs: tuple[CfgBlockRef, ...]
+    retained_handler_block_refs: tuple[CfgBlockRef, ...]
+    comparison_region_block_refs: tuple[CfgBlockRef, ...]
+    terminal_digest: str
+    effect_digest: str
+    topology_digest: str
+    source_reachable_block_refs: tuple[CfgBlockRef, ...]
+    component_block_refs: tuple[CfgBlockRef, ...]
+    remainder_block_refs: tuple[CfgBlockRef, ...]
+    terminal_site_keys: tuple[tuple[object, int, TerminalKind], ...]
+    effect_site_keys: tuple[tuple[object, int, EffectSiteKind], ...]
+    source_blocks: tuple[InventoryBlockObservation, ...]
+
+    def __post_init__(self) -> None:
+        for name in ("result_id", "claim_id", "corridor_forecast_id", "corridor_coverage_result_id", "source_fingerprint", "dispatcher_subject_id", "terminal_digest", "effect_digest", "topology_digest"):
+            _id(getattr(self, name), name)
+        _generation(self.source_generation, "source_generation")
+        _authority_ref(self.dispatcher_block_ref, "dispatcher_block_ref")
+        for name in ("dead_handler_subject_ids", "retained_handler_subject_ids", "component_subject_ids", "comparison_region_subject_ids", "source_reachable_subject_ids"):
+            values = _strict_id_tuple(getattr(self, name), name)
+            if not values:
+                raise ValueError(f"{name} must not be empty")
+            object.__setattr__(self, name, values)
+        for name in (
+            "dead_handler_block_refs", "retained_handler_block_refs",
+            "comparison_region_block_refs", "source_reachable_block_refs",
+            "component_block_refs",
+        ):
+            values = _tuple(getattr(self, name), name)
+            if not values:
+                raise ValueError(f"{name} must not be empty")
+            if any(type(value) not in _CFG_REF_TYPES for value in values):
+                raise TypeError(f"{name} must contain exact CFG block refs")
+            if len(set(values)) != len(values):
+                raise ValueError(f"{name} must not contain duplicate refs")
+            object.__setattr__(self, name, values)
+        remainder = _tuple(self.remainder_block_refs, "remainder_block_refs")
+        if any(type(value) not in _CFG_REF_TYPES for value in remainder):
+            raise TypeError("remainder_block_refs must contain exact CFG block refs")
+        if len(set(remainder)) != len(remainder):
+            raise ValueError("remainder_block_refs must not contain duplicate refs")
+        object.__setattr__(self, "remainder_block_refs", remainder)
+        if set(self.dead_handler_subject_ids) & set(self.retained_handler_subject_ids):
+            raise ValueError("dead and retained handler partitions overlap")
+        if set(self.dead_handler_block_refs) & set(self.retained_handler_block_refs):
+            raise ValueError("dead and retained handler block partitions overlap")
+        if not set(self.dead_handler_block_refs) <= set(self.component_block_refs):
+            raise ValueError("detached component must contain every dead handler")
+        if self.dispatcher_block_ref not in set(self.comparison_region_block_refs):
+            raise ValueError("comparison region must contain the dispatcher")
+        reachable_refs = set(self.source_reachable_block_refs)
+        if not (
+            {self.dispatcher_block_ref}
+            | set(self.dead_handler_block_refs)
+            | set(self.retained_handler_block_refs)
+            | set(self.comparison_region_block_refs)
+            | set(self.component_block_refs)
+            | set(self.remainder_block_refs)
+        ) <= reachable_refs:
+            raise ValueError("detached source facts contain a non-reachable block ref")
+        blocks = _tuple(self.source_blocks, "source_blocks")
+        if any(type(block) is not InventoryBlockObservation for block in blocks):
+            raise TypeError("source_blocks must contain exact inventory block rows")
+        for block in blocks:
+            block.__post_init__()
+        if tuple(block.serial for block in blocks) != tuple(sorted(block.serial for block in blocks)):
+            raise ValueError("source_blocks must be in canonical serial order")
+        if any(block.block_ref is None for block in blocks):
+            raise ValueError("detached source block rows require stable refs")
+        if {block.block_ref for block in blocks} != reachable_refs:
+            raise ValueError("source_blocks must cover the exact reachable source refs")
+        object.__setattr__(self, "source_blocks", blocks)
+        content = ("unflatten.detached-dead-handler-component-source.v2", self.claim_id,
+                   self.corridor_forecast_id, self.corridor_coverage_result_id,
+                   self.source_fingerprint, self.source_generation,
+                   self.dispatcher_subject_id, self.dispatcher_block_ref,
+                   self.dead_handler_subject_ids, self.retained_handler_subject_ids,
+                   self.component_subject_ids, self.comparison_region_subject_ids,
+                   self.source_reachable_subject_ids,
+                   self.dead_handler_block_refs, self.retained_handler_block_refs,
+                   self.comparison_region_block_refs, self.terminal_digest,
+                   self.effect_digest, self.topology_digest,
+                   self.source_reachable_block_refs, self.component_block_refs,
+                   self.remainder_block_refs, self.terminal_site_keys,
+                   self.effect_site_keys, self.source_blocks)
+        if self.result_id != authority_id(content):
+            raise ValueError("result_id does not match canonical detached component source content")
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True)
+class DetachedDeadHandlerComponentPhaseResult:
+    """Sealed binder result for one detached-component claim and phase."""
+
+    result_id: str
+    claim_id: str
+    phase: UnflattenAuthorityPhase
+    corridor_coverage_result_id: str
+    source_fingerprint: str
+    candidate_fingerprint: str
+    source_generation: int
+    candidate_generation: int
+    accepted: bool
+    source_result_id: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("result_id", "claim_id", "corridor_coverage_result_id", "source_fingerprint", "candidate_fingerprint"):
+            _id(getattr(self, name), name)
+        _enum(self.phase, UnflattenAuthorityPhase, "phase")
+        _generation(self.source_generation, "source_generation")
+        _generation(self.candidate_generation, "candidate_generation")
+        if type(self.accepted) is not bool:
+            raise TypeError("accepted must be an exact bool")
+        if self.source_result_id is not None:
+            _id(self.source_result_id, "source_result_id")
+        if self.accepted and self.source_result_id is None:
+            raise ValueError("accepted detached component result requires a sealed source result")
+        if self.result_id != authority_id((
+            "unflatten.detached-dead-handler-component-phase.v1", self.claim_id,
+            self.phase, self.corridor_coverage_result_id, self.source_fingerprint,
+            self.candidate_fingerprint, self.source_generation,
+            self.candidate_generation, self.accepted, self.source_result_id,
+        )):
+            raise ValueError("result_id does not match canonical detached component phase result content")
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedComponentEvidencePayload:
+    """Exact evidence wrapper for one sealed detached-component phase result."""
+
+    phase_result_id: str
+    claim_id: str
+    corridor_coverage_result_id: str
+    phase: UnflattenAuthorityPhase
+    source_fingerprint: str
+    candidate_fingerprint: str
+    source_generation: int
+    candidate_generation: int
+    accepted: bool
+    authorized_subject_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for name in ("phase_result_id", "claim_id", "corridor_coverage_result_id", "source_fingerprint", "candidate_fingerprint"):
+            _id(getattr(self, name), name)
+        _enum(self.phase, UnflattenAuthorityPhase, "phase")
+        _generation(self.source_generation, "source_generation")
+        _generation(self.candidate_generation, "candidate_generation")
+        if type(self.accepted) is not bool:
+            raise TypeError("accepted must be an exact bool")
+        subjects = _strict_id_tuple(self.authorized_subject_ids, "authorized_subject_ids")
+        if not subjects:
+            raise ValueError("authorized_subject_ids must not be empty")
+        object.__setattr__(self, "authorized_subject_ids", subjects)
 
 
 def _terminal_cycle_refs(
@@ -1220,6 +1416,7 @@ _SUBJECT_MATRIX = {
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SOURCE_ENTRY): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_ENTRY): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE): BlockSubjectLocator,
+    (SemanticSubjectKind.BLOCK, SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EFFECT_SITE): BlockSubjectLocator,
@@ -2217,7 +2414,7 @@ AuthorityEvidencePayload: TypeAlias = (
     | StructuralLineageEvidencePayload | SemanticRouteEvidencePayload
     | EffectSiteEvidencePayload | ReachabilityEvidencePayload
     | UseDefAuditEvidencePayload | CorridorCoverageEvidencePayload
-    | TerminalCycleEvidencePayload
+    | TerminalCycleEvidencePayload | DetachedComponentEvidencePayload
     | PatchStepEvidencePayload | GenericCfgGateEvidencePayload
 )
 
@@ -2231,6 +2428,7 @@ _PAYLOAD_BY_KIND = {
     AuthorityEvidenceKind.USE_DEF_AUDIT: UseDefAuditEvidencePayload,
     AuthorityEvidenceKind.CORRIDOR_COVERAGE: CorridorCoverageEvidencePayload,
     AuthorityEvidenceKind.TERMINAL_CYCLE: TerminalCycleEvidencePayload,
+    AuthorityEvidenceKind.DETACHED_COMPONENT: DetachedComponentEvidencePayload,
     AuthorityEvidenceKind.PATCH_STEP: PatchStepEvidencePayload,
     AuthorityEvidenceKind.GENERIC_CFG_GATE: GenericCfgGateEvidencePayload,
 }
@@ -2449,6 +2647,46 @@ class RetiredDispatcherInfrastructureClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class DetachedDeadHandlerComponentClaim:
+    """Frozen producer claim for one exact detached dead-handler component.
+
+    The claim intentionally carries only source-catalog subjects.  Candidate
+    topology, reachability, effects, and terminal equivalence are all bound
+    later by the transaction authority.
+    """
+
+    claim_id: str
+    kind: Literal[UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT]
+    dispatcher_subject: SemanticSubjectRef
+    dead_handler_subjects: tuple[SemanticSubjectRef, ...]
+    retained_handler_subjects: tuple[SemanticSubjectRef, ...]
+    component_subjects: tuple[SemanticSubjectRef, ...]
+    source_generation: int
+
+    def __post_init__(self) -> None:
+        _claim_common(self.claim_id, self.kind, UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT, self.source_generation)
+        _claim_subject(self.dispatcher_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_ENTRY, BlockSubjectLocator, "dispatcher_subject")
+        dead = _tuple(self.dead_handler_subjects, "dead_handler_subjects", sort=True)
+        retained = _tuple(self.retained_handler_subjects, "retained_handler_subjects", sort=True)
+        component = _tuple(self.component_subjects, "component_subjects", sort=True)
+        if not dead or not retained or not component:
+            raise ValueError("detached component claim requires dead, retained, and component subjects")
+        for subject in (*dead, *retained):
+            _claim_subject(subject, SemanticSubjectKind.HANDLER, SemanticSubjectRole.AUTHORITATIVE_HANDLER, HandlerSubjectLocator, "handler_subject")
+        for subject in component:
+            _claim_subject(subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT, BlockSubjectLocator, "component_subject")
+        if {subject.subject_id for subject in dead} & {subject.subject_id for subject in retained}:
+            raise ValueError("dead and retained handler subjects overlap")
+        if not {subject.block_ref for subject in dead} <= {subject.block_ref for subject in component}:
+            raise ValueError("component subjects must contain every dead handler")
+        object.__setattr__(self, "dead_handler_subjects", dead)
+        object.__setattr__(self, "retained_handler_subjects", retained)
+        object.__setattr__(self, "component_subjects", component)
+        if self.claim_id != claim_id(self):
+            raise ValueError("claim_id does not match canonical claim content")
+
+
+@dataclass(frozen=True, slots=True)
 class EquivalentSemanticRouteClaim:
     claim_id: str
     kind: Literal[UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE]
@@ -2624,7 +2862,7 @@ class TerminalCycleBreakClaim:
 
 
 ProducerUnflattenClaim: TypeAlias = (
-    RetiredDispatcherInfrastructureClaim | EquivalentSemanticRouteClaim
+    RetiredDispatcherInfrastructureClaim | DetachedDeadHandlerComponentClaim | EquivalentSemanticRouteClaim
     | ExactInfeasibleEffectClaim | TerminalCycleBreakClaim
 )
 TransactionDerivedUnflattenClaim: TypeAlias = LocalAliasEffectScalarizationClaim
@@ -2717,109 +2955,39 @@ class SourceIdentityCatalog:
 
 
 @dataclass(frozen=True, slots=True)
-class RetirementProofRecord:
-    """Closed proof content attached to an exact retirement catalog row.
+class RetirementProofMember:
+    """One ordered, typed member of a retirement proof."""
 
-    The proof ID is derived from the immutable payload digest and its ordered
-    member/anchor projection.  Callers therefore cannot mint an arbitrary
-    proof identifier and have it treated as retirement authority.
-    """
-
-    proof_id: str
-    family: RetirementProofFamily
-    canonical_payload: bytes
-    member_refs: tuple[NativeBlockRef | LogicalBlockRef, ...]
-    member_anchor_eas: tuple[int, ...]
-    source_generation: int
-    roles: tuple[str, ...]
+    block_ref: NativeBlockRef | LogicalBlockRef
+    anchor_ea: int
+    retired: bool
+    role: str
 
     def __post_init__(self) -> None:
-        _id(self.proof_id, "proof_id")
+        _authority_ref(self.block_ref, "block_ref")
+        _ea(self.anchor_ea, "anchor_ea")
+        if type(self.retired) is not bool:
+            raise TypeError("retired must be an exact bool")
+        if type(self.role) is not str or not self.role.strip():
+            raise ValueError("role must be a non-empty exact str")
+
+
+@dataclass(frozen=True, slots=True)
+class RetirementProofContent:
+    """Closed authority content for one ordered retirement proof."""
+
+    family: RetirementProofFamily
+    source_generation: int
+    members: tuple[RetirementProofMember, ...]
+
+    def __post_init__(self) -> None:
         _enum(self.family, RetirementProofFamily, "family")
-        if type(self.canonical_payload) is not bytes or not self.canonical_payload:
-            raise TypeError("canonical_payload must be non-empty exact bytes")
-        try:
-            decoded_payload = decode_legacy_value(self.canonical_payload)
-        except Exception as exc:
-            raise ValueError("canonical_payload must be valid legacy wire bytes") from exc
-        if type(decoded_payload) is not dict or set(decoded_payload) != {
-            "family", "source_generation", "members", "family_payload",
-        }:
-            raise ValueError("canonical_payload must be a closed retirement proof envelope")
-        if decoded_payload["family"] != self.family.value:
-            raise ValueError("retirement proof payload family disagrees with record")
-        if decoded_payload["source_generation"] != self.source_generation:
-            raise ValueError("retirement proof payload generation disagrees with record")
-        raw_members = decoded_payload["members"]
-        if type(raw_members) is not tuple:
-            raise ValueError("retirement proof payload members must preserve tuple order")
-        decoded_members = []
-        for raw_member in raw_members:
-            if type(raw_member) is not dict or set(raw_member) != {
-                "ref", "anchor_ea", "retired", "role",
-            }:
-                raise ValueError("retirement proof payload member is malformed")
-            if type(raw_member["ref"]) is not bytes:
-                raise ValueError("retirement proof payload ref is malformed")
-            if type(raw_member["anchor_ea"]) is not int or raw_member["anchor_ea"] < 0:
-                raise ValueError("retirement proof payload anchor is malformed")
-            if type(raw_member["retired"]) is not bool:
-                raise ValueError("retirement proof payload retired flag is malformed")
-            if type(raw_member["role"]) is not str or not raw_member["role"].strip():
-                raise ValueError("retirement proof payload role is malformed")
-            try:
-                ref = canonical_decode(raw_member["ref"])
-            except Exception as exc:
-                raise ValueError("retirement proof payload ref is not canonical") from exc
-            if type(ref) not in (NativeBlockRef, LogicalBlockRef):
-                raise ValueError("retirement proof payload ref is not an authority ref")
-            decoded_members.append((ref, raw_member["anchor_ea"], raw_member["retired"], raw_member["role"]))
-        if decoded_members != list(zip(self.member_refs, self.member_anchor_eas,
-                                       tuple(raw["retired"] for raw in raw_members), self.roles)):
-            raise ValueError("retirement proof payload members disagree with record")
-        family_payload = decoded_payload["family_payload"]
-        if type(family_payload) is not dict or set(family_payload) != {self.family.value}:
-            raise ValueError("retirement proof payload family content is malformed")
-        raw_rows = family_payload[self.family.value]
-        if type(raw_rows) is not tuple or len(raw_rows) != len(decoded_members):
-            raise ValueError("retirement proof family rows must preserve exact tuple order")
-        for raw_row, (_ref, anchor, retired, role) in zip(raw_rows, decoded_members):
-            if type(raw_row) is not dict or set(raw_row) != {"role", "anchor_ea", "retired"}:
-                raise ValueError("retirement proof family row is malformed")
-            if (
-                type(raw_row["role"]) is not str
-                or type(raw_row["anchor_ea"]) is not int
-                or raw_row["anchor_ea"] < 0
-                or type(raw_row["retired"]) is not bool
-            ):
-                raise ValueError("retirement proof family row has non-canonical fields")
-            if (
-                raw_row["role"] != role
-                or raw_row["anchor_ea"] != anchor
-                or raw_row["retired"] != retired
-            ):
-                raise ValueError("retirement proof family row disagrees with payload member")
-        if encode_legacy_value(decoded_payload) != self.canonical_payload:
-            raise ValueError("canonical_payload is not byte-canonical")
-        if type(self.member_refs) is not tuple:
-            raise TypeError("member_refs must be an exact tuple")
-        refs = self.member_refs
-        if not refs:
+        _generation(self.source_generation, "source_generation")
+        members = _tuple(self.members, "members")
+        if not members:
             raise ValueError("retirement proof must cover at least one member")
-        for ref in refs:
-            _authority_ref(ref, "member_refs item")
-        if type(self.member_anchor_eas) is not tuple:
-            raise TypeError("member_anchor_eas must be an exact tuple")
-        anchors = self.member_anchor_eas
-        if len(anchors) != len(refs):
-            raise ValueError("retirement proof refs and anchors must be one-to-one")
-        for anchor in anchors:
-            _ea(anchor, "member_anchor_eas item")
-        if type(self.roles) is not tuple:
-            raise TypeError("roles must be an exact tuple")
-        roles = self.roles
-        if len(roles) != len(refs) or any(type(role) is not str or not role.strip() for role in roles):
-            raise ValueError("retirement proof roles must match ordered members")
+        if any(type(member) is not RetirementProofMember for member in members):
+            raise TypeError("members must contain RetirementProofMember values")
         allowed_roles = {
             RetirementProofFamily.RETIRED_INFRASTRUCTURE: {
                 "comparison_dispatcher", "comparison_corridor", "dispatcher_feeder", "state_merge",
@@ -2829,19 +2997,60 @@ class RetirementProofRecord:
             },
             RetirementProofFamily.RETIRED_CORRIDOR: {"comparison_corridor"},
         }[self.family]
-        if any(role not in allowed_roles for role in roles):
+        if any(member.role not in allowed_roles for member in members):
             raise ValueError("retirement proof role is not valid for its family")
-        _generation(self.source_generation, "source_generation")
+        refs = tuple(member.block_ref for member in members)
+        anchors = tuple(member.anchor_ea for member in members)
         if len(set(refs)) != len(refs):
             raise ValueError("retirement proof member refs must be unique")
         if len(set(anchors)) != len(anchors):
             raise ValueError("retirement proof anchors must be unique")
-        object.__setattr__(self, "member_refs", refs)
-        object.__setattr__(self, "member_anchor_eas", anchors)
-        object.__setattr__(self, "roles", roles)
+        object.__setattr__(self, "members", members)
+
+
+@dataclass(frozen=True, slots=True)
+class RetirementProofRecord:
+    """Closed proof content attached to an exact retirement catalog row.
+
+    The proof ID is derived from the immutable payload digest and its ordered
+    member/anchor projection.  Callers therefore cannot mint an arbitrary
+    proof identifier and have it treated as retirement authority.
+    """
+
+    proof_id: str
+    content: RetirementProofContent
+
+    def __post_init__(self) -> None:
+        _id(self.proof_id, "proof_id")
+        if type(self.content) is not RetirementProofContent:
+            raise TypeError("content must be a RetirementProofContent")
         expected = authority_id(("unflatten.retirement-proof.v3", self.canonical_payload))
         if self.proof_id != expected:
             raise ValueError("proof_id does not match closed proof content")
+
+    @property
+    def family(self) -> RetirementProofFamily:
+        return self.content.family
+
+    @property
+    def member_refs(self) -> tuple[NativeBlockRef | LogicalBlockRef, ...]:
+        return tuple(member.block_ref for member in self.content.members)
+
+    @property
+    def member_anchor_eas(self) -> tuple[int, ...]:
+        return tuple(member.anchor_ea for member in self.content.members)
+
+    @property
+    def source_generation(self) -> int:
+        return self.content.source_generation
+
+    @property
+    def roles(self) -> tuple[str, ...]:
+        return tuple(member.role for member in self.content.members)
+
+    @property
+    def canonical_payload(self) -> bytes:
+        return canonical_bytes(self.content)
 
     @property
     def content_digest(self) -> str:
@@ -2849,9 +3058,7 @@ class RetirementProofRecord:
 
     @property
     def _decoded_retired_flags(self) -> tuple[bool, ...]:
-        decoded = decode_legacy_value(self.canonical_payload)
-        rows = decoded["family_payload"][self.family.value]
-        return tuple(row["retired"] for row in rows)
+        return tuple(member.retired for member in self.content.members)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3017,10 +3224,6 @@ class LegacyShadowEntry:
             raise ValueError("key is not a reserved unflatten metadata key")
         if type(self.canonical_payload) is not bytes or not self.canonical_payload:
             raise TypeError("canonical_payload must be non-empty exact bytes")
-        try:
-            decode_legacy_value(self.canonical_payload)
-        except Exception as exc:
-            raise ValueError("canonical_payload must be canonical bytes") from exc
         if (
             type(self.payload_sha256) is not str
             or len(self.payload_sha256) != 64
@@ -3150,7 +3353,7 @@ class ProposedUnflattenContract:
         if not claims:
             raise ValueError("proposal requires at least one claim")
         for claim in claims:
-            if type(claim) not in (RetiredDispatcherInfrastructureClaim, EquivalentSemanticRouteClaim, ExactInfeasibleEffectClaim, TerminalCycleBreakClaim):
+            if type(claim) not in (RetiredDispatcherInfrastructureClaim, DetachedDeadHandlerComponentClaim, EquivalentSemanticRouteClaim, ExactInfeasibleEffectClaim, TerminalCycleBreakClaim):
                 raise TypeError("claims must contain producer claims only")
         if len({claim.claim_id for claim in claims}) != len(claims):
             raise ValueError("claims must not contain duplicate IDs")
@@ -3251,6 +3454,29 @@ class ProposedUnflattenContract:
         handler_refs = {
             handler.block_ref for handler in self.plan_inputs.authoritative_handlers
         }
+        for detached_claim in (
+            claim
+            for claim in claims
+            if type(claim) is DetachedDeadHandlerComponentClaim
+        ):
+            claimed_handler_refs = {
+                subject.block_ref
+                for subject in (
+                    *detached_claim.dead_handler_subjects,
+                    *detached_claim.retained_handler_subjects,
+                )
+            }
+            if claimed_handler_refs != handler_refs:
+                raise ValueError(
+                    "detached handler partitions must cover the exact authoritative handler catalog"
+                )
+            if (
+                detached_claim.dispatcher_subject.block_ref
+                != self.plan_inputs.dispatcher_entry_ref
+            ):
+                raise ValueError(
+                    "detached dispatcher must match the exact plan dispatcher entry"
+                )
         if handler_refs & retired_refs:
             raise ValueError("authoritative handlers must be disjoint from retired infrastructure")
         if self.plan_inputs.shape is UnflattenPlanShape.EXACT_EFFECT_ONLY:
@@ -3264,6 +3490,7 @@ class ProposedUnflattenContract:
                 UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
                 UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
                 UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
+                UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT,
             }):
                 raise ValueError("partial rewrite requires route, retirement, or terminal-cycle claims")
             if not dispatcher_member_refs - retired_refs:
@@ -3376,6 +3603,7 @@ _LOSS_RULE_KIND = {
     UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN: SemanticLossKind.EXACT_INFEASIBLE_EFFECT,
     UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN: SemanticLossKind.TERMINAL_CYCLE_BREAK,
     UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN: SemanticLossKind.LOCAL_ALIAS_SCALARIZATION,
+    UnflattenJustificationRule.DETACHED_COMPONENT_PROVEN: SemanticLossKind.DETACHED_DEAD_HANDLER_COMPONENT,
 }
 _LOSS_RULE_CLAIMS = {
     UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN: (RetiredDispatcherInfrastructureClaim,),
@@ -3383,6 +3611,7 @@ _LOSS_RULE_CLAIMS = {
     UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN: (ExactInfeasibleEffectClaim,),
     UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN: (TerminalCycleBreakClaim,),
     UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN: (LocalAliasEffectScalarizationClaim,),
+    UnflattenJustificationRule.DETACHED_COMPONENT_PROVEN: (DetachedDeadHandlerComponentClaim,),
 }
 
 
@@ -3507,7 +3736,7 @@ class SemanticLossRow:
             raise ValueError("justification premise is outside exact row evidence")
         expected_claim_ids = tuple(sorted({item.claim_id for item in justifications if item.claim_id is not None}))
         claim_types = (
-            RetiredDispatcherInfrastructureClaim, EquivalentSemanticRouteClaim,
+            RetiredDispatcherInfrastructureClaim, DetachedDeadHandlerComponentClaim, EquivalentSemanticRouteClaim,
             ExactInfeasibleEffectClaim, LocalAliasEffectScalarizationClaim,
             TerminalCycleBreakClaim,
         )
@@ -4446,6 +4675,7 @@ class PreparationAuthorityReceipt:
     planned_helper_digest: str
     patch_step_digest: str
     conditional_relation_digest: str
+    projected_topology_reference_digest: str
     metrics: PreparationBuildMetrics
     generic_gate_facts_digest: str | None = None
     route_assessment_digest: str | None = None
@@ -4478,6 +4708,10 @@ class PreparationAuthorityReceipt:
             value = getattr(self, name)
             if value is not None:
                 _id(value, name)
+        _id(
+            self.projected_topology_reference_digest,
+            "projected_topology_reference_digest",
+        )
         if self.retirement_catalog is not None and type(self.retirement_catalog) is not RetirementAuthorityCatalog:
             raise TypeError("retirement_catalog must be RetirementAuthorityCatalog or None")
         if self.corridor_coverage_forecast is not None:
@@ -4517,7 +4751,7 @@ class PreparationAuthorityReceipt:
                 "effect_catalog_digest", "terminal_catalog_digest",
                 "plan_input_digest", "dispatcher_member_digest",
                 "planned_helper_digest", "patch_step_digest",
-                "conditional_relation_digest", "metrics",
+                "conditional_relation_digest", "projected_topology_reference_digest", "metrics",
                 "generic_gate_facts_digest", "route_assessment_digest", "retirement_catalog",
                 "corridor_coverage_forecast",
             )
@@ -4661,6 +4895,7 @@ class DerivedUnflattenPreparationInputs:
     preparation_receipt: PreparationAuthorityReceipt
     source_inventory: SemanticGraphInventory
     candidate_inventory: SemanticGraphInventory
+    projected_topology_reference: SemanticGraphInventory
     source_route_assessment: CanonicalRouteAssessment | None
     candidate_route_assessment: CanonicalRouteAssessment | None
     generic_gate_facts: GenericCfgGateFacts | None
@@ -4669,6 +4904,8 @@ class DerivedUnflattenPreparationInputs:
     preparation_metrics: PreparationBuildMetrics
     phase_build_metrics: PhaseBuildMetrics
     corridor_coverage_phase_result: CorridorCoveragePhaseResult | None = None
+    detached_dead_handler_component_source_results: tuple[DetachedDeadHandlerComponentSourceResult, ...] = ()
+    detached_dead_handler_component_phase_results: tuple[DetachedDeadHandlerComponentPhaseResult, ...] = ()
     terminal_cycle_phase_results: tuple[TerminalCyclePhaseResult, ...] = ()
 
     def __post_init__(self) -> None:
@@ -4680,6 +4917,7 @@ class DerivedUnflattenPreparationInputs:
             raise TypeError("claims must be an exact tuple")
         for claim in self.claims:
             if type(claim) not in (RetiredDispatcherInfrastructureClaim,
+                                   DetachedDeadHandlerComponentClaim,
                                    EquivalentSemanticRouteClaim, ExactInfeasibleEffectClaim,
                                    LocalAliasEffectScalarizationClaim, TerminalCycleBreakClaim):
                 raise TypeError("claims must contain closed UnflattenClaim values")
@@ -4688,6 +4926,25 @@ class DerivedUnflattenPreparationInputs:
             if type(inventory) is not SemanticGraphInventory:
                 raise TypeError(f"{name} must be SemanticGraphInventory")
             validate_semantic_graph_inventory(inventory)
+        reference = self.projected_topology_reference
+        if type(reference) is not SemanticGraphInventory:
+            raise TypeError("projected_topology_reference must be SemanticGraphInventory")
+        validate_semantic_graph_inventory(reference)
+        if reference.phase is not UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+            raise ValueError("projected topology reference must be projected preflight")
+        if (
+            reference.function_ea != self.source_inventory.function_ea
+            or reference.function_ea != self.candidate_inventory.function_ea
+        ):
+            raise ValueError("projected topology reference function EA differs from inventory")
+        if reference.source_subject_ids != self.source_inventory.source_subject_ids:
+            raise ValueError("projected topology reference subject partition differs")
+        phase = self.phase_build_metrics.phase
+        if phase is UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+            if reference is not self.candidate_inventory:
+                raise ValueError("projected phase must reference its candidate inventory")
+            if reference.generation != self.candidate_inventory.generation:
+                raise ValueError("projected topology reference generation differs from candidate")
         forecast = self.proposal.corridor_coverage_forecast
         if forecast is not None and not (
             forecast.function_ea == self.source_inventory.function_ea
@@ -4744,6 +5001,46 @@ class DerivedUnflattenPreparationInputs:
                 raise ValueError("corridor phase result coordinates are not sealed to inventories and receipt")
         elif self.proposal.corridor_coverage_forecast is not None:
             raise ValueError("typed corridor forecast requires a bound phase result")
+        source_results = _tuple(
+            self.detached_dead_handler_component_source_results,
+            "detached_dead_handler_component_source_results", sort=True,
+        )
+        if any(type(item) is not DetachedDeadHandlerComponentSourceResult for item in source_results):
+            raise TypeError("detached source results must be closed")
+        for item in source_results:
+            item.__post_init__()
+            if (
+                item.source_fingerprint != self.source_inventory.graph_fingerprint
+                or item.source_generation != self.source_inventory.generation
+                or self.corridor_coverage_phase_result is None
+                or item.corridor_forecast_id
+                != self.corridor_coverage_phase_result.forecast_id
+            ):
+                raise ValueError("detached source result is not sealed to preparation authority")
+            if (
+                self.phase_build_metrics.phase
+                is UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+                and item.corridor_coverage_result_id
+                != self.corridor_coverage_phase_result.result_id
+            ):
+                raise ValueError(
+                    "projected detached source result differs from its minting corridor result"
+                )
+        phase_results = _tuple(
+            self.detached_dead_handler_component_phase_results,
+            "detached_dead_handler_component_phase_results", sort=True,
+        )
+        if any(type(item) is not DetachedDeadHandlerComponentPhaseResult for item in phase_results):
+            raise TypeError("detached phase results must be closed")
+        by_claim = {item.claim_id: item for item in source_results}
+        for item in phase_results:
+            item.__post_init__()
+            if item.accepted and by_claim.get(item.claim_id) is None:
+                raise ValueError("accepted detached phase result lacks sealed source result")
+            if item.accepted and item.source_result_id != by_claim[item.claim_id].result_id:
+                raise ValueError("detached phase result source authority drifted")
+        object.__setattr__(self, "detached_dead_handler_component_source_results", source_results)
+        object.__setattr__(self, "detached_dead_handler_component_phase_results", phase_results)
         terminal_results = _validate_terminal_cycle_phase_results(
             self.terminal_cycle_phase_results,
             self.claims,
@@ -4802,6 +5099,8 @@ class DerivedUnflattenPreparationInputs:
             raise ValueError("receipt source inventory digest does not match inventory")
         if self.preparation_receipt.candidate_inventory_digest != self.candidate_inventory.inventory_digest:
             raise ValueError("receipt candidate inventory digest does not match inventory")
+        if self.preparation_receipt.projected_topology_reference_digest != reference.inventory_digest:
+            raise ValueError("receipt projected topology reference digest does not match reference")
 
 
 @dataclass(frozen=True, slots=True)
@@ -4829,6 +5128,8 @@ class SemanticSafetyCase:
     source_bindings: tuple[PhaseSubjectBinding, ...] = ()
     retirement_catalog: RetirementAuthorityCatalog | None = None
     corridor_coverage_phase_result: CorridorCoveragePhaseResult | None = None
+    detached_dead_handler_component_source_results: tuple[DetachedDeadHandlerComponentSourceResult, ...] = ()
+    detached_dead_handler_component_phase_results: tuple[DetachedDeadHandlerComponentPhaseResult, ...] = ()
     terminal_cycle_phase_results: tuple[TerminalCyclePhaseResult, ...] = ()
 
     def __post_init__(self) -> None:
@@ -4865,6 +5166,52 @@ class SemanticSafetyCase:
                 raise ValueError("case corridor phase result coordinates are not sealed")
         elif self.preparation_receipt.corridor_coverage_forecast is not None:
             raise ValueError("typed corridor forecast requires a case-owned phase result")
+        source_results = _tuple(
+            self.detached_dead_handler_component_source_results,
+            "detached_dead_handler_component_source_results", sort=True,
+        )
+        if any(type(item) is not DetachedDeadHandlerComponentSourceResult for item in source_results):
+            raise TypeError("case detached source results must be closed")
+        source_by_claim: dict[str, DetachedDeadHandlerComponentSourceResult] = {}
+        for item in source_results:
+            item.__post_init__()
+            if item.claim_id in source_by_claim:
+                raise ValueError("case detached source authority is ambiguous")
+            if (
+                item.source_fingerprint != self.source_inventory.graph_fingerprint
+                or item.source_generation != self.source_inventory.generation
+                or self.corridor_coverage_phase_result is None
+                or item.corridor_forecast_id
+                != self.corridor_coverage_phase_result.forecast_id
+            ):
+                raise ValueError("case detached source result has foreign coordinates")
+            if (
+                self.phase is UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+                and item.corridor_coverage_result_id
+                != self.corridor_coverage_phase_result.result_id
+            ):
+                raise ValueError("case projected detached source result has foreign corridor authority")
+            source_by_claim[item.claim_id] = item
+        phase_results = _tuple(
+            self.detached_dead_handler_component_phase_results,
+            "detached_dead_handler_component_phase_results", sort=True,
+        )
+        if any(type(item) is not DetachedDeadHandlerComponentPhaseResult for item in phase_results):
+            raise TypeError("case detached phase results must be closed")
+        for item in phase_results:
+            item.__post_init__()
+            source_result = source_by_claim.get(item.claim_id)
+            if item.accepted and (
+                source_result is None
+                or item.source_result_id != source_result.result_id
+            ):
+                raise ValueError("case detached phase result lacks its exact source authority")
+        object.__setattr__(
+            self, "detached_dead_handler_component_source_results", source_results,
+        )
+        object.__setattr__(
+            self, "detached_dead_handler_component_phase_results", phase_results,
+        )
         terminal_results = _validate_terminal_cycle_phase_results(
             self.terminal_cycle_phase_results,
             self.claims,
@@ -4897,7 +5244,7 @@ class SemanticSafetyCase:
         _generation(self.candidate_generation, "candidate_generation")
         for name in ("claims", "subjects", "bindings", "conditional_relations", "required_obligations", "evidence", "justifications"):
             object.__setattr__(self, name, _tuple(getattr(self, name), name))
-        if any(type(claim) not in (RetiredDispatcherInfrastructureClaim, EquivalentSemanticRouteClaim, ExactInfeasibleEffectClaim, LocalAliasEffectScalarizationClaim, TerminalCycleBreakClaim) for claim in self.claims):
+        if any(type(claim) not in (RetiredDispatcherInfrastructureClaim, DetachedDeadHandlerComponentClaim, EquivalentSemanticRouteClaim, ExactInfeasibleEffectClaim, LocalAliasEffectScalarizationClaim, TerminalCycleBreakClaim) for claim in self.claims):
             raise TypeError("claims must contain closed UnflattenClaim values")
         if any(type(subject) is not SemanticSubjectRef for subject in self.subjects):
             raise TypeError("subjects must contain SemanticSubjectRef values")
@@ -5149,7 +5496,6 @@ class PreparedUnflattenAuthority:
     source_inventory: SemanticGraphInventory
     source_inputs: DerivedUnflattenPreparationInputs | None = None
     preparation_attempt_id: TransactionAttemptId | None = None
-    legacy_unflatten_shadow: LegacyUnflattenShadowEnvelope | None = None
     source_route_assessment: CanonicalRouteAssessment | None = None
     projected_route_assessment: CanonicalRouteAssessment | None = None
 
@@ -5232,19 +5578,6 @@ class PreparedUnflattenAuthority:
                 raise ValueError("prepared projected route assessment does not match authority")
         if self.preparation_attempt_id is not None and type(self.preparation_attempt_id) is not TransactionAttemptId:
             raise TypeError("preparation_attempt_id must be TransactionAttemptId or None")
-        owning_shadow = getattr(self.owning_plan, "legacy_unflatten_shadow", None)
-        if self.legacy_unflatten_shadow is not owning_shadow:
-            raise ValueError("prepared shadow must be the owning plan shadow object")
-        if self.legacy_unflatten_shadow is not None:
-            if type(self.legacy_unflatten_shadow) is not LegacyUnflattenShadowEnvelope:
-                raise TypeError("legacy_unflatten_shadow must be LegacyUnflattenShadowEnvelope or None")
-            LegacyUnflattenShadowEnvelope.__post_init__(self.legacy_unflatten_shadow)
-            if self.legacy_unflatten_shadow.plan_id != self.owning_plan.plan_id:
-                raise ValueError("prepared shadow plan does not match owning plan")
-            if self.legacy_unflatten_shadow.snapshot_id != self.owning_plan.snapshot_id:
-                raise ValueError("prepared shadow snapshot does not match owning plan")
-            if self.owning_plan.source_generation is not None and self.legacy_unflatten_shadow.source_generation != self.owning_plan.source_generation:
-                raise ValueError("prepared shadow generation does not match owning plan")
         if self.owning_plan.plan_id != self.proposal.plan_id:
             raise ValueError("owning plan does not match proposal")
         if self.preparation_attempt_id is not None:
@@ -5389,11 +5722,6 @@ class BoundUnflattenAuthority:
             raise ValueError("patch binding plan does not match prepared authority")
         if self.patch_binding.plan.unflatten_proposal is not self.prepared.proposal:
             raise ValueError("patch binding proposal does not match prepared authority")
-        if (
-            self.patch_binding.plan.legacy_unflatten_shadow
-            is not self.prepared.legacy_unflatten_shadow
-        ):
-            raise ValueError("patch binding shadow does not match prepared authority")
         if self.patch_binding.attempt_id is not self.attempt_id:
             raise ValueError("patch binding attempt does not match authority")
         if (

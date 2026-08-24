@@ -8,18 +8,18 @@ the same closed canonical wire format used by authority records.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import hashlib
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
 )
-from d810.core.typing import Any, Literal, TypeAlias
+from d810.core.typing import Literal, TypeAlias
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.block_identity import StableBlockIdentity
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
-from d810.transforms.plan import PatchPlan, normalized_metadata_items
+from d810.transforms.plan import normalized_metadata_items
 from d810.ir.storage_identity import storage_identity_from_record
 from d810.analyses.control_flow.effect_branch_exclusion import ExactStateBranchEffectExclusion
 
@@ -46,11 +46,12 @@ from .model import (
     CorridorSubjectLocator,
     EquivalentSemanticRouteClaim,
     EffectSubjectLocator,
-    LegacyShadowEntry,
     LegacyUnflattenShadowEnvelope,
     ProposedUnflattenContract,
     RetirementAuthorityCatalog,
     RetirementMemberCatalogRow,
+    RetirementProofContent,
+    RetirementProofMember,
     RetirementProofFamily,
     RetirementProofRecord,
     RetiredDispatcherInfrastructureClaim,
@@ -317,7 +318,7 @@ def _exact_generation(value: object, label: str) -> None:
 
 
 def _metadata(metadata: object) -> tuple[tuple[object, object], ...]:
-    """Use PatchPlan's one stable parser, retaining order and duplicates."""
+    """Use the stable legacy metadata parser, retaining order and duplicates."""
 
     try:
         items = normalized_metadata_items(metadata)
@@ -327,58 +328,6 @@ def _metadata(metadata: object) -> tuple[tuple[object, object], ...]:
         if type(key) is not str:
             raise TypeError("legacy metadata keys must be exact str")
     return items
-
-
-def capture_legacy_unflatten_shadow(
-    *,
-    plan_id: str,
-    snapshot_id: str,
-    source_generation: int,
-    metadata: tuple[tuple[str, object], ...],
-) -> tuple[tuple[tuple[str, object], ...], LegacyUnflattenShadowEnvelope | None]:
-    """Capture reserved values and return metadata safe for a typed plan.
-
-    Ordinary entries are returned as the exact parsed pair objects.  Reserved
-    entries are each captured once, sorted in the closed envelope, and removed
-    from the top-level metadata channel.
-    """
-
-    _exact_text(plan_id, "plan_id")
-    _exact_text(snapshot_id, "snapshot_id")
-    _exact_generation(source_generation, "source_generation")
-    items = _metadata(metadata)
-    reserved: dict[str, object] = {}
-    ordinary: list[tuple[str, object]] = []
-    for key, value in items:
-        if key not in LEGACY_RESERVED_KEYS:
-            ordinary.append((key, value))
-            continue
-        if key in reserved:
-            raise ValueError("reserved legacy metadata key occurs more than once")
-        # canonical_bytes is deliberately called on the exact current value;
-        # it rejects open/hostile objects instead of coercing them.
-        canonical_payload = encode_legacy_value(value)
-        reserved[key] = (value, canonical_payload)
-
-    if not reserved:
-        return tuple(ordinary), None
-
-    entries = tuple(
-        LegacyShadowEntry(
-            key,
-            payload,
-            hashlib.sha256(payload).hexdigest(),
-        )
-        for key, (_value, payload) in sorted(reserved.items())
-    )
-    envelope = LegacyUnflattenShadowEnvelope(
-        1,
-        plan_id,
-        snapshot_id,
-        source_generation,
-        entries,
-    )
-    return tuple(ordinary), envelope
 
 
 def decode_legacy_canonical_payload(payload: bytes) -> object:
@@ -750,31 +699,19 @@ def retirement_claim_from_legacy_proof(
     family = RetirementProofFamily(present[0])
     # Legacy serials and proof IDs are transport-only.  The authority payload
     # retains only closed family semantics after exact catalog resolution.
-    family_payload = {
-        present[0]: tuple({
-            "role": role,
-            "anchor_ea": ea,
-            "retired": declared_retired[ref],
-        } for role, ea, ref in rows),
-    }
-    canonical_payload = encode_legacy_value({
-        "family": family.value,
-        "source_generation": proposal.source_identity_catalog.generation,
-        "members": tuple({
-            "ref": canonical_bytes(ref),
-            "anchor_ea": ea,
-            "retired": declared_retired[ref],
-            "role": role,
-        } for role, ea, ref in rows),
-        "family_payload": family_payload,
-    })
+    content = RetirementProofContent(
+        family,
+        proposal.source_identity_catalog.generation,
+        tuple(
+            RetirementProofMember(ref, ea, declared_retired[ref], role)
+            for role, ea, ref in rows
+        ),
+    )
     proof = RetirementProofRecord(
-        proof_id=authority_id(("unflatten.retirement-proof.v3", canonical_payload)),
-        family=family, canonical_payload=canonical_payload,
-        member_refs=tuple(ref for _role, _ea, ref in rows),
-        member_anchor_eas=tuple(ea for _role, ea, _ref in rows),
-        source_generation=proposal.source_identity_catalog.generation,
-        roles=tuple(role for role, _ea, _ref in rows),
+        proof_id=authority_id((
+            "unflatten.retirement-proof.v3", canonical_bytes(content)
+        )),
+        content=content,
     )
     supplied_ids = payload.get("proof_ids")
     if supplied_ids is not None:
@@ -965,86 +902,6 @@ def terminal_cycle_claim_from_legacy_proof(
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyShadowPlanView(Mapping[str, object]):
-    """A read-only replay view; it is never a second ``PatchPlan``."""
-
-    plan: PatchPlan
-    replay_metadata: tuple[tuple[str, object], ...]
-
-    def __post_init__(self) -> None:
-        if type(self.plan) is not PatchPlan:
-            raise TypeError("shadow view requires an exact PatchPlan")
-        items = _metadata(self.replay_metadata)
-        object.__setattr__(self, "replay_metadata", items)
-
-    def __getattr__(self, name: str) -> Any:
-        # The explicit metadata property wins; all other plan attributes are
-        # delegated without copying or mutation.
-        if name == "legacy_unflatten_shadow":
-            raise AttributeError("legacy shadow transport is hidden from the view")
-        return getattr(self.plan, name)
-
-    @property
-    def legacy_unflatten_shadow(self) -> None:
-        """Hide the transport envelope from the replay consumer."""
-
-        raise AttributeError("legacy shadow transport is hidden from the view")
-
-    @property
-    def metadata(self) -> tuple[tuple[str, object], ...]:
-        return _metadata(self.replay_metadata)
-
-    def metadata_dict(self) -> dict[str, object]:
-        return dict(normalized_metadata_items(self.metadata))
-
-    def __getitem__(self, key: str) -> object:
-        return self.metadata_dict()[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.metadata_dict())
-
-    def __len__(self) -> int:
-        return len(self.metadata_dict())
-
-    def canonical_payload(self, key: str) -> bytes:
-        """Return the exact captured bytes for one replayed legacy key."""
-
-        shadow = self.plan.legacy_unflatten_shadow
-        if shadow is None:
-            raise KeyError(key)
-        for entry in shadow.entries:
-            if entry.key == key:
-                return entry.canonical_payload
-        raise KeyError(key)
-
-    def payload_sha256(self, key: str) -> str:
-        """Return the integrity digest paired with ``canonical_payload``."""
-
-        shadow = self.plan.legacy_unflatten_shadow
-        if shadow is None:
-            raise KeyError(key)
-        for entry in shadow.entries:
-            if entry.key == key:
-                return entry.payload_sha256
-        raise KeyError(key)
-
-    def assert_payload(self, key: str, canonical_payload: bytes, payload_sha256: str) -> None:
-        """Validate the exact bytes/digest pair before a legacy decision."""
-
-        if type(canonical_payload) is not bytes or type(payload_sha256) is not str:
-            raise TypeError("legacy payload contract requires exact bytes and digest")
-        expected = self.canonical_payload(key)
-        digest = self.payload_sha256(key)
-        if expected != canonical_payload or digest != payload_sha256:
-            raise ValueError(f"legacy payload contract mismatch for {key}")
-
-    def metadata_value(self, key: str, default: object = None) -> object:
-        if type(key) is not str:
-            raise TypeError("metadata key must be an exact str")
-        return self.metadata_dict().get(key, default)
-
-
-@dataclass(frozen=True, slots=True)
 class LegacyFamilyAdaptation:
     key: str
     family: str
@@ -1097,61 +954,6 @@ class LegacyShadowCodecReceipt:
     @property
     def payloads(self) -> tuple[tuple[str, bytes, str], ...]:
         return tuple((item.key, item.canonical_payload, item.payload_sha256) for item in self.adaptations)
-
-
-def replay_legacy_unflatten_shadow(plan: PatchPlan) -> LegacyShadowPlanView:
-    """Validate and replay a plan's exact temporary shadow envelope."""
-
-    if type(plan) is not PatchPlan:
-        raise TypeError("legacy shadow replay requires an exact PatchPlan")
-    if (
-        type(plan.plan_id) is not str
-        or type(plan.snapshot_id) is not str
-        or type(plan.source_generation) is not int
-    ):
-        raise ValueError("owning PatchPlan identity/generation must be exact")
-    shadow = plan.legacy_unflatten_shadow
-    if type(shadow) is not LegacyUnflattenShadowEnvelope:
-        raise ValueError("plan has no exact legacy shadow envelope")
-    try:
-        LegacyUnflattenShadowEnvelope.__post_init__(shadow)
-    except Exception as exc:
-        raise ValueError("legacy shadow envelope is invalid") from exc
-    if type(shadow.schema_version) is not int:
-        raise ValueError("legacy shadow schema_version must be exact")
-    if type(shadow.plan_id) is not str or type(shadow.snapshot_id) is not str:
-        raise ValueError("legacy shadow identifiers must be exact strings")
-    if type(shadow.source_generation) is not int:
-        raise ValueError("legacy shadow source_generation must be exact")
-    if shadow.plan_id != plan.plan_id:
-        raise ValueError("legacy shadow plan_id mismatch")
-    if shadow.snapshot_id != plan.snapshot_id:
-        raise ValueError("legacy shadow snapshot_id mismatch")
-    if type(plan.source_generation) is not int or (
-        shadow.source_generation != plan.source_generation
-    ):
-        raise ValueError("legacy shadow source_generation mismatch")
-
-    ordinary = _metadata(plan.metadata)
-    if any(key in LEGACY_RESERVED_KEYS for key, _value in ordinary):
-        raise ValueError("legacy shadow plan retains reserved metadata")
-    replayed: list[tuple[str, object]] = list(ordinary)
-    for entry in shadow.entries:
-        if (
-            type(entry.key) is not str
-            or type(entry.canonical_payload) is not bytes
-            or type(entry.payload_sha256) is not str
-        ):
-            raise ValueError("legacy shadow entry fields must be exact")
-        try:
-            payload = entry.canonical_payload
-            if hashlib.sha256(payload).hexdigest() != entry.payload_sha256:
-                raise ValueError("legacy shadow payload digest mismatch")
-            value = decode_legacy_canonical_payload(payload)
-        except Exception as exc:
-            raise ValueError("legacy shadow payload is invalid") from exc
-        replayed.append((entry.key, value))
-    return LegacyShadowPlanView(plan, tuple(replayed))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1626,7 +1428,7 @@ def _family_result_ids(
 
 
 def adapt_legacy_unflatten_shadow(
-    shadow: LegacyUnflattenShadowEnvelope | LegacyShadowPlanView | PatchPlan,
+    shadow: LegacyUnflattenShadowEnvelope,
     *,
     context: LegacyUnflattenDecodeContext,
 ) -> LegacyShadowCodecReceipt:
@@ -1640,22 +1442,9 @@ def adapt_legacy_unflatten_shadow(
         raise TypeError("context must be LegacyUnflattenDecodeContext")
     if context.canonical_proposal is None:
         raise ValueError("full shadow adaptation requires a canonical proposal")
-    if type(shadow) is PatchPlan:
-        plan = shadow
-        view = replay_legacy_unflatten_shadow(plan)
-        envelope = plan.legacy_unflatten_shadow
-    elif type(shadow) is LegacyShadowPlanView:
-        plan = shadow.plan
-        view = shadow
-        envelope = plan.legacy_unflatten_shadow
-    elif type(shadow) is LegacyUnflattenShadowEnvelope:
-        plan = None
-        view = None
-        envelope = shadow
-    else:
-        raise TypeError("shadow must be a LegacyUnflattenShadowEnvelope, view, or PatchPlan")
+    envelope = shadow
     if type(envelope) is not LegacyUnflattenShadowEnvelope:
-        raise ValueError("shadow envelope is missing")
+        raise TypeError("persistence adaptation requires a legacy envelope")
     envelope.__post_init__()
     if envelope.plan_id != context.plan_id or envelope.source_generation != context.source_generation:
         raise ValueError("shadow envelope identity differs from decode context")
@@ -1669,8 +1458,6 @@ def adapt_legacy_unflatten_shadow(
             raise ValueError(f"legacy shadow payload integrity mismatch for {entry.key}")
         value = decode_legacy_canonical_payload(payload)
         values[entry.key] = value
-        if view is not None:
-            view.assert_payload(entry.key, payload, entry.payload_sha256)
     proposal = context.canonical_proposal
     coverage = values.get(DISPATCHER_CORRIDOR_COVERAGE_METADATA)
     adaptations: list[LegacyFamilyAdaptation] = []
@@ -1991,13 +1778,11 @@ __all__ = [
     "LEGACY_RESERVED_KEYS",
     "LegacyFamilyAdaptation",
     "LegacyShadowCodecReceipt",
-    "LegacyShadowPlanView",
     "LegacyUnflattenAbsent",
     "LegacyUnflattenDecoded",
     "LegacyUnflattenDecodeContext",
     "LegacyUnflattenDecodeResult",
     "LegacyUnflattenRejected",
-    "capture_legacy_unflatten_shadow",
     "adapt_legacy_unflatten_shadow",
     "decode_legacy_canonical_payload",
     "decode_legacy_unflatten_contract",
@@ -2005,6 +1790,5 @@ __all__ = [
     "legacy_canonical_bytes",
     "legacy_canonical_decode",
     "retirement_claim_from_legacy_proof",
-    "replay_legacy_unflatten_shadow",
     "select_route_proof_ids_from_legacy_metadata",
 ]

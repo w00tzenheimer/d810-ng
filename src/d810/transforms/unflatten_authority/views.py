@@ -71,6 +71,108 @@ class TerminalCycleView:
     terminal_justification_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class DetachedComponentView:
+    """Exact dead-handler loss rows, classified only by the canonical ledger."""
+
+    claim_id: str
+    dead_handler_subject_ids: tuple[str, ...]
+    ledger_rows: tuple[model.SemanticLossRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CompatibilityValidationView:
+    """One-release immutable projection for legacy diagnostic consumers."""
+
+    kind: str
+    passed: bool
+    reason: str
+    phase: str
+    authority_id: str | None
+    binding_id: str | None
+    case_id: str | None
+    candidate_fingerprint: str
+    failed_obligation_states: tuple[str, ...] = ()
+    retirement_subject_ids: tuple[str, ...] = ()
+    corridor_subject_ids: tuple[str, ...] = ()
+    subject_ids: tuple[str, ...] = ()
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "validation_status": "accepted" if self.passed else "rejected",
+            "reason": self.reason,
+            "phase": self.phase,
+            "authority_id": self.authority_id,
+            "binding_id": self.binding_id,
+            "case_id": self.case_id,
+            "candidate_fingerprint": self.candidate_fingerprint,
+            "failed_obligation_states": self.failed_obligation_states,
+            "retirement_subject_ids": self.retirement_subject_ids,
+            "corridor_subject_ids": self.corridor_subject_ids,
+            "subject_ids": self.subject_ids,
+        }
+
+
+def compatibility_projection(
+    verdict: model.UnflattenAuthorityVerdict | None,
+    kind: str,
+) -> CompatibilityValidationView | None:
+    """Project a verdict without parsing metadata or traversing a graph."""
+
+    if verdict is None:
+        return None
+    if type(verdict) is not model.UnflattenAuthorityVerdict:
+        raise TypeError("compatibility projection requires an authority verdict")
+    if kind not in ("removal", "coverage"):
+        raise ValueError("unknown compatibility projection")
+    case = verdict.safety_case
+    if case is None:
+        return CompatibilityValidationView(
+            kind, verdict.accepted, verdict.reason.value, verdict.phase.value,
+            verdict.authority_id, verdict.binding_id, verdict.case_id,
+            verdict.candidate_fingerprint,
+            tuple(sorted({item.state.value for item in verdict.failed_obligations})),
+        )
+    subject_ids: tuple[str, ...] = ()
+    retirement_subject_ids: tuple[str, ...] = ()
+    corridor_subject_ids: tuple[str, ...] = ()
+    if kind == "removal":
+        claims = tuple(
+            claim for claim in case.claims
+            if type(claim) is model.RetiredDispatcherInfrastructureClaim
+        )
+        subject_ids = tuple(sorted(
+            subject.subject_id
+            for claim in claims
+            for subject in claim.member_subjects
+        ))
+        retirement_subject_ids = subject_ids
+    else:
+        evidence = tuple(
+            item for item in case.evidence
+            if item.kind is model.AuthorityEvidenceKind.CORRIDOR_COVERAGE
+        )
+        if evidence:
+            payload = evidence[0].payload
+            subject_ids = (payload.corridor_subject_id,)
+        corridor_subject_ids = subject_ids
+    failed_states = tuple(sorted({item.state.value for item in verdict.failed_obligations}))
+    return CompatibilityValidationView(
+        kind,
+        verdict.accepted,
+        verdict.reason.value,
+        verdict.phase.value,
+        verdict.authority_id,
+        verdict.binding_id,
+        verdict.case_id,
+        verdict.candidate_fingerprint,
+        failed_states,
+        retirement_subject_ids,
+        corridor_subject_ids,
+        subject_ids,
+    )
+
+
 def corridor_coverage_rows(case: model.SemanticSafetyCase) -> CorridorCoverageView:
     """Project the sole aggregate corridor result without recomputation."""
 
@@ -192,8 +294,8 @@ def terminal_cycle_rows(
     )
     terminal = tuple(
         item.justification_id for item in case.justifications
-        if item.claim_id is None
-        and item.rule is model.UnflattenJustificationRule.SUBJECT_REACHABLE
+        if item.claim_id == claim.claim_id
+        and item.rule is model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN
         and item.conclusion == keys["terminal"]
     )
     foreign_scope = tuple(
@@ -254,6 +356,38 @@ def retirement_rows(
             ):
                 raise ValueError("retired row lacks exact retirement proof rule")
     return view
+
+
+def detached_component_rows(
+    case: model.SemanticSafetyCase, claim_id: str,
+) -> DetachedComponentView:
+    """Project one detached claim from ledger classifications, never raw membership."""
+
+    _check_case(case)
+    claim = next(
+        (
+            item for item in case.claims
+            if type(item) is model.DetachedDeadHandlerComponentClaim
+            and item.claim_id == claim_id
+        ),
+        None,
+    )
+    if claim is None:
+        raise ValueError("detached component claim is missing or ambiguous")
+    dead_ids = tuple(sorted(subject.subject_id for subject in claim.dead_handler_subjects))
+    rows = tuple(
+        row for row in semantic_loss_ledger(case).rows
+        if row.source_subject.subject_id in set(dead_ids)
+    )
+    if tuple(row.source_subject.subject_id for row in rows) != dead_ids:
+        raise ValueError("detached component lacks exact dead-handler ledger rows")
+    if any(
+        row.kind is not model.SemanticLossKind.DETACHED_DEAD_HANDLER_COMPONENT
+        or tuple(row.claim_ids) != (claim_id,)
+        for row in rows
+    ):
+        raise ValueError("detached component lacks exact ledger classification")
+    return DetachedComponentView(claim_id, dead_ids, rows)
 
 
 def semantic_loss_ledger(case: model.SemanticSafetyCase) -> model.SemanticLossLedger:
@@ -469,8 +603,8 @@ diagnostic_view = evidence_ids
 
 
 __all__ = [
-    "VIEW_GRAPH_TRAVERSALS", "ViewMetrics", "ExactEffectLossView", "RetiredInfrastructureView", "CorridorCoverageView", "TerminalCycleView", "corridor_coverage_rows", "terminal_cycle_rows", "obligation_states",
+    "VIEW_GRAPH_TRAVERSALS", "ViewMetrics", "ExactEffectLossView", "RetiredInfrastructureView", "CorridorCoverageView", "TerminalCycleView", "DetachedComponentView", "corridor_coverage_rows", "terminal_cycle_rows", "detached_component_rows", "obligation_states",
     "failed_obligations", "evidence_ids", "justification_ids", "view_metrics",
     "exact_effect_loss_view", "retired_infrastructure_view", "retirement_rows", "semantic_loss_ledger", "observed_only_loss",
-    "loss_view", "coverage_view", "diagnostic_view",
+    "loss_view", "coverage_view", "diagnostic_view", "CompatibilityValidationView", "compatibility_projection",
 ]

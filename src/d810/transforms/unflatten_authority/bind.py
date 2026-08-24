@@ -58,6 +58,8 @@ class RetiredInfrastructureBindingResult:
 
     claim: model.RetiredDispatcherInfrastructureClaim
     proposal: model.ProposedUnflattenContract
+    source_inventory: model.SemanticGraphInventory
+    projected_inventory: model.SemanticGraphInventory
     source_catalog: model.SourceIdentityCatalog
     member_catalog: tuple[model.RetirementMemberCatalogRow, ...]
     source_bindings: tuple[model.PhaseSubjectBinding, ...]
@@ -77,6 +79,21 @@ class RetiredInfrastructureBindingResult:
             raise TypeError("claim must be a closed retirement claim")
         if type(self.proposal) is not model.ProposedUnflattenContract:
             raise TypeError("proposal must be a closed proposal")
+        if type(self.source_inventory) is not model.SemanticGraphInventory:
+            raise TypeError("source_inventory must be a closed semantic inventory")
+        if type(self.projected_inventory) is not model.SemanticGraphInventory:
+            raise TypeError("projected_inventory must be a closed semantic inventory")
+        model.validate_semantic_graph_inventory(self.source_inventory)
+        model.validate_semantic_graph_inventory(self.projected_inventory)
+        if self.source_inventory.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST:
+            raise ValueError("retirement source inventory must be producer forecast")
+        if self.projected_inventory.phase not in {
+            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        }:
+            raise ValueError("retirement projected inventory phase is stale")
+        if self.source_inventory.generation != self.generation:
+            raise ValueError("retirement source inventory generation is stale")
         validate_canonical_roundtrip(self.claim, model.RetiredDispatcherInfrastructureClaim)
         validate_canonical_roundtrip(self.proposal, model.ProposedUnflattenContract)
         validate_canonical_roundtrip(self.source_catalog, model.SourceIdentityCatalog)
@@ -91,8 +108,6 @@ class RetiredInfrastructureBindingResult:
         expected_subjects = {
             item.block_ref: item for item in self.claim.member_subjects
         }
-        source_by_id = {item.subject.subject_id: item for item in self.source_bindings}
-        projected_by_id = {item.subject.subject_id: item for item in self.projected_bindings}
         expected_ids = {
             expected_subjects.get(ref, _subject_factory(
                 model.SemanticSubjectRef,
@@ -104,6 +119,22 @@ class RetiredInfrastructureBindingResult:
             )).subject_id
             for ref, row in rows_by_ref.items()
         }
+        source_by_id = {item.subject.subject_id: item for item in self.source_bindings}
+        projected_by_id = {item.subject.subject_id: item for item in self.projected_bindings}
+        inventory_source_by_id = {
+            item.subject.subject_id: item
+            for item in self.source_inventory.bindings
+            if item.subject.subject_id in expected_ids
+        }
+        inventory_projected_by_id = {
+            item.subject.subject_id: item
+            for item in self.projected_inventory.bindings
+            if item.subject.subject_id in expected_ids
+        }
+        if source_by_id != inventory_source_by_id:
+            raise ValueError("retirement source bindings are not carried by source inventory")
+        if projected_by_id != inventory_projected_by_id:
+            raise ValueError("retirement projected bindings are not carried by projected inventory")
         if set(source_by_id) != expected_ids or set(projected_by_id) != expected_ids:
             raise ValueError("retirement binding rows do not cover the exact member catalog")
         expected_order = tuple(sorted(expected_ids))
@@ -139,13 +170,8 @@ class RetiredInfrastructureBindingResult:
                 or source.generation != row.source_generation
             ):
                 raise ValueError("retirement source binding is not catalog-bound")
-            expected_status = (
-                model.SubjectBindingStatus.MISSING if row.retired
-                else model.SubjectBindingStatus.UNIQUE
-            )
             if (
                 projected.subject != subject
-                or projected.status is not expected_status
                 or projected.phase not in {
                     model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
                     model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
@@ -153,19 +179,30 @@ class RetiredInfrastructureBindingResult:
                 or projected.generation != row.source_generation
             ):
                 raise ValueError("projected retirement binding is not catalog-bound")
-            if expected_status is model.SubjectBindingStatus.UNIQUE and (
+            if row.retired and projected.status is model.SubjectBindingStatus.MISSING:
+                if (
+                    projected.block_ref is not None
+                    or projected.serial is not None
+                    or projected.anchor_ea is not None
+                    or projected.native_instruction_eas
+                ):
+                    raise ValueError("retired projected binding is not an authorized missing row")
+                continue
+            if projected.status is not model.SubjectBindingStatus.UNIQUE:
+                raise ValueError("projected retirement binding is not uniquely catalog-bound")
+            if (
                 projected.block_ref != ref
                 or projected.anchor_ea != row.anchor_ea
                 or tuple(projected.native_instruction_eas) != tuple(native_by_ref[ref])
             ):
                 raise ValueError("retained projected binding drifted from catalog")
-            if expected_status is model.SubjectBindingStatus.MISSING and (
-                projected.block_ref is not None
-                or projected.serial is not None
-                or projected.anchor_ea is not None
-                or projected.native_instruction_eas
-            ):
-                raise ValueError("retired projected binding is not an authorized missing row")
+            if projected.serial is None:
+                raise ValueError("projected retirement binding has no serial")
+            if row.retired:
+                if projected.serial in self.projected_inventory.reachable_serials:
+                    raise ValueError("retired projected binding remains reachable")
+            elif projected.serial not in self.projected_inventory.reachable_serials:
+                raise ValueError("retained projected binding is unreachable")
 
 
 def _retirement_binding_seal(result: RetiredInfrastructureBindingResult) -> str:
@@ -179,9 +216,11 @@ def _retirement_binding_seal(result: RetiredInfrastructureBindingResult) -> str:
         for row in result.member_catalog
     )
     return "sha256:" + hashlib.sha256(canonical_bytes((
-        result.claim, result.proposal, result.source_catalog,
+        result.claim, result.proposal, result.source_inventory,
+        result.projected_inventory, result.source_catalog,
         catalog_rows, result.source_bindings,
-        result.projected_bindings, result.generation,
+        result.projected_bindings, result.projected_inventory.reachable_serials,
+        result.generation,
     ))).hexdigest()
 
 
@@ -1093,6 +1132,30 @@ def bind_corridor_coverage_forecast(
     correlation_content = tuple(
         sorted(correlation_specs, key=lambda item: (item[0], item[2]))
     )
+    # The forecast is the sole producer-owned comparison authority.  Preserve
+    # its exact source nodes as sealed subject IDs for consumers that must
+    # validate dispatcher-only ingress; do not rediscover a comparison region
+    # from either transaction graph.
+    comparison_region_subject_ids = tuple(sorted({
+        binding.subject.subject_id
+        for path in forecast.paths
+        for node in path.nodes
+        for binding in source_inventory.bindings
+        if binding.subject.block_ref == node.block_ref
+        and binding.subject.anchor_ea == node.anchor_ea
+    }))
+    if not comparison_region_subject_ids:
+        raise ValueError("corridor forecast has no source comparison-region subjects")
+    dispatcher_candidates = tuple(
+        binding.subject.subject_id for binding in source_inventory.bindings
+        if binding.subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+        and binding.subject.block_ref == forecast.dispatcher_ref
+        and binding.subject.anchor_ea == forecast.dispatcher_anchor_ea
+        and binding.status is model.SubjectBindingStatus.UNIQUE
+    )
+    if len(dispatcher_candidates) != 1:
+        raise ValueError("corridor forecast dispatcher has no exact unique source subject")
+    dispatcher_subject_id = dispatcher_candidates[0]
     result_id = authority_id((
         "unflatten.corridor-coverage-phase.v1", forecast.forecast_id, phase,
         source_fp, candidate_fp, source_inventory.generation,
@@ -1100,7 +1163,7 @@ def bind_corridor_coverage_forecast(
         tuple(sorted(residual)), tuple(sorted(drifted)),
         forecast.enumeration_complete, tuple(sorted(set(matched_exclusions))),
         source_dispatcher_reachable, candidate_dispatcher_reachable,
-        correlation_content,
+        correlation_content, comparison_region_subject_ids, dispatcher_subject_id,
     ))
     expected_covered = set(forecast.covered_path_ids)
     if (
@@ -1119,29 +1182,584 @@ def bind_corridor_coverage_forecast(
         tuple(sorted(covered)), tuple(sorted(residual)), tuple(sorted(drifted)),
         forecast.enumeration_complete, tuple(sorted(set(matched_exclusions))),
         source_dispatcher_reachable, candidate_dispatcher_reachable,
-        correlations,
+        correlations, comparison_region_subject_ids, dispatcher_subject_id,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedDeadHandlerComponentBindingResult:
+    """One transaction-minted detached source authority and phase verdict."""
+
+    source_result: model.DetachedDeadHandlerComponentSourceResult
+    phase_result: model.DetachedDeadHandlerComponentPhaseResult
+
+    def __post_init__(self) -> None:
+        if type(self.source_result) is not model.DetachedDeadHandlerComponentSourceResult:
+            raise TypeError("detached binding requires a closed source result")
+        if type(self.phase_result) is not model.DetachedDeadHandlerComponentPhaseResult:
+            raise TypeError("detached binding requires a closed phase result")
+        validate_detached_source_result(self.source_result)
+        validate_detached_phase_result(self.phase_result)
+        if self.phase_result.source_result_id != self.source_result.result_id:
+            raise ValueError("detached phase result is foreign to its source authority")
+
+
+def _ref_tuple(values: Sequence[object]) -> tuple[object, ...]:
+    return tuple(sorted(set(values), key=canonical_bytes))
+
+
+def _stable_terminal_keys(
+    inventory: model.SemanticGraphInventory,
+) -> tuple[tuple[object, int, model.TerminalKind], ...]:
+    reachable = set(inventory.reachable_serials)
+    rows = (
+        (
+            item.owner_ref
+            if item.owner_ref is not None
+            else ("generated", item.owner_serial, item.owner_anchor_ea),
+            item.instruction_ea,
+            item.terminal_kind,
+        )
+        for item in inventory.terminals
+        if item.owner_serial in reachable
+    )
+    return tuple(sorted(rows, key=canonical_bytes))
+
+
+def _stable_effect_keys(
+    inventory: model.SemanticGraphInventory,
+) -> tuple[tuple[object, int, model.EffectSiteKind], ...]:
+    reachable = set(inventory.reachable_serials)
+    rows = (
+        (
+            item.owner_ref
+            if item.owner_ref is not None
+            else ("generated", item.owner_serial, item.owner_anchor_ea),
+            item.instruction_ea,
+            item.effect_kind,
+        )
+        for item in inventory.effects
+        if item.owner_serial in reachable
+    )
+    return tuple(sorted(rows, key=canonical_bytes))
+
+
+def _candidate_reachable_refs(
+    inventory: model.SemanticGraphInventory,
+) -> frozenset[object]:
+    reachable = set(inventory.reachable_serials)
+    return frozenset(
+        block.block_ref
+        for block in inventory.blocks
+        if block.serial in reachable and block.block_ref is not None
+    )
+
+
+def _source_block_maps(
+    blocks: Sequence[model.InventoryBlockObservation],
+) -> tuple[dict[int, model.InventoryBlockObservation], dict[object, model.InventoryBlockObservation]]:
+    by_serial = {block.serial: block for block in blocks}
+    by_ref = {
+        block.block_ref: block for block in blocks if block.block_ref is not None
+    }
+    if len(by_serial) != len(tuple(blocks)) or len(by_ref) != len(tuple(blocks)):
+        raise ValueError("detached source block facts are not exact by serial and ref")
+    return by_serial, by_ref
+
+
+def _derive_detached_component_refs(
+    *,
+    source_blocks: Sequence[model.InventoryBlockObservation],
+    dead_handler_refs: frozenset[object],
+    dispatcher_ref: object,
+    candidate_reachable_refs: frozenset[object],
+) -> frozenset[object]:
+    by_serial, by_ref = _source_block_maps(source_blocks)
+    source_refs = frozenset(by_ref)
+    lost_refs = source_refs - candidate_reachable_refs
+    component: set[object] = set()
+    pending = list(dead_handler_refs)
+    while pending:
+        ref = pending.pop()
+        if (
+            ref in component
+            or ref == dispatcher_ref
+            or ref in candidate_reachable_refs
+            or ref not in lost_refs
+        ):
+            continue
+        block = by_ref.get(ref)
+        if block is None:
+            raise ValueError("detached handler is absent from sealed source blocks")
+        component.add(ref)
+        pending.extend(by_serial[target].block_ref for target in block.successor_serials)
+    return frozenset(component)
+
+
+def _validate_candidate_detached_partition(
+    *,
+    claim: model.DetachedDeadHandlerComponentClaim,
+    candidate_inventory: model.SemanticGraphInventory,
+    source_blocks: Sequence[model.InventoryBlockObservation],
+    dispatcher_ref: object,
+    comparison_refs: frozenset[object],
+    expected_component_refs: frozenset[object],
+    source_terminal_keys: tuple[tuple[object, int, model.TerminalKind], ...],
+    source_effect_keys: tuple[tuple[object, int, model.EffectSiteKind], ...],
+) -> tuple[frozenset[object], frozenset[object]]:
+    bindings = {
+        binding.subject.subject_id: binding
+        for binding in candidate_inventory.bindings
+    }
+    reachable_serials = set(candidate_inventory.reachable_serials)
+    reachable_refs = _candidate_reachable_refs(candidate_inventory)
+
+    def binding_reachable(subject: model.SemanticSubjectRef) -> bool:
+        binding = bindings.get(subject.subject_id)
+        if binding is None or binding.status is model.SubjectBindingStatus.AMBIGUOUS:
+            raise ValueError("detached candidate subject binding is absent or ambiguous")
+        exact_reachable = (
+            binding.status is model.SubjectBindingStatus.UNIQUE
+            and binding.serial in reachable_serials
+        )
+        if exact_reachable != (subject.block_ref in reachable_refs):
+            raise ValueError("detached candidate binding disagrees with stable-ref reachability")
+        return exact_reachable
+
+    if binding_reachable(claim.dispatcher_subject):
+        raise ValueError("detached dispatcher remains candidate-reachable")
+    if any(binding_reachable(subject) for subject in claim.dead_handler_subjects):
+        raise ValueError("detached dead-handler partition remains candidate-reachable")
+    if not all(binding_reachable(subject) for subject in claim.retained_handler_subjects):
+        raise ValueError("detached retained-handler partition is not candidate-reachable")
+    if any(binding_reachable(subject) for subject in claim.component_subjects):
+        raise ValueError("detached component member remains candidate-reachable")
+
+    dead_refs = frozenset(subject.block_ref for subject in claim.dead_handler_subjects)
+    derived_component = _derive_detached_component_refs(
+        source_blocks=source_blocks,
+        dead_handler_refs=dead_refs,
+        dispatcher_ref=dispatcher_ref,
+        candidate_reachable_refs=reachable_refs,
+    )
+    if derived_component != expected_component_refs:
+        raise ValueError("detached component differs from the exact source/candidate walk")
+    if not dead_refs <= derived_component:
+        raise ValueError("detached component does not cover every dead handler")
+
+    by_serial, by_ref = _source_block_maps(source_blocks)
+    source_refs = frozenset(by_ref)
+    lost_refs = source_refs - reachable_refs
+    for ref in dead_refs:
+        block = by_ref[ref]
+        reachable_preds = frozenset(
+            by_serial[pred].block_ref
+            for pred in block.predecessor_serials
+            if pred in by_serial
+        )
+        if not reachable_preds or not reachable_preds <= comparison_refs:
+            raise ValueError("detached dead handler has non-comparison ingress")
+    for ref in derived_component:
+        block = by_ref[ref]
+        reachable_preds = frozenset(
+            by_serial[pred].block_ref
+            for pred in block.predecessor_serials
+            if pred in by_serial
+        )
+        if not reachable_preds <= derived_component | comparison_refs:
+            raise ValueError("detached component has external semantic ingress")
+        if any(
+            observation.is_call
+            or observation.instruction_kind in {model.InsnKind.CALL, model.InsnKind.STORE}
+            for observation in block.instruction_observations
+        ):
+            raise ValueError("detached component contains CALL or STORE")
+
+    remainder = lost_refs - derived_component - comparison_refs
+    retired_region = remainder | derived_component | comparison_refs
+    for ref in remainder:
+        block = by_ref[ref]
+        if any(
+            observation.is_call
+            or observation.instruction_kind in {model.InsnKind.CALL, model.InsnKind.STORE}
+            for observation in block.instruction_observations
+        ):
+            raise ValueError("detached remainder contains CALL or STORE")
+        if not block.successor_serials:
+            raise ValueError("detached remainder contains a terminal block")
+        successor_refs = frozenset(by_serial[target].block_ref for target in block.successor_serials)
+        if not successor_refs <= retired_region:
+            raise ValueError("detached remainder escapes the retired region")
+
+    if _stable_terminal_keys(candidate_inventory) != source_terminal_keys:
+        raise ValueError("detached candidate terminal identity drifted")
+    if _stable_effect_keys(candidate_inventory) != source_effect_keys:
+        raise ValueError("detached candidate effect identity drifted")
+    if len(derived_component) * 2 >= max(1, len(source_refs)):
+        raise ValueError("detached component is not a strict minority island")
+    return derived_component, frozenset(remainder)
+
+
+def _detached_source_result_values(
+    *,
+    claim: model.DetachedDeadHandlerComponentClaim,
+    source_inventory: model.SemanticGraphInventory,
+    candidate_inventory: model.SemanticGraphInventory,
+    corridor_result: model.CorridorCoveragePhaseResult,
+) -> dict[str, object]:
+    model.validate_semantic_graph_inventory(source_inventory)
+    source_bindings = {
+        binding.subject.subject_id: binding for binding in source_inventory.bindings
+    }
+    source_reachable = set(source_inventory.reachable_serials)
+    required_subjects = (
+        claim.dispatcher_subject,
+        *claim.dead_handler_subjects,
+        *claim.retained_handler_subjects,
+        *claim.component_subjects,
+    )
+    for subject in required_subjects:
+        binding = source_bindings.get(subject.subject_id)
+        if (
+            binding is None
+            or binding.subject != subject
+            or binding.status is not model.SubjectBindingStatus.UNIQUE
+            or binding.serial not in source_reachable
+        ):
+            raise ValueError("detached source subject is not uniquely source-reachable")
+    if corridor_result.dispatcher_subject_id != claim.dispatcher_subject.subject_id:
+        raise ValueError("detached dispatcher differs from sealed corridor authority")
+    comparison_bindings = tuple(
+        source_bindings.get(subject_id)
+        for subject_id in corridor_result.comparison_region_subject_ids
+    )
+    if any(
+        binding is None
+        or binding.status is not model.SubjectBindingStatus.UNIQUE
+        or binding.serial not in source_reachable
+        for binding in comparison_bindings
+    ):
+        raise ValueError("detached comparison region is not exactly source-bound")
+
+    source_blocks = tuple(
+        block for block in source_inventory.blocks if block.serial in source_reachable
+    )
+    _source_block_maps(source_blocks)
+    source_refs = frozenset(block.block_ref for block in source_blocks)
+    comparison_refs = frozenset(binding.block_ref for binding in comparison_bindings)
+    dead_refs = frozenset(subject.block_ref for subject in claim.dead_handler_subjects)
+    retained_refs = frozenset(subject.block_ref for subject in claim.retained_handler_subjects)
+    claimed_component_refs = frozenset(
+        subject.block_ref for subject in claim.component_subjects
+    )
+    terminal_keys = _stable_terminal_keys(source_inventory)
+    effect_keys = _stable_effect_keys(source_inventory)
+    component_refs, remainder_refs = _validate_candidate_detached_partition(
+        claim=claim,
+        candidate_inventory=candidate_inventory,
+        source_blocks=source_blocks,
+        dispatcher_ref=claim.dispatcher_subject.block_ref,
+        comparison_refs=comparison_refs,
+        expected_component_refs=claimed_component_refs,
+        source_terminal_keys=terminal_keys,
+        source_effect_keys=effect_keys,
+    )
+    reachable_subject_ids = tuple(sorted(
+        subject_id
+        for subject_id, binding in source_bindings.items()
+        if binding.status is model.SubjectBindingStatus.UNIQUE
+        and binding.serial in source_reachable
+    ))
+    values = (
+        claim.claim_id,
+        corridor_result.forecast_id,
+        corridor_result.result_id,
+        source_inventory.graph_fingerprint,
+        source_inventory.generation,
+        claim.dispatcher_subject.subject_id,
+        claim.dispatcher_subject.block_ref,
+        tuple(subject.subject_id for subject in claim.dead_handler_subjects),
+        tuple(subject.subject_id for subject in claim.retained_handler_subjects),
+        tuple(subject.subject_id for subject in claim.component_subjects),
+        corridor_result.comparison_region_subject_ids,
+        reachable_subject_ids,
+        _ref_tuple(dead_refs),
+        _ref_tuple(retained_refs),
+        _ref_tuple(comparison_refs),
+        authority_id(terminal_keys),
+        authority_id(effect_keys),
+        authority_id(source_blocks),
+        _ref_tuple(source_refs),
+        _ref_tuple(component_refs),
+        _ref_tuple(remainder_refs),
+        terminal_keys,
+        effect_keys,
+        source_blocks,
+    )
+    return {
+        "result_id": authority_id((
+            "unflatten.detached-dead-handler-component-source.v2", *values,
+        )),
+        "claim_id": values[0],
+        "corridor_forecast_id": values[1],
+        "corridor_coverage_result_id": values[2],
+        "source_fingerprint": values[3],
+        "source_generation": values[4],
+        "dispatcher_subject_id": values[5],
+        "dispatcher_block_ref": values[6],
+        "dead_handler_subject_ids": values[7],
+        "retained_handler_subject_ids": values[8],
+        "component_subject_ids": values[9],
+        "comparison_region_subject_ids": values[10],
+        "source_reachable_subject_ids": values[11],
+        "dead_handler_block_refs": values[12],
+        "retained_handler_block_refs": values[13],
+        "comparison_region_block_refs": values[14],
+        "terminal_digest": values[15],
+        "effect_digest": values[16],
+        "topology_digest": values[17],
+        "source_reachable_block_refs": values[18],
+        "component_block_refs": values[19],
+        "remainder_block_refs": values[20],
+        "terminal_site_keys": values[21],
+        "effect_site_keys": values[22],
+        "source_blocks": values[23],
+    }
+
+
+def _graph_bind_detached_dead_handler_component_claim(
+    *, claim: model.DetachedDeadHandlerComponentClaim,
+    source_inventory: model.SemanticGraphInventory,
+    candidate_inventory: model.SemanticGraphInventory,
+    corridor_result: model.CorridorCoveragePhaseResult,
+    phase: model.UnflattenAuthorityPhase,
+    source_result: model.DetachedDeadHandlerComponentSourceResult | None = None,
+    _mint_source_result: object | None = None,
+    _mint_phase_result: object | None = None,
+    _lifecycle_secret: object | None = None,
+    _source_values_impl=_detached_source_result_values,
+) -> DetachedDeadHandlerComponentBindingResult:
+    """Mint projected authority once, then validate observed candidates against it."""
+
+    if (
+        _lifecycle_secret is None
+        or not callable(_mint_source_result)
+        or not callable(_mint_phase_result)
+    ):
+        raise TypeError("detached binding lifecycle is closed")
+    if type(claim) is not model.DetachedDeadHandlerComponentClaim:
+        raise TypeError("detached claim must be closed")
+    claim.__post_init__()
+    if phase not in {
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    }:
+        raise ValueError("detached binding phase must be projected or observed")
+    if (
+        type(corridor_result) is not model.CorridorCoveragePhaseResult
+        or corridor_result.phase is not phase
+        or not corridor_result.full
+    ):
+        raise ValueError("detached bind requires exact full phase corridor authority")
+    corridor_result.__post_init__()
+    model.validate_semantic_graph_inventory(candidate_inventory)
+    if candidate_inventory.phase is not phase:
+        raise ValueError("detached candidate inventory is bound to the wrong phase")
+    if (
+        corridor_result.source_fingerprint != source_inventory.graph_fingerprint
+        or corridor_result.candidate_fingerprint != candidate_inventory.graph_fingerprint
+        or corridor_result.source_generation != source_inventory.generation
+        or corridor_result.candidate_generation != candidate_inventory.generation
+    ):
+        raise ValueError("detached corridor result has foreign phase coordinates")
+
+    if source_result is None:
+        if phase is not model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+            raise ValueError("observed detached bind requires projected sealed source authority")
+        source_result = _mint_source_result(**_source_values_impl(
+            claim=claim,
+            source_inventory=source_inventory,
+            candidate_inventory=candidate_inventory,
+            corridor_result=corridor_result,
+        ))
+    else:
+        if phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+            raise ValueError("projected detached bind must mint its own source authority")
+        if type(source_result) is not model.DetachedDeadHandlerComponentSourceResult:
+            raise TypeError("detached source result must be closed")
+        validate_detached_source_result(source_result)
+        if (
+            source_result.claim_id != claim.claim_id
+            or source_result.corridor_forecast_id != corridor_result.forecast_id
+            or source_result.source_fingerprint != source_inventory.graph_fingerprint
+            or source_result.source_generation != source_inventory.generation
+            or source_result.dispatcher_subject_id != claim.dispatcher_subject.subject_id
+            or source_result.dispatcher_block_ref != claim.dispatcher_subject.block_ref
+            or source_result.comparison_region_subject_ids
+            != corridor_result.comparison_region_subject_ids
+            or corridor_result.dispatcher_subject_id
+            != source_result.dispatcher_subject_id
+        ):
+            raise ValueError("observed detached bind has foreign sealed source authority")
+        if source_result.dead_handler_subject_ids != tuple(
+            subject.subject_id for subject in claim.dead_handler_subjects
+        ) or source_result.retained_handler_subject_ids != tuple(
+            subject.subject_id for subject in claim.retained_handler_subjects
+        ) or source_result.component_subject_ids != tuple(
+            subject.subject_id for subject in claim.component_subjects
+        ):
+            raise ValueError("observed detached claim partition drifted from source authority")
+        component_refs, _remainder_refs = _validate_candidate_detached_partition(
+            claim=claim,
+            candidate_inventory=candidate_inventory,
+            source_blocks=source_result.source_blocks,
+            dispatcher_ref=source_result.dispatcher_block_ref,
+            comparison_refs=frozenset(source_result.comparison_region_block_refs),
+            expected_component_refs=frozenset(source_result.component_block_refs),
+            source_terminal_keys=source_result.terminal_site_keys,
+            source_effect_keys=source_result.effect_site_keys,
+        )
+        if component_refs != frozenset(source_result.component_block_refs):
+            raise ValueError("observed detached component drifted from source authority")
+
+    values = (
+        claim.claim_id,
+        phase,
+        corridor_result.result_id,
+        source_inventory.graph_fingerprint,
+        candidate_inventory.graph_fingerprint,
+        source_inventory.generation,
+        candidate_inventory.generation,
+        True,
+        source_result.result_id,
+    )
+    phase_result = _mint_phase_result(
+        result_id=authority_id(("unflatten.detached-dead-handler-component-phase.v1", *values)),
+        claim_id=claim.claim_id,
+        phase=phase,
+        corridor_coverage_result_id=corridor_result.result_id,
+        source_fingerprint=source_inventory.graph_fingerprint,
+        candidate_fingerprint=candidate_inventory.graph_fingerprint,
+        source_generation=source_inventory.generation,
+        candidate_generation=candidate_inventory.generation,
+        accepted=True,
+        source_result_id=source_result.result_id,
+    )
+    return DetachedDeadHandlerComponentBindingResult(source_result, phase_result)
+
+
+def _make_detached_binding_entrypoint(
+    graph_impl=_graph_bind_detached_dead_handler_component_claim,
+):
+    """Keep detached authority minting private to the graph-binding closure."""
+
+    source_registry: dict[
+        int,
+        tuple[
+            weakref.ReferenceType[model.DetachedDeadHandlerComponentSourceResult], str,
+        ],
+    ] = {}
+    phase_registry: dict[
+        int,
+        tuple[
+            weakref.ReferenceType[model.DetachedDeadHandlerComponentPhaseResult], str,
+        ],
+    ] = {}
+    lifecycle_secret = object()
+
+    def validate_source(result: model.DetachedDeadHandlerComponentSourceResult) -> None:
+        if type(result) is not model.DetachedDeadHandlerComponentSourceResult:
+            raise TypeError("detached source result must be closed")
+        registered = source_registry.get(id(result))
+        if registered is None or registered[0]() is not result:
+            raise ValueError("detached source result was not minted by the transaction binder")
+        result.__post_init__()
+        if registered[1] != authority_id(("unflatten.detached-source-object-seal.v1", result)):
+            raise ValueError("detached source result content changed after minting")
+
+    def validate_phase(result: model.DetachedDeadHandlerComponentPhaseResult) -> None:
+        if type(result) is not model.DetachedDeadHandlerComponentPhaseResult:
+            raise TypeError("detached phase result must be closed")
+        registered = phase_registry.get(id(result))
+        if registered is None or registered[0]() is not result:
+            raise ValueError("detached phase result was not minted by the transaction binder")
+        result.__post_init__()
+        if registered[1] != authority_id(("unflatten.detached-phase-object-seal.v1", result)):
+            raise ValueError("detached phase result content changed after minting")
+
+    def mint_source(**values: object) -> model.DetachedDeadHandlerComponentSourceResult:
+        result = object.__new__(model.DetachedDeadHandlerComponentSourceResult)
+        for name, value in values.items():
+            object.__setattr__(result, name, value)
+        result.__post_init__()
+        identity = id(result)
+        seal = authority_id(("unflatten.detached-source-object-seal.v1", result))
+
+        def cleanup(
+            reference: weakref.ReferenceType[model.DetachedDeadHandlerComponentSourceResult],
+        ) -> None:
+            registered = source_registry.get(identity)
+            if registered is not None and registered[0] is reference:
+                source_registry.pop(identity, None)
+
+        source_registry[identity] = (weakref.ref(result, cleanup), seal)
+        validate_source(result)
+        return result
+
+    def mint_phase(**values: object) -> model.DetachedDeadHandlerComponentPhaseResult:
+        result = object.__new__(model.DetachedDeadHandlerComponentPhaseResult)
+        for name, value in values.items():
+            object.__setattr__(result, name, value)
+        result.__post_init__()
+        identity = id(result)
+        seal = authority_id(("unflatten.detached-phase-object-seal.v1", result))
+
+        def cleanup(
+            reference: weakref.ReferenceType[model.DetachedDeadHandlerComponentPhaseResult],
+        ) -> None:
+            registered = phase_registry.get(identity)
+            if registered is not None and registered[0] is reference:
+                phase_registry.pop(identity, None)
+
+        phase_registry[identity] = (weakref.ref(result, cleanup), seal)
+        validate_phase(result)
+        return result
+
+    def entrypoint(**kwargs: object) -> DetachedDeadHandlerComponentBindingResult:
+        return graph_impl(
+            **kwargs,
+            _mint_source_result=mint_source,
+            _mint_phase_result=mint_phase,
+            _lifecycle_secret=lifecycle_secret,
+        )
+
+    return entrypoint, validate_source, validate_phase
+
+
+(
+    bind_detached_dead_handler_component_claim,
+    validate_detached_source_result,
+    validate_detached_phase_result,
+) = _make_detached_binding_entrypoint()
+del _make_detached_binding_entrypoint
+del _graph_bind_detached_dead_handler_component_claim
+del _detached_source_result_values
 
 
 def bind_retired_dispatcher_infrastructure_claim(
     *,
     claim: model.RetiredDispatcherInfrastructureClaim,
     proposal: model.ProposedUnflattenContract,
-    source_serial_by_ref: Mapping[object, int] | None = None,
-    projected_serial_by_ref: Mapping[object, int] | None = None,
-    source_graph_fingerprint: str,
-    projected_graph_fingerprint: str,
-    generation: int,
+    source_inventory: model.SemanticGraphInventory,
+    projected_inventory: model.SemanticGraphInventory,
     phase: model.UnflattenAuthorityPhase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-    projected_generation: int | None = None,
-    source_subject_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None,
-    projected_subject_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None,
 ) -> RetiredInfrastructureBindingResult:
-    """Bind every planned member and require retained members to survive.
+    """Bind every planned member and classify retirement by inventory reachability.
 
-    The projected map may omit only exact retired members.  No raw serial is
-    stored in the result's authority catalog; serials remain phase-local rows
-    on the returned bindings.
+    A retired member may be physically missing or remain uniquely indexed while
+    absent from the exact candidate reachable closure. Retained members must be
+    unique and reachable. No raw serial is stored in the result's authority
+    catalog; serials remain phase-local rows on the returned bindings.
     """
 
     if type(claim) is not model.RetiredDispatcherInfrastructureClaim:
@@ -1157,14 +1775,21 @@ def bind_retired_dispatcher_infrastructure_claim(
         model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
     }:
         raise ValueError("retirement binding phase must be projected or observed")
-    if projected_generation is None:
-        projected_generation = generation
-    if type(projected_generation) is not int or projected_generation < 0:
-        raise ValueError("retirement projected generation must be an exact non-negative int")
-    if projected_generation != generation:
-        raise ValueError("retirement projected generation differs from source authority")
-    if (source_subject_bindings is None) != (projected_subject_bindings is None):
-        raise ValueError("retirement source/projected bindings must be supplied together")
+    if type(source_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("retirement source_inventory must be a closed semantic inventory")
+    if type(projected_inventory) is not model.SemanticGraphInventory:
+        raise TypeError("retirement projected_inventory must be a closed semantic inventory")
+    model.validate_semantic_graph_inventory(source_inventory)
+    model.validate_semantic_graph_inventory(projected_inventory)
+    if source_inventory.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST:
+        raise ValueError("retirement source inventory must be producer forecast")
+    if projected_inventory.phase is not phase:
+        raise ValueError("retirement projected inventory phase differs from requested phase")
+    generation = source_inventory.generation
+    if projected_inventory.generation != generation:
+        raise ValueError("retirement projected inventory generation differs from source authority")
+    source_graph_fingerprint = source_inventory.graph_fingerprint
+    projected_graph_fingerprint = projected_inventory.graph_fingerprint
     catalog_rows = retirement_member_catalog(proposal, claim)
     catalog = proposal.source_identity_catalog
     subjects_by_ref = {member.block_ref: member for member in claim.member_subjects}
@@ -1181,63 +1806,26 @@ def bind_retired_dispatcher_infrastructure_claim(
                 locator=model.BlockSubjectLocator(row.block_ref, row.anchor_ea),
             )
         subjects.append(subject)
-    if source_subject_bindings is not None:
-        for label, bindings in (
-            ("source_subject_bindings", source_subject_bindings),
-            ("projected_subject_bindings", projected_subject_bindings),
-        ):
-            if type(bindings) is not tuple or any(
-                type(binding) is not model.PhaseSubjectBinding for binding in bindings
-            ):
-                raise TypeError(f"{label} must be an exact tuple of PhaseSubjectBinding values")
-        source_bindings = source_subject_bindings
-        projected_bindings = projected_subject_bindings
-        for binding in source_bindings:
-            if (
-                binding.phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-                or binding.graph_fingerprint != source_graph_fingerprint
-                or binding.generation != generation
-            ):
-                raise ValueError("retirement source binding disagrees with explicit authority fields")
-        for binding in projected_bindings:
-            if (
-                binding.phase is not phase
-                or binding.graph_fingerprint != projected_graph_fingerprint
-                or binding.generation != projected_generation
-            ):
-                raise ValueError("retirement candidate binding disagrees with explicit authority fields")
-    else:
-        if type(source_serial_by_ref) is not dict or type(projected_serial_by_ref) is not dict:
-            raise TypeError("retirement serial maps must be exact dicts")
-        catalog_refs = {item.block_ref for item in proposal.source_identity_catalog.blocks}
-        plan_refs = set(proposal.plan_inputs.dispatcher_member_refs)
-        if set(source_serial_by_ref) != catalog_refs:
-            raise ValueError("retirement source serial map is not the exact source catalog")
-        if not set(projected_serial_by_ref) <= plan_refs:
-            raise ValueError("retirement projected serial map contains an extra member")
-        if len(set(source_serial_by_ref.values())) != len(source_serial_by_ref):
-            raise ValueError("retirement source serial map is ambiguous")
-        if len(set(projected_serial_by_ref.values())) != len(projected_serial_by_ref):
-            raise ValueError("retirement projected serial map is ambiguous")
-        source_bindings = bind_source_subjects(
-            tuple(subjects), catalog=catalog,
-            phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
-            graph_fingerprint=source_graph_fingerprint,
-            generation=generation,
-            serial_by_ref=source_serial_by_ref,
-        )
-        projected_bindings = bind_projected_subjects(
-            tuple(subjects), catalog=catalog,
-            phase=phase,
-            graph_fingerprint=projected_graph_fingerprint,
-            generation=projected_generation,
-            serial_by_ref=projected_serial_by_ref,
-        )
+    expected_ids = {subject.subject_id for subject in subjects}
+    source_bindings = tuple(sorted(
+        (binding for binding in source_inventory.bindings if binding.subject.subject_id in expected_ids),
+        key=lambda item: item.subject.subject_id,
+    ))
+    projected_bindings = tuple(sorted(
+        (binding for binding in projected_inventory.bindings if binding.subject.subject_id in expected_ids),
+        key=lambda item: item.subject.subject_id,
+    ))
+    if len(source_bindings) != len(expected_ids) or len(projected_bindings) != len(expected_ids):
+        raise ValueError("retirement inventories lack the exact member binding rows")
     result = object.__new__(RetiredInfrastructureBindingResult)
     for name, value in {
-        "claim": claim, "proposal": proposal, "source_catalog": catalog,
+        "claim": claim, "proposal": proposal,
+        "source_inventory": source_inventory,
+        "projected_inventory": projected_inventory,
+        "source_catalog": catalog,
         "member_catalog": catalog_rows, "source_bindings": source_bindings,
-        "projected_bindings": projected_bindings, "generation": generation,
+        "projected_bindings": projected_bindings,
+        "generation": generation,
     }.items():
         object.__setattr__(result, name, value)
     object.__setattr__(result, "_content_seal", _retirement_binding_seal(result))
@@ -2056,10 +2644,13 @@ __all__ = [
     "ExactEffectBindingResult",
     "RetiredInfrastructureBindingResult",
     "TerminalCycleBindingResult",
+    "bind_detached_dead_handler_component_claim",
     "bind_retired_dispatcher_infrastructure_claim",
     "bind_terminal_cycle_break_claim",
     "terminal_cycle_binding_subjects",
     "validate_exact_effect_binding_result",
+    "validate_detached_source_result",
+    "validate_detached_phase_result",
     "validate_retired_infrastructure_binding_result",
     "validate_terminal_cycle_binding_result",
     "bind_subjects",

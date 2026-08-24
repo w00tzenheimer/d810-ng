@@ -33,6 +33,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import PredicateKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
@@ -350,6 +351,27 @@ def _chain_graph():
         },
         entry_serial=0,
         func_ea=0x1000,
+    )
+
+
+def _chain_graph_with_state_write():
+    graph = _chain_graph()
+    state_write = InsnSnapshot(
+        opcode=0,
+        ea=0x1001,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=C1),
+        d=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=20),
+        kind=InsnKind.MOV,
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    return FlowGraph(
+        blocks={
+            **graph.blocks,
+            1: replace(graph.blocks[1], insn_snapshots=(state_write,)),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
     )
 
 
@@ -1636,7 +1658,9 @@ def test_recover_state_transitions_binds_portable_semantic_route_group() -> None
         def evidence_for(self, function_ea: int):
             return evidence if int(function_ea) == 0x1000 else None
 
-    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    am = AnalysisManager(
+        _chain_graph_with_state_write(), input_facts=_input_facts(),
+    )
     ctx = _ctx(
         am.graph,
         am.view(),

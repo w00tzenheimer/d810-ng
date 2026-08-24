@@ -1,8 +1,8 @@
 """Validation helpers for the typed unflatten proposal channel.
 
-This module validates the producer-owned value without evaluating it.  Route
-selection belongs to :mod:`transaction_api`; the temporary legacy envelope is
-transport only and is never converted into authority here.
+This module validates the producer-owned value without evaluating it. Route
+selection belongs to :mod:`transaction_api`; historical envelopes are decoded
+only by the persistence codec and are never producer transport here.
 """
 
 from __future__ import annotations
@@ -16,15 +16,44 @@ from d810.transforms.plan import (
     PatchRedirectGoto,
     normalized_metadata_items,
 )
+from d810.transforms.dispatcher_corridor_coverage import (
+    DispatcherCorridor,
+    DispatcherCorridorCoverage,
+    DispatcherRemovalPreflightProof,
+    DispatcherRemovalPreflightValidation,
+    TerminalSwitchCycleBreakProof,
+)
+from d810.analyses.control_flow.minimal_state_recovery import (
+    CandidatePrefixAlternateCorridorProof,
+)
+from d810.ir.block_identity import StableBlockIdentity
 
 from .model import (
-    BlockSubjectLocator,
+    CorridorCoverageForecast,
+    CorridorCoveragePath,
+    CorridorCoveragePathNode,
+    CorridorPathDisposition,
+    CorridorSemanticExclusion,
     CorridorSubjectLocator,
-    LegacyUnflattenShadowEnvelope,
+    BlockSubjectLocator,
+    HandlerSubjectLocator,
     ProposedUnflattenContract,
+    RetirementAuthorityCatalog,
+    RetirementProofContent,
+    RetirementProofMember,
+    RetirementProofFamily,
+    RetirementProofRecord,
     RetirementMemberCatalogRow,
     RetiredDispatcherInfrastructureClaim,
+    DetachedDeadHandlerComponentClaim,
+    SemanticSubjectKind,
+    SemanticSubjectRef,
     SemanticSubjectRole,
+    EquivalentSemanticRouteClaim,
+    TerminalCycleBreakClaim,
+    TerminalKind,
+    TerminalSubjectLocator,
+    UnflattenClaimKind,
     UnflattenPlanShape,
     UnflattenAuthorityNotApplicable,
     UnflattenAuthorityReason,
@@ -32,12 +61,15 @@ from .model import (
 )
 from .producer_api import build_unflatten_plan_input_catalog
 from . import producer_api
-from .ids import content_id, validate_canonical_roundtrip
-from .legacy_keys import LEGACY_UNFLATTEN_KEYS
-from .legacy_keys import (
-    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+from .ids import (
+    _claim_factory,
+    _subject_factory,
+    authority_id,
+    canonical_bytes,
+    content_id,
+    validate_canonical_roundtrip,
 )
+from .legacy_keys import LEGACY_UNFLATTEN_KEYS
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +79,172 @@ class RedirectStepManifest:
     steps: tuple[dict[str, object], ...]
     owner_refs: tuple[NativeBlockRef | LogicalBlockRef, ...]
     digest: str
+
+
+def corridor_coverage_forecast_from_analysis(
+    coverage: DispatcherCorridorCoverage,
+    *,
+    proposal: ProposedUnflattenContract,
+    block_refs_by_serial: dict[int, NativeBlockRef | LogicalBlockRef],
+) -> CorridorCoverageForecast:
+    """Seal producer coverage directly into the typed proposal vocabulary.
+
+    The emitter already owns the immutable corridor analysis.  This adapter
+    only changes its identity representation; it deliberately does not emit
+    a legacy payload and parse that payload back into authority objects.
+    """
+
+    if type(proposal) is not ProposedUnflattenContract:
+        raise TypeError("coverage forecast requires a closed proposal")
+    if type(coverage) is not DispatcherCorridorCoverage:
+        raise TypeError("coverage analysis must be DispatcherCorridorCoverage")
+    catalog = {
+        item.block_ref: item for item in proposal.source_identity_catalog.blocks
+    }
+    refs_by_serial = dict(block_refs_by_serial)
+
+    def node_coords(serial: int, ea: int, label: str) -> CorridorCoveragePathNode:
+        serial = int(serial)
+        ea = int(ea)
+        ref = refs_by_serial.get(serial)
+        if ref is None or ref not in catalog or catalog[ref].anchor_ea != ea:
+            raise ValueError(f"coverage {label} is foreign to source catalog")
+        return CorridorCoveragePathNode(ref, ea)
+
+    dispatcher_anchor = coverage.dispatcher
+    if dispatcher_anchor is None:
+        raise ValueError("coverage forecast requires a dispatcher anchor")
+    dispatcher_node = node_coords(
+        dispatcher_anchor.serial, dispatcher_anchor.ea, "dispatcher"
+    )
+    dispatcher_ref = dispatcher_node.block_ref
+    if dispatcher_ref != proposal.plan_inputs.dispatcher_entry_ref:
+        raise ValueError("coverage dispatcher differs from proposal entry")
+
+    exclusions: list[CorridorSemanticExclusion] = []
+    exclusion_suffixes: dict[str, tuple[tuple[int, int], ...]] = {}
+    for raw in coverage.semantic_exclusions:
+        if type(raw) is not CandidatePrefixAlternateCorridorProof:
+            raise TypeError("coverage semantic exclusions must be canonical proofs")
+        source = node_coords(
+            raw.source_serial, raw.source_ea,
+            "semantic exclusion source",
+        )
+        feeder = None
+        if raw.feeder_serial is not None:
+            feeder = node_coords(
+                raw.feeder_serial, raw.feeder_ea,
+                "semantic exclusion feeder",
+            )
+        prefix = node_coords(
+            raw.prefix_serial, raw.prefix_ea,
+            "semantic exclusion prefix",
+        )
+        root = node_coords(
+            raw.root_serial, raw.root_ea,
+            "semantic exclusion root",
+        )
+        typed = (
+            "unflatten.corridor-semantic-exclusion.v1",
+            int(raw.normalized_state) & 0xFFFFFFFF,
+            raw.state_identity,
+            source,
+            feeder,
+            prefix,
+            root,
+        )
+        exclusion_id = authority_id(typed)
+        exclusion = CorridorSemanticExclusion(
+            exclusion_id,
+            authority_id(("unflatten.corridor-semantic-exclusion-digest.v1", typed)),
+            int(raw.normalized_state) & 0xFFFFFFFF,
+            raw.state_identity,
+            source,
+            feeder,
+            prefix,
+            root,
+        )
+        exclusions.append(exclusion)
+        suffix = [(int(raw.source_serial), int(raw.source_ea))]
+        if feeder is not None:
+            suffix.append((int(raw.feeder_serial), int(raw.feeder_ea)))
+        suffix.extend(
+            (
+                (int(raw.prefix_serial), int(raw.prefix_ea)),
+                (int(raw.root_serial), int(raw.root_ea)),
+            )
+        )
+        exclusion_suffixes[exclusion_id] = tuple(suffix)
+
+    def path_row(corridor: DispatcherCorridor, disposition: CorridorPathDisposition) -> CorridorCoveragePath:
+        if type(corridor) is not DispatcherCorridor:
+            raise TypeError("coverage paths must be canonical corridors")
+        anchors = tuple(
+            node_coords(anchor.serial, anchor.ea, "corridor path")
+            for anchor in corridor.path
+        )
+        state_merge = (
+            None
+            if corridor.state_merge is None
+            else node_coords(
+                corridor.state_merge.serial,
+                corridor.state_merge.ea,
+                "corridor state merge",
+            )
+        )
+        path_exclusions = tuple(
+            exclusion_id
+            for exclusion_id, suffix in exclusion_suffixes.items()
+            if len(corridor.path) >= len(suffix)
+            and tuple(
+                (int(anchor.serial), int(anchor.ea))
+                for anchor in corridor.path[-len(suffix):]
+            ) == suffix
+        )
+        actual_disposition = (
+            CorridorPathDisposition.SEMANTICALLY_EXCLUDED
+            if path_exclusions
+            else disposition
+        )
+        path_id = authority_id((
+            "unflatten.corridor-coverage-path.v1", anchors, state_merge,
+            actual_disposition, path_exclusions,
+        ))
+        return CorridorCoveragePath(
+            path_id, anchors, state_merge, actual_disposition, path_exclusions,
+        )
+
+    covered = tuple(
+        path_row(corridor, CorridorPathDisposition.STRUCTURALLY_COVERED)
+        for corridor in coverage.covered_corridors
+    )
+    residual = tuple(
+        path_row(corridor, CorridorPathDisposition.RESIDUAL)
+        for corridor in coverage.residual_corridors
+    )
+    paths = tuple(sorted((*covered, *residual), key=lambda path: path.path_id))
+    covered_ids = tuple(path.path_id for path in paths if path.disposition is not CorridorPathDisposition.RESIDUAL)
+    residual_ids = tuple(path.path_id for path in paths if path.disposition is CorridorPathDisposition.RESIDUAL)
+    exclusion_rows = tuple(sorted(exclusions, key=lambda item: item.exclusion_id))
+    digest_rows = tuple((item.exclusion_id, item.digest) for item in exclusion_rows)
+    linked_paths = tuple(
+        (item.exclusion_id, tuple(path.path_id for path in paths if item.exclusion_id in path.semantic_exclusion_ids))
+        for item in exclusion_rows
+    )
+    forecast_id = authority_id((
+        "unflatten.corridor-coverage-forecast.v1", proposal.plan_id,
+        int(coverage.function_ea), proposal.source_identity_catalog.native_key,
+        proposal.source_identity_catalog.generation, dispatcher_ref,
+        dispatcher_node.anchor_ea, paths, covered_ids, residual_ids,
+        bool(coverage.enumeration_complete), digest_rows, exclusion_rows, linked_paths,
+    ))
+    return CorridorCoverageForecast(
+        forecast_id, proposal.plan_id, int(coverage.function_ea),
+        proposal.source_identity_catalog.native_key,
+        proposal.source_identity_catalog.generation, dispatcher_ref,
+        dispatcher_node.anchor_ea, paths, covered_ids, residual_ids,
+        bool(coverage.enumeration_complete), digest_rows, exclusion_rows, linked_paths,
+    )
 
 
 def retirement_member_catalog(
@@ -352,6 +550,316 @@ def _validate_use_def_locator(
         raise ValueError("use-def redirect owner is outside the source catalog")
 
 
+def claims_from_dispatcher_removal_validation(
+    validation: DispatcherRemovalPreflightValidation,
+    *,
+    proposal: ProposedUnflattenContract,
+    block_refs_by_serial: dict[int, NativeBlockRef | LogicalBlockRef],
+) -> tuple[RetiredDispatcherInfrastructureClaim | DetachedDeadHandlerComponentClaim | TerminalCycleBreakClaim, ...]:
+    """Convert producer removal proof objects directly into typed claims."""
+
+    if type(validation) is not DispatcherRemovalPreflightValidation:
+        raise TypeError("dispatcher removal validation must be canonical")
+    proof = validation.proof
+    if proof is not None and type(proof) is not DispatcherRemovalPreflightProof:
+        raise TypeError("dispatcher removal proof must be canonical")
+    if proof is None:
+        return ()
+    terminal = validation.terminal_switch_cycle_break
+    if terminal is not None and type(terminal) is not TerminalSwitchCycleBreakProof:
+        raise TypeError("terminal switch proof must be canonical")
+    catalog = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+    refs_by_serial = dict(block_refs_by_serial)
+    plan_refs = tuple(sorted(proposal.plan_inputs.dispatcher_member_refs, key=canonical_bytes))
+    entry_ref = proposal.plan_inputs.dispatcher_entry_ref
+    entry = catalog.get(entry_ref)
+    if entry is None:
+        raise ValueError("dispatcher entry is absent from source catalog")
+    handler_inputs = {
+        item.block_ref: item for item in proposal.plan_inputs.authoritative_handlers
+    }
+
+    def resolve(anchor: object, label: str):
+        serial, ea = int(anchor.serial), int(anchor.ea)
+        ref = refs_by_serial.get(serial)
+        witness = catalog.get(ref)
+        if ref is None or witness is None or witness.anchor_ea != ea:
+            raise ValueError(f"dispatcher removal {label} is foreign to source catalog")
+        return ref, ea
+
+    if terminal is not None:
+        if (
+            not validation.passed
+            or validation.reason != "terminal_switch_cycle_break"
+            or proof.passed
+            or proof.reason != "untyped_lost_block"
+            or any(
+                allowance is not None
+                for allowance in (
+                    validation.interval_state_normalizer_retirement,
+                    validation.state_transition_plumbing_retirement,
+                    validation.comparison_corridor_retirement,
+                )
+            )
+        ):
+            raise ValueError("terminal switch allowance envelope is not canonical")
+
+        dispatcher_ref, dispatcher_ea = resolve(terminal.dispatcher, "terminal dispatcher")
+        if dispatcher_ref != entry_ref:
+            raise ValueError("terminal switch dispatcher differs from plan entry")
+        source_ref, source_ea = resolve(terminal.terminal_source, "terminal source")
+        merge_ref, merge_ea = resolve(terminal.shared_merge, "shared merge")
+        target_ref, target_ea = resolve(terminal.terminal_target, "terminal target")
+        stop_ref, stop_ea = resolve(terminal.terminal_stop, "terminal stop")
+        residue_rows = tuple(
+            resolve(anchor, "retired residue") for anchor in terminal.retired_residue
+        )
+        residue_refs = tuple(ref for ref, _ea in residue_rows)
+        residue_anchors = tuple(ea for _ref, ea in residue_rows)
+        if (
+            not residue_refs
+            or len(set(residue_refs)) != len(residue_refs)
+            or entry_ref not in residue_refs
+            or merge_ref not in residue_refs
+            or not set(residue_refs) <= set(plan_refs)
+        ):
+            raise ValueError("terminal switch residue is not an exact plan subset")
+        residue_serials = frozenset(
+            int(anchor.serial) for anchor in terminal.retired_residue
+        )
+        if proof.lost_blocks != residue_serials:
+            raise ValueError("terminal switch residue disagrees with lost blocks")
+        if tuple(proof.lost_block_anchors) != tuple(terminal.retired_residue):
+            raise ValueError("terminal switch residue disagrees with lost anchors")
+        for retired in proof.retired_infrastructure:
+            resolve(retired.anchor, "retired infrastructure")
+
+        def stable_identity(ref, label: str):
+            witness = catalog.get(ref)
+            if witness is None:
+                raise ValueError(f"terminal {label} is foreign to source catalog")
+            if type(ref) is NativeBlockRef:
+                return ref.identity
+            return StableBlockIdentity.from_instruction_eas(
+                witness.native_instruction_eas,
+                native_key=proposal.source_identity_catalog.native_key,
+            )
+
+        source_identity = stable_identity(source_ref, "source")
+        target_identity = stable_identity(target_ref, "target")
+        matching_proofs = []
+        for route_proof in proposal.route_evidence.route_proofs:
+            terminal_destinations = tuple(
+                destination
+                for destination in route_proof.destinations
+                if destination.terminal
+            )
+            if (
+                route_proof.source_identity == source_identity
+                and route_proof.source_anchor_ea == source_ea
+                and len(terminal_destinations) == 1
+                and terminal_destinations[0].target_identity == target_identity
+                and terminal_destinations[0].target_anchor_ea == target_ea
+            ):
+                matching_proofs.append(route_proof)
+        if len(matching_proofs) != 1:
+            raise ValueError("terminal switch route proof is absent or ambiguous")
+        route_proof = matching_proofs[0]
+        selected_route_claims = tuple(
+            claim
+            for claim in proposal.claims
+            if type(claim) is EquivalentSemanticRouteClaim
+            and route_proof.proof_id in claim.route_proof_ids
+        )
+        if len(selected_route_claims) != 1:
+            raise ValueError("terminal switch route proof is not selected")
+
+        cycle = _subject_factory(
+            SemanticSubjectRef,
+            kind=SemanticSubjectKind.CORRIDOR,
+            role=SemanticSubjectRole.DISPATCHER_CORRIDOR,
+            block_ref=dispatcher_ref,
+            anchor_ea=dispatcher_ea,
+            locator=CorridorSubjectLocator(
+                authority_id(("unflatten.terminal-cycle.v1", proposal.plan_id, residue_refs)),
+                dispatcher_ref,
+                dispatcher_ea,
+                residue_refs,
+                residue_anchors,
+            ),
+        )
+        cleanup = _subject_factory(
+            SemanticSubjectRef,
+            kind=SemanticSubjectKind.BLOCK,
+            role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+            block_ref=merge_ref,
+            anchor_ea=merge_ea,
+            locator=BlockSubjectLocator(merge_ref, merge_ea),
+        )
+        terminal_subject = _subject_factory(
+            SemanticSubjectRef,
+            kind=SemanticSubjectKind.TERMINAL,
+            role=SemanticSubjectRole.TERMINAL_SITE,
+            block_ref=stop_ref,
+            anchor_ea=stop_ea,
+            locator=TerminalSubjectLocator(stop_ref, stop_ea, TerminalKind.STOP, stop_ea),
+        )
+        return (_claim_factory(
+            TerminalCycleBreakClaim,
+            kind=UnflattenClaimKind.TERMINAL_CYCLE_BREAK,
+            cycle_subject=cycle,
+            cleanup_source_subject=cleanup,
+            terminal_subject=terminal_subject,
+            terminal_route_proof_ids=(route_proof.proof_id,),
+            source_generation=proposal.source_identity_catalog.generation,
+        ),)
+
+    detached = validation.detached_dead_handler_component
+    if detached is not None:
+        if (
+            not validation.passed
+            or validation.reason != "detached_dead_handler_component"
+            or proof.passed
+            or proof.reason != "untyped_lost_block"
+        ):
+            raise ValueError("detached component allowance envelope is not canonical")
+        dispatcher_ref, dispatcher_ea = resolve(detached.dispatcher, "detached dispatcher")
+        if dispatcher_ref != entry_ref:
+            raise ValueError("detached dispatcher differs from plan entry")
+
+        def handler_subject(anchor, label):
+            ref, ea = resolve(anchor, label)
+            handler_input = handler_inputs.get(ref)
+            if handler_input is None or int(handler_input.anchor_ea) != ea:
+                raise ValueError(f"detached {label} is not an authoritative source handler")
+            return _subject_factory(
+                SemanticSubjectRef, kind=SemanticSubjectKind.HANDLER,
+                role=SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+                block_ref=ref, anchor_ea=ea,
+                locator=HandlerSubjectLocator(ref, ea, handler_input.normalized_states),
+            )
+
+        def component_subject(anchor):
+            ref, ea = resolve(anchor, "detached component")
+            return _subject_factory(
+                SemanticSubjectRef, kind=SemanticSubjectKind.BLOCK,
+                role=SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT,
+                block_ref=ref, anchor_ea=ea, locator=BlockSubjectLocator(ref, ea),
+            )
+
+        dead = tuple(handler_subject(anchor, "dead handler") for anchor in detached.dead_handlers)
+        retained = tuple(handler_subject(anchor, "retained handler") for anchor in detached.retained_handlers)
+        component = tuple(component_subject(anchor) for anchor in detached.component)
+        if not dead or not retained or not component:
+            raise ValueError("detached component content is incomplete")
+        if len({item.block_ref for item in dead}) != len(dead) or len({item.block_ref for item in retained}) != len(retained) or len({item.block_ref for item in component}) != len(component):
+            raise ValueError("detached component anchors are duplicate")
+        if {item.block_ref for item in dead} & {item.block_ref for item in retained}:
+            raise ValueError("detached handler partitions overlap")
+        if not {item.block_ref for item in dead} <= {item.block_ref for item in component}:
+            raise ValueError("detached component omits a dead handler")
+        dispatcher = _subject_factory(
+            SemanticSubjectRef, kind=SemanticSubjectKind.BLOCK,
+            role=SemanticSubjectRole.DISPATCHER_ENTRY,
+            block_ref=dispatcher_ref, anchor_ea=dispatcher_ea,
+            locator=BlockSubjectLocator(dispatcher_ref, dispatcher_ea),
+        )
+        return (_claim_factory(
+            DetachedDeadHandlerComponentClaim,
+            kind=UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT,
+            dispatcher_subject=dispatcher, dead_handler_subjects=dead,
+            retained_handler_subjects=retained, component_subjects=component,
+            source_generation=proposal.source_identity_catalog.generation,
+        ),)
+
+    if not validation.passed or not proof.passed:
+        return ()
+
+    retired_rows = tuple(proof.retired_infrastructure)
+    retired_by_ref = {
+        resolve(row.anchor, "retired member")[0]: str(row.role)
+        for row in retired_rows
+    }
+    if any(ref not in plan_refs for ref in retired_by_ref):
+        raise ValueError("dispatcher removal member is outside proposal catalog")
+    claims: list[RetiredDispatcherInfrastructureClaim | TerminalCycleBreakClaim] = []
+    if retired_by_ref:
+        family = RetirementProofFamily.RETIRED_INFRASTRUCTURE
+        member_rows = tuple(
+            (
+                ref,
+                int(catalog[ref].anchor_ea),
+                ref in retired_by_ref,
+                retired_by_ref.get(ref, "comparison_dispatcher"),
+            )
+            for ref in plan_refs
+        )
+        content = RetirementProofContent(
+            family,
+            proposal.source_identity_catalog.generation,
+            tuple(
+                RetirementProofMember(ref, anchor, retired, role)
+                for ref, anchor, retired, role in member_rows
+            ),
+        )
+        record = RetirementProofRecord(
+            authority_id(("unflatten.retirement-proof.v3", canonical_bytes(content))),
+            content,
+        )
+        members = tuple(
+            RetirementMemberCatalogRow(
+                ref, int(catalog[ref].anchor_ea), catalog[ref].native_instruction_eas,
+                proposal.source_identity_catalog.generation, ref in retired_by_ref,
+                (record,) if ref in retired_by_ref else (),
+            ) for ref in plan_refs
+        )
+        retirement_catalog = RetirementAuthorityCatalog(
+            authority_id(("unflatten.retirement-catalog.v1",
+                          proposal.source_identity_catalog.generation, members, (record,))),
+            proposal.source_identity_catalog.generation, members, (record,),
+        )
+        member_subjects = tuple(
+            _subject_factory(
+                SemanticSubjectRef,
+                kind=SemanticSubjectKind.BLOCK,
+                role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                block_ref=ref, anchor_ea=int(catalog[ref].anchor_ea),
+                locator=BlockSubjectLocator(ref, int(catalog[ref].anchor_ea)),
+            ) for ref in plan_refs if ref in retired_by_ref
+        )
+        corridor = _subject_factory(
+            SemanticSubjectRef,
+            kind=SemanticSubjectKind.CORRIDOR,
+            role=SemanticSubjectRole.DISPATCHER_CORRIDOR,
+            block_ref=entry_ref, anchor_ea=int(entry.anchor_ea),
+            locator=CorridorSubjectLocator(
+                content_id("unflatten.corridor.v1", plan_refs), entry_ref,
+                int(entry.anchor_ea), plan_refs,
+                tuple(int(catalog[ref].anchor_ea) for ref in plan_refs),
+            ),
+        )
+        infrastructure = next(
+            (item for item in member_subjects if item.block_ref == entry_ref),
+            _subject_factory(
+                SemanticSubjectRef,
+                kind=SemanticSubjectKind.BLOCK,
+                role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+                block_ref=entry_ref, anchor_ea=int(entry.anchor_ea),
+                locator=BlockSubjectLocator(entry_ref, int(entry.anchor_ea)),
+            ),
+        )
+        claims.append(_claim_factory(
+            RetiredDispatcherInfrastructureClaim,
+            kind=UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
+            infrastructure_subject=infrastructure, corridor_subject=corridor,
+            member_subjects=member_subjects,
+            retirement_proof_ids=(record.proof_id,),
+            source_generation=proposal.source_identity_catalog.generation,
+            retirement_catalog=retirement_catalog,
+        ))
+    return tuple(claims)
+
+
 @dataclass(frozen=True, slots=True)
 class TypedProposalRoute:
     """The sole accepted semantic route in this task."""
@@ -393,70 +901,6 @@ PlanRouteResult: TypeAlias = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class ShadowValidationAccepted:
-    """The exact shadow transport correlates with its owning plan."""
-
-
-ShadowValidationResult: TypeAlias = ShadowValidationAccepted | RejectedPlanRoute
-
-
-def validate_shadow_for_plan(
-    plan: PatchPlan,
-    shadow: object,
-) -> ShadowValidationResult:
-    """Return a typed rejection for malformed or stale shadow transport."""
-
-    if type(plan) is not PatchPlan:
-        return RejectedPlanRoute(
-            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
-            "plan_type_is_not_closed",
-        )
-    if (
-        type(plan.plan_id) is not str
-        or type(plan.snapshot_id) is not str
-        or type(plan.source_generation) is not int
-    ):
-        return RejectedPlanRoute(
-            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
-            "shadow_plan_identity_invalid",
-        )
-    if type(shadow) is not LegacyUnflattenShadowEnvelope:
-        return RejectedPlanRoute(
-            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
-            "shadow_type_is_not_closed",
-        )
-    try:
-        LegacyUnflattenShadowEnvelope.__post_init__(shadow)
-        from .legacy_wire import decode_legacy_value, encode_legacy_value
-
-        for entry in shadow.entries:
-            decoded = decode_legacy_value(entry.canonical_payload)
-            if encode_legacy_value(decoded) != entry.canonical_payload:
-                raise ValueError("legacy shadow payload is not byte-canonical")
-    except Exception:
-        return RejectedPlanRoute(
-            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
-            "shadow_invariants_invalid",
-        )
-    if shadow.plan_id != plan.plan_id:
-        return RejectedPlanRoute(
-            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
-            "shadow_plan_id_mismatch",
-        )
-    if shadow.snapshot_id != plan.snapshot_id:
-        return RejectedPlanRoute(
-            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
-            "shadow_snapshot_id_mismatch",
-        )
-    if shadow.source_generation != plan.source_generation:
-        return RejectedPlanRoute(
-            UnflattenAuthorityReason.MALFORMED_PROPOSAL,
-            "shadow_source_generation_mismatch",
-        )
-    return ShadowValidationAccepted()
-
-
 def attach_typed_proposal(
     plan: PatchPlan,
     *,
@@ -470,12 +914,14 @@ def attach_typed_proposal(
     authoritative_handler_serials,
     state_identity,
     use_def_witness,
+    corridor_coverage=None,
+    dispatcher_removal_validation=None,
 ) -> PatchPlan:
-    """Attach one typed proposal and capture all legacy metadata exactly once."""
+    """Attach one typed proposal from producer-owned typed evidence."""
 
     if type(plan) is not PatchPlan:
         raise TypeError("typed proposal attachment requires a PatchPlan")
-    if plan.unflatten_proposal is not None or plan.legacy_unflatten_shadow is not None:
+    if plan.unflatten_proposal is not None:
         raise ValueError("typed proposal attachment may run only once")
     proposal = producer_api.build_proposal(
         plan_id=plan.plan_id,
@@ -492,120 +938,52 @@ def attach_typed_proposal(
         use_def_witness=use_def_witness,
     )
     metadata_items = tuple(normalized_metadata_items(plan.metadata))
-    corridor_rows = tuple(
-        value for key, value in metadata_items
-        if key == DISPATCHER_CORRIDOR_COVERAGE_METADATA
-    )
-    if len(corridor_rows) > 1:
-        raise ValueError("legacy corridor coverage metadata occurs more than once")
-    if corridor_rows:
-        corridor_payload = corridor_rows[0]
-        from .legacy_codec import corridor_coverage_forecast_from_legacy_metadata
-        try:
-            forecast = corridor_coverage_forecast_from_legacy_metadata(
-                corridor_payload,
+    if any(key in LEGACY_UNFLATTEN_KEYS for key, _value in metadata_items):
+        raise ValueError("typed producer plans cannot carry reserved legacy metadata")
+    if corridor_coverage is not None:
+        proposal = replace(
+            proposal,
+            corridor_coverage_forecast=corridor_coverage_forecast_from_analysis(
+                corridor_coverage,
                 proposal=proposal,
                 block_refs_by_serial=block_refs_by_serial,
-                source_function_ea=int(source.func_ea),
-            )
-        except (TypeError, ValueError) as exc:
-            raise ValueError("legacy corridor coverage conversion failed") from exc
-        proposal = replace(proposal, corridor_coverage_forecast=forecast)
-    # Legacy retirement families are adapted once into the proposal-owned
-    # exact catalog.  The claim remains partial when the proof covers only a
-    # subset of planned members.
-    retirement_payload = dict(metadata_items).get(
-        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA
-    )
-    retirement_family_keys = (
-        "retired_infrastructure", "retired_state_plumbing", "retired_corridor",
-    )
-    retirement_present = tuple(
-        key for key in retirement_family_keys
-        if isinstance(retirement_payload, dict)
-        and key in retirement_payload
-    )
-    if retirement_present:
-        from .legacy_codec import retirement_claim_from_legacy_proof
-
-        try:
-            if len(retirement_present) != 1:
-                raise ValueError("legacy retirement families are ambiguous")
-            transport = {retirement_present[0]: retirement_payload[retirement_present[0]]}
-            if "proof_ids" in retirement_payload:
-                transport["proof_ids"] = retirement_payload["proof_ids"]
-            claim = retirement_claim_from_legacy_proof(
-                transport,
-                proposal=proposal,
-                block_refs_by_serial=block_refs_by_serial,
-            )
-            retired_refs = {member.block_ref for member in claim.member_subjects}
-            member_refs = set(proposal.plan_inputs.dispatcher_member_refs)
-            if retired_refs and retired_refs <= member_refs:
-                shape = (
-                    UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT
-                    if retired_refs == member_refs
-                    else UnflattenPlanShape.PARTIAL_REWRITE
-                )
-                proposal = replace(
-                    proposal,
-                    claims=tuple(sorted((*proposal.claims, claim), key=lambda item: item.claim_id)),
-                    plan_inputs=replace(
-                        proposal.plan_inputs,
-                        shape=shape,
-                    ),
-                    retirement_catalog=claim.retirement_catalog,
-                )
-        except (TypeError, ValueError) as exc:
-            # A supported retirement family is authority input once present;
-            # malformed rows fail closed instead of silently becoming a shadow.
-            raise ValueError("legacy retirement proof conversion failed") from exc
-    terminal_payload_present = (
-        isinstance(retirement_payload, dict)
-        and "terminal_switch_cycle_break" in retirement_payload
-    )
-    if terminal_payload_present:
-        from .legacy_codec import terminal_cycle_claim_from_legacy_proof
-
-        try:
-            if retirement_payload.get("validation_status") != "accepted" or retirement_payload.get("reason") != "terminal_switch_cycle_break":
-                raise ValueError("legacy terminal proof validation status is not accepted")
-            terminal_claim = terminal_cycle_claim_from_legacy_proof(
-                retirement_payload,
-                proposal=proposal,
-                block_refs_by_serial=block_refs_by_serial,
-            )
+            ),
+        )
+    if dispatcher_removal_validation is not None:
+        claims = claims_from_dispatcher_removal_validation(
+            dispatcher_removal_validation,
+            proposal=proposal,
+            block_refs_by_serial=block_refs_by_serial,
+        )
+        if claims:
+            retired_refs = {
+                member.block_ref
+                for claim in claims
+                if type(claim) is RetiredDispatcherInfrastructureClaim
+                for member in claim.member_subjects
+            }
+            dispatcher_refs = set(proposal.plan_inputs.dispatcher_member_refs)
             proposal = replace(
                 proposal,
-                claims=tuple(sorted((*proposal.claims, terminal_claim), key=lambda item: item.claim_id)),
+                claims=tuple(sorted((*proposal.claims, *claims), key=lambda item: item.claim_id)),
                 plan_inputs=replace(
                     proposal.plan_inputs,
-                    shape=UnflattenPlanShape.PARTIAL_REWRITE,
+                    shape=UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT
+                    if retired_refs == dispatcher_refs
+                    else UnflattenPlanShape.PARTIAL_REWRITE,
+                ),
+                retirement_catalog=next(
+                    (claim.retirement_catalog for claim in claims
+                     if type(claim) is RetiredDispatcherInfrastructureClaim),
+                    proposal.retirement_catalog,
                 ),
             )
-        except (TypeError, ValueError) as exc:
-            raise ValueError("legacy terminal proof conversion failed") from exc
     if (
         proposal.retirement_catalog is not None
         or any(type(claim) is RetiredDispatcherInfrastructureClaim for claim in proposal.claims)
     ) and proposal.corridor_coverage_forecast is None:
         raise ValueError("corridor rewrite or retirement proposal requires coverage metadata")
-    from .legacy_codec import capture_legacy_unflatten_shadow
-
-    cleaned, shadow = capture_legacy_unflatten_shadow(
-        plan_id=plan.plan_id,
-        snapshot_id=plan.snapshot_id,
-        source_generation=plan.source_generation,
-        metadata=plan.metadata,
-    )
-    if shadow is None:
-        raise ValueError("typed proposal attachment requires legacy shadow capture")
-    return replace(
-        plan,
-        metadata=cleaned,
-        unflatten_proposal=proposal,
-        legacy_unflatten_shadow=shadow,
-    )
+    return replace(plan, metadata=metadata_items, unflatten_proposal=proposal)
 
 
 __all__ = [
@@ -618,12 +996,10 @@ __all__ = [
     "ProposalRejected",
     "ProposalValidationResult",
     "RejectedPlanRoute",
-    "ShadowValidationAccepted",
-    "ShadowValidationResult",
     "TypedProposalRoute",
     "reserved_metadata_keys",
     "retirement_member_catalog",
     "validate_proposal",
-    "validate_shadow_for_plan",
     "attach_typed_proposal",
+    "claims_from_dispatcher_removal_validation",
 ]
