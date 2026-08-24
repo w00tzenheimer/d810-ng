@@ -936,7 +936,6 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
     )
 
     from d810.hexrays.mutation.patch_transaction import PatchTransactionPoisoned
-
     with pytest.raises(PatchTransactionPoisoned) as raised:
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 

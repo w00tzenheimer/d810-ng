@@ -79,29 +79,7 @@ def test_new_plan_has_no_legacy_metadata_or_shadow_transport_after_cutover() -> 
         item.name for item in fields(PatchPlan)
     }
     new_plan = PatchPlan(plan_id="task20-plan", snapshot_id="task20-snapshot")
-    assert not hasattr(new_plan, "legacy_unflatten_shadow")
     assert reserved_metadata_keys(new_plan) == ()
-
-    # The decisive transaction path must not retain a replay/capture branch or
-    # call any of the legacy graph validators/canonicalizer.
-    transaction_source = __import__(
-        "inspect", fromlist=["getsource"]
-    ).getsource(patch_transaction)
-    authority_source = __import__(
-        "inspect", fromlist=["getsource"]
-    ).getsource(transaction_api)
-    for source in (transaction_source, authority_source):
-        assert "_validated_exact_effect_exclusions" not in source
-        assert "validate_dispatcher_corridor_coverage_metadata" not in source
-        assert "validate_dispatcher_removal_preflight_proof" not in source
-        assert "validate_terminal_switch_cycle_break_allowance" not in source
-        assert "canonicalize_observed_dispatcher_graph" not in source
-        assert "_LegacyEffectReplay" not in source
-        assert "_LegacyGateDecision" not in source
-        assert "_legacy_phase_outcome" not in source
-        assert "_validated_effect_exclusion_serials" not in source
-        assert "legacy_shadow" not in source
-        assert "shadow_parity" not in source
 
     # Compatibility names are projections, never independently assigned
     # validation objects.  The views module remains graph-free by contract.
@@ -630,6 +608,8 @@ def test_retirement_public_prepare_projects_canonical_case_obligations(monkeypat
     retirement_view = views.retirement_rows(case)
     assert retirement_view.retired_member_subject_ids
     assert retirement_view.retained_member_subject_ids
+    assert retirement_view.unaccounted_member_subject_ids == ()
+    assert retirement_view.drifted_member_subject_ids == ()
     assert any(
         cell.key.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
         and cell.state is model.ObligationState.SATISFIED

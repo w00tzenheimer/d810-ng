@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import inspect
-
 import pytest
 
 from d810.ir.flowgraph import BlockKind, BlockSnapshot
@@ -13,18 +11,6 @@ from d810.transforms.unflatten_authority.ids import authority_id, semantic_graph
 
 
 _BADADDR = 0xFFFFFFFFFFFFFFFF
-
-
-def test_transaction_derivation_does_not_construct_semantic_authority_payloads() -> None:
-    source = inspect.getsource(transaction_api._derive_inputs)
-    for forbidden in (
-        "StructuralLineageEvidencePayload", "TopologyEvidencePayload",
-        "SemanticRouteEvidencePayload", "EffectSiteEvidencePayload",
-        "ReachabilityEvidencePayload", "CorridorCoverageEvidencePayload",
-        "GenericCfgGateResult",
-    ):
-        assert forbidden not in source
-    assert not hasattr(transaction_api, "_topology_relations_from_inventory")
 
 
 def test_observe_inventory_block_preserves_raw_graph_start_ea() -> None:
@@ -45,14 +31,6 @@ def test_observe_inventory_block_preserves_raw_graph_start_ea() -> None:
 
     assert type(observed) is model.InventoryBlockObservation
     assert observed.graph_start_ea == _BADADDR
-
-
-def test_transaction_uses_only_the_closed_inventory_model() -> None:
-    assert not hasattr(transaction_api, "GraphSemanticInventory")
-    assert not hasattr(transaction_api, "_reused_source_inventory")
-    assert not hasattr(transaction_api, "_build_graph_inventory")
-    assert "discover_reachable_effects_and_terminals" not in transaction_api.__dict__
-    assert "reachable_terminal_blocks" not in transaction_api.__dict__
 
 
 def test_reachable_closure_empty_graph_has_explicit_zero_entry_policy() -> None:

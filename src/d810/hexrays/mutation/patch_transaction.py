@@ -9,7 +9,7 @@ from d810.analyses.control_flow.graph_checks import (
     check_effectful_reachability_preserved,
     check_terminal_reachability_preserved,
 )
-from d810.transforms.unflatten_authority import transaction_api as unflatten_authority_api
+import d810.transforms.unflatten_authority_facade as unflatten_authority_api
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import (
     BoundCfgTransaction,
@@ -932,12 +932,8 @@ class _PatchTransactionLifecycle:
             raise RuntimeError("patch validation lacks immutable source authority")
         active_unflatten_authority = self.bound.unflatten_authority
         if active_unflatten_authority is not None:
-            from d810.transforms.unflatten_authority.transaction_api import (
-                revalidate_bound_patch_plan_against_prepared,
-            )
-
             try:
-                revalidate_bound_patch_plan_against_prepared(
+                unflatten_authority_api.revalidate_bound_patch_plan_against_prepared(
                     active_unflatten_authority.prepared,
                     self.bound.patch_binding,
                 )

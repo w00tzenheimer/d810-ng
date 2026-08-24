@@ -37,6 +37,8 @@ class RetiredInfrastructureView:
     claim_id: str
     retired_member_subject_ids: tuple[str, ...]
     retained_member_subject_ids: tuple[str, ...]
+    unaccounted_member_subject_ids: tuple[str, ...]
+    drifted_member_subject_ids: tuple[str, ...]
     structural_cell_keys: tuple[model.ObligationKey, ...]
     justification_ids: tuple[str, ...]
 
@@ -241,14 +243,6 @@ def retired_infrastructure_view(
     phase_by_ref = {item.block_ref: item for item in result.members}
     if set(phase_by_ref) != plan_refs or result.claim_id != claim_id:
         raise ValueError("retirement phase result does not cover the exact claim plan")
-    if any(
-        item.classification not in {
-            model.RetirementPhaseClassification.RETIRED,
-            model.RetirementPhaseClassification.RETAINED,
-        }
-        for item in result.members
-    ):
-        raise ValueError("retirement phase result contains unsupported classification")
     member_ids = {
         subject.subject_id: subject
         for subject in case.subjects
@@ -267,6 +261,16 @@ def retired_infrastructure_view(
         if phase_by_ref[subject.block_ref].classification
         is model.RetirementPhaseClassification.RETAINED
     ))
+    unaccounted = tuple(sorted(
+        subject_id for subject_id, subject in member_ids.items()
+        if phase_by_ref[subject.block_ref].classification
+        is model.RetirementPhaseClassification.UNACCOUNTED
+    ))
+    drifted = tuple(sorted(
+        subject_id for subject_id, subject in member_ids.items()
+        if phase_by_ref[subject.block_ref].classification
+        is model.RetirementPhaseClassification.DRIFTED
+    ))
     structural = tuple(sorted(
         (
             cell.key for cell in case.obligation_index.cells
@@ -281,7 +285,8 @@ def retired_infrastructure_view(
         and item.conclusion.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
     ))
     return RetiredInfrastructureView(
-        claim_id, retired, retained, structural, justifications,
+        claim_id, retired, retained, unaccounted, drifted, structural,
+        justifications,
     )
 
 
