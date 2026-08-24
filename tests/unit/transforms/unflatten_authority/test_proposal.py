@@ -258,44 +258,23 @@ def _typed_plan(proposal):
     return replace(plan, unflatten_proposal=proposal), proposal
 
 
-def test_rejected_dispatcher_removal_proof_mints_no_authority_claims() -> None:
-    """A failed producer receipt is evidence of rejection, never authority."""
+def test_incomplete_dispatcher_forecast_mints_no_authority_claims() -> None:
+    """An abstaining producer forecast cannot create a retirement claim."""
 
-    from d810.transforms.dispatcher_corridor_coverage import (
-        DispatcherBlockAnchor,
-        DispatcherRemovalPreflightProof,
-        DispatcherRemovalPreflightValidation,
-        RetiredDispatcherInfrastructure,
-    )
+    from d810.transforms.dispatcher_corridor_coverage import DispatcherCorridorCoverage
     from d810.transforms.unflatten_authority import proposal as proposal_api
     from .helpers import exact_fixture
 
     source, proposal, _exclusion, refs = exact_fixture()
-    proof = DispatcherRemovalPreflightProof(
+    coverage = DispatcherCorridorCoverage(
         function_ea=source.func_ea,
-        dispatcher=DispatcherBlockAnchor(1, source.blocks[1].start_ea),
-        authoritative_handlers=(),
-        post_reachable_handlers=(),
-        pre_reachable_terminals=(),
-        post_reachable_terminals=(),
-        retired_infrastructure=(RetiredDispatcherInfrastructure(
-            "comparison_dispatcher",
-            DispatcherBlockAnchor(0, source.blocks[0].start_ea),
-        ),),
-        lost_blocks=frozenset({0}),
-        lost_block_anchors=(DispatcherBlockAnchor(0, source.blocks[0].start_ea),),
-        state_plumbing=(),
-        producer_safety=(),
-        coverage_enumeration_complete=True,
-        residual_corridor_count=0,
-        passed=False,
-        reason="authoritative_handler_lost",
+        dispatcher=None,
+        covered_corridors=(),
+        residual_corridors=(),
+        enumeration_complete=False,
     )
-
-    assert proposal_api.claims_from_dispatcher_removal_validation(
-        DispatcherRemovalPreflightValidation(False, proof.reason, proof),
-        proposal=proposal,
-        block_refs_by_serial=refs,
+    assert proposal_api.claims_from_dispatcher_removal_forecast(
+        coverage, proposal=proposal, block_refs_by_serial=refs,
     ) == ()
 
 
@@ -305,8 +284,7 @@ def test_detached_component_analysis_mints_only_catalog_bound_claim() -> None:
     from d810.transforms.dispatcher_corridor_coverage import (
         DetachedDeadHandlerComponentAnalysis,
         DispatcherBlockAnchor,
-        DispatcherRemovalPreflightProof,
-        DispatcherRemovalPreflightValidation,
+        DispatcherCorridorCoverage,
     )
     from d810.transforms.unflatten_authority import proposal as proposal_api
     from .helpers import exact_fixture
@@ -332,231 +310,31 @@ def test_detached_component_analysis_mints_only_catalog_bound_claim() -> None:
         dispatcher=anchors[1], dead_handlers=(anchors[2],),
         retained_handlers=(anchors[3],), component=(anchors[2],),
     )
-    validation = DispatcherRemovalPreflightValidation(
-        passed=True, reason="detached_dead_handler_component",
-        proof=DispatcherRemovalPreflightProof(
-            function_ea=source.func_ea, dispatcher=anchors[1],
-            authoritative_handlers=(anchors[2], anchors[3]),
-            post_reachable_handlers=(anchors[3],),
-            pre_reachable_terminals=(), post_reachable_terminals=(),
-            retired_infrastructure=(), lost_blocks=frozenset({2}),
-            lost_block_anchors=(anchors[2],), state_plumbing=(), producer_safety=(),
-            coverage_enumeration_complete=True, residual_corridor_count=0,
-            passed=False, reason="untyped_lost_block",
-        ),
+    coverage = DispatcherCorridorCoverage(
+        function_ea=source.func_ea,
+        dispatcher=anchors[1],
+        covered_corridors=(),
+        residual_corridors=(),
+        enumeration_complete=True,
         detached_dead_handler_component=analysis,
     )
 
-    claims = proposal_api.claims_from_dispatcher_removal_validation(
-        validation, proposal=proposal, block_refs_by_serial=refs,
+    claims = proposal_api.claims_from_dispatcher_removal_forecast(
+        coverage, proposal=proposal, block_refs_by_serial=refs,
     )
 
     assert len(claims) == 1
     assert claims[0].kind.value == "detached_dead_handler_component"
     assert claims[0].dead_handler_subjects[0].block_ref == refs[2]
-
-
-def _terminal_cycle_fixture():
-    from d810.transforms.dispatcher_corridor_coverage import (
-        DispatcherBlockAnchor,
-        DispatcherRemovalPreflightProof,
-        DispatcherRemovalPreflightValidation,
-        RetiredDispatcherInfrastructure,
-        TerminalSwitchCycleBreakProof,
-    )
-    from .test_model import import_authority_model, _valid_proposal
-
-    model = import_authority_model()
-    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
-    route = proposal.route_evidence.route_proofs[0]
-    route = replace(
-        route,
-        destinations=(replace(route.destinations[0], terminal=True),),
-    )
-    proposal = replace(
-        proposal,
-        route_evidence=replace(proposal.route_evidence, route_proofs=(route,)),
-    )
-    refs = {
-        serial: block.block_ref
-        for serial, block in enumerate(proposal.source_identity_catalog.blocks)
-    }
-    anchors = {
-        serial: DispatcherBlockAnchor(serial, block.anchor_ea)
-        for serial, block in enumerate(proposal.source_identity_catalog.blocks)
-    }
-    inner = DispatcherRemovalPreflightProof(
-        function_ea=0x5000,
-        dispatcher=anchors[0],
-        authoritative_handlers=(anchors[2],),
-        post_reachable_handlers=(anchors[2],),
-        pre_reachable_terminals=(),
-        post_reachable_terminals=(),
-        retired_infrastructure=(
-            RetiredDispatcherInfrastructure("comparison_dispatcher", anchors[1]),
-        ),
-        lost_blocks=frozenset({0, 1}),
-        lost_block_anchors=(anchors[0], anchors[1]),
-        state_plumbing=(),
-        producer_safety=(),
-        coverage_enumeration_complete=True,
-        residual_corridor_count=0,
-        passed=False,
-        reason="untyped_lost_block",
-    )
-    terminal = TerminalSwitchCycleBreakProof(
-        dispatcher=anchors[0],
-        terminal_source=anchors[0],
-        shared_merge=anchors[1],
-        terminal_target=anchors[2],
-        terminal_stop=anchors[2],
-        retired_residue=(anchors[0], anchors[1]),
-    )
-    validation = DispatcherRemovalPreflightValidation(
-        passed=True,
-        reason="terminal_switch_cycle_break",
-        proof=inner,
-        terminal_switch_cycle_break=terminal,
-    )
-    return proposal, refs, route, terminal, validation
-
-
-def test_terminal_cycle_wrapper_mints_only_terminal_claim() -> None:
-    """A terminal allowance consumes its rejected inner removal receipt."""
-
-    from d810.transforms.unflatten_authority import proposal as proposal_api
-    from .test_model import import_authority_model
-
-    proposal, refs, route, terminal, validation = _terminal_cycle_fixture()
-    model = import_authority_model()
-    claims = proposal_api.claims_from_dispatcher_removal_validation(
-        validation,
-        proposal=proposal,
-        block_refs_by_serial=refs,
-    )
-
-    assert len(claims) == 1
-    assert isinstance(claims[0], model.TerminalCycleBreakClaim)
-    assert not any(
-        isinstance(claim, model.RetiredDispatcherInfrastructureClaim)
-        for claim in claims
-    )
-    assert proposal.retirement_catalog is None
-    assert claims[0].cleanup_source_subject.block_ref == refs[1]
-    assert claims[0].terminal_subject.block_ref == refs[2]
-    assert claims[0].terminal_route_proof_ids == (route.proof_id,)
-    locator = claims[0].cycle_subject.locator
-    assert locator.member_refs == (refs[0], refs[1])
-    assert locator.member_anchor_eas == (0x1000, 0x1300)
-
-
-def test_terminal_cycle_rejects_matching_route_that_is_not_selected() -> None:
+def test_proposal_module_has_no_local_removal_verdict_api() -> None:
+    from d810.transforms import dispatcher_corridor_coverage as coverage_api
     from d810.transforms.unflatten_authority import proposal as proposal_api
 
-    proposal, refs, route, _terminal, validation = _terminal_cycle_fixture()
-    route = replace(route, proof_id="sha256:" + "a" * 64)
-    proposal = replace(
-        proposal,
-        route_evidence=replace(proposal.route_evidence, route_proofs=(route,)),
-    )
-    with pytest.raises(ValueError, match="route proof is not selected"):
-        proposal_api.claims_from_dispatcher_removal_validation(
-            validation, proposal=proposal, block_refs_by_serial=refs,
-        )
+    names = vars(coverage_api)
+    assert "DispatcherRemoval" + "PreflightValidation" not in names
+    assert "DispatcherRemoval" + "PreflightProof" not in names
+    assert "claims_from_dispatcher_removal" + "_validation" not in vars(proposal_api)
 
-
-def test_terminal_cycle_rejects_ambiguous_selected_route_proofs() -> None:
-    from d810.transforms.unflatten_authority import proposal as proposal_api
-    from d810.transforms.unflatten_authority.ids import _claim_factory, _subject_factory
-    from .helpers import authority_id
-    from .test_model import import_authority_model
-
-    proposal, refs, route, _terminal, validation = _terminal_cycle_fixture()
-    model = import_authority_model()
-    route_two = replace(
-        route,
-        proof_id=authority_id("ambiguous-terminal-route"),
-    )
-    original_claim = proposal.claims[0]
-    retired_locator = replace(
-        original_claim.retired_route_subject.locator,
-        proof_id=route_two.proof_id,
-    )
-    replacement_locator = replace(
-        original_claim.replacement_route_subject.locator,
-        proof_id=route_two.proof_id,
-    )
-    retired_subject = _subject_factory(
-        model.SemanticSubjectRef,
-        kind=model.SemanticSubjectKind.ROUTE,
-        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
-        block_ref=original_claim.retired_route_subject.block_ref,
-        anchor_ea=original_claim.retired_route_subject.anchor_ea,
-        locator=retired_locator,
-    )
-    replacement_subject = _subject_factory(
-        model.SemanticSubjectRef,
-        kind=model.SemanticSubjectKind.ROUTE,
-        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
-        block_ref=original_claim.replacement_route_subject.block_ref,
-        anchor_ea=original_claim.replacement_route_subject.anchor_ea,
-        locator=replacement_locator,
-    )
-    second_claim = _claim_factory(
-        model.EquivalentSemanticRouteClaim,
-        kind=original_claim.kind,
-        retired_route_subject=retired_subject,
-        replacement_route_subject=replacement_subject,
-        source_subject=original_claim.source_subject,
-        destination_subjects=original_claim.destination_subjects,
-        route_proof_ids=(route_two.proof_id,),
-        atomic_group_id=original_claim.atomic_group_id,
-        source_generation=original_claim.source_generation,
-    )
-    proposal = replace(
-        proposal,
-        route_evidence=replace(
-            proposal.route_evidence,
-            route_proofs=(route, route_two),
-        ),
-        claims=(original_claim, second_claim),
-    )
-    with pytest.raises(ValueError, match="absent or ambiguous"):
-        proposal_api.claims_from_dispatcher_removal_validation(
-            validation, proposal=proposal, block_refs_by_serial=refs,
-        )
-
-
-def test_terminal_cycle_rejects_residue_mismatch_and_missing_merge() -> None:
-    from d810.transforms.unflatten_authority import proposal as proposal_api
-
-    proposal, refs, _route, terminal, validation = _terminal_cycle_fixture()
-    mismatched = replace(
-        validation,
-        terminal_switch_cycle_break=replace(
-            terminal, retired_residue=(terminal.retired_residue[0],),
-        ),
-    )
-    with pytest.raises(ValueError, match="residue"):
-        proposal_api.claims_from_dispatcher_removal_validation(
-            mismatched, proposal=proposal, block_refs_by_serial=refs,
-        )
-    missing_merge = replace(
-        validation,
-        proof=replace(
-            validation.proof,
-            lost_blocks=frozenset({0, 2}),
-            lost_block_anchors=(terminal.dispatcher, terminal.terminal_target),
-        ),
-        terminal_switch_cycle_break=replace(
-            terminal,
-            retired_residue=(terminal.retired_residue[0], terminal.terminal_target),
-        ),
-    )
-    with pytest.raises(ValueError, match="residue"):
-        proposal_api.claims_from_dispatcher_removal_validation(
-            missing_merge, proposal=proposal, block_refs_by_serial=refs,
-        )
 
 
 def test_redirect_manifest_is_canonical_and_plan_bound() -> None:

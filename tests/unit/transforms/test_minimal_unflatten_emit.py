@@ -113,6 +113,9 @@ from d810.transforms.minimal_unflatten_emit import (
     build_state_write_redirects,
     enrich_native_bound_transition_routes,
 )
+from d810.transforms.unflatten_authority.producer_api import (
+    ConditionalEntryBridgeForecast,
+)
 from tests.native_preanalysis import make_native_key
 from tests.typed_patch_authority import emit_minimal_unflatten, graph_modifications
 
@@ -6645,8 +6648,8 @@ def test_imported_conditional_entry_prefers_native_origin_over_stale_arm_anchor(
     )
 
     assert plan == emit_module.ConditionalEntryBridgePlan(
-        proofs=(
-            emit_module.ConditionalEntryBridgeProof(
+        forecasts=(
+            ConditionalEntryBridgeForecast(
                 source_serial=1,
                 predicate_ea=predicate_ea,
                 false_target_serial=20,
@@ -6724,8 +6727,8 @@ def test_imported_conditional_entry_prefers_canonical_handler_for_leaf_ea() -> N
     )
 
     assert plan == emit_module.ConditionalEntryBridgePlan(
-        proofs=(
-            emit_module.ConditionalEntryBridgeProof(
+        forecasts=(
+            ConditionalEntryBridgeForecast(
                 source_serial=1,
                 predicate_ea=predicate_ea,
                 false_target_serial=20,
@@ -6874,8 +6877,8 @@ def test_imported_conditional_entry_routes_both_states_to_authoritative_handlers
     )
 
     assert plan == emit_module.ConditionalEntryBridgePlan(
-        proofs=(
-            emit_module.ConditionalEntryBridgeProof(
+        forecasts=(
+            ConditionalEntryBridgeForecast(
                 source_serial=1,
                 predicate_ea=predicate_ea,
                 false_target_serial=20,
@@ -6962,8 +6965,8 @@ def test_imported_conditional_entry_binds_distinct_logical_source_owner() -> Non
     )
 
     assert plan == emit_module.ConditionalEntryBridgePlan(
-        proofs=(
-            emit_module.ConditionalEntryBridgeProof(
+        forecasts=(
+            ConditionalEntryBridgeForecast(
                 source_serial=4,
                 predicate_ea=live_predicate_ea,
                 false_target_serial=20,
@@ -7149,10 +7152,10 @@ def test_imported_conditional_entry_plan_includes_complete_nested_tree() -> None
     )
 
     assert plan == emit_module.ConditionalEntryBridgePlan(
-        proofs=(
-            emit_module.ConditionalEntryBridgeProof(1, outer_ea, 3, 2),
-            emit_module.ConditionalEntryBridgeProof(2, taken_nested_ea, 21, 20),
-            emit_module.ConditionalEntryBridgeProof(
+        forecasts=(
+            ConditionalEntryBridgeForecast(1, outer_ea, 3, 2),
+            ConditionalEntryBridgeForecast(2, taken_nested_ea, 21, 20),
+            ConditionalEntryBridgeForecast(
                 3,
                 fallthrough_nested_ea,
                 31,
@@ -7298,7 +7301,7 @@ def test_imported_conditional_entry_plan_ignores_handler_local_ambiguity() -> No
     )
 
     assert plan == emit_module.ConditionalEntryBridgePlan(
-        proofs=(emit_module.ConditionalEntryBridgeProof(1, entry_ea, 21, 20),),
+        forecasts=(ConditionalEntryBridgeForecast(1, entry_ea, 21, 20),),
         root_source_serials=(1,),
     )
 

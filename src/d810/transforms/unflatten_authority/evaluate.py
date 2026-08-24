@@ -540,27 +540,21 @@ def _dimensions(
     candidate_fingerprint: str | None = None,
     candidate_generation: int | None = None,
     retired_topology_satisfied_ids: frozenset[str] = frozenset(),
+    retirement_phase_result: model.RetirementPhaseResult | None = None,
     conditional_relations: tuple[model.ConditionalSubjectRelation, ...] = (),
     proposal: model.ProposedUnflattenContract | None = None,
     detached_dead_handler_ids: frozenset[str] = frozenset(),
 ) -> tuple[model.ObligationKey, ...]:
     result: set[model.ObligationKey] = set()
     relation_dimensions = {(item.target_subject_id, item.dimension) for item in conditional_relations}
+    # The transaction-owned phase result is the sole source of the retirement
+    # partition.  In particular, do not reconstruct it from candidate
+    # reachability or producer eligibility flags here.
+    retired_refs = set(retirement_phase_result.retired_refs) if retirement_phase_result is not None else set()
     # A dispatcher entry that is itself an exact retired-catalog row is no
     # longer an applicable live entry obligation.  This is T13 retirement
     # applicability; corridor coverage never supplies this exception.
-    retired_dispatcher_entry_refs = {
-        member.block_ref
-        for claim in claims
-        if type(claim) is model.RetiredDispatcherInfrastructureClaim
-        and claim.retirement_catalog is not None
-        for member in claim.retirement_catalog.members
-        if member.retired
-        and any(
-            subject.block_ref == member.block_ref
-            for subject in claim.member_subjects
-        )
-    }
+    retired_dispatcher_entry_refs = set(retired_refs)
     terminal_cycle_structural_ids = {
         claim.cycle_subject.subject_id
         for claim in claims
@@ -1735,14 +1729,8 @@ def _evaluator_fact_evidence(
         model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
         model.SemanticSubjectRole.PLANNED_HELPER,
     }
-    retired_topology_refs = {
-        row.block_ref
-        for claim in inputs.claims
-        if type(claim) is model.RetiredDispatcherInfrastructureClaim
-        and claim.retirement_catalog is not None
-        for row in claim.retirement_catalog.members
-        if row.retired
-    }
+    retirement_result = inputs.retirement_phase_result
+    retired_topology_refs = set(retirement_result.retired_refs) if retirement_result is not None else set()
     retired_roles = {
         model.SemanticSubjectRole.DISPATCHER_ENTRY,
         model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
@@ -2019,22 +2007,8 @@ def _evaluator_fact_evidence(
         retirement_authorized = (
             claim is not None
             and phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-            and candidate_binding is not None
-            and (
-                candidate_binding.status is model.SubjectBindingStatus.MISSING
-                or (
-                    candidate_binding.status is model.SubjectBindingStatus.UNIQUE
-                    and candidate_binding.serial is not None
-                    and candidate_binding.serial not in candidate.reachable_serials
-                )
-            )
-            and claim.retirement_catalog is not None
-            and any(
-                member.block_ref == subject.block_ref
-                and member.anchor_ea == subject.anchor_ea
-                and member.retired
-                for member in claim.retirement_catalog.members
-            )
+            and retirement_result is not None
+            and subject.block_ref in retirement_result.retired_refs
         )
         if (
             retirement_authorized
@@ -2595,6 +2569,7 @@ def build_semantic_case(
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
             else candidate_fingerprint
         ),
+        retirement_phase_result=inputs.retirement_phase_result,
         candidate_generation=(
             source_generation
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
@@ -2604,20 +2579,9 @@ def build_semantic_case(
             member.subject_id
             for claim in inputs.claims
             if type(claim) is model.RetiredDispatcherInfrastructureClaim
-            and claim.retirement_catalog is not None
-            and {
-                ref for proof in claim.retirement_catalog.proofs
-                for ref in proof.member_refs
-            } == {
-                member.block_ref for member in claim.retirement_catalog.members
-            }
-            and {
-                item.payload.source_subject_id for item in lineage_evidence
-                if type(item.payload) is model.StructuralLineageEvidencePayload
-                and item.payload.claim_id == claim.claim_id
-                and item.payload.disposition is model.StructuralDisposition.AUTHORIZED_RETIREMENT
-            } == {member.subject_id for member in claim.member_subjects}
             for member in claim.member_subjects
+            if inputs.retirement_phase_result is not None
+            and member.block_ref in inputs.retirement_phase_result.retired_refs
         ),
         conditional_relations=inputs.conditional_relations,
         proposal=inputs.proposal,
@@ -3131,10 +3095,6 @@ def build_semantic_case(
             forecast_ids = {path.path_id for path in forecast.paths}
             if set(payload.covered_path_ids) | set(payload.residual_path_ids) | set(payload.drifted_path_ids) != forecast_ids:
                 raise ValueError("corridor evidence path partition is not exhaustive")
-            if set(payload.covered_path_ids) != set(forecast.covered_path_ids):
-                raise ValueError("corridor evidence covered partition drifted from forecast")
-            if set(payload.residual_path_ids) != set(forecast.residual_path_ids):
-                raise ValueError("corridor evidence residual partition drifted from forecast")
         elif type(payload) is model.DetachedComponentEvidencePayload:
             header_target = item.subject.subject_id
             matching = tuple(
@@ -3475,6 +3435,14 @@ def build_semantic_case(
         rule = model.UnflattenJustificationRule.SOURCE_PRESERVED
         claim_evidence: tuple[str, ...] = ()
         if type(claim) is model.RetiredDispatcherInfrastructureClaim:
+            retirement_result = inputs.retirement_phase_result
+            if retirement_result is None:
+                raise ValueError("retirement claim lacks a sealed phase result")
+            phase_members = {item.block_ref: item for item in retirement_result.members}
+            if set(phase_members) != set(
+                inputs.proposal.retirement_candidate_catalog.member_refs
+            ):
+                raise ValueError("retirement phase result differs from exact plan membership")
             matching_lineage = tuple(
                 item for item in evidence
                 if type(item.payload) is model.StructuralLineageEvidencePayload
@@ -3484,15 +3452,24 @@ def build_semantic_case(
             )
             claim_evidence = tuple(item.evidence_id for item in matching_lineage)
             lineage_members = tuple(item.payload.source_subject_id for item in matching_lineage)
+            # A retirement claim owns the candidate scope, but the phase
+            # result decides which members actually retired.  Retained,
+            # reachable candidates must not be required to carry a retirement
+            # justification (nor be placed in its retired complement).
+            retired_member_subjects = tuple(
+                member for member in claim.member_subjects
+                if phase_members[member.block_ref].classification
+                is model.RetirementPhaseClassification.RETIRED
+            )
             exact_lineage = (
-                len(matching_lineage) == len(claim.member_subjects)
-                and set(lineage_members) == {member.subject_id for member in claim.member_subjects}
+                len(matching_lineage) == len(retired_member_subjects)
+                and set(lineage_members) == {member.subject_id for member in retired_member_subjects}
                 and len(set(lineage_members)) == len(lineage_members)
             )
-            if exact_lineage:
+            if exact_lineage and retired_member_subjects:
                 targets = tuple(
                     (member, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
-                    for member in claim.member_subjects
+                    for member in retired_member_subjects
                 )
             rule = model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
         elif type(claim) is model.EquivalentSemanticRouteClaim:
@@ -3748,7 +3725,8 @@ def build_semantic_case(
         "candidate_inventory": candidate_inventory,
         "source_subject_ids": tuple(item.subject_id for item in source_subjects),
         "source_bindings": tuple(source_inventory.bindings),
-        "retirement_catalog": inputs.proposal.retirement_catalog,
+        "retirement_candidate_catalog": inputs.proposal.retirement_candidate_catalog,
+        "retirement_phase_result": inputs.retirement_phase_result,
         "corridor_coverage_phase_result": inputs.corridor_coverage_phase_result,
         "detached_dead_handler_component_source_results": inputs.detached_dead_handler_component_source_results,
         "detached_dead_handler_component_phase_results": inputs.detached_dead_handler_component_phase_results,

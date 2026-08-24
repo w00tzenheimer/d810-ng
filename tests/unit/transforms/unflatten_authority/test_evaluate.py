@@ -924,8 +924,8 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         planned_helper_digest=_digest(tuple(item.subject_id for item in candidate_subjects if item.role is model.SemanticSubjectRole.PLANNED_HELPER)),
         patch_step_digest=_digest(tuple(sorted(patch_payloads, key=lambda item: (item.plan_id, item.step_index))),),
         conditional_relation_digest=_digest(relations), metrics=metrics,
-        retirement_catalog=proposal.retirement_catalog,
         corridor_coverage_forecast=proposal.corridor_coverage_forecast,
+        retirement_candidate_catalog=proposal.retirement_candidate_catalog,
     )
     def fixture_inventory(
         phase_value: model.UnflattenAuthorityPhase,
@@ -1246,6 +1246,21 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
             candidate_inventory=candidate_inventory,
             phase=phase,
         )
+    retirement_result = None
+    retirement_claims = tuple(
+        claim for claim in claims
+        if type(claim) is model.RetiredDispatcherInfrastructureClaim
+    )
+    if retirement_claims:
+        from d810.transforms.unflatten_authority.bind import bind_retired_dispatcher_infrastructure_claim
+        if len(retirement_claims) != 1:
+            raise ValueError("fixture requires one retirement claim")
+        retirement_result = bind_retired_dispatcher_infrastructure_claim(
+            claim=retirement_claims[0], proposal=proposal,
+            source_inventory=source_inventory,
+            projected_inventory=candidate_inventory,
+            phase=phase,
+        ).phase_result
     return model.DerivedUnflattenPreparationInputs(
         proposal=proposal, claims=claims, preparation_receipt=receipt,
         source_inventory=source_inventory,
@@ -1257,6 +1272,7 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         preparation_metrics=metrics,
         phase_build_metrics=model.PhaseBuildMetrics(phase, 1, 1, 1.25),
         corridor_coverage_phase_result=corridor_result,
+        retirement_phase_result=retirement_result,
     )
 
 
@@ -3619,15 +3635,15 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         ),
     )
     destination = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
-    retirement_catalog = _retirement_catalog(model, (member0.block_ref, member1.block_ref), (member0.anchor_ea, member1.anchor_ea), 3)
+    candidate_catalog = _retirement_catalog(model, (member0.block_ref, member1.block_ref), (member0.anchor_ea, member1.anchor_ea), 3)
     retirement = _claim_factory(
         model.RetiredDispatcherInfrastructureClaim,
         kind=model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
         infrastructure_subject=member0, corridor_subject=corridor,
         member_subjects=(member0, member1),
-        retirement_proof_ids=(retirement_catalog.proofs[0].proof_id,),
+        candidate_evidence_ids=tuple(sorted({evidence_id for item in candidate_catalog.candidates for evidence_id in item.evidence_ids})),
         source_generation=3,
-        retirement_catalog=retirement_catalog,
+        candidate_catalog=candidate_catalog,
     )
 
     proposal_values = _valid_proposal(model)
@@ -3642,22 +3658,97 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     destination = route_claim.destination_subjects[0]
     retirement_proposal = model.ProposedUnflattenContract(
         **{**proposal_values, "claims": tuple(sorted((retirement, route_claim), key=lambda claim: claim.claim_id),),
-           "retirement_catalog": retirement_catalog}
+           "retirement_candidate_catalog": candidate_catalog}
+    )
+    complete_inputs = _complete_inputs(
+        source_subjects=(
+            entry, member0, member1, corridor, route, destination,
+        ),
+        claims=tuple(sorted((retirement, route_claim), key=lambda claim: claim.claim_id)),
+        proposal=retirement_proposal,
     )
     complete = build_semantic_case(
         authority_id=authority_id("retirement-complete"),
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=_complete_inputs(
-            source_subjects=(
-                entry, member0, member1, corridor, route, destination,
-            ),
-            claims=tuple(sorted((retirement, route_claim), key=lambda claim: claim.claim_id)), proposal=retirement_proposal,
-        ),
+        inputs=complete_inputs,
     )
     assert next(
         cell for cell in complete.obligation_index.cells
         if cell.key == model.ObligationKey(member0, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
     ).state is model.ObligationState.SATISFIED
+
+    phase_result = complete_inputs.retirement_phase_result
+    assert phase_result is not None
+    retained = next(
+        item for item in phase_result.members
+        if item.classification is model.RetirementPhaseClassification.RETAINED
+    )
+    equal_candidate_clone = replace(retained.candidate_binding)
+    assert equal_candidate_clone == retained.candidate_binding
+    assert equal_candidate_clone is not retained.candidate_binding
+    object.__setattr__(retained, "candidate_binding", equal_candidate_clone)
+    with pytest.raises(ValueError, match="retirement phase result bindings differ from inventories"):
+        model.DerivedUnflattenPreparationInputs.__post_init__(complete_inputs)
+    with pytest.raises(ValueError, match="retirement phase result bindings differ from inventories"):
+        model.SemanticSafetyCase.__post_init__(complete)
+
+    forged_candidate = replace(
+        retained.candidate_binding,
+        block_ref=None,
+        serial=None,
+        anchor_ea=None,
+        native_instruction_eas=(),
+        status=model.SubjectBindingStatus.MISSING,
+    )
+    forged_member = object.__new__(model.RetirementPhaseMember)
+    for name, value in {
+        "block_ref": retained.block_ref,
+        "anchor_ea": retained.anchor_ea,
+        "classification": model.RetirementPhaseClassification.RETIRED,
+        "candidate_id": retained.candidate_id,
+        "candidate_reachable": None,
+        "reason": "candidate_missing",
+        "source_binding": retained.source_binding,
+        "candidate_binding": forged_candidate,
+    }.items():
+        object.__setattr__(forged_member, name, value)
+    forged_member.__post_init__()
+    forged_members = tuple(
+        forged_member if item.block_ref == retained.block_ref else item
+        for item in phase_result.members
+    )
+    forged_result = object.__new__(model.RetirementPhaseResult)
+    for name, value in {
+        "catalog_id": phase_result.catalog_id,
+        "claim_id": phase_result.claim_id,
+        "phase": phase_result.phase,
+        "source_fingerprint": phase_result.source_fingerprint,
+        "candidate_fingerprint": phase_result.candidate_fingerprint,
+        "source_generation": phase_result.source_generation,
+        "candidate_generation": phase_result.candidate_generation,
+        "members": forged_members,
+    }.items():
+        object.__setattr__(forged_result, name, value)
+    object.__setattr__(
+        forged_result,
+        "result_id",
+        canonical_authority_id((
+            "unflatten.dispatcher-retirement-phase.v1",
+            forged_result.catalog_id,
+            forged_result.claim_id,
+            forged_result.phase,
+            forged_result.source_fingerprint,
+            forged_result.candidate_fingerprint,
+            forged_result.source_generation,
+            forged_result.candidate_generation,
+            forged_result.members,
+        )),
+    )
+    forged_result.__post_init__()
+    with pytest.raises(ValueError, match="retirement phase result bindings differ from inventories"):
+        replace(complete_inputs, retirement_phase_result=forged_result)
+    with pytest.raises(ValueError, match="retirement phase result bindings differ from inventories"):
+        replace(complete, retirement_phase_result=forged_result)
 
     unreachable_inputs = _complete_inputs(
         source_subjects=(entry, member0, member1, corridor, route, destination),
@@ -3697,6 +3788,17 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     object.__setattr__(
         unreachable_inputs.preparation_receipt,
         "receipt_id", receipt_id(unreachable_inputs.preparation_receipt),
+    )
+    from d810.transforms.unflatten_authority.bind import bind_retired_dispatcher_infrastructure_claim
+    object.__setattr__(
+        unreachable_inputs,
+        "retirement_phase_result",
+        bind_retired_dispatcher_infrastructure_claim(
+            claim=retirement, proposal=retirement_proposal,
+            source_inventory=unreachable_inputs.source_inventory,
+            projected_inventory=unreachable_inputs.candidate_inventory,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        ).phase_result,
     )
     unreachable = build_semantic_case(
         authority_id=authority_id("retirement-unreachable-physical-row"),
@@ -3761,6 +3863,16 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         incomplete_inputs.preparation_receipt,
         "receipt_id", receipt_id(incomplete_inputs.preparation_receipt),
     )
+    object.__setattr__(
+        incomplete_inputs,
+        "retirement_phase_result",
+        bind_retired_dispatcher_infrastructure_claim(
+            claim=retirement, proposal=retirement_proposal,
+            source_inventory=incomplete_inputs.source_inventory,
+            projected_inventory=incomplete_inputs.candidate_inventory,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        ).phase_result,
+    )
     incomplete = build_semantic_case(
         authority_id=authority_id("retirement-incomplete"),
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
@@ -3791,6 +3903,7 @@ def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
     """Retirement authority is structural and only covers exact retired rows."""
 
     from d810.transforms.unflatten_authority.legacy_codec import retirement_claim_from_legacy_proof
+    from d810.transforms.unflatten_authority.bind import bind_retired_dispatcher_infrastructure_claim
 
     base = model.ProposedUnflattenContract(**_valid_proposal(model))
     refs = {index: item.block_ref for index, item in enumerate(base.source_identity_catalog.blocks)}
@@ -3806,7 +3919,7 @@ def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
         base,
         claims=tuple(sorted((*base.claims, claim), key=lambda item: item.claim_id)),
         plan_inputs=replace(base.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE),
-        retirement_catalog=claim.retirement_catalog,
+        retirement_candidate_catalog=claim.candidate_catalog,
         corridor_coverage_forecast=_minimal_corridor_forecast(model, base),
     )
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "catalog-entry")
@@ -3846,6 +3959,16 @@ def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
     object.__setattr__(inputs.preparation_receipt, "candidate_inventory_digest", inputs.candidate_inventory.inventory_digest)
     object.__setattr__(inputs.preparation_receipt, "projected_topology_reference_digest", inputs.projected_topology_reference.inventory_digest)
     object.__setattr__(inputs.preparation_receipt, "receipt_id", receipt_id(inputs.preparation_receipt))
+    object.__setattr__(
+        inputs,
+        "retirement_phase_result",
+        bind_retired_dispatcher_infrastructure_claim(
+            claim=claim, proposal=proposal,
+            source_inventory=inputs.source_inventory,
+            projected_inventory=inputs.candidate_inventory,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        ).phase_result,
+    )
     case = build_semantic_case(
         authority_id=authority_id("exact-retirement-catalog"),
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,

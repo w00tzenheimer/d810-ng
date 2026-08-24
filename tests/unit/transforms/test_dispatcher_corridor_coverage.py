@@ -22,13 +22,10 @@ from d810.ir.flowgraph import (
 from d810.transforms import dispatcher_corridor_coverage as corridor_module
 from d810.transforms import minimal_unflatten_emit as emit_module
 from d810.transforms.dispatcher_corridor_coverage import (
-    DispatcherRemovalPreflightProof,
+    DispatcherCorridorCoverage,
     analyze_dispatcher_corridor_coverage,
     build_detached_dead_handler_component_analysis,
-    build_dispatcher_removal_preflight_proof,
-    collect_dispatcher_corridor_coverage_observations,
-    collect_dispatcher_corridor_coverage_observations_from_metadata,
-    collect_use_def_severance_observations_from_metadata,
+    build_dispatcher_removal_forecast,
 )
 from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
 from d810.transforms.graph_modification import (
@@ -470,728 +467,6 @@ def test_dispatcher_self_reentry_respects_corridor_caps(
     assert not report.residual_corridors
 
 
-def _executed_fragment_safety() -> dict[str, bool]:
-    """The only producer evidence eligible for the narrow retirement proof."""
-    return {
-        "fragment_atomic": True,
-        "non_state_use_def_veto": True,
-        "non_state_use_def_checked": True,
-        "non_state_use_def_severances_zero": True,
-    }
-
-
-
-
-def _state_transition_plumbing_fixture(
-    *,
-    semantic_side_effect: bool = False,
-    missing_state_write: bool = False,
-) -> tuple[FlowGraph, FlowGraph, object, object]:
-    """Pure transition expressions feeding the bound dispatcher state slot."""
-
-    def value(
-        operation: ValueOpKind,
-        ea: int,
-        left: MopSnapshot,
-        right: MopSnapshot | None,
-        destination: MopSnapshot,
-    ) -> InsnSnapshot:
-        return InsnSnapshot(
-            opcode=0x40,
-            ea=ea,
-            operands=(),
-            l=left,
-            r=right,
-            d=destination,
-            kind=InsnKind.UNKNOWN,
-            value_op_kind=operation,
-        )
-
-    state = MopSnapshot(kind=OperandKind.STACK, stkoff=40, size=4)
-    eax = MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=4)
-    ecx = MopSnapshot(kind=OperandKind.REGISTER, reg=24, size=4)
-    edx = MopSnapshot(kind=OperandKind.REGISTER, reg=16, size=4)
-    feeder_destination = edx if missing_state_write else state
-    merge_destination = (
-        MopSnapshot(kind=OperandKind.GLOBAL, gaddr=0x140003000, size=4)
-        if semantic_side_effect
-        else edx
-    )
-    dispatcher_branch = InsnSnapshot(
-        opcode=42,
-        ea=0x1200,
-        operands=(),
-        l=state,
-        r=MopSnapshot(kind=OperandKind.NUMBER, value=0x12345678, size=4),
-        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=20),
-        kind=InsnKind.COND_JUMP,
-        predicate_kind=PredicateKind.EQ,
-    )
-    pre_graph = FlowGraph(
-        blocks={
-            0: _block(0, (10, 12), (), 0x1000, kind=BlockKind.N_WAY),
-            10: _block(10, (123,), (0,), 0x1010, kind=BlockKind.ONE_WAY),
-            12: _block(12, (112,), (0,), 0x1020, kind=BlockKind.ONE_WAY),
-            123: _block(
-                123,
-                (3,),
-                (10,),
-                0x1100,
-                kind=BlockKind.ONE_WAY,
-                insns=(value(ValueOpKind.XOR, 0x1100, eax, ecx, merge_destination),),
-                tail_kind=InsnKind.GOTO,
-            ),
-            3: _block(
-                3,
-                (4,),
-                (123,),
-                0x1110,
-                kind=BlockKind.ONE_WAY,
-                insns=(value(ValueOpKind.MOVE, 0x1110, edx, None, feeder_destination),),
-                tail_kind=InsnKind.GOTO,
-            ),
-            112: _block(
-                112,
-                (4,),
-                (12,),
-                0x1120,
-                kind=BlockKind.ONE_WAY,
-                insns=(value(ValueOpKind.ADD, 0x1120, eax, ecx, state),),
-                tail_kind=InsnKind.GOTO,
-            ),
-            4: _block(
-                4,
-                (21, 20),
-                (3, 112),
-                0x1200,
-                kind=BlockKind.TWO_WAY,
-                insns=(dispatcher_branch,),
-                tail_kind=InsnKind.COND_JUMP,
-            ),
-            20: _block(20, (), (4,), 0x1300, kind=BlockKind.STOP),
-            21: _block(21, (), (4,), 0x1310, kind=BlockKind.STOP),
-        },
-        entry_serial=0,
-        func_ea=0x1000,
-    )
-    modifications = (
-        RedirectGoto(from_serial=10, old_target=123, new_target=20),
-        RedirectGoto(from_serial=12, old_target=112, new_target=21),
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        pre_graph,
-        modifications=modifications,
-        dispatcher_entry_serial=4,
-    )
-    post_graph = _replace_observed_edges(
-        pre_graph,
-        {
-            **{
-                serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()
-            },
-            10: (20,),
-            12: (21,),
-        },
-    )
-    proof = build_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({10, 12, 20, 21}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-        state_plumbing_serials=frozenset({3, 112, 123}),
-    )
-    return pre_graph, post_graph, coverage, proof
-
-
-
-
-@pytest.mark.parametrize(
-    "fixture_overrides",
-    (
-        {"semantic_side_effect": True},
-        {"missing_state_write": True},
-    ),
-)
-
-
-def _partitioned_state_transition_retirement_fixture(
-    *,
-    mismatched_internal_target: bool = False,
-    mismatched_secondary_target: bool = False,
-    effectful_secondary_comparison: bool = False,
-    state_carrier_handler_leaf: bool = False,
-    secondary_foreign_comparison_leaf: bool = False,
-    internal_goto_alias: bool = False,
-    effectful_internal_alias: bool = False,
-    intermediate_post_route: bool = False,
-    mismatched_intermediate_post_route: bool = False,
-    same_nonhandler_endpoint: bool = False,
-    observed_discards_exact_effect: bool = False,
-) -> tuple[FlowGraph, FlowGraph, object, object]:
-    """Exact source partitions entering main and secondary state forests."""
-
-    state = MopSnapshot(kind=OperandKind.STACK, stkoff=40, size=4)
-    eax = MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=4)
-    ecx = MopSnapshot(kind=OperandKind.REGISTER, reg=16, size=4)
-
-    def constant(ea: int, value: int, destination: MopSnapshot) -> InsnSnapshot:
-        return InsnSnapshot(
-            opcode=0x40,
-            ea=ea,
-            operands=(),
-            l=MopSnapshot(kind=OperandKind.NUMBER, value=value, size=4),
-            r=None,
-            d=destination,
-            kind=InsnKind.UNKNOWN,
-            value_op_kind=ValueOpKind.MOVE,
-        )
-
-    def value(
-        operation: ValueOpKind,
-        ea: int,
-        left: MopSnapshot,
-        right: MopSnapshot | None,
-        destination: MopSnapshot,
-    ) -> InsnSnapshot:
-        return InsnSnapshot(
-            opcode=0x41,
-            ea=ea,
-            operands=(),
-            l=left,
-            r=right,
-            d=destination,
-            kind=InsnKind.UNKNOWN,
-            value_op_kind=operation,
-        )
-
-    def branch(
-        ea: int,
-        predicate: PredicateKind,
-        constant_value: int,
-        target: int,
-    ) -> InsnSnapshot:
-        return InsnSnapshot(
-            opcode=0x42,
-            ea=ea,
-            operands=(),
-            l=state,
-            r=MopSnapshot(
-                kind=OperandKind.NUMBER,
-                value=constant_value,
-                size=4,
-            ),
-            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
-            kind=InsnKind.COND_JUMP,
-            predicate_kind=predicate,
-        )
-
-    def goto(ea: int, target: int) -> InsnSnapshot:
-        return InsnSnapshot(
-            opcode=0x43,
-            ea=ea,
-            operands=(),
-            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
-            kind=InsnKind.GOTO,
-        )
-
-    effectful_store = InsnSnapshot(
-        opcode=0x43,
-        ea=0x12FF,
-        operands=(),
-        l=MopSnapshot(kind=OperandKind.NUMBER, value=1, size=4),
-        r=None,
-        d=MopSnapshot(kind=OperandKind.GLOBAL, gaddr=0x2000, size=4),
-        kind=InsnKind.UNKNOWN,
-        value_op_kind=ValueOpKind.MOVE,
-    )
-
-    blocks = {
-        0: _block(
-            0,
-            (
-                10,
-                11,
-                12,
-                13,
-                *((14,) if internal_goto_alias else ()),
-                101,
-                103,
-                104,
-                105,
-                *((107,) if secondary_foreign_comparison_leaf else ()),
-                *((90,) if observed_discards_exact_effect else ()),
-            ),
-            (),
-            0x1000,
-            kind=BlockKind.N_WAY,
-        ),
-        10: _block(
-            10,
-            (30,),
-            (0,),
-            0x1010,
-            kind=BlockKind.ONE_WAY,
-            insns=(constant(0x1010, 0x10, eax),),
-            tail_kind=InsnKind.GOTO,
-        ),
-        11: _block(
-            11,
-            (31,),
-            (0,),
-            0x1020,
-            kind=BlockKind.ONE_WAY,
-            insns=(
-                constant(0x1020, 0x18, eax),
-                constant(0x1024, 0x08, ecx),
-            ),
-            tail_kind=InsnKind.GOTO,
-        ),
-        12: _block(
-            12,
-            (32,),
-            (0,),
-            0x1030,
-            kind=BlockKind.ONE_WAY,
-            insns=(
-                constant(0x1030, 0x50, eax),
-                constant(0x1034, 0x20, ecx),
-            ),
-            tail_kind=InsnKind.GOTO,
-        ),
-        13: _block(
-            13,
-            (32,),
-            (0,),
-            0x1040,
-            kind=BlockKind.ONE_WAY,
-            insns=(
-                constant(0x1040, 0x70, eax),
-                constant(0x1044, 0x20, ecx),
-            ),
-            tail_kind=InsnKind.GOTO,
-        ),
-        **(
-            {
-                14: _block(
-                    14,
-                    (33,),
-                    (0,),
-                    0x1050,
-                    kind=BlockKind.ONE_WAY,
-                    insns=(constant(0x1050, 0x20, eax),),
-                    tail_kind=InsnKind.GOTO,
-                ),
-                33: _block(
-                    33,
-                    (50,),
-                    (14,),
-                    0x1130,
-                    kind=BlockKind.ONE_WAY,
-                    insns=(value(ValueOpKind.MOVE, 0x1130, eax, None, state),),
-                    tail_kind=InsnKind.GOTO,
-                ),
-            }
-            if internal_goto_alias
-            else {}
-        ),
-        30: _block(
-            30,
-            (50,),
-            (10,),
-            0x1100,
-            kind=BlockKind.ONE_WAY,
-            insns=(value(ValueOpKind.MOVE, 0x1100, eax, None, state),),
-            tail_kind=InsnKind.GOTO,
-        ),
-        31: _block(
-            31,
-            (51,),
-            (11,),
-            0x1110,
-            kind=BlockKind.ONE_WAY,
-            insns=(value(ValueOpKind.ADD, 0x1110, eax, ecx, state),),
-            tail_kind=InsnKind.GOTO,
-        ),
-        32: _block(
-            32,
-            (70,),
-            (12, 13),
-            0x1120,
-            kind=BlockKind.ONE_WAY,
-            insns=(value(ValueOpKind.SUB, 0x1120, eax, ecx, state),),
-            tail_kind=InsnKind.GOTO,
-        ),
-        50: _block(
-            50,
-            (
-                (51, 80)
-                if same_nonhandler_endpoint
-                else ((60, 100) if internal_goto_alias else (51, 100))
-            ),
-            ((30, 33) if internal_goto_alias else (30,)),
-            0x1200,
-            kind=BlockKind.TWO_WAY,
-            insns=(
-                branch(
-                    0x1200,
-                    PredicateKind.EQ,
-                    0x10,
-                    80 if same_nonhandler_endpoint else 100,
-                ),
-            ),
-            tail_kind=InsnKind.COND_JUMP,
-        ),
-        51: _block(
-            51,
-            (103, 101),
-            ((60, 31) if internal_goto_alias else (50, 31)),
-            0x1210,
-            kind=BlockKind.TWO_WAY,
-            insns=(branch(0x1210, PredicateKind.EQ, 0x20, 101),),
-            tail_kind=InsnKind.COND_JUMP,
-        ),
-        **(
-            {
-                60: _block(
-                    60,
-                    (51,),
-                    (50,),
-                    0x1220,
-                    kind=BlockKind.ONE_WAY,
-                    insns=(
-                        *((effectful_store,) if effectful_internal_alias else ()),
-                        goto(0x1220, 51),
-                    ),
-                    tail_kind=InsnKind.GOTO,
-                )
-            }
-            if internal_goto_alias
-            else {}
-        ),
-        70: _block(
-            70,
-            (71, 72),
-            (32,),
-            0x1300,
-            kind=BlockKind.TWO_WAY,
-            insns=(
-                *((effectful_store,) if effectful_secondary_comparison else ()),
-                branch(
-                    0x1300,
-                    PredicateKind.ULT,
-                    0x40,
-                    71,
-                ),
-            ),
-            tail_kind=InsnKind.COND_JUMP,
-        ),
-        71: _block(
-            71,
-            (103, 102),
-            (70,),
-            0x1310,
-            kind=BlockKind.TWO_WAY,
-            insns=(branch(0x1310, PredicateKind.EQ, 0x30, 102),),
-            tail_kind=InsnKind.COND_JUMP,
-        ),
-        72: _block(
-            72,
-            ((107, 104) if secondary_foreign_comparison_leaf else (105, 104)),
-            (70,),
-            0x1320,
-            kind=BlockKind.TWO_WAY,
-            insns=(branch(0x1320, PredicateKind.EQ, 0x50, 104),),
-            tail_kind=InsnKind.COND_JUMP,
-        ),
-        **(
-            {
-                80: _block(
-                    80,
-                    (
-                        (100, 103)
-                        if mismatched_intermediate_post_route
-                        else (103, 100)
-                    ),
-                    (),
-                    0x1380,
-                    kind=BlockKind.TWO_WAY,
-                    insns=(
-                        (
-                            InsnSnapshot(
-                                opcode=0x42,
-                                ea=0x1380,
-                                operands=(),
-                                l=MopSnapshot(
-                                    kind=OperandKind.STACK,
-                                    stkoff=64,
-                                    size=8,
-                                ),
-                                r=MopSnapshot(
-                                    kind=OperandKind.NUMBER,
-                                    value=0,
-                                    size=8,
-                                ),
-                                d=MopSnapshot(
-                                    kind=OperandKind.BLOCK,
-                                    block_ref=100,
-                                ),
-                                kind=InsnKind.COND_JUMP,
-                                predicate_kind=PredicateKind.EQ,
-                            )
-                            if same_nonhandler_endpoint
-                            else branch(
-                                0x1380,
-                                PredicateKind.EQ,
-                                0x10,
-                                103
-                                if mismatched_intermediate_post_route
-                                else 100,
-                            )
-                        ),
-                    ),
-                    tail_kind=InsnKind.COND_JUMP,
-                )
-            }
-            if intermediate_post_route or same_nonhandler_endpoint
-            else {}
-        ),
-        100: (
-            _block(
-                100,
-                (101,),
-                (50,),
-                0x1400,
-                kind=BlockKind.ONE_WAY,
-                insns=(value(ValueOpKind.MOVE, 0x1400, state, None, eax),),
-                tail_kind=InsnKind.GOTO,
-            )
-            if state_carrier_handler_leaf
-            else _block(100, (), (50,), 0x1400, kind=BlockKind.STOP)
-        ),
-        101: _block(101, (), (51,), 0x1410, kind=BlockKind.STOP),
-        102: _block(102, (), (71,), 0x1420, kind=BlockKind.STOP),
-        103: _block(103, (), (51, 71), 0x1430, kind=BlockKind.STOP),
-        104: _block(104, (), (72,), 0x1440, kind=BlockKind.STOP),
-        105: _block(
-            105,
-            (),
-            ((72, 107) if secondary_foreign_comparison_leaf else (72,)),
-            0x1450,
-            kind=BlockKind.STOP,
-        ),
-        **(
-            {
-                90: _block(
-                    90,
-                    (91,),
-                    (0,),
-                    0x1490,
-                    kind=BlockKind.ONE_WAY,
-                    insns=(
-                        constant(0x1490, 0x10, state),
-                        goto(0x1494, 91),
-                    ),
-                    tail_kind=InsnKind.GOTO,
-                ),
-                91: _block(
-                    91,
-                    (92, 100),
-                    (90,),
-                    0x14A0,
-                    kind=BlockKind.TWO_WAY,
-                    insns=(branch(0x14A0, PredicateKind.EQ, 0x10, 100),),
-                    tail_kind=InsnKind.COND_JUMP,
-                ),
-                92: _block(
-                    92,
-                    (100,),
-                    (91,),
-                    0x14B0,
-                    kind=BlockKind.ONE_WAY,
-                    insns=(
-                        InsnSnapshot(
-                            opcode=0x44,
-                            ea=0x14B0,
-                            operands=(),
-                            kind=InsnKind.CALL,
-                            is_call=True,
-                        ),
-                    ),
-                    tail_kind=InsnKind.GOTO,
-                ),
-            }
-            if observed_discards_exact_effect
-            else {}
-        ),
-        **(
-            {
-                107: _block(
-                    107,
-                    (105, 103),
-                    (0, 72),
-                    0x1470,
-                    kind=BlockKind.TWO_WAY,
-                    insns=(
-                        InsnSnapshot(
-                            opcode=0x42,
-                            ea=0x1470,
-                            operands=(),
-                            l=MopSnapshot(
-                                kind=OperandKind.STACK,
-                                stkoff=64,
-                                size=8,
-                            ),
-                            r=MopSnapshot(
-                                kind=OperandKind.NUMBER,
-                                value=0,
-                                size=8,
-                            ),
-                            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=103),
-                            kind=InsnKind.COND_JUMP,
-                            predicate_kind=PredicateKind.EQ,
-                        ),
-                    ),
-                    tail_kind=InsnKind.COND_JUMP,
-                )
-            }
-            if secondary_foreign_comparison_leaf
-            else {}
-        ),
-    }
-    pre_graph = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
-    pre_graph = _replace_observed_edges(
-        pre_graph,
-        {serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()},
-    )
-    target_11 = 103 if mismatched_internal_target else 101
-    target_13 = 102 if mismatched_secondary_target else 104
-    target_10 = 80 if intermediate_post_route or same_nonhandler_endpoint else 100
-    modifications = [
-        RedirectGoto(from_serial=10, old_target=30, new_target=target_10),
-        RedirectGoto(from_serial=11, old_target=31, new_target=target_11),
-        RedirectGoto(from_serial=12, old_target=32, new_target=102),
-        RedirectGoto(from_serial=13, old_target=32, new_target=target_13),
-    ]
-    if internal_goto_alias:
-        modifications.append(
-            RedirectGoto(from_serial=14, old_target=33, new_target=101)
-        )
-    coverage = analyze_dispatcher_corridor_coverage(
-        pre_graph,
-        modifications=tuple(modifications),
-        dispatcher_entry_serial=50,
-    )
-    post_successors = {
-        serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()
-    }
-    post_successors.update(
-        {10: (target_10,), 11: (target_11,), 12: (102,), 13: (target_13,)}
-    )
-    if internal_goto_alias:
-        post_successors[14] = (101,)
-    producer_post_graph = _replace_observed_edges(pre_graph, post_successors)
-    proof = build_dispatcher_removal_preflight_proof(
-        pre_graph,
-        post_graph=producer_post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=50,
-        authoritative_handler_serials=frozenset(
-            {100, 101, 102, 103, 104, 105}
-        ),
-        dispatcher_region_serials=frozenset({50, 51}),
-        producer_safety=_executed_fragment_safety(),
-        state_plumbing_serials=frozenset({30, 31, 32}),
-    )
-    post_graph = (
-        _replace_observed_edges(
-            producer_post_graph,
-            {
-                serial: ((100,) if serial == 91 else tuple(block.succs))
-                for serial, block in producer_post_graph.blocks.items()
-            },
-        )
-        if observed_discards_exact_effect
-        else producer_post_graph
-    )
-    return pre_graph, post_graph, coverage, proof
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-@pytest.mark.parametrize(
-    "fixture_overrides",
-    (
-        {"duplicate_carrier_destination": True},
-        {"carrier_branch_is_call": True},
-    ),
-)
-
-
-
-
-@pytest.mark.parametrize(
-    "fixture_overrides",
-    (
-        {"extra_normalizer_operation": True},
-        {"carrier_register": 9},
-        {"feeder_state_stkoff": 999},
-        {"normalized_value": 0x33333333},
-        {"semantic_normalizer_predecessor": True},
-        {"retain_dynamic_corridor": True},
-    ),
-)
-
 
 def _nested_merge_behind_shared_feeder_graph() -> FlowGraph:
     """Target shape when other handlers also re-enter the same feeder."""
@@ -1358,28 +633,6 @@ def test_target_shape_advisory_and_explicit_veto_preserve_exact_counts(
     assert not set(enforced_plan.metadata_dict()).intersection(LEGACY_UNFLATTEN_KEYS)
 
 
-def test_partial_use_def_audit_metadata_and_collection_report_unavailable_safety():
-    audit = UseDefSeveranceAudit(
-        executed=False,
-        severance_count=1,
-        failure_reason="query_failed:LookupError",
-        enforced=True,
-    )
-
-    metadata = audit.to_metadata(function_ea=0x700000)
-    assert metadata["enforcement_status"] == "safety_unavailable"
-
-    observations = collect_use_def_severance_observations_from_metadata(
-        metadata,
-        maturity="MMAT_GLBOPT1",
-        phase="lower_state_machine",
-    )
-    assert len(observations) == 1
-    assert observations[0].kind == "UnflattenUseDefSeveranceSummary"
-    assert observations[0].payload["enforcement_status"] == "safety_unavailable"
-    assert observations[0].payload["severance_count"] == 1
-
-
 def test_coverage_descends_one_shared_merge_behind_a_shared_feeder() -> None:
     """The known blk45/blk122 merge must not collapse into source blk123."""
     report = analyze_dispatcher_corridor_coverage(
@@ -1429,47 +682,6 @@ def test_coverage_reports_each_reachable_nested_dispatcher_corridor() -> None:
         (0x7FF859C08BFE, 0x7FF859C08D35, 0x7FF859C070C0, 0x7FF859C070C4),
     }
 
-    observations = collect_dispatcher_corridor_coverage_observations(
-        report,
-        maturity="MMAT_GLBOPT1",
-        phase="lower_state_machine",
-    )
-    residual = [
-        observation
-        for observation in observations
-        if observation.payload.get("coverage") == "residual"
-    ]
-    assert len(residual) == 2
-    assert all(observation.source_block in {45, 122} for observation in residual)
-    assert all(
-        observation.source_ea in {0x7FF859C07656, 0x7FF859C08BFE}
-        for observation in residual
-    )
-    assert all(
-        observation.payload["state_merge"]
-        == {
-            "serial": 123,
-            "ea": 0x7FF859C08D35,
-            "label": "blk123@0x7ff859c08d35",
-        }
-        for observation in residual
-    )
-    assert all(
-        "blk45@0x7ff859c07656" in observation.fact_id
-        or "blk122@0x7ff859c08bfe" in observation.fact_id
-        for observation in residual
-    )
-
-    from_metadata = collect_dispatcher_corridor_coverage_observations_from_metadata(
-        report.to_metadata(),
-        maturity="MMAT_GLBOPT1",
-        phase="lower_state_machine",
-    )
-    assert {observation.fact_id for observation in from_metadata} == {
-        observation.fact_id for observation in observations
-    }
-
-
 def test_coverage_marks_both_nested_corridors_covered_only_after_bypass() -> None:
     report = analyze_dispatcher_corridor_coverage(
         _nested_merge_corridor_graph(),
@@ -1492,44 +704,7 @@ def test_coverage_marks_both_nested_corridors_covered_only_after_bypass() -> Non
         (122, 123, 3, 4),
     }
 
-    pending = collect_dispatcher_corridor_coverage_observations(
-        report,
-        maturity="MMAT_GLBOPT1",
-        phase="lower_state_machine",
-    )
-    pending_rows = [
-        observation
-        for observation in pending
-        if observation.kind == "UnflattenDispatcherCorridorCoverage"
-    ]
-    assert {row.payload["coverage"] for row in pending_rows} == {"pending"}
-    assert {row.payload["planned_coverage"] for row in pending_rows} == {"covered"}
-    assert {row.payload["completion_status"] for row in pending_rows} == {
-        "pending_patch_application"
-    }
-
-    rejected = collect_dispatcher_corridor_coverage_observations(
-        report,
-        maturity="MMAT_GLBOPT1",
-        phase="patch_transaction",
-        application_status="rejected_preflight",
-        outcome_reason="entry reachability collapsed",
-    )
-    rejected_rows = [
-        observation
-        for observation in rejected
-        if observation.kind == "UnflattenDispatcherCorridorCoverage"
-    ]
-    assert {row.payload["coverage"] for row in rejected_rows} == {"residual"}
-    assert {row.payload["application_status"] for row in rejected_rows} == {
-        "rejected_preflight"
-    }
-    assert {row.payload["completion_status"] for row in rejected_rows} == {
-        "abstained_rejected_preflight"
-    }
-
-
-def test_dispatcher_removal_proof_accepts_only_typed_infrastructure_loss() -> None:
+def test_dispatcher_removal_forecast_contains_only_typed_infrastructure_loss() -> None:
     graph = _nested_merge_corridor_graph()
     coverage = analyze_dispatcher_corridor_coverage(
         graph,
@@ -1539,7 +714,6 @@ def test_dispatcher_removal_proof_accepts_only_typed_infrastructure_loss() -> No
         ),
         dispatcher_entry_serial=4,
     )
-
     post_graph = FlowGraph(
         blocks={
             **graph.blocks,
@@ -1552,356 +726,87 @@ def test_dispatcher_removal_proof_accepts_only_typed_infrastructure_loss() -> No
         entry_serial=0,
         func_ea=0x7FF859C06F60,
     )
-
-    proof = build_dispatcher_removal_preflight_proof(
+    forecast = corridor_module.build_dispatcher_removal_forecast(
         graph,
-        post_graph=post_graph,
         coverage=coverage,
         dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
     )
-
-    assert isinstance(proof, DispatcherRemovalPreflightProof)
-    assert proof.passed
-    assert proof.lost_blocks == {
-        3,
-        4,
-        123,
-    }
-    assert {anchor.serial for anchor in proof.post_reachable_handlers} == {34, 121}
     assert {
-        (entry.role, entry.anchor.serial) for entry in proof.retired_infrastructure
+        (item.role, item.anchor.serial) for item in forecast.retirement_candidates
     } == {
         ("comparison_dispatcher", 4),
         ("dispatcher_feeder", 3),
         ("state_merge", 123),
     }
+    assert not hasattr(forecast, "passed")
+    assert not hasattr(forecast, "reason")
 
 
+def test_incomplete_removal_forecast_abstains_without_verdict() -> None:
+    graph = _nested_merge_corridor_graph()
+    coverage = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(),
+        dispatcher_entry_serial=4,
+    )
+    forecast = corridor_module.build_dispatcher_removal_forecast(
+        graph,
+        coverage=coverage,
+        dispatcher_entry_serial=4,
+    )
+    assert forecast.residual_corridors
+    assert forecast.dispatcher == coverage.dispatcher
+    assert not hasattr(forecast, "passed")
+    assert not hasattr(forecast, "reason")
 
 
-
-
-def _populated_router_block(*operands: MopSnapshot) -> BlockSnapshot:
-    predicate = InsnSnapshot(
-        opcode=0x71,
-        ea=0x7FF859C0A000,
+def test_detached_component_analysis_proposes_only_dead_handler_island() -> None:
+    state = MopSnapshot(kind=OperandKind.STACK, stkoff=40, size=4)
+    branch = InsnSnapshot(
+        opcode=42,
+        ea=0x1200,
         operands=(),
-        l=operands[0] if operands else None,
-        r=operands[1] if len(operands) > 1 else None,
-        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=1),
+        l=state,
+        r=MopSnapshot(kind=OperandKind.NUMBER, value=7, size=4),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=21),
         kind=InsnKind.COND_JUMP,
-        predicate_kind=PredicateKind.NE,
+        predicate_kind=PredicateKind.EQ,
     )
-    return _block(
-        10,
-        (1, 2),
-        (),
-        0x7FF859C0A000,
-        kind=BlockKind.TWO_WAY,
-        insns=(predicate,),
-        tail_kind=InsnKind.COND_JUMP,
-    )
-
-
-@pytest.mark.parametrize(
-    "operand",
-    (
-        MopSnapshot(kind=OperandKind.GLOBAL, gaddr=0x7FF859C0B000),
-        MopSnapshot(
-            kind=OperandKind.ADDRESS,
-            sub_l=MopSnapshot(kind=OperandKind.STACK, stkoff=0x20),
-        ),
-        MopSnapshot(
-            kind=OperandKind.SUBINSN,
-            sub_kind=InsnKind.CALL,
-            sub_l=MopSnapshot(kind=OperandKind.REGISTER, reg=1),
-        ),
-        MopSnapshot(kind=OperandKind.UNKNOWN),
-    ),
-)
-def test_effect_free_dispatcher_router_rejects_effectful_or_unresolved_operands(
-    operand: MopSnapshot,
-) -> None:
-    """Router kind alone cannot prove a predicate is effect-free."""
-    assert not corridor_module._is_effect_free_dispatcher_router(
-        _populated_router_block(operand, MopSnapshot(kind=OperandKind.NUMBER, value=0))
-    )
-
-
-
-
-def test_dispatcher_removal_proof_skips_direct_corridor_in_mixed_coverage() -> None:
-    """A direct feeder must not veto an independently typed merge forest."""
-    nested = _nested_merge_corridor_graph()
-    graph = FlowGraph(
+    pre_graph = FlowGraph(
         blocks={
-            **nested.blocks,
-            0: _block(0, (45, 122, 200), (), 0x7FF859C06F60),
-            4: _block(4, (121, 34), (3, 200), 0x7FF859C070C4),
-            200: _block(200, (4,), (0,), 0x7FF859C09000),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-            RedirectGoto(from_serial=200, old_target=4, new_target=121),
-        ),
-        dispatcher_entry_serial=4,
-    )
-    assert any(
-        corridor.state_merge is None
-        for corridor in coverage.covered_corridors
-    )
-    post_graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            45: _block(45, (121,), (0,), 0x7FF859C07656),
-            122: _block(122, (34,), (0,), 0x7FF859C08BFE),
-            200: _block(200, (121,), (0,), 0x7FF859C09000),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-
-    assert proof.passed
-    assert ("comparison_corridor", 200) not in {
-        (entry.role, entry.anchor.serial)
-        for entry in proof.retired_infrastructure
-    }
-
-
-def test_dispatcher_removal_proof_rejects_lost_handler_near_miss() -> None:
-    graph = _nested_merge_corridor_graph()
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
-        dispatcher_entry_serial=4,
-    )
-    post_graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            45: _block(45, (121,), (0,), 0x7FF859C07656),
-            122: _block(122, (34,), (0,), 0x7FF859C08BFE),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121, 123}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-
-    assert not proof.passed
-    assert proof.reason == "authoritative_handler_lost"
-
-
-def test_dispatcher_removal_proof_rejects_empty_authoritative_handlers() -> None:
-    graph = _nested_merge_corridor_graph()
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
-        dispatcher_entry_serial=4,
-    )
-    post_graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            45: _block(45, (121,), (0,), 0x7FF859C07656),
-            122: _block(122, (34,), (0,), 0x7FF859C08BFE),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset(),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-    )
-
-    assert not proof.passed
-    assert proof.reason == "authoritative_handlers_empty"
-
-
-def test_dispatcher_removal_proof_rejects_unexecuted_use_def_safety() -> None:
-    graph = _nested_merge_corridor_graph()
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
-        dispatcher_entry_serial=4,
-    )
-    post_graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            45: _block(45, (121,), (0,), 0x7FF859C07656),
-            122: _block(122, (34,), (0,), 0x7FF859C08BFE),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
-
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety={
-            "fragment_atomic": True,
-            "non_state_use_def_veto": True,
-            "non_state_use_def_checked": False,
-            "non_state_use_def_severances_zero": False,
-        },
-    )
-
-    assert not proof.passed
-    assert proof.reason == "producer_safety_missing"
-
-
-def test_dispatcher_removal_proof_rejects_linear_semantic_body_labeled_merge() -> None:
-    graph = FlowGraph(
-        blocks={
-            0: _block(0, (1,), (), 0x1000),
-            1: _block(1, (2,), (0,), 0x1001),
-            2: _block(2, (3,), (1,), 0x1002),
-            3: _block(3, (4,), (2,), 0x1003),
-            4: _block(4, (), (3,), 0x1004),
+            0: _block(0, (4,), (), 0x1000, kind=BlockKind.ONE_WAY),
+            4: _block(4, (20, 21), (0, 21), 0x1200, kind=BlockKind.TWO_WAY, insns=(branch,)),
+            20: _block(20, (), (4,), 0x1300, kind=BlockKind.STOP),
+            21: _block(21, (4,), (4,), 0x1310, kind=BlockKind.ONE_WAY),
         },
         entry_serial=0,
         func_ea=0x1000,
     )
-    coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(RedirectGoto(from_serial=0, old_target=1, new_target=4),),
-        dispatcher_entry_serial=3,
-    )
-    post_graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            0: _block(0, (4,), (), 0x1000),
-        },
-        entry_serial=0,
-        func_ea=0x1000,
-    )
-
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
-        post_graph=post_graph,
-        coverage=coverage,
-        dispatcher_entry_serial=3,
-        authoritative_handler_serials=frozenset({4}),
-        dispatcher_region_serials=frozenset({1, 3}),
-        producer_safety=_executed_fragment_safety(),
-    )
-
-    assert not proof.passed
-    assert proof.reason == "untyped_lost_block"
-    assert coverage.covered_corridors[0].state_merge is None
-
-
-
-
-
-
-
-
-
-
-def test_dispatcher_removal_proof_rejects_effectful_state_merge() -> None:
-    graph = _nested_merge_corridor_graph()
-    effectful = InsnSnapshot(
-        opcode=4,
-        ea=0x7FF859C08D37,
-        operands=(),
-        kind=InsnKind.UNKNOWN,
-    )
-    graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            123: _block(
-                123,
-                (3,),
-                (45, 122),
-                0x7FF859C08D35,
-                insns=(effectful,),
-            ),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
+    post_graph = _replace_observed_edges(
+        pre_graph,
+        {0: (20,), 4: (20, 21), 20: (), 21: (4,)},
     )
     coverage = analyze_dispatcher_corridor_coverage(
-        graph,
-        modifications=(
-            RedirectGoto(from_serial=45, old_target=123, new_target=121),
-            RedirectGoto(from_serial=122, old_target=123, new_target=34),
-        ),
+        pre_graph,
+        modifications=(RedirectGoto(from_serial=0, old_target=4, new_target=20),),
         dispatcher_entry_serial=4,
     )
-    post_graph = FlowGraph(
-        blocks={
-            **graph.blocks,
-            45: _block(45, (121,), (0,), 0x7FF859C07656),
-            122: _block(122, (34,), (0,), 0x7FF859C08BFE),
-        },
-        entry_serial=0,
-        func_ea=0x7FF859C06F60,
-    )
 
-    proof = build_dispatcher_removal_preflight_proof(
-        graph,
+    analysis = build_detached_dead_handler_component_analysis(
+        pre_graph,
         post_graph=post_graph,
         coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({34, 121}),
-        dispatcher_region_serials=frozenset({4}),
-        producer_safety=_executed_fragment_safety(),
-        # Raw producer metadata may call this state plumbing; it is not bound
-        # authority at the generic validator boundary.
-        state_plumbing_serials=frozenset({3, 123}),
+        authoritative_handler_serials=frozenset({20, 21}),
     )
 
-    assert not proof.passed
-    assert proof.reason == "untyped_lost_block"
-    assert 123 in proof.lost_blocks
+    assert analysis is not None
+    assert {anchor.serial for anchor in analysis.dead_handlers} == {21}
+    assert {anchor.serial for anchor in analysis.retained_handlers} == {20}
+    assert {anchor.serial for anchor in analysis.component} == {21}
 
 
 def _detached_dead_handler_component_fixture() -> tuple[FlowGraph, FlowGraph, object]:
-    """One typed producer candidate with a retained and a dead handler."""
+    """One candidate with a retained handler and a dead handler island."""
     state = MopSnapshot(kind=OperandKind.STACK, stkoff=40, size=4)
     branch = InsnSnapshot(
         opcode=42,
@@ -1949,11 +854,19 @@ def _detached_dead_handler_component_fixture() -> tuple[FlowGraph, FlowGraph, ob
             ),
             20: _block(20, (), (4,), 0x1300, kind=BlockKind.STOP),
             21: _block(
-                21, (113,), (4,), 0x1310, kind=BlockKind.ONE_WAY,
+                21,
+                (113,),
+                (4,),
+                0x1310,
+                kind=BlockKind.ONE_WAY,
                 insns=(dead_local_write,),
             ),
             113: _block(
-                113, (4,), (21,), 0x1320, kind=BlockKind.ONE_WAY,
+                113,
+                (4,),
+                (21,),
+                0x1320,
+                kind=BlockKind.ONE_WAY,
                 insns=(move_state,),
             ),
         },
@@ -1972,8 +885,14 @@ def _detached_dead_handler_component_fixture() -> tuple[FlowGraph, FlowGraph, ob
     post_graph = _replace_observed_edges(
         pre_graph,
         {
-            **{serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()},
-            0: (10, 12), 10: (20,), 12: (20,), 21: (20,),
+            **{
+                serial: tuple(block.succs)
+                for serial, block in pre_graph.blocks.items()
+            },
+            0: (10, 12),
+            10: (20,),
+            12: (20,),
+            21: (20,),
         },
     )
     return pre_graph, post_graph, coverage
@@ -1982,7 +901,6 @@ def _detached_dead_handler_component_fixture() -> tuple[FlowGraph, FlowGraph, ob
 def test_detached_component_analysis_uses_state_aware_decision_forest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The typed producer recovers a state-aware forest if structural routing abstains."""
     pre_graph, post_graph, coverage = _detached_dead_handler_component_fixture()
     monkeypatch.setattr(
         corridor_module,
@@ -2002,10 +920,9 @@ def test_detached_component_analysis_uses_state_aware_decision_forest(
     assert {item.serial for item in analysis.component} == {21, 113}
 
 
-def test_detached_component_analysis_uses_pure_control_fallback_for_wrapper_shape(
+def test_detached_component_analysis_uses_bounded_pure_control_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A strict forest abstention still permits only the bounded pure-control walk."""
     pre_graph, post_graph, coverage = _detached_dead_handler_component_fixture()
     monkeypatch.setattr(
         corridor_module,

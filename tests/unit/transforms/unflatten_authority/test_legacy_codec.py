@@ -196,7 +196,7 @@ def _real_full_shadow_fixture():
     proposal = replace(
         proposal,
         claims=tuple(sorted((*proposal.claims, removal_claim), key=lambda claim: claim.claim_id)),
-        retirement_catalog=removal_claim.retirement_catalog,
+        retirement_candidate_catalog=removal_claim.candidate_catalog,
     )
     metadata = {
         "concrete_state_route_provenance": [{

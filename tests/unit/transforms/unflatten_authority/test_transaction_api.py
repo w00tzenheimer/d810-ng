@@ -357,45 +357,10 @@ def _full_corridor_fixture():
         steps=(PatchRedirectBranch(refs[5], refs[6], refs[0]),),
         source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
     )
-    projected_template = project_patch_plan(
-        source, template, snapshot_id=template.snapshot_id,
-    )
-    projected_blocks = {
-        serial: block for serial, block in projected_template.graph.blocks.items()
-        if serial != 6
-    }
-    projected_blocks[0] = replace(projected_blocks[0], preds=(5,))
-    projected_blocks[5] = replace(
-        projected_blocks[5], succs=(0,), kind=BlockKind.ONE_WAY,
-    )
-    projected_for_proof = type(projected_template.graph)(
-        projected_blocks, projected_template.graph.entry_serial,
-        projected_template.graph.func_ea,
-    )
-    removal_proof = dispatcher_corridor_coverage.build_dispatcher_removal_preflight_proof(
+    removal_forecast = dispatcher_corridor_coverage.build_dispatcher_removal_forecast(
         source,
-        post_graph=projected_for_proof,
         coverage=coverage,
         dispatcher_entry_serial=6,
-        authoritative_handler_serials=frozenset({2}),
-        dispatcher_region_serials=frozenset({5, 6}),
-        producer_safety={
-            "fragment_atomic": True,
-            "non_state_use_def_veto": True,
-            "non_state_use_def_checked": True,
-            "non_state_use_def_severances_zero": True,
-        },
-        state_plumbing_serials=frozenset(),
-        patch_plan=template,
-    )
-    removal_validation = dispatcher_corridor_coverage.validate_terminal_switch_cycle_break_allowance(
-        source,
-        post_graph=projected_template.graph,
-        patch_plan=template,
-        removal_validation=dispatcher_corridor_coverage.DispatcherRemovalPreflightValidation(
-            passed=removal_proof.passed, reason=removal_proof.reason,
-            proof=removal_proof,
-        ),
     )
     manifest = canonical_redirect_manifest(template)
     witness = replace(
@@ -410,7 +375,7 @@ def _full_corridor_fixture():
         dispatcher_member_serials=(5, 6), authoritative_handler_serials=(2,),
         state_identity=base.plan_inputs.state_identity, use_def_witness=witness,
         corridor_coverage=coverage,
-        dispatcher_removal_validation=removal_validation,
+        dispatcher_removal_forecast=removal_forecast,
     )
     projected = project_patch_plan(source, plan, snapshot_id=plan.snapshot_id).graph
     projected_blocks = {

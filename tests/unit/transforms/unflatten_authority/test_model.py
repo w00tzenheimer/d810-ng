@@ -62,52 +62,41 @@ def test_detached_component_justification_has_its_closed_loss_kind() -> None:
 
 
 def _retirement_catalog(model, refs, anchors, generation=3):
-    content = model.RetirementProofContent(
-        model.RetirementProofFamily.RETIRED_INFRASTRUCTURE,
-        generation,
-        tuple(
-            model.RetirementProofMember(
-                ref, anchor, True, "comparison_dispatcher"
-            )
-            for ref, anchor in zip(refs, anchors)
-        ),
-    )
-    proof = model.RetirementProofRecord(
-        canonical_authority_id(("unflatten.retirement-proof.v3", canonical_bytes(content))),
-        content,
-    )
-    rows = tuple(
-        model.RetirementMemberCatalogRow(ref, anchor, (anchor,), generation, True, (proof,))
+    members = tuple(
+        model.RetirementPlanMember(ref, anchor, (anchor,))
         for ref, anchor in zip(refs, anchors)
     )
-    return model.RetirementAuthorityCatalog(
-        canonical_authority_id(("unflatten.retirement-catalog.v1", generation, rows, (proof,))),
-        generation, rows, (proof,),
+    candidates = tuple(
+        model.DispatcherRetirementCandidate(
+            ref, anchor, "comparison_dispatcher",
+            (canonical_authority_id(("retirement-evidence", ref, anchor, generation)),),
+            generation,
+            canonical_authority_id((
+                "unflatten.dispatcher-retirement-candidate.v1",
+                ref, anchor, "comparison_dispatcher",
+                (canonical_authority_id(("retirement-evidence", ref, anchor, generation)),),
+                generation,
+            )),
+        )
+        for ref, anchor in zip(refs, anchors)
+    )
+    return model.RetirementCandidateCatalog(
+        canonical_authority_id((
+            "unflatten.dispatcher-retirement-candidate-catalog.v1",
+            generation, members, candidates,
+        )), generation, members, candidates,
     )
 
 
-def test_retirement_proof_content_is_typed_and_authority_model_is_wire_free() -> None:
+def test_retirement_candidate_catalog_is_typed_and_authority_model_is_wire_free() -> None:
     model = import_authority_model()
     ref = block_ref("retirement-content")
-    content = model.RetirementProofContent(
-        model.RetirementProofFamily.RETIRED_INFRASTRUCTURE,
-        3,
-        (model.RetirementProofMember(ref, 0x401000, True, "comparison_dispatcher"),),
-    )
-    proof = model.RetirementProofRecord(
-        canonical_authority_id(("unflatten.retirement-proof.v3", canonical_bytes(content))),
-        content,
-    )
-    assert proof.member_refs == (ref,)
-    assert proof.member_anchor_eas == (0x401000,)
-    assert proof.source_generation == 3
-    assert proof.roles == ("comparison_dispatcher",)
-    assert proof._decoded_retired_flags == (True,)
-    assert proof.canonical_payload == canonical_bytes(content)
-    assert proof.content_digest == "sha256:" + __import__("hashlib").sha256(
-        canonical_bytes(content)
-    ).hexdigest()
-    assert "legacy_wire" not in __import__("inspect").getsource(model.RetirementProofRecord)
+    catalog = _retirement_catalog(model, (ref,), (0x401000,))
+    assert catalog.member_refs == (ref,)
+    assert catalog.candidate_refs == (ref,)
+    assert catalog.candidates[0].role == "comparison_dispatcher"
+    assert not hasattr(catalog.candidates[0], "retired")
+    assert "legacy_wire" not in __import__("inspect").getsource(model.RetirementCandidateCatalog)
 
 
 def _subject(model, kind, role, locator):
@@ -357,6 +346,7 @@ def test_derived_inputs_exposes_only_transaction_facts() -> None:
             "detached_dead_handler_component_source_results",
             "detached_dead_handler_component_phase_results",
             "terminal_cycle_phase_results",
+            "retirement_phase_result",
     }
     for removed in (
         "source_subjects", "candidate_subjects", "source_bindings",
@@ -948,7 +938,7 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
     claims = [
         _claim_factory(model.RetiredDispatcherInfrastructureClaim,
             model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
-                infra, corridor, (infra, infra2), (_retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0).proofs[0].proof_id,), 0,
+                infra, corridor, (infra, infra2), tuple(sorted({evidence_id for candidate in _retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0).candidates for evidence_id in candidate.evidence_ids})), 0,
                 _retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0),
         ),
         _claim_factory(model.EquivalentSemanticRouteClaim,
@@ -976,7 +966,7 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
     with pytest.raises(ValueError):
         _claim_factory(model.RetiredDispatcherInfrastructureClaim,
             model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
-            bad_subject, corridor, (infra,), (_retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0).proofs[0].proof_id,), 0,
+            bad_subject, corridor, (infra,), tuple(sorted({evidence_id for candidate in _retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0).candidates for evidence_id in candidate.evidence_ids})), 0,
             _retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0),
         )
     with pytest.raises(ValueError):
@@ -1031,7 +1021,7 @@ def test_retirement_and_route_claims_preserve_cross_field_membership() -> None:
     with pytest.raises(ValueError):
         _claim_factory(model.RetiredDispatcherInfrastructureClaim,
             model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
-            infra, corridor, (infra,), (_retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0).proofs[0].proof_id,), 0,
+            infra, corridor, (infra,), (_retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0).candidates[0].evidence_ids[0],), 0,
             _retirement_catalog(model, (b0, b1), (0x1000, 0x1100), 0),
         )
 
@@ -1330,7 +1320,7 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
     retirement_catalog = _retirement_catalog(model, (b0, b1), (0x1000, 0x1300), 3)
     retirement = _claim_factory(model.RetiredDispatcherInfrastructureClaim,
         model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
-            infra, corridor, (infra, infra2), (retirement_catalog.proofs[0].proof_id,), 3,
+            infra, corridor, (infra, infra2), tuple(sorted({evidence_id for candidate in retirement_catalog.candidates for evidence_id in candidate.evidence_ids})), 3,
             retirement_catalog,
     )
     assert model.AuthoritativeHandlerInput(b2, 0x1100, (1,)).block_ref not in {
@@ -1343,7 +1333,7 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
     )
     assert model.ProposedUnflattenContract(
             **{**valid, "claims": (retirement,), "plan_inputs": full_inputs,
-               "retirement_catalog": retirement_catalog}
+               "retirement_candidate_catalog": retirement_catalog}
     )
     partial_inputs = model.UnflattenPlanInputCatalog(
         model.UnflattenPlanShape.PARTIAL_REWRITE,
@@ -1367,10 +1357,10 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
     foreign_retirement = _claim_factory(model.RetiredDispatcherInfrastructureClaim,
         model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
         foreign_infra, foreign_corridor, (foreign_infra,),
-        (_retirement_catalog(model, (b2,), (0x1100,), 3).proofs[0].proof_id,), 3,
+        (_retirement_catalog(model, (b2,), (0x1100,), 3).candidates[0].evidence_ids[0],), 3,
         _retirement_catalog(model, (b2,), (0x1100,), 3),
     )
-    with pytest.raises(ValueError, match="retirement claims must share|dispatcher_member_refs"):
+    with pytest.raises(ValueError, match="retirement (claims must share|claim must share|candidate catalog)|dispatcher_member_refs"):
         model.ProposedUnflattenContract(
             **{**valid, "claims": (foreign_retirement,), "plan_inputs": partial_inputs}
         )

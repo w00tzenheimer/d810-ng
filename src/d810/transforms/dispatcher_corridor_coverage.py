@@ -6,16 +6,16 @@ reachable and still enter the dispatcher even when every *emitted* transition
 has a concrete target.  This module applies the planned CFG redirects to the
 portable graph and records the original corridors as covered or residual.
 
-It is deliberately planner-side and SQLite-free.  Callers publish the returned
-typed observations through the observability bus; diagnostic subscribers own
-persistence.
+It is deliberately planner-side and SQLite-free.  The returned coverage and
+forecast models are consumed by the transaction authority; canonical diagnostic
+facts are published by the authority-phase observability facade.
 """
 
 from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.graph_checks import (
     check_effectful_reachability_preserved,
@@ -27,21 +27,20 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     build_current_u32_decision_forest,
     validate_candidate_prefix_alternate_corridor_proof,
 )
-from d810.analyses.value_flow.observation import FactObservation
+from d810.analyses.control_flow.instruction_semantics import (
+    split_const_storage_identity_from_branch,
+)
+from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
     BlockKind,
     FlowGraph,
     InsnKind,
 )
-from d810.ir.expressions import ValueOpKind
 from d810.ir.insn_projection import (
     InstructionProjection,
     is_effect_free_operand_tree,
 )
 from d810.ir.semantics import ControlTransferKind
-from d810.analyses.control_flow.instruction_semantics import (
-    split_const_storage_identity_from_branch,
-)
 from d810.ir.storage_identity import (
     StorageIdentity,
 )
@@ -79,26 +78,13 @@ __all__ = [
     "DispatcherCorridor",
     "DispatcherCorridorCoverage",
     "DispatcherCorridorCoverageValidation",
-    "ComparisonCorridorRetirementProof",
-    "DispatcherRemovalPreflightProof",
-    "DispatcherRemovalPreflightValidation",
+    "DispatcherCycleBreakForecast",
     "DetachedDeadHandlerComponentAnalysis",
-    "IntervalStateNormalizerRetirementProof",
-    "IntervalStateNormalizerRouteProof",
-    "IntervalStateSourceRouteProof",
-    "StateTransitionPlumbingRetirementProof",
-    "StateTransitionPlumbingRouteProof",
-    "TerminalSwitchCycleBreakProof",
     "RetiredDispatcherInfrastructure",
     "analyze_dispatcher_corridor_coverage",
-    "build_dispatcher_removal_preflight_proof",
+    "build_dispatcher_removal_forecast",
     "build_detached_dead_handler_component_analysis",
-    "collect_dispatcher_corridor_coverage_observations",
-    "collect_dispatcher_corridor_coverage_observations_from_metadata",
-    "collect_dispatcher_removal_preflight_proof_observations_from_metadata",
-    "collect_use_def_severance_observations_from_metadata",
-    "collect_unflatten_dispatcher_outcome_observations_from_metadata",
-    "validate_terminal_switch_cycle_break_allowance",
+    "forecast_terminal_switch_cycle_break",
 ]
 
 
@@ -183,272 +169,8 @@ class RetiredDispatcherInfrastructure:
 
 
 @dataclass(frozen=True, slots=True)
-class DispatcherRemovalPreflightProof:
-    """Exact, narrow allowance for intentional comparison-dispatcher removal.
-
-    The generic entry-reachability gate remains the default.  This proof can
-    only admit its failure when the post-plan graph retains every authoritative
-    handler and reachable terminal, and every lost pre-plan block has an
-    explicit router-infrastructure role with a serial plus EA anchor.
-    """
-
-    function_ea: int
-    dispatcher: DispatcherBlockAnchor | None
-    authoritative_handlers: tuple[DispatcherBlockAnchor, ...]
-    post_reachable_handlers: tuple[DispatcherBlockAnchor, ...]
-    pre_reachable_terminals: tuple[DispatcherBlockAnchor, ...]
-    post_reachable_terminals: tuple[DispatcherBlockAnchor, ...]
-    retired_infrastructure: tuple[RetiredDispatcherInfrastructure, ...]
-    lost_blocks: frozenset[int]
-    lost_block_anchors: tuple[DispatcherBlockAnchor, ...]
-    state_plumbing: tuple[DispatcherBlockAnchor, ...]
-    producer_safety: tuple[tuple[str, bool], ...]
-    coverage_enumeration_complete: bool
-    residual_corridor_count: int
-    passed: bool
-    reason: str
-
-    def to_metadata(self) -> dict[str, object]:
-        return {
-            "function_ea": int(self.function_ea),
-            "dispatcher": (
-                None if self.dispatcher is None else self.dispatcher.to_payload()
-            ),
-            "proof_status": "accepted" if self.passed else "rejected",
-            "reason": self.reason,
-            "authoritative_handlers": [
-                anchor.to_payload() for anchor in self.authoritative_handlers
-            ],
-            "post_reachable_handlers": [
-                anchor.to_payload() for anchor in self.post_reachable_handlers
-            ],
-            "pre_reachable_terminals": [
-                anchor.to_payload() for anchor in self.pre_reachable_terminals
-            ],
-            "post_reachable_terminals": [
-                anchor.to_payload() for anchor in self.post_reachable_terminals
-            ],
-            "retired_infrastructure": [
-                item.to_payload() for item in self.retired_infrastructure
-            ],
-            "lost_blocks": [anchor.to_payload() for anchor in self.lost_block_anchors],
-            "state_plumbing": [anchor.to_payload() for anchor in self.state_plumbing],
-            "producer_safety": dict(self.producer_safety),
-            "coverage_enumeration_complete": bool(self.coverage_enumeration_complete),
-            "residual_corridor_count": int(self.residual_corridor_count),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class IntervalStateNormalizerRouteProof:
-    """One comparison-forest exit that canonicalizes an interval state."""
-
-    normalizer: DispatcherBlockAnchor
-    state_feeder: DispatcherBlockAnchor
-    normalized_value: int
-    routed_handler: DispatcherBlockAnchor
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "normalizer": self.normalizer.to_payload(),
-            "state_feeder": self.state_feeder.to_payload(),
-            "normalized_value": int(self.normalized_value),
-            "routed_handler": self.routed_handler.to_payload(),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class IntervalStateSourceRouteProof:
-    """One source-owned constant route around a retired state feeder."""
-
-    source: DispatcherBlockAnchor
-    state_feeder: DispatcherBlockAnchor
-    state_value: int
-    projected_successor: DispatcherBlockAnchor
-    routed_handler: DispatcherBlockAnchor
-    retired_normalizers: tuple[DispatcherBlockAnchor, ...] = ()
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "source": self.source.to_payload(),
-            "state_feeder": self.state_feeder.to_payload(),
-            "state_value": int(self.state_value),
-            "projected_successor": self.projected_successor.to_payload(),
-            "routed_handler": self.routed_handler.to_payload(),
-            "retired_normalizers": [
-                anchor.to_payload() for anchor in self.retired_normalizers
-            ],
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class IntervalStateNormalizerRetirementProof:
-    """Independent authority for retiring interval state-normalization plumbing."""
-
-    dispatcher: DispatcherBlockAnchor
-    state_identity: StorageIdentity
-    normalizers: tuple[IntervalStateNormalizerRouteProof, ...]
-    retired_state_plumbing: tuple[RetiredDispatcherInfrastructure, ...]
-    semantic_handlers: tuple[DispatcherBlockAnchor, ...]
-    post_reachable_handlers: tuple[DispatcherBlockAnchor, ...]
-    lost_blocks: tuple[DispatcherBlockAnchor, ...]
-    source_routes: tuple[IntervalStateSourceRouteProof, ...] = ()
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "dispatcher": self.dispatcher.to_payload(),
-            "state_identity": self.state_identity.to_record(),
-            "normalizers": [route.to_payload() for route in self.normalizers],
-            "source_routes": [route.to_payload() for route in self.source_routes],
-            "retired_state_plumbing": [
-                item.to_payload() for item in self.retired_state_plumbing
-            ],
-            "semantic_handlers": [
-                anchor.to_payload() for anchor in self.semantic_handlers
-            ],
-            "post_reachable_handlers": [
-                anchor.to_payload() for anchor in self.post_reachable_handlers
-            ],
-            "lost_blocks": [anchor.to_payload() for anchor in self.lost_blocks],
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class StateTransitionPlumbingRouteProof:
-    """One handler edge that bypasses a retired state-expression corridor."""
-
-    source: DispatcherBlockAnchor
-    path: tuple[DispatcherBlockAnchor, ...]
-    state_writer: DispatcherBlockAnchor
-    routed_handler: DispatcherBlockAnchor
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "source": self.source.to_payload(),
-            "path": [anchor.to_payload() for anchor in self.path],
-            "state_writer": self.state_writer.to_payload(),
-            "routed_handler": self.routed_handler.to_payload(),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class StateTransitionPlumbingRetirementProof:
-    """Independent authority for retiring pure dispatcher-state expressions."""
-
-    dispatcher: DispatcherBlockAnchor
-    state_identity: StorageIdentity
-    routes: tuple[StateTransitionPlumbingRouteProof, ...]
-    retired_state_plumbing: tuple[RetiredDispatcherInfrastructure, ...]
-    semantic_handlers: tuple[DispatcherBlockAnchor, ...]
-    post_reachable_handlers: tuple[DispatcherBlockAnchor, ...]
-    lost_blocks: tuple[DispatcherBlockAnchor, ...]
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "dispatcher": self.dispatcher.to_payload(),
-            "state_identity": self.state_identity.to_record(),
-            "routes": [route.to_payload() for route in self.routes],
-            "retired_state_plumbing": [
-                item.to_payload() for item in self.retired_state_plumbing
-            ],
-            "semantic_handlers": [
-                anchor.to_payload() for anchor in self.semantic_handlers
-            ],
-            "post_reachable_handlers": [
-                anchor.to_payload() for anchor in self.post_reachable_handlers
-            ],
-            "lost_blocks": [anchor.to_payload() for anchor in self.lost_blocks],
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ComparisonCorridorRetirementProof:
-    """Immutable authority for retiring exact covered control-only corridors."""
-
-    dispatcher: DispatcherBlockAnchor
-    covered_corridors: tuple[DispatcherCorridor, ...]
-    retired_corridor: tuple[RetiredDispatcherInfrastructure, ...]
-    semantic_handlers: tuple[DispatcherBlockAnchor, ...]
-    post_reachable_handlers: tuple[DispatcherBlockAnchor, ...]
-    lost_blocks: tuple[DispatcherBlockAnchor, ...]
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "dispatcher": self.dispatcher.to_payload(),
-            "covered_corridors": [
-                corridor.to_payload() for corridor in self.covered_corridors
-            ],
-            "retired_corridor": [item.to_payload() for item in self.retired_corridor],
-            "semantic_handlers": [
-                anchor.to_payload() for anchor in self.semantic_handlers
-            ],
-            "post_reachable_handlers": [
-                anchor.to_payload() for anchor in self.post_reachable_handlers
-            ],
-            "lost_blocks": [anchor.to_payload() for anchor in self.lost_blocks],
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class DispatcherRemovalPreflightValidation:
-    """Result of recomputing a plan's narrow removal proof at preflight."""
-
-    passed: bool
-    reason: str
-    proof: DispatcherRemovalPreflightProof | None = None
-    terminal_switch_cycle_break: "TerminalSwitchCycleBreakProof | None" = None
-    interval_state_normalizer_retirement: (
-        IntervalStateNormalizerRetirementProof | None
-    ) = None
-    state_transition_plumbing_retirement: (
-        StateTransitionPlumbingRetirementProof | None
-    ) = None
-    comparison_corridor_retirement: ComparisonCorridorRetirementProof | None = None
-    detached_dead_handler_component: "DetachedDeadHandlerComponentAnalysis | None" = None
-
-    def to_payload(self) -> dict[str, object]:
-        """Return compact typed evidence for a projected or observed verdict."""
-        payload = {
-            "validation_status": "accepted" if self.passed else "rejected",
-            "reason": str(self.reason),
-            "proof": None if self.proof is None else self.proof.to_metadata(),
-        }
-        if self.terminal_switch_cycle_break is not None:
-            payload["terminal_switch_cycle_break"] = (
-                self.terminal_switch_cycle_break.to_payload()
-            )
-        if self.interval_state_normalizer_retirement is not None:
-            payload["interval_state_normalizer_retirement"] = (
-                self.interval_state_normalizer_retirement.to_payload()
-            )
-        if self.state_transition_plumbing_retirement is not None:
-            payload["state_transition_plumbing_retirement"] = (
-                self.state_transition_plumbing_retirement.to_payload()
-            )
-        if self.comparison_corridor_retirement is not None:
-            payload["comparison_corridor_retirement"] = (
-                self.comparison_corridor_retirement.to_payload()
-            )
-        return payload
-
-
-@dataclass(frozen=True, slots=True)
-class DetachedDeadHandlerComponentAnalysis:
-    """Producer-only source anchors for one candidate dead handler component.
-
-    This is deliberately not metadata and contains no candidate authority.
-    The canonical binder re-establishes every topology and effect premise.
-    """
-
-    dispatcher: DispatcherBlockAnchor
-    dead_handlers: tuple[DispatcherBlockAnchor, ...]
-    retained_handlers: tuple[DispatcherBlockAnchor, ...]
-    component: tuple[DispatcherBlockAnchor, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class TerminalSwitchCycleBreakProof:
-    """Exact structural authority for retiring one detached switch residue."""
+class DispatcherCycleBreakForecast:
+    """Producer-only topology forecast for one detached terminal residue."""
 
     dispatcher: DispatcherBlockAnchor
     terminal_source: DispatcherBlockAnchor
@@ -466,6 +188,20 @@ class TerminalSwitchCycleBreakProof:
             "terminal_stop": self.terminal_stop.to_payload(),
             "retired_residue": [anchor.to_payload() for anchor in self.retired_residue],
         }
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedDeadHandlerComponentAnalysis:
+    """Producer-only source anchors for one candidate dead-handler island.
+
+    This proposal contains no allowance or candidate verdict.  Canonical
+    transaction binding re-establishes every topology and semantic premise.
+    """
+
+    dispatcher: DispatcherBlockAnchor
+    dead_handlers: tuple[DispatcherBlockAnchor, ...]
+    retained_handlers: tuple[DispatcherBlockAnchor, ...]
+    component: tuple[DispatcherBlockAnchor, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -503,6 +239,11 @@ class DispatcherCorridorCoverage:
     residual_corridors: tuple[DispatcherCorridor, ...]
     enumeration_complete: bool
     semantic_exclusions: tuple[CandidatePrefixAlternateCorridorProof, ...] = ()
+    # These are producer forecasts only.  They are deliberately absent from
+    # the canonical forecast identity and cannot carry a pass/fail verdict.
+    retirement_candidates: tuple[RetiredDispatcherInfrastructure, ...] = ()
+    cycle_break: DispatcherCycleBreakForecast | None = None
+    detached_dead_handler_component: DetachedDeadHandlerComponentAnalysis | None = None
 
     @property
     def planned_completion_status(self) -> str:
@@ -1073,61 +814,38 @@ def _retired_dispatcher_infrastructure(
     coverage: DispatcherCorridorCoverage,
     *,
     dispatcher_entry_serial: int,
-    dispatcher_region_serials: frozenset[int],
-    state_plumbing_serials: frozenset[int],
-    lost_blocks: frozenset[int],
 ) -> tuple[RetiredDispatcherInfrastructure, ...]:
     """Return only roles that are explicit in router or corridor evidence.
 
-    A generic block on a corridor is deliberately *not* accepted.  The narrow
-    proof admits only the known comparison region plus the exact feeder and
+    A generic block on a corridor is deliberately *not* forecast.  The
+    producer admits only the known comparison region plus exact feeder and
     shared state-merge anchors surfaced by corridor enumeration.
     """
-    # ``retired_infrastructure`` is diagnostic evidence, not authority.  The
-    # proof must therefore recompute the comparison region from the immutable
-    # source CFG rather than accept a producer/metadata role label.  Retain the
-    # argument for API compatibility with profile discovery, but deliberately
-    # do not let it broaden the proved region.
-    del dispatcher_region_serials
+    # ``retirement_candidates`` field is diagnostic evidence, not authority. The
+    # candidate is recomputed from the immutable source CFG rather than from
+    # producer/metadata role labels.
     roles_by_serial: dict[int, str] = {
         int(serial): "comparison_dispatcher"
         for serial in _independent_comparison_dispatcher_region(
             flow_graph,
             dispatcher_entry_serial=int(dispatcher_entry_serial),
         )
-        if int(serial) in lost_blocks
     }
     dispatcher_block = flow_graph.get_block(int(dispatcher_entry_serial))
-    if (
-        int(dispatcher_entry_serial) in lost_blocks
-        and _is_effect_free_dispatcher_router(dispatcher_block)
-    ):
+    if _is_effect_free_dispatcher_router(dispatcher_block):
         roles_by_serial.setdefault(int(dispatcher_entry_serial), "comparison_dispatcher")
     for corridor in coverage.covered_corridors:
         feeder = corridor.feeder
-        if int(feeder.serial) in lost_blocks and _feeder_is_retireable(
-            flow_graph,
-            feeder_serial=int(feeder.serial),
-            state_plumbing_serials=state_plumbing_serials,
-        ):
+        if _is_effect_free_dispatcher_router(flow_graph.get_block(int(feeder.serial))):
             roles_by_serial.setdefault(int(feeder.serial), "dispatcher_feeder")
         state_merge = corridor.state_merge
         if (
             state_merge is not None
-            and int(state_merge.serial) in lost_blocks
             and _is_effect_free_dispatcher_router(
             flow_graph.get_block(int(state_merge.serial))
             )
         ):
             roles_by_serial.setdefault(int(state_merge.serial), "state_merge")
-    corridor_safe, corridor_serials = _covered_control_only_comparison_corridor_region(
-        flow_graph,
-        coverage,
-        dispatcher_entry_serial=int(dispatcher_entry_serial),
-    )
-    if corridor_safe:
-        for serial in corridor_serials & set(lost_blocks):
-            roles_by_serial.setdefault(int(serial), "comparison_corridor")
     return tuple(
         RetiredDispatcherInfrastructure(
             role=role,
@@ -1135,91 +853,6 @@ def _retired_dispatcher_infrastructure(
         )
         for serial, role in sorted(roles_by_serial.items())
     )
-
-
-def _covered_control_only_comparison_corridor_region(
-    flow_graph: FlowGraph,
-    coverage: DispatcherCorridorCoverage,
-    *,
-    dispatcher_entry_serial: int,
-) -> tuple[bool, frozenset[int]]:
-    """Revalidate exact covered multi-forest paths as control-only infrastructure.
-
-    Corridor metadata is not authority.  Each path is checked against the
-    immutable source graph, including its EAs, edges, and structural merge
-    anchor.  A path is eligible only when it carries merge evidence for a
-    comparison forest and every block is an effect-free control router.  One
-    semantic instruction, memory operation, call, or unknown node vetoes the
-    complete extension rather than allowing a sibling forest to be retired.
-    """
-    dispatcher_serial = int(dispatcher_entry_serial)
-    if (
-        coverage.dispatcher is None
-        or int(coverage.dispatcher.serial) != dispatcher_serial
-    ):
-        return False, frozenset()
-    candidates: set[int] = set()
-    saw_comparison_corridor = False
-    for corridor in coverage.covered_corridors:
-        path = tuple(int(anchor.serial) for anchor in corridor.path)
-        if len(path) < 2 or path[-1] != dispatcher_serial:
-            return False, frozenset()
-        if any(
-            flow_graph.get_block(serial) is None
-            or int(corridor.path[index].ea)
-            != int(getattr(flow_graph.get_block(serial), "start_ea", 0) or 0)
-            for index, serial in enumerate(path)
-        ):
-            return False, frozenset()
-        for source, target in zip(path, path[1:]):
-            block = flow_graph.get_block(source)
-            if block is None or int(target) not in {
-                int(successor) for successor in getattr(block, "succs", ()) or ()
-            }:
-                return False, frozenset()
-        state_merge = corridor.state_merge
-        if state_merge is None:
-            # A direct corridor is eligible only when one of its source-path
-            # nodes independently carries a comparison branch.  A purely
-            # linear body remains semantic by default, even if its snapshot
-            # happens to omit instructions.
-            if not any(
-                len(tuple(getattr(flow_graph.get_block(serial), "succs", ()) or ()))
-                >= 2
-                for serial in path[:-1]
-            ):
-                continue
-        else:
-            if len(path) < 4:
-                return False, frozenset()
-            merge_serial = int(state_merge.serial)
-            if merge_serial != path[-3] or int(state_merge.ea) != int(
-                getattr(flow_graph.get_block(merge_serial), "start_ea", 0) or 0
-            ):
-                return False, frozenset()
-            merge = flow_graph.get_block(merge_serial)
-            feeder_serial = path[-2]
-            if (
-                merge is None
-                or len(
-                    {
-                        int(predecessor)
-                        for predecessor in getattr(merge, "preds", ()) or ()
-                    }
-                )
-                < 2
-                or tuple(int(target) for target in getattr(merge, "succs", ()) or ())
-                != (feeder_serial,)
-            ):
-                return False, frozenset()
-        saw_comparison_corridor = True
-        for serial in path[:-1]:
-            if not _is_effect_free_dispatcher_router(flow_graph.get_block(serial)):
-                return False, frozenset()
-            candidates.add(int(serial))
-    if not saw_comparison_corridor:
-        return True, frozenset()
-    return True, frozenset(candidates)
 
 
 def _is_effect_free_dispatcher_router(block: object) -> bool:
@@ -1312,6 +945,34 @@ def _independent_comparison_dispatcher_region(
     return frozenset(seen)
 
 
+def build_dispatcher_removal_forecast(
+    flow_graph: FlowGraph,
+    *,
+    coverage: DispatcherCorridorCoverage,
+    dispatcher_entry_serial: int | None,
+) -> DispatcherCorridorCoverage:
+    """Return producer-only retirement candidates from source CFG structure.
+
+    This function does not inspect candidate reachability, terminal identity,
+    use-def safety, or loss sets.  Those are transaction obligations.  A
+    candidate is emitted only when the source dispatcher and corridor anchors
+    are structurally bindable; an incomplete coverage forecast is preserved so
+    the authority phase can reject it with the complete evidence attached.
+    """
+    if (
+        dispatcher_entry_serial is None
+        or coverage.dispatcher is None
+        or int(coverage.dispatcher.serial) != int(dispatcher_entry_serial)
+    ):
+        return coverage
+    retired = _retired_dispatcher_infrastructure(
+        flow_graph,
+        coverage,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+    )
+    return replace(coverage, retirement_candidates=tuple(retired))
+
+
 def _dispatcher_state_identity(
     flow_graph: FlowGraph,
     dispatcher_entry_serial: int,
@@ -1338,232 +999,6 @@ def _dispatcher_state_identity(
     return identity
 
 
-def _feeder_is_retireable(
-    flow_graph: FlowGraph,
-    *,
-    feeder_serial: int,
-    state_plumbing_serials: frozenset[int],
-) -> bool:
-    """Allow a feeder loss only with effect-free or bound state evidence."""
-    block = flow_graph.get_block(int(feeder_serial))
-    if block is None:
-        return False
-    if _is_effect_free_dispatcher_router(block):
-        return True
-    return int(feeder_serial) in {int(serial) for serial in state_plumbing_serials}
-
-
-def _exact_planned_stop_relocation(
-    flow_graph: FlowGraph,
-    *,
-    post_graph: FlowGraph,
-    patch_plan: PatchPlan | None,
-) -> tuple[int, int] | None:
-    """Return the source/projected STOP pair for an exact typed relocation."""
-    if patch_plan is None or not patch_plan.new_blocks:
-        return None
-    source_stop_ref = patch_plan.relocation_map.source_stop
-    source_stop_serial = (
-        None
-        if source_stop_ref is None
-        else dict(patch_plan.source_coordinates).get(source_stop_ref)
-    )
-    if source_stop_serial is None:
-        return None
-    relocated_stop_serial = int(source_stop_serial) + len(patch_plan.new_blocks)
-    source_stop = flow_graph.get_block(int(source_stop_serial))
-    relocated_stop = post_graph.get_block(int(relocated_stop_serial))
-    if (
-        source_stop is None
-        or relocated_stop is None
-        or source_stop.kind is not BlockKind.STOP
-        or relocated_stop.kind is not BlockKind.STOP
-        or source_stop.succs
-        or relocated_stop.succs
-        or int(source_stop.start_ea) != int(relocated_stop.start_ea)
-        or tuple(source_stop.insn_snapshots) != tuple(relocated_stop.insn_snapshots)
-        or source_stop.tail_kind is not relocated_stop.tail_kind
-    ):
-        return None
-    return int(source_stop_serial), int(relocated_stop_serial)
-
-
-def _semantic_lost_blocks(
-    flow_graph: FlowGraph,
-    *,
-    post_graph: FlowGraph,
-    patch_plan: PatchPlan | None,
-) -> frozenset[int]:
-    """Return true lost blocks, excluding an exact typed STOP relocation."""
-    pre_reachable = _reachable_from_entry(
-        flow_graph.as_adjacency_dict(), int(flow_graph.entry_serial)
-    )
-    post_reachable = _reachable_from_entry(
-        post_graph.as_adjacency_dict(), int(post_graph.entry_serial)
-    )
-    lost = frozenset(int(serial) for serial in pre_reachable - post_reachable)
-    relocation = _exact_planned_stop_relocation(
-        flow_graph,
-        post_graph=post_graph,
-        patch_plan=patch_plan,
-    )
-    if relocation is None:
-        return lost
-    source_stop_serial, _ = relocation
-    return frozenset(serial for serial in lost if serial != source_stop_serial)
-
-
-def build_dispatcher_removal_preflight_proof(
-    flow_graph: FlowGraph,
-    *,
-    post_graph: FlowGraph,
-    coverage: DispatcherCorridorCoverage,
-    dispatcher_entry_serial: int | None,
-    authoritative_handler_serials: frozenset[int],
-    dispatcher_region_serials: frozenset[int],
-    producer_safety: Mapping[str, bool],
-    state_plumbing_serials: frozenset[int] = frozenset(),
-    patch_plan: PatchPlan | None = None,
-) -> DispatcherRemovalPreflightProof:
-    """Prove the exact exception to raw entry-count preservation.
-
-    The raw count gate intentionally remains conservative.  A comparison
-    forest can be entirely dead after every state route becomes direct, though,
-    so its removal lowers the count without losing executable handler or return
-    behavior.  This proof records the only accepted shape and fails closed for
-    unknown loss.
-    """
-    normalized_safety = tuple(
-        sorted((str(name), bool(value)) for name, value in producer_safety.items())
-    )
-    required_safety = {
-        "fragment_atomic": True,
-        "non_state_use_def_veto": True,
-        "non_state_use_def_checked": True,
-        "non_state_use_def_severances_zero": True,
-    }
-    post_reachable = _reachable_from_entry(
-        post_graph.as_adjacency_dict(),
-        int(post_graph.entry_serial),
-    )
-    lost_blocks = _semantic_lost_blocks(
-        flow_graph,
-        post_graph=post_graph,
-        patch_plan=patch_plan,
-    )
-    dispatcher = coverage.dispatcher
-    handlers = frozenset(int(serial) for serial in authoritative_handler_serials)
-    handler_anchors = _anchors_for_serials(flow_graph, handlers)
-    post_handlers = _anchors_for_serials(
-        post_graph,
-        frozenset(serial for serial in handlers if serial in post_reachable),
-    )
-    pre_terminals = frozenset(
-        int(serial) for serial in reachable_terminal_blocks(flow_graph)
-    )
-    post_terminal_serials = frozenset(
-        int(serial) for serial in reachable_terminal_blocks(post_graph)
-    )
-    pre_terminal_anchors = _anchors_for_serials(flow_graph, pre_terminals)
-    post_terminal_anchors = _anchors_for_serials(post_graph, post_terminal_serials)
-    stop_relocation = _exact_planned_stop_relocation(
-        flow_graph,
-        post_graph=post_graph,
-        patch_plan=patch_plan,
-    )
-    if stop_relocation is not None:
-        source_stop_serial, relocated_stop_serial = stop_relocation
-        if (
-            source_stop_serial in pre_terminals
-            and relocated_stop_serial in post_terminal_serials
-        ):
-            post_terminal_anchors = tuple(
-                _anchor(flow_graph, source_stop_serial)
-                if int(anchor.serial) == relocated_stop_serial
-                else anchor
-                for anchor in post_terminal_anchors
-            )
-    plumbing = frozenset(int(serial) for serial in state_plumbing_serials)
-    plumbing_anchors = _anchors_for_serials(flow_graph, plumbing)
-    retired = (
-        ()
-        if dispatcher_entry_serial is None
-        else _retired_dispatcher_infrastructure(
-            flow_graph,
-            coverage,
-            dispatcher_entry_serial=int(dispatcher_entry_serial),
-            dispatcher_region_serials=frozenset(
-                int(serial) for serial in dispatcher_region_serials
-            ),
-            state_plumbing_serials=plumbing,
-            lost_blocks=lost_blocks,
-        )
-    )
-    allowed_lost = {item.anchor.serial for item in retired}
-    safety = dict(normalized_safety)
-
-    if dispatcher_entry_serial is None or dispatcher is None:
-        passed = False
-        reason = "dispatcher_missing"
-    elif int(dispatcher.serial) != int(dispatcher_entry_serial):
-        passed = False
-        reason = "dispatcher_anchor_mismatch"
-    elif not coverage.enumeration_complete:
-        passed = False
-        reason = "corridor_enumeration_incomplete"
-    elif coverage.residual_corridors:
-        passed = False
-        reason = "residual_dispatcher_corridor"
-    elif not handlers:
-        passed = False
-        reason = "authoritative_handlers_empty"
-    elif len(handler_anchors) != len(handlers):
-        passed = False
-        reason = "authoritative_handler_missing"
-    elif set(post_handlers) != set(handler_anchors):
-        passed = False
-        if any(serial not in post_reachable for serial in handlers):
-            reason = "authoritative_handler_lost"
-        else:
-            reason = "authoritative_handler_identity_drift"
-    elif set(post_terminal_anchors) != set(pre_terminal_anchors):
-        passed = False
-        pre_terminal_serials = {anchor.serial for anchor in pre_terminal_anchors}
-        if not pre_terminal_serials.issubset(post_terminal_serials):
-            reason = "reachable_terminal_lost"
-        else:
-            reason = "reachable_terminal_identity_drift"
-    elif not lost_blocks.issubset(allowed_lost):
-        passed = False
-        reason = "untyped_lost_block"
-    elif any(
-        safety.get(name) is not expected for name, expected in required_safety.items()
-    ):
-        passed = False
-        reason = "producer_safety_missing"
-    else:
-        passed = True
-        reason = "typed_dispatcher_infrastructure_removed"
-
-    return DispatcherRemovalPreflightProof(
-        function_ea=int(flow_graph.func_ea),
-        dispatcher=dispatcher,
-        authoritative_handlers=handler_anchors,
-        post_reachable_handlers=post_handlers,
-        pre_reachable_terminals=pre_terminal_anchors,
-        post_reachable_terminals=post_terminal_anchors,
-        retired_infrastructure=retired,
-        lost_blocks=lost_blocks,
-        lost_block_anchors=_anchors_for_serials(flow_graph, lost_blocks),
-        state_plumbing=plumbing_anchors,
-        producer_safety=normalized_safety,
-        coverage_enumeration_complete=bool(coverage.enumeration_complete),
-        residual_corridor_count=len(coverage.residual_corridors),
-        passed=passed,
-        reason=reason,
-    )
-
-
 def build_detached_dead_handler_component_analysis(
     flow_graph: FlowGraph,
     *,
@@ -1572,8 +1007,12 @@ def build_detached_dead_handler_component_analysis(
     authoritative_handler_serials: frozenset[int],
     patch_plan: PatchPlan | None = None,
 ) -> DetachedDeadHandlerComponentAnalysis | None:
-    """Produce source anchors only when the mainline dead-island shape holds."""
+    """Propose one bounded dead-handler island for canonical binding.
 
+    The planner may name only source anchors.  It does not classify loss or
+    decide whether the projected or observed candidate is acceptable.
+    """
+    del patch_plan
     dispatcher = coverage.dispatcher
     handlers = frozenset(int(value) for value in authoritative_handler_serials)
     if (
@@ -1588,7 +1027,8 @@ def build_detached_dead_handler_component_analysis(
     if state_identity is None:
         return None
     comparison_region = _independent_comparison_dispatcher_region(
-        flow_graph, dispatcher_entry_serial=dispatcher_serial,
+        flow_graph,
+        dispatcher_entry_serial=dispatcher_serial,
     )
     if dispatcher_serial not in comparison_region:
         decision_forest = build_current_u32_decision_forest(
@@ -1601,10 +1041,9 @@ def build_detached_dead_handler_component_analysis(
                 {*decision_forest.nodes, *decision_forest.aliases}
             )
     if dispatcher_serial not in comparison_region:
-        # Hex-Rays may retain an operand wrapper that the strict operand-tree
-        # classifier cannot normalize.  This fallback remains bounded to the
-        # dispatcher-connected, pure-control portion of the CFG and stops at
-        # semantic handler entries; it proposes no loss authority itself.
+        # Hex-Rays can preserve an operand wrapper the strict classifier does
+        # not normalize.  Keep this fallback bounded to dispatcher-connected,
+        # pure-control nodes and stop at semantic handler entries.
         relaxed_region: set[int] = set()
         pending = [dispatcher_serial]
         while pending:
@@ -1655,34 +1094,46 @@ def build_detached_dead_handler_component_analysis(
     if dispatcher_serial not in comparison_region:
         return None
     pre_reachable = _reachable_from_entry(
-        flow_graph.as_adjacency_dict(), int(flow_graph.entry_serial)
+        flow_graph.as_adjacency_dict(),
+        int(flow_graph.entry_serial),
     )
     post_reachable = _reachable_from_entry(
-        post_graph.as_adjacency_dict(), int(post_graph.entry_serial)
+        post_graph.as_adjacency_dict(),
+        int(post_graph.entry_serial),
     )
     dead_handlers = frozenset(handlers - post_reachable)
     retained_handlers = frozenset(handlers & post_reachable)
     if not dead_handlers or not retained_handlers or not dead_handlers <= pre_reachable:
         return None
-    if set(reachable_terminal_blocks(flow_graph)) != set(reachable_terminal_blocks(post_graph)):
+    if set(reachable_terminal_blocks(flow_graph)) != set(
+        reachable_terminal_blocks(post_graph)
+    ):
         return None
     for serial in dead_handlers:
         block = flow_graph.get_block(serial)
         if block is None:
             return None
-        reachable_preds = frozenset(int(pred) for pred in block.preds if int(pred) in pre_reachable)
+        reachable_preds = frozenset(
+            int(pred) for pred in block.preds if int(pred) in pre_reachable
+        )
         if not reachable_preds or not reachable_preds <= comparison_region:
             return None
     if check_effectful_reachability_preserved(
-        flow_graph, post_adj=post_graph.as_adjacency_dict(),
+        flow_graph,
+        post_adj=post_graph.as_adjacency_dict(),
     ).lost_block_serials:
         return None
-    lost = _semantic_lost_blocks(flow_graph, post_graph=post_graph, patch_plan=patch_plan)
+    lost = frozenset(pre_reachable - post_reachable)
     component: set[int] = set()
     pending = list(dead_handlers)
     while pending:
         serial = int(pending.pop())
-        if serial in component or serial == dispatcher_serial or serial in post_reachable or serial not in lost:
+        if (
+            serial in component
+            or serial == dispatcher_serial
+            or serial in post_reachable
+            or serial not in lost
+        ):
             continue
         component.add(serial)
         block = flow_graph.get_block(serial)
@@ -1692,18 +1143,18 @@ def build_detached_dead_handler_component_analysis(
         return None
     for serial in component:
         block = flow_graph.get_block(serial)
-        if block is None or any(insn.is_call or insn.kind in {InsnKind.CALL, InsnKind.STORE} for insn in block.insn_snapshots):
+        if block is None or any(
+            instruction.is_call
+            or instruction.kind in {InsnKind.CALL, InsnKind.STORE}
+            for instruction in block.insn_snapshots
+        ):
             return None
-        if any(int(pred) in pre_reachable and int(pred) not in component and int(pred) not in comparison_region for pred in block.preds):
-            return None
-    remainder = frozenset(lost - component - comparison_region)
-    for serial in remainder:
-        block = flow_graph.get_block(serial)
-        if block is None or any(insn.is_call or insn.kind in {InsnKind.CALL, InsnKind.STORE} for insn in block.insn_snapshots):
-            return None
-        if not tuple(int(target) for target in block.succs):
-            return None
-        if any(int(target) not in remainder and int(target) not in comparison_region and int(target) not in component for target in block.succs):
+        if any(
+            int(pred) in pre_reachable
+            and int(pred) not in component
+            and int(pred) not in comparison_region
+            for pred in block.preds
+        ):
             return None
     if len(component) * 2 >= max(1, len(pre_reachable)):
         return None
@@ -1713,599 +1164,6 @@ def build_detached_dead_handler_component_analysis(
         retained_handlers=_anchors_for_serials(flow_graph, retained_handlers),
         component=_anchors_for_serials(flow_graph, frozenset(component)),
     )
-
-
-def collect_dispatcher_corridor_coverage_observations(
-    coverage: DispatcherCorridorCoverage,
-    *,
-    maturity: str,
-    phase: str,
-    application_status: str = "pending",
-    outcome_reason: str | None = None,
-    observed_coverage_validation: DispatcherCorridorCoverageValidation | None = None,
-    projected_coverage_validation: DispatcherCorridorCoverageValidation | None = None,
-    plan_id: str | None = None,
-    attempt_id: str | None = None,
-) -> tuple[FactObservation, ...]:
-    """Turn exact CFG coverage into outcome-qualified diagnostic observations."""
-    if application_status == "pending":
-        completion_status = coverage.completion_status
-    elif application_status == "applied":
-        completion_status = coverage.applied_completion_status
-    elif (
-        application_status.startswith("rejected_")
-        or application_status == "poisoned_restart_required"
-    ):
-        completion_status = f"abstained_{application_status}"
-    else:
-        raise ValueError(
-            "dispatcher coverage application status must be pending, applied, "
-            "rejected_*, or poisoned_restart_required"
-        )
-    dispatcher_label = (
-        coverage.dispatcher.label if coverage.dispatcher is not None else "dispatcher@?"
-    )
-    scope = _diagnostic_outcome_scope(plan_id=plan_id, attempt_id=attempt_id)
-    scope_suffix = f":{scope}" if scope else ""
-    summary_payload = coverage.to_metadata()
-    summary_payload.update(
-        {
-            "application_status": application_status,
-            "completion_status": completion_status,
-            "planned_completion_status": coverage.planned_completion_status,
-            "outcome_reason": outcome_reason,
-            "observed_coverage_validation": (
-                None
-                if observed_coverage_validation is None
-                else observed_coverage_validation.to_payload()
-            ),
-            "projected_coverage_validation": (
-                None
-                if projected_coverage_validation is None
-                else projected_coverage_validation.to_payload()
-            ),
-            "plan_id": plan_id,
-            "attempt_id": attempt_id,
-        }
-    )
-    observations: list[FactObservation] = [
-        FactObservation(
-            fact_id=(
-                "unflatten-dispatcher-corridor-summary:"
-                f"{application_status}:func=0x{int(coverage.function_ea):x}:"
-                f"{dispatcher_label}{scope_suffix}"
-            ),
-            kind="UnflattenDispatcherCorridorCoverageSummary",
-            semantic_key=(
-                "unflatten_dispatcher_corridor_summary:"
-                f"func=0x{int(coverage.function_ea):x}:{dispatcher_label}"
-            ),
-            maturity=str(maturity),
-            phase=str(phase),
-            confidence=1.0,
-            source_block=(
-                None if coverage.dispatcher is None else coverage.dispatcher.serial
-            ),
-            source_ea=(None if coverage.dispatcher is None else coverage.dispatcher.ea),
-            payload=summary_payload,
-            evidence=(() if coverage.dispatcher is None else (dispatcher_label,)),
-        )
-    ]
-    for planned_coverage, corridors in (
-        ("covered", coverage.covered_corridors),
-        ("residual", coverage.residual_corridors),
-    ):
-        for corridor in corridors:
-            if application_status == "pending":
-                coverage_status = (
-                    "pending" if planned_coverage == "covered" else "residual"
-                )
-            elif application_status == "applied":
-                coverage_status = planned_coverage
-            else:
-                coverage_status = "residual"
-            path_label = "->".join(anchor.label for anchor in corridor.path)
-            observations.append(
-                FactObservation(
-                    fact_id=(
-                        "unflatten-dispatcher-corridor:"
-                        f"{application_status}:{planned_coverage}:{path_label}{scope_suffix}"
-                    ),
-                    kind="UnflattenDispatcherCorridorCoverage",
-                    semantic_key=(
-                        "unflatten_dispatcher_corridor:"
-                        f"{corridor.source.label}:{corridor.dispatcher.label}"
-                    ),
-                    maturity=str(maturity),
-                    phase=str(phase),
-                    confidence=1.0,
-                    source_block=corridor.source.serial,
-                    source_ea=corridor.source.ea,
-                    block_fingerprint=path_label,
-                    payload={
-                        "coverage": coverage_status,
-                        "planned_coverage": planned_coverage,
-                        "application_status": application_status,
-                        "completion_status": completion_status,
-                        "planned_completion_status": coverage.planned_completion_status,
-                        "full_unflattening_claim": coverage.full_unflattening_claim,
-                        "enumeration_complete": coverage.enumeration_complete,
-                        "outcome_reason": outcome_reason,
-                        "observed_coverage_validation": (
-                            None
-                            if observed_coverage_validation is None
-                            else observed_coverage_validation.to_payload()
-                        ),
-                        "projected_coverage_validation": (
-                            None
-                            if projected_coverage_validation is None
-                            else projected_coverage_validation.to_payload()
-                        ),
-                        "plan_id": plan_id,
-                        "attempt_id": attempt_id,
-                        **corridor.to_payload(),
-                    },
-                    evidence=tuple(anchor.label for anchor in corridor.path),
-                )
-            )
-    return tuple(observations)
-
-
-def _diagnostic_outcome_scope(*, plan_id: str | None, attempt_id: str | None) -> str:
-    """Name a fact lifecycle without conflating separate PatchPlans."""
-    if plan_id is None and attempt_id is None:
-        return ""
-    normalized_plan = str(plan_id).strip() if plan_id is not None else "unknown"
-    normalized_attempt = (
-        str(attempt_id).strip() if attempt_id is not None else "unknown"
-    )
-    return (
-        f"plan={normalized_plan or 'unknown'}:attempt={normalized_attempt or 'unknown'}"
-    )
-
-
-def _use_def_optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _use_def_anchor_payload(value: object) -> dict[str, int | str | None]:
-    """Normalize an evidence anchor so a serial never survives without its EA."""
-    if not isinstance(value, Mapping):
-        return {"serial": None, "ea": None, "label": "unknown"}
-    serial = _use_def_optional_int(value.get("serial"))
-    ea = _use_def_optional_int(value.get("ea"))
-    if serial is None or ea is None:
-        return {"serial": None, "ea": None, "label": "unknown"}
-    return {
-        "serial": serial,
-        "ea": ea,
-        "label": f"blk{serial}@0x{ea:x}",
-    }
-
-
-def collect_use_def_severance_observations_from_metadata(
-    metadata: object,
-    *,
-    function_ea: int | None = None,
-    maturity: str,
-    phase: str,
-    application_status: str = "pending",
-    outcome_reason: str | None = None,
-    plan_id: str | None = None,
-    attempt_id: str | None = None,
-) -> tuple[FactObservation, ...]:
-    """Turn immutable use-def audit metadata into one fact per violation."""
-    if not isinstance(metadata, Mapping):
-        return ()
-    resolved_function_ea = _use_def_optional_int(metadata.get("function_ea"))
-    if resolved_function_ea is None:
-        resolved_function_ea = _use_def_optional_int(function_ea)
-    if resolved_function_ea is None:
-        return ()
-    raw_violations = metadata.get("violations", ())
-    if not isinstance(raw_violations, (tuple, list)):
-        raw_violations = ()
-    severance_count = _use_def_optional_int(metadata.get("severance_count"))
-    if severance_count is None:
-        severance_count = len(raw_violations)
-    enforced = bool(
-        metadata.get("enforced", metadata.get("enforcement_enabled", False))
-    )
-    executed = bool(metadata.get("executed", False))
-    if not executed:
-        enforcement_status = "safety_unavailable"
-    elif severance_count > 0:
-        enforcement_status = "fragment_rejected" if enforced else "heuristic_observed"
-    else:
-        enforcement_status = "clean"
-    scope = _diagnostic_outcome_scope(plan_id=plan_id, attempt_id=attempt_id)
-    scope_suffix = f":{scope}" if scope else ""
-    shared_payload = {
-        "function_ea": int(resolved_function_ea),
-        "application_status": application_status,
-        "enforcement_status": enforcement_status,
-        "executed": executed,
-        "clean": bool(metadata.get("clean", False)),
-        "severance_count": int(severance_count),
-        "enforced": enforced,
-        "enforcement_enabled": enforced,
-        "failure_reason": metadata.get("failure_reason"),
-        "outcome_reason": outcome_reason,
-        "plan_id": plan_id,
-        "attempt_id": attempt_id,
-    }
-    summary_payload = dict(metadata)
-    summary_payload.update(shared_payload)
-    observations: list[FactObservation] = [
-        FactObservation(
-            fact_id=(
-                "unflatten-use-def-severance-summary:"
-                f"{application_status}:func=0x{int(resolved_function_ea):x}"
-                f"{scope_suffix}"
-            ),
-            kind="UnflattenUseDefSeveranceSummary",
-            semantic_key=(
-                "unflatten_use_def_severance_summary:"
-                f"func=0x{int(resolved_function_ea):x}"
-            ),
-            maturity=str(maturity),
-            phase=str(phase),
-            confidence=1.0,
-            payload=summary_payload,
-            evidence=(enforcement_status,),
-        )
-    ]
-    for index, raw_violation in enumerate(raw_violations):
-        if not isinstance(raw_violation, Mapping):
-            raw_violation = {}
-        source = _use_def_anchor_payload(raw_violation.get("source"))
-        old_target = _use_def_anchor_payload(raw_violation.get("old_target"))
-        new_target = _use_def_anchor_payload(raw_violation.get("new_target"))
-        use = _use_def_anchor_payload(raw_violation.get("use"))
-        stack_offset = _use_def_optional_int(raw_violation.get("stack_offset"))
-        stack_size = _use_def_optional_int(raw_violation.get("stack_size"))
-        use_instruction_ea = _use_def_optional_int(
-            raw_violation.get("use_instruction_ea")
-        )
-        payload = {
-            **shared_payload,
-            "source": source,
-            "old_target": old_target,
-            "new_target": new_target,
-            "stack_offset": stack_offset,
-            "stack_size": stack_size,
-            "use": use,
-            "use_instruction_ea": use_instruction_ea,
-            "observation_index": index,
-        }
-        source_label = str(source["label"])
-        observations.append(
-            FactObservation(
-                fact_id=(
-                    "unflatten-use-def-severance:"
-                    f"{application_status}:func=0x{int(resolved_function_ea):x}:"
-                    f"{index}:{source_label}{scope_suffix}"
-                ),
-                kind="UnflattenUseDefSeverance",
-                semantic_key=(
-                    "unflatten_use_def_severance:"
-                    f"func=0x{int(resolved_function_ea):x}:{index}"
-                ),
-                maturity=str(maturity),
-                phase=str(phase),
-                confidence=1.0,
-                source_block=source["serial"],
-                source_ea=source["ea"],
-                block_fingerprint=source_label,
-                payload=payload,
-                evidence=tuple(
-                    str(anchor["label"])
-                    for anchor in (source, old_target, new_target, use)
-                    if anchor["serial"] is not None
-                ),
-            )
-        )
-    return tuple(observations)
-
-
-def _anchor_from_payload(value: object) -> DispatcherBlockAnchor | None:
-    if not isinstance(value, Mapping):
-        return None
-    try:
-        return DispatcherBlockAnchor(
-            serial=int(value["serial"]),
-            ea=int(value["ea"]),
-        )
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _corridors_from_payload(value: object) -> tuple[DispatcherCorridor, ...]:
-    if not isinstance(value, (tuple, list)):
-        return ()
-    corridors: list[DispatcherCorridor] = []
-    for item in value:
-        if not isinstance(item, Mapping):
-            continue
-        raw_path = item.get("path")
-        if not isinstance(raw_path, (tuple, list)):
-            continue
-        path = tuple(
-            anchor
-            for anchor in (_anchor_from_payload(raw_anchor) for raw_anchor in raw_path)
-            if anchor is not None
-        )
-        if len(path) < 2:
-            continue
-        state_merge = _anchor_from_payload(item.get("state_merge"))
-        if state_merge is not None and state_merge not in path:
-            state_merge = None
-        corridor = DispatcherCorridor(path, state_merge_anchor=state_merge)
-        if corridor not in corridors:
-            corridors.append(corridor)
-    return tuple(corridors)
-
-
-def collect_dispatcher_corridor_coverage_observations_from_metadata(
-    metadata: object,
-    *,
-    maturity: str,
-    phase: str,
-    application_status: str = "pending",
-    outcome_reason: str | None = None,
-    observed_coverage_validation: DispatcherCorridorCoverageValidation | None = None,
-    projected_coverage_validation: DispatcherCorridorCoverageValidation | None = None,
-    plan_id: str | None = None,
-    attempt_id: str | None = None,
-) -> tuple[FactObservation, ...]:
-    """Rehydrate emitter metadata for the pass-layer observability publisher."""
-    if not isinstance(metadata, Mapping):
-        return ()
-    try:
-        function_ea = int(metadata["function_ea"])
-    except (KeyError, TypeError, ValueError):
-        return ()
-    coverage = DispatcherCorridorCoverage(
-        function_ea=function_ea,
-        dispatcher=_anchor_from_payload(metadata.get("dispatcher")),
-        covered_corridors=_corridors_from_payload(metadata.get("covered_corridors")),
-        residual_corridors=_corridors_from_payload(metadata.get("residual_corridors")),
-        enumeration_complete=bool(metadata.get("enumeration_complete", False)),
-    )
-    return collect_dispatcher_corridor_coverage_observations(
-        coverage,
-        maturity=maturity,
-        phase=phase,
-        application_status=application_status,
-        outcome_reason=outcome_reason,
-        observed_coverage_validation=observed_coverage_validation,
-        projected_coverage_validation=projected_coverage_validation,
-        plan_id=plan_id,
-        attempt_id=attempt_id,
-    )
-
-
-def collect_dispatcher_removal_preflight_proof_observations_from_metadata(
-    metadata: object,
-    *,
-    coverage_metadata: object | None = None,
-    maturity: str,
-    phase: str,
-    application_status: str = "pending",
-    outcome_reason: str | None = None,
-    observed_validation: DispatcherRemovalPreflightValidation | None = None,
-    projected_validation: DispatcherRemovalPreflightValidation | None = None,
-    observed_coverage_validation: DispatcherCorridorCoverageValidation | None = None,
-    projected_coverage_validation: DispatcherCorridorCoverageValidation | None = None,
-    plan_id: str | None = None,
-    attempt_id: str | None = None,
-) -> tuple[FactObservation, ...]:
-    """Persist the proof payload without making runtime code read diagnostic DBs."""
-    if application_status == "applied" and observed_validation is None:
-        # A transaction can apply a partial cleanup plan while the producer's
-        # dispatcher-removal proof remains rejected.  Without a post-apply
-        # validation there is no applied removal claim to publish; coverage is
-        # still emitted independently by the companion collector.
-        return ()
-    validation_only = not isinstance(metadata, Mapping)
-    if validation_only:
-        coverage_validation = (
-            observed_coverage_validation
-            if observed_validation is not None
-            else projected_coverage_validation
-        )
-        if (
-            (observed_validation is None and projected_validation is None)
-            or coverage_validation is None
-            or not coverage_validation.passed
-            or not isinstance(coverage_metadata, Mapping)
-        ):
-            return ()
-        try:
-            function_ea = int(coverage_metadata["function_ea"])
-        except (KeyError, TypeError, ValueError):
-            return ()
-        dispatcher = _anchor_from_payload(coverage_metadata.get("dispatcher"))
-        if dispatcher is None:
-            return ()
-        payload = {
-            "function_ea": function_ea,
-            "dispatcher": dispatcher.to_payload(),
-            "validation_only": True,
-            "raw_proof_present": False,
-        }
-        lost_blocks: tuple[object, ...] = ()
-    else:
-        try:
-            function_ea = int(metadata["function_ea"])
-        except (KeyError, TypeError, ValueError):
-            return ()
-        dispatcher = _anchor_from_payload(metadata.get("dispatcher"))
-        payload = dict(metadata)
-        raw_lost_blocks = metadata.get("lost_blocks", ())
-        if isinstance(raw_lost_blocks, (tuple, list)):
-            lost_blocks = tuple(raw_lost_blocks)
-        else:
-            lost_blocks = ()
-            payload["lost_blocks_malformed"] = True
-    dispatcher_label = "dispatcher@?" if dispatcher is None else dispatcher.label
-    scope = _diagnostic_outcome_scope(plan_id=plan_id, attempt_id=attempt_id)
-    scope_suffix = f":{scope}" if scope else ""
-    if application_status == "applied" and observed_validation is not None:
-        if "proof_status" in payload:
-            payload["producer_proof_status"] = payload["proof_status"]
-        if "reason" in payload:
-            payload["producer_reason"] = payload["reason"]
-        payload["proof_status"] = (
-            "accepted" if observed_validation.passed else "rejected"
-        )
-        payload["reason"] = str(observed_validation.reason)
-    payload.update(
-        {
-            "application_status": application_status,
-            "outcome_reason": outcome_reason,
-            "plan_id": plan_id,
-            "attempt_id": attempt_id,
-        }
-    )
-    if observed_validation is not None:
-        payload["observed_validation"] = observed_validation.to_payload()
-    if projected_validation is not None:
-        payload["projected_validation"] = projected_validation.to_payload()
-    if observed_coverage_validation is not None:
-        payload["observed_coverage_validation"] = (
-            observed_coverage_validation.to_payload()
-        )
-    if projected_coverage_validation is not None:
-        payload["projected_coverage_validation"] = (
-            projected_coverage_validation.to_payload()
-        )
-    evidence = [dispatcher_label]
-    for item in lost_blocks:
-        anchor = _anchor_from_payload(item)
-        if anchor is not None:
-            evidence.append(anchor.label)
-    return (
-        FactObservation(
-            fact_id=(
-                "unflatten-dispatcher-removal-preflight:"
-                f"{application_status}:func=0x{function_ea:x}:{dispatcher_label}"
-                f"{':validation-only' if validation_only else ''}{scope_suffix}"
-            ),
-            kind="UnflattenDispatcherRemovalPreflightProof",
-            semantic_key=(
-                "unflatten_dispatcher_removal_preflight:"
-                f"func=0x{function_ea:x}:{dispatcher_label}"
-            ),
-            maturity=str(maturity),
-            phase=str(phase),
-            confidence=1.0,
-            source_block=None if dispatcher is None else dispatcher.serial,
-            source_ea=None if dispatcher is None else dispatcher.ea,
-            payload=payload,
-            evidence=tuple(evidence),
-        ),
-    )
-
-
-def collect_unflatten_dispatcher_outcome_observations_from_metadata(
-    plan_metadata: object,
-    *,
-    maturity: str,
-    phase: str,
-    application_status: str = "pending",
-    outcome_reason: str | None = None,
-    observed_coverage_validation: DispatcherCorridorCoverageValidation | None = None,
-    projected_coverage_validation: DispatcherCorridorCoverageValidation | None = None,
-    observed_validation: DispatcherRemovalPreflightValidation | None = None,
-    projected_validation: DispatcherRemovalPreflightValidation | None = None,
-    plan_id: str | None = None,
-    attempt_id: str | None = None,
-) -> tuple[FactObservation, ...]:
-    """Collect pending or final transaction facts from immutable plan metadata."""
-    if not isinstance(plan_metadata, Mapping):
-        return ()
-    coverage = collect_dispatcher_corridor_coverage_observations_from_metadata(
-        plan_metadata.get(DISPATCHER_CORRIDOR_COVERAGE_METADATA),
-        maturity=maturity,
-        phase=phase,
-        application_status=application_status,
-        outcome_reason=outcome_reason,
-        observed_coverage_validation=observed_coverage_validation,
-        projected_coverage_validation=projected_coverage_validation,
-        plan_id=plan_id,
-        attempt_id=attempt_id,
-    )
-    if not coverage:
-        coverage_validation = (
-            observed_coverage_validation
-            if observed_coverage_validation is not None
-            else projected_coverage_validation
-        )
-        function_ea = (
-            None
-            if coverage_validation is None
-            else _use_def_optional_int(
-                getattr(coverage_validation, "function_ea", None)
-            )
-        )
-        if function_ea is not None:
-            # A malformed present claim cannot be rehydrated into corridors,
-            # but its rejected validation still needs a durable terminal fact.
-            coverage = collect_dispatcher_corridor_coverage_observations(
-                DispatcherCorridorCoverage(
-                    function_ea=function_ea,
-                    dispatcher=None,
-                    covered_corridors=(),
-                    residual_corridors=(),
-                    enumeration_complete=False,
-                ),
-                maturity=maturity,
-                phase=phase,
-                application_status=application_status,
-                outcome_reason=outcome_reason,
-                observed_coverage_validation=observed_coverage_validation,
-                projected_coverage_validation=projected_coverage_validation,
-                plan_id=plan_id,
-                attempt_id=attempt_id,
-            )
-    proof = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
-        plan_metadata.get(DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA),
-        coverage_metadata=plan_metadata.get(DISPATCHER_CORRIDOR_COVERAGE_METADATA),
-        maturity=maturity,
-        phase=phase,
-        application_status=application_status,
-        outcome_reason=outcome_reason,
-        observed_validation=observed_validation,
-        projected_validation=projected_validation,
-        observed_coverage_validation=observed_coverage_validation,
-        projected_coverage_validation=projected_coverage_validation,
-        plan_id=plan_id,
-        attempt_id=attempt_id,
-    )
-    coverage_metadata = plan_metadata.get(DISPATCHER_CORRIDOR_COVERAGE_METADATA)
-    function_ea = (
-        coverage_metadata.get("function_ea")
-        if isinstance(coverage_metadata, Mapping)
-        else None
-    )
-    use_def = collect_use_def_severance_observations_from_metadata(
-        plan_metadata.get(USE_DEF_SEVERANCE_AUDIT_METADATA),
-        function_ea=_use_def_optional_int(function_ea),
-        maturity=maturity,
-        phase=phase,
-        application_status=application_status,
-        outcome_reason=outcome_reason,
-        plan_id=plan_id,
-        attempt_id=attempt_id,
-    )
-    return (*coverage, *proof, *use_def)
-
 
 def _resolved_goto_redirects(
     patch_plan: PatchPlan,
@@ -2397,38 +1255,35 @@ def _residue_is_acyclic(
     return visited_count == len(residue)
 
 
-def validate_terminal_switch_cycle_break_allowance(
+def forecast_terminal_switch_cycle_break(
     pre_graph: FlowGraph,
     *,
     post_graph: FlowGraph,
     patch_plan: PatchPlan,
-    removal_validation: DispatcherRemovalPreflightValidation,
-) -> DispatcherRemovalPreflightValidation:
-    """Accept only an exact terminal redirect that makes switch residue acyclic.
+    coverage: DispatcherCorridorCoverage,
+    dispatcher_entry_serial: int,
+    authoritative_handler_serials: frozenset[int],
+) -> DispatcherCorridorCoverage:
+    """Forecast an exact terminal redirect that makes switch residue acyclic.
 
-    The ordinary removal proof remains rejected: this allowance does not
-    reclassify arbitrary lost blocks as dispatcher infrastructure.  It proves
-    a different fact from immutable plan and CFG structure: a terminal handler
-    bypasses one shared merge, and that same merge is redirected away from the
-    switch dispatcher so the now-detached residue cannot spin Hex-Rays.
+    This producer fact is only a candidate for the canonical terminal-cycle
+    claim.  Transaction binding still checks the source/candidate residue and
+    all route obligations before producing a verdict.
     """
-    proof = removal_validation.proof
-    dispatcher = None if proof is None else proof.dispatcher
+    dispatcher = coverage.dispatcher
     if (
-        proof is None
-        or dispatcher is None
-        or proof.reason != "untyped_lost_block"
-        or proof.passed
-        or not proof.authoritative_handlers
+        dispatcher is None
+        or int(dispatcher.serial) != int(dispatcher_entry_serial)
+        or not authoritative_handler_serials
     ):
-        return removal_validation
+        return coverage
     dispatcher_block = pre_graph.get_block(int(dispatcher.serial))
     if dispatcher_block is None or dispatcher_block.kind is not BlockKind.N_WAY:
-        return removal_validation
+        return coverage
     redirects = _resolved_goto_redirects(patch_plan)
     if redirects is None:
-        return removal_validation
-    handler_serials = {int(anchor.serial) for anchor in proof.authoritative_handlers}
+        return coverage
+    handler_serials = {int(serial) for serial in authoritative_handler_serials}
     candidates: list[tuple[int, int, int, int]] = []
     for merge, old_dispatcher, target in redirects:
         if old_dispatcher != int(dispatcher.serial):
@@ -2452,7 +1307,7 @@ def validate_terminal_switch_cycle_break_allowance(
             if stop is not None:
                 candidates.append((source, merge, target, stop))
     if len(candidates) != 1:
-        return removal_validation
+        return coverage
     terminal_source, shared_merge, terminal_target, terminal_stop = candidates[0]
     projected_source = post_graph.get_block(terminal_source)
     projected_merge = post_graph.get_block(shared_merge)
@@ -2462,16 +1317,15 @@ def validate_terminal_switch_cycle_break_allowance(
         or projected_merge is None
         or tuple(projected_merge.succs) != (terminal_target,)
     ):
-        return removal_validation
+        return coverage
     residue = _detached_dispatcher_residue(post_graph, int(dispatcher.serial))
     if (
         residue is None
         or shared_merge not in residue
-        or residue != proof.lost_blocks
         or not _residue_is_acyclic(post_graph, residue)
     ):
-        return removal_validation
-    cycle_break = TerminalSwitchCycleBreakProof(
+        return coverage
+    cycle_break = DispatcherCycleBreakForecast(
         dispatcher=dispatcher,
         terminal_source=_anchor(pre_graph, terminal_source),
         shared_merge=_anchor(pre_graph, shared_merge),
@@ -2479,9 +1333,4 @@ def validate_terminal_switch_cycle_break_allowance(
         terminal_stop=_anchor(pre_graph, terminal_stop),
         retired_residue=_anchors_for_serials(pre_graph, residue),
     )
-    return DispatcherRemovalPreflightValidation(
-        passed=True,
-        reason="terminal_switch_cycle_break",
-        proof=proof,
-        terminal_switch_cycle_break=cycle_break,
-    )
+    return replace(coverage, cycle_break=cycle_break)

@@ -47,6 +47,7 @@ from d810.analyses.control_flow.branch_witness_provider import (
 )
 from d810.analyses.control_flow.graph_checks import (
     check_effectful_reachability_preserved,
+    effectful_loss_coordinates,
 )
 from d810.analyses.control_flow.effect_branch_exclusion import (
     ExactStateBranchEffectExclusion,
@@ -124,8 +125,10 @@ from d810.core.observability_preanalysis import (
 )
 from d810.ir.block_identity import (
     NativeEaInterval,
+    SnapshotBlockCoordinate,
     StableBlockIdentity,
     block_label,
+    snapshot_block_coordinate_from_snapshot,
 )
 from d810.ir.flowgraph import BlockKind, InsnKind, OperandKind
 from d810.ir.maturity import MaturityEnvelope
@@ -164,9 +167,8 @@ from d810.transforms.exit_path_effect_emission import (
 from d810.transforms.dispatcher_corridor_coverage import (
     analyze_dispatcher_corridor_coverage,
     build_detached_dead_handler_component_analysis,
-    build_dispatcher_removal_preflight_proof,
-    DispatcherRemovalPreflightValidation,
-    validate_terminal_switch_cycle_break_allowance,
+    build_dispatcher_removal_forecast,
+    forecast_terminal_switch_cycle_break,
 )
 from d810.transforms.use_def_redirect_filter import (
     audit_use_def_severances,
@@ -174,6 +176,9 @@ from d810.transforms.use_def_redirect_filter import (
 )
 from d810.transforms.unflatten_authority.ids import content_id
 from d810.transforms.unflatten_authority.producer_api import (
+    BootstrapEntryRouteForecast,
+    ConcreteEntryRouteForecast,
+    ConditionalEntryBridgeForecast,
     adapt_bootstrap_entry_route_proof,
     adapt_concrete_entry_route,
     adapt_conditional_entry_route,
@@ -219,14 +224,6 @@ __all__ = [
 
 
 @dataclass(frozen=True, slots=True)
-class ConcreteStateEntryRouteProof:
-    """Typed provenance for one accepted scalar entry route."""
-
-    normalized_state: int
-    target_handler: int
-    source_kinds: tuple[str, ...]
-
-@dataclass(frozen=True, slots=True)
 class ConditionalStateTransitionCandidate:
     """One first-class conditional state edge in the interval-spine model.
 
@@ -250,32 +247,10 @@ class ConditionalStateTransitionCandidate:
 
 
 @dataclass(frozen=True, slots=True)
-class BootstrapEntryRouteProof:
-    """One exact, already-applied entry-prefix route in the current snapshot."""
-
-    source_serial: int
-    handler_serial: int
-    state: int
-    source_anchor_ea: int
-    handler_anchor_ea: int
-
-
-@dataclass(frozen=True, slots=True)
-class ConditionalEntryBridgeProof:
-    """One exact live entry predicate routed to two known handlers."""
-
-    source_serial: int
-    predicate_ea: int
-    false_target_serial: int
-    true_target_serial: int
-    true_is_taken: bool = True
-
-
-@dataclass(frozen=True, slots=True)
 class ConditionalEntryBridgePlan:
-    """One atomic resolver-proven conditional entry tree or forest."""
+    """One atomic conditional entry-tree or forest selection forecast."""
 
-    proofs: tuple[ConditionalEntryBridgeProof, ...]
+    forecasts: tuple[ConditionalEntryBridgeForecast, ...]
     root_source_serials: tuple[int, ...]
 
 
@@ -6171,17 +6146,20 @@ def _merge_effect_safe_source_keyed_redirect_group(
         flow_graph,
         post_cfg=project_modifications(tuple(candidate)),
     )
-    newly_lost = (
-        candidate_effects.lost_block_serials - base_effects.lost_block_serials
-    )
+    try:
+        newly_lost = effectful_loss_coordinates(
+            flow_graph, candidate_effects
+        ) - effectful_loss_coordinates(flow_graph, base_effects)
+    except ValueError:
+        return list(base_modifications), False
     if newly_lost:
         if logger.info_on:
             logger.info(
                 "unflat source-keyed: abstain group reason=incremental_effect_loss "
                 "lost=%s",
                 ",".join(
-                    _format_block_label(flow_graph, int(serial))
-                    for serial in sorted(newly_lost)
+                    coordinate.label
+                    for coordinate in sorted(newly_lost)
                 ),
             )
         return list(base_modifications), False
@@ -6199,7 +6177,7 @@ def _exact_latent_effect_exclusions(
     projected_graph,
     *,
     rejected_groups: Mapping[int, tuple[object, ...]],
-    lost_effect_serials: frozenset[int],
+    lost_effects: frozenset[SnapshotBlockCoordinate],
     transitions: tuple[StateWriteTransition, ...],
     state_var_stkoff: int | None,
     state_var_reg: int | None,
@@ -6213,7 +6191,8 @@ def _exact_latent_effect_exclusions(
     if not identities:
         return None
     proofs: list[ExactStateBranchEffectExclusion] = []
-    for effect_serial in sorted(int(serial) for serial in lost_effect_serials):
+    for effect_coordinate in sorted(lost_effects):
+        effect_serial = int(effect_coordinate.serial)
         candidates: list[ExactStateBranchEffectExclusion] = []
         for predicate_serial, group in sorted(rejected_groups.items()):
             predicate = flow_graph.get_block(int(predicate_serial))
@@ -6332,9 +6311,12 @@ def _stage_effect_safe_intermediate_redirect_groups(
             flow_graph,
             post_cfg=project_modifications(tuple((*accumulated, *group))),
         )
-        newly_lost = (
-            candidate_effects.lost_block_serials - base_effects.lost_block_serials
-        )
+        try:
+            newly_lost = effectful_loss_coordinates(
+                flow_graph, candidate_effects
+            ) - effectful_loss_coordinates(flow_graph, base_effects)
+        except ValueError:
+            return None
         if newly_lost:
             rejected_groups[key] = tuple(group)
             if logger.info_on:
@@ -6351,8 +6333,8 @@ def _stage_effect_safe_intermediate_redirect_groups(
                         ),
                     ),
                     ",".join(
-                        _format_block_label(flow_graph, int(serial))
-                        for serial in sorted(newly_lost)
+                        coordinate.label
+                        for coordinate in sorted(newly_lost)
                     ),
                 )
             continue
@@ -6382,14 +6364,18 @@ def _stage_effect_safe_intermediate_redirect_groups(
         flow_graph,
         post_cfg=project_modifications(latent_routes),
     )
-    if latent_effects.lost_block_serials:
+    try:
+        latent_losses = effectful_loss_coordinates(flow_graph, latent_effects)
+    except ValueError:
+        return None
+    if latent_losses:
         if logger.info_on:
             logger.info(
                 "unflat intermediate-route: forecast reason="
                 "semantic_retained_route_effect_loss lost=%s",
                 ",".join(
-                    _format_block_label(flow_graph, int(serial))
-                    for serial in sorted(latent_effects.lost_block_serials)
+                    coordinate.label
+                    for coordinate in sorted(latent_losses)
                 ),
             )
 
@@ -6422,9 +6408,12 @@ def _stage_effect_safe_intermediate_redirect_groups(
                 tuple((*forecast_accumulated, *unit, *latent_routes))
             ),
         )
-        newly_lost = (
-            candidate_effects.lost_block_serials - base_effects.lost_block_serials
-        )
+        try:
+            newly_lost = effectful_loss_coordinates(
+                flow_graph, candidate_effects
+            ) - effectful_loss_coordinates(flow_graph, base_effects)
+        except ValueError:
+            return None
         if newly_lost:
             if logger.info_on:
                 logger.info(
@@ -6439,8 +6428,8 @@ def _stage_effect_safe_intermediate_redirect_groups(
                         ),
                     ),
                     ",".join(
-                        _format_block_label(flow_graph, int(serial))
-                        for serial in sorted(newly_lost)
+                        coordinate.label
+                        for coordinate in sorted(newly_lost)
                     ),
                 )
             continue
@@ -6465,17 +6454,23 @@ def _stage_effect_safe_intermediate_redirect_groups(
         post_cfg=project_modifications(tuple((*result, *latent_routes))),
     )
     effect_exclusions: tuple[ExactStateBranchEffectExclusion, ...] = ()
-    if final_latent_effects.lost_block_serials:
+    try:
+        final_latent_losses = effectful_loss_coordinates(
+            flow_graph, final_latent_effects
+        )
+    except ValueError:
+        return None
+    if final_latent_losses:
         effect_exclusions = _exact_latent_effect_exclusions(
             flow_graph,
             project_modifications(tuple(result)),
             rejected_groups=rejected_groups,
-            lost_effect_serials=final_latent_effects.lost_block_serials,
+            lost_effects=final_latent_losses,
             transitions=transitions,
             state_var_stkoff=state_var_stkoff,
             state_var_reg=state_var_reg,
         ) or ()
-        if len(effect_exclusions) != len(final_latent_effects.lost_block_serials):
+        if len(effect_exclusions) != len(final_latent_losses):
             return None
         if logger.info_on:
             logger.info(
@@ -7494,12 +7489,12 @@ def _prove_materialized_conditional_entry_bridge(
     *,
     dispatcher_entry_serial: int,
     handler_serials: frozenset[int],
-) -> ConditionalEntryBridgeProof | None:
-    """Prove that one exact live entry-prefix predicate reaches two handlers.
+) -> ConditionalEntryBridgeForecast | None:
+    """Forecast one exact live entry-prefix predicate reaching two handlers.
 
     The conditional bridge builder already checked predicate identity,
     polarity, and exact state-to-handler arm routing. This projection accepts
-    that proof as the function's entry bridge only when its source is reachable
+    that forecast as the function's entry bridge only when its source is reachable
     before crossing either the dispatcher or any handler entry. Handler-local
     predicates therefore cannot satisfy the entry safety gate.
     """
@@ -7522,7 +7517,7 @@ def _prove_materialized_conditional_entry_bridge(
         entry_prefix.add(serial)
         pending.extend(int(successor) for successor in block.succs)
 
-    candidates: set[ConditionalEntryBridgeProof] = set()
+    candidates: set[ConditionalEntryBridgeForecast] = set()
     for modification in modifications:
         if not isinstance(modification, LowerConditionalStateTransition):
             continue
@@ -7551,7 +7546,7 @@ def _prove_materialized_conditional_entry_bridge(
         ):
             continue
         candidates.add(
-            ConditionalEntryBridgeProof(
+            ConditionalEntryBridgeForecast(
                 source_serial=source,
                 predicate_ea=predicate_ea,
                 false_target_serial=false_target,
@@ -7566,11 +7561,11 @@ def _prove_bound_bootstrap_entry_routes(
     evidence_rows: tuple[BootstrapRouteBindingEvidence, ...],
     *,
     dispatcher_entry_serial: int,
-) -> tuple[BootstrapEntryRouteProof, ...]:
-    """Rebind exact PREOPT routes and confirm their current live entry edges.
+) -> tuple[BootstrapEntryRouteForecast, ...]:
+    """Forecast exact PREOPT routes and confirm their current live entry edges.
 
     A bootstrap route is source-scoped; it is not a scalar initial state for
-    sibling prologue arms.  The proof therefore accepts only an already-applied
+    sibling prologue arms.  The forecast therefore accepts only an already-applied
     ``source -> handler`` edge reachable before crossing the dispatcher.  It can
     satisfy the safety gate without redirecting any unresolved sibling arm.
     """
@@ -7590,7 +7585,7 @@ def _prove_bound_bootstrap_entry_routes(
         }
         return next(iter(matches)) if len(matches) == 1 else None
 
-    candidates_by_source: dict[int, set[BootstrapEntryRouteProof]] = {}
+    candidates_by_source: dict[int, set[BootstrapEntryRouteForecast]] = {}
     for evidence in evidence_rows:
         source = rebind(evidence.source_identity)
         handler = rebind(evidence.handler_identity)
@@ -7603,14 +7598,14 @@ def _prove_bound_bootstrap_entry_routes(
             or handler not in tuple(int(serial) for serial in source_block.succs)
         ):
             continue
-        proof = BootstrapEntryRouteProof(
+        forecast = BootstrapEntryRouteForecast(
             source_serial=source,
             handler_serial=handler,
             state=int(evidence.route.state) & 0xFFFFFFFF,
             source_anchor_ea=int(evidence.route.source_anchor_ea),
             handler_anchor_ea=int(evidence.route.handler_anchor_ea),
         )
-        candidates_by_source.setdefault(source, set()).add(proof)
+        candidates_by_source.setdefault(source, set()).add(forecast)
     return tuple(
         sorted(
             (
@@ -7618,10 +7613,10 @@ def _prove_bound_bootstrap_entry_routes(
                 for candidates in candidates_by_source.values()
                 if len(candidates) == 1
             ),
-            key=lambda proof: (
-                int(proof.source_anchor_ea),
-                int(proof.state),
-                int(proof.handler_anchor_ea),
+            key=lambda forecast: (
+                int(forecast.source_anchor_ea),
+                int(forecast.state),
+                int(forecast.handler_anchor_ea),
             ),
         )
     )
@@ -7908,7 +7903,7 @@ def _plan_imported_conditional_entry_bridges(
 
     candidate_rows: dict[
         int,
-        set[tuple[ConditionalEntryBridgeProof, int, int, bool, bool]],
+        set[tuple[ConditionalEntryBridgeForecast, int, int, bool, bool]],
     ] = {}
     for (
         evidence,
@@ -8015,7 +8010,7 @@ def _plan_imported_conditional_entry_bridges(
             if port.predicate_true_is_taken in (True, False)
             else True
         )
-        proof = ConditionalEntryBridgeProof(
+        forecast = ConditionalEntryBridgeForecast(
             source_serial=source,
             predicate_ea=live_predicate_ea,
             false_target_serial=(
@@ -8028,7 +8023,7 @@ def _plan_imported_conditional_entry_bridges(
         )
         candidate_rows.setdefault(source, set()).add(
             (
-                proof,
+                forecast,
                 taken_proof_target,
                 fallthrough_proof_target,
                 bool(port.taken_target_is_boundary_source),
@@ -8163,50 +8158,50 @@ def _plan_imported_conditional_entry_bridges(
                 ],
             )
         return None
-    proofs = tuple(candidates[source][0] for source in sorted(candidates))
+    forecasts = tuple(candidates[source][0] for source in sorted(candidates))
     if logger.info_on:
         logger.info(
-            "imported conditional entry forest proven: roots=%s nodes=%d predicates=%s",
+            "imported conditional entry forest forecast: roots=%s nodes=%d predicates=%s",
             [_format_block_label(flow_graph, source) for source in roots],
-            len(proofs),
-            ["0x%X" % proof.predicate_ea for proof in proofs],
+            len(forecasts),
+            ["0x%X" % forecast.predicate_ea for forecast in forecasts],
         )
     return ConditionalEntryBridgePlan(
-        proofs=proofs,
+        forecasts=forecasts,
         root_source_serials=roots,
     )
 
 
 def _lower_conditional_entry_bridge(
     flow_graph,
-    proof: ConditionalEntryBridgeProof,
+    forecast: ConditionalEntryBridgeForecast,
 ) -> LowerConditionalStateTransition | None:
-    """Retarget both arms of one exact entry predicate to proven handlers."""
-    source = flow_graph.get_block(int(proof.source_serial))
+    """Retarget both arms of one forecast entry predicate to selected handlers."""
+    source = flow_graph.get_block(int(forecast.source_serial))
     predicate = None if source is None else source.insn_snapshots[-1]
     if (
         source is None
         or source.nsucc != 2
         or predicate is None
         or not predicate.is_conditional_jump
-        or int(predicate.ea) != int(proof.predicate_ea)
+        or int(predicate.ea) != int(forecast.predicate_ea)
         or predicate.d is None
         or predicate.d.block_ref is None
     ):
         return None
     return LowerConditionalStateTransition(
-        source_serial=int(proof.source_serial),
+        source_serial=int(forecast.source_serial),
         old_dispatcher_serial=int(predicate.d.block_ref),
-        rewrite_from_ea=int(proof.predicate_ea),
+        rewrite_from_ea=int(forecast.predicate_ea),
         condition_operand=PreserveLivePredicateCondition(
-            predicate_ea=int(proof.predicate_ea),
-            true_is_taken=bool(proof.true_is_taken),
+            predicate_ea=int(forecast.predicate_ea),
+            true_is_taken=bool(forecast.true_is_taken),
         ),
-        false_target_serial=int(proof.false_target_serial),
-        true_target_serial=int(proof.true_target_serial),
+        false_target_serial=int(forecast.false_target_serial),
+        true_target_serial=int(forecast.true_target_serial),
         proof_id=(
             "resolver_proven_conditional_entry_bridge:"
-            f"predicate_ea=0x{int(proof.predicate_ea):X}"
+            f"predicate_ea=0x{int(forecast.predicate_ea):X}"
         ),
         reason="resolver_proven_conditional_entry_bridge",
     )
@@ -8218,8 +8213,8 @@ def _lower_conditional_entry_bridge_plan(
 ) -> tuple[LowerConditionalStateTransition, ...]:
     """Lower every node of an entry forest, or abstain atomically."""
     lowerings: list[LowerConditionalStateTransition] = []
-    for proof in plan.proofs:
-        lowering = _lower_conditional_entry_bridge(flow_graph, proof)
+    for forecast in plan.forecasts:
+        lowering = _lower_conditional_entry_bridge(flow_graph, forecast)
         if lowering is None:
             return ()
         lowerings.append(lowering)
@@ -9132,6 +9127,19 @@ def build_resolver_proven_indirect_call_neutralizations(
     handler_serials: frozenset[int],
 ) -> list[NopInstructions]:
     """NOP stale call lifts only when one planned handler edge replaces them."""
+    handler_targets = frozenset(
+        coordinate
+        for target in sorted(handler_serials)
+        if (
+            (block := flow_graph.get_block(int(target))) is not None
+            and (
+                coordinate := snapshot_block_coordinate_from_snapshot(block)
+            )
+            is not None
+        )
+    )
+    if len(handler_targets) != len(handler_serials):
+        return []
     redirected_targets: dict[int, set[int]] = {}
     for modification in modifications:
         if not isinstance(modification, RedirectGoto):
@@ -9146,7 +9154,7 @@ def build_resolver_proven_indirect_call_neutralizations(
             source: tuple(sorted(targets))
             for source, targets in redirected_targets.items()
         },
-        allowed_target_serials=handler_serials,
+        allowed_targets=handler_targets,
     )
     return [
         NopInstructions(
@@ -9303,7 +9311,7 @@ def emit_minimal_unflatten(
         "non_state_use_def_severances_zero": False,
     }
     dispatcher_state_plumbing_serials: frozenset[int] = frozenset()
-    concrete_state_entry_route_proofs: tuple[ConcreteStateEntryRouteProof, ...] = ()
+    concrete_entry_route_forecasts: tuple[ConcreteEntryRouteForecast, ...] = ()
     exact_state_effect_exclusions: tuple[
         ExactStateBranchEffectExclusion, ...
     ] = ()
@@ -9339,20 +9347,17 @@ def emit_minimal_unflatten(
             snapshot_id=plan.snapshot_id,
         ).graph
 
-    def build_dispatcher_removal_validation(
+    def build_dispatcher_removal_forecast_for_plan(
         plan: PatchPlan,
         coverage,
-    ) -> DispatcherRemovalPreflightValidation:
-        """Build the fail-closed exact proof for intended router removal.
+    ):
+        """Build producer retirement forecasts for the typed proposal.
 
-        This does not relax any producer safety gate.  It merely gives the
-        transaction preflight enough typed topology evidence to distinguish a
-        removed comparison forest from a lost handler/body island.
+        The returned coverage is evidence only; transaction binding remains
+        responsible for the authoritative candidate/source verdict.
         """
         if dispatcher_entry_serial is None:
-            return DispatcherRemovalPreflightValidation(
-                passed=False, reason="dispatcher_entry_missing"
-            )
+            return coverage
         projected = project_patch_plan(
             flow_graph,
             plan,
@@ -9368,57 +9373,30 @@ def emit_minimal_unflatten(
                 and int(row.target) != int(dispatcher_entry_serial)
             )
         )
-        proof = build_dispatcher_removal_preflight_proof(
+        forecast = build_dispatcher_removal_forecast(
             flow_graph,
-            post_graph=projected.graph,
             coverage=coverage,
             dispatcher_entry_serial=int(dispatcher_entry_serial),
-            authoritative_handler_serials=authoritative_handlers,
-            dispatcher_region_serials=frozenset(
-                int(serial) for serial in dispatcher_region_serials
-            ),
-            producer_safety=dispatcher_removal_safety,
-            state_plumbing_serials=dispatcher_state_plumbing_serials,
-            patch_plan=plan,
         )
-        if logger.info_on:
-            logger.info(
-                "unflat dispatcher removal preflight proof: status=%s reason=%s "
-                "handlers=%d/%d terminals=%d/%d lost=%s",
-                "accepted" if proof.passed else "rejected",
-                proof.reason,
-                len(proof.post_reachable_handlers),
-                len(proof.authoritative_handlers),
-                len(proof.post_reachable_terminals),
-                len(proof.pre_reachable_terminals),
-                ",".join(anchor.label for anchor in proof.lost_block_anchors)
-                or "none",
-            )
-        validation = validate_terminal_switch_cycle_break_allowance(
+        forecast = forecast_terminal_switch_cycle_break(
             flow_graph,
             post_graph=projected.graph,
             patch_plan=plan,
-            removal_validation=DispatcherRemovalPreflightValidation(
-                passed=proof.passed,
-                reason=proof.reason,
-                proof=proof,
-            ),
+            coverage=forecast,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            authoritative_handler_serials=authoritative_handlers,
         )
         detached = build_detached_dead_handler_component_analysis(
             flow_graph,
             post_graph=projected.graph,
-            coverage=coverage,
+            coverage=forecast,
             authoritative_handler_serials=authoritative_handlers,
             patch_plan=plan,
         )
-        if detached is not None:
-            validation = DispatcherRemovalPreflightValidation(
-                passed=True,
-                reason="detached_dead_handler_component",
-                proof=proof,
-                detached_dead_handler_component=detached,
-            )
-        return validation
+        return replace(
+            forecast,
+            detached_dead_handler_component=detached,
+        )
 
     def log_dispatcher_coverage(coverage) -> None:
         if not logger.info_on:
@@ -9863,7 +9841,7 @@ def emit_minimal_unflatten(
             imported_conditional_entry_bridge
             if materialized_conditional_entry_bridge is None
             or materialized_conditional_entry_bridge
-            in imported_conditional_entry_bridge.proofs
+            in imported_conditional_entry_bridge.forecasts
             else None
         )
         if conditional_entry_bridge is None and logger.info_on:
@@ -9875,7 +9853,7 @@ def emit_minimal_unflatten(
             )
     elif materialized_conditional_entry_bridge is not None:
         conditional_entry_bridge = ConditionalEntryBridgePlan(
-            proofs=(materialized_conditional_entry_bridge,),
+            forecasts=(materialized_conditional_entry_bridge,),
             root_source_serials=(materialized_conditional_entry_bridge.source_serial,),
         )
     else:
@@ -9889,10 +9867,10 @@ def emit_minimal_unflatten(
             flow_graph,
             conditional_entry_bridge,
         )
-        if len(entry_lowerings) == len(conditional_entry_bridge.proofs):
+        if len(entry_lowerings) == len(conditional_entry_bridge.forecasts):
             dynamic_entry_bridge_edges = frozenset()
             entry_sources = {
-                int(proof.source_serial) for proof in conditional_entry_bridge.proofs
+                int(forecast.source_serial) for forecast in conditional_entry_bridge.forecasts
             }
             if logger.info_on:
                 for modification in conditional_bridge_mods:
@@ -10098,8 +10076,8 @@ def emit_minimal_unflatten(
                     if int(getattr(modification, "new_target", target)) == target
                 ]
             if entry_route is not None:
-                concrete_state_entry_route_proofs = (
-                    ConcreteStateEntryRouteProof(
+                concrete_entry_route_forecasts = (
+                    ConcreteEntryRouteForecast(
                         normalized_state=entry_route.normalized_state,
                         target_handler=entry_route.target_block,
                         source_kinds=entry_route.source_kinds,
@@ -10123,9 +10101,9 @@ def emit_minimal_unflatten(
             if not bridged and conditional_entry_bridge is not None:
                 bridged = True
                 if logger.info_on:
-                    proofs_by_source = {
-                        int(proof.source_serial): proof
-                        for proof in conditional_entry_bridge.proofs
+                    forecasts_by_source = {
+                        int(forecast.source_serial): forecast
+                        for forecast in conditional_entry_bridge.forecasts
                     }
                     logger.info(
                         "unflat entry bridge: EXACT_CONDITIONAL_FOREST "
@@ -10134,9 +10112,9 @@ def emit_minimal_unflatten(
                             _format_block_label(flow_graph, source)
                             for source in conditional_entry_bridge.root_source_serials
                         ),
-                        len(conditional_entry_bridge.proofs),
+                        len(conditional_entry_bridge.forecasts),
                         ",".join(
-                            "0x%X" % proofs_by_source[source].predicate_ea
+                            "0x%X" % forecasts_by_source[source].predicate_ea
                             for source in conditional_entry_bridge.root_source_serials
                         ),
                     )
@@ -10853,7 +10831,7 @@ def emit_minimal_unflatten(
         plan = compile_modifications(list(mods))
     else:
         plan = compile_modifications(list(mods))
-        build_dispatcher_removal_validation(plan, coverage)
+        build_dispatcher_removal_forecast_for_plan(plan, coverage)
         log_dispatcher_coverage(coverage)
     if typed_authority:
         if not block_refs_by_serial:
@@ -10898,7 +10876,7 @@ def emit_minimal_unflatten(
                 route_owner_by_proof_id[proof.proof_id] = owner
                 selected_route_proof_ids.append(proof.proof_id)
 
-            for route in concrete_state_entry_route_proofs:
+            for route in concrete_entry_route_forecasts:
                 select_route(
                     "concrete_entry",
                     adapt_concrete_entry_route(
@@ -10925,10 +10903,10 @@ def emit_minimal_unflatten(
                         block_refs_by_serial=block_refs_by_serial,
                         canonical_evidence=canonical_route_evidence,
                     )
-                    for route in conditional_entry_bridge.proofs
+                    for route in conditional_entry_bridge.forecasts
                 )
                 if len({proof.proof_id for proof in conditional_proofs}) != len(
-                    conditional_entry_bridge.proofs
+                    conditional_entry_bridge.forecasts
                 ):
                     raise ValueError("conditional entry bridge proof selection is ambiguous")
                 for proof in conditional_proofs:
@@ -10988,7 +10966,7 @@ def emit_minimal_unflatten(
         if use_def_witness is None:
             return compile_with_dispatcher_coverage(())
         try:
-            dispatcher_removal_validation = build_dispatcher_removal_validation(
+            dispatcher_removal_forecast = build_dispatcher_removal_forecast_for_plan(
                 plan, coverage
             )
             plan = attach_typed_proposal(
@@ -11004,7 +10982,7 @@ def emit_minimal_unflatten(
                 state_identity=state_identity,
                 use_def_witness=use_def_witness,
                 corridor_coverage=coverage,
-                dispatcher_removal_validation=dispatcher_removal_validation,
+                dispatcher_removal_forecast=dispatcher_removal_forecast,
             )
         except (TypeError, ValueError):
             return compile_with_dispatcher_coverage(())

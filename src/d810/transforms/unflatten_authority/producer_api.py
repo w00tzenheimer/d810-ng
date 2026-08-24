@@ -75,6 +75,37 @@ _BADADDR = 0xFFFFFFFFFFFFFFFF
 AuthorityBlockRef = NativeBlockRef | LogicalBlockRef
 
 
+@dataclass(frozen=True, slots=True)
+class ConcreteEntryRouteForecast:
+    """Producer selection forecast for one concrete scalar entry route."""
+
+    normalized_state: int
+    target_handler: int
+    source_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapEntryRouteForecast:
+    """Producer selection forecast for one bound bootstrap entry route."""
+
+    source_serial: int
+    handler_serial: int
+    state: int
+    source_anchor_ea: int
+    handler_anchor_ea: int
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalEntryBridgeForecast:
+    """Producer selection forecast for one conditional entry bridge."""
+
+    source_serial: int
+    predicate_ea: int
+    false_target_serial: int
+    true_target_serial: int
+    true_is_taken: bool = True
+
+
 def _validate_classifier_operand(operand: object, label: str) -> None:
     if operand is None:
         return
@@ -1175,12 +1206,10 @@ def adapt_concrete_entry_route(
     block_refs_by_serial: Mapping[int, AuthorityBlockRef],
     canonical_evidence: CanonicalSemanticEvidence,
 ) -> SemanticRouteProof:
-    """Adapt concrete-entry metadata by exact selection from canonical proofs."""
+    """Select one canonical proof from a concrete-entry forecast."""
 
-    from d810.transforms.minimal_unflatten_emit import ConcreteStateEntryRouteProof
-
-    if type(route) is not ConcreteStateEntryRouteProof:
-        raise TypeError("concrete entry adapter requires ConcreteStateEntryRouteProof")
+    if type(route) is not ConcreteEntryRouteForecast:
+        raise TypeError("concrete entry adapter requires ConcreteEntryRouteForecast")
     target_identity = _target_identity(
         source, source_catalog, block_refs_by_serial, route.target_handler,
     )
@@ -1213,12 +1242,10 @@ def adapt_bootstrap_entry_route_proof(
     block_refs_by_serial: Mapping[int, AuthorityBlockRef],
     canonical_evidence: CanonicalSemanticEvidence,
 ) -> SemanticRouteProof:
-    """Select a bootstrap emitter row against stable canonical endpoints."""
+    """Select one canonical proof from a bootstrap-entry forecast."""
 
-    from d810.transforms.minimal_unflatten_emit import BootstrapEntryRouteProof
-
-    if type(route) is not BootstrapEntryRouteProof:
-        raise TypeError("bootstrap entry adapter requires BootstrapEntryRouteProof")
+    if type(route) is not BootstrapEntryRouteForecast:
+        raise TypeError("bootstrap entry adapter requires BootstrapEntryRouteForecast")
     source_identity = _target_identity(
         source, source_catalog, block_refs_by_serial, route.source_serial,
     )
@@ -1251,12 +1278,10 @@ def adapt_conditional_entry_route(
     block_refs_by_serial: Mapping[int, AuthorityBlockRef],
     canonical_evidence: CanonicalSemanticEvidence,
 ) -> SemanticRouteProof:
-    """Select a complete conditional proof; sparse forests cannot mint one."""
+    """Select one complete canonical proof from a conditional forecast."""
 
-    from d810.transforms.minimal_unflatten_emit import ConditionalEntryBridgeProof
-
-    if type(route) is not ConditionalEntryBridgeProof:
-        raise TypeError("conditional entry adapter requires ConditionalEntryBridgeProof")
+    if type(route) is not ConditionalEntryBridgeForecast:
+        raise TypeError("conditional entry adapter requires ConditionalEntryBridgeForecast")
     source_witness = _witness_for_serial(
         source, source_catalog, block_refs_by_serial, route.source_serial,
     )
@@ -1710,6 +1735,9 @@ def build_exact_effect_claim(
 
 
 __all__ = [
+    "ConcreteEntryRouteForecast",
+    "BootstrapEntryRouteForecast",
+    "ConditionalEntryBridgeForecast",
     "DiscoveredEffect",
     "DiscoveredTerminal",
     "SourceEffectTerminalCatalog",

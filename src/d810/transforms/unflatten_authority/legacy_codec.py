@@ -48,12 +48,9 @@ from .model import (
     EffectSubjectLocator,
     LegacyUnflattenShadowEnvelope,
     ProposedUnflattenContract,
-    RetirementAuthorityCatalog,
-    RetirementMemberCatalogRow,
-    RetirementProofContent,
-    RetirementProofMember,
-    RetirementProofFamily,
-    RetirementProofRecord,
+    RetirementCandidateCatalog,
+    RetirementPlanMember,
+    DispatcherRetirementCandidate,
     RetiredDispatcherInfrastructureClaim,
     TerminalCycleBreakClaim,
     TerminalKind,
@@ -656,6 +653,8 @@ def retirement_claim_from_legacy_proof(
     retired_refs = {
         ref for _role, _ea, ref in rows if declared_retired.get(ref, True)
     }
+    if not retired_refs:
+        raise ValueError("legacy retirement proof proposes no eligible candidate")
     entry_ref = proposal.plan_inputs.dispatcher_entry_ref
     entry = catalog.get(entry_ref)
     if entry is None:
@@ -696,58 +695,71 @@ def retirement_claim_from_legacy_proof(
             locator=BlockSubjectLocator(entry_ref, entry.anchor_ea),
         ),
     )
-    family = RetirementProofFamily(present[0])
-    # Legacy serials and proof IDs are transport-only.  The authority payload
-    # retains only closed family semantics after exact catalog resolution.
-    content = RetirementProofContent(
-        family,
-        proposal.source_identity_catalog.generation,
-        tuple(
-            RetirementProofMember(ref, ea, declared_retired[ref], role)
-            for role, ea, ref in rows
-        ),
-    )
-    proof = RetirementProofRecord(
-        proof_id=authority_id((
-            "unflatten.retirement-proof.v3", canonical_bytes(content)
-        )),
-        content=content,
-    )
-    supplied_ids = payload.get("proof_ids")
-    if supplied_ids is not None:
-        if type(supplied_ids) is not tuple or supplied_ids != (proof.proof_id,):
-            raise ValueError("legacy retirement proof IDs are not content-authoritative")
-    rows_by_ref = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
-    member_catalog = tuple(
-        RetirementMemberCatalogRow(
-            block_ref=ref,
-            anchor_ea=rows_by_ref[ref].anchor_ea,
-            native_instruction_eas=rows_by_ref[ref].native_instruction_eas,
-            source_generation=proposal.source_identity_catalog.generation,
-            retired=ref in retired_refs,
-            proofs=(proof,) if ref in retired_refs else (),
+    generation = proposal.source_identity_catalog.generation
+    rows_by_ref = {
+        item.block_ref: item for item in proposal.source_identity_catalog.blocks
+    }
+    plan_members = tuple(
+        RetirementPlanMember(
+            ref,
+            rows_by_ref[ref].anchor_ea,
+            rows_by_ref[ref].native_instruction_eas,
         )
         for ref in canonical_plan_refs
     )
-    retirement_catalog = RetirementAuthorityCatalog(
-        catalog_id=authority_id((
-            "unflatten.retirement-catalog.v1",
-            proposal.source_identity_catalog.generation,
-            member_catalog, (proof,),
+    candidates = []
+    for role, ea, ref in rows:
+        if ref not in retired_refs:
+            continue
+        evidence_ids = (authority_id((
+            "unflatten.legacy-retirement-candidate-evidence.v1",
+            present[0], ref, ea, role, generation,
+        )),)
+        candidates.append(DispatcherRetirementCandidate(
+            ref,
+            ea,
+            role,
+            evidence_ids,
+            generation,
+            authority_id((
+                "unflatten.dispatcher-retirement-candidate.v1",
+                ref, ea, role, evidence_ids, generation,
+            )),
+        ))
+    candidates = tuple(sorted(candidates, key=canonical_bytes))
+    candidate_catalog = RetirementCandidateCatalog(
+        authority_id((
+            "unflatten.dispatcher-retirement-candidate-catalog.v1",
+            generation, plan_members, candidates,
         )),
-        source_generation=proposal.source_identity_catalog.generation,
-        members=member_catalog,
-        proofs=(proof,),
+        generation,
+        plan_members,
+        candidates,
     )
+    compatibility_evidence_id = authority_id((
+        "unflatten.legacy-retirement-candidates.v1",
+        present[0], candidate_catalog.catalog_id,
+    ))
+    supplied_ids = payload.get("proof_ids")
+    if supplied_ids is not None:
+        if (
+            type(supplied_ids) is not tuple
+            or supplied_ids != (compatibility_evidence_id,)
+        ):
+            raise ValueError("legacy retirement proof IDs are not content-authoritative")
     return _claim_factory(
         RetiredDispatcherInfrastructureClaim,
         kind=UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
         infrastructure_subject=infrastructure,
         corridor_subject=corridor,
         member_subjects=member_subjects,
-        retirement_proof_ids=(proof.proof_id,),
-        source_generation=proposal.source_identity_catalog.generation,
-        retirement_catalog=retirement_catalog,
+        candidate_evidence_ids=tuple(sorted({
+            evidence_id
+            for candidate in candidates
+            for evidence_id in candidate.evidence_ids
+        })),
+        source_generation=generation,
+        candidate_catalog=candidate_catalog,
     )
 
 
@@ -759,9 +771,9 @@ def terminal_cycle_claim_from_legacy_proof(
 ) -> TerminalCycleBreakClaim:
     """Adapt the current transaction preflight terminal proof to a typed claim.
 
-    Only ``DispatcherRemovalPreflightValidation.to_payload`` is accepted.  In
-    particular, a legacy reason, serial allowance, or ad-hoc proof spelling is
-    never sufficient to mint terminal authority.
+    Only the exact historical removal-validation payload schema is accepted.
+    A legacy reason, serial allowance, or ad-hoc proof spelling is never
+    sufficient to mint terminal authority.
     """
     if type(payload) is not dict or set(payload) != {
         "validation_status", "reason", "proof", "terminal_switch_cycle_break",

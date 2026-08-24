@@ -233,19 +233,40 @@ def retired_infrastructure_view(
     )
     if claim is None:
         raise ValueError("retirement claim is missing or ambiguous")
-    if case.retirement_catalog is None:
-        raise ValueError("case has no case-owned retirement catalog")
-    plan_refs = {item.block_ref for item in case.retirement_catalog.members}
-    retired = tuple(sorted(
-        member.subject_id for member in claim.member_subjects
-    ))
+    catalog = case.retirement_candidate_catalog
+    result = case.retirement_phase_result
+    if catalog is None or result is None:
+        raise ValueError("case has no sealed retirement candidate/result pair")
+    plan_refs = set(catalog.member_refs)
+    phase_by_ref = {item.block_ref: item for item in result.members}
+    if set(phase_by_ref) != plan_refs or result.claim_id != claim_id:
+        raise ValueError("retirement phase result does not cover the exact claim plan")
+    if any(
+        item.classification not in {
+            model.RetirementPhaseClassification.RETIRED,
+            model.RetirementPhaseClassification.RETAINED,
+        }
+        for item in result.members
+    ):
+        raise ValueError("retirement phase result contains unsupported classification")
     member_ids = {
         subject.subject_id: subject
         for subject in case.subjects
         if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
         and subject.block_ref in plan_refs
     }
-    retained = tuple(sorted(set(member_ids) - set(retired)))
+    if set(subject.block_ref for subject in member_ids.values()) != plan_refs:
+        raise ValueError("retirement view is missing an exact dispatcher member")
+    retired = tuple(sorted(
+        subject_id for subject_id, subject in member_ids.items()
+        if phase_by_ref[subject.block_ref].classification
+        is model.RetirementPhaseClassification.RETIRED
+    ))
+    retained = tuple(sorted(
+        subject_id for subject_id, subject in member_ids.items()
+        if phase_by_ref[subject.block_ref].classification
+        is model.RetirementPhaseClassification.RETAINED
+    ))
     structural = tuple(sorted(
         (
             cell.key for cell in case.obligation_index.cells
@@ -401,6 +422,8 @@ def semantic_loss_ledger(case: model.SemanticSafetyCase) -> model.SemanticLossLe
     justifications = {item.justification_id: item for item in case.justifications}
     evidence = {item.evidence_id: item for item in case.evidence}
     claims = {item.claim_id: item for item in case.claims}
+    retirement_result = case.retirement_phase_result
+    retired_refs = set(retirement_result.retired_refs) if retirement_result is not None else set()
     rows: list[model.SemanticLossRow] = []
     for subject_id in case.source_subject_ids:
         subject = subjects.get(subject_id)
@@ -410,7 +433,7 @@ def semantic_loss_ledger(case: model.SemanticSafetyCase) -> model.SemanticLossLe
         source_binding = source_bindings.get(subject_id)
         if source_binding is None:
             raise ValueError("source subject partition is not covered by source bindings")
-        if binding.status is not model.SubjectBindingStatus.MISSING:
+        if binding.status is not model.SubjectBindingStatus.MISSING and subject.block_ref not in retired_refs:
             continue
         if case.phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST:
             continue

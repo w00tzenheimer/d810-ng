@@ -19,9 +19,6 @@ from d810.transforms.plan import (
 from d810.transforms.dispatcher_corridor_coverage import (
     DispatcherCorridor,
     DispatcherCorridorCoverage,
-    DispatcherRemovalPreflightProof,
-    DispatcherRemovalPreflightValidation,
-    TerminalSwitchCycleBreakProof,
 )
 from d810.analyses.control_flow.minimal_state_recovery import (
     CandidatePrefixAlternateCorridorProof,
@@ -38,12 +35,9 @@ from .model import (
     BlockSubjectLocator,
     HandlerSubjectLocator,
     ProposedUnflattenContract,
-    RetirementAuthorityCatalog,
-    RetirementProofContent,
-    RetirementProofMember,
-    RetirementProofFamily,
-    RetirementProofRecord,
-    RetirementMemberCatalogRow,
+    RetirementCandidateCatalog,
+    RetirementPlanMember,
+    DispatcherRetirementCandidate,
     RetiredDispatcherInfrastructureClaim,
     DetachedDeadHandlerComponentClaim,
     SemanticSubjectKind,
@@ -250,8 +244,8 @@ def corridor_coverage_forecast_from_analysis(
 def retirement_member_catalog(
     proposal: ProposedUnflattenContract,
     claim: RetiredDispatcherInfrastructureClaim,
-) -> tuple[RetirementMemberCatalogRow, ...]:
-    """Validate and return all planned dispatcher members, retired or retained."""
+) -> tuple[RetirementPlanMember, ...]:
+    """Validate and return the exact candidate-catalog plan membership."""
 
     if type(proposal) is not ProposedUnflattenContract:
         raise TypeError("retirement catalog requires a closed proposal")
@@ -265,9 +259,10 @@ def retirement_member_catalog(
         raise ValueError("retirement plan has no dispatcher members")
     if claim.source_generation != proposal.source_identity_catalog.generation:
         raise ValueError("retirement claim generation differs from source catalog")
-    if proposal.retirement_catalog is None or claim.retirement_catalog != proposal.retirement_catalog:
-        raise ValueError("retirement claim is not bound to proposal catalog")
-    catalog_rows = {item.block_ref: item for item in proposal.retirement_catalog.members}
+    candidate_catalog = proposal.retirement_candidate_catalog
+    if candidate_catalog is None or claim.candidate_catalog != candidate_catalog:
+        raise ValueError("retirement claim is not bound to proposal candidate catalog")
+    catalog_rows = {item.block_ref: item for item in candidate_catalog.plan_members}
     if claim.infrastructure_subject.block_ref != proposal.plan_inputs.dispatcher_entry_ref:
         raise ValueError("retirement infrastructure subject is not the dispatcher entry")
     corridor = claim.corridor_subject.locator
@@ -276,7 +271,7 @@ def retirement_member_catalog(
     entry = source_catalog.get(proposal.plan_inputs.dispatcher_entry_ref)
     if entry is None:
         raise ValueError("dispatcher entry is absent from source catalog")
-    catalog_order = tuple(item.block_ref for item in proposal.retirement_catalog.members)
+    catalog_order = tuple(item.block_ref for item in candidate_catalog.plan_members)
     if (
         corridor.entry_ref != proposal.plan_inputs.dispatcher_entry_ref
         or corridor.entry_anchor_ea != entry.anchor_ea
@@ -285,20 +280,20 @@ def retirement_member_catalog(
         != tuple(source_catalog[ref].anchor_ea for ref in catalog_order)
     ):
         raise ValueError("retirement corridor is not the exact plan member catalog")
-    retired_by_ref = {member.block_ref: member for member in claim.member_subjects}
-    if len(retired_by_ref) != len(claim.member_subjects) or any(
-        ref not in plan_refs for ref in retired_by_ref
+    candidates_by_ref = {member.block_ref: member for member in claim.member_subjects}
+    if len(candidates_by_ref) != len(claim.member_subjects) or any(
+        ref not in plan_refs for ref in candidates_by_ref
     ):
-        raise ValueError("retirement members must be an exact plan-member subset")
-    rows: list[RetirementMemberCatalogRow] = []
+        raise ValueError("retirement candidates must be an exact plan-member subset")
+    rows: list[RetirementPlanMember] = []
     for ref in plan_refs:
         witness = source_catalog.get(ref)
         if witness is None:
             raise ValueError("dispatcher member is absent from source catalog")
-        member = retired_by_ref.get(ref)
+        member = candidates_by_ref.get(ref)
         exact_row = catalog_rows.get(ref)
         if exact_row is None:
-            raise ValueError("retirement member is absent from exact catalog")
+            raise ValueError("retirement member is absent from candidate catalog")
         if member is not None:
             if (
                 member.role is not SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
@@ -307,7 +302,7 @@ def retirement_member_catalog(
             ):
                 raise ValueError("retirement member identity drifted from source catalog")
         if exact_row.anchor_ea != witness.anchor_ea or exact_row.native_instruction_eas != witness.native_instruction_eas:
-            raise ValueError("retirement catalog native identity drifted")
+            raise ValueError("retirement candidate catalog native identity drifted")
         rows.append(exact_row)
     return tuple(rows)
 
@@ -550,24 +545,28 @@ def _validate_use_def_locator(
         raise ValueError("use-def redirect owner is outside the source catalog")
 
 
-def claims_from_dispatcher_removal_validation(
-    validation: DispatcherRemovalPreflightValidation,
+def claims_from_dispatcher_removal_forecast(
+    coverage: DispatcherCorridorCoverage,
     *,
     proposal: ProposedUnflattenContract,
     block_refs_by_serial: dict[int, NativeBlockRef | LogicalBlockRef],
 ) -> tuple[RetiredDispatcherInfrastructureClaim | DetachedDeadHandlerComponentClaim | TerminalCycleBreakClaim, ...]:
-    """Convert producer removal proof objects directly into typed claims."""
+    """Convert producer retirement forecasts into canonical typed claims.
 
-    if type(validation) is not DispatcherRemovalPreflightValidation:
-        raise TypeError("dispatcher removal validation must be canonical")
-    proof = validation.proof
-    if proof is not None and type(proof) is not DispatcherRemovalPreflightProof:
-        raise TypeError("dispatcher removal proof must be canonical")
-    if proof is None:
+    A missing or incomplete forecast yields no retirement claim.  This helper
+    never manufactures a pass/fail result; transaction binding replays the
+    candidate against source and candidate inventories.
+    """
+
+    if type(coverage) is not DispatcherCorridorCoverage:
+        raise TypeError("dispatcher removal forecast must be corridor coverage")
+    if not coverage.enumeration_complete or coverage.residual_corridors:
         return ()
-    terminal = validation.terminal_switch_cycle_break
-    if terminal is not None and type(terminal) is not TerminalSwitchCycleBreakProof:
-        raise TypeError("terminal switch proof must be canonical")
+    terminal = coverage.cycle_break
+    retired_forecast = tuple(coverage.retirement_candidates)
+    detached = getattr(coverage, "detached_dead_handler_component", None)
+    if not retired_forecast and terminal is None and detached is None:
+        return ()
     catalog = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
     refs_by_serial = dict(block_refs_by_serial)
     plan_refs = tuple(sorted(proposal.plan_inputs.dispatcher_member_refs, key=canonical_bytes))
@@ -578,6 +577,11 @@ def claims_from_dispatcher_removal_validation(
     handler_inputs = {
         item.block_ref: item for item in proposal.plan_inputs.authoritative_handlers
     }
+    candidate_catalog = retirement_candidate_catalog_from_forecast(
+        coverage,
+        proposal=proposal,
+        block_refs_by_serial=block_refs_by_serial,
+    )
 
     def resolve(anchor: object, label: str):
         serial, ea = int(anchor.serial), int(anchor.ea)
@@ -588,22 +592,6 @@ def claims_from_dispatcher_removal_validation(
         return ref, ea
 
     if terminal is not None:
-        if (
-            not validation.passed
-            or validation.reason != "terminal_switch_cycle_break"
-            or proof.passed
-            or proof.reason != "untyped_lost_block"
-            or any(
-                allowance is not None
-                for allowance in (
-                    validation.interval_state_normalizer_retirement,
-                    validation.state_transition_plumbing_retirement,
-                    validation.comparison_corridor_retirement,
-                )
-            )
-        ):
-            raise ValueError("terminal switch allowance envelope is not canonical")
-
         dispatcher_ref, dispatcher_ea = resolve(terminal.dispatcher, "terminal dispatcher")
         if dispatcher_ref != entry_ref:
             raise ValueError("terminal switch dispatcher differs from plan entry")
@@ -624,14 +612,7 @@ def claims_from_dispatcher_removal_validation(
             or not set(residue_refs) <= set(plan_refs)
         ):
             raise ValueError("terminal switch residue is not an exact plan subset")
-        residue_serials = frozenset(
-            int(anchor.serial) for anchor in terminal.retired_residue
-        )
-        if proof.lost_blocks != residue_serials:
-            raise ValueError("terminal switch residue disagrees with lost blocks")
-        if tuple(proof.lost_block_anchors) != tuple(terminal.retired_residue):
-            raise ValueError("terminal switch residue disagrees with lost anchors")
-        for retired in proof.retired_infrastructure:
+        for retired in coverage.retirement_candidates:
             resolve(retired.anchor, "retired infrastructure")
 
         def stable_identity(ref, label: str):
@@ -714,15 +695,8 @@ def claims_from_dispatcher_removal_validation(
             source_generation=proposal.source_identity_catalog.generation,
         ),)
 
-    detached = validation.detached_dead_handler_component
+    detached_claim = None
     if detached is not None:
-        if (
-            not validation.passed
-            or validation.reason != "detached_dead_handler_component"
-            or proof.passed
-            or proof.reason != "untyped_lost_block"
-        ):
-            raise ValueError("detached component allowance envelope is not canonical")
         dispatcher_ref, dispatcher_ea = resolve(detached.dispatcher, "detached dispatcher")
         if dispatcher_ref != entry_ref:
             raise ValueError("detached dispatcher differs from plan entry")
@@ -764,60 +738,42 @@ def claims_from_dispatcher_removal_validation(
             block_ref=dispatcher_ref, anchor_ea=dispatcher_ea,
             locator=BlockSubjectLocator(dispatcher_ref, dispatcher_ea),
         )
-        return (_claim_factory(
+        detached_claim = _claim_factory(
             DetachedDeadHandlerComponentClaim,
             kind=UnflattenClaimKind.DETACHED_DEAD_HANDLER_COMPONENT,
             dispatcher_subject=dispatcher, dead_handler_subjects=dead,
             retained_handler_subjects=retained, component_subjects=component,
             source_generation=proposal.source_identity_catalog.generation,
-        ),)
+        )
 
-    if not validation.passed or not proof.passed:
-        return ()
+    if not retired_forecast:
+        return () if detached_claim is None else (detached_claim,)
 
-    retired_rows = tuple(proof.retired_infrastructure)
-    retired_by_ref = {
-        resolve(row.anchor, "retired member")[0]: str(row.role)
-        for row in retired_rows
+    retired_rows = retired_forecast
+    # Forecast observations are deliberately advisory.  Keep only exact
+    # dispatcher-member candidates; a nonmember router observation must never
+    # widen the proposal's authority scope.  Handler rows are likewise
+    # excluded even if a producer's structural walk happened to encounter
+    # them.
+    handler_refs = {
+        handler.block_ref for handler in proposal.plan_inputs.authoritative_handlers
     }
-    if any(ref not in plan_refs for ref in retired_by_ref):
-        raise ValueError("dispatcher removal member is outside proposal catalog")
-    claims: list[RetiredDispatcherInfrastructureClaim | TerminalCycleBreakClaim] = []
+    retired_by_ref = {
+        ref: role
+        for row in retired_rows
+        for ref, role in ((resolve(row.anchor, "retirement candidate")[0], str(row.role)),)
+        if ref in plan_refs and ref not in handler_refs
+    }
+    claims: list[RetiredDispatcherInfrastructureClaim | DetachedDeadHandlerComponentClaim | TerminalCycleBreakClaim] = []
+    if detached_claim is not None:
+        claims.append(detached_claim)
     if retired_by_ref:
-        family = RetirementProofFamily.RETIRED_INFRASTRUCTURE
-        member_rows = tuple(
-            (
-                ref,
-                int(catalog[ref].anchor_ea),
-                ref in retired_by_ref,
-                retired_by_ref.get(ref, "comparison_dispatcher"),
-            )
-            for ref in plan_refs
-        )
-        content = RetirementProofContent(
-            family,
-            proposal.source_identity_catalog.generation,
-            tuple(
-                RetirementProofMember(ref, anchor, retired, role)
-                for ref, anchor, retired, role in member_rows
-            ),
-        )
-        record = RetirementProofRecord(
-            authority_id(("unflatten.retirement-proof.v3", canonical_bytes(content))),
-            content,
-        )
-        members = tuple(
-            RetirementMemberCatalogRow(
-                ref, int(catalog[ref].anchor_ea), catalog[ref].native_instruction_eas,
-                proposal.source_identity_catalog.generation, ref in retired_by_ref,
-                (record,) if ref in retired_by_ref else (),
-            ) for ref in plan_refs
-        )
-        retirement_catalog = RetirementAuthorityCatalog(
-            authority_id(("unflatten.retirement-catalog.v1",
-                          proposal.source_identity_catalog.generation, members, (record,))),
-            proposal.source_identity_catalog.generation, members, (record,),
-        )
+        if candidate_catalog is None:
+            raise ValueError("retirement candidates require a candidate catalog")
+        candidate_by_ref = {
+            candidate.block_ref: candidate
+            for candidate in candidate_catalog.candidates
+        }
         member_subjects = tuple(
             _subject_factory(
                 SemanticSubjectRef,
@@ -825,7 +781,7 @@ def claims_from_dispatcher_removal_validation(
                 role=SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
                 block_ref=ref, anchor_ea=int(catalog[ref].anchor_ea),
                 locator=BlockSubjectLocator(ref, int(catalog[ref].anchor_ea)),
-            ) for ref in plan_refs if ref in retired_by_ref
+            ) for ref in plan_refs if ref in candidate_by_ref
         )
         corridor = _subject_factory(
             SemanticSubjectRef,
@@ -853,11 +809,62 @@ def claims_from_dispatcher_removal_validation(
             kind=UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
             infrastructure_subject=infrastructure, corridor_subject=corridor,
             member_subjects=member_subjects,
-            retirement_proof_ids=(record.proof_id,),
+            candidate_evidence_ids=tuple(sorted({
+                evidence_id
+                for candidate in candidate_catalog.candidates
+                for evidence_id in candidate.evidence_ids
+            })),
             source_generation=proposal.source_identity_catalog.generation,
-            retirement_catalog=retirement_catalog,
+            candidate_catalog=candidate_catalog,
         ))
     return tuple(claims)
+
+
+def retirement_candidate_catalog_from_forecast(
+    coverage: DispatcherCorridorCoverage,
+    *,
+    proposal: ProposedUnflattenContract,
+    block_refs_by_serial: dict[int, NativeBlockRef | LogicalBlockRef],
+) -> RetirementCandidateCatalog | None:
+    """Build producer eligibility evidence without minting a partition."""
+    if type(coverage) is not DispatcherCorridorCoverage:
+        raise TypeError("retirement forecast must be corridor coverage")
+    if not coverage.retirement_candidates:
+        return None
+    source_by_ref = {item.block_ref: item for item in proposal.source_identity_catalog.blocks}
+    plan_refs = tuple(sorted(proposal.plan_inputs.dispatcher_member_refs, key=canonical_bytes))
+    members = tuple(
+        RetirementPlanMember(ref, source_by_ref[ref].anchor_ea, source_by_ref[ref].native_instruction_eas)
+        for ref in plan_refs
+    )
+    handler_refs = {handler.block_ref for handler in proposal.plan_inputs.authoritative_handlers}
+    candidates = []
+    for row in coverage.retirement_candidates:
+        ref = block_refs_by_serial.get(int(row.anchor.serial))
+        witness = source_by_ref.get(ref)
+        if ref is None or witness is None or ref not in plan_refs or ref in handler_refs:
+            continue
+        if witness.anchor_ea != int(row.anchor.ea):
+            continue
+        role = str(row.role)
+        evidence_ids = (authority_id(("unflatten.dispatcher-retirement-evidence.v1", ref, witness.anchor_ea, role)),)
+        candidate_id = authority_id((
+            "unflatten.dispatcher-retirement-candidate.v1", ref,
+            witness.anchor_ea, role, evidence_ids,
+            proposal.source_identity_catalog.generation,
+        ))
+        candidates.append(DispatcherRetirementCandidate(
+            ref, witness.anchor_ea, role, evidence_ids,
+            proposal.source_identity_catalog.generation, candidate_id,
+        ))
+    if not candidates:
+        return None
+    candidates = tuple(sorted(candidates, key=canonical_bytes))
+    catalog_id = authority_id((
+        "unflatten.dispatcher-retirement-candidate-catalog.v1",
+        proposal.source_identity_catalog.generation, members, candidates,
+    ))
+    return RetirementCandidateCatalog(catalog_id, proposal.source_identity_catalog.generation, members, candidates)
 
 
 @dataclass(frozen=True, slots=True)
@@ -915,7 +922,7 @@ def attach_typed_proposal(
     state_identity,
     use_def_witness,
     corridor_coverage=None,
-    dispatcher_removal_validation=None,
+    dispatcher_removal_forecast=None,
 ) -> PatchPlan:
     """Attach one typed proposal from producer-owned typed evidence."""
 
@@ -949,37 +956,42 @@ def attach_typed_proposal(
                 block_refs_by_serial=block_refs_by_serial,
             ),
         )
-    if dispatcher_removal_validation is not None:
-        claims = claims_from_dispatcher_removal_validation(
-            dispatcher_removal_validation,
+    if dispatcher_removal_forecast is not None:
+        candidate_catalog = retirement_candidate_catalog_from_forecast(
+            dispatcher_removal_forecast,
+            proposal=proposal,
+            block_refs_by_serial=block_refs_by_serial,
+        )
+        claims = claims_from_dispatcher_removal_forecast(
+            dispatcher_removal_forecast,
             proposal=proposal,
             block_refs_by_serial=block_refs_by_serial,
         )
         if claims:
-            retired_refs = {
+            candidate_refs = {
                 member.block_ref
                 for claim in claims
                 if type(claim) is RetiredDispatcherInfrastructureClaim
                 for member in claim.member_subjects
             }
             dispatcher_refs = set(proposal.plan_inputs.dispatcher_member_refs)
+            retirement_claim = any(
+                type(claim) is RetiredDispatcherInfrastructureClaim
+                for claim in claims
+            )
             proposal = replace(
                 proposal,
                 claims=tuple(sorted((*proposal.claims, *claims), key=lambda item: item.claim_id)),
+                retirement_candidate_catalog=(candidate_catalog if retirement_claim else None),
                 plan_inputs=replace(
                     proposal.plan_inputs,
                     shape=UnflattenPlanShape.FULL_DISPATCHER_RETIREMENT
-                    if retired_refs == dispatcher_refs
+                    if candidate_refs == dispatcher_refs
                     else UnflattenPlanShape.PARTIAL_REWRITE,
-                ),
-                retirement_catalog=next(
-                    (claim.retirement_catalog for claim in claims
-                     if type(claim) is RetiredDispatcherInfrastructureClaim),
-                    proposal.retirement_catalog,
                 ),
             )
     if (
-        proposal.retirement_catalog is not None
+        proposal.retirement_candidate_catalog is not None
         or any(type(claim) is RetiredDispatcherInfrastructureClaim for claim in proposal.claims)
     ) and proposal.corridor_coverage_forecast is None:
         raise ValueError("corridor rewrite or retirement proposal requires coverage metadata")
@@ -1001,5 +1013,5 @@ __all__ = [
     "retirement_member_catalog",
     "validate_proposal",
     "attach_typed_proposal",
-    "claims_from_dispatcher_removal_validation",
+    "claims_from_dispatcher_removal_forecast",
 ]

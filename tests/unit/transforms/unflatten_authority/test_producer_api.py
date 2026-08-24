@@ -12,9 +12,24 @@ from d810.transforms.unflatten_authority.model import (
     resolve_inventory_block_sites,
 )
 from d810.transforms.unflatten_authority.producer_api import (
+    BootstrapEntryRouteForecast,
+    ConcreteEntryRouteForecast,
+    ConditionalEntryBridgeForecast,
     classify_block_effects_and_terminals,
     validate_exact_effect_claim_semantics,
 )
+
+
+class _ForeignConcreteEntryRouteForecast(ConcreteEntryRouteForecast):
+    pass
+
+
+class _ForeignBootstrapEntryRouteForecast(BootstrapEntryRouteForecast):
+    pass
+
+
+class _ForeignConditionalEntryBridgeForecast(ConditionalEntryBridgeForecast):
+    pass
 
 
 def _block(*instructions: InsnSnapshot, kind: BlockKind = BlockKind.UNKNOWN, succs: tuple[int, ...] = ()) -> BlockSnapshot:
@@ -265,8 +280,8 @@ def test_route_adapters_select_one_canonical_proof_and_reject_ambiguity() -> Non
     )
     from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
     from d810.transforms.minimal_unflatten_emit import (
-        BootstrapEntryRouteProof, ConcreteStateEntryRouteProof,
-        ConditionalEntryBridgeProof,
+        BootstrapEntryRouteForecast, ConcreteEntryRouteForecast,
+        ConditionalEntryBridgeForecast,
     )
     from d810.transforms.unflatten_authority import producer_api
     from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
@@ -286,7 +301,7 @@ def test_route_adapters_select_one_canonical_proof_and_reject_ambiguity() -> Non
             + (("source_kinds", "concrete"),),
         ),),
     )
-    concrete = ConcreteStateEntryRouteProof(7, 2, ("concrete",))
+    concrete = ConcreteEntryRouteForecast(7, 2, ("concrete",))
     assert producer_api.adapt_concrete_entry_route(
         concrete, **{**kwargs, "canonical_evidence": concrete_evidence},
     ) is concrete_evidence.route_proofs[0]
@@ -302,12 +317,12 @@ def test_route_adapters_select_one_canonical_proof_and_reject_ambiguity() -> Non
             BootstrapRouteProofKind.STATIC_NATIVE,
         )
 
-    bootstrap_row = BootstrapEntryRouteProof(0, 2, 7, 0x1000, 0x3000)
+    bootstrap_row = BootstrapEntryRouteForecast(0, 2, 7, 0x1000, 0x3000)
     # A conditional canonical proof must not be reinterpreted as a bootstrap row.
     with pytest.raises(ValueError, match="zero"):
         producer_api.adapt_bootstrap_entry_route_proof(bootstrap_row, **kwargs)
 
-    conditional = ConditionalEntryBridgeProof(1, 0x2001, 3, 2, True)
+    conditional = ConditionalEntryBridgeForecast(1, 0x2001, 3, 2, True)
     assert producer_api.adapt_conditional_entry_route(conditional, **kwargs) is proposal.route_evidence.route_proofs[0]
     with pytest.raises(ValueError, match="zero"):
         producer_api.adapt_conditional_entry_route(
@@ -342,6 +357,36 @@ def test_route_adapters_select_one_canonical_proof_and_reject_ambiguity() -> Non
         producer_api.adapt_conditional_entry_route(conditional, **{**kwargs, "canonical_evidence": evidence})
 
 
+@pytest.mark.parametrize(
+    ("adapter", "route"),
+    (
+        (
+            producer_module.adapt_concrete_entry_route,
+            _ForeignConcreteEntryRouteForecast(7, 2, ("concrete",)),
+        ),
+        (
+            producer_module.adapt_bootstrap_entry_route_proof,
+            _ForeignBootstrapEntryRouteForecast(0, 2, 7, 0x1000, 0x3000),
+        ),
+        (
+            producer_module.adapt_conditional_entry_route,
+            _ForeignConditionalEntryBridgeForecast(1, 0x2001, 3, 2, True),
+        ),
+    ),
+)
+def test_route_adapters_reject_noncanonical_forecast_instances(adapter, route) -> None:
+    """Adapters accept only the exact canonical forecast DTO classes."""
+
+    with pytest.raises(TypeError, match="Forecast"):
+        adapter(
+            route,
+            source=None,
+            source_catalog=None,
+            block_refs_by_serial={},
+            canonical_evidence=None,
+        )
+
+
 def test_route_adapters_reject_semantic_field_drift_beyond_endpoint_coincidence() -> None:
     """Selectors must bind the whole proof, not merely one matching endpoint."""
 
@@ -355,7 +400,7 @@ def test_route_adapters_reject_semantic_field_drift_beyond_endpoint_coincidence(
     )
     from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
     from d810.transforms.minimal_unflatten_emit import (
-        ConcreteStateEntryRouteProof, ConditionalEntryBridgeProof,
+        ConcreteEntryRouteForecast, ConditionalEntryBridgeForecast,
     )
     from d810.transforms.unflatten_authority import producer_api
     from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
@@ -364,7 +409,7 @@ def test_route_adapters_reject_semantic_field_drift_beyond_endpoint_coincidence(
     proof = proposal.route_evidence.route_proofs[0]
     kwargs = dict(source=source, source_catalog=proposal.source_identity_catalog,
                   block_refs_by_serial=refs, canonical_evidence=proposal.route_evidence)
-    conditional = ConditionalEntryBridgeProof(1, 0x2001, 3, 2, True)
+    conditional = ConditionalEntryBridgeForecast(1, 0x2001, 3, 2, True)
     native = NativeBoundTransitionRoute("fact", 0x1000, 0, 7, 2)
     transition = StateWriteTransition(
         0, 7, 2, False, None,
@@ -429,10 +474,10 @@ def test_route_adapters_reject_semantic_field_drift_beyond_endpoint_coincidence(
     original_diag = proof.diagnostic_provenance
     object.__setattr__(proof, "diagnostic_provenance", original_diag + (("source_kinds", "concrete"), ("fact_id", "fact")))
     try:
-        concrete = ConcreteStateEntryRouteProof(7, 2, ("concrete",))
+        concrete = ConcreteEntryRouteForecast(7, 2, ("concrete",))
         assert producer_api.adapt_concrete_entry_route(concrete, **kwargs) is proof
         try:
-            producer_api.adapt_concrete_entry_route(ConcreteStateEntryRouteProof(7, 2, ("foreign",)), **kwargs)
+            producer_api.adapt_concrete_entry_route(ConcreteEntryRouteForecast(7, 2, ("foreign",)), **kwargs)
         except (TypeError, ValueError):
             pass
         else:

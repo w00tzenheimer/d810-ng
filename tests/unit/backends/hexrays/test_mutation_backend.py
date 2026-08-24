@@ -78,9 +78,8 @@ from d810.transforms.unflatten_authority import views as authority_views
 from d810.transforms.dispatcher_corridor_coverage import (
     DISPATCHER_CORRIDOR_COVERAGE_METADATA,
     DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
-    DispatcherRemovalPreflightValidation,
     analyze_dispatcher_corridor_coverage,
-    build_dispatcher_removal_preflight_proof,
+    build_dispatcher_removal_forecast,
 )
 from d810.transforms.edit_simulator import project_patch_plan
 from d810.transforms.fragment_plan import (
@@ -603,15 +602,6 @@ def _comparison_dispatcher_forest_cfg() -> FlowGraph:
     )
 
 
-def _executed_fragment_safety() -> dict[str, bool]:
-    return {
-        "fragment_atomic": True,
-        "non_state_use_def_veto": True,
-        "non_state_use_def_checked": True,
-        "non_state_use_def_severances_zero": True,
-    }
-
-
 def _comparison_dispatcher_forest_observed_cfg(
     *,
     direct_target: int,
@@ -639,7 +629,7 @@ def _typed_bootstrap_authority_plan(
     dispatcher_member_serials: tuple[int, ...],
     authoritative_handler_serials: tuple[int, ...],
     coverage,
-    removal_validation=None,
+    removal_forecast=None,
     route_edge: tuple[int, int] | None = None,
     route_terminal: bool = False,
 ) -> PatchPlan:
@@ -767,7 +757,7 @@ def _typed_bootstrap_authority_plan(
         state_identity=state,
         use_def_witness=witness,
         corridor_coverage=coverage,
-        dispatcher_removal_validation=removal_validation,
+        dispatcher_removal_forecast=removal_forecast,
     )
 
 
@@ -786,20 +776,13 @@ def test_apply_rejects_unbound_comparison_dispatcher_removal_below_raw_threshold
         modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
         dispatcher_entry_serial=2,
     )
-    projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
-    proof = build_dispatcher_removal_preflight_proof(
-        cfg,
-        post_graph=projected.graph,
-        coverage=coverage,
-        dispatcher_entry_serial=2,
-        authoritative_handler_serials=frozenset({3, 4}),
-        dispatcher_region_serials=frozenset({2, *range(5, 32)}),
-        producer_safety=_executed_fragment_safety(),
-    )
     plan = plan.with_metadata(
         **{
             DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
-            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata(),
+            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: {
+                "proof_status": "accepted",
+                "reason": "untrusted_stamped_metadata",
+            },
         }
     )
 
@@ -830,18 +813,11 @@ def test_apply_rejects_dispatcher_removal_proof_when_one_handler_is_lost() -> No
         modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
         dispatcher_entry_serial=2,
     )
-    projected = project_patch_plan(cfg, raw_plan, snapshot_id=raw_plan.snapshot_id)
-    proof = build_dispatcher_removal_preflight_proof(
+    removal_forecast = build_dispatcher_removal_forecast(
         cfg,
-        post_graph=projected.graph,
         coverage=coverage,
         dispatcher_entry_serial=2,
-        authoritative_handler_serials=frozenset({3, 4, 5}),
-        dispatcher_region_serials=frozenset({2, *range(5, 32)}),
-        producer_safety=_executed_fragment_safety(),
     )
-    assert not proof.passed
-    assert proof.reason == "authoritative_handler_lost"
     plan = _typed_bootstrap_authority_plan(
         cfg,
         template=raw_plan,
@@ -849,9 +825,7 @@ def test_apply_rejects_dispatcher_removal_proof_when_one_handler_is_lost() -> No
         coverage=coverage,
         dispatcher_member_serials=(1, 2, *range(5, 32)),
         authoritative_handler_serials=(1,),
-        removal_validation=DispatcherRemovalPreflightValidation(
-            proof.passed, proof.reason, proof,
-        ),
+        removal_forecast=removal_forecast,
     )
 
     translator = _FakeTranslator(cfg)
@@ -931,16 +905,11 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
         dispatcher_entry_serial=2,
     )
     projected = project_patch_plan(cfg, template, snapshot_id=template.snapshot_id)
-    proof = build_dispatcher_removal_preflight_proof(
+    removal_forecast = build_dispatcher_removal_forecast(
         cfg,
-        post_graph=projected.graph,
         coverage=coverage,
         dispatcher_entry_serial=2,
-        authoritative_handler_serials=frozenset({3, 4}),
-        dispatcher_region_serials=frozenset({2}),
-        producer_safety=_executed_fragment_safety(),
     )
-    assert proof.passed
     plan = _typed_bootstrap_authority_plan(
         cfg,
         template=template,
@@ -949,9 +918,7 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
         authoritative_handler_serials=(3,),
         coverage=coverage,
         route_edge=(1, 3),
-        removal_validation=DispatcherRemovalPreflightValidation(
-            proof.passed, proof.reason, proof,
-        ),
+        removal_forecast=removal_forecast,
     )
     translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(
@@ -980,6 +947,12 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
     assert observed_verdict is not None
     assert observed_verdict.phase is authority_model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
     assert observed_verdict.accepted is False
+    assert observed_verdict.safety_case is not None
+    assert any(
+        item.key.dimension is authority_model.SafetyDimension.CORRIDOR_COVERAGE
+        and item.state is not authority_model.ObligationState.SATISFIED
+        for item in observed_verdict.failed_obligations
+    )
 
 
 def test_partial_coverage_drift_rejects_before_any_mutation() -> None:
@@ -2085,13 +2058,6 @@ def test_backend_typed_authority_emits_two_canonical_phase_payloads(monkeypatch)
             observation_factory()
         ),
     )
-    legacy_observations = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: legacy_observations.append(kwargs),
-    )
-
     result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
 
     assert result is observed_cfg
@@ -2122,7 +2088,6 @@ def test_backend_typed_authority_emits_two_canonical_phase_payloads(monkeypatch)
         assert payload["session_id"]
     assert projected_payload["generation"] == execution.projected_unflatten_verdict.safety_case.candidate_generation
     assert observed_payload["generation"] == execution.observed_unflatten_verdict.safety_case.candidate_generation
-    assert legacy_observations == []
 
 
 def test_canonical_phase_observer_contains_subscriber_failure(
@@ -3675,16 +3640,11 @@ def test_full_dispatcher_retirement_uses_ordinary_contract_when_entry_reachabili
     )
     assert coverage.planned_completion_status == "planned_dispatcher_corridors_covered"
     projected = project_patch_plan(cfg, template, snapshot_id=template.snapshot_id)
-    proof = build_dispatcher_removal_preflight_proof(
+    removal_forecast = build_dispatcher_removal_forecast(
         cfg,
-        post_graph=projected.graph,
         coverage=coverage,
         dispatcher_entry_serial=2,
-        authoritative_handler_serials=frozenset({3, 4}),
-        dispatcher_region_serials=frozenset({2}),
-        producer_safety=_executed_fragment_safety(),
     )
-    assert proof.passed
     plan = _typed_bootstrap_authority_plan(
         cfg,
         template=template,
@@ -3693,9 +3653,7 @@ def test_full_dispatcher_retirement_uses_ordinary_contract_when_entry_reachabili
         authoritative_handler_serials=(3,),
         coverage=coverage,
         route_edge=(1, 3),
-        removal_validation=DispatcherRemovalPreflightValidation(
-            proof.passed, proof.reason, proof,
-        ),
+        removal_forecast=removal_forecast,
     )
     projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
 
@@ -3718,8 +3676,8 @@ def test_full_dispatcher_retirement_uses_ordinary_contract_when_entry_reachabili
     assert backend.last_patch_execution.projected_unflatten_verdict.accepted
 
 
-def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proof():
-    """A rejected narrow proof alone must not disable ordinary safe rewrites."""
+def test_small_noncyclic_retirement_uses_transaction_owned_contract():
+    """Producer forecast status cannot replace transaction-owned obligations."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
         stop_serials=(4,),
@@ -3736,17 +3694,11 @@ def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proo
         modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
         dispatcher_entry_serial=2,
     )
-    projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
-    proof = build_dispatcher_removal_preflight_proof(
+    removal_forecast = build_dispatcher_removal_forecast(
         cfg,
-        post_graph=projected.graph,
         coverage=coverage,
         dispatcher_entry_serial=2,
-        authoritative_handler_serials=frozenset({3, 4}),
-        dispatcher_region_serials=frozenset({2}),
-        producer_safety={},
     )
-    assert not proof.passed
     plan = _typed_bootstrap_authority_plan(
         cfg,
         template=plan,
@@ -3755,10 +3707,12 @@ def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proo
         authoritative_handler_serials=(3,),
         coverage=coverage,
         route_edge=(1, 3),
-        removal_validation=DispatcherRemovalPreflightValidation(
-            proof.passed, proof.reason, proof,
-        ),
+        removal_forecast=removal_forecast,
     )
+    # The typed bootstrap mutates source instruction identity while attaching
+    # its proposal.  The transaction must project from that final typed plan.
+    projected = project_patch_plan(cfg, plan, snapshot_id=plan.snapshot_id)
+
     class _ProjectedTranslator(_FakeTranslator):
         def lift(self, _live_source: object) -> FlowGraph:
             self.lift_count += 1
@@ -3772,10 +3726,21 @@ def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proo
 
     result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
-    assert result is cfg
-    assert translator.lower_calls == []
-    assert translator.lift_count == 1
-    assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
+    assert result is projected.graph
+    assert translator.lower_calls == [plan]
+    assert translator.lift_count == 2
+    execution = backend.last_patch_execution
+    assert execution is not None
+    projected_verdict = execution.projected_unflatten_verdict
+    assert projected_verdict is not None and projected_verdict.safety_case is not None
+    retirement_result = projected_verdict.safety_case.retirement_phase_result
+    assert retirement_result is not None
+    member = next(
+        item
+        for item in retirement_result.members
+        if item.anchor_ea == cfg.blocks[1].start_ea
+    )
+    assert member.classification is authority_model.RetirementPhaseClassification.RETAINED
 
 def test_backend_reports_unclaimed_typed_local_alias_sibling_store_loss() -> None:
     pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
@@ -3953,16 +3918,11 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
         dispatcher_entry_serial=2,
     )
     projected = project_patch_plan(cfg, template, snapshot_id=template.snapshot_id)
-    proof = build_dispatcher_removal_preflight_proof(
+    removal_forecast = build_dispatcher_removal_forecast(
         cfg,
-        post_graph=projected.graph,
         coverage=coverage,
         dispatcher_entry_serial=2,
-        authoritative_handler_serials=frozenset({3, 4, 5, 6}),
-        dispatcher_region_serials=frozenset({2}),
-        producer_safety={},
     )
-    assert proof.reason == "untyped_lost_block"
     plan = _typed_bootstrap_authority_plan(
         cfg,
         template=template,
@@ -3971,9 +3931,7 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
         authoritative_handler_serials=(4,),
         coverage=coverage,
         route_edge=(3, 4),
-        removal_validation=DispatcherRemovalPreflightValidation(
-            False, proof.reason, proof,
-        ),
+        removal_forecast=removal_forecast,
     )
     translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(
@@ -4046,46 +4004,33 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break() -> None:
         dispatcher_entry_serial=2,
     )
     projected = project_patch_plan(cfg, template, snapshot_id=template.snapshot_id)
-    proof = build_dispatcher_removal_preflight_proof(
+    removal_forecast = build_dispatcher_removal_forecast(
         cfg,
-        post_graph=projected.graph,
         coverage=coverage,
         dispatcher_entry_serial=2,
-        authoritative_handler_serials=frozenset({3, 4, 5, 6}),
-        dispatcher_region_serials=frozenset({2}),
-        producer_safety={},
     )
     assert coverage.planned_completion_status == "planned_dispatcher_corridors_covered"
-    assert not proof.passed
-    assert proof.reason == "untyped_lost_block"
     from d810.transforms.dispatcher_corridor_coverage import (
-        DispatcherBlockAnchor,
-        TerminalSwitchCycleBreakProof,
+        forecast_terminal_switch_cycle_break,
     )
-    anchor = lambda serial: DispatcherBlockAnchor(serial, cfg.blocks[serial].start_ea)
-    terminal = TerminalSwitchCycleBreakProof(
-        dispatcher=anchor(2),
-        terminal_source=anchor(3),
-        shared_merge=anchor(8),
-        terminal_target=anchor(4),
-        terminal_stop=anchor(9),
-        retired_residue=(anchor(2), anchor(7), anchor(8)),
+    removal_forecast = forecast_terminal_switch_cycle_break(
+        cfg,
+        post_graph=projected.graph,
+        patch_plan=template,
+        coverage=removal_forecast,
+        dispatcher_entry_serial=2,
+        authoritative_handler_serials=frozenset({3, 4, 5, 6}),
     )
     plan = _typed_bootstrap_authority_plan(
         cfg,
         template=template,
         dispatcher_entry_serial=2,
         dispatcher_member_serials=(2, 7, 8),
-        authoritative_handler_serials=(4,),
+        authoritative_handler_serials=(6,),
         coverage=coverage,
-        route_edge=(3, 4),
+        route_edge=(5, 6),
         route_terminal=True,
-        removal_validation=DispatcherRemovalPreflightValidation(
-            True,
-            "terminal_switch_cycle_break",
-            proof,
-            terminal_switch_cycle_break=terminal,
-        ),
+        removal_forecast=removal_forecast,
     )
 
     class _ProjectedTranslator(_FakeTranslator):

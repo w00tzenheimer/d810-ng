@@ -368,7 +368,7 @@ def _retirement_inventories(
     )
     candidate_graph = projected
     if physically_present_retired:
-        retired_ref = proposal.retirement_catalog.members[1].block_ref
+        retired_ref = proposal.retirement_candidate_catalog.plan_members[1].block_ref
         retired_serial = next(
             serial for ref, serial in plan.source_coordinates
             if ref == retired_ref
@@ -393,6 +393,67 @@ def _retirement_inventories(
         if type(claim) is model.RetiredDispatcherInfrastructureClaim
     )
     return proposal, claim, source_inventory, projected_inventory
+
+
+def test_retirement_phase_records_are_binder_owned() -> None:
+    """Callers cannot mint a content-addressed retirement result themselves."""
+
+    proposal, claim, source_inventory, projected_inventory = _retirement_inventories()
+    binding_result = bind.bind_retired_dispatcher_infrastructure_claim(
+        claim=claim,
+        proposal=proposal,
+        source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    result = binding_result.phase_result
+    assert result is not None
+    member = result.members[0]
+    with pytest.raises(TypeError, match="binder-owned"):
+        model.RetirementPhaseMember(
+            member.block_ref,
+            member.anchor_ea,
+            member.classification,
+            member.candidate_id,
+            member.candidate_reachable,
+            member.reason,
+            member.source_binding,
+            member.candidate_binding,
+        )
+    with pytest.raises(TypeError, match="binder-owned"):
+        model.RetirementPhaseResult(
+            result.result_id,
+            result.catalog_id,
+            result.claim_id,
+            result.phase,
+            result.source_fingerprint,
+            result.candidate_fingerprint,
+            result.source_generation,
+            result.candidate_generation,
+            result.members,
+        )
+    forged_result = object.__new__(model.RetirementPhaseResult)
+    for name in (
+        "result_id",
+        "catalog_id",
+        "claim_id",
+        "phase",
+        "source_fingerprint",
+        "candidate_fingerprint",
+        "source_generation",
+        "candidate_generation",
+        "members",
+    ):
+        object.__setattr__(forged_result, name, getattr(result, name))
+    forged_result.__post_init__()
+    with pytest.raises(ValueError, match="not minted by the transaction binder"):
+        bind.validate_retirement_phase_result(forged_result)
+    equal_source_clone = replace(member.source_binding)
+    assert equal_source_clone == member.source_binding
+    assert equal_source_clone is not member.source_binding
+    object.__setattr__(member, "source_binding", equal_source_clone)
+    with pytest.raises(ValueError, match="retirement phase result bindings differ from binder rows"):
+        bind.validate_retired_infrastructure_binding_result(binding_result)
 
 
 def test_terminal_cycle_binding_requires_exact_reachable_cycle_break() -> None:
@@ -1516,7 +1577,7 @@ def test_retirement_binding_requires_retained_members_and_seals_post_bind_mutati
     )
     retained = next(
         item for item in result.projected_bindings
-        if item.subject.block_ref == claim.retirement_catalog.members[0].block_ref
+        if item.subject.block_ref == claim.candidate_catalog.plan_members[0].block_ref
     )
     assert retained.status is model.SubjectBindingStatus.UNIQUE
     assert not hasattr(result, "candidate_reachable_serials")
@@ -1531,8 +1592,8 @@ def test_retirement_binding_accepts_physically_present_but_unreachable_retired_m
     proposal, claim, source_inventory, projected_inventory = _retirement_inventories(
         physically_present_retired=True,
     )
-    retired_ref = claim.retirement_catalog.members[1].block_ref
-    retained_ref = claim.retirement_catalog.members[0].block_ref
+    retired_ref = claim.candidate_catalog.plan_members[1].block_ref
+    retained_ref = claim.candidate_catalog.plan_members[0].block_ref
     result = bind.bind_retired_dispatcher_infrastructure_claim(
         claim=claim, proposal=proposal,
         source_inventory=source_inventory,
@@ -1566,7 +1627,7 @@ def test_retirement_binding_rejects_naked_caller_reachability_authority() -> Non
         base,
         claims=(claim,),
         plan_inputs=replace(base.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE),
-        retirement_catalog=claim.retirement_catalog,
+        retirement_candidate_catalog=claim.candidate_catalog,
         corridor_coverage_forecast=_minimal_corridor_forecast(model, base),
     )
     with pytest.raises(TypeError):
@@ -1574,7 +1635,7 @@ def test_retirement_binding_rejects_naked_caller_reachability_authority() -> Non
             claim=claim,
             proposal=proposal,
             source_serial_by_ref={item.block_ref: index for index, item in enumerate(base.source_identity_catalog.blocks)},
-            projected_serial_by_ref={claim.retirement_catalog.members[1].block_ref: 0},
+            projected_serial_by_ref={claim.candidate_catalog.plan_members[1].block_ref: 0},
             candidate_reachable_serials=(0,),
             source_graph_fingerprint=authority_id("naked-reachability-source"),
             projected_graph_fingerprint=authority_id("naked-reachability-projector"),

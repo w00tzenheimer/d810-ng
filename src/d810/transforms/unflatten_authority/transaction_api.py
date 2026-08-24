@@ -665,7 +665,7 @@ def _receipt(
             ))
             if route_assessments else None
         ),
-        "retirement_catalog": proposal.retirement_catalog,
+        "retirement_candidate_catalog": proposal.retirement_candidate_catalog,
         "corridor_coverage_forecast": proposal.corridor_coverage_forecast,
         "projected_topology_reference_digest": projected_topology_reference.inventory_digest,
     }
@@ -1365,6 +1365,7 @@ def _derive_inputs(
     terminal_cycle_phase_results = []
     detached_phase_results = []
     detached_source_results = []
+    retirement_phase_results = []
     if phase in {
         model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
@@ -1374,7 +1375,6 @@ def _derive_inputs(
                 # Coverage is bound once below; defer until that sealed result exists.
                 continue
             if type(claim) is model.RetiredDispatcherInfrastructureClaim:
-                catalog_rows = claim.retirement_catalog.members
                 binding_result = authority_bind.bind_retired_dispatcher_infrastructure_claim(
                     claim=claim, proposal=proposal,
                     source_inventory=source_inventory,
@@ -1403,6 +1403,9 @@ def _derive_inputs(
                     raise ValueError("retirement binder result is not carried by source facts")
                 if actual_projected != expected_projected:
                     raise ValueError("candidate retirement facts drifted from binder result")
+                if binding_result.phase_result is None:
+                    raise ValueError("retirement binder did not produce a phase result")
+                retirement_phase_results.append(binding_result.phase_result)
             elif type(claim) is model.TerminalCycleBreakClaim:
                 terminal_binding = authority_bind.bind_terminal_cycle_break_claim(
                     claim=claim,
@@ -1456,6 +1459,9 @@ def _derive_inputs(
         prior_source_results=prior_detached_source_results,
     )
     claims = tuple(sorted((*proposal.claims, *alias_claims), key=lambda item: item.claim_id))
+    if len(retirement_phase_results) > 1:
+        raise ValueError("retirement phase must mint exactly one result")
+    retirement_phase_result = retirement_phase_results[0] if retirement_phase_results else None
     route_assessments = tuple(
         item for item in (source_route_assessment, candidate_route_assessment)
         if item is not None
@@ -1490,6 +1496,7 @@ def _derive_inputs(
         terminal_cycle_phase_results=tuple(sorted(
             terminal_cycle_phase_results, key=lambda item: item.result_id,
         )),
+        retirement_phase_result=retirement_phase_result,
         projected_topology_reference=projected_topology_reference,
     )
 
