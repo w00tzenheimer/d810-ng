@@ -88,6 +88,10 @@ def _load_plugin_module(
 
     typing_module = ModuleType("d810.core.typing")
     typing_module.override = lambda function: function
+    backends = ModuleType("d810.backends")
+    backends.prepare_extension_rules_for_core_reload = lambda: events.append(
+        "prepare-extension-rules"
+    )
 
     for name, module in (
         ("idaapi", idaapi),
@@ -95,6 +99,7 @@ def _load_plugin_module(
         ("ida_hexrays", ida_hexrays),
         ("d810", d810),
         ("d810._vendor.ida_reloader", reloader),
+        ("d810.backends", backends),
         ("d810.core.typing", typing_module),
     ):
         monkeypatch.setitem(sys.modules, name, module)
@@ -151,6 +156,7 @@ def test_late_init_starts_core_exactly_when_needed(
             True,
             [
                 "base-reload-enter",
+                "prepare-extension-rules",
                 "reload-package",
                 "base-reload-exit",
                 "core-is-loaded",
@@ -159,7 +165,12 @@ def test_late_init_starts_core_exactly_when_needed(
         ),
         (
             False,
-            ["base-reload-enter", "reload-package", "base-reload-exit"],
+            [
+                "base-reload-enter",
+                "prepare-extension-rules",
+                "reload-package",
+                "base-reload-exit",
+            ],
         ),
     ),
 )
@@ -194,6 +205,7 @@ def test_reload_action_enters_plugin_lifecycle_once(
 
     assert events == [
         "base-reload-enter",
+        "prepare-extension-rules",
         "reload-package",
         "base-reload-exit",
         "core-is-loaded",

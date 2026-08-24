@@ -14,6 +14,7 @@ module is a no-op that proves nothing.
 
 from __future__ import annotations
 
+import importlib
 import sys
 import textwrap
 import unittest
@@ -40,6 +41,9 @@ class _FakeRegistry:
 
     def rule_modules(self):
         self.calls += 1
+        return self._modules
+
+    def extension_reload_module_prefixes(self):
         return self._modules
 
     def record_rule_module_result(self, module_name, error):
@@ -236,6 +240,85 @@ class TestLoadExtensionRules(unittest.TestCase):
         reg.activate_implementation(candidate)
 
         self.assertEqual(rule_marker.read_text(), "imported")
+
+    def test_reload_preparation_evicts_the_whole_extension_package(self):
+        """Rule dependencies must cold-import against the reloaded D810 core."""
+        package = self.root / "acme_ext_hot_reload"
+        rules = package / "rules"
+        rules.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        (package / "runtime.py").write_text("TOKEN = object()")
+        (rules / "__init__.py").write_text("")
+        (rules / "solver.py").write_text(
+            "from acme_ext_hot_reload.runtime import TOKEN"
+        )
+        imported = (
+            importlib.import_module("acme_ext_hot_reload"),
+            importlib.import_module("acme_ext_hot_reload.runtime"),
+            importlib.import_module("acme_ext_hot_reload.rules"),
+            importlib.import_module("acme_ext_hot_reload.rules.solver"),
+        )
+        self._planted.extend(module.__name__ for module in imported)
+        self._patch_registry(_FakeRegistry(["acme_ext_hot_reload"]))
+
+        import d810.backends as backends
+
+        evicted = backends.prepare_extension_rules_for_core_reload()
+
+        self.assertEqual(
+            evicted,
+            (
+                "acme_ext_hot_reload.rules.solver",
+                "acme_ext_hot_reload.runtime",
+                "acme_ext_hot_reload.rules",
+                "acme_ext_hot_reload",
+            ),
+        )
+        self.assertFalse(
+            any(
+                name == "acme_ext_hot_reload"
+                or name.startswith("acme_ext_hot_reload.")
+                for name in sys.modules
+            )
+        )
+
+    def test_reload_preparation_preserves_shared_namespace_siblings(self):
+        namespace = self.root / "acme_shared_namespace"
+        extension = namespace / "d810"
+        sibling = namespace / "other_plugin"
+        extension.mkdir(parents=True)
+        sibling.mkdir()
+        (namespace / "__init__.py").write_text("")
+        (extension / "__init__.py").write_text("TOKEN = object()")
+        (sibling / "__init__.py").write_text("TOKEN = object()")
+        parent = importlib.import_module("acme_shared_namespace")
+        old_extension = importlib.import_module("acme_shared_namespace.d810")
+        sibling_module = importlib.import_module(
+            "acme_shared_namespace.other_plugin"
+        )
+        planted = (
+            parent.__name__,
+            old_extension.__name__,
+            sibling_module.__name__,
+        )
+        self._planted.extend(planted)
+        self._patch_registry(
+            _FakeRegistry(["acme_shared_namespace.d810"])
+        )
+
+        import d810.backends as backends
+
+        evicted = backends.prepare_extension_rules_for_core_reload()
+
+        self.assertEqual(evicted, ("acme_shared_namespace.d810",))
+        self.assertIn("acme_shared_namespace", sys.modules)
+        self.assertIn("acme_shared_namespace.other_plugin", sys.modules)
+        self.assertFalse(hasattr(parent, "d810"))
+
+        imported: dict[str, object] = {}
+        exec("from acme_shared_namespace import d810", imported)
+        self.assertIsNot(imported["d810"], old_extension)
+        self.assertIs(parent.other_plugin, sibling_module)
 
     def test_imported_module_without_registered_class_is_misdeclared(self):
         rule_marker = self.write_rule("acme_ext_rule_unregistered")

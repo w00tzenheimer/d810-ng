@@ -269,9 +269,30 @@ may separately exist at a *different version* -- trusting entry points for
 builtins would let the backend list describe one version while another
 executes.
 
-One caveat for extension authors: the reloader will not evict your module (its
-name is not `d810.*`), so **do not cache d810 objects at module scope** -- they
-go stale across a hot reload. Resolve them inside functions.
+Hot reload treats the entry point's manifest module as the extension-owned
+reload prefix. In the example above, `d810_backend_mything` and every loaded
+submodule beneath it are evicted after D810 stops and then cold-imported against
+the rebuilt core. This keeps rule classes and portable contract types from
+surviving with stale identities.
+
+If D810-coupled runtime code lives outside the manifest package, declare the
+additional exact module prefix rather than relying on shared-namespace
+inference:
+
+```python
+MANIFEST = {
+    "name": "mything",
+    "api_version": 1,
+    "provides": "company.mything_runtime:api",
+    "reload_modules": ("company.mything_runtime",),
+}
+```
+
+Do not declare a broad shared prefix such as `company`: reload preparation
+would correctly treat that declaration as ownership and evict sibling modules.
+Provider availability does not affect this lifecycle; unavailable and
+incompatible extension manifests are also evicted without resolving
+`provides`.
 
 ## Future Backends
 

@@ -186,6 +186,12 @@ class D810Plugin(
             getattr(getattr(self.plugin, "manager", None), "started", False)
         )
         with self.plugin_setup_reload():
+            # The core reloader only owns d810.* modules.  Installed rule
+            # packages must be evicted after the running manager stops so their
+            # full dependency graphs cold-import against the reloaded core.
+            from d810.backends import prepare_extension_rules_for_core_reload
+
+            prepare_extension_rules_for_core_reload()
             reload_package(
                 d810,
                 skip=[

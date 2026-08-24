@@ -106,6 +106,30 @@ class TestDiscovery(unittest.TestCase):
         self.assertEqual(reg.names(), ["hexrays"])
         self.assertEqual(reg.info("hexrays").origin, "builtin")
 
+    def test_reload_prefixes_include_an_unavailable_provider_without_reprobe(self):
+        load = Recorder(raises=ImportError("native binding unavailable"))
+        manifest = BackendManifest(
+            name="acme",
+            api_version=PLUGIN_API_VERSION,
+            provides=load,
+            reload_modules=("acme_runtime",),
+        )
+        backend = BackendSpec(
+            name="acme",
+            origin="acme-dist",
+            load_manifest=lambda: manifest,
+            reload_modules=("company.acme_manifest",),
+        )
+        reg = registry([backend])
+        self.assertEqual(reg.probe("acme").status, BackendStatus.UNAVAILABLE)
+        self.assertEqual(load.calls, 1)
+
+        self.assertEqual(
+            reg.extension_reload_module_prefixes(),
+            ("acme_runtime", "company.acme_manifest"),
+        )
+        self.assertEqual(load.calls, 1, "reload discovery must not reprobe provides")
+
 
 class TestLoading(unittest.TestCase):
     def test_load_returns_the_object_and_caches_it(self):
@@ -243,6 +267,20 @@ class TestManifest(unittest.TestCase):
         got = manifest_of({"name": "acme", "api_version": 1, "provides": "pkg:obj"})
         self.assertEqual((got.name, got.api_version, got.provides),
                          ("acme", 1, "pkg:obj"))
+
+    def test_plain_manifest_accepts_explicit_reload_module_prefixes(self):
+        got = manifest_of(
+            {
+                "name": "acme",
+                "api_version": 1,
+                "provides": "pkg:obj",
+                "reload_modules": ("company.d810", "acme_runtime"),
+            }
+        )
+        self.assertEqual(
+            got.reload_modules,
+            ("company.d810", "acme_runtime"),
+        )
 
     def test_any_object_with_the_fields_is_a_valid_manifest(self):
         class Declared:

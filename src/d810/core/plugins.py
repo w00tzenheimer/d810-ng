@@ -75,9 +75,10 @@ An out-of-tree extension looks like this (dependency-free flavour; using
                 "provides": "d810_cobra.binding:api"}
 
 The module named by ``provides`` may import d810 freely: it is resolved long
-after d810 has finished loading. It must not, however, cache d810 objects at
-module scope -- the reloader will not evict it (its name is not ``d810.*``), so
-module-level references go stale across a hot reload.
+after d810 has finished loading. Hot reload evicts the extension entry point's
+manifest module prefix and cold-imports it against the rebuilt D810 core. A
+manifest whose coupled runtime lives under another prefix declares it in
+``reload_modules``.
 """
 
 from __future__ import annotations
@@ -285,6 +286,13 @@ class BackendManifest:
     implements: Mapping[str, str] = field(
         default_factory=lambda: types.MappingProxyType({})
     )
+    #: Module prefixes owned by this extension that retain D810 runtime types.
+    #:
+    #: The entry-point manifest module is included automatically.  Declare
+    #: additional prefixes only when D810-coupled runtime code lives outside
+    #: that package.  Exact prefixes avoid treating a shared namespace's first
+    #: segment as extension-owned during hot reload.
+    reload_modules: tuple[str, ...] = ()
 
 
 _MANIFEST_FIELDS = ("name", "api_version", "provides")
@@ -419,7 +427,12 @@ def manifest_of(raw: Any) -> BackendManifest:
     if isinstance(raw, BackendManifest):
         rules = _validate_rules(raw.rules)
         implements = _coerce_implements(raw)
-        if rules == raw.rules and implements == raw.implements:
+        reload_modules = _validate_reload_modules(raw.reload_modules)
+        if (
+            rules == raw.rules
+            and implements == raw.implements
+            and reload_modules == raw.reload_modules
+        ):
             return raw
         return BackendManifest(
             name=raw.name,
@@ -428,6 +441,7 @@ def manifest_of(raw: Any) -> BackendManifest:
             capabilities=raw.capabilities,
             rules=rules,
             implements=implements,
+            reload_modules=reload_modules,
         )
 
     getter = (
@@ -459,6 +473,7 @@ def manifest_of(raw: Any) -> BackendManifest:
     offers = _coerce_offers(raw)
     rules = _coerce_rules(raw)
     implements = _coerce_implements(raw)
+    reload_modules = _coerce_reload_modules(raw)
 
     return BackendManifest(
         name=str(values["name"]),
@@ -467,6 +482,7 @@ def manifest_of(raw: Any) -> BackendManifest:
         capabilities=offers,
         rules=rules,
         implements=implements,
+        reload_modules=reload_modules,
     )
 
 
@@ -544,6 +560,47 @@ def _validate_rules(declared: Any) -> tuple[str, ...]:
     return modules
 
 
+def _coerce_reload_modules(raw: Any) -> tuple[str, ...]:
+    """Read optional extension-owned module prefixes for hot reload."""
+    try:
+        declared = (
+            raw["reload_modules"]
+            if isinstance(raw, Mapping)
+            else raw.reload_modules
+        )
+    except (KeyError, AttributeError):
+        return ()
+    return _validate_reload_modules(declared)
+
+
+def _validate_reload_modules(declared: Any) -> tuple[str, ...]:
+    if declared is None:
+        return ()
+    if isinstance(declared, str):
+        raise ManifestError(
+            "reload_modules must be an ordered sequence of module prefixes, "
+            f"not a bare string: {declared!r}"
+        )
+    if isinstance(declared, (bytes, bytearray, memoryview, Mapping)):
+        raise ManifestError(
+            "reload_modules must be an ordered sequence of module prefixes, "
+            f"not {type(declared).__name__}"
+        )
+    if not isinstance(declared, Sequence):
+        raise ManifestError(
+            "reload_modules must be an ordered tuple/list-like sequence of "
+            f"module prefixes, got {type(declared).__name__}: {declared!r}"
+        )
+    modules = tuple(declared)
+    for module in modules:
+        if not isinstance(module, str) or not module:
+            raise ManifestError(
+                "reload_modules entries must be non-empty import-path strings, "
+                f"got {module!r}"
+            )
+    return modules
+
+
 def _coerce_implements(raw: Any) -> Mapping[str, str]:
     """Read the optional ``implements`` mapping: ``{pass_id: rule class name}``."""
     try:
@@ -583,6 +640,7 @@ class BackendSpec:
     name: str
     load_manifest: Callable[[], Any]
     origin: str = "unknown"
+    reload_modules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -659,6 +717,7 @@ def entry_point_source() -> list[BackendSpec]:
             name=entry_point.name,
             origin=_origin_of(entry_point),
             load_manifest=entry_point.load,
+            reload_modules=(entry_point.module,),
         )
         for entry_point in metadata.entry_points(group=ENTRY_POINT_GROUP)
     ]
@@ -930,6 +989,34 @@ class BackendRegistry:
                 ),
             )
         )
+
+    def extension_reload_module_prefixes(self) -> tuple[str, ...]:
+        """Return declared extension-owned modules without probing providers.
+
+        Reload preparation must include unavailable and incompatible backends:
+        their manifest packages can still be cached with old D810 contract
+        classes.  Read only the cheap manifest declaration and never resolve
+        ``provides`` here.
+        """
+        self.discover()
+        with self._lock:
+            specs = tuple(
+                spec
+                for candidates in self._candidates.values()
+                for spec in candidates
+            )
+        prefixes = {
+            module_name
+            for spec in specs
+            for module_name in spec.reload_modules
+        }
+        for spec in specs:
+            try:
+                manifest = manifest_of(spec.load_manifest())
+            except Exception:
+                continue
+            prefixes.update(manifest.reload_modules)
+        return tuple(sorted(prefixes))
 
     def implementation_manifest_info(self, name: str) -> BackendInfo:
         """Classify one backend from its manifest without loading ``provides``.
