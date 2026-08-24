@@ -31,8 +31,6 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Mapping
-
 from d810._vendor.peewee import fn
 from d810.core import logging as _d810_logging
 from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
@@ -120,7 +118,6 @@ from d810.core.observability_events import (
     StateDispatcherRowsObserved,
     StateTransitionDispatchResolutionsObserved,
     SwitchCaseTransitionFactsObserved,
-    UnflattenDispatcherCorridorCoverageObserved,
     WatchBlockTransitionObserved,
 )
 
@@ -158,10 +155,6 @@ _pending_condition_chain_intervals: list[ConditionChainIntervalDispatcherObserve
 
 _state_dispatcher_lock = threading.Lock()
 _pending_state_dispatcher_rows: list[StateDispatcherRowsObserved] = []
-_unflatten_dispatcher_corridor_lock = threading.Lock()
-_pending_unflatten_dispatcher_corridor_coverage: list[
-    UnflattenDispatcherCorridorCoverageObserved
-] = []
 _branch_witness_lock = threading.Lock()
 _pending_branch_witness_decisions: list[BranchWitnessDecisionsObserved] = []
 _exit_path_shortcut_lock = threading.Lock()
@@ -245,9 +238,6 @@ def _handle_capture_mba(ev: CaptureMbaSnapshotRequested) -> None:
     _flush_pending_provenance(conn, snap_id)
     _flush_pending_condition_chain_intervals(conn, snap_id, snap.func_ea)
     _flush_pending_state_dispatcher_rows(conn, snap_id, snap.func_ea)
-    _flush_pending_unflatten_dispatcher_corridor_coverage(
-        conn, snap_id, snap.func_ea
-    )
     _flush_pending_branch_witness_decisions(conn, snap_id, snap.func_ea)
     _flush_pending_exit_path_shortcut_decisions(conn, snap_id, snap.func_ea)
     # Block-lineage drain is fired by snapshot_mba via
@@ -602,50 +592,6 @@ def _flush_pending_state_dispatcher_rows(
         )
 
 
-def _handle_unflatten_dispatcher_corridor_coverage(
-    ev: UnflattenDispatcherCorridorCoverageObserved,
-) -> None:
-    """Persist typed lowerer coverage facts at the current/next capture.
-
-    A final transaction outcome has to remain inspectable even when the
-    transaction does not cause a later MBA capture (for example, a clean
-    preflight rejection).  In that narrow case the diagnostic subscriber owns
-    a zero-block outcome snapshot, flushes the pending planned facts into it,
-    and persists the final outcome beside them.  Producers still emit only
-    structured observations and never access SQLite themselves.
-    """
-    try:
-        conn = get_diag_conn(int(ev.func_ea))
-        if conn is None or not ev.observations:
-            return
-        # A closed sqlite connection can survive a stale subscriber lifecycle.
-        # Probe it here so the loss becomes a logged diagnostic failure rather
-        # than an event-bus no-op hidden behind a later write exception.
-        conn.execute("SELECT 1")
-        snap_id = _latest_snapshot_id_for_func(ev.func_ea)
-        application_status = _terminal_unflatten_dispatcher_outcome_status(ev)
-        if snap_id is None:
-            if application_status is None:
-                _buffer_unflatten_dispatcher_corridor_coverage(ev)
-                return
-            snap_id = _snapshot_unflatten_dispatcher_terminal_outcome(
-                conn,
-                ev,
-                application_status=application_status,
-            )
-        if application_status is not None:
-            _flush_pending_unflatten_dispatcher_corridor_coverage(
-                conn,
-                int(snap_id),
-                ev.func_ea,
-                plan_id=_unflatten_dispatcher_plan_id(ev),
-            )
-        snapshot_fact_observations(conn, snap_id, ev.func_ea, ev.observations)
-    except Exception:
-        _report_diag_persistence_failure("unflatten_dispatcher_corridor_coverage")
-        return
-
-
 def _handle_optblock_callback_exception(
     ev: OptblockCallbackExceptionObserved,
 ) -> None:
@@ -714,114 +660,6 @@ def _handle_optblock_callback_exception(
     except Exception:
         _report_diag_persistence_failure("optblock_callback_exception")
         return
-
-
-def _observation_field(observation: object, field_name: str, default: object) -> object:
-    if isinstance(observation, Mapping):
-        return observation.get(field_name, default)
-    return getattr(observation, field_name, default)
-
-
-def _terminal_unflatten_dispatcher_outcome_status(
-    ev: UnflattenDispatcherCorridorCoverageObserved,
-) -> str | None:
-    """Return one terminal status only when every observation agrees."""
-    statuses: set[str] = set()
-    for observation in ev.observations:
-        payload = _observation_field(observation, "payload", {})
-        if not isinstance(payload, Mapping):
-            return None
-        status = payload.get("application_status")
-        if status is None:
-            return None
-        statuses.add(str(status))
-    if len(statuses) != 1:
-        return None
-    status = statuses.pop()
-    if (
-        status == "applied"
-        or status.startswith("rejected_")
-        or status == "poisoned_restart_required"
-    ):
-        return status
-    return None
-
-
-def _snapshot_unflatten_dispatcher_terminal_outcome(
-    conn: sqlite3.Connection,
-    ev: UnflattenDispatcherCorridorCoverageObserved,
-    *,
-    application_status: str,
-) -> int:
-    """Create the explicit zero-block diagnostic anchor for a final outcome."""
-    first = ev.observations[0]
-    maturity = str(_observation_field(first, "maturity", "unknown"))
-    # ``snapshots.phase`` is intentionally a closed maturity-lifecycle enum;
-    # transaction facts retain their finer-grained ``patch_transaction`` phase
-    # in ``fact_observations.phase`` while the synthetic anchor is post-D810.
-    del first
-    return snapshot_mba(
-        conn,
-        [],
-        label=f"unflatten_dispatcher_outcome:{application_status}",
-        func_ea=int(ev.func_ea),
-        maturity=maturity,
-        phase="post_d810",
-    )
-
-
-def _buffer_unflatten_dispatcher_corridor_coverage(
-    ev: UnflattenDispatcherCorridorCoverageObserved,
-) -> None:
-    with _unflatten_dispatcher_corridor_lock:
-        _pending_unflatten_dispatcher_corridor_coverage.append(ev)
-
-
-def _unflatten_dispatcher_plan_id(
-    ev: UnflattenDispatcherCorridorCoverageObserved,
-) -> str | None:
-    """Return one stable plan scope only when all observations agree."""
-    plan_ids: set[str] = set()
-    for observation in ev.observations:
-        payload = _observation_field(observation, "payload", {})
-        if not isinstance(payload, Mapping):
-            return None
-        plan_id = payload.get("plan_id")
-        if plan_id is None:
-            return None
-        normalized = str(plan_id).strip()
-        if not normalized:
-            return None
-        plan_ids.add(normalized)
-    return next(iter(plan_ids)) if len(plan_ids) == 1 else None
-
-
-def _flush_pending_unflatten_dispatcher_corridor_coverage(
-    conn: sqlite3.Connection,
-    snap_id: int,
-    func_ea: int,
-    *,
-    plan_id: str | None = None,
-) -> None:
-    with _unflatten_dispatcher_corridor_lock:
-        matching = [
-            ev
-            for ev in _pending_unflatten_dispatcher_corridor_coverage
-            if int(ev.func_ea) == int(func_ea)
-            and (
-                plan_id is None
-                or _unflatten_dispatcher_plan_id(ev) == str(plan_id)
-            )
-        ]
-        if matching:
-            matching_ids = {id(ev) for ev in matching}
-            _pending_unflatten_dispatcher_corridor_coverage[:] = [
-                ev
-                for ev in _pending_unflatten_dispatcher_corridor_coverage
-                if id(ev) not in matching_ids
-            ]
-    for ev in matching:
-        snapshot_fact_observations(conn, int(snap_id), ev.func_ea, ev.observations)
 
 
 def _handle_state_transition_dispatch_resolutions(
@@ -1294,10 +1132,6 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (StateDispatcherRowsObserved, _handle_state_dispatcher_rows),
     (OptblockCallbackExceptionObserved, _handle_optblock_callback_exception),
     (
-        UnflattenDispatcherCorridorCoverageObserved,
-        _handle_unflatten_dispatcher_corridor_coverage,
-    ),
-    (
         StateTransitionDispatchResolutionsObserved,
         _handle_state_transition_dispatch_resolutions,
     ),
@@ -1367,8 +1201,6 @@ def _uninstall_locked() -> None:
         _pending_condition_chain_intervals.clear()
     with _state_dispatcher_lock:
         _pending_state_dispatcher_rows.clear()
-    with _unflatten_dispatcher_corridor_lock:
-        _pending_unflatten_dispatcher_corridor_coverage.clear()
     with _branch_witness_lock:
         _pending_branch_witness_decisions.clear()
     with _exit_path_shortcut_lock:

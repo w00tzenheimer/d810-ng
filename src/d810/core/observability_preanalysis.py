@@ -31,7 +31,6 @@ from d810.core.observability_events import (
     StateDispatcherRowsObserved as StateDispatcherRowsObserved,
     StateTransitionDispatchResolutionsObserved as StateTransitionDispatchResolutionsObserved,
     SwitchCaseTransitionFactsObserved as SwitchCaseTransitionFactsObserved,
-    UnflattenDispatcherCorridorCoverageObserved as UnflattenDispatcherCorridorCoverageObserved,
 )
 from d810.core.observability_models import (
     DagEdge as DagEdge,
@@ -121,20 +120,6 @@ def observe_state_dispatcher_rows(
             ),
             dispatcher_kind=str(dispatcher_kind),
             rows=tuple(rows),
-        )
-    )
-
-
-def observe_unflatten_dispatcher_corridor_coverage(
-    *,
-    func_ea: int,
-    observations,
-) -> None:
-    """Publish typed covered/residual dispatcher-corridor observations."""
-    _emit(
-        UnflattenDispatcherCorridorCoverageObserved(
-            func_ea=int(func_ea),
-            observations=tuple(observations),
         )
     )
 
@@ -328,7 +313,6 @@ def diagnostics_enabled() -> bool:
             RenderedProgramObserved,
             ReachabilityObserved,
             StateDispatcherRowsObserved,
-            UnflattenDispatcherCorridorCoverageObserved,
             StateTransitionDispatchResolutionsObserved,
             SwitchCaseTransitionFactsObserved,
             BranchOwnershipProofsObserved,
@@ -355,7 +339,6 @@ __all__ = [
     "ReachabilityObserved",
     "RenderedProgramObserved",
     "StateDispatcherRowsObserved",
-    "UnflattenDispatcherCorridorCoverageObserved",
     "StateTransitionDispatchResolutionsObserved",
     "SwitchCaseTransitionFactsObserved",
     # Neutral model types (kept here for backward compatibility)
@@ -368,7 +351,6 @@ __all__ = [
     "observe_dag",
     "observe_condition_chain_interval_dispatcher",
     "observe_state_dispatcher_rows",
-    "observe_unflatten_dispatcher_corridor_coverage",
     "observe_state_transition_dispatch_resolutions",
     "observe_switch_case_transition_facts",
     "observe_branch_ownership_proofs",

@@ -1186,22 +1186,6 @@ class OptblockCallbackExceptionObserved:
 
 
 @dataclass(frozen=True)
-class UnflattenDispatcherCorridorCoverageObserved:
-    """Preanalysis observed covered and residual dispatcher-entry corridors.
-
-    Lowering has no fresh :class:`SnapshotRef` at this point.  The diagnostic
-    sink therefore binds the typed observations to the latest capture for the
-    function, buffering planned observations until that capture exists when
-    necessary.  A terminal ``applied`` or ``rejected_preflight`` batch without
-    a capture receives an explicit diagnostic-only anchor snapshot, so the
-    planned-to-final transaction history cannot disappear.
-    """
-
-    func_ea: int
-    observations: tuple[Any, ...]
-
-
-@dataclass(frozen=True)
 class StateTransitionDispatchResolutionsObserved:
     "Preanalysis observed transition resolutions through exact dispatcher rows."
 
@@ -1425,7 +1409,6 @@ __all__ = [
     "RenderedProgramObserved",
     "OptblockCallbackExceptionObserved",
     "StateDispatcherRowsObserved",
-    "UnflattenDispatcherCorridorCoverageObserved",
     "StateTransitionDispatchResolutionsObserved",
     "SwitchCaseTransitionFactsObserved",
     # CFG
