@@ -1,0 +1,18 @@
+id: no-direct-unflatten-phase-result-construction
+snapshots:
+  ? |
+    def make():
+        return RetirementPhaseResult(result_id, catalog_id, claim_id, phase)
+  : labels:
+    - source: RetirementPhaseResult(result_id, catalog_id, claim_id, phase)
+      style: primary
+      start: 23
+      end: 84
+  ? |
+    def make():
+        return model.RetirementPhaseMember(block_ref=ref, anchor_ea=ea)
+  : labels:
+    - source: model.RetirementPhaseMember(block_ref=ref, anchor_ea=ea)
+      style: primary
+      start: 23
+      end: 79

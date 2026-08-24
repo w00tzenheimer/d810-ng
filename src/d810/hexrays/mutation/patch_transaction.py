@@ -9,7 +9,7 @@ from d810.analyses.control_flow.graph_checks import (
     check_effectful_reachability_preserved,
     check_terminal_reachability_preserved,
 )
-from d810.transforms.unflatten_authority.diagnostics import PhaseTimings
+from d810.transforms.unflatten_authority import transaction_api as unflatten_authority_api
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import (
     BoundCfgTransaction,
@@ -37,7 +37,6 @@ from d810.transforms.patch_binding import (
     BoundPatchPlan,
     validate_bound_patch_plan,
 )
-from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
 from d810.hexrays.mutation.semantic_ownership import (
     find_patch_plan_semantic_ownership_overlap,
     format_patch_plan_semantic_ownership_overlap,
@@ -333,9 +332,7 @@ def _compatibility_projection(verdict: object | None, kind: str):
     """Project canonical verdict data for legacy diagnostic consumers."""
     if verdict is None:
         return None
-    from d810.transforms.unflatten_authority.views import compatibility_projection
-
-    return compatibility_projection(verdict, kind)
+    return unflatten_authority_api.compatibility_projection(verdict, kind)
 
 
 class PatchTransactionPreflightRejected(RuntimeError):
@@ -432,7 +429,7 @@ class PreparedPatchCfgTransaction(PreparedCfgTransaction):
     plan: PatchPlan
     unflatten_authority: object | None = None
     projected_unflatten_verdict: object | None = None
-    projected_unflatten_timing: PhaseTimings | None = None
+    projected_unflatten_timing: unflatten_authority_api.PhaseTimings | None = None
 
     def __post_init__(self) -> None:
         PreparedCfgTransaction.__post_init__(self)
@@ -450,8 +447,8 @@ class PatchTransactionExecution(PatchPlanExecutionResult):
     creation_receipts: tuple[object, ...] = ()
     projected_unflatten_verdict: object | None = None
     observed_unflatten_verdict: object | None = None
-    projected_unflatten_timing: PhaseTimings | None = None
-    observed_unflatten_timing: PhaseTimings | None = None
+    projected_unflatten_timing: unflatten_authority_api.PhaseTimings | None = None
+    observed_unflatten_timing: unflatten_authority_api.PhaseTimings | None = None
 
     def __post_init__(self) -> None:
         PatchPlanExecutionResult.__post_init__(self)
@@ -528,8 +525,8 @@ class HexRaysPatchTransactionParticipant:
     _unflatten_authority: object | None = field(default=None, init=False, repr=False)
     _projected_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
     _observed_unflatten_verdict: object | None = field(default=None, init=False, repr=False)
-    _projected_unflatten_timing: PhaseTimings | None = field(default=None, init=False, repr=False)
-    _observed_unflatten_timing: PhaseTimings | None = field(default=None, init=False, repr=False)
+    _projected_unflatten_timing: unflatten_authority_api.PhaseTimings | None = field(default=None, init=False, repr=False)
+    _observed_unflatten_timing: unflatten_authority_api.PhaseTimings | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, PatchPlan):
@@ -630,14 +627,8 @@ class HexRaysPatchTransactionParticipant:
             snapshot,
             post_adj=projection.graph.as_adjacency_dict(),
         )
-        from d810.transforms.unflatten_authority import transaction_api
-        from d810.transforms.unflatten_authority.model import (
-            UnflattenAuthorityPreparationAccepted,
-            UnflattenAuthorityNotApplicable,
-            UnflattenAuthorityPreparationRejected,
-        )
-
-        semantic_gates = GenericCfgGateBundle(
+        transaction_api = unflatten_authority_api
+        semantic_gates = transaction_api.GenericCfgGateBundle(
             entry_reachability,
             effectful_reachability_raw,
             effectful_reachability,
@@ -659,19 +650,19 @@ class HexRaysPatchTransactionParticipant:
         else:
             semantic_result = semantic_timed_result
         if type(semantic_result) not in (
-            UnflattenAuthorityNotApplicable,
-            UnflattenAuthorityPreparationAccepted,
-            UnflattenAuthorityPreparationRejected,
+            transaction_api.UnflattenAuthorityNotApplicable,
+            transaction_api.UnflattenAuthorityPreparationAccepted,
+            transaction_api.UnflattenAuthorityPreparationRejected,
         ):
             raise TypeError("canonical projected authority returned malformed outcome")
-        if isinstance(semantic_result, UnflattenAuthorityNotApplicable):
+        if isinstance(semantic_result, transaction_api.UnflattenAuthorityNotApplicable):
             if self.plan.unflatten_proposal is not None:
                 raise PatchTransactionPreflightRejected(
                     "applicable unflatten route returned not-applicable"
                 )
             semantic_authority = None
             semantic_verdict = None
-        elif isinstance(semantic_result, UnflattenAuthorityPreparationAccepted):
+        elif isinstance(semantic_result, transaction_api.UnflattenAuthorityPreparationAccepted):
             semantic_authority = semantic_result.prepared
             semantic_verdict = semantic_result.verdict
         else:
@@ -684,15 +675,14 @@ class HexRaysPatchTransactionParticipant:
         if (
             semantic_verdict is not None
             and not isinstance(
-                semantic_result, UnflattenAuthorityPreparationAccepted
+                semantic_result, transaction_api.UnflattenAuthorityPreparationAccepted
             )
         ):
             from d810.hexrays.observability import observe_unflatten_authority_phase
-            from d810.transforms.unflatten_authority.diagnostics import phase_observation
             observe_unflatten_authority_phase(
                 mba=self.mba,
                 verdict=semantic_verdict,
-                observation_factory=lambda: (phase_observation(
+                observation_factory=lambda: (transaction_api.phase_observation(
                     semantic_verdict,
                     maturity=str(self.plan.source_maturity),
                     source_ea=int(snapshot.func_ea),
@@ -701,8 +691,8 @@ class HexRaysPatchTransactionParticipant:
                 ),),
             )
         canonical_rejected = (
-            not isinstance(semantic_result, UnflattenAuthorityPreparationAccepted)
-            and not isinstance(semantic_result, UnflattenAuthorityNotApplicable)
+            not isinstance(semantic_result, transaction_api.UnflattenAuthorityPreparationAccepted)
+            and not isinstance(semantic_result, transaction_api.UnflattenAuthorityNotApplicable)
         )
         if canonical_rejected:
             raise PatchTransactionPreflightRejected(
@@ -710,7 +700,7 @@ class HexRaysPatchTransactionParticipant:
                 unflatten_verdict=semantic_verdict,
             )
         if (
-            isinstance(semantic_result, UnflattenAuthorityNotApplicable)
+            isinstance(semantic_result, transaction_api.UnflattenAuthorityNotApplicable)
             and (
                 not terminal_reachability.passed
                 or not effectful_reachability.passed
@@ -788,24 +778,19 @@ class HexRaysPatchTransactionParticipant:
         bound_plan = patch_binding.bound_plan
         bound_authority = None
         if prepared.unflatten_authority is not None:
-            from d810.transforms.unflatten_authority import transaction_api
-            from d810.transforms.unflatten_authority.model import (
-                UnflattenAuthorityBindingAccepted,
-                UnflattenAuthorityBindingRejected,
-            )
-
+            transaction_api = unflatten_authority_api
             bind_result = transaction_api.bind_prepared_unflatten_authority(
                 prepared=prepared.unflatten_authority,
                 patch_binding=bound_plan,
             )
             if type(bind_result) not in (
-                UnflattenAuthorityBindingAccepted,
-                UnflattenAuthorityBindingRejected,
+                transaction_api.UnflattenAuthorityBindingAccepted,
+                transaction_api.UnflattenAuthorityBindingRejected,
             ):
                 raise TypeError("canonical bind returned malformed outcome")
             if bind_result is None:
                 bound_authority = None
-            elif not isinstance(bind_result, UnflattenAuthorityBindingAccepted):
+            elif not isinstance(bind_result, transaction_api.UnflattenAuthorityBindingAccepted):
                 self._observe_projected_unflatten_verdict(bind_result.verdict)
                 raise PatchTransactionPreflightRejected(
                     "bound unflatten authority rejected",
@@ -835,23 +820,17 @@ class HexRaysPatchTransactionParticipant:
     def _observe_projected_unflatten_verdict(self, verdict: object) -> None:
         """Publish the one final projected-phase authority observation."""
 
-        from d810.transforms.unflatten_authority.model import (
-            UnflattenAuthorityVerdict,
-        )
-
-        if type(verdict) is not UnflattenAuthorityVerdict:
+        if type(verdict) is not unflatten_authority_api.UnflattenAuthorityVerdict:
             raise TypeError("projected observation requires a canonical verdict")
         snapshot = self._snapshot
         if snapshot is None:
             raise RuntimeError("projected observation lacks immutable source snapshot")
         from d810.hexrays.observability import observe_unflatten_authority_phase
-        from d810.transforms.unflatten_authority.diagnostics import phase_observation
-
         observe_unflatten_authority_phase(
             mba=self.mba,
             verdict=verdict,
             observation_factory=lambda: (
-                phase_observation(
+                unflatten_authority_api.phase_observation(
                     verdict,
                     maturity=str(self.plan.source_maturity),
                     source_ea=int(snapshot.func_ea),
@@ -1001,9 +980,8 @@ class _PatchTransactionLifecycle:
                 f"entry={entry_reachability.reason}",
             )
         if active_unflatten_authority is not None:
-            from d810.transforms.unflatten_authority import transaction_api
-            from d810.transforms.unflatten_authority.model import UnflattenAuthorityVerdict
-            semantic_gates = GenericCfgGateBundle(
+            transaction_api = unflatten_authority_api
+            semantic_gates = transaction_api.GenericCfgGateBundle(
                 entry_reachability,
                 effectful_reachability,
                 effectful_reachability,
@@ -1021,16 +999,15 @@ class _PatchTransactionLifecycle:
             ):
                 raise TypeError("canonical observed authority returned malformed outcome")
             semantic_verdict = semantic_timed_result.result
-            if type(semantic_verdict) is not UnflattenAuthorityVerdict:
+            if type(semantic_verdict) is not transaction_api.UnflattenAuthorityVerdict:
                 raise TypeError("canonical observed authority returned malformed verdict")
             self.participant._observed_unflatten_timing = semantic_timed_result.timings
             self.participant._observed_unflatten_verdict = semantic_verdict
             from d810.hexrays.observability import observe_unflatten_authority_phase
-            from d810.transforms.unflatten_authority.diagnostics import phase_observation
             observe_unflatten_authority_phase(
                 mba=self.participant.mba,
                 verdict=semantic_verdict,
-                observation_factory=lambda: (phase_observation(
+                observation_factory=lambda: (transaction_api.phase_observation(
                     semantic_verdict,
                     maturity=str(self.plan.source_maturity),
                     source_ea=int(observed.func_ea),

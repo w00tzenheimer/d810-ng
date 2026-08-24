@@ -149,6 +149,11 @@ def test_compatibility_properties_project_the_exact_canonical_verdict() -> None:
         generic_gates=gates,
     )
     assert prepared.prepared is not None
+    preflight = PatchTransactionPreflightRejected(
+        "preflight", unflatten_verdict=prepared.verdict,
+    )
+    projected_view = views.compatibility_projection(prepared.verdict, "removal")
+    assert preflight.projected_dispatcher_removal_validation.to_payload() == projected_view.to_payload()
     projected_accepted = prepared.verdict
     from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
     from d810.hexrays.mutation.patch_binding import bind_patch_plan
@@ -401,7 +406,7 @@ def test_full_corridor_public_lifecycle_uses_sealed_nonempty_forecast(monkeypatc
 
     from d810.transforms import dispatcher_corridor_coverage
     from d810.transforms.cfg_transaction import TransactionAttemptId
-    from d810.transforms.unflatten_authority import transaction_api
+    from d810.transforms.unflatten_authority import model, transaction_api
 
     source, plan, projected, gates = _full_corridor_fixture()
     attempt = TransactionAttemptId(
@@ -417,9 +422,9 @@ def test_full_corridor_public_lifecycle_uses_sealed_nonempty_forecast(monkeypatc
         plan=plan, attempt_id=attempt, generic_gates=gates,
     )
     assert getattr(prepared_result, "prepared", None) is not None, (
-        getattr(prepared_result, "verdict", prepared_result),
-        getattr(getattr(prepared_result, "verdict", None), "reason", None),
-        getattr(getattr(prepared_result, "verdict", None), "failed_obligations", ()),
+        prepared_result.verdict.reason,
+        prepared_result.verdict.safety_case,
+        prepared_result.verdict.failed_obligations,
     )
     forecast = prepared_result.prepared.source_inputs.proposal.corridor_coverage_forecast
     assert forecast is not None and forecast.paths and forecast.enumeration_complete

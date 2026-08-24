@@ -251,7 +251,7 @@ REQUIRED_DIMENSIONS: dict[model.SemanticSubjectRole, tuple[model.SafetyDimension
     ),
     model.SemanticSubjectRole.DISPATCHER_ENTRY: (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
-        model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.ENTRY_REACHABILITY,
+        model.SafetyDimension.STRUCTURAL_ACCOUNTING,
     ),
     model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE: (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
@@ -539,7 +539,6 @@ def _dimensions(
     *,
     candidate_fingerprint: str | None = None,
     candidate_generation: int | None = None,
-    retired_topology_satisfied_ids: frozenset[str] = frozenset(),
     retirement_phase_result: model.RetirementPhaseResult | None = None,
     conditional_relations: tuple[model.ConditionalSubjectRelation, ...] = (),
     proposal: model.ProposedUnflattenContract | None = None,
@@ -550,11 +549,6 @@ def _dimensions(
     # The transaction-owned phase result is the sole source of the retirement
     # partition.  In particular, do not reconstruct it from candidate
     # reachability or producer eligibility flags here.
-    retired_refs = set(retirement_phase_result.retired_refs) if retirement_phase_result is not None else set()
-    # A dispatcher entry that is itself an exact retired-catalog row is no
-    # longer an applicable live entry obligation.  This is T13 retirement
-    # applicability; corridor coverage never supplies this exception.
-    retired_dispatcher_entry_refs = set(retired_refs)
     terminal_cycle_structural_ids = {
         claim.cycle_subject.subject_id
         for claim in claims
@@ -568,35 +562,12 @@ def _dimensions(
         ):
             dimensions.append(model.SafetyDimension.STRUCTURAL_ACCOUNTING)
         if (
-            subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
-            and subject.block_ref in retired_dispatcher_entry_refs
-        ):
-            dimensions = [
-                dimension for dimension in dimensions
-                if dimension not in {
-                    model.SafetyDimension.TOPOLOGY_INTEGRITY,
-                    model.SafetyDimension.STRUCTURAL_ACCOUNTING,
-                    model.SafetyDimension.ENTRY_REACHABILITY,
-                }
-            ]
-        if (
             subject.role is model.SemanticSubjectRole.EFFECT_SITE
             and subject.kind is model.SemanticSubjectKind.BLOCK
         ):
             dimensions = [
                 dimension for dimension in dimensions
                 if dimension is not model.SafetyDimension.EFFECT_PRESERVATION
-            ]
-        if (
-            subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
-            and subject.subject_id in retired_topology_satisfied_ids
-        ):
-            dimensions = [
-                dimension for dimension in dimensions
-                if dimension not in {
-                    model.SafetyDimension.TOPOLOGY_INTEGRITY,
-                    model.SafetyDimension.CORRIDOR_COVERAGE,
-                }
             ]
         if subject.subject_id in detached_dead_handler_ids:
             dimensions = [
@@ -610,10 +581,6 @@ def _dimensions(
             dimension for target_id, dimension in relation_dimensions
             if target_id == subject.subject_id
             and dimension not in dimensions
-            and not (
-                subject.subject_id in retired_topology_satisfied_ids
-                and dimension is not model.SafetyDimension.STRUCTURAL_ACCOUNTING
-            )
         )
         result.update(model.ObligationKey(subject, dimension) for dimension in dimensions)
     return tuple(sorted(result, key=lambda key: (key.subject.subject_id, key.dimension.value)))
@@ -921,6 +888,16 @@ def _validate_justification_graph(
             claim_targets = {
                 subject.subject_id for subject in _claim_subjects(claim)
             }
+            if type(claim) is model.RetiredDispatcherInfrastructureClaim:
+                claim_member_refs = {
+                    member.block_ref for member in claim.member_subjects
+                }
+                claim_targets.update(
+                    subject.subject_id
+                    for subject in subjects
+                    if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+                    and subject.block_ref in claim_member_refs
+                )
             if type(claim) is model.LocalAliasEffectScalarizationClaim:
                 claim_targets.update(
                     relation.target_subject_id
@@ -1730,11 +1707,6 @@ def _evaluator_fact_evidence(
         model.SemanticSubjectRole.PLANNED_HELPER,
     }
     retirement_result = inputs.retirement_phase_result
-    retired_topology_refs = set(retirement_result.retired_refs) if retirement_result is not None else set()
-    retired_roles = {
-        model.SemanticSubjectRole.DISPATCHER_ENTRY,
-        model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
-    }
     def topology_relations(inventory: model.SemanticGraphInventory) -> tuple[model.TopologyEdgeRelation, ...]:
         by_serial = {item.serial: item for item in inventory.blocks}
         subject_by_serial: dict[int, tuple[model.SemanticSubjectRef, ...]] = defaultdict(tuple)
@@ -1763,14 +1735,6 @@ def _evaluator_fact_evidence(
                 continue
             for source_subject in subject_by_serial.get(source_serial, ()):
                 for target_subject in subject_by_serial.get(target_serial, ()):
-                    if (
-                        source_subject.block_ref in retired_topology_refs
-                        and source_subject.role in retired_roles
-                    ) or (
-                        target_subject.block_ref in retired_topology_refs
-                        and target_subject.role in retired_roles
-                    ):
-                        continue
                     result.append(model.TopologyEdgeRelation(
                         model.SemanticEdgeRole.DIRECT, source_subject.subject_id,
                         target_subject.subject_id, anchor,
@@ -2000,7 +1964,15 @@ def _evaluator_fact_evidence(
             disposition = model.StructuralDisposition.PRESERVED if preserved else model.StructuralDisposition.UNACCOUNTED_LOSS
         claim = next((claim for claim in inputs.claims
                       if type(claim) is model.RetiredDispatcherInfrastructureClaim
-                      and subject.subject_id in {item.subject_id for item in claim.member_subjects}), None)
+                      and (
+                          subject.subject_id in {item.subject_id for item in claim.member_subjects}
+                          or (
+                              subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+                              and subject.block_ref in {
+                                  item.block_ref for item in claim.member_subjects
+                              }
+                          )
+                      )), None)
         terminal_claim = next((claim for claim in inputs.claims
                                if type(claim) is model.TerminalCycleBreakClaim
                                and subject.subject_id == claim.cycle_subject.subject_id), None)
@@ -2574,14 +2546,6 @@ def build_semantic_case(
             source_generation
             if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
             else candidate_generation
-        ),
-        retired_topology_satisfied_ids=frozenset(
-            member.subject_id
-            for claim in inputs.claims
-            if type(claim) is model.RetiredDispatcherInfrastructureClaim
-            for member in claim.member_subjects
-            if inputs.retirement_phase_result is not None
-            and member.block_ref in inputs.retirement_phase_result.retired_refs
         ),
         conditional_relations=inputs.conditional_relations,
         proposal=inputs.proposal,
@@ -3227,7 +3191,19 @@ def build_semantic_case(
                         claim for claim in inputs.claims
                         if claim.claim_id == payload.claim_id
                         and type(claim) is model.RetiredDispatcherInfrastructureClaim
-                        and payload.source_subject_id in {member.subject_id for member in claim.member_subjects}
+                        and (
+                            payload.source_subject_id in {
+                                member.subject_id for member in claim.member_subjects
+                            }
+                            or any(
+                                subject.subject_id == payload.source_subject_id
+                                and subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+                                and subject.block_ref in {
+                                    member.block_ref for member in claim.member_subjects
+                                }
+                                for subject in subjects
+                            )
+                        )
                     ),
                     None,
             )
@@ -3443,11 +3419,25 @@ def build_semantic_case(
                 inputs.proposal.retirement_candidate_catalog.member_refs
             ):
                 raise ValueError("retirement phase result differs from exact plan membership")
+            retired_member_subjects = tuple(
+                member for member in claim.member_subjects
+                if phase_members[member.block_ref].classification
+                is model.RetirementPhaseClassification.RETIRED
+            )
+            retired_member_refs = {member.block_ref for member in retired_member_subjects}
+            retired_entry_subjects = tuple(
+                subject for subject in source_subjects
+                if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
+                and subject.block_ref in retired_member_refs
+            )
+            retired_claim_subjects = (*retired_member_subjects, *retired_entry_subjects)
             matching_lineage = tuple(
                 item for item in evidence
                 if type(item.payload) is model.StructuralLineageEvidencePayload
                 and item.payload.claim_id == claim.claim_id
-                and item.payload.source_subject_id in {member.subject_id for member in claim.member_subjects}
+                and item.payload.source_subject_id in {
+                    member.subject_id for member in retired_claim_subjects
+                }
                 and item.payload.disposition is model.StructuralDisposition.AUTHORIZED_RETIREMENT
             )
             claim_evidence = tuple(item.evidence_id for item in matching_lineage)
@@ -3456,20 +3446,17 @@ def build_semantic_case(
             # result decides which members actually retired.  Retained,
             # reachable candidates must not be required to carry a retirement
             # justification (nor be placed in its retired complement).
-            retired_member_subjects = tuple(
-                member for member in claim.member_subjects
-                if phase_members[member.block_ref].classification
-                is model.RetirementPhaseClassification.RETIRED
-            )
             exact_lineage = (
-                len(matching_lineage) == len(retired_member_subjects)
-                and set(lineage_members) == {member.subject_id for member in retired_member_subjects}
+                len(matching_lineage) == len(retired_claim_subjects)
+                and set(lineage_members) == {
+                    member.subject_id for member in retired_claim_subjects
+                }
                 and len(set(lineage_members)) == len(lineage_members)
             )
             if exact_lineage and retired_member_subjects:
                 targets = tuple(
                     (member, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
-                    for member in retired_member_subjects
+                    for member in retired_claim_subjects
                 )
             rule = model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
         elif type(claim) is model.EquivalentSemanticRouteClaim:

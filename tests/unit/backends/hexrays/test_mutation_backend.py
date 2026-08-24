@@ -887,7 +887,7 @@ def test_apply_rejects_recomputed_stale_dispatcher_coverage_proof() -> None:
 
 
 def test_small_full_retirement_poisons_when_observed_graph_differs_from_projection() -> None:
-    """Projected retirement may lower, but an unchanged live CFG poisons it."""
+    """Observed corridor drift rejects with a canonical observed safety case."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
         stop_serials=(4,),
@@ -941,9 +941,9 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
     assert isinstance(raised.value.__cause__, PatchTransactionPostObservationRejected)
-    assert translator.lower_calls
+    assert translator.lower_calls == [plan]
     assert translator.lift_count == 2
-    observed_verdict = backend.last_patch_failure.unflatten_verdict
+    observed_verdict = raised.value.unflatten_verdict
     assert observed_verdict is not None
     assert observed_verdict.phase is authority_model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
     assert observed_verdict.accepted is False
@@ -3621,7 +3621,7 @@ def test_default_fragment_backend_receives_native_body_materializer(
 
 
 def test_full_dispatcher_retirement_uses_ordinary_contract_when_entry_reachability_passes():
-    """A small full retirement uses the typed removal authority contract."""
+    """A full dispatcher retirement completes without entry authority on the dispatcher node."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
         stop_serials=(4,),
@@ -3671,9 +3671,29 @@ def test_full_dispatcher_retirement_uses_ordinary_contract_when_entry_reachabili
     result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
     assert result is projected.graph
+    assert backend.last_patch_failure is None
     assert translator.lower_calls == [plan]
-    assert backend.last_patch_execution is not None
-    assert backend.last_patch_execution.projected_unflatten_verdict.accepted
+    assert translator.lift_count == 2
+    execution = backend.last_patch_execution
+    assert execution is not None
+    verdict = execution.projected_unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    case = verdict.safety_case
+    assert any(
+        item.key.subject.role is authority_model.SemanticSubjectRole.SOURCE_ENTRY
+        and item.key.dimension is authority_model.SafetyDimension.ENTRY_REACHABILITY
+        for item in case.obligation_index.cells
+    )
+    assert not any(
+        item.key.subject.role is authority_model.SemanticSubjectRole.DISPATCHER_ENTRY
+        and item.key.dimension is authority_model.SafetyDimension.ENTRY_REACHABILITY
+        for item in case.obligation_index.cells
+    )
+    assert all(
+        item.conclusion.dimension is authority_model.SafetyDimension.STRUCTURAL_ACCOUNTING
+        for item in case.justifications
+        if item.rule is authority_model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
+    )
 
 
 def test_small_noncyclic_retirement_uses_transaction_owned_contract():
@@ -3727,6 +3747,7 @@ def test_small_noncyclic_retirement_uses_transaction_owned_contract():
     result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
     assert result is projected.graph
+    assert backend.last_patch_failure is None
     assert translator.lower_calls == [plan]
     assert translator.lift_count == 2
     execution = backend.last_patch_execution
@@ -4085,8 +4106,8 @@ def test_below_threshold_dispatcher_retirement_still_requires_narrow_proof():
     assert translator.lower_calls == []
     assert backend.last_patch_failure is not None
     assert "projected unflatten authority rejected" in str(backend.last_patch_failure)
-def test_corridor_coverage_drift_is_rejected_by_stronger_projected_obligation():
-    """An impossible downstream drift case fails at the stronger projected gate."""
+def test_corridor_coverage_drift_is_rejected_by_observed_retirement_obligation():
+    """A changed live CFG poisons after canonical observed corridor revalidation."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
         stop_serials=(4,),
@@ -4117,13 +4138,19 @@ def test_corridor_coverage_drift_is_rejected_by_stronger_projected_obligation():
         mutation_gateway=_ordinary_gateway(cfg, plan),
         translator=translator,
     )
-    assert backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks)) is cfg
-    assert translator.lower_calls == []
-    verdict = backend.last_patch_failure.unflatten_verdict
+    from d810.hexrays.mutation.patch_transaction import PatchTransactionPoisoned
+
+    with pytest.raises(PatchTransactionPoisoned) as raised:
+        backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
+
+    assert isinstance(raised.value.__cause__, PatchTransactionPostObservationRejected)
+    assert translator.lower_calls == [plan]
+    assert translator.lift_count == 2
+    verdict = raised.value.unflatten_verdict
     assert verdict is not None
-    assert verdict.phase is authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+    assert verdict.phase is authority_model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
     assert verdict.reason is authority_model.UnflattenAuthorityReason.OBLIGATION_VIOLATED
     assert any(
-        item.key.dimension is authority_model.SafetyDimension.ENTRY_REACHABILITY
+        item.key.dimension is authority_model.SafetyDimension.CORRIDOR_COVERAGE
         for item in verdict.failed_obligations
     )

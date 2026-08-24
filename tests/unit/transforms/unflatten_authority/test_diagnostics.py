@@ -213,6 +213,9 @@ def test_one_anchored_fact_observation_per_case_phase_has_exact_ids_and_labels()
         attempt_id=attempt,
         generic_gates=generic_gates,
     )
+    projected = prepared.verdict
+    assert prepared.prepared is not None
+    assert projected.safety_case is not None
     refs = {
         block.block_ref: block
         for block in plan.unflatten_proposal.source_identity_catalog.blocks
@@ -230,14 +233,14 @@ def test_one_anchored_fact_observation_per_case_phase_has_exact_ids_and_labels()
         prepared=prepared.prepared,
         patch_binding=bind_patch_plan(plan, index, attempt).bound_plan,
     )
+    assert bound.authority is not None
     observed = transaction_api.revalidate_observed_unflatten_authority(
         authority=bound.authority,
         observed=projected_graph,
         observed_generation=attempt.generation,
         generic_gates=generic_gates,
     )
-    projected = prepared.verdict
-    assert bound.authority is not None
+    assert observed.accepted
     authority = projected.authority_id
     rows = tuple(
         phase_observation(

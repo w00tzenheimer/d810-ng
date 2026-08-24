@@ -330,6 +330,14 @@ forbidden_modules =
     d810.transforms.minimal_unflatten_emit
     d810.transforms.unflatten_authority.bind
     d810.transforms.unflatten_authority.evaluate
+    d810.transforms.unflatten_authority.model
+    d810.transforms.unflatten_authority.diagnostics
+    d810.transforms.unflatten_authority.gates
+    d810.transforms.unflatten_authority.views
+    d810.transforms.unflatten_authority.ids
+    d810.transforms.unflatten_authority.proposal
+    d810.transforms.unflatten_authority.producer_api
+    d810.transforms.unflatten_authority.legacy_codec
 
 [importlinter:contract:unflatten-producers-no-transaction-authority]
 name = Unflatten producers cannot import transaction authority

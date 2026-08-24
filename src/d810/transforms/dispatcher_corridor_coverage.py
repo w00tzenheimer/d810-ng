@@ -1118,10 +1118,10 @@ def build_detached_dead_handler_component_analysis(
         )
         if not reachable_preds or not reachable_preds <= comparison_region:
             return None
-    if check_effectful_reachability_preserved(
+    if not check_effectful_reachability_preserved(
         flow_graph,
         post_adj=post_graph.as_adjacency_dict(),
-    ).lost_block_serials:
+    ).passed:
         return None
     lost = frozenset(pre_reachable - post_reachable)
     component: set[int] = set()

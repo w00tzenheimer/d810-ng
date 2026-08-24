@@ -1609,6 +1609,103 @@ def test_retirement_binding_accepts_physically_present_but_unreachable_retired_m
     assert projected_inventory.reachable_serials == (0, 1, 2, 3, 4, 5)
 
 
+@pytest.mark.parametrize("binding_status", [
+    model.SubjectBindingStatus.AMBIGUOUS,
+    model.SubjectBindingStatus.STALE_GENERATION,
+])
+def test_retirement_phase_matrix_fails_closed_for_ambiguous_or_stale_member(
+    binding_status: model.SubjectBindingStatus,
+) -> None:
+    """Identity drift never becomes a transaction-owned retirement claim."""
+
+    proposal, claim, source_inventory, projected_inventory = _retirement_inventories()
+    target = claim.candidate_catalog.plan_members[0].block_ref
+    bindings = []
+    for binding in projected_inventory.bindings:
+        if binding.subject.block_ref == target:
+            binding = replace(
+                binding,
+                block_ref=None,
+                serial=None,
+                anchor_ea=None,
+                native_instruction_eas=(),
+                status=binding_status,
+            )
+        bindings.append(binding)
+    object.__setattr__(projected_inventory, "bindings", tuple(bindings))
+    with pytest.raises(ValueError, match="inventory_digest does not match inventory content"):
+        bind.bind_retired_dispatcher_infrastructure_claim(
+            claim=claim,
+            proposal=proposal,
+            source_inventory=source_inventory,
+            projected_inventory=projected_inventory,
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        )
+
+
+def test_retirement_phase_matrix_marks_unsupported_unreachable_member_unaccounted() -> None:
+    """A non-candidate plan member cannot authorize loss by complement."""
+
+    proposal, claim, source_inventory, projected_inventory = _retirement_inventories(
+        physically_present_retired=True,
+    )
+    catalog = claim.candidate_catalog
+    candidates = catalog.candidates[:-1]
+    reduced_catalog = model.RetirementCandidateCatalog(
+        authority_id((
+            "unflatten.dispatcher-retirement-candidate-catalog.v1",
+            catalog.source_generation, catalog.plan_members, candidates,
+        )),
+        catalog.source_generation,
+        catalog.plan_members,
+        candidates,
+    )
+    reduced_claim = _claim_factory(
+        model.RetiredDispatcherInfrastructureClaim,
+        kind=model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
+        infrastructure_subject=claim.infrastructure_subject,
+        corridor_subject=claim.corridor_subject,
+        member_subjects=tuple(
+            subject for subject in claim.member_subjects
+            if subject.block_ref in reduced_catalog.candidate_refs
+        ),
+        candidate_evidence_ids=tuple(sorted({
+            evidence_id
+            for candidate in reduced_catalog.candidates
+            for evidence_id in candidate.evidence_ids
+        })),
+        source_generation=claim.source_generation,
+        candidate_catalog=reduced_catalog,
+    )
+    reduced_proposal = replace(
+        proposal,
+        plan_inputs=replace(
+            proposal.plan_inputs,
+            shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
+        ),
+        claims=tuple(
+            reduced_claim if item is claim else item
+            for item in proposal.claims
+        ),
+        retirement_candidate_catalog=reduced_catalog,
+    )
+    binding_result = bind.bind_retired_dispatcher_infrastructure_claim(
+        claim=reduced_claim,
+        proposal=reduced_proposal,
+        source_inventory=source_inventory,
+        projected_inventory=projected_inventory,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    result = binding_result.phase_result
+    assert result is not None
+    member = next(
+        item for item in result.members
+        if item.block_ref == catalog.plan_members[-1].block_ref
+    )
+    assert member.classification is model.RetirementPhaseClassification.UNACCOUNTED
+    assert member.reason == "unsupported_unreachable_member"
+
+
 def test_retirement_binding_rejects_naked_caller_reachability_authority() -> None:
     """Reachability must come from a closed projected inventory, not a tuple."""
 

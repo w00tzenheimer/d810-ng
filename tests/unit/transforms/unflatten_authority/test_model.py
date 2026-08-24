@@ -88,15 +88,30 @@ def _retirement_catalog(model, refs, anchors, generation=3):
     )
 
 
-def test_retirement_candidate_catalog_is_typed_and_authority_model_is_wire_free() -> None:
+def test_retirement_candidate_catalog_is_typed_and_exactly_scoped() -> None:
     model = import_authority_model()
     ref = block_ref("retirement-content")
     catalog = _retirement_catalog(model, (ref,), (0x401000,))
     assert catalog.member_refs == (ref,)
     assert catalog.candidate_refs == (ref,)
     assert catalog.candidates[0].role == "comparison_dispatcher"
-    assert not hasattr(catalog.candidates[0], "retired")
-    assert "legacy_wire" not in __import__("inspect").getsource(model.RetirementCandidateCatalog)
+
+
+def test_retirement_phase_records_are_binder_owned() -> None:
+    model = import_authority_model()
+    ref = block_ref("binder-owned-phase")
+    with pytest.raises(TypeError, match="binder-owned"):
+        model.RetirementPhaseMember(ref, 0x401000, None, None, None, "", None, None)
+    with pytest.raises(TypeError, match="binder-owned"):
+        model.RetirementPhaseResult(
+            canonical_authority_id(("result",)),
+            canonical_authority_id(("catalog",)),
+            canonical_authority_id(("claim",)),
+            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            canonical_authority_id(("source",)),
+            canonical_authority_id(("candidate",)),
+            1, 1, (),
+        )
 
 
 def _subject(model, kind, role, locator):

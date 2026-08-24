@@ -51,7 +51,18 @@ from d810.transforms.unflatten_authority.gates import (
     GenericCfgGateBundle,
     validate_generic_cfg_gate_bundle,
 )
-from d810.transforms.unflatten_authority.diagnostics import PhaseTimings
+from d810.transforms.unflatten_authority.diagnostics import PhaseTimings, phase_observation
+from d810.transforms.unflatten_authority.views import compatibility_projection
+
+# These aliases are the only authority types/projections that the live patch
+# transaction may consume.  Keep their implementation imports behind this
+# facade so the vendor transaction cannot reach authority submodules directly.
+UnflattenAuthorityNotApplicable = model.UnflattenAuthorityNotApplicable
+UnflattenAuthorityPreparationAccepted = model.UnflattenAuthorityPreparationAccepted
+UnflattenAuthorityPreparationRejected = model.UnflattenAuthorityPreparationRejected
+UnflattenAuthorityBindingAccepted = model.UnflattenAuthorityBindingAccepted
+UnflattenAuthorityBindingRejected = model.UnflattenAuthorityBindingRejected
+UnflattenAuthorityVerdict = model.UnflattenAuthorityVerdict
 
 
 from d810.transforms.unflatten_authority.ids import (

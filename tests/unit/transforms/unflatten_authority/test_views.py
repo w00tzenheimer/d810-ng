@@ -85,12 +85,31 @@ def test_compatibility_projection_preserves_case_owned_ids_and_failed_states() -
         generic_gates=gates,
     )
     assert result.prepared is not None
+    assert result.verdict.accepted
+    assert result.verdict.safety_case is not None
     view = views.compatibility_projection(result.verdict, "coverage")
     assert view is not None
     assert view.case_id == result.verdict.case_id
     assert view.candidate_fingerprint == result.verdict.candidate_fingerprint
     assert view.failed_obligation_states == ()
-    assert view.to_payload()["case_id"] == result.verdict.case_id
+    payload = view.to_payload()
+    assert payload["case_id"] == result.verdict.case_id
+    assert payload["validation_status"] == "accepted"
+    retirement = views.retirement_rows(result.prepared.projected_case)
+    assert retirement.retired_member_subject_ids
+    assert retirement.retained_member_subject_ids
+    structural_cells = {
+        cell.key.subject.subject_id: cell
+        for cell in result.prepared.projected_case.obligation_index.cells
+        if cell.key.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
+    }
+    assert all(
+        structural_cells[subject_id].state is model.ObligationState.SATISFIED
+        for subject_id in (
+            *retirement.retired_member_subject_ids,
+            *retirement.retained_member_subject_ids,
+        )
+    )
 
 
 def test_terminal_cycle_view_projects_only_cycle_and_terminal_authority() -> None:

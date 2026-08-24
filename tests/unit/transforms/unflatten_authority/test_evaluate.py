@@ -3984,13 +3984,19 @@ def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
     )
     assert retired_cell.state is model.ObligationState.SATISFIED
     assert retained_cell.state is model.ObligationState.SATISFIED
-    assert not any(
-        cell.key.subject == member0
+    retired_non_structural = tuple(
+        cell for cell in case.obligation_index.cells
+        if cell.key.subject == member0
         and cell.key.dimension in {
             model.SafetyDimension.CORRIDOR_COVERAGE,
             model.SafetyDimension.TOPOLOGY_INTEGRITY,
         }
-        for cell in case.obligation_index.cells
+    )
+    assert retired_non_structural
+    assert not any(
+        item.rule is model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
+        and item.conclusion in {cell.key for cell in retired_non_structural}
+        for item in case.justifications
     )
     supporting = tuple(
         item for item in case.justifications
@@ -4018,12 +4024,14 @@ def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
         row for row in views.semantic_loss_ledger(case).rows
         if row.source_subject.subject_id == member0.subject_id
     )
-    assert ledger_row.kind is model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE
-    retirement_view = views.retirement_rows(case, claim.claim_id)
+    assert ledger_row.kind is model.SemanticLossKind.UNCLASSIFIED
+    retirement_view = views.retired_infrastructure_view(case, claim.claim_id)
     assert retirement_view.claim_id == claim.claim_id
     assert retirement_view.retired_member_subject_ids == (member0.subject_id,)
     assert retirement_view.retained_member_subject_ids == (member1.subject_id,)
     assert retirement_view.structural_cell_keys == (retired_cell.key,)
+    with pytest.raises(ValueError):
+        views.retirement_rows(case, claim.claim_id)
 def test_resegmentation_patch_step_supports_only_its_helper_structural_key() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "resegment-entry")
     helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")

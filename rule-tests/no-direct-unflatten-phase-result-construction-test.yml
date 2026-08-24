@@ -1,0 +1,17 @@
+id: no-direct-unflatten-phase-result-construction
+
+valid:
+  - |
+      def read(result):
+          return result.members
+  - |
+      def read(result):
+          return isinstance(result, RetirementPhaseResult)
+
+invalid:
+  - |
+      def make():
+          return RetirementPhaseResult(result_id, catalog_id, claim_id, phase)
+  - |
+      def make():
+          return model.RetirementPhaseMember(block_ref=ref, anchor_ea=ea)
