@@ -363,36 +363,108 @@ def _has_dispatcher_removal_proof_metadata(plan_metadata: object) -> bool:
     return DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA in plan_metadata
 
 
+@dataclass(frozen=True, slots=True)
+class _LegacyEffectReplay:
+    """Closed transaction-local result for the legacy effect replay."""
+
+    accepted: bool
+    effect_serials: frozenset[int]
+
+    def __post_init__(self) -> None:
+        if type(self.accepted) is not bool:
+            raise TypeError("legacy replay accepted must be an exact bool")
+        if type(self.effect_serials) is not frozenset or any(
+            type(serial) is not int or serial < 0
+            for serial in self.effect_serials
+        ):
+            raise TypeError("legacy replay effect serials must be a frozenset of ints")
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyGateDecision:
+    """Closed transaction-local aggregate of one legacy gate boundary."""
+
+    accepted: bool
+    reason_scope: UnflattenAuthorityReason
+    replay: _LegacyEffectReplay
+
+    def __post_init__(self) -> None:
+        if type(self.accepted) is not bool:
+            raise TypeError("legacy gate accepted must be an exact bool")
+        if type(self.reason_scope) is not UnflattenAuthorityReason:
+            raise TypeError("legacy gate reason must be UnflattenAuthorityReason")
+        if type(self.replay) is not _LegacyEffectReplay:
+            raise TypeError("legacy gate replay must be _LegacyEffectReplay")
+
+
+def _legacy_gate_decision(
+    phase: UnflattenAuthorityPhase,
+    replay: _LegacyEffectReplay,
+    *,
+    terminal_passed: bool,
+    effectful_passed: bool,
+    entry_passed: bool,
+    entry_allowance_passed: bool,
+    dispatcher_removal_rejected: bool,
+    coverage_rejected: bool,
+) -> _LegacyGateDecision:
+    """Fold the former generic legacy gates into one diagnostic decision."""
+
+    for name, value in (
+        ("terminal_passed", terminal_passed),
+        ("effectful_passed", effectful_passed),
+        ("entry_passed", entry_passed),
+        ("entry_allowance_passed", entry_allowance_passed),
+        ("dispatcher_removal_rejected", dispatcher_removal_rejected),
+        ("coverage_rejected", coverage_rejected),
+    ):
+        if type(value) is not bool:
+            raise TypeError(f"legacy gate {name} must be an exact bool")
+    accepted = replay.accepted and terminal_passed and effectful_passed and (
+        entry_passed or entry_allowance_passed
+    ) and not dispatcher_removal_rejected and not coverage_rejected
+    reason = (
+        UnflattenAuthorityReason.ACCEPTED
+        if accepted
+        else (
+            UnflattenAuthorityReason.PROJECTED_BINDING_FAILED
+            if phase is UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+            else UnflattenAuthorityReason.LIVE_BINDING_FAILED
+        )
+    )
+    return _LegacyGateDecision(accepted, reason, replay)
+
+
 def _validated_exact_effect_exclusions(
     source: FlowGraph,
     projected: FlowGraph,
     plan_metadata: object,
-) -> frozenset[int] | None:
+) -> _LegacyEffectReplay:
     """Replay every typed semantic effect exclusion against immutable inputs."""
 
     if not isinstance(plan_metadata, Mapping):
-        return frozenset()
+        return _LegacyEffectReplay(True, frozenset())
     raw = plan_metadata.get(EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA)
     if raw is None:
-        return frozenset()
+        return _LegacyEffectReplay(True, frozenset())
     if not isinstance(raw, (tuple, list)):
-        return None
+        return _LegacyEffectReplay(False, frozenset())
     parsed = tuple(
         exact_state_branch_effect_exclusion_from_metadata(payload)
         for payload in raw
     )
     if any(proof is None for proof in parsed):
-        return None
+        return _LegacyEffectReplay(False, frozenset())
     proofs = tuple(proof for proof in parsed if proof is not None)
     effect_serials = tuple(int(proof.discarded_effect_serial) for proof in proofs)
     if len(effect_serials) != len(set(effect_serials)):
-        return None
+        return _LegacyEffectReplay(False, frozenset())
     if any(
         not validate_exact_state_branch_effect_exclusion(source, projected, proof)
         for proof in proofs
     ):
-        return None
-    return frozenset(effect_serials)
+        return _LegacyEffectReplay(False, frozenset())
+    return _LegacyEffectReplay(True, frozenset(effect_serials))
 
 
 def _apply_exact_effect_exclusions(
@@ -498,6 +570,7 @@ def _legacy_phase_outcome(
     source_inventory: SemanticGraphInventory,
     effectful: EffectfulReachabilityResult,
     removal_validation: DispatcherRemovalPreflightValidation | None,
+    decision: _LegacyGateDecision,
 ) -> LegacyPhaseOutcome:
     """Capture already-computed legacy loss anchors at the decision boundary."""
 
@@ -528,8 +601,8 @@ def _legacy_phase_outcome(
     ))
     return LegacyPhaseOutcome(
         phase=phase,
-        accepted=True,
-        reason_scope=UnflattenAuthorityReason.ACCEPTED,
+        accepted=decision.accepted,
+        reason_scope=decision.reason_scope,
         anchored_losses=anchors,
     )
 
@@ -850,17 +923,21 @@ class HexRaysPatchTransactionParticipant:
         if snapshot is None:
             raise RuntimeError("patch preflight lacks immutable source snapshot")
         self._reject_committed_semantic_overlap()
+        unflatten_route_applicable = (
+            self.plan.unflatten_proposal is not None
+            or self.plan.legacy_unflatten_shadow is not None
+        )
         legacy_view = _legacy_plan_view(self.plan)
         validated_effect_exclusions = _validated_exact_effect_exclusions(
             snapshot,
             projection.graph,
             legacy_view,
         )
-        if validated_effect_exclusions is None:
+        if not validated_effect_exclusions.accepted and not unflatten_route_applicable:
             raise PatchTransactionPreflightRejected(
                 "projected effect exclusion rejected: malformed or stale exact proof"
             )
-        self._validated_effect_exclusion_serials = validated_effect_exclusions
+        self._validated_effect_exclusion_serials = validated_effect_exclusions.effect_serials
         terminal_reachability = check_terminal_reachability_preserved(
             snapshot,
             post_adj=projection.graph.as_adjacency_dict(),
@@ -871,7 +948,7 @@ class HexRaysPatchTransactionParticipant:
         )
         effectful_reachability = _apply_exact_effect_exclusions(
             effectful_reachability_raw,
-            validated_effect_exclusions,
+            self._validated_effect_exclusion_serials,
         )
         entry_reachability = check_entry_reachability_not_collapsed(
             snapshot,
@@ -922,7 +999,7 @@ class HexRaysPatchTransactionParticipant:
                 post_graph=projection.graph,
                 plan_metadata=legacy_view,
                 validated_exact_effect_exclusion_serials=(
-                    validated_effect_exclusions
+                    self._validated_effect_exclusion_serials
                 ),
                 patch_plan=self.plan,
             )
@@ -979,9 +1056,23 @@ class HexRaysPatchTransactionParticipant:
             projected_coverage_validation is not None
             and not projected_coverage_validation.passed
         )
-        if not terminal_reachability.passed or not effectful_reachability.passed or (
-            not entry_reachability.passed and not entry_allowance_passed
-        ) or dispatcher_removal_rejected or projected_coverage_rejected:
+        projected_legacy_decision = _legacy_gate_decision(
+            UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            validated_effect_exclusions,
+            terminal_passed=terminal_reachability.passed,
+            effectful_passed=effectful_reachability.passed,
+            entry_passed=entry_reachability.passed,
+            entry_allowance_passed=entry_allowance_passed,
+            dispatcher_removal_rejected=dispatcher_removal_rejected,
+            coverage_rejected=projected_coverage_rejected,
+        )
+        if not unflatten_route_applicable and (
+            not terminal_reachability.passed
+            or not effectful_reachability.passed
+            or (not entry_reachability.passed and not entry_allowance_passed)
+            or dispatcher_removal_rejected
+            or projected_coverage_rejected
+        ):
             effectful_detail = ""
             if not effectful_reachability.passed:
                 effectful_lost = ", ".join(
@@ -1039,43 +1130,38 @@ class HexRaysPatchTransactionParticipant:
             terminal_reachability,
         )
 
-        try:
-            semantic_timed_result = (
-                transaction_api.prepare_unflatten_authority_timed(
-                    source=snapshot,
-                    projection=projection,
-                    plan=self.plan,
-                    attempt_id=self.attempt_id,
-                    generic_gates=semantic_gates,
-                )
-                if self.plan.unflatten_proposal is not None
-                or self.plan.legacy_unflatten_shadow is not None
-                else UnflattenAuthorityNotApplicable(
-                    route=transaction_api.UnflattenPlanRoute.ORDINARY
-                )
+        semantic_timed_result = (
+            transaction_api.prepare_unflatten_authority_timed(
+                source=snapshot,
+                projection=projection,
+                plan=self.plan,
+                attempt_id=self.attempt_id,
+                generic_gates=semantic_gates,
             )
-            if isinstance(
-                semantic_timed_result, transaction_api.TimedUnflattenAuthorityResult
-            ):
-                semantic_result = semantic_timed_result.result
-                self._projected_unflatten_timing = semantic_timed_result.timings
-            else:
-                semantic_result = semantic_timed_result
-            if type(semantic_result) not in (
-                UnflattenAuthorityNotApplicable,
-                UnflattenAuthorityPreparationAccepted,
-                UnflattenAuthorityPreparationRejected,
-            ):
-                raise TypeError("canonical projected authority returned malformed outcome")
-        except Exception as error:
-            if self.plan.legacy_unflatten_shadow is None:
-                raise
-            self._shadow_parity_error = str(error) or type(error).__name__
-            semantic_result = UnflattenAuthorityNotApplicable(
+            if self.plan.unflatten_proposal is not None
+            or self.plan.legacy_unflatten_shadow is not None
+            else UnflattenAuthorityNotApplicable(
                 route=transaction_api.UnflattenPlanRoute.ORDINARY
             )
-            self._projected_unflatten_timing = None
+        )
+        if isinstance(
+            semantic_timed_result, transaction_api.TimedUnflattenAuthorityResult
+        ):
+            semantic_result = semantic_timed_result.result
+            self._projected_unflatten_timing = semantic_timed_result.timings
+        else:
+            semantic_result = semantic_timed_result
+        if type(semantic_result) not in (
+            UnflattenAuthorityNotApplicable,
+            UnflattenAuthorityPreparationAccepted,
+            UnflattenAuthorityPreparationRejected,
+        ):
+            raise TypeError("canonical projected authority returned malformed outcome")
         if isinstance(semantic_result, UnflattenAuthorityNotApplicable):
+            if unflatten_route_applicable:
+                raise PatchTransactionPreflightRejected(
+                    "applicable unflatten route returned not-applicable",
+                )
             semantic_authority = None
             semantic_verdict = None
         elif isinstance(semantic_result, UnflattenAuthorityPreparationAccepted):
@@ -1088,6 +1174,7 @@ class HexRaysPatchTransactionParticipant:
                         semantic_authority.source_inventory,
                         effectful_reachability_raw,
                         entry_allowance,
+                        projected_legacy_decision,
                     )
                 except (TypeError, ValueError) as error:
                     self._shadow_parity_error = str(error)
@@ -1125,11 +1212,10 @@ class HexRaysPatchTransactionParticipant:
             not isinstance(semantic_result, UnflattenAuthorityPreparationAccepted)
             and not isinstance(semantic_result, UnflattenAuthorityNotApplicable)
         )
-        if canonical_rejected and self.plan.legacy_unflatten_shadow is not None:
+        if canonical_rejected:
             self._legacy_shadow_codec_error = (
                 "canonical projected authority rejected before shadow receipt"
             )
-        if canonical_rejected and self.plan.legacy_unflatten_shadow is None:
             raise PatchTransactionPreflightRejected(
                 "projected unflatten authority rejected",
                 unflatten_verdict=semantic_verdict,
@@ -1188,32 +1274,21 @@ class HexRaysPatchTransactionParticipant:
                 UnflattenAuthorityBindingRejected,
             )
 
-            try:
-                bind_result = transaction_api.bind_prepared_unflatten_authority(
-                    prepared=prepared.unflatten_authority,
-                    patch_binding=bound_plan,
-                )
-                if type(bind_result) not in (
-                    UnflattenAuthorityBindingAccepted,
-                    UnflattenAuthorityBindingRejected,
-                ):
-                    raise TypeError("canonical bind returned malformed outcome")
-            except Exception as error:
-                if self.plan.legacy_unflatten_shadow is None:
-                    raise
-                self._shadow_parity_error = str(error) or type(error).__name__
-                bind_result = None
+            bind_result = transaction_api.bind_prepared_unflatten_authority(
+                prepared=prepared.unflatten_authority,
+                patch_binding=bound_plan,
+            )
+            if type(bind_result) not in (
+                UnflattenAuthorityBindingAccepted,
+                UnflattenAuthorityBindingRejected,
+            ):
+                raise TypeError("canonical bind returned malformed outcome")
             if bind_result is None:
                 bound_authority = None
             elif not isinstance(bind_result, UnflattenAuthorityBindingAccepted):
-                if self.plan.legacy_unflatten_shadow is None:
-                    raise PatchTransactionPreflightRejected(
-                        "bound unflatten authority rejected",
-                        unflatten_verdict=bind_result.verdict,
-                    )
-                self._shadow_parity_error = (
-                    "bound unflatten authority rejected: "
-                    f"{bind_result.verdict.reason}"
+                raise PatchTransactionPreflightRejected(
+                    "bound unflatten authority rejected",
+                    unflatten_verdict=bind_result.verdict,
                 )
             else:
                 bound_authority = bind_result.authority
@@ -1338,6 +1413,10 @@ class _PatchTransactionLifecycle:
         if source is None:
             raise RuntimeError("patch validation lacks immutable source authority")
         observed_validation_graph = observed
+        unflatten_route_applicable = (
+            self.plan.unflatten_proposal is not None
+            or self.plan.legacy_unflatten_shadow is not None
+        )
         active_unflatten_authority = self.bound.unflatten_authority
         if active_unflatten_authority is not None:
             from d810.transforms.unflatten_authority.transaction_api import (
@@ -1350,12 +1429,9 @@ class _PatchTransactionLifecycle:
                     self.bound.patch_binding,
                 )
             except (TypeError, ValueError) as error:
-                if self.plan.legacy_unflatten_shadow is None:
-                    raise PatchTransactionPostObservationRejected(
-                        "observed bound authority changed before legacy replay"
-                    ) from error
-                self.participant._shadow_parity_error = str(error)
-                active_unflatten_authority = None
+                raise PatchTransactionPostObservationRejected(
+                    "observed bound authority changed before canonical validation"
+                ) from error
         legacy_view = _legacy_plan_view(self.plan)
         projection = self.participant._projection
         if projection is None:
@@ -1403,15 +1479,15 @@ class _PatchTransactionLifecycle:
                         observed_coverage_validation
                     ),
                 ) from error
-        if (
-            validated_effect_exclusions is None
-            or validated_effect_exclusions
+        if not unflatten_route_applicable and (
+            not validated_effect_exclusions.accepted
+            or validated_effect_exclusions.effect_serials
             != self.participant._validated_effect_exclusion_serials
         ):
             raise PatchTransactionPostObservationRejected(
                 "observed effect exclusion rejected: exact proof authority drift; "
                 f"projected={tuple(sorted(self.participant._validated_effect_exclusion_serials))} "
-                f"observed={None if validated_effect_exclusions is None else tuple(sorted(validated_effect_exclusions))}"
+                f"observed={tuple(sorted(validated_effect_exclusions.effect_serials))}"
             )
         terminal_reachability = check_terminal_reachability_preserved(
             source,
@@ -1423,7 +1499,7 @@ class _PatchTransactionLifecycle:
         )
         effectful_reachability = _apply_exact_effect_exclusions(
             effectful_reachability_raw,
-            validated_effect_exclusions,
+            self.participant._validated_effect_exclusion_serials,
         )
         entry_reachability = check_entry_reachability_not_collapsed(
             source,
@@ -1473,7 +1549,7 @@ class _PatchTransactionLifecycle:
                 post_graph=observed_validation_graph,
                 plan_metadata=legacy_view,
                 validated_exact_effect_exclusion_serials=(
-                    validated_effect_exclusions
+                    self.participant._validated_effect_exclusion_serials
                 ),
                 patch_plan=self.plan,
             )
@@ -1550,11 +1626,33 @@ class _PatchTransactionLifecycle:
             type(claim) is LocalAliasEffectScalarizationClaim
             for claim in bound_claims
         )
-        if not terminal_reachability.passed or (
-            not effectful_reachability.passed and not has_local_alias_claim
-        ) or (
-            not entry_reachability.passed and not entry_allowance_passed
-        ) or observed_removal_rejected or observed_coverage_rejected:
+        observed_replay = validated_effect_exclusions
+        if (
+            validated_effect_exclusions.effect_serials
+            != self.participant._validated_effect_exclusion_serials
+        ):
+            observed_replay = _LegacyEffectReplay(
+                False, validated_effect_exclusions.effect_serials,
+            )
+        observed_legacy_decision = _legacy_gate_decision(
+            UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            observed_replay,
+            terminal_passed=terminal_reachability.passed,
+            effectful_passed=(
+                effectful_reachability.passed or has_local_alias_claim
+            ),
+            entry_passed=entry_reachability.passed,
+            entry_allowance_passed=entry_allowance_passed,
+            dispatcher_removal_rejected=observed_removal_rejected,
+            coverage_rejected=observed_coverage_rejected,
+        )
+        if not unflatten_route_applicable and (
+            not terminal_reachability.passed
+            or (not effectful_reachability.passed and not has_local_alias_claim)
+            or (not entry_reachability.passed and not entry_allowance_passed)
+            or observed_removal_rejected
+            or observed_coverage_rejected
+        ):
             effectful_detail = ""
             if not effectful_reachability.passed:
                 effectful_lost = ", ".join(
@@ -1596,6 +1694,7 @@ class _PatchTransactionLifecycle:
                     active_unflatten_authority.prepared.source_inventory,
                     effectful_reachability_raw,
                     observed_validation,
+                    observed_legacy_decision,
                 )
             except (TypeError, ValueError) as error:
                 self.participant._shadow_parity_error = str(error)
@@ -1608,28 +1707,21 @@ class _PatchTransactionLifecycle:
                 terminal_reachability,
             )
 
-            try:
-                semantic_timed_result = transaction_api.revalidate_observed_unflatten_authority_timed(
-                    authority=active_unflatten_authority,
-                    observed=observed_validation_graph,
-                    observed_generation=int(self.gateway.generation),
-                    generic_gates=semantic_gates,
-                )
-                if not isinstance(
-                    semantic_timed_result, transaction_api.TimedUnflattenAuthorityResult
-                ):
-                    raise TypeError("canonical observed authority returned malformed outcome")
-                semantic_verdict = semantic_timed_result.result
-                if type(semantic_verdict) is not UnflattenAuthorityVerdict:
-                    raise TypeError("canonical observed authority returned malformed verdict")
-                self.participant._observed_unflatten_timing = semantic_timed_result.timings
-                self.participant._observed_unflatten_verdict = semantic_verdict
-            except Exception as error:
-                if self.plan.legacy_unflatten_shadow is None:
-                    raise
-                self.participant._shadow_parity_error = str(error) or type(error).__name__
-                active_unflatten_authority = None
-                semantic_verdict = None
+            semantic_timed_result = transaction_api.revalidate_observed_unflatten_authority_timed(
+                authority=active_unflatten_authority,
+                observed=observed_validation_graph,
+                observed_generation=int(self.gateway.generation),
+                generic_gates=semantic_gates,
+            )
+            if not isinstance(
+                semantic_timed_result, transaction_api.TimedUnflattenAuthorityResult
+            ):
+                raise TypeError("canonical observed authority returned malformed outcome")
+            semantic_verdict = semantic_timed_result.result
+            if type(semantic_verdict) is not UnflattenAuthorityVerdict:
+                raise TypeError("canonical observed authority returned malformed verdict")
+            self.participant._observed_unflatten_timing = semantic_timed_result.timings
+            self.participant._observed_unflatten_verdict = semantic_verdict
             if active_unflatten_authority is not None:
                 self.participant._observed_unflatten_verdict = semantic_verdict
                 parity_payload = None
@@ -1681,7 +1773,7 @@ class _PatchTransactionLifecycle:
                         projected_case=active_unflatten_authority.prepared.projected_case,
                     ),),
                 )
-                if not semantic_verdict.accepted and self.plan.legacy_unflatten_shadow is None:
+                if not semantic_verdict.accepted:
                     raise PatchTransactionPostObservationRejected(
                         "observed unflatten authority rejected",
                         unflatten_verdict=semantic_verdict,

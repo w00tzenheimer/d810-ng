@@ -31,6 +31,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
 )
 from d810.hexrays.mutation.patch_transaction import (
     HexRaysPatchTransactionParticipant,
+    PatchTransactionPostObservationRejected,
     PatchTransactionPreflightRejected,
     _patch_plan_observation_items,
     _requires_observed_identity_canonicalization,
@@ -2859,8 +2860,8 @@ def test_backend_typed_shadow_uses_one_receipt_for_both_phase_payloads(monkeypat
     assert projected_receipt == observed_receipt == observed_parity
 
 
-def test_backend_shadow_keeps_legacy_decisive_on_projected_canonical_rejection(monkeypatch) -> None:
-    """A canonical preflight rejection is diagnostic when legacy shadow is present."""
+def test_backend_shadow_canonical_projected_rejection_is_decisive(monkeypatch) -> None:
+    """A canonical preflight rejection is fatal even with a legacy shadow."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
     plan = _attach_exact_effect_shadow(pre_cfg, plan)
@@ -2887,11 +2888,144 @@ def test_backend_shadow_keeps_legacy_decisive_on_projected_canonical_rejection(m
     result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
 
     assert result is observed_cfg
+    assert backend.last_patch_execution is None
+    assert backend.last_patch_failure is not None
+    assert backend.last_patch_failure.unflatten_verdict is rejected
+
+
+def test_backend_applicable_unflatten_not_applicable_is_decisive(monkeypatch) -> None:
+    """An applicable unflatten route may not fall through as ordinary."""
+
+    pre_cfg, plan = _typed_local_alias_fixture()
+    plan = _attach_exact_effect_shadow(pre_cfg, plan)
+    backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
+    from d810.transforms.unflatten_authority import transaction_api
+
+    monkeypatch.setattr(
+        transaction_api,
+        "prepare_unflatten_authority_timed",
+        lambda **_kwargs: transaction_api.TimedUnflattenAuthorityResult(
+            authority_model.UnflattenAuthorityNotApplicable(
+                route=transaction_api.UnflattenPlanRoute.ORDINARY,
+            ),
+            transaction_api.PhaseTimings(
+                inventory_ms=1.0, binding_ms=1.0, evaluation_ms=1.0,
+            ),
+        ),
+    )
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+    assert result is pre_cfg
+    assert backend.last_patch_execution is None
+    assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
+    assert str(backend.last_patch_failure) == (
+        "applicable unflatten route returned not-applicable"
+    )
+    assert backend.last_patch_failure.unflatten_verdict is None
+    assert backend._translator.lower_calls == []
+
+
+def test_backend_canonical_commit_records_rejecting_legacy_replay(monkeypatch) -> None:
+    """Canonical acceptance commits while legacy replay mismatch stays diagnostic."""
+
+    pre_cfg, plan = _typed_local_alias_fixture()
+    plan = _attach_exact_effect_shadow(pre_cfg, plan)
+    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg)
+    backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
+    from d810.hexrays.mutation import patch_transaction
+
+    original_replay = patch_transaction._validated_exact_effect_exclusions
+
+    def reject_replay(*args, **kwargs):
+        replay = original_replay(*args, **kwargs)
+        return patch_transaction._LegacyEffectReplay(False, replay.effect_serials)
+
+    monkeypatch.setattr(
+        patch_transaction,
+        "_validated_exact_effect_exclusions",
+        reject_replay,
+    )
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+    assert result is observed_cfg
     assert backend.last_patch_execution is not None
-    assert backend.last_patch_execution.legacy_shadow_codec_error is not None
+    execution = backend.last_patch_execution
+    assert execution.projected_unflatten_verdict is not None
+    assert execution.projected_unflatten_verdict.accepted
+    assert execution.observed_unflatten_verdict is not None
+    assert execution.observed_unflatten_verdict.accepted
+    assert execution.shadow_parity_payload is not None
+    assert execution.shadow_parity_payload.parity_ok is False
+    assert execution.shadow_parity_payload.projected.accepted_equal is False
+    assert execution.shadow_parity_payload.observed.accepted_equal is False
+    assert not execution.shadow_parity_payload.projected.legacy.accepted
+    assert (
+        execution.shadow_parity_payload.projected.legacy.reason_scope
+        is authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED
+    )
+    assert not execution.shadow_parity_payload.observed.legacy.accepted
+    assert (
+        execution.shadow_parity_payload.observed.legacy.reason_scope
+        is authority_model.UnflattenAuthorityReason.LIVE_BINDING_FAILED
+    )
 
 
-def test_backend_shadow_keeps_legacy_decisive_when_projected_canonical_prepare_raises(monkeypatch) -> None:
+def test_legacy_gate_diagnostics_keep_raw_losses_without_deciding_canonical() -> None:
+    """Every former legacy gate remains observable beside accepted authority."""
+
+    pre_cfg, plan = _typed_local_alias_fixture()
+    plan = _attach_exact_effect_shadow(pre_cfg, plan)
+    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg)
+    backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+    assert result is observed_cfg
+    execution = backend.last_patch_execution
+    assert execution is not None
+    assert execution.projected_unflatten_verdict is not None
+    assert execution.projected_unflatten_verdict.accepted
+    assert execution.shadow_parity_payload is not None
+
+    from d810.analyses.control_flow.graph_checks import EffectfulReachabilityResult
+    from d810.hexrays.mutation import patch_transaction
+
+    source_inventory = execution.projected_unflatten_verdict.safety_case.source_inventory
+    anchor = next(block for block in source_inventory.blocks if block.anchor_ea is not None)
+    serial, anchor_ea = anchor.serial, int(anchor.anchor_ea)
+    raw_effect = EffectfulReachabilityResult(
+        passed=False,
+        pre_effectful_block_serials=frozenset({serial}),
+        post_reachable_effectful_block_serials=frozenset(),
+        lost_block_serials=frozenset({serial}),
+        reason="diagnostic fixture",
+    )
+    replay = patch_transaction._LegacyEffectReplay(True, frozenset())
+    for failed_gate in ("terminal", "effect", "entry", "coverage"):
+        decision = patch_transaction._legacy_gate_decision(
+            authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            replay,
+            terminal_passed=failed_gate != "terminal",
+            effectful_passed=failed_gate != "effect",
+            entry_passed=failed_gate != "entry",
+            entry_allowance_passed=False,
+            dispatcher_removal_rejected=False,
+            coverage_rejected=failed_gate == "coverage",
+        )
+        outcome = patch_transaction._legacy_phase_outcome(
+            authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            source_inventory,
+            raw_effect,
+            None,
+            decision,
+        )
+        assert not outcome.accepted
+        assert outcome.reason_scope is authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED
+        assert outcome.anchored_losses == ((serial, anchor_ea),)
+
+
+def test_backend_shadow_canonical_projected_prepare_exception_is_decisive(monkeypatch) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
     plan = _attach_exact_effect_shadow(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
@@ -2902,13 +3036,9 @@ def test_backend_shadow_keeps_legacy_decisive_when_projected_canonical_prepare_r
 
     monkeypatch.setattr(transaction_api, "prepare_unflatten_authority_timed", raise_prepare)
 
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
-
-    assert result is pre_cfg
-    assert backend.last_patch_execution is not None
-    assert backend.last_patch_execution.shadow_parity_error == (
-        "projected canonical prepare exploded"
-    )
+    with pytest.raises(RuntimeError, match="projected canonical prepare exploded"):
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    assert backend.last_patch_execution is None
 
 
 def test_backend_non_shadow_propagates_projected_canonical_prepare_exception(monkeypatch) -> None:
@@ -2925,7 +3055,7 @@ def test_backend_non_shadow_propagates_projected_canonical_prepare_exception(mon
         backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
 
 
-def test_backend_shadow_disables_malformed_projected_canonical_prepare(monkeypatch) -> None:
+def test_backend_shadow_malformed_projected_canonical_prepare_is_decisive(monkeypatch) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
     plan = _attach_exact_effect_shadow(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
@@ -2933,15 +3063,13 @@ def test_backend_shadow_disables_malformed_projected_canonical_prepare(monkeypat
 
     monkeypatch.setattr(transaction_api, "prepare_unflatten_authority_timed", lambda **_kwargs: object())
 
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
-
-    assert result is pre_cfg
-    assert backend.last_patch_execution is not None
-    assert "malformed outcome" in (backend.last_patch_execution.shadow_parity_error or "")
+    with pytest.raises(TypeError, match="malformed outcome"):
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    assert backend.last_patch_execution is None
 
 
-def test_backend_shadow_keeps_legacy_decisive_on_observed_canonical_rejection(monkeypatch) -> None:
-    """A canonical post-apply rejection is diagnostic when legacy gates pass."""
+def test_backend_shadow_canonical_observed_rejection_is_decisive(monkeypatch) -> None:
+    """A canonical post-apply rejection poisons after mutation."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
     plan = _attach_exact_effect_shadow(pre_cfg, plan)
@@ -2965,15 +3093,15 @@ def test_backend_shadow_keeps_legacy_decisive_on_observed_canonical_rejection(mo
         transaction_api, "revalidate_observed_unflatten_authority_timed", reject_observed,
     )
 
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    from d810.hexrays.mutation.patch_transaction import PatchTransactionPoisoned
 
-    assert result is observed_cfg
-    assert backend.last_patch_execution is not None
-    assert backend.last_patch_execution.observed_unflatten_verdict is not None
-    assert not backend.last_patch_execution.observed_unflatten_verdict.accepted
+    with pytest.raises(PatchTransactionPoisoned) as raised:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    assert isinstance(raised.value.__cause__, PatchTransactionPostObservationRejected)
+    assert raised.value.__cause__.unflatten_verdict is not None
 
 
-def test_backend_shadow_keeps_legacy_decisive_when_observed_canonical_revalidate_raises(monkeypatch) -> None:
+def test_backend_shadow_canonical_observed_revalidate_exception_is_decisive(monkeypatch) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
     plan = _attach_exact_effect_shadow(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
@@ -2988,13 +3116,10 @@ def test_backend_shadow_keeps_legacy_decisive_when_observed_canonical_revalidate
         raise_revalidate,
     )
 
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    from d810.hexrays.mutation.patch_transaction import PatchTransactionPoisoned
 
-    assert result is pre_cfg
-    assert backend.last_patch_execution is not None
-    assert backend.last_patch_execution.shadow_parity_error == (
-        "observed canonical revalidate exploded"
-    )
+    with pytest.raises(PatchTransactionPoisoned, match="observed canonical revalidate exploded"):
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
 
 
 def test_backend_non_shadow_poisoned_when_observed_canonical_revalidate_raises(monkeypatch) -> None:
@@ -3016,8 +3141,8 @@ def test_backend_non_shadow_poisoned_when_observed_canonical_revalidate_raises(m
         backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
 
 
-def test_backend_shadow_keeps_legacy_decisive_when_canonical_bind_rejects(monkeypatch) -> None:
-    """A bind-only canonical rejection must not abort a legacy shadow commit."""
+def test_backend_shadow_canonical_bind_rejection_is_decisive(monkeypatch) -> None:
+    """A bind-only canonical rejection cleanly aborts despite a shadow."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
     plan = _attach_exact_effect_shadow(pre_cfg, plan)
@@ -3041,11 +3166,12 @@ def test_backend_shadow_keeps_legacy_decisive_when_canonical_bind_rejects(monkey
     result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
 
     assert result is observed_cfg
-    assert backend.last_patch_execution is not None
-    assert backend.last_patch_execution.shadow_parity_error is not None
+    assert backend.last_patch_execution is None
+    assert backend.last_patch_failure is not None
+    assert backend.last_patch_failure.unflatten_verdict is rejected
 
 
-def test_backend_shadow_keeps_legacy_decisive_when_canonical_bind_raises(monkeypatch) -> None:
+def test_backend_shadow_canonical_bind_exception_is_decisive(monkeypatch) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
     plan = _attach_exact_effect_shadow(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
@@ -3056,15 +3182,13 @@ def test_backend_shadow_keeps_legacy_decisive_when_canonical_bind_raises(monkeyp
 
     monkeypatch.setattr(transaction_api, "bind_prepared_unflatten_authority", raise_bind)
 
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
-
-    assert result is pre_cfg
-    assert backend.last_patch_execution is not None
-    assert backend.last_patch_execution.shadow_parity_error == "canonical bind exploded"
+    with pytest.raises(RuntimeError, match="canonical bind exploded"):
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    assert backend.last_patch_execution is None
 
 
-def test_backend_shadow_keeps_legacy_decisive_when_observed_provenance_drifts(monkeypatch) -> None:
-    """Observed provenance drift is diagnostic while legacy validation commits."""
+def test_backend_shadow_canonical_observed_provenance_drift_is_decisive(monkeypatch) -> None:
+    """Observed provenance drift poisons after mutation despite a shadow."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
     plan = _attach_exact_effect_shadow(pre_cfg, plan)
@@ -3097,13 +3221,12 @@ def test_backend_shadow_keeps_legacy_decisive_when_observed_provenance_drifts(mo
         reject_provenance,
     )
 
-    result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    from d810.hexrays.mutation.patch_transaction import PatchTransactionPoisoned
 
-    assert result is observed_cfg
-    assert backend.last_patch_execution is not None
-    assert backend.last_patch_execution.shadow_parity_error == (
-        "observed authority provenance drift"
-    )
+    with pytest.raises(PatchTransactionPoisoned) as raised:
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+    assert isinstance(raised.value.__cause__, PatchTransactionPostObservationRejected)
+    assert "observed authority provenance drift" in str(raised.value.__cause__.__cause__)
 
 
 def test_backend_accepts_exact_reachable_local_alias_store_scalarization(monkeypatch) -> None:

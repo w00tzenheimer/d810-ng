@@ -1816,3 +1816,108 @@ def test_prepare_rejects_projected_route_carrier_interference() -> None:
 
     assert getattr(result, "prepared", None) is None
     assert result.verdict.reason.name == "PROJECTED_BINDING_FAILED"
+
+
+def test_canonical_acceptance_is_decisive_while_exact_shadow_replay_remains_observed() -> None:
+    """A rejecting legacy result is observable without overriding acceptance."""
+
+    from d810.transforms.unflatten_authority import transaction_api
+    from d810.transforms.unflatten_authority.diagnostics import (
+        LegacyPhaseOutcome,
+        ShadowParityCounters,
+    )
+    from d810.transforms.unflatten_authority.legacy_codec import (
+        LegacyFamilyAdaptation,
+        LegacyShadowCodecReceipt,
+    )
+
+    source, plan, projected, gates = _full_corridor_fixture()
+    attempt = TransactionAttemptId(
+        plan.plan_id, authority_id("parity-session"), 1,
+        authority_id("parity-attempt"),
+    )
+    prepared_result = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=attempt,
+        generic_gates=gates,
+    )
+    assert prepared_result.prepared is not None
+    projected_canonical = prepared_result.verdict
+
+    assert projected_canonical.safety_case is not None
+    from d810.ir.maturity import MaturityEnvelope
+    from d810.transforms.patch_binding import BoundPatchPlan
+    from d810.transforms.unflatten_authority.model import UnflattenAuthorityPhase
+
+    refs_by_serial = {
+        serial: ref for ref, serial in plan.source_coordinates
+    }
+    patch_binding = BoundPatchPlan(
+        plan=plan,
+        attempt_id=attempt,
+        session_id=attempt.session_id,
+        generation=attempt.generation,
+        maturity=MaturityEnvelope(ir=None, provider="test", provider_id=0),
+        bindings=tuple(
+            (refs_by_serial[serial], serial)
+            for serial in (5, 6, 0)
+        ),
+    )
+    bound_result = transaction_api.bind_prepared_unflatten_authority(
+        prepared=prepared_result.prepared,
+        patch_binding=patch_binding,
+    )
+    assert bound_result.authority is not None
+    observed_result = transaction_api.revalidate_observed_unflatten_authority(
+        authority=bound_result.authority,
+        observed=projected,
+        observed_generation=attempt.generation,
+        generic_gates=gates,
+    )
+    assert observed_result.accepted
+    observed_canonical = observed_result
+    assert observed_canonical.phase is UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+    assert observed_canonical.case_id != projected_canonical.case_id
+
+    shadow = _shadow(plan.plan_id, plan.snapshot_id)
+    entry = shadow.entries[0]
+    receipt = LegacyShadowCodecReceipt(
+        shadow,
+        (
+            LegacyFamilyAdaptation(
+                entry.key, "test", ("legacy-reject",),
+                entry.canonical_payload, entry.payload_sha256,
+            ),
+        ),
+    )
+    projected_legacy = LegacyPhaseOutcome(
+        projected_canonical.phase,
+        False,
+        UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        (),
+    )
+    observed_legacy = LegacyPhaseOutcome(
+        observed_canonical.phase,
+        False,
+        UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+        (),
+    )
+    parity = transaction_api.project_shadow_parity(
+        projected_legacy,
+        projected_canonical,
+        observed_legacy,
+        observed_canonical,
+        projected_counters=ShadowParityCounters.from_case(
+            projected_canonical.safety_case,
+        ),
+        observed_counters=ShadowParityCounters.from_case(
+            observed_canonical.safety_case,
+        ),
+        codec_receipt=receipt,
+    )
+    assert projected_canonical.accepted and observed_canonical.accepted
+    assert parity.parity_ok is False
+    assert parity.projected.accepted_equal is False
+    assert parity.observed.accepted_equal is False

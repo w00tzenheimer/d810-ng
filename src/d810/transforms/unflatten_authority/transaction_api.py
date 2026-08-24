@@ -2019,10 +2019,10 @@ def project_shadow_parity(
     observed_counters: ShadowParityCounters,
     codec_receipt: LegacyShadowCodecReceipt,
 ) -> ShadowParityPayload:
-    """Project parity facts without changing the transaction decision.
+    """Project legacy/canonical parity facts as transaction diagnostics.
 
-    Legacy remains decisive for the shadow release.  This facade only routes
-    already validated facts to the pure diagnostic comparator.
+    The canonical verdict is the transaction decision.  This facade only
+    routes already validated facts to the pure diagnostic comparator.
     """
 
     from .diagnostics import compare_shadow_parity
