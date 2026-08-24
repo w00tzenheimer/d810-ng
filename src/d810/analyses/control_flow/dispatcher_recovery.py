@@ -229,6 +229,103 @@ class DispatcherRecovery:
     candidate_identity: DispatcherCandidateIdentity | None = None
 
 
+def recovery_from_graph(
+    graph: FlowGraph | None,
+    dispatch_map: StateDispatcherMap | None = None,
+    *,
+    candidate_identity: DispatcherCandidateIdentity | None = None,
+) -> DispatcherRecovery:
+    """Build the portable recovery view owned by dispatcher analysis.
+
+    Reachability is generic graph inventory, so callers that have an exact
+    dispatcher map (including a map projected from another recovery engine)
+    use this adapter instead of rebuilding a partial ``DispatcherRecovery``
+    themselves.  A missing graph or map preserves the existing empty/map-less
+    recovery behavior.
+    """
+    if graph is None:
+        return DispatcherRecovery()
+    adjacency = {serial: graph.successors(serial) for serial in graph.blocks}
+    reachable = reachable_from(adjacency, graph.block_count, graph.entry_serial)
+    if dispatch_map is None:
+        return DispatcherRecovery(
+            reachable_block_serials=reachable,
+            candidate_identity=candidate_identity,
+        )
+    return DispatcherRecovery(
+        reachable_block_serials=reachable,
+        dispatcher_block_serial=dispatch_map.dispatcher_entry_block,
+        condition_chain_block_serials=tuple(sorted(dispatch_map.dispatcher_blocks)),
+        state_var_stkoff=dispatch_map.state_var_stkoff,
+        state_var_reg=getattr(dispatch_map, "state_var_reg", None),
+        dispatch_map=dispatch_map,
+        candidate_identity=candidate_identity,
+    )
+
+
+def recovery_with_materialized_dispatcher(
+    recovery: DispatcherRecovery,
+    graph: FlowGraph | None,
+    *,
+    state_var_reg: int | None,
+    dispatcher_entry_serial: int | None,
+    handler_by_state: dict[int, int] | None,
+    router_serials=(),
+) -> DispatcherRecovery:
+    """Install a current-snapshot exact dispatcher view on ``recovery``.
+
+    The generic recovery retains ownership of its reachability inventory.  This
+    helper validates graph-local identities and creates the materialized map,
+    returning the original recovery when evidence is incomplete or conflicting.
+    """
+    if recovery.dispatch_map is not None or graph is None:
+        return recovery
+    handlers = {
+        int(state) & 0xFFFFFFFF: int(serial)
+        for state, serial in (handler_by_state or {}).items()
+    }
+    if state_var_reg is None or dispatcher_entry_serial is None or not handlers:
+        return recovery
+    entry_serial = int(dispatcher_entry_serial)
+    if graph.get_block(entry_serial) is None:
+        return recovery
+    if any(graph.get_block(serial) is None for serial in handlers.values()):
+        return recovery
+    dispatcher_blocks = frozenset(
+        {entry_serial, *(int(serial) for serial in (router_serials or ()))}
+    )
+    if any(graph.get_block(serial) is None for serial in dispatcher_blocks):
+        return recovery
+    rows = tuple(
+        StateDispatcherRow(
+            state_const=int(state),
+            target_block=int(target),
+            dispatcher_block=entry_serial,
+            compare_block=None,
+            branch_kind="materialized_exact",
+            router_kind=RouterKind.CONDITION_CHAIN,
+        )
+        for state, target in sorted(handlers.items())
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=rows,
+        dispatcher_entry_block=entry_serial,
+        dispatcher_blocks=dispatcher_blocks,
+        state_var_stkoff=None,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+        state_var_reg=int(state_var_reg),
+    )
+    return replace(
+        recovery,
+        dispatcher_block_serial=entry_serial,
+        condition_chain_block_serials=tuple(sorted(dispatcher_blocks)),
+        state_var_stkoff=None,
+        state_var_reg=int(state_var_reg),
+        dispatch_map=dispatch_map,
+    )
+
+
 def _split_const_state(
     left: StorageView,
     left_stkoff: int | None,
@@ -1328,16 +1425,14 @@ def recover_dispatcher(
     can recover sub-default state constants; defaults to :data:`MIN_STATE_CONSTANT`.
     """
     if graph is None:
-        return DispatcherRecovery()
-    adjacency = {serial: graph.successors(serial) for serial in graph.blocks}
-    reachable = reachable_from(adjacency, graph.block_count, graph.entry_serial)
+        return recovery_from_graph(None)
     resolution = resolve_dispatcher_any_kind(
         graph,
         min_state_constant=min_state_constant,
         excluded_identities=excluded_identities,
     )
     if resolution is None:
-        return DispatcherRecovery(reachable_block_serials=reachable)
+        return recovery_from_graph(graph)
     dmap = resolution.dispatcher_map
     candidate_identity = dispatcher_resolution_identity(graph, resolution)
     # Equality-chain / switch dispatchers do not thread an ``initial_state`` (the
@@ -1355,12 +1450,8 @@ def recover_dispatcher(
         if recovered_initial is not None:
             dmap = replace(dmap, initial_state=recovered_initial)
     dmap = _augment_residual_equality_rows(graph, dmap, materialized_indirect_transfers)
-    return DispatcherRecovery(
-        reachable_block_serials=reachable,
-        dispatcher_block_serial=dmap.dispatcher_entry_block,
-        condition_chain_block_serials=tuple(sorted(dmap.dispatcher_blocks)),
-        state_var_stkoff=dmap.state_var_stkoff,
-        state_var_reg=getattr(dmap, "state_var_reg", None),
-        dispatch_map=dmap,
+    return recovery_from_graph(
+        graph,
+        dmap,
         candidate_identity=candidate_identity,
     )

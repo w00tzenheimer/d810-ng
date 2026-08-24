@@ -61,6 +61,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
+from d810.ir.block_identity import snapshot_block_coordinate_from_snapshot
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from tests.native_preanalysis import make_native_key
 
@@ -1339,7 +1340,9 @@ def test_resolver_proven_native_jump_neutralizes_exact_mislifted_call() -> None:
         (transfer,),
         graph,
         redirected_targets_by_source={83: (43,)},
-        allowed_target_serials=frozenset({43}),
+        allowed_targets=frozenset(
+            {snapshot_block_coordinate_from_snapshot(graph.blocks[43])}
+        ),
     ) == (
         ResidualIndirectCallNeutralizationPlan(
             source_block_serial=83,
@@ -1404,7 +1407,10 @@ def test_resolver_proven_indirect_call_neutralization_abstains_without_full_proo
             (transfer,),
             graph,
             redirected_targets_by_source=redirects,
-            allowed_target_serials=allowed_targets,
+            allowed_targets=frozenset(
+                snapshot_block_coordinate_from_snapshot(graph.blocks[serial])
+                for serial in allowed_targets
+            ),
         )
         == ()
     )

@@ -6,6 +6,10 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 
 from d810.analyses.control_flow.edit_simulation import SimulatedEdit, simulate_edits
+from d810.ir.block_identity import (
+    SnapshotBlockCoordinate,
+    snapshot_block_coordinate_from_snapshot,
+)
 from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind
 
 
@@ -298,6 +302,35 @@ def _block_effect_identities(block: object) -> tuple[tuple[object, ...], ...]:
             )
         )
     return tuple(identities)
+
+
+def effectful_loss_coordinates(
+    source_cfg: FlowGraph,
+    result: EffectfulReachabilityResult,
+) -> frozenset[SnapshotBlockCoordinate]:
+    """Project a reachability result into exact serial+EA source coordinates.
+
+    The raw serial sets remain a generic graph-check implementation detail.
+    Unflatten producers consume this paired representation so a snapshot-local
+    serial never becomes independent semantic authority.
+    """
+
+    if type(source_cfg) is not FlowGraph:
+        raise TypeError("effectful loss coordinates require an exact FlowGraph")
+    if type(result) is not EffectfulReachabilityResult:
+        raise TypeError(
+            "effectful loss coordinates require EffectfulReachabilityResult"
+        )
+    coordinates: set[SnapshotBlockCoordinate] = set()
+    for serial in result.lost_block_serials:
+        block = source_cfg.get_block(int(serial))
+        if block is None:
+            raise ValueError("lost effectful block is absent from the source graph")
+        coordinate = snapshot_block_coordinate_from_snapshot(block)
+        if coordinate is None:
+            raise ValueError("lost effectful block has no stable native-EA anchor")
+        coordinates.add(coordinate)
+    return frozenset(coordinates)
 
 
 def check_effectful_reachability_preserved(

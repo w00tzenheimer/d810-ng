@@ -22,7 +22,11 @@ from d810.ir.flowgraph import (
     InsnSnapshot,
     MopSnapshot,
 )
-from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.block_identity import (
+    SnapshotBlockCoordinate,
+    StableBlockIdentity,
+    snapshot_block_coordinate_from_snapshot,
+)
 
 
 CONDITIONAL_HANDLER_BRIDGE_KINDS = frozenset(
@@ -997,7 +1001,7 @@ def plan_resolver_proven_indirect_call_neutralizations(
     flow_graph: FlowGraph,
     *,
     redirected_targets_by_source: Mapping[int, Sequence[int]],
-    allowed_target_serials: frozenset[int],
+    allowed_targets: frozenset[SnapshotBlockCoordinate],
 ) -> tuple[ResidualIndirectCallNeutralizationPlan, ...]:
     """Neutralize only stale call artifacts replaced by a proven handler edge.
 
@@ -1007,6 +1011,23 @@ def plan_resolver_proven_indirect_call_neutralizations(
     plan supplies one unique replacement edge to a known handler.  Missing,
     ambiguous, or already-live edges abstain.
     """
+    if type(allowed_targets) is not frozenset:
+        raise TypeError("allowed handler targets must be an exact frozenset")
+    for coordinate in allowed_targets:
+        if type(coordinate) is not SnapshotBlockCoordinate:
+            raise TypeError("allowed handler targets must be snapshot coordinates")
+        block = flow_graph.get_block(coordinate.serial)
+        expected = (
+            None
+            if block is None
+            else snapshot_block_coordinate_from_snapshot(block)
+        )
+        if expected != coordinate:
+            raise ValueError("allowed handler target coordinate is stale or foreign")
+    allowed_target_ids = frozenset(
+        coordinate.serial for coordinate in allowed_targets
+    )
+
     plans: set[ResidualIndirectCallNeutralizationPlan] = set()
     for transfer in transfers:
         if (
@@ -1037,7 +1058,7 @@ def plan_resolver_proven_indirect_call_neutralizations(
             continue
         redirected_target = next(iter(redirected_targets))
         if (
-            redirected_target not in allowed_target_serials
+            redirected_target not in allowed_target_ids
             or flow_graph.get_block(redirected_target) is None
             or redirected_target in source.succs
         ):

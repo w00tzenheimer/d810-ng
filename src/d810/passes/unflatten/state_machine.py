@@ -30,14 +30,11 @@ from d810.passes.state_machine_options import StateMachineCffOptions
 from d810.analyses.control_flow.dispatcher_recovery import (
     DispatcherRecovery,
     min_state_constant_from_config,
+    recovery_from_graph,
+    recovery_with_materialized_dispatcher,
     recover_entry_dominated_initial_state,
     recover_dispatcher,
 )
-from d810.analyses.control_flow.dispatcher_resolution import (
-    StateDispatcherMap,
-    StateDispatcherRow,
-)
-from d810.analyses.control_flow.reachability import reachable_from
 from d810.analyses.machine import recover_machine
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
@@ -140,7 +137,6 @@ from d810.analyses.data_flow.concolic import EmulationCapability
 from d810.core import logging
 from d810.core.observability_preanalysis import (
     observe_state_dispatcher_rows,
-    observe_unflatten_dispatcher_corridor_coverage,
 )
 from d810.transforms.native_cfg_normalization import ObservedEdgeStateContract
 from d810.transforms.plan import (
@@ -1008,110 +1004,6 @@ def _has_emulated_endpoint_rows(dmap) -> bool:
     return any(str(getattr(row, "branch_kind", "")) == "emulated" for row in rows)
 
 
-def _recovery_from_machine(
-    machine, graph, min_state_constant: int
-) -> DispatcherRecovery:
-    """Adapt a P1 ``RecoveredMachine`` back into the existing ``DispatcherRecovery``.
-
-    The reduced-product orchestrator (ticket llr-1d8u) returns the engine-neutral
-    ``RecoveredMachine``; the downstream passes (``RecoverStateTransitions``,
-    ``PlanSemanticRegions``, ``LowerStateMachine``, ``emit_minimal_unflatten``)
-    consume a ``DispatcherRecovery`` whose ``dispatch_map`` is a
-    ``StateDispatcherMap``. ``machine.to_state_dispatcher_map()`` is the EXACT
-    inverse of the lift, so the projection yields the SAME map shape the emit path
-    consumes -- the richer forking/context data is carried separately (published as
-    ``recovered_machine``) and ignored by the emit. ``None`` machine -> an empty
-    recovery (caller's downstream sees "no dispatcher", same as a clean function).
-    """
-    if graph is None:
-        return DispatcherRecovery()
-    adjacency = {serial: graph.successors(serial) for serial in graph.blocks}
-    reachable = reachable_from(adjacency, graph.block_count, graph.entry_serial)
-    if machine is None:
-        return DispatcherRecovery(reachable_block_serials=reachable)
-    dmap = machine.to_state_dispatcher_map()
-    if dmap is None:
-        return DispatcherRecovery(reachable_block_serials=reachable)
-    return DispatcherRecovery(
-        reachable_block_serials=reachable,
-        dispatcher_block_serial=dmap.dispatcher_entry_block,
-        condition_chain_block_serials=tuple(sorted(dmap.dispatcher_blocks)),
-        state_var_stkoff=dmap.state_var_stkoff,
-        state_var_reg=getattr(dmap, "state_var_reg", None),
-        dispatch_map=dmap,
-    )
-
-
-def _materialized_dispatcher_recovery(
-    context: FunctionPipelineContext,
-    recovery: DispatcherRecovery,
-) -> DispatcherRecovery:
-    """Build an exact current-snapshot dispatcher view from portable evidence.
-
-    PREOPT import can remove the legacy comparison dispatcher while retaining
-    exact state-to-native-handler routes.  The live adapter has already rebound
-    those native EAs to this FlowGraph; this pass packages that ephemeral view
-    into the ordinary portable dispatcher contract.  Missing, conflicting, or
-    non-live identities abstain rather than inventing serials.
-    """
-    if recovery.dispatch_map is not None or not bool(
-        _analysis(context, "materialized_computed_goto_profile", False)
-    ):
-        return recovery
-    state_var_reg = _analysis(context, "materialized_state_var_reg")
-    entry_serial = _analysis(context, "materialized_dispatcher_entry_serial")
-    handlers = {
-        int(state) & 0xFFFFFFFF: int(serial)
-        for state, serial in (
-            _analysis(context, "materialized_handler_by_state", {}) or {}
-        ).items()
-    }
-    router_serials = frozenset(
-        int(serial)
-        for serial in (
-            _analysis(context, "materialized_dispatcher_router_serials", ()) or ()
-        )
-    )
-    if state_var_reg is None or entry_serial is None or not handlers:
-        return recovery
-    entry_serial = int(entry_serial)
-    if context.graph.get_block(entry_serial) is None:
-        return recovery
-    if any(context.graph.get_block(serial) is None for serial in handlers.values()):
-        return recovery
-    dispatcher_blocks = frozenset({entry_serial, *router_serials})
-    if any(context.graph.get_block(serial) is None for serial in dispatcher_blocks):
-        return recovery
-    rows = tuple(
-        StateDispatcherRow(
-            state_const=int(state),
-            target_block=int(target),
-            dispatcher_block=entry_serial,
-            compare_block=None,
-            branch_kind="materialized_exact",
-            router_kind=RouterKind.CONDITION_CHAIN,
-        )
-        for state, target in sorted(handlers.items())
-    )
-    dispatch_map = StateDispatcherMap(
-        rows=rows,
-        dispatcher_entry_block=entry_serial,
-        dispatcher_blocks=dispatcher_blocks,
-        state_var_stkoff=None,
-        state_var_lvar_idx=None,
-        router_kind=RouterKind.CONDITION_CHAIN,
-        state_var_reg=int(state_var_reg),
-    )
-    return DispatcherRecovery(
-        reachable_block_serials=recovery.reachable_block_serials,
-        dispatcher_block_serial=entry_serial,
-        condition_chain_block_serials=tuple(sorted(dispatcher_blocks)),
-        state_var_stkoff=None,
-        state_var_reg=int(state_var_reg),
-        dispatch_map=dispatch_map,
-    )
-
-
 class RecoverDispatcher(PipelinePass):
     name = "recover_dispatcher"
 
@@ -1161,9 +1053,12 @@ class RecoverDispatcher(PipelinePass):
                 project_config=cfg if isinstance(cfg, dict) else None,
                 engines=engines_cap,
             )
-            recovery = _recovery_from_machine(
-                machine, context.graph, min_state_constant
+            dispatch_map = (
+                machine.to_state_dispatcher_map()
+                if machine is not None and context.graph is not None
+                else None
             )
+            recovery = recovery_from_graph(context.graph, dispatch_map)
             _publish(context, "recovered_machine", machine)
             analysis_outputs = {"recovered_machine": machine}
         else:
@@ -1183,7 +1078,21 @@ class RecoverDispatcher(PipelinePass):
             recovery,
             _analysis(context, "range_evidence"),
         )
-        recovery = _materialized_dispatcher_recovery(context, recovery)
+        if bool(_analysis(context, "materialized_computed_goto_profile", False)):
+            recovery = recovery_with_materialized_dispatcher(
+                recovery,
+                context.graph,
+                state_var_reg=_analysis(context, "materialized_state_var_reg"),
+                dispatcher_entry_serial=_analysis(
+                    context, "materialized_dispatcher_entry_serial"
+                ),
+                handler_by_state=_analysis(
+                    context, "materialized_handler_by_state", {}
+                ),
+                router_serials=_analysis(
+                    context, "materialized_dispatcher_router_serials", ()
+                ),
+            )
         _publish(context, self.name, recovery)
         analysis_outputs[self.name] = recovery
         dispatch_map = getattr(recovery, "dispatch_map", None)

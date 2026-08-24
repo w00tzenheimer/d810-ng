@@ -8,6 +8,7 @@ from d810.analyses.control_flow.graph_checks import (
     check_entry_reachability_counts_not_collapsed,
     check_entry_reachability_not_collapsed,
     check_effectful_reachability_preserved,
+    effectful_loss_coordinates,
     check_terminal_reachability_preserved,
     detect_terminal_cycles,
     prove_terminal_sink,
@@ -15,6 +16,7 @@ from d810.analyses.control_flow.graph_checks import (
     SemanticGate,
     check_edge_split_structural_legality,
 )
+from d810.ir.block_identity import SnapshotBlockCoordinate
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 
 
@@ -405,6 +407,10 @@ class TestEffectfulReachabilityPreservation:
         assert not result.passed
         assert result.lost_block_serials == frozenset({1})
         assert result.reason == "reachable effectful blocks became unreachable"
+
+        assert effectful_loss_coordinates(cfg, result) == frozenset(
+            {SnapshotBlockCoordinate(serial=1, anchor_ea=0x1001)}
+        )
 
     def test_allows_redirect_that_strands_effect_free_register_write(self):
         move = InsnSnapshot(

@@ -16,8 +16,14 @@ from d810.ir.expressions import ValueOpKind
 from d810.analyses.control_flow.dispatcher_recovery import (
     DispatcherRecovery,
     build_state_dispatcher_map_from_flow_graph,
+    recovery_from_graph,
+    recovery_with_materialized_dispatcher,
     recover_dispatcher,
     recover_entry_dominated_initial_state,
+)
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
 )
 from d810.ir.flowgraph import (
     BlockSnapshot,
@@ -92,6 +98,71 @@ def test_recover_dispatcher_computes_reachability_over_flowgraph():
 def test_recover_dispatcher_tolerates_null_graph():
     # the pipeline shape test runs passes on a null context
     assert recover_dispatcher(None, None) == DispatcherRecovery()
+
+
+def test_recovery_from_graph_installs_exact_map_and_reachability():
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1,), ()),
+            1: _blk(1, (), (0,)),
+            2: _blk(2, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x10000001,
+                target_block=1,
+                dispatcher_block=0,
+                compare_block=None,
+                branch_kind="materialized_exact",
+                router_kind=RouterKind.CONDITION_CHAIN,
+            ),
+        ),
+        dispatcher_entry_block=0,
+        dispatcher_blocks=frozenset({0}),
+        state_var_stkoff=None,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+        state_var_reg=28,
+    )
+
+    result = recovery_from_graph(graph, dispatch_map)
+
+    assert result.reachable_block_serials == frozenset({0, 1})
+    assert result.dispatch_map is dispatch_map
+    assert result.dispatcher_block_serial == 0
+    assert result.condition_chain_block_serials == (0,)
+    assert result.state_var_reg == 28
+
+
+def test_recovery_with_materialized_dispatcher_preserves_reachability():
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1,), ()),
+            1: _blk(1, (), (0,)),
+            2: _blk(2, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    base = recovery_from_graph(graph)
+
+    result = recovery_with_materialized_dispatcher(
+        base,
+        graph,
+        state_var_reg=28,
+        dispatcher_entry_serial=0,
+        handler_by_state={0x10000001: 1},
+        router_serials=frozenset({0}),
+    )
+
+    assert result.reachable_block_serials == base.reachable_block_serials
+    assert result.dispatch_map is not None
+    assert result.dispatch_map.state_to_handler() == {0x10000001: 1}
+    assert result.state_var_reg == 28
 
 
 def _table_jump_block(

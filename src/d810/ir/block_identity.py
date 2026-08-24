@@ -26,6 +26,28 @@ _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
 _BADADDR = _MASK64
 
 
+@dataclass(frozen=True, order=True, slots=True)
+class SnapshotBlockCoordinate:
+    """Snapshot-local serial paired with a stable native-EA anchor."""
+
+    serial: int
+    anchor_ea: int
+
+    def __post_init__(self) -> None:
+        serial = int(self.serial)
+        anchor_ea = int(self.anchor_ea)
+        if serial < 0:
+            raise ValueError("snapshot block serial must be non-negative")
+        if not 0 <= anchor_ea < _BADADDR:
+            raise ValueError("snapshot block coordinate requires a native EA")
+        object.__setattr__(self, "serial", serial)
+        object.__setattr__(self, "anchor_ea", anchor_ea)
+
+    @property
+    def label(self) -> str:
+        return f"blk{self.serial}@0x{self.anchor_ea:x}"
+
+
 @dataclass(frozen=True, slots=True)
 class NativeEaInterval:
     """A native code-address interval used to identify a lifted block."""
@@ -428,6 +450,33 @@ class CurrentMbaIdentityBindingSnapshot:
                 )
             ),
         )
+
+
+def snapshot_block_coordinate_from_snapshot(
+    block: BlockSnapshot,
+) -> SnapshotBlockCoordinate | None:
+    """Return one exact serial+native-EA coordinate for a lifted block."""
+
+    if type(block) is not BlockSnapshot:
+        raise TypeError("snapshot block coordinate requires an exact BlockSnapshot")
+    native_anchors = {
+        int(candidate)
+        for candidate in (
+            block.native_start_ea,
+            *(
+                insn.native_ea if insn.native_ea is not None else insn.ea
+                for insn in block.insn_snapshots
+            ),
+            block.start_ea,
+        )
+        if candidate is not None and 0 <= int(candidate) < _BADADDR
+    }
+    if not native_anchors:
+        return None
+    return SnapshotBlockCoordinate(
+        serial=int(block.serial),
+        anchor_ea=min(native_anchors),
+    )
 
 
 def stable_block_identity_from_snapshot(
