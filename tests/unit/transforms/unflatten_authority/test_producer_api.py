@@ -11,6 +11,7 @@ from d810.transforms.unflatten_authority.model import (
     InventoryInstructionObservation,
     resolve_inventory_block_sites,
 )
+from d810.transforms.unflatten_authority.ids import validate_canonical_roundtrip
 from d810.transforms.unflatten_authority.producer_api import (
     BootstrapEntryRouteForecast,
     ConcreteEntryRouteForecast,
@@ -58,6 +59,36 @@ def test_classifier_emits_exact_effect_and_terminal_rows(
         assert terminals == ()
     else:
         assert terminals[0].terminal_kind is terminal_kind
+
+
+def test_clean_use_def_redirect_digest_is_order_invariant_and_canonically_stable() -> None:
+    from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+    from d810.transforms.cfg_transaction import LogicalBlockRef
+    from d810.transforms.use_def_redirect_filter import UseDefSeveranceAudit
+
+    refs = (
+        LogicalBlockRef("use-def-session", "owner-b", 2),
+        LogicalBlockRef("use-def-session", "owner-a", 1),
+    )
+    audit = UseDefSeveranceAudit(True, 0)
+    state_identity = StorageIdentity(StorageIdentityKind.STACK, 0x40)
+    first = producer_module.build_use_def_fragment_witness(
+        audit,
+        fragment_id="sha256:" + "1" * 64,
+        state_identity=state_identity,
+        redirect_owner_refs=refs,
+    )
+    second = producer_module.build_use_def_fragment_witness(
+        audit,
+        fragment_id="sha256:" + "1" * 64,
+        state_identity=state_identity,
+        redirect_owner_refs=tuple(reversed(refs)),
+    )
+    assert first is not None and second is not None
+    assert first.redirect_digest == second.redirect_digest
+    assert validate_canonical_roundtrip(
+        first, type(first),
+    ) == first
 
 
 def test_classifier_emits_call_terminal_and_synthesized_stop() -> None:

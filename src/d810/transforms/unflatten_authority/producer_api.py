@@ -11,7 +11,6 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-import hashlib
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     bind_canonical_semantic_evidence,
@@ -67,6 +66,7 @@ from . import model
 from .ids import (
     _claim_factory,
     _subject_factory,
+    content_id,
     validate_canonical_roundtrip,
 )
 
@@ -999,10 +999,13 @@ def build_use_def_fragment_witness(
 
     if type(audit) is not UseDefSeveranceAudit or not audit.clean:
         return None
-    refs = tuple(redirect_owner_refs)
+    refs = model._canonical_cfg_ref_tuple(
+        redirect_owner_refs, "redirect_owner_refs",
+    )
     if redirect_digest is None:
-        payload = repr(tuple(refs)).encode("utf-8")
-        redirect_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+        redirect_digest = content_id(
+            "unflatten.use-def.redirect-owners.v1", refs,
+        )
     if audit.violations:
         return None
     violations: tuple[str, ...] = ()

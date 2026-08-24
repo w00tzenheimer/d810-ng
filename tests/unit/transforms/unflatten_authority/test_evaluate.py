@@ -1369,9 +1369,7 @@ def test_prepared_authority_accepts_canonical_bound_route_endpoints() -> None:
         unflatten_proposal=proposal,
     )
 
-    expected_coordinates = tuple(
-        sorted(plan.source_coordinates, key=lambda item: (repr(item[0]), item[1]))
-    )
+    expected_coordinates = model._canonical_source_coordinates(plan.source_coordinates)
     prepared = model.PreparedUnflattenAuthority(
         authority_id=authority,
         route=model.UnflattenPlanRoute.ORDINARY,

@@ -1680,7 +1680,7 @@ def _prepare_unflatten_authority(*, source, projection, plan, attempt_id, generi
                 bound_routes=bound_routes, snapshot_id=plan.snapshot_id,
                 source_maturity=plan.source_maturity,
                 source_coordinate_digest=authority_id(
-                    tuple(sorted(plan.source_coordinates, key=lambda item: repr(item)))
+                    model._canonical_source_coordinates(plan.source_coordinates)
                 ),
                 source_fingerprint=inputs.source_inventory.graph_fingerprint,
                 projected_fingerprint=inputs.candidate_inventory.graph_fingerprint,

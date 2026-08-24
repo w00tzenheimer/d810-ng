@@ -191,6 +191,30 @@ def _cfg_ref(value: object, label: str = "block_ref") -> CfgBlockRef:
     return value
 
 
+def _canonical_cfg_ref_tuple(
+    values: Iterable[object], label: str,
+) -> tuple[CfgBlockRef, ...]:
+    refs = tuple(values)
+    if len(set(refs)) != len(refs):
+        raise ValueError(f"{label} must not contain duplicates")
+    for ref in refs:
+        _cfg_ref(ref, f"{label} item")
+    return tuple(sorted(refs, key=canonical_bytes))
+
+
+def _canonical_source_coordinates(
+    values: Iterable[object],
+) -> tuple[tuple[CfgBlockRef, int], ...]:
+    coordinates = tuple(values)
+    for coordinate in coordinates:
+        if type(coordinate) is not tuple or len(coordinate) != 2:
+            raise TypeError("source coordinates must contain (CfgBlockRef, serial) pairs")
+        ref, serial = coordinate
+        _cfg_ref(ref, "source coordinate reference")
+        _nonnegative(serial, "source coordinate serial")
+    return tuple(sorted(coordinates, key=canonical_bytes))
+
+
 def _authority_ref(value: object, label: str = "block_ref") -> NativeBlockRef | LogicalBlockRef:
     if type(value) not in _AUTHORITY_REF_TYPES:
         raise TypeError(f"{label} must be a NativeBlockRef or LogicalBlockRef")
@@ -520,9 +544,9 @@ class ValueFlowSubjectLocator:
         _id(self.fragment_id, "fragment_id")
         if type(self.state_identity) is not StorageIdentity:
             raise TypeError("state_identity must be a StorageIdentity")
-        refs = _tuple(self.redirect_owner_refs, "redirect_owner_refs", sort=True)
-        for ref in refs:
-            _cfg_ref(ref)
+        refs = _canonical_cfg_ref_tuple(
+            self.redirect_owner_refs, "redirect_owner_refs",
+        )
         object.__setattr__(self, "redirect_owner_refs", refs)
 
 
@@ -2890,9 +2914,9 @@ class UseDefFragmentWitness:
         _id(self.fragment_id, "fragment_id")
         if type(self.state_identity) is not StorageIdentity:
             raise TypeError("state_identity must be a StorageIdentity")
-        refs = _tuple(self.redirect_owner_refs, "redirect_owner_refs", sort=True)
-        for ref in refs:
-            _cfg_ref(ref)
+        refs = _canonical_cfg_ref_tuple(
+            self.redirect_owner_refs, "redirect_owner_refs",
+        )
         object.__setattr__(self, "redirect_owner_refs", refs)
         _id(self.redirect_digest, "redirect_digest")
         if not isinstance(self.executed, bool) or not isinstance(self.fragment_atomic, bool):
@@ -5698,28 +5722,24 @@ class PreparedUnflattenAuthority:
             raise ValueError("source generation does not match owning plan")
         if self.source_maturity != self.owning_plan.source_maturity:
             raise ValueError("source maturity does not match owning plan")
-        def coordinate_key(item: tuple[object, int]) -> tuple[str, int]:
-            return repr(item[0]), item[1]
         # PatchPlan.source_coordinates are always authoritative ref -> source
         # serial rows. The catalog anchor is a separate native identity
         # witness and must never be compared to the graph serial.
         plan_coordinates = dict(self.owning_plan.source_coordinates)
-        expected_coordinates = tuple(sorted(
-            ((block.block_ref, plan_coordinates[block.block_ref])
-             for block in self.proposal.source_identity_catalog.blocks),
-            key=coordinate_key,
-        ))
-        if tuple(sorted(self.owning_plan.source_coordinates, key=coordinate_key)) != expected_coordinates:
+        expected_coordinates = _canonical_source_coordinates(
+            (block.block_ref, plan_coordinates[block.block_ref])
+            for block in self.proposal.source_identity_catalog.blocks
+        )
+        if _canonical_source_coordinates(self.owning_plan.source_coordinates) != expected_coordinates:
             raise ValueError("owning plan source coordinates do not match the proposal catalog")
         if self.source_coordinate_digest != authority_id(expected_coordinates):
             raise ValueError("source coordinate digest does not match the proposal catalog")
-        source_binding_coordinates = tuple(sorted(
-            ((binding.block_ref, binding.serial)
-             for binding in self.source_bindings
-             if binding.status is SubjectBindingStatus.UNIQUE
-             and binding.block_ref is not None and binding.serial is not None),
-            key=coordinate_key,
-        ))
+        source_binding_coordinates = _canonical_source_coordinates(
+            (binding.block_ref, binding.serial)
+            for binding in self.source_bindings
+            if binding.status is SubjectBindingStatus.UNIQUE
+            and binding.block_ref is not None and binding.serial is not None
+        )
         if frozenset(source_binding_coordinates) != frozenset(expected_coordinates):
             raise ValueError("source bindings do not cover the proposal catalog")
         source_subject_ids = self.projected_case.source_subject_ids

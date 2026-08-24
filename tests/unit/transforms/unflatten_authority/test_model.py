@@ -7,6 +7,7 @@ import inspect
 
 import pytest
 
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.analyses.control_flow.semantic_route_evidence import (
@@ -17,7 +18,8 @@ from d810.analyses.control_flow.semantic_route_evidence import (
 )
 from .helpers import import_authority_model
 from .helpers import authority_id, block_ref, edge_role, state_identity
-from d810.transforms.unflatten_authority.ids import _subject_factory, _claim_factory, _evidence_factory, subject_id, authority_id as canonical_authority_id, canonical_bytes
+from d810.transforms.cfg_transaction import NativeBlockRef, PlanBlockRef
+from d810.transforms.unflatten_authority.ids import _subject_factory, _claim_factory, _evidence_factory, subject_id, authority_id as canonical_authority_id, canonical_bytes, canonical_decode
 
 
 def test_detached_dead_handler_claim_kind_is_closed_canonical_vocabulary() -> None:
@@ -95,6 +97,36 @@ def test_retirement_candidate_catalog_is_typed_and_exactly_scoped() -> None:
     assert catalog.member_refs == (ref,)
     assert catalog.candidate_refs == (ref,)
     assert catalog.candidates[0].role == "comparison_dispatcher"
+
+
+def test_source_coordinate_digest_is_order_invariant_and_canonically_roundtrips() -> None:
+    model = import_authority_model()
+    native_key = NativePreanalysisKey(
+        "source-coordinate-test", "x86", 64, 0,
+        "a" * 64, "b" * 64, "c" * 64,
+    )
+    native_ref = NativeBlockRef(
+        StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x1000, 0x1001),),
+            native_key=native_key,
+            exact_instruction_eas=(0x1000,),
+        )
+    )
+    refs = (
+        block_ref("logical"),
+        native_ref,
+        PlanBlockRef("sha256:" + "1" * 64, "plan-local"),
+    )
+    coordinates = tuple((ref, serial) for serial, ref in enumerate(refs))
+    reversed_coordinates = tuple(reversed(coordinates))
+
+    canonical = model._canonical_source_coordinates(coordinates)
+    reversed_canonical = model._canonical_source_coordinates(reversed_coordinates)
+    assert canonical == reversed_canonical
+    assert canonical_authority_id(canonical) == canonical_authority_id(reversed_canonical)
+    assert canonical_decode(canonical_bytes(canonical)) == canonical
+    with pytest.raises(TypeError, match="CfgBlockRef"):
+        model._canonical_source_coordinates(((object(), 0),))
 
 
 def test_retirement_phase_records_are_binder_owned() -> None:
