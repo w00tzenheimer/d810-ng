@@ -58,7 +58,7 @@ from d810.ui.project_config_logic import (
 from d810.ui.project_picker_logic import build_project_picker_entries
 from d810.ui.project_picker_popup import ProjectPickerPopup
 from d810.ui.qt_layout_policy import (
-    configure_left_aligned_button,
+    configure_expanding_selector_button,
     configure_left_aligned_form,
     configure_overflow_menu_button,
 )
@@ -1020,7 +1020,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         config_row.addWidget(self.curlabel)
 
         self.cfg_select = QtWidgets.QPushButton(self.parent)
-        configure_left_aligned_button(self.cfg_select)
+        configure_expanding_selector_button(self.cfg_select)
         self.cfg_select.setToolTip("Choose a D-810 configuration")
         config_row.addWidget(self.cfg_select, stretch=1)
 

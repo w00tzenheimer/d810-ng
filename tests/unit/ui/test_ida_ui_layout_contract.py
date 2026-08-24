@@ -289,7 +289,17 @@ def test_plugin_settings_keep_general_and_developer_controls_compact_at_top() ->
 def test_project_selector_and_identity_form_use_left_aligned_layout_policy() -> None:
     source = ast.unparse(_method("OnCreate"))
 
-    assert "configure_left_aligned_button(self.cfg_select)" in source
+    assert "configure_expanding_selector_button(self.cfg_select)" in source
+    assert "config_row.addWidget(self.cfg_select, stretch=1)" in source
+    for button_name in (
+        "btn_new_cfg",
+        "btn_duplicate_cfg",
+        "btn_edit_cfg",
+        "btn_delele_cfg",
+        "btn_about",
+    ):
+        assert f"config_row.addWidget(self.{button_name})" in source
+    assert "btn_project_overflow" not in source
     assert "configure_left_aligned_form(identity_layout)" in source
 
 

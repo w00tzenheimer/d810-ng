@@ -34,6 +34,7 @@ class _RecordingButton:
         self.stylesheet = ""
         self.minimum_height: int | None = None
         self.minimum_width: int | None = None
+        self.size_policy: tuple[object, object] | None = None
 
     def setStyleSheet(self, stylesheet: str) -> None:
         self.stylesheet = stylesheet
@@ -43,6 +44,9 @@ class _RecordingButton:
 
     def setMinimumWidth(self, width: int) -> None:
         self.minimum_width = width
+
+    def setSizePolicy(self, horizontal: object, vertical: object) -> None:
+        self.size_policy = (horizontal, vertical)
 
 
 @pytest.mark.parametrize("qt6", (False, True))
@@ -111,6 +115,35 @@ def test_button_policy_preserves_project_row_height_while_left_aligned() -> None
 
     qt_layout_policy.configure_left_aligned_button(button)
 
+    assert button.minimum_height == 32
+    assert button.stylesheet == (
+        "QPushButton { text-align: left; padding-left: 8px; }"
+    )
+
+
+@pytest.mark.parametrize("qt6", (False, True))
+def test_selector_button_expands_only_between_its_fixed_neighbors(
+    monkeypatch: pytest.MonkeyPatch,
+    qt6: bool,
+) -> None:
+    expanding = object()
+    fixed = object()
+    if qt6:
+        size_policy = SimpleNamespace(
+            Policy=SimpleNamespace(Expanding=expanding, Fixed=fixed)
+        )
+    else:
+        size_policy = SimpleNamespace(Expanding=expanding, Fixed=fixed)
+    monkeypatch.setattr(
+        qt_layout_policy,
+        "QtWidgets",
+        SimpleNamespace(QSizePolicy=size_policy),
+    )
+    button = _RecordingButton()
+
+    qt_layout_policy.configure_expanding_selector_button(button)
+
+    assert button.size_policy == (expanding, fixed)
     assert button.minimum_height == 32
     assert button.stylesheet == (
         "QPushButton { text-align: left; padding-left: 8px; }"

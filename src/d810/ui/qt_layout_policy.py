@@ -48,6 +48,17 @@ def configure_left_aligned_button(button: Any) -> None:
     button.setStyleSheet(_LEFT_ALIGNED_BUTTON_STYLESHEET)
 
 
+def configure_expanding_selector_button(button: Any) -> None:
+    """Let a selector fill its row without consuming fixed neighboring controls."""
+
+    configure_left_aligned_button(button)
+    try:
+        policy = QtWidgets.QSizePolicy.Policy
+    except AttributeError:
+        policy = QtWidgets.QSizePolicy
+    button.setSizePolicy(policy.Expanding, policy.Fixed)
+
+
 def configure_overflow_menu_button(button: Any) -> None:
     """Keep a compact overflow menu easy to target without fixing its size."""
     button.setMinimumWidth(72)
@@ -55,6 +66,7 @@ def configure_overflow_menu_button(button: Any) -> None:
 
 __all__ = [
     "configure_left_aligned_button",
+    "configure_expanding_selector_button",
     "configure_left_aligned_form",
     "configure_overflow_menu_button",
 ]
