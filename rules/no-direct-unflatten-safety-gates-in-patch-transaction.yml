@@ -1,0 +1,39 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Patch transaction owns mutation coordination, not unflatten proof logic.
+
+id: no-direct-unflatten-safety-gates-in-patch-transaction
+language: python
+severity: error
+
+files:
+  - "src/d810/hexrays/mutation/patch_transaction.py"
+
+message: |
+  Patch transaction must call the unflatten transaction facade for semantic
+  safety gates. It may retain generic CFG reachability checks.
+
+rule:
+  any:
+    - pattern: _validated_exact_effect_exclusions($$$)
+    - pattern: _validated_local_alias_effect_exclusions($$$)
+    - pattern: validate_dispatcher_corridor_coverage_metadata($$$)
+    - pattern: validate_dispatcher_removal_preflight_proof($$$)
+    - pattern: validate_terminal_switch_cycle_break_allowance($$$)
+    - pattern: canonicalize_observed_dispatcher_graph($$$)
+    - pattern: compose_legacy_unflatten_allowance($$$)
+    - pattern: compose_legacy_allowance($$$)
+    - pattern: $MODULE._validated_exact_effect_exclusions($$$)
+    - pattern: $MODULE._validated_local_alias_effect_exclusions($$$)
+    - pattern: $MODULE.validate_dispatcher_corridor_coverage_metadata($$$)
+    - pattern: $MODULE.validate_dispatcher_removal_preflight_proof($$$)
+    - pattern: $MODULE.validate_terminal_switch_cycle_break_allowance($$$)
+    - pattern: $MODULE.canonicalize_observed_dispatcher_graph($$$)
+    - pattern: $MODULE.compose_legacy_unflatten_allowance($$$)
+    - pattern: $MODULE.compose_legacy_allowance($$$)
+
+note: |
+  Direct calls to generic reachability gates and transaction_api.prepare or
+  transaction_api.revalidate are valid and are not matched here.

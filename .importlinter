@@ -315,3 +315,46 @@ forbidden_modules =
 # - d810.backends is intentionally NOT in source_modules: vendor
 #   subpackages there (e.g. a future d810.backends.angr) MUST be
 #   able to import their vendor module.
+
+[importlinter:contract:patch-transaction-unflatten-facade-only]
+name = Patch transaction uses only unflatten transaction facade
+type = forbidden
+# This is a direct-import boundary: the facade necessarily delegates to the
+# binding/evaluation implementation behind it.
+allow_indirect_imports = True
+source_modules =
+    d810.hexrays.mutation.patch_transaction
+forbidden_modules =
+    d810.transforms.dispatcher_corridor_coverage
+    d810.analyses.control_flow.effect_branch_exclusion
+    d810.transforms.minimal_unflatten_emit
+    d810.transforms.unflatten_authority.bind
+    d810.transforms.unflatten_authority.evaluate
+
+[importlinter:contract:unflatten-producers-no-transaction-authority]
+name = Unflatten producers cannot import transaction authority
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.transforms.minimal_unflatten_emit
+    d810.transforms.unflatten_authority.producer_api
+    d810.transforms.unflatten_authority.proposal
+    d810.analyses.control_flow.minimal_state_recovery
+    d810.analyses.control_flow.semantic_route_evidence
+    d810.passes.unflatten.state_machine
+forbidden_modules =
+    d810.transforms.unflatten_authority.bind
+    d810.transforms.unflatten_authority.evaluate
+    d810.transforms.unflatten_authority.transaction_api
+
+[importlinter:contract:unflatten-diagnostics-no-validation-execution]
+name = Unflatten diagnostics cannot execute validation
+type = forbidden
+allow_indirect_imports = True
+source_modules =
+    d810.transforms.unflatten_authority.diagnostics
+    d810.transforms.unflatten_authority.views
+forbidden_modules =
+    d810.transforms.unflatten_authority.bind
+    d810.transforms.unflatten_authority.evaluate
+    d810.transforms.unflatten_authority.transaction_api

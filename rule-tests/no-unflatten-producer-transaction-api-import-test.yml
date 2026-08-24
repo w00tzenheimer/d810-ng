@@ -1,0 +1,27 @@
+id: no-unflatten-producer-transaction-api-import
+
+valid:
+  - |
+      from .model import PatchPlan
+  - |
+      from .proposal import TypedProposalRoute
+  - |
+      from .producer_api import build_proposal
+  - |
+      from d810.analyses.control_flow.semantic_route_evidence import CanonicalSemanticEvidence
+  - |
+      from transaction_api import prepare_unflatten_authority_timed
+
+invalid:
+  - |
+      from .bind import bind_subjects
+  - |
+      from .evaluate import evaluate_case
+  - |
+      from .transaction_api import prepare_unflatten_authority_timed
+  - |
+      from d810.transforms.unflatten_authority import transaction_api
+  - |
+      import d810.transforms.unflatten_authority.bind
+  - |
+      import d810.transforms.unflatten_authority.evaluate as evaluation

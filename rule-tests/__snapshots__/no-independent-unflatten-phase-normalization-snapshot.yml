@@ -1,0 +1,46 @@
+id: no-independent-unflatten-phase-normalization
+snapshots:
+  ? |
+    def normalize(graph):
+        return canonicalize_observed_dispatcher_graph(graph)
+  : labels:
+    - source: canonicalize_observed_dispatcher_graph(graph)
+      style: primary
+      start: 33
+      end: 78
+  ? |
+    def normalize(graph):
+        return coverage.canonicalize_observed_dispatcher_graph(graph)
+  : labels:
+    - source: coverage.canonicalize_observed_dispatcher_graph(graph)
+      style: primary
+      start: 33
+      end: 87
+  ? |
+    def replay(plan):
+        return _validated_local_alias_effect_exclusions(plan)
+  : labels:
+    - source: _validated_local_alias_effect_exclusions(plan)
+      style: primary
+      start: 29
+      end: 75
+  ? |
+    def subtract(source_serials, observed_serials):
+        return source_serials - observed_serials
+  : labels:
+    - source: source_serials - observed_serials
+      style: primary
+      start: 59
+      end: 92
+    - source: '-'
+      style: secondary
+      start: 74
+      end: 75
+  ? |
+    def subtract(source_serials, observed_serials):
+        return source_serials.difference(observed_serials)
+  : labels:
+    - source: source_serials.difference(observed_serials)
+      style: primary
+      start: 59
+      end: 102

@@ -1,0 +1,30 @@
+id: no-stringly-unflatten-authority-state
+
+valid:
+  - |
+      status = UnflattenAuthorityReason.ACCEPTED
+  - |
+      if verdict.reason is UnflattenAuthorityReason.EXACT_INFEASIBLE_EFFECT:
+          return verdict.reason.value
+  - |
+      detail = "validator_detail_code"
+
+invalid:
+  - |
+      if state == "accepted":
+          return state
+  - |
+      payload = {"phase": "projected_preflight"}
+  - |
+      if "unproven" in states:
+          return "exact_infeasible_effect"
+  - |
+      match state:
+          case "accepted":
+              return state
+  - |
+      phase = "observed_post_apply"
+  - |
+      payload = {"state": "satisfied"}
+  - |
+      verdict = Verdict(reason="exact_infeasible_effect")

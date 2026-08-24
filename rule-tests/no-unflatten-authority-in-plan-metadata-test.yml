@@ -1,0 +1,35 @@
+id: no-unflatten-authority-in-plan-metadata
+
+valid:
+  - |
+      plan = PatchPlan(unflatten_proposal=proposal)
+  - |
+      def decode_legacy_codec(codec):
+          return codec.read_legacy_metadata()
+  - |
+      def use_typed(plan):
+          return plan.unflatten_proposal
+  - |
+      plan = PatchPlan(metadata=(("ordinary_diagnostic_label", label),))
+
+invalid:
+  - |
+      plan = plan.with_metadata(unflatten_authority=authority)
+  - |
+      plan = PatchPlan(metadata=(("semantic_safety_case", case),))
+  - |
+      plan = PatchPlan(metadata=(("exact_state_branch_effect_exclusions", rows),))
+  - |
+      plan = plan.with_metadata(dispatcher_removal_preflight_proof=forecast)
+  - |
+      plan = PatchPlan(metadata=(("unflatten_authority_claim_id", claim),))
+  - |
+      plan = PatchPlan(metadata=(("unflatten_authority_evidence_id", evidence),))
+  - |
+      plan = PatchPlan(metadata=(("unflatten_authority_case_id", case),))
+  - |
+      plan = PatchPlan(metadata=(("unflatten_authority_index_id", index),))
+  - |
+      plan = PatchPlan(metadata=(("unflatten_authority_binding_id", binding),))
+  - |
+      plan = plan.with_metadata(unflatten_authority_case_id=case)

@@ -1,0 +1,45 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Semantic authority is carried by the typed proposal, never plan metadata.
+
+id: no-unflatten-authority-in-plan-metadata
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/minimal_unflatten_emit.py"
+  - "src/d810/analyses/control_flow/minimal_state_recovery.py"
+  - "src/d810/analyses/control_flow/semantic_route_evidence.py"
+  - "src/d810/passes/unflatten/state_machine.py"
+
+message: |
+  Unflatten authority must not be smuggled through PatchPlan metadata.
+  Build the typed unflatten proposal and pass it through the transaction API.
+
+rule:
+  any:
+    - pattern: $PLAN.with_metadata(unflatten_authority=$VALUE)
+    - all:
+        - kind: call
+        - has:
+            kind: attribute
+            pattern: $PLAN.with_metadata
+            stopBy: end
+        - has:
+            regex: "(concrete_state_route_provenance|dispatcher_corridor_coverage|dispatcher_removal_preflight_proof|exact_state_branch_effect_exclusions|full_unflattening_claim|native_bound_transition_route_receipts|unflatten_completion_status|use_def_severance_audit|semantic_safety_case|unflatten_authority_[A-Za-z0-9_]+)"
+            stopBy: end
+    - all:
+        - kind: call
+        - has:
+            kind: identifier
+            regex: "^PatchPlan$"
+            stopBy: end
+        - has:
+            regex: "(concrete_state_route_provenance|dispatcher_corridor_coverage|dispatcher_removal_preflight_proof|exact_state_branch_effect_exclusions|full_unflattening_claim|native_bound_transition_route_receipts|unflatten_completion_status|use_def_severance_audit|semantic_safety_case|unflatten_authority_[A-Za-z0-9_]+)"
+            stopBy: end
+
+note: |
+  Legacy metadata keys are decoded only by legacy_codec.py and are not a
+  semantic authority. The runtime model rejects the complete reserved set.

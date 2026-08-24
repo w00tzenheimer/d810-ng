@@ -1,0 +1,50 @@
+id: no-direct-unflatten-verdict-construction
+snapshots:
+  ? |
+    def make():
+        return ObligationEvidenceCell(key=key, state=state)
+  : labels:
+    - source: ObligationEvidenceCell(key=key, state=state)
+      style: primary
+      start: 23
+      end: 67
+  ? |
+    def make():
+        return ObligationEvidenceIndex(cells=cells)
+  : labels:
+    - source: ObligationEvidenceIndex(cells=cells)
+      style: primary
+      start: 23
+      end: 59
+  ? |
+    def make():
+        return SemanticSafetyCase(bindings=(), evidence=())
+  : labels:
+    - source: SemanticSafetyCase(bindings=(), evidence=())
+      style: primary
+      start: 23
+      end: 67
+  ? |
+    def make():
+        return UnflattenAuthorityVerdict(phase, reason, True)
+  : labels:
+    - source: UnflattenAuthorityVerdict(phase, reason, True)
+      style: primary
+      start: 23
+      end: 69
+  ? |
+    def make():
+        return api.UnflattenAuthorityVerdict(phase=phase, reason=reason, accepted=True)
+  : labels:
+    - source: api.UnflattenAuthorityVerdict(phase=phase, reason=reason, accepted=True)
+      style: primary
+      start: 23
+      end: 95
+  ? |
+    def make():
+        return model.SemanticSafetyCase(bindings=(), evidence=())
+  : labels:
+    - source: model.SemanticSafetyCase(bindings=(), evidence=())
+      style: primary
+      start: 23
+      end: 73

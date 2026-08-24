@@ -1,0 +1,32 @@
+id: no-direct-unflatten-verdict-construction
+
+valid:
+  - |
+      def render(verdict: UnflattenAuthorityVerdict) -> str:
+          return verdict.reason.value
+  - |
+      def inspect(value):
+          return isinstance(value, SemanticSafetyCase)
+  - |
+      def factory():
+          return evaluate_case()
+
+invalid:
+  - |
+      def make():
+          return UnflattenAuthorityVerdict(phase, reason, True)
+  - |
+      def make():
+          return SemanticSafetyCase(bindings=(), evidence=())
+  - |
+      def make():
+          return ObligationEvidenceCell(key=key, state=state)
+  - |
+      def make():
+          return ObligationEvidenceIndex(cells=cells)
+  - |
+      def make():
+          return api.UnflattenAuthorityVerdict(phase=phase, reason=reason, accepted=True)
+  - |
+      def make():
+          return model.SemanticSafetyCase(bindings=(), evidence=())

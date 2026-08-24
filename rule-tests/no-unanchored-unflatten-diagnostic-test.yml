@@ -1,0 +1,21 @@
+id: no-unanchored-unflatten-diagnostic
+
+valid:
+  - |
+      label = f"blk{serial}@0x{anchor_ea:x}"
+  - |
+      payload = {"serial": serial, "anchor_ea": anchor_ea}
+  - |
+      label = f"subject:{subject_id}"
+
+invalid:
+  - |
+      label = f"block {serial}"
+  - |
+      label = "block_serial={}".format(serial)
+  - |
+      payload = {"lost_block_serial": serial}
+  - |
+      label = "serial=" + str(serial)
+  - |
+      label = "serial=%d" % serial

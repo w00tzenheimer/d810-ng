@@ -1,0 +1,43 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Phase normalization is owned by the transaction facade and canonical views.
+
+id: no-independent-unflatten-phase-normalization
+language: python
+severity: error
+
+files:
+  - "src/d810/hexrays/mutation/patch_transaction.py"
+  - "src/d810/transforms/unflatten_authority/diagnostics.py"
+  - "src/d810/transforms/unflatten_authority/views.py"
+
+message: |
+  Do not independently normalize projected and observed unflatten phases.
+  Route lineage and replay through transaction_api and canonical views.
+
+rule:
+  any:
+    - pattern: canonicalize_observed_dispatcher_graph($$$)
+    - pattern: _validated_exact_effect_exclusions($$$)
+    - pattern: _validated_local_alias_effect_exclusions($$$)
+    - pattern: compose_legacy_unflatten_allowance($$$)
+    - pattern: compose_legacy_allowance($$$)
+    - pattern: $MODULE.canonicalize_observed_dispatcher_graph($$$)
+    - pattern: $MODULE._validated_exact_effect_exclusions($$$)
+    - pattern: $MODULE._validated_local_alias_effect_exclusions($$$)
+    - pattern: $MODULE.compose_legacy_unflatten_allowance($$$)
+    - pattern: $MODULE.compose_legacy_allowance($$$)
+    - pattern: $SOURCE.difference($OBSERVED)
+    - pattern: $SOURCE.difference_update($OBSERVED)
+    - all:
+        - kind: binary_operator
+        - regex: "(source|observed|projected|candidate).*serial"
+        - has:
+            regex: "[-&|]"
+            stopBy: end
+
+note: |
+  Source-indexed lineage calls through transaction_api and generic CFG gate
+  calls are valid; only independent authority reconstruction is prohibited.

@@ -4,6 +4,9 @@
 ruleDirs:
   - rules
 
+# Permanent semantic-authority fixtures live under rule-tests/ and are run
+# explicitly in CI with `sg test --config sgconfig.yml --test-dir rule-tests`.
+
 # Exclude test directories + vendored third-party code from scanning
 ignore:
   - tests/

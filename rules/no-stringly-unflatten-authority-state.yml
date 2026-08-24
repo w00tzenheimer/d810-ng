@@ -1,0 +1,71 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Authority state is represented by closed enums, not ad-hoc strings.
+
+id: no-stringly-unflatten-authority-state
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/unflatten_authority/bind.py"
+  - "src/d810/transforms/unflatten_authority/diagnostics.py"
+  - "src/d810/transforms/unflatten_authority/proposal.py"
+  - "src/d810/transforms/unflatten_authority/views.py"
+  - "src/d810/transforms/unflatten_authority/producer_api.py"
+
+message: |
+  Unflatten authority state must use the closed model enums. Project enum
+  values through `.value` only at the diagnostic boundary.
+
+rule:
+  any:
+    - all:
+        - kind: comparison_operator
+        - has:
+            kind: string
+            regex: '^"(accepted|producer_forecast|projected_preflight|observed_post_apply|unproven|satisfied|violated|inconsistent|exact_infeasible_effect)"$'
+            stopBy: end
+    - all:
+        - kind: assignment
+        - regex: '(phase|state|status|reason)\s*=\s*"(accepted|producer_forecast|projected_preflight|observed_post_apply|unproven|satisfied|violated|inconsistent|exact_infeasible_effect)"'
+    - all:
+        - kind: dictionary
+        - regex: '"(phase|state|status|reason)"\s*:\s*"(accepted|producer_forecast|projected_preflight|observed_post_apply|unproven|satisfied|violated|inconsistent|exact_infeasible_effect)"'
+    - all:
+        - kind: call
+        - regex: '(phase|state|status|reason)\s*=\s*"(accepted|producer_forecast|projected_preflight|observed_post_apply|unproven|satisfied|violated|inconsistent|exact_infeasible_effect)"'
+    - pattern: $STATE == "accepted"
+    - pattern: $STATE != "accepted"
+    - pattern: $STATE == "projected_preflight"
+    - pattern: $STATE != "projected_preflight"
+    - pattern: $STATE == "exact_infeasible_effect"
+    - pattern: $STATE != "exact_infeasible_effect"
+    - pattern: $STATE == "unproven"
+    - pattern: $STATE != "unproven"
+    - pattern: $STATE == "observed_post_apply"
+    - pattern: $STATE != "observed_post_apply"
+    - pattern: '"accepted" in $STATES'
+    - pattern: '"projected_preflight" in $STATES'
+    - pattern: '"exact_infeasible_effect" in $STATES'
+    - pattern: '"unproven" in $STATES'
+    - pattern: '"observed_post_apply" in $STATES'
+    - all:
+        - kind: match_statement
+        - has:
+            regex: "(accepted|producer_forecast|projected_preflight|observed_post_apply|exact_infeasible_effect|unproven|satisfied|violated|inconsistent)"
+            stopBy: end
+    - pattern: '{"phase": "projected_preflight"}'
+    - pattern: '{"state": "unproven"}'
+    - pattern: '{"status": "accepted"}'
+    - pattern: '$OBJ(state="accepted", $$$)'
+    - pattern: '$OBJ(status="accepted", $$$)'
+    - pattern: '$OBJ(phase="projected_preflight", $$$)'
+    - pattern: '$OBJ(reason="exact_infeasible_effect", $$$)'
+    - pattern: '$OBJ(state="unproven", $$$)'
+
+note: |
+  Free-form validator detail codes outside authority-state fields remain
+  ordinary diagnostic strings. Enum construction and `.value` projection are
+  intentionally outside this rule.

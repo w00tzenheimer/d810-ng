@@ -24,10 +24,13 @@ jobs:
                   node-version: "20"
             - name: Install ast-grep
               run: |
-                  npm install -g @ast-grep/cli
+                  npm install -g @ast-grep/cli@0.42.3
+            - name: Run ast-grep rule fixtures
+              run: |
+                  sg test --config sgconfig.yml --test-dir rule-tests
             - name: Run ast-grep rules
               run: |
-                  sg scan --config sgconfig.yml
+                  sg scan --config sgconfig.yml --report-style short
 
             - name: Portable-core shape-lint gate (warning-mode ratchet)
               run: |
@@ -67,7 +70,7 @@ jobs:
                   python -m d810.speedups.install
             - name: Check import boundaries
               run: |
-                  lint-imports
+                  PYTHONPATH=src lint-imports --config .importlinter
             - name: Check Python version compatibility
               if: contains(fromJSON('["3.11", "3.12"]'), matrix.python-version)
               run: |

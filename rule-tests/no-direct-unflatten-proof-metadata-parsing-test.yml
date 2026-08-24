@@ -1,0 +1,44 @@
+id: no-direct-unflatten-proof-metadata-parsing
+
+valid:
+  - |
+      def legacy_codec(codec):
+          return codec.decode_legacy_metadata()
+  - |
+      def project(case):
+          return {"state": case.state.value}
+  - |
+      def read_diagnostic(view):
+          return view.binding_id
+
+invalid:
+  - |
+      def read(metadata):
+          return metadata.get("dispatcher_corridor_coverage")
+  - |
+      def read(metadata):
+          return metadata[USE_DEF_SEVERANCE_AUDIT_METADATA]
+  - |
+      def read(metadata):
+          return metadata[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
+  - |
+      def read(metadata):
+          return metadata.get(SEMANTIC_SAFETY_CASE_METADATA)
+  - |
+      def read(metadata):
+          return metadata[EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA]
+  - |
+      def read(metadata):
+          if NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA in metadata:
+              return metadata[NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA]
+  - |
+      def read(metadata):
+          if DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA in metadata:
+              return metadata[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
+  - |
+      def read(metadata, key):
+          if "dispatcher_corridor_coverage" in metadata:
+              for key in metadata:
+                  if key == "semantic_safety_case":
+                      return metadata[key]
+          return None

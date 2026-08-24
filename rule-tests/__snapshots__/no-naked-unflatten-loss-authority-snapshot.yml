@@ -1,0 +1,116 @@
+id: no-naked-unflatten-loss-authority
+snapshots:
+  ? |
+    def emit(*, allowed_effect_serials):
+        return allowed_effect_serials
+  : labels:
+    - source: allowed_effect_serials
+      style: primary
+      start: 12
+      end: 34
+    - source: |-
+        def emit(*, allowed_effect_serials):
+            return allowed_effect_serials
+      style: secondary
+      start: 0
+      end: 70
+  ? |
+    def emit(allowed_target_serials):
+        retained = allowed_target_serials
+        return retained
+  : labels:
+    - source: allowed_target_serials
+      style: primary
+      start: 9
+      end: 31
+    - source: |-
+        def emit(allowed_target_serials):
+            retained = allowed_target_serials
+            return retained
+      style: secondary
+      start: 0
+      end: 91
+  ? |
+    def emit(coverage):
+        return coverage.reachable_handler_serials
+  : labels:
+    - source: reachable_handler_serials
+      style: primary
+      start: 40
+      end: 65
+    - source: |-
+        def emit(coverage):
+            return coverage.reachable_handler_serials
+      style: secondary
+      start: 0
+      end: 65
+  ? |
+    def emit(effect_exclusion_serials, alias_effect_exclusion_serials):
+        return effect_exclusion_serials, alias_effect_exclusion_serials
+  : labels:
+    - source: effect_exclusion_serials
+      style: primary
+      start: 9
+      end: 33
+    - source: |-
+        def emit(effect_exclusion_serials, alias_effect_exclusion_serials):
+            return effect_exclusion_serials, alias_effect_exclusion_serials
+      style: secondary
+      start: 0
+      end: 135
+  ? |
+    def emit(lost_block_serials, reachable_handler_serials):
+        return lost_block_serials | reachable_handler_serials
+  : labels:
+    - source: lost_block_serials
+      style: primary
+      start: 9
+      end: 27
+    - source: |-
+        def emit(lost_block_serials, reachable_handler_serials):
+            return lost_block_serials | reachable_handler_serials
+      style: secondary
+      start: 0
+      end: 114
+  ? |
+    def emit(permitted_effect_serials):
+        return permitted_effect_serials
+  : labels:
+    - source: permitted_effect_serials
+      style: primary
+      start: 9
+      end: 33
+    - source: |-
+        def emit(permitted_effect_serials):
+            return permitted_effect_serials
+      style: secondary
+      start: 0
+      end: 71
+  ? |
+    def emit(validated_source_serials):
+        return validated_source_serials
+  : labels:
+    - source: validated_source_serials
+      style: primary
+      start: 9
+      end: 33
+    - source: |-
+        def emit(validated_source_serials):
+            return validated_source_serials
+      style: secondary
+      start: 0
+      end: 71
+  ? |
+    def retained(retained_transaction_local_serial_allowance):
+        return retained_transaction_local_serial_allowance
+  : labels:
+    - source: retained_transaction_local_serial_allowance
+      style: primary
+      start: 13
+      end: 56
+    - source: |-
+        def retained(retained_transaction_local_serial_allowance):
+            return retained_transaction_local_serial_allowance
+      style: secondary
+      start: 0
+      end: 113

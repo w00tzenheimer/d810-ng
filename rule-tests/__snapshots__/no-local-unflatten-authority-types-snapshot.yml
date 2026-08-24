@@ -1,0 +1,59 @@
+id: no-local-unflatten-authority-types
+snapshots:
+  ? |
+    @dataclass
+    class TransactionAllowance:
+        reason: str
+  : labels:
+    - source: |-
+        class TransactionAllowance:
+            reason: str
+      style: primary
+      start: 11
+      end: 54
+    - source: TransactionAllowance
+      style: secondary
+      start: 17
+      end: 37
+  ? |
+    class LocalAuthority:
+        pass
+  : labels:
+    - source: |-
+        class LocalAuthority:
+            pass
+      style: primary
+      start: 0
+      end: 30
+    - source: LocalAuthority
+      style: secondary
+      start: 6
+      end: 20
+  ? |
+    class LocalLossProof:
+        pass
+  : labels:
+    - source: |-
+        class LocalLossProof:
+            pass
+      style: primary
+      start: 0
+      end: 30
+    - source: LocalLossProof
+      style: secondary
+      start: 6
+      end: 20
+  ? |
+    class LocalReceipt:
+        pass
+  : labels:
+    - source: |-
+        class LocalReceipt:
+            pass
+      style: primary
+      start: 0
+      end: 28
+    - source: LocalReceipt
+      style: secondary
+      start: 6
+      end: 18

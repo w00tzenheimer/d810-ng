@@ -1,0 +1,53 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Every diagnostic serial is paired with a stable EA anchor in the same record.
+
+id: no-unanchored-unflatten-diagnostic
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/unflatten_authority/diagnostics.py"
+  - "src/d810/transforms/unflatten_authority/views.py"
+
+message: |
+  Unflatten diagnostics must render a block serial with its stable EA anchor.
+  Use `blk{serial}@0x{anchor:x}` or a subject-only label when unbound.
+
+rule:
+  any:
+    - all:
+        - kind: string
+        - pattern: 'f"$$$"'
+        - regex: "(serial|block_serial|lost_block)"
+        - not:
+            regex: "(anchor|anchor_ea|\\bea\\b|0x)"
+    - all:
+        - kind: call
+        - regex: "(serial|block_serial|lost_block).*format"
+        - not:
+            regex: "(anchor|anchor_ea|ea|0x)"
+    - all:
+        - kind: binary_operator
+        - any:
+            - pattern: '"$$$" + $B'
+            - pattern: "'$$$' + $B"
+            - pattern: $A % $B
+        - regex: "(serial|block_serial|lost_block)"
+        - not:
+            regex: "(anchor|anchor_ea|ea|0x)"
+    - all:
+        - kind: dictionary
+        - has:
+            regex: "(serial|block_serial|lost_block)"
+            stopBy: end
+        - not:
+            has:
+              regex: "(anchor|anchor_ea|ea)"
+              stopBy: end
+
+note: |
+  Subject-ID-only diagnostics are valid for missing or ambiguous bindings;
+  generic serial logs outside these enrolled modules are not governed here.

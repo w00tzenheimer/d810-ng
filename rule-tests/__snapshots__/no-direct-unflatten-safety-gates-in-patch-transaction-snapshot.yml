@@ -1,0 +1,50 @@
+id: no-direct-unflatten-safety-gates-in-patch-transaction
+snapshots:
+  ? |
+    def execute(graph):
+        return canonicalize_observed_dispatcher_graph(graph)
+  : labels:
+    - source: canonicalize_observed_dispatcher_graph(graph)
+      style: primary
+      start: 31
+      end: 76
+  ? |
+    def execute(graph):
+        return legacy.canonicalize_observed_dispatcher_graph(graph)
+  : labels:
+    - source: legacy.canonicalize_observed_dispatcher_graph(graph)
+      style: primary
+      start: 31
+      end: 83
+  ? |
+    def execute(plan):
+        return _validated_exact_effect_exclusions(plan)
+  : labels:
+    - source: _validated_exact_effect_exclusions(plan)
+      style: primary
+      start: 30
+      end: 70
+  ? |
+    def execute(plan):
+        return compose_legacy_unflatten_allowance(plan)
+  : labels:
+    - source: compose_legacy_unflatten_allowance(plan)
+      style: primary
+      start: 30
+      end: 70
+  ? |
+    def execute(plan):
+        return coverage.validate_dispatcher_corridor_coverage_metadata(plan)
+  : labels:
+    - source: coverage.validate_dispatcher_corridor_coverage_metadata(plan)
+      style: primary
+      start: 30
+      end: 91
+  ? |
+    def execute(plan):
+        return validate_dispatcher_corridor_coverage_metadata(plan)
+  : labels:
+    - source: validate_dispatcher_corridor_coverage_metadata(plan)
+      style: primary
+      start: 30
+      end: 82

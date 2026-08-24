@@ -1,0 +1,47 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Producers emit proposals; transaction authority is imported only by the
+# mutation facade.
+
+id: no-unflatten-producer-transaction-api-import
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/minimal_unflatten_emit.py"
+  - "src/d810/transforms/unflatten_authority/producer_api.py"
+  - "src/d810/transforms/unflatten_authority/proposal.py"
+  - "src/d810/analyses/control_flow/minimal_state_recovery.py"
+  - "src/d810/analyses/control_flow/semantic_route_evidence.py"
+  - "src/d810/passes/unflatten/state_machine.py"
+
+message: |
+  Unflatten producer modules must not import bind, evaluate, or transaction_api.
+  Return canonical producer evidence and let the transaction facade bind it.
+
+rule:
+  any:
+    - pattern: from .bind import $$$
+    - pattern: from .evaluate import $$$
+    - pattern: from .transaction_api import $$$
+    - pattern: from d810.transforms.unflatten_authority.bind import $$$
+    - pattern: from d810.transforms.unflatten_authority.evaluate import $$$
+    - pattern: from d810.transforms.unflatten_authority.transaction_api import $$$
+    - pattern: from . import bind
+    - pattern: from . import evaluate
+    - pattern: from . import transaction_api
+    - pattern: from d810.transforms.unflatten_authority import bind
+    - pattern: from d810.transforms.unflatten_authority import evaluate
+    - pattern: from d810.transforms.unflatten_authority import transaction_api
+    - pattern: import d810.transforms.unflatten_authority.bind
+    - pattern: import d810.transforms.unflatten_authority.evaluate
+    - pattern: import d810.transforms.unflatten_authority.transaction_api
+    - pattern: import d810.transforms.unflatten_authority.bind as $ALIAS
+    - pattern: import d810.transforms.unflatten_authority.evaluate as $ALIAS
+    - pattern: import d810.transforms.unflatten_authority.transaction_api as $ALIAS
+
+note: |
+  Imports of `.model`, `.proposal`, `.producer_api`, and canonical analysis
+  evidence are producer-safe. The transaction module itself is not enrolled.

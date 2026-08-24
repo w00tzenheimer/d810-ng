@@ -1,0 +1,38 @@
+id: no-direct-unflatten-safety-gates-in-patch-transaction
+
+valid:
+  - |
+      def generic_gate(graph):
+          return check_terminal_reachability_preserved(graph)
+  - |
+      def generic_gate(graph):
+          return check_effectful_reachability_preserved(graph)
+  - |
+      def generic_gate(graph):
+          return check_entry_reachability_not_collapsed(graph)
+  - |
+      def facade(plan):
+          return transaction_api.prepare(plan)
+  - |
+      def facade(plan):
+          return transaction_api.revalidate(plan)
+
+invalid:
+  - |
+      def execute(plan):
+          return _validated_exact_effect_exclusions(plan)
+  - |
+      def execute(plan):
+          return validate_dispatcher_corridor_coverage_metadata(plan)
+  - |
+      def execute(graph):
+          return canonicalize_observed_dispatcher_graph(graph)
+  - |
+      def execute(plan):
+          return compose_legacy_unflatten_allowance(plan)
+  - |
+      def execute(plan):
+          return coverage.validate_dispatcher_corridor_coverage_metadata(plan)
+  - |
+      def execute(graph):
+          return legacy.canonicalize_observed_dispatcher_graph(graph)

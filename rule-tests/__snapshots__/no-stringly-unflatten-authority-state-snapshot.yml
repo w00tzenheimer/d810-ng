@@ -1,0 +1,73 @@
+id: no-stringly-unflatten-authority-state
+snapshots:
+  ? |
+    if "unproven" in states:
+        return "exact_infeasible_effect"
+  : labels:
+    - source: '"unproven" in states'
+      style: primary
+      start: 3
+      end: 23
+    - source: '"unproven"'
+      style: secondary
+      start: 3
+      end: 13
+  ? |
+    if state == "accepted":
+        return state
+  : labels:
+    - source: state == "accepted"
+      style: primary
+      start: 3
+      end: 22
+    - source: '"accepted"'
+      style: secondary
+      start: 12
+      end: 22
+  ? |
+    match state:
+        case "accepted":
+            return state
+  : labels:
+    - source: |-
+        match state:
+            case "accepted":
+                return state
+      style: primary
+      start: 0
+      end: 54
+    - source: |2-
+
+            case "accepted":
+                return state
+      style: secondary
+      start: 12
+      end: 54
+  ? |
+    payload = {"phase": "projected_preflight"}
+  : labels:
+    - source: '{"phase": "projected_preflight"}'
+      style: primary
+      start: 10
+      end: 42
+  ? |
+    payload = {"state": "satisfied"}
+  : labels:
+    - source: '{"state": "satisfied"}'
+      style: primary
+      start: 10
+      end: 32
+  ? |
+    phase = "observed_post_apply"
+  : labels:
+    - source: phase = "observed_post_apply"
+      style: primary
+      start: 0
+      end: 29
+  ? |
+    verdict = Verdict(reason="exact_infeasible_effect")
+  : labels:
+    - source: verdict = Verdict(reason="exact_infeasible_effect")
+      style: primary
+      start: 0
+      end: 51

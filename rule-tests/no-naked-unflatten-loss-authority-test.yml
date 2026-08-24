@@ -1,0 +1,39 @@
+id: no-naked-unflatten-loss-authority
+
+valid:
+  - |
+      def bind(subject, anchor_ea, serial):
+          return PhaseSubjectBinding(subject=subject, serial=serial, anchor_ea=anchor_ea)
+  - |
+      def generic_graph(reachable_nodes):
+          return reachable_nodes
+  - |
+      def generic(serial):
+          return serial
+
+invalid:
+  - |
+      def emit(validated_source_serials):
+          return validated_source_serials
+  - |
+      def emit(*, allowed_effect_serials):
+          return allowed_effect_serials
+  - |
+      def emit(permitted_effect_serials):
+          return permitted_effect_serials
+  - |
+      def retained(retained_transaction_local_serial_allowance):
+          return retained_transaction_local_serial_allowance
+  - |
+      def emit(lost_block_serials, reachable_handler_serials):
+          return lost_block_serials | reachable_handler_serials
+  - |
+      def emit(effect_exclusion_serials, alias_effect_exclusion_serials):
+          return effect_exclusion_serials, alias_effect_exclusion_serials
+  - |
+      def emit(allowed_target_serials):
+          retained = allowed_target_serials
+          return retained
+  - |
+      def emit(coverage):
+          return coverage.reachable_handler_serials

@@ -1,0 +1,41 @@
+id: no-unanchored-unflatten-diagnostic
+snapshots:
+  ? |
+    label = "block_serial={}".format(serial)
+  : labels:
+    - source: '"block_serial={}".format(serial)'
+      style: primary
+      start: 8
+      end: 40
+  ? |
+    label = "serial=" + str(serial)
+  : labels:
+    - source: '"serial=" + str(serial)'
+      style: primary
+      start: 8
+      end: 31
+  ? |
+    label = "serial=%d" % serial
+  : labels:
+    - source: '"serial=%d" % serial'
+      style: primary
+      start: 8
+      end: 28
+  ? |
+    label = f"block {serial}"
+  : labels:
+    - source: f"block {serial}"
+      style: primary
+      start: 8
+      end: 25
+  ? |
+    payload = {"lost_block_serial": serial}
+  : labels:
+    - source: '{"lost_block_serial": serial}'
+      style: primary
+      start: 10
+      end: 39
+    - source: '"lost_block_serial": serial'
+      style: secondary
+      start: 11
+      end: 38

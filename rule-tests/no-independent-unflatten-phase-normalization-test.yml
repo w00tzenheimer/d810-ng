@@ -1,0 +1,29 @@
+id: no-independent-unflatten-phase-normalization
+
+valid:
+  - |
+      def lineage(plan):
+          return transaction_api.source_indexed_lineage(plan)
+  - |
+      def gate(graph):
+          return check_effectful_reachability_preserved(graph)
+  - |
+      def render(case):
+          return views.compatibility_projection(case)
+
+invalid:
+  - |
+      def normalize(graph):
+          return canonicalize_observed_dispatcher_graph(graph)
+  - |
+      def replay(plan):
+          return _validated_local_alias_effect_exclusions(plan)
+  - |
+      def subtract(source_serials, observed_serials):
+          return source_serials - observed_serials
+  - |
+      def subtract(source_serials, observed_serials):
+          return source_serials.difference(observed_serials)
+  - |
+      def normalize(graph):
+          return coverage.canonicalize_observed_dispatcher_graph(graph)

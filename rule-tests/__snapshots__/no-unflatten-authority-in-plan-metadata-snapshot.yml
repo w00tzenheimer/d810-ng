@@ -1,0 +1,191 @@
+id: no-unflatten-authority-in-plan-metadata
+snapshots:
+  ? |
+    def emit(unflatten_authority_phase):
+        return {"unflatten_authority_phase": unflatten_authority_phase}
+  : labels:
+    - source: '{"unflatten_authority_phase": unflatten_authority_phase}'
+      style: primary
+      start: 48
+      end: 104
+    - source: unflatten_authority_phase
+      style: secondary
+      start: 50
+      end: 75
+  ? |
+    plan = PatchPlan(binding_id=binding)
+  : labels:
+    - source: PatchPlan(binding_id=binding)
+      style: primary
+      start: 7
+      end: 36
+  ? |
+    plan = PatchPlan(case_id=case)
+  : labels:
+    - source: PatchPlan(case_id=case)
+      style: primary
+      start: 7
+      end: 30
+  ? |
+    plan = PatchPlan(claim_id=claim)
+  : labels:
+    - source: PatchPlan(claim_id=claim)
+      style: primary
+      start: 7
+      end: 32
+  ? |
+    plan = PatchPlan(evidence_id=evidence)
+  : labels:
+    - source: PatchPlan(evidence_id=evidence)
+      style: primary
+      start: 7
+      end: 38
+  ? |
+    plan = PatchPlan(index_id=index)
+  : labels:
+    - source: PatchPlan(index_id=index)
+      style: primary
+      start: 7
+      end: 32
+  ? |
+    plan = PatchPlan(metadata=(("exact_state_branch_effect_exclusions", rows),))
+  : labels:
+    - source: PatchPlan(metadata=(("exact_state_branch_effect_exclusions", rows),))
+      style: primary
+      start: 7
+      end: 76
+    - source: PatchPlan
+      style: secondary
+      start: 7
+      end: 16
+    - source: (metadata=(("exact_state_branch_effect_exclusions", rows),))
+      style: secondary
+      start: 16
+      end: 76
+  ? |
+    plan = PatchPlan(metadata=(("semantic_safety_case", case),))
+  : labels:
+    - source: PatchPlan(metadata=(("semantic_safety_case", case),))
+      style: primary
+      start: 7
+      end: 60
+    - source: PatchPlan
+      style: secondary
+      start: 7
+      end: 16
+    - source: (metadata=(("semantic_safety_case", case),))
+      style: secondary
+      start: 16
+      end: 60
+  ? |
+    plan = PatchPlan(metadata=(("unflatten_authority_binding_id", binding),))
+  : labels:
+    - source: PatchPlan(metadata=(("unflatten_authority_binding_id", binding),))
+      style: primary
+      start: 7
+      end: 73
+    - source: PatchPlan
+      style: secondary
+      start: 7
+      end: 16
+    - source: (metadata=(("unflatten_authority_binding_id", binding),))
+      style: secondary
+      start: 16
+      end: 73
+  ? |
+    plan = PatchPlan(metadata=(("unflatten_authority_case_id", case),))
+  : labels:
+    - source: PatchPlan(metadata=(("unflatten_authority_case_id", case),))
+      style: primary
+      start: 7
+      end: 67
+    - source: PatchPlan
+      style: secondary
+      start: 7
+      end: 16
+    - source: (metadata=(("unflatten_authority_case_id", case),))
+      style: secondary
+      start: 16
+      end: 67
+  ? |
+    plan = PatchPlan(metadata=(("unflatten_authority_claim_id", claim),))
+  : labels:
+    - source: PatchPlan(metadata=(("unflatten_authority_claim_id", claim),))
+      style: primary
+      start: 7
+      end: 69
+    - source: PatchPlan
+      style: secondary
+      start: 7
+      end: 16
+    - source: (metadata=(("unflatten_authority_claim_id", claim),))
+      style: secondary
+      start: 16
+      end: 69
+  ? |
+    plan = PatchPlan(metadata=(("unflatten_authority_evidence_id", evidence),))
+  : labels:
+    - source: PatchPlan(metadata=(("unflatten_authority_evidence_id", evidence),))
+      style: primary
+      start: 7
+      end: 75
+    - source: PatchPlan
+      style: secondary
+      start: 7
+      end: 16
+    - source: (metadata=(("unflatten_authority_evidence_id", evidence),))
+      style: secondary
+      start: 16
+      end: 75
+  ? |
+    plan = PatchPlan(metadata=(("unflatten_authority_index_id", index),))
+  : labels:
+    - source: PatchPlan(metadata=(("unflatten_authority_index_id", index),))
+      style: primary
+      start: 7
+      end: 69
+    - source: PatchPlan
+      style: secondary
+      start: 7
+      end: 16
+    - source: (metadata=(("unflatten_authority_index_id", index),))
+      style: secondary
+      start: 16
+      end: 69
+  ? |
+    plan = plan.with_metadata(dispatcher_removal_preflight_proof=forecast)
+  : labels:
+    - source: plan.with_metadata(dispatcher_removal_preflight_proof=forecast)
+      style: primary
+      start: 7
+      end: 70
+    - source: plan.with_metadata
+      style: secondary
+      start: 7
+      end: 25
+    - source: (dispatcher_removal_preflight_proof=forecast)
+      style: secondary
+      start: 25
+      end: 70
+  ? |
+    plan = plan.with_metadata(unflatten_authority=authority)
+  : labels:
+    - source: plan.with_metadata(unflatten_authority=authority)
+      style: primary
+      start: 7
+      end: 56
+  ? |
+    plan = plan.with_metadata(unflatten_authority_case_id=case)
+  : labels:
+    - source: plan.with_metadata(unflatten_authority_case_id=case)
+      style: primary
+      start: 7
+      end: 59
+    - source: plan.with_metadata
+      style: secondary
+      start: 7
+      end: 25
+    - source: (unflatten_authority_case_id=case)
+      style: secondary
+      start: 25
+      end: 59

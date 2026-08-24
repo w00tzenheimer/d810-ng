@@ -1,0 +1,24 @@
+id: no-local-unflatten-authority-types
+
+valid:
+  - |
+      class PlainHelper:
+          pass
+  - |
+      def adapt(case) -> SemanticSafetyCase:
+          return case
+
+invalid:
+  - |
+      class LocalLossProof:
+          pass
+  - |
+      @dataclass
+      class TransactionAllowance:
+          reason: str
+  - |
+      class LocalAuthority:
+          pass
+  - |
+      class LocalReceipt:
+          pass

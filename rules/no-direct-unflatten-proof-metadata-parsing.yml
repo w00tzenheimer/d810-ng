@@ -1,0 +1,63 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Proof metadata parsing belongs exclusively to the legacy compatibility codec.
+
+id: no-direct-unflatten-proof-metadata-parsing
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/minimal_unflatten_emit.py"
+  - "src/d810/analyses/control_flow/minimal_state_recovery.py"
+  - "src/d810/analyses/control_flow/semantic_route_evidence.py"
+  - "src/d810/passes/unflatten/state_machine.py"
+  - "src/d810/transforms/unflatten_authority/diagnostics.py"
+  - "src/d810/transforms/unflatten_authority/views.py"
+
+message: |
+  Migrated unflatten code must not parse proof or authority metadata.
+  Consume the typed SemanticSafetyCase and canonical verdict instead.
+
+rule:
+  any:
+    - pattern: $METADATA.get("dispatcher_corridor_coverage")
+    - pattern: $METADATA.get("semantic_safety_case")
+    - pattern: $METADATA.get("use_def_severance_audit")
+    - pattern: $METADATA.get("full_unflattening_claim")
+    - pattern: $METADATA[USE_DEF_SEVERANCE_AUDIT_METADATA]
+    - pattern: $METADATA["dispatcher_corridor_coverage"]
+    - pattern: $METADATA["semantic_safety_case"]
+    - pattern: $METADATA["use_def_severance_audit"]
+    - all:
+        - kind: call
+        - has:
+            kind: attribute
+            regex: "\\.get$"
+            stopBy: end
+        - has:
+            regex: "((CONCRETE_STATE_ROUTE_PROVENANCE|DISPATCHER_CORRIDOR_COVERAGE|DISPATCHER_REMOVAL_PREFLIGHT_PROOF|EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS|FULL_UNFLATTENING_CLAIM|NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS|UNFLATTEN_COMPLETION_STATUS|USE_DEF_SEVERANCE_AUDIT)_METADATA|SEMANTIC_SAFETY_CASE_METADATA|UNFLATTEN_AUTHORITY_[A-Z0-9_]+)"
+            stopBy: end
+    - all:
+        - kind: subscript
+        - has:
+            regex: "((CONCRETE_STATE_ROUTE_PROVENANCE|DISPATCHER_CORRIDOR_COVERAGE|DISPATCHER_REMOVAL_PREFLIGHT_PROOF|EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS|FULL_UNFLATTENING_CLAIM|NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS|UNFLATTEN_COMPLETION_STATUS|USE_DEF_SEVERANCE_AUDIT)_METADATA|SEMANTIC_SAFETY_CASE_METADATA|UNFLATTEN_AUTHORITY_[A-Z0-9_]+)"
+            stopBy: end
+    - all:
+        - kind: comparison_operator
+        - has:
+            regex: "((concrete_state_route_provenance|dispatcher_corridor_coverage|dispatcher_removal_preflight_proof|exact_state_branch_effect_exclusions|full_unflattening_claim|native_bound_transition_route_receipts|unflatten_completion_status|use_def_severance_audit|semantic_safety_case|unflatten_authority_[A-Za-z0-9_]+)|((CONCRETE_STATE_ROUTE_PROVENANCE|DISPATCHER_CORRIDOR_COVERAGE|DISPATCHER_REMOVAL_PREFLIGHT_PROOF|EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS|FULL_UNFLATTENING_CLAIM|NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS|UNFLATTEN_COMPLETION_STATUS|USE_DEF_SEVERANCE_AUDIT)_METADATA|SEMANTIC_SAFETY_CASE_METADATA|UNFLATTEN_AUTHORITY_[A-Z0-9_]+))"
+            stopBy: end
+        - inside:
+            kind: function_definition
+            stopBy: end
+    - all:
+        - kind: for_statement
+        - has:
+            regex: "((concrete_state_route_provenance|dispatcher_corridor_coverage|dispatcher_removal_preflight_proof|exact_state_branch_effect_exclusions|full_unflattening_claim|native_bound_transition_route_receipts|unflatten_completion_status|use_def_severance_audit|semantic_safety_case|unflatten_authority_[A-Za-z0-9_]+)|((CONCRETE_STATE_ROUTE_PROVENANCE|DISPATCHER_CORRIDOR_COVERAGE|DISPATCHER_REMOVAL_PREFLIGHT_PROOF|EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS|FULL_UNFLATTENING_CLAIM|NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS|UNFLATTEN_COMPLETION_STATUS|USE_DEF_SEVERANCE_AUDIT)_METADATA|SEMANTIC_SAFETY_CASE_METADATA|UNFLATTEN_AUTHORITY_[A-Z0-9_]+))"
+            stopBy: end
+
+note: |
+  Metadata compatibility reads are intentionally confined to the strict
+  legacy_codec.py adapter, which is outside this rule's file set.

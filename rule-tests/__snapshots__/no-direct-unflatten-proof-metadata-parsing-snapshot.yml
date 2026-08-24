@@ -1,0 +1,124 @@
+id: no-direct-unflatten-proof-metadata-parsing
+snapshots:
+  ? |
+    def read(metadata):
+        if DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA in metadata:
+            return metadata[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
+  : labels:
+    - source: DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA in metadata
+      style: primary
+      start: 27
+      end: 82
+    - source: DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA
+      style: secondary
+      start: 27
+      end: 70
+    - source: |-
+        def read(metadata):
+            if DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA in metadata:
+                return metadata[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
+      style: secondary
+      start: 0
+      end: 152
+  ? |
+    def read(metadata):
+        if NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA in metadata:
+            return metadata[NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA]
+  : labels:
+    - source: NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA in metadata
+      style: primary
+      start: 27
+      end: 86
+    - source: NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA
+      style: secondary
+      start: 27
+      end: 74
+    - source: |-
+        def read(metadata):
+            if NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA in metadata:
+                return metadata[NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA]
+      style: secondary
+      start: 0
+      end: 160
+  ? |
+    def read(metadata):
+        return metadata.get("dispatcher_corridor_coverage")
+  : labels:
+    - source: metadata.get("dispatcher_corridor_coverage")
+      style: primary
+      start: 31
+      end: 75
+  ? |
+    def read(metadata):
+        return metadata.get(SEMANTIC_SAFETY_CASE_METADATA)
+  : labels:
+    - source: metadata.get(SEMANTIC_SAFETY_CASE_METADATA)
+      style: primary
+      start: 31
+      end: 74
+    - source: metadata.get
+      style: secondary
+      start: 31
+      end: 43
+    - source: (SEMANTIC_SAFETY_CASE_METADATA)
+      style: secondary
+      start: 43
+      end: 74
+  ? |
+    def read(metadata):
+        return metadata[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
+  : labels:
+    - source: metadata[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
+      style: primary
+      start: 31
+      end: 78
+    - source: DISPATCHER_CORRIDOR_COVERAGE_METADATA
+      style: secondary
+      start: 40
+      end: 77
+  ? |
+    def read(metadata):
+        return metadata[EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA]
+  : labels:
+    - source: metadata[EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA]
+      style: primary
+      start: 31
+      end: 86
+    - source: EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA
+      style: secondary
+      start: 40
+      end: 85
+  ? |
+    def read(metadata):
+        return metadata[USE_DEF_SEVERANCE_AUDIT_METADATA]
+  : labels:
+    - source: metadata[USE_DEF_SEVERANCE_AUDIT_METADATA]
+      style: primary
+      start: 31
+      end: 73
+  ? |
+    def read(metadata, key):
+        if "dispatcher_corridor_coverage" in metadata:
+            for key in metadata:
+                if key == "semantic_safety_case":
+                    return metadata[key]
+        return None
+  : labels:
+    - source: '"dispatcher_corridor_coverage" in metadata'
+      style: primary
+      start: 32
+      end: 74
+    - source: '"dispatcher_corridor_coverage"'
+      style: secondary
+      start: 32
+      end: 62
+    - source: |-
+        def read(metadata, key):
+            if "dispatcher_corridor_coverage" in metadata:
+                for key in metadata:
+                    if key == "semantic_safety_case":
+                        return metadata[key]
+            return None
+      style: secondary
+      start: 0
+      end: 203

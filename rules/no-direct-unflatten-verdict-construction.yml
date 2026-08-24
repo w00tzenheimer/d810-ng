@@ -1,0 +1,43 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Only the evaluator and transaction API may mint final authority objects.
+
+id: no-direct-unflatten-verdict-construction
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/unflatten_authority/bind.py"
+  - "src/d810/transforms/unflatten_authority/diagnostics.py"
+  - "src/d810/transforms/unflatten_authority/views.py"
+  - "src/d810/transforms/unflatten_authority/model.py"
+  - "src/d810/transforms/unflatten_authority/proposal.py"
+  - "src/d810/transforms/unflatten_authority/producer_api.py"
+  - "src/d810/transforms/unflatten_authority/legacy_codec.py"
+  - "src/d810/transforms/minimal_unflatten_emit.py"
+  - "src/d810/transforms/dispatcher_corridor_coverage.py"
+  - "src/d810/analyses/control_flow/minimal_state_recovery.py"
+  - "src/d810/analyses/control_flow/semantic_route_evidence.py"
+  - "src/d810/passes/unflatten/state_machine.py"
+  - "src/d810/hexrays/mutation/patch_transaction.py"
+
+message: |
+  Final unflatten verdicts and evidence indexes must be constructed by the
+  evaluator or transaction API, not by producers or diagnostics.
+
+rule:
+  any:
+    - pattern: UnflattenAuthorityVerdict($$$)
+    - pattern: SemanticSafetyCase($$$)
+    - pattern: ObligationEvidenceCell($$$)
+    - pattern: ObligationEvidenceIndex($$$)
+    - pattern: $MODULE.UnflattenAuthorityVerdict($$$)
+    - pattern: $MODULE.SemanticSafetyCase($$$)
+    - pattern: $MODULE.ObligationEvidenceCell($$$)
+    - pattern: $MODULE.ObligationEvidenceIndex($$$)
+
+note: |
+  Type annotations, isinstance checks, read-only projections, and evaluator
+  factories are valid. This guard covers construction expressions only.

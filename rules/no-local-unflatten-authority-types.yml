@@ -1,0 +1,31 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Migrated emitter and coverage modules consume canonical authority types.
+
+id: no-local-unflatten-authority-types
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/minimal_unflatten_emit.py"
+  - "src/d810/transforms/dispatcher_corridor_coverage.py"
+
+message: |
+  Do not define local unflatten Proof, Receipt, Authority, or Allowance types.
+  Extend the canonical authority model and return its typed objects.
+
+rule:
+  all:
+    - kind: class_definition
+    - has:
+        field: name
+        all:
+          - kind: identifier
+          - regex: "(Proof|Receipt|Authority|Allowance)$"
+        stopBy: end
+
+note: |
+  Unrelated proof classes outside the enrolled authority modules and adapter
+  functions returning canonical model types are valid.
