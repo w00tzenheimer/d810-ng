@@ -670,12 +670,11 @@ def _binding(subject: model.SemanticSubjectRef, phase: model.UnflattenAuthorityP
     )
 
 
-def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], candidate_subjects: tuple[model.SemanticSubjectRef, ...] | None = None, source_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None, candidate_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None, patch_step_facts: tuple[model.PatchStepEvidencePayload, ...] = (), claims: tuple[model.UnflattenClaim, ...] | None = None, proposal: model.ProposedUnflattenContract | None = None, native_instruction_eas_by_block: dict[object, tuple[int, ...]] | None = None) -> model.DerivedUnflattenPreparationInputs:
+def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], candidate_subjects: tuple[model.SemanticSubjectRef, ...] | None = None, source_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None, candidate_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None, patch_step_facts: tuple[model.PatchStepEvidencePayload, ...] = (), claims: tuple[model.UnflattenClaim, ...] | None = None, proposal: model.ProposedUnflattenContract | None = None, native_instruction_eas_by_block: dict[object, tuple[int, ...]] | None = None, phase: model.UnflattenAuthorityPhase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT) -> model.DerivedUnflattenPreparationInputs:
     proposal = model.ProposedUnflattenContract(**_valid_proposal(model)) if proposal is None else proposal
     if tuple(proposal.use_def_witness.redirect_owner_refs) != tuple(proposal.plan_inputs.dispatcher_member_refs):
         object.__setattr__(proposal.use_def_witness, "redirect_owner_refs", proposal.plan_inputs.dispatcher_member_refs)
     claims = proposal.claims if claims is None else claims
-    phase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
     def normalize_value_flow(subjects: tuple[model.SemanticSubjectRef, ...]) -> tuple[model.SemanticSubjectRef, ...]:
         return tuple(
             _subject_factory(
@@ -1213,6 +1212,23 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         candidate_subjects,
     )
     candidate_bindings = candidate_inventory.bindings
+    projected_topology_reference = candidate_inventory
+    if phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        projected_reference_bindings = tuple(
+            replace(
+                binding,
+                phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            )
+            for binding in candidate_bindings
+        )
+        projected_topology_reference = fixture_inventory(
+            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            authority_id("candidate-fp"), 4,
+            tuple(sorted(projected_reference_bindings, key=lambda item: item.subject.subject_id)),
+            tuple(sorted({item.subject_id: item for item in (*source_subjects, *candidate_subjects)}.values(), key=lambda item: item.subject_id)),
+            source_subjects,
+            candidate_subjects,
+        )
     object.__setattr__(
         receipt,
         "source_binding_digest",
@@ -1235,7 +1251,7 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
     )
     object.__setattr__(receipt, "source_inventory_digest", source_inventory.inventory_digest)
     object.__setattr__(receipt, "candidate_inventory_digest", candidate_inventory.inventory_digest)
-    object.__setattr__(receipt, "projected_topology_reference_digest", candidate_inventory.inventory_digest)
+    object.__setattr__(receipt, "projected_topology_reference_digest", projected_topology_reference.inventory_digest)
     object.__setattr__(receipt, "receipt_id", receipt_id(receipt))
     corridor_result = None
     if proposal.corridor_coverage_forecast is not None:
@@ -1265,12 +1281,15 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         proposal=proposal, claims=claims, preparation_receipt=receipt,
         source_inventory=source_inventory,
         candidate_inventory=candidate_inventory,
-        projected_topology_reference=candidate_inventory,
+        projected_topology_reference=projected_topology_reference,
         source_route_assessment=None, candidate_route_assessment=None,
         generic_gate_facts=None, conditional_relations=relations,
         patch_step_facts=patch_payloads,
         preparation_metrics=metrics,
-        phase_build_metrics=model.PhaseBuildMetrics(phase, 1, 1, 1.25),
+        phase_build_metrics=model.PhaseBuildMetrics(
+            phase, 0 if phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY else 1,
+            1, 1.25,
+        ),
         corridor_coverage_phase_result=corridor_result,
         retirement_phase_result=retirement_result,
     )

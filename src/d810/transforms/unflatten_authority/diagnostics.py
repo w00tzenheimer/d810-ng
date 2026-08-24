@@ -10,7 +10,12 @@ from d810.transforms.cfg_transaction import TransactionAttemptId
 
 from . import model
 from .ids import content_id
-from .views import ViewMetrics, observed_only_loss, semantic_loss_ledger
+from .views import (
+    ObservedLossReclassification,
+    ViewMetrics,
+    observed_loss_delta,
+    semantic_loss_ledger,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,22 +194,43 @@ def _loss_row_payload(row: model.SemanticLossRow) -> dict[str, object]:
     }
 
 
+def _loss_reclassification_payload(
+    row: ObservedLossReclassification,
+) -> dict[str, object]:
+    return {
+        "subject": row.subject.subject_id,
+        "anchor": row.anchored_location,
+        "projected_kind": row.projected_kind.value,
+        "observed_kind": row.observed_kind.value,
+        "projected_evidence_ids": row.projected_evidence_ids,
+        "observed_evidence_ids": row.observed_evidence_ids,
+    }
+
+
 def _phase_view_projection(
     verdict: model.UnflattenAuthorityVerdict,
     projected_case: model.SemanticSafetyCase | None,
-) -> tuple[object, object, dict[str, str] | None]:
+) -> tuple[
+    object,
+    model.ObservedSemanticLossDelta | None,
+    dict[str, str] | None,
+    tuple[ObservedLossReclassification, ...],
+]:
     case = verdict.safety_case
     ledger = None if case is None else semantic_loss_ledger(case)
     observed_delta = None
     observed_delta_rejection = None
+    observed_reclassifications: tuple[ObservedLossReclassification, ...] = ()
     if projected_case is not None and case is not None:
-        observed_delta = observed_only_loss(projected_case, case)
+        projection = observed_loss_delta(projected_case, case)
+        observed_delta = projection.observed_only
+        observed_reclassifications = projection.reclassifications
     elif projected_case is not None:
         observed_delta_rejection = {
             "code": "observed_case_missing",
             "reason": "observed_case_missing",
         }
-    return ledger, observed_delta, observed_delta_rejection
+    return ledger, observed_delta, observed_delta_rejection, observed_reclassifications
 
 
 def build_phase_payload(
@@ -213,7 +239,12 @@ def build_phase_payload(
     timings: PhaseTimings | None = None,
     projected_case: model.SemanticSafetyCase | None = None,
     correlation: TransactionAttemptId | None = None,
-    _view_projection: tuple[object, object, dict[str, str] | None] | None = None,
+    _view_projection: tuple[
+        object,
+        model.ObservedSemanticLossDelta | None,
+        dict[str, str] | None,
+        tuple[ObservedLossReclassification, ...],
+    ] | None = None,
 ) -> dict[str, object]:
     """Build one complete, typed payload from a canonical verdict."""
 
@@ -228,7 +259,7 @@ def build_phase_payload(
         raise TypeError("correlation must be TransactionAttemptId or None")
     if _view_projection is None:
         _view_projection = _phase_view_projection(verdict, projected_case)
-    ledger, observed_delta, observed_delta_rejection = _view_projection
+    ledger, observed_delta, observed_delta_rejection, observed_reclassifications = _view_projection
     bindings_by_subject = {} if case is None else {
         binding.subject.subject_id: binding for binding in case.bindings
     }
@@ -334,6 +365,10 @@ def build_phase_payload(
         "anchored_loss_labels": anchored_loss_labels,
         "observed_only_loss": observed_loss_rows,
         "observed_only_loss_rejection": observed_delta_rejection,
+        "observed_loss_reclassification": tuple(
+            _loss_reclassification_payload(row)
+            for row in observed_reclassifications
+        ),
         "bindings": bindings,
         "handlers": () if case is None else tuple(_case_subject_label(case, subject) for subject in case.subjects if subject.role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER),
         "terminals": () if case is None else tuple(_case_subject_label(case, subject) for subject in case.subjects if subject.role is model.SemanticSubjectRole.TERMINAL_SITE),

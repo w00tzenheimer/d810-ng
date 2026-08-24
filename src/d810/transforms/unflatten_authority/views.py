@@ -23,6 +23,52 @@ class ViewMetrics:
 
 
 @dataclass(frozen=True, slots=True)
+class ObservedLossReclassification:
+    """One anchored loss subject whose semantic kind changed after apply."""
+
+    subject: model.SemanticSubjectRef
+    anchored_location: str
+    projected_kind: model.SemanticLossKind
+    observed_kind: model.SemanticLossKind
+    projected_evidence_ids: tuple[str, ...]
+    observed_evidence_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.subject) is not model.SemanticSubjectRef:
+            raise TypeError("reclassification subject must be SemanticSubjectRef")
+        if type(self.anchored_location) is not str or not self.anchored_location:
+            raise TypeError("reclassification location must be a non-empty string")
+        for name in ("projected_kind", "observed_kind"):
+            if type(getattr(self, name)) is not model.SemanticLossKind:
+                raise TypeError(f"{name} must be SemanticLossKind")
+        for name in ("projected_evidence_ids", "observed_evidence_ids"):
+            values = getattr(self, name)
+            if type(values) is not tuple or any(type(item) is not str or not item for item in values):
+                raise TypeError(f"{name} must contain exact evidence IDs")
+            if values != tuple(sorted(set(values))):
+                raise ValueError(f"{name} must be canonical and unique")
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedLossDeltaProjection:
+    """Observed-only rows plus separate post-apply kind reclassifications."""
+
+    observed_only: model.ObservedSemanticLossDelta
+    reclassifications: tuple[ObservedLossReclassification, ...] = ()
+
+    def __post_init__(self) -> None:
+        if type(self.observed_only) is not model.ObservedSemanticLossDelta:
+            raise TypeError("observed_only must be ObservedSemanticLossDelta")
+        if type(self.reclassifications) is not tuple:
+            raise TypeError("reclassifications must be an exact tuple")
+        if any(type(item) is not ObservedLossReclassification for item in self.reclassifications):
+            raise TypeError("reclassifications must contain typed projections")
+        subject_ids = tuple(item.subject.subject_id for item in self.reclassifications)
+        if subject_ids != tuple(sorted(set(subject_ids))):
+            raise ValueError("reclassifications must be canonical and unique")
+
+
+@dataclass(frozen=True, slots=True)
 class ExactEffectLossView:
     """Canonical evidence and sole exact classification for one effect loss."""
 
@@ -502,7 +548,19 @@ def observed_only_loss(
     projected_case: model.SemanticSafetyCase,
     observed_case: model.SemanticSafetyCase,
 ) -> model.ObservedSemanticLossDelta:
-    """Project exact observed-only loss subjects relative to preflight."""
+    """Project only genuinely new loss subjects relative to preflight."""
+
+    projection = observed_loss_delta(projected_case, observed_case)
+    if projection.reclassifications:
+        raise ValueError("observed semantic loss classification drift")
+    return projection.observed_only
+
+
+def observed_loss_delta(
+    projected_case: model.SemanticSafetyCase,
+    observed_case: model.SemanticSafetyCase,
+) -> ObservedLossDeltaProjection:
+    """Project observed-only loss and kind reclassification separately."""
 
     _check_case(projected_case)
     _check_case(observed_case)
@@ -539,18 +597,30 @@ def observed_only_loss(
         subject_id for subject_id in common
         if projected_by_subject[subject_id].kind is not observed_by_subject[subject_id].kind
     }
-    if drift:
-        raise ValueError("observed semantic loss classification drift")
+    reclassifications = tuple(
+        ObservedLossReclassification(
+            subject=observed_by_subject[subject_id].source_subject,
+            anchored_location=observed_by_subject[subject_id].anchored_location,
+            projected_kind=projected_by_subject[subject_id].kind,
+            observed_kind=observed_by_subject[subject_id].kind,
+            projected_evidence_ids=projected_by_subject[subject_id].evidence_ids,
+            observed_evidence_ids=observed_by_subject[subject_id].evidence_ids,
+        )
+        for subject_id in sorted(drift)
+    )
     rows = tuple(sorted(
         (row for subject_id, row in observed_by_subject.items() if subject_id not in projected_by_subject),
         key=lambda row: row.source_subject.subject_id,
     ))
-    return model.ObservedSemanticLossDelta(
-        authority_id=observed.authority_id,
-        source_fingerprint=observed.source_fingerprint,
-        projected_case_id=projected.case_id,
-        observed_case_id=observed.case_id,
-        rows=rows,
+    return ObservedLossDeltaProjection(
+        observed_only=model.ObservedSemanticLossDelta(
+            authority_id=observed.authority_id,
+            source_fingerprint=observed.source_fingerprint,
+            projected_case_id=projected.case_id,
+            observed_case_id=observed.case_id,
+            rows=rows,
+        ),
+        reclassifications=reclassifications,
     )
 
 
@@ -635,6 +705,7 @@ diagnostic_view = evidence_ids
 __all__ = [
     "VIEW_GRAPH_TRAVERSALS", "ViewMetrics", "ExactEffectLossView", "RetiredInfrastructureView", "CorridorCoverageView", "TerminalCycleView", "DetachedComponentView", "corridor_coverage_rows", "terminal_cycle_rows", "detached_component_rows", "obligation_states",
     "failed_obligations", "evidence_ids", "justification_ids", "view_metrics",
-    "exact_effect_loss_view", "retired_infrastructure_view", "retirement_rows", "semantic_loss_ledger", "observed_only_loss",
+    "exact_effect_loss_view", "retired_infrastructure_view", "retirement_rows", "semantic_loss_ledger", "observed_only_loss", "observed_loss_delta",
+    "ObservedLossReclassification", "ObservedLossDeltaProjection",
     "loss_view", "coverage_view", "diagnostic_view", "CompatibilityValidationView", "compatibility_projection",
 ]

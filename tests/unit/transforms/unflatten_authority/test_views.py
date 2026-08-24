@@ -259,6 +259,53 @@ def test_observed_delta_rejects_wrong_phase_before_comparing_rows() -> None:
         views.observed_only_loss(case, case)
 
 
+def test_observed_delta_projects_kind_reclassification_without_observed_only_loss(
+    monkeypatch,
+) -> None:
+    subject = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "kind-drift")
+    projected_case = build_semantic_case(
+        authority_id=authority_id("kind-drift"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(source_subjects=(subject,), candidate_subjects=()),
+    )
+    observed_case = build_semantic_case(
+        authority_id=authority_id("kind-drift"),
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        inputs=_complete_inputs(
+            source_subjects=(subject,), candidate_subjects=(),
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        ),
+    )
+    original_kind = model.SemanticLossRow.kind
+    monkeypatch.setattr(
+        model.SemanticLossRow,
+        "kind",
+        property(
+            lambda row: (
+                model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE
+                if row.source_subject.subject_id == subject.subject_id
+                and row.case.phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+                else model.SemanticLossKind.UNCLASSIFIED
+                if row.source_subject.subject_id == subject.subject_id
+                else original_kind.fget(row)
+            )
+        ),
+    )
+
+    projection = views.observed_loss_delta(projected_case, observed_case)
+
+    assert projection.observed_only.rows == ()
+    assert len(projection.reclassifications) == 1
+    drift = projection.reclassifications[0]
+    assert drift.anchored_location == "blk0@0x1000"
+    assert drift.projected_kind is model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE
+    assert drift.observed_kind is model.SemanticLossKind.UNCLASSIFIED
+    assert drift.projected_evidence_ids
+    assert drift.observed_evidence_ids
+    with pytest.raises(ValueError, match="classification drift"):
+        views.observed_only_loss(projected_case, observed_case)
+
+
 def test_retirement_rows_rejects_empty_or_nonretirement_cases() -> None:
     subject = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "retirement-empty")
     case = build_semantic_case(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -102,6 +103,106 @@ def test_observed_precase_with_projected_case_is_total_and_typed() -> None:
     assert payload["loss_ledger"] == ()
     assert payload["observed_only_loss"] == ()
     assert payload["observed_only_loss_rejection"]["reason"] == "observed_case_missing"
+
+
+def test_observed_kind_reclassification_is_one_canonical_diagnostic_record(
+    monkeypatch,
+) -> None:
+    subject = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "diagnostic-kind-drift")
+    projected_case = build_semantic_case(
+        authority_id=authority_id("diagnostic-kind-drift"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(source_subjects=(subject,), candidate_subjects=()),
+    )
+    observed_case = build_semantic_case(
+        authority_id=authority_id("diagnostic-kind-drift"),
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        inputs=_complete_inputs(
+            source_subjects=(subject,), candidate_subjects=(),
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        ),
+    )
+    original_kind = model.SemanticLossRow.kind
+    monkeypatch.setattr(
+        model.SemanticLossRow,
+        "kind",
+        property(
+            lambda row: (
+                model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE
+                if row.source_subject.subject_id == subject.subject_id
+                and row.case.phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+                else model.SemanticLossKind.UNCLASSIFIED
+                if row.source_subject.subject_id == subject.subject_id
+                else original_kind.fget(row)
+            )
+        ),
+    )
+    verdict = model.UnflattenAuthorityVerdict(
+        accepted=False,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        reason=model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+        authority_id=observed_case.authority_id,
+        binding_id=authority_id("diagnostic-binding"),
+        case_id=observed_case.case_id,
+        candidate_fingerprint=observed_case.candidate_fingerprint,
+        safety_case=observed_case,
+        failed_obligations=tuple(
+            model.FailedObligation(cell.key, cell.state)
+            for cell in observed_case.obligation_index.cells
+            if cell.state is not model.ObligationState.SATISFIED
+        ),
+    )
+
+    observation = phase_observation(
+        verdict,
+        maturity="MMAT_GLBOPT1",
+        source_ea=0x401000,
+        projected_case=projected_case,
+        correlation=TransactionAttemptId(
+            authority_id("diagnostic-plan"),
+            authority_id("diagnostic-session"),
+            3,
+            authority_id("diagnostic-attempt"),
+        ),
+    )
+
+    records = observation.payload["observed_loss_reclassification"]
+    assert len(records) == 1
+    assert records[0]["projected_kind"] == "retired_dispatcher_infrastructure"
+    assert records[0]["observed_kind"] == "unclassified"
+    assert records[0]["anchor"] == "blk0@0x1000"
+    assert records[0]["projected_evidence_ids"]
+    assert records[0]["observed_evidence_ids"]
+    assert observation.payload["authority_id"] == observed_case.authority_id
+    assert observation.payload["plan_id"] == authority_id("diagnostic-plan")
+    assert observation.payload["session_id"] == authority_id("diagnostic-session")
+    assert observation.payload["generation"] == 3
+
+    import d810.hexrays.observability as authority_observability
+    from d810.core import observability_preanalysis
+
+    captured = []
+    monkeypatch.setattr(authority_observability, "diagnostics_enabled", lambda: True)
+    monkeypatch.setattr(authority_observability, "mba_to_block_snapshots", lambda _mba: ())
+    snapshot = object()
+    monkeypatch.setattr(
+        authority_observability,
+        "request_capture_mba_snapshot",
+        lambda **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        observability_preanalysis,
+        "observe_fact_observation",
+        lambda snapshot_arg, source_ea, observations: captured.append(
+            (snapshot_arg, source_ea, observations)
+        ),
+    )
+    authority_observability.observe_unflatten_authority_phase(
+        mba=SimpleNamespace(func_ea=0x401000, maturity=0),
+        verdict=verdict,
+        observation_factory=lambda: (observation,),
+    )
+    assert captured == [(snapshot, 0x401000, (observation,))]
 
 
 def test_precase_fact_id_excludes_attempt_correlation() -> None:
