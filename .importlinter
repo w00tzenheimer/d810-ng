@@ -357,6 +357,7 @@ forbidden_modules =
     d810.transforms.unflatten_authority.bind
     d810.transforms.unflatten_authority.evaluate
     d810.transforms.unflatten_authority.transaction_api
+    d810.transforms.unflatten_authority_facade
 
 [importlinter:contract:unflatten-diagnostics-no-validation-execution]
 name = Unflatten diagnostics cannot execute validation
@@ -369,3 +370,4 @@ forbidden_modules =
     d810.transforms.unflatten_authority.bind
     d810.transforms.unflatten_authority.evaluate
     d810.transforms.unflatten_authority.transaction_api
+    d810.transforms.unflatten_authority_facade

@@ -16,6 +16,8 @@ valid:
   - |
       def facade(plan):
           return transaction_api.revalidate(plan)
+  - |
+      from d810.transforms.unflatten_authority_facade import GenericCfgGateBundle
 
 invalid:
   - |

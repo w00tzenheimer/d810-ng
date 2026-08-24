@@ -42,3 +42,31 @@ snapshots:
       style: primary
       start: 0
       end: 65
+  ? |
+    from d810.transforms import unflatten_authority_facade
+  : labels:
+    - source: from d810.transforms import unflatten_authority_facade
+      style: primary
+      start: 0
+      end: 54
+  ? |
+    from d810.transforms.unflatten_authority_facade import prepare_unflatten_authority_timed
+  : labels:
+    - source: from d810.transforms.unflatten_authority_facade import prepare_unflatten_authority_timed
+      style: primary
+      start: 0
+      end: 88
+  ? |
+    import d810.transforms.unflatten_authority_facade
+  : labels:
+    - source: import d810.transforms.unflatten_authority_facade
+      style: primary
+      start: 0
+      end: 49
+  ? |
+    import d810.transforms.unflatten_authority_facade as facade
+  : labels:
+    - source: import d810.transforms.unflatten_authority_facade as facade
+      style: primary
+      start: 0
+      end: 59

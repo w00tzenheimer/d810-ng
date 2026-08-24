@@ -1,0 +1,30 @@
+id: no-unflatten-diagnostic-transaction-facade-import
+snapshots:
+  ? |
+    from d810.transforms import unflatten_authority_facade
+  : labels:
+    - source: from d810.transforms import unflatten_authority_facade
+      style: primary
+      start: 0
+      end: 54
+  ? |
+    from d810.transforms.unflatten_authority_facade import phase_observation
+  : labels:
+    - source: from d810.transforms.unflatten_authority_facade import phase_observation
+      style: primary
+      start: 0
+      end: 72
+  ? |
+    import d810.transforms.unflatten_authority_facade
+  : labels:
+    - source: import d810.transforms.unflatten_authority_facade
+      style: primary
+      start: 0
+      end: 49
+  ? |
+    import d810.transforms.unflatten_authority_facade as facade
+  : labels:
+    - source: import d810.transforms.unflatten_authority_facade as facade
+      style: primary
+      start: 0
+      end: 59

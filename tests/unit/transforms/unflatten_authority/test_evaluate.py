@@ -3878,6 +3878,13 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         inputs=incomplete_inputs,
     )
+    invalid_verdict = evaluate_case(incomplete)
+    assert not invalid_verdict.accepted
+    assert invalid_verdict.safety_case is incomplete
+    assert invalid_verdict.reason in {
+        model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        model.UnflattenAuthorityReason.OBLIGATION_VIOLATED,
+    }
     member1_structural = next(
         cell for cell in incomplete.obligation_index.cells
         if cell.key == model.ObligationKey(
@@ -3897,6 +3904,105 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         if cell.key == model.ObligationKey(corridor, model.SafetyDimension.CORRIDOR_COVERAGE)
     )
     assert corridor_coverage.state is model.ObligationState.SATISFIED
+    invalid_view = views.retired_infrastructure_view(incomplete, retirement.claim_id)
+    assert invalid_view.drifted_member_subject_ids == (member1.subject_id,)
+    assert invalid_view.unaccounted_member_subject_ids == ()
+    assert member1.subject_id not in invalid_view.retired_member_subject_ids
+    assert member1.subject_id not in invalid_view.retained_member_subject_ids
+    with pytest.raises(ValueError, match="satisfied structural cell"):
+        views.retirement_rows(incomplete, retirement.claim_id)
+
+    reduced_candidates = tuple(
+        item for item in candidate_catalog.candidates
+        if item.block_ref != member1.block_ref
+    )
+    reduced_catalog = model.RetirementCandidateCatalog(
+        canonical_authority_id((
+            "unflatten.dispatcher-retirement-candidate-catalog.v1",
+            candidate_catalog.source_generation,
+            candidate_catalog.plan_members,
+            reduced_candidates,
+        )),
+        candidate_catalog.source_generation,
+        candidate_catalog.plan_members,
+        reduced_candidates,
+    )
+    unsupported_retirement = _claim_factory(
+        model.RetiredDispatcherInfrastructureClaim,
+        kind=model.UnflattenClaimKind.RETIRED_DISPATCHER_INFRASTRUCTURE,
+        infrastructure_subject=member0,
+        corridor_subject=corridor,
+        member_subjects=(member0,),
+        candidate_evidence_ids=tuple(sorted({
+            evidence_id
+            for item in reduced_catalog.candidates
+            for evidence_id in item.evidence_ids
+        })),
+        source_generation=3,
+        candidate_catalog=reduced_catalog,
+    )
+    unsupported_proposal = replace(
+        retirement_proposal,
+        claims=tuple(sorted((unsupported_retirement, route_claim), key=lambda claim: claim.claim_id)),
+        plan_inputs=replace(
+            retirement_proposal.plan_inputs,
+            shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
+        ),
+        retirement_candidate_catalog=reduced_catalog,
+    )
+    candidate_missing_bindings = tuple(
+        replace(
+            binding,
+            status=model.SubjectBindingStatus.MISSING,
+            block_ref=None,
+            serial=None,
+            anchor_ea=None,
+            native_instruction_eas=(),
+        )
+        if binding.subject == member1
+        else binding
+        for binding in incomplete_inputs.candidate_inventory.bindings
+    )
+    unsupported_inputs = _complete_inputs(
+        source_subjects=(entry, member0, member1, corridor, route, destination),
+        claims=unsupported_proposal.claims,
+        proposal=unsupported_proposal,
+        candidate_bindings=candidate_missing_bindings,
+    )
+    assert member1.block_ref not in unsupported_inputs.proposal.retirement_candidate_catalog.candidate_refs
+    unsupported = build_semantic_case(
+        authority_id=authority_id("retirement-unsupported"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=unsupported_inputs,
+    )
+    unsupported_verdict = evaluate_case(unsupported)
+    assert not unsupported_verdict.accepted
+    assert unsupported_verdict.safety_case is unsupported
+    unsupported_phase_member = next(
+        item for item in unsupported_inputs.retirement_phase_result.members
+        if item.block_ref == member1.block_ref
+    )
+    assert unsupported_phase_member.classification is model.RetirementPhaseClassification.UNACCOUNTED, (
+        unsupported_phase_member.classification,
+        unsupported_phase_member.reason,
+        unsupported_phase_member.candidate_id,
+        unsupported_inputs.proposal.retirement_candidate_catalog.candidate_refs,
+    )
+    unsupported_structural = next(
+        cell for cell in unsupported.obligation_index.cells
+        if cell.key == model.ObligationKey(
+            member1, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+        )
+    )
+    assert unsupported_structural.state is model.ObligationState.VIOLATED
+    unsupported_view = views.retired_infrastructure_view(
+        unsupported, unsupported_retirement.claim_id,
+    )
+    assert unsupported_view.unaccounted_member_subject_ids == (member1.subject_id,)
+    assert member1.subject_id not in unsupported_view.retired_member_subject_ids
+    assert member1.subject_id not in unsupported_view.retained_member_subject_ids
+    with pytest.raises(ValueError, match="satisfied structural cell"):
+        views.retirement_rows(unsupported, unsupported_retirement.claim_id)
 
 
 def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:

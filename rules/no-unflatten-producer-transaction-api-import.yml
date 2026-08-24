@@ -18,8 +18,9 @@ files:
   - "src/d810/passes/unflatten/state_machine.py"
 
 message: |
-  Unflatten producer modules must not import bind, evaluate, or transaction_api.
-  Return canonical producer evidence and let the transaction facade bind it.
+  Unflatten producer modules must not import bind, evaluate, transaction_api,
+  or the transaction facade. Return canonical producer evidence and let the
+  mutation facade bind it.
 
 rule:
   any:
@@ -35,12 +36,16 @@ rule:
     - pattern: from d810.transforms.unflatten_authority import bind
     - pattern: from d810.transforms.unflatten_authority import evaluate
     - pattern: from d810.transforms.unflatten_authority import transaction_api
+    - pattern: from d810.transforms import unflatten_authority_facade
+    - pattern: from d810.transforms.unflatten_authority_facade import $$$
     - pattern: import d810.transforms.unflatten_authority.bind
     - pattern: import d810.transforms.unflatten_authority.evaluate
     - pattern: import d810.transforms.unflatten_authority.transaction_api
     - pattern: import d810.transforms.unflatten_authority.bind as $ALIAS
     - pattern: import d810.transforms.unflatten_authority.evaluate as $ALIAS
     - pattern: import d810.transforms.unflatten_authority.transaction_api as $ALIAS
+    - pattern: import d810.transforms.unflatten_authority_facade
+    - pattern: import d810.transforms.unflatten_authority_facade as $ALIAS
 
 note: |
   Imports of `.model`, `.proposal`, `.producer_api`, and canonical analysis

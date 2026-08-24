@@ -356,6 +356,8 @@ def retirement_rows(
             raise ValueError("retirement rows require one unambiguous retirement claim")
         claim_id = retirement_ids[0]
     view = retired_infrastructure_view(case, claim_id)
+    if view.unaccounted_member_subject_ids or view.drifted_member_subject_ids:
+        raise ValueError("retirement rows require a satisfied structural cell")
     ledger = semantic_loss_ledger(case)
     cells = {
         cell.key: cell for cell in case.obligation_index.cells

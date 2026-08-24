@@ -1,0 +1,25 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore.
+
+id: no-unflatten-diagnostic-transaction-facade-import
+language: python
+severity: error
+
+files:
+  - "src/d810/transforms/unflatten_authority/diagnostics.py"
+  - "src/d810/transforms/unflatten_authority/views.py"
+
+message: |
+  Unflatten diagnostic and view modules must consume sealed authority facts;
+  only the mutation transaction may import the transaction facade.
+
+rule:
+  any:
+    - pattern: from d810.transforms import unflatten_authority_facade
+    - pattern: from d810.transforms.unflatten_authority_facade import $$$
+    - pattern: import d810.transforms.unflatten_authority_facade
+    - pattern: import d810.transforms.unflatten_authority_facade as $ALIAS
+
+note: |
+  The mutation transaction is the sole enrolled facade consumer. Diagnostics
+  and views remain graph-free projections over sealed cases and verdicts.

@@ -25,3 +25,11 @@ invalid:
       import d810.transforms.unflatten_authority.bind
   - |
       import d810.transforms.unflatten_authority.evaluate as evaluation
+  - |
+      from d810.transforms import unflatten_authority_facade
+  - |
+      from d810.transforms.unflatten_authority_facade import prepare_unflatten_authority_timed
+  - |
+      import d810.transforms.unflatten_authority_facade
+  - |
+      import d810.transforms.unflatten_authority_facade as facade

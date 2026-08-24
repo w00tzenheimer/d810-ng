@@ -1,0 +1,17 @@
+id: no-unflatten-diagnostic-transaction-facade-import
+
+valid:
+  - |
+      from .model import SemanticSafetyCase
+  - |
+      from d810.transforms.unflatten_authority import model
+
+invalid:
+  - |
+      from d810.transforms import unflatten_authority_facade
+  - |
+      from d810.transforms.unflatten_authority_facade import phase_observation
+  - |
+      import d810.transforms.unflatten_authority_facade
+  - |
+      import d810.transforms.unflatten_authority_facade as facade
