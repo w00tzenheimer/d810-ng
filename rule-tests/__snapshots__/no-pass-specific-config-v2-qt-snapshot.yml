@@ -1,0 +1,32 @@
+id: no-pass-specific-config-v2-qt
+snapshots:
+  ? |
+    def render(inspector):
+        if inspector.pass_id == "constant-simplification":
+            return "Constants"
+        return inspector.display_name
+  : labels:
+    - source: inspector.pass_id == "constant-simplification"
+      style: primary
+      start: 30
+      end: 76
+  ? |
+    def render(pass_id):
+        if pass_id == "mba-solve":
+            return "special"
+        return "generic"
+  : labels:
+    - source: pass_id == "mba-solve"
+      style: primary
+      start: 28
+      end: 50
+  ? |
+    def render(pass_id):
+        if pass_id in {"mba-solve", "constant-simplification"}:
+            return "special"
+        return "generic"
+  : labels:
+    - source: pass_id in {"mba-solve", "constant-simplification"}
+      style: primary
+      start: 28
+      end: 79

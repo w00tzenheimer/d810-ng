@@ -27,6 +27,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
 )
 from d810.hexrays.mutation.patch_transaction import (
     HexRaysPatchTransactionParticipant,
+    PatchTransactionPoisoned,
     PatchTransactionPostObservationRejected,
     PatchTransactionPreflightRejected,
     _patch_plan_observation_items,
@@ -4105,8 +4106,8 @@ def test_below_threshold_dispatcher_retirement_still_requires_narrow_proof():
     assert translator.lower_calls == []
     assert backend.last_patch_failure is not None
     assert "projected unflatten authority rejected" in str(backend.last_patch_failure)
-def test_corridor_coverage_drift_is_rejected_by_observed_retirement_obligation():
-    """A changed live CFG poisons after canonical observed corridor revalidation."""
+def test_corridor_coverage_drift_is_rejected_by_observed_phase_result():
+    """Observed corridor drift poisons with its canonical rejected safety case."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
         stop_serials=(4,),
@@ -4137,11 +4138,8 @@ def test_corridor_coverage_drift_is_rejected_by_observed_retirement_obligation()
         mutation_gateway=_ordinary_gateway(cfg, plan),
         translator=translator,
     )
-    from d810.hexrays.mutation.patch_transaction import PatchTransactionPoisoned
-
     with pytest.raises(PatchTransactionPoisoned) as raised:
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
     assert isinstance(raised.value.__cause__, PatchTransactionPostObservationRejected)
     assert translator.lower_calls == [plan]
     assert translator.lift_count == 2
@@ -4149,7 +4147,9 @@ def test_corridor_coverage_drift_is_rejected_by_observed_retirement_obligation()
     assert verdict is not None
     assert verdict.phase is authority_model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
     assert verdict.reason is authority_model.UnflattenAuthorityReason.OBLIGATION_VIOLATED
+    assert verdict.safety_case is not None
     assert any(
         item.key.dimension is authority_model.SafetyDimension.CORRIDOR_COVERAGE
+        and item.state is not authority_model.ObligationState.SATISFIED
         for item in verdict.failed_obligations
     )
