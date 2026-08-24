@@ -57,8 +57,9 @@ from d810.transforms.native_cfg_normalization import (
     ObservedEdgeStateContract,
 )
 from d810.transforms.plan import PatchPlan
-from d810.transforms.unflatten_authority.legacy_keys import (
-    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
+from d810.transforms.unflatten_authority.legacy_codec import (
+    NativeBoundTransitionRouteReceipt,
+    native_bound_transition_route_receipts_from_plan,
 )
 
 logger = getLogger("d810.passes.driver")
@@ -198,6 +199,7 @@ def _log_applied_native_bound_route_receipts(
     new_graph: object,
     mutation_status: ExecutionAttemptStatus,
     mutation_receipt: object | None,
+    route_receipts: tuple[NativeBoundTransitionRouteReceipt, ...],
 ) -> None:
     """Log route receipts only after a changed graph was committed by apply."""
     if (
@@ -206,33 +208,23 @@ def _log_applied_native_bound_route_receipts(
         or not logger.info_on
     ):
         return
-    metadata_dict = getattr(plan, "metadata_dict", None)
-    if not callable(metadata_dict):
-        return
-    try:
-        metadata = metadata_dict()
-    except Exception:
-        return
-    if not isinstance(metadata, dict):
-        return
-    receipts = metadata.get(NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA)
-    if not isinstance(receipts, tuple):
+    if type(route_receipts) is not tuple:
         return
     committed_operation_keys = _committed_operation_keys(mutation_receipt)
     if committed_operation_keys is None:
         return
     logged_operation_keys: set[tuple[str, int, int | None, int | None]] = set()
-    for receipt in receipts:
-        if not isinstance(receipt, dict):
+    for receipt in route_receipts:
+        if type(receipt) is not NativeBoundTransitionRouteReceipt:
             continue
-        fact_id = receipt.get("fact_id")
-        native_ea = receipt.get("native_ea")
-        native_ea_hex = receipt.get("native_ea_hex")
-        current_block = receipt.get("current_block")
-        state = receipt.get("state")
-        target = receipt.get("target")
-        target_block = receipt.get("target_block")
-        operation_key = _validated_route_operation_key(receipt.get("operation_key"))
+        fact_id = receipt.fact_id
+        native_ea = receipt.native_ea
+        native_ea_hex = f"0x{native_ea:X}"
+        current_block = receipt.current_block
+        state = receipt.state
+        target = receipt.target
+        target_block = receipt.target_block
+        operation_key = _validated_route_operation_key(receipt.operation_key)
         if (
             not isinstance(fact_id, str)
             or not fact_id
@@ -1069,6 +1061,9 @@ def _run_pass_spec(
                 new_graph=new_graph,
                 mutation_status=mutation_status,
                 mutation_receipt=_backend_mutation_receipt(backend),
+                route_receipts=native_bound_transition_route_receipts_from_plan(
+                    result.rewrite_plan
+                ),
             )
             _observe_native_cfg_mutation(
                 state=native_cfg_observer_state,
@@ -1118,6 +1113,9 @@ def _run_pass_spec(
                 new_graph=new_graph,
                 mutation_status=mutation_status,
                 mutation_receipt=_backend_mutation_receipt(backend),
+                route_receipts=native_bound_transition_route_receipts_from_plan(
+                    fragment_plan
+                ),
             )
             _observe_native_cfg_mutation(
                 state=native_cfg_observer_state,

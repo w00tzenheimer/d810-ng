@@ -22,26 +22,13 @@ snapshots:
       start: 0
       end: 62
   ? |
-    from d810.transforms.unflatten_authority import transaction_api
+    from d810.transforms import unflatten_authority as ua
+    ua.transaction_api.prepare_unflatten_authority_timed(plan)
   : labels:
-    - source: from d810.transforms.unflatten_authority import transaction_api
+    - source: from d810.transforms import unflatten_authority as ua
       style: primary
       start: 0
-      end: 63
-  ? |
-    import d810.transforms.unflatten_authority.bind
-  : labels:
-    - source: import d810.transforms.unflatten_authority.bind
-      style: primary
-      start: 0
-      end: 47
-  ? |
-    import d810.transforms.unflatten_authority.evaluate as evaluation
-  : labels:
-    - source: import d810.transforms.unflatten_authority.evaluate as evaluation
-      style: primary
-      start: 0
-      end: 65
+      end: 53
   ? |
     from d810.transforms import unflatten_authority_facade
   : labels:
@@ -57,12 +44,41 @@ snapshots:
       start: 0
       end: 64
   ? |
+    from d810.transforms.unflatten_authority import transaction_api
+  : labels:
+    - source: from d810.transforms.unflatten_authority import transaction_api
+      style: primary
+      start: 0
+      end: 63
+  ? |
     from d810.transforms.unflatten_authority_facade import prepare_unflatten_authority_timed
   : labels:
     - source: from d810.transforms.unflatten_authority_facade import prepare_unflatten_authority_timed
       style: primary
       start: 0
       end: 88
+  ? |
+    import d810.transforms.unflatten_authority as ua
+    ua.transaction_api.prepare_unflatten_authority_timed(plan)
+  : labels:
+    - source: import d810.transforms.unflatten_authority as ua
+      style: primary
+      start: 0
+      end: 48
+  ? |
+    import d810.transforms.unflatten_authority.bind
+  : labels:
+    - source: import d810.transforms.unflatten_authority.bind
+      style: primary
+      start: 0
+      end: 47
+  ? |
+    import d810.transforms.unflatten_authority.evaluate as evaluation
+  : labels:
+    - source: import d810.transforms.unflatten_authority.evaluate as evaluation
+      style: primary
+      start: 0
+      end: 65
   ? |
     import d810.transforms.unflatten_authority_facade
   : labels:

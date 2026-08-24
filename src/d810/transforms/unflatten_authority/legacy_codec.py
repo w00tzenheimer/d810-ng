@@ -70,6 +70,67 @@ from .ids import _claim_factory, _subject_factory, authority_id, canonical_bytes
 LEGACY_RESERVED_KEYS = LEGACY_UNFLATTEN_KEYS
 
 
+def _legacy_route_operation_key(
+    value: object,
+) -> tuple[str, int, int | None, int | None] | None:
+    if type(value) is not tuple or len(value) != 4:
+        return None
+    mutation_kind, source_serial, old_target_serial, target_serial = value
+    if type(mutation_kind) is not str or not mutation_kind.strip():
+        return None
+    if any(separator in mutation_kind for separator in ("\x00", "\n", "\r")):
+        return None
+
+    def serial(candidate: object) -> int | None:
+        if candidate is None:
+            return None
+        if type(candidate) is not int or candidate < 0:
+            return None
+        return candidate
+
+    source = serial(source_serial)
+    if source is None:
+        return None
+    old_target = serial(old_target_serial)
+    if old_target_serial is not None and old_target is None:
+        return None
+    target = serial(target_serial)
+    if target_serial is not None and target is None:
+        return None
+    return (mutation_kind.strip(), source, old_target, target)
+
+
+@dataclass(frozen=True, slots=True)
+class NativeBoundTransitionRouteReceipt:
+    """Typed projection of one legacy native-bound route receipt."""
+
+    fact_id: str
+    native_ea: int
+    current_block: str
+    state: int
+    target: int
+    target_block: str
+    operation_key: tuple[str, int, int | None, int | None]
+
+    def __post_init__(self) -> None:
+        if type(self.fact_id) is not str or not self.fact_id:
+            raise ValueError("native-bound route fact id is malformed")
+        if type(self.native_ea) is not int or not 0 <= self.native_ea < 0xFFFFFFFFFFFFFFFF:
+            raise ValueError("native-bound route native EA is malformed")
+        if type(self.current_block) is not str or not self.current_block:
+            raise ValueError("native-bound route source block is malformed")
+        if type(self.state) is not int or not 0 <= self.state <= 0xFFFFFFFF:
+            raise ValueError("native-bound route state is malformed")
+        if type(self.target) is not int or self.target < 0:
+            raise ValueError("native-bound route target is malformed")
+        if type(self.target_block) is not str or not self.target_block:
+            raise ValueError("native-bound route target block is malformed")
+        operation_key = _legacy_route_operation_key(self.operation_key)
+        if operation_key is None:
+            raise ValueError("native-bound route operation key is malformed")
+        object.__setattr__(self, "operation_key", operation_key)
+
+
 def _legacy_block_label(value: str, label: str) -> tuple[int, int]:
     """Decode the exact ``blk<serial>@0x<EA>`` diagnostic coordinate."""
 
@@ -325,6 +386,64 @@ def _metadata(metadata: object) -> tuple[tuple[object, object], ...]:
         if type(key) is not str:
             raise TypeError("legacy metadata keys must be exact str")
     return items
+
+
+def native_bound_transition_route_receipts_from_plan(
+    plan: object,
+) -> tuple[NativeBoundTransitionRouteReceipt, ...]:
+    """Decode legacy route rows into a typed diagnostic projection.
+
+    The caller must not inspect the reserved metadata payload.  Malformed or
+    absent compatibility rows are ignored, matching the old diagnostic's
+    fail-closed behavior; this projection never participates in authority.
+    """
+
+    metadata_dict = getattr(plan, "metadata_dict", None)
+    if not callable(metadata_dict):
+        return ()
+    try:
+        metadata = metadata_dict()
+    except Exception:
+        return ()
+    if type(metadata) is not dict:
+        return ()
+    rows = metadata.get(NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA)
+    if type(rows) is not tuple:
+        return ()
+    projected: list[NativeBoundTransitionRouteReceipt] = []
+    for row in rows:
+        if type(row) is not dict:
+            continue
+        required = {
+            "fact_id",
+            "native_ea",
+            "native_ea_hex",
+            "current_block",
+            "state",
+            "target",
+            "target_block",
+            "operation_key",
+        }
+        if set(row) != required:
+            continue
+        native_ea = row["native_ea"]
+        if type(native_ea) is not int or row["native_ea_hex"] != f"0x{native_ea:X}":
+            continue
+        try:
+            projected.append(
+                NativeBoundTransitionRouteReceipt(
+                    fact_id=row["fact_id"],
+                    native_ea=native_ea,
+                    current_block=row["current_block"],
+                    state=row["state"],
+                    target=row["target"],
+                    target_block=row["target_block"],
+                    operation_key=row["operation_key"],
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return tuple(projected)
 
 
 def decode_legacy_canonical_payload(payload: bytes) -> object:
@@ -1795,12 +1914,14 @@ __all__ = [
     "LegacyUnflattenDecodeContext",
     "LegacyUnflattenDecodeResult",
     "LegacyUnflattenRejected",
+    "NativeBoundTransitionRouteReceipt",
     "adapt_legacy_unflatten_shadow",
     "decode_legacy_canonical_payload",
     "decode_legacy_unflatten_contract",
     "equivalent_route_claims_from_legacy_metadata",
     "legacy_canonical_bytes",
     "legacy_canonical_decode",
+    "native_bound_transition_route_receipts_from_plan",
     "retirement_claim_from_legacy_proof",
     "select_route_proof_ids_from_legacy_metadata",
 ]

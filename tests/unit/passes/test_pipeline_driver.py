@@ -47,6 +47,9 @@ from d810.passes.scheduler import PassScheduler, RunLater, RunLaterDomain
 from d810.passes.registry import PassRegistry
 from d810.transforms.cfg_transaction import LogicalBlockRef
 from d810.transforms.plan import PatchNopInstructions, PatchPlan
+from d810.transforms.unflatten_authority.legacy_codec import (
+    NativeBoundTransitionRouteReceipt,
+)
 from d810.core.execution_journal import (
     DecompilationSessionId,
     ExecutionAttemptStatus,
@@ -57,7 +60,6 @@ from d810.passes.driver import (
     AnalysisContractError,
     BackendRouteError,
     CapabilityError,
-    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
     NOT_SCHEDULED_AT_MATURITY_REASON,
     PassContractDiagnostic,
     PassContractError,
@@ -243,24 +245,23 @@ class _ReceiptPass:
 
     def run(self, ctx) -> PassResult:
         del ctx
-        return PassResult(
-            rewrite_plan=_nonempty_patch_plan().with_metadata(
-                **{
-                    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA: (
-                        {
-                            "fact_id": "transition:driver",
-                            "native_ea": 0x7FF855576BAA,
-                            "native_ea_hex": "0x7FF855576BAA",
-                            "current_block": "blk[10]@0x1280",
-                            "state": 0x20,
-                            "target": 20,
-                            "target_block": "blk[20]@0x1500",
-                            "operation_key": ("block_goto_change", 10, 2, 20),
-                        },
-                    )
-                }
-            )
-        )
+        return PassResult(rewrite_plan=_nonempty_patch_plan())
+
+
+def _typed_route_projection(
+    operation_key=("block_goto_change", 10, 2, 20),
+):
+    return (
+        NativeBoundTransitionRouteReceipt(
+            fact_id="transition:driver",
+            native_ea=0x7FF855576BAA,
+            current_block="blk[10]@0x1280",
+            state=0x20,
+            target=20,
+            target_block="blk[20]@0x1500",
+            operation_key=operation_key,
+        ),
+    )
 
 
 def _fragment_identity(start_ea: int) -> StableBlockIdentity:
@@ -558,10 +559,23 @@ def test_default_safety_policy_still_reaches_backend_for_specs_without_native_sa
     assert backend.safety_policies == [SafetyPolicy()]
 
 
-def test_native_bound_route_receipt_logs_only_after_completed_mutation(caplog):
+def test_native_bound_route_receipt_logs_typed_codec_projection(monkeypatch, caplog):
+    projection = _typed_route_projection()
+    seen_plans = []
+
+    def project(plan):
+        seen_plans.append(plan)
+        return projection
+
+    monkeypatch.setattr(
+        driver_module,
+        "native_bound_transition_route_receipts_from_plan",
+        project,
+    )
     with caplog.at_level(logging.INFO, logger="d810.passes.driver"):
         _run_specs((PassSpec("receipt", _ReceiptPass, no_caps, default),))
 
+    assert seen_plans
     assert [
         record.getMessage()
         for record in caplog.records
@@ -574,9 +588,14 @@ def test_native_bound_route_receipt_logs_only_after_completed_mutation(caplog):
 
 
 def test_native_bound_route_receipt_is_silent_for_an_unrelated_committed_operation(
-    caplog,
+    monkeypatch, caplog,
 ):
     backend = _Backend(receipt_operation_key=("block_goto_change", 10, 2, 21))
+    monkeypatch.setattr(
+        driver_module,
+        "native_bound_transition_route_receipts_from_plan",
+        lambda plan: _typed_route_projection(),
+    )
 
     with caplog.at_level(logging.INFO, logger="d810.passes.driver"):
         _run_specs(
@@ -591,9 +610,14 @@ def test_native_bound_route_receipt_is_silent_for_an_unrelated_committed_operati
 
 
 def test_native_bound_route_receipt_is_silent_when_route_operation_was_replaced(
-    caplog,
+    monkeypatch, caplog,
 ):
     backend = _Backend(receipt_operation_key=("block_convert_to_goto", 10, None, 20))
+    monkeypatch.setattr(
+        driver_module,
+        "native_bound_transition_route_receipts_from_plan",
+        lambda plan: _typed_route_projection(),
+    )
 
     with caplog.at_level(logging.INFO, logger="d810.passes.driver"):
         _run_specs(
@@ -608,13 +632,18 @@ def test_native_bound_route_receipt_is_silent_when_route_operation_was_replaced(
 
 
 def test_native_bound_route_receipt_is_silent_when_mutation_does_not_change_graph(
-    caplog,
+    monkeypatch, caplog,
 ):
     class _NoChangeBackend(_Backend):
         def apply(self, plan, live_source, safety_policy):
             del plan, live_source, safety_policy
             return _GRAPH
 
+    monkeypatch.setattr(
+        driver_module,
+        "native_bound_transition_route_receipts_from_plan",
+        lambda plan: _typed_route_projection(),
+    )
     with caplog.at_level(logging.INFO, logger="d810.passes.driver"):
         _run_specs(
             (PassSpec("receipt", _ReceiptPass, no_caps, default),),
@@ -627,10 +656,17 @@ def test_native_bound_route_receipt_is_silent_when_mutation_does_not_change_grap
     )
 
 
-def test_native_bound_route_receipt_is_silent_when_backend_rejects_mutation(caplog):
+def test_native_bound_route_receipt_is_silent_when_backend_rejects_mutation(
+    monkeypatch, caplog,
+):
     class _RejectedBackend(_Backend):
         last_patch_failure = RuntimeError("preflight rejected")
 
+    monkeypatch.setattr(
+        driver_module,
+        "native_bound_transition_route_receipts_from_plan",
+        lambda plan: _typed_route_projection(),
+    )
     with caplog.at_level(logging.INFO, logger="d810.passes.driver"):
         _run_specs(
             (PassSpec("receipt", _ReceiptPass, no_caps, default),),

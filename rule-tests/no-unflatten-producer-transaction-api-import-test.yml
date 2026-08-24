@@ -35,3 +35,9 @@ invalid:
       import d810.transforms.unflatten_authority_facade
   - |
       import d810.transforms.unflatten_authority_facade as facade
+  - |
+      import d810.transforms.unflatten_authority as ua
+      ua.transaction_api.prepare_unflatten_authority_timed(plan)
+  - |
+      from d810.transforms import unflatten_authority as ua
+      ua.transaction_api.prepare_unflatten_authority_timed(plan)

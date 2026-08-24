@@ -45,6 +45,8 @@ rule:
     - pattern: import d810.transforms.unflatten_authority.bind as $ALIAS
     - pattern: import d810.transforms.unflatten_authority.evaluate as $ALIAS
     - pattern: import d810.transforms.unflatten_authority.transaction_api as $ALIAS
+    - pattern: import d810.transforms.unflatten_authority as $ALIAS
+    - pattern: from d810.transforms import unflatten_authority as $ALIAS
     - pattern: import d810.transforms.unflatten_authority_facade
     - pattern: import d810.transforms.unflatten_authority_facade as $ALIAS
 

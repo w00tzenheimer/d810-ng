@@ -7,6 +7,7 @@ import importlib
 import inspect
 import copy
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,7 @@ from d810.transforms.unflatten_authority.model import (
 from d810.transforms.unflatten_authority import model
 from d810.transforms.unflatten_authority.proposal import LEGACY_UNFLATTEN_KEYS
 from d810.transforms.unflatten_authority.legacy_keys import EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA
+from d810.transforms.unflatten_authority.legacy_keys import NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA
 from d810.transforms.unflatten_authority.ids import authority_id
 
 
@@ -68,6 +70,31 @@ def _decode_context(codec, *, evidence=None, generation=3, ref=None):
         "plan", source, generation,
         ((0, ref or LogicalBlockRef("legacy", "b0", 1)),), evidence,
     )
+
+
+def test_native_bound_route_receipts_project_to_typed_codec_values():
+    codec = _codec()
+    row = {
+        "fact_id": "transition:codec",
+        "native_ea": 0x1000,
+        "native_ea_hex": "0x1000",
+        "current_block": "blk[10]@0x1280",
+        "state": 0x20,
+        "target": 20,
+        "target_block": "blk[20]@0x1500",
+        "operation_key": ("block_goto_change", 10, 2, 20),
+    }
+    plan = SimpleNamespace(
+        metadata_dict=lambda: {
+            NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA: (row,),
+        }
+    )
+
+    projection = codec.native_bound_transition_route_receipts_from_plan(plan)
+
+    assert len(projection) == 1
+    assert type(projection[0]) is codec.NativeBoundTransitionRouteReceipt
+    assert projection[0].operation_key == ("block_goto_change", 10, 2, 20)
 
 
 def _corridor_metadata(*, covered=True, path=None, **overrides):
