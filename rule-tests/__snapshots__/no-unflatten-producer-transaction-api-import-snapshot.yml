@@ -50,6 +50,13 @@ snapshots:
       start: 0
       end: 54
   ? |
+    from d810.transforms import unflatten_authority_facade as facade
+  : labels:
+    - source: from d810.transforms import unflatten_authority_facade as facade
+      style: primary
+      start: 0
+      end: 64
+  ? |
     from d810.transforms.unflatten_authority_facade import prepare_unflatten_authority_timed
   : labels:
     - source: from d810.transforms.unflatten_authority_facade import prepare_unflatten_authority_timed

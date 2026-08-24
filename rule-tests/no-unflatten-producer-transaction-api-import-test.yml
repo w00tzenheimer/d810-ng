@@ -28,6 +28,8 @@ invalid:
   - |
       from d810.transforms import unflatten_authority_facade
   - |
+      from d810.transforms import unflatten_authority_facade as facade
+  - |
       from d810.transforms.unflatten_authority_facade import prepare_unflatten_authority_timed
   - |
       import d810.transforms.unflatten_authority_facade

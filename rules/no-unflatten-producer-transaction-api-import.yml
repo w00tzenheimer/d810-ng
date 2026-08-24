@@ -37,6 +37,7 @@ rule:
     - pattern: from d810.transforms.unflatten_authority import evaluate
     - pattern: from d810.transforms.unflatten_authority import transaction_api
     - pattern: from d810.transforms import unflatten_authority_facade
+    - pattern: from d810.transforms import unflatten_authority_facade as $ALIAS
     - pattern: from d810.transforms.unflatten_authority_facade import $$$
     - pattern: import d810.transforms.unflatten_authority.bind
     - pattern: import d810.transforms.unflatten_authority.evaluate

@@ -16,6 +16,7 @@ message: |
 rule:
   any:
     - pattern: from d810.transforms import unflatten_authority_facade
+    - pattern: from d810.transforms import unflatten_authority_facade as $ALIAS
     - pattern: from d810.transforms.unflatten_authority_facade import $$$
     - pattern: import d810.transforms.unflatten_authority_facade
     - pattern: import d810.transforms.unflatten_authority_facade as $ALIAS
