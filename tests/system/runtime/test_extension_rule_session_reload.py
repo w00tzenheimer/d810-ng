@@ -11,6 +11,8 @@ import pytest
 _RELOAD_GATE_ENV = "D810_RELOAD_GATE"
 _EGGLOG_RULE_MODULE = "d810_egglog.rules.egglog_optimizer"
 _EGGLOG_RULE_NAME = "EgglogOptimizer"
+_COBRA_RULE_MODULE = "d810_cobra.rules.cobra_solve"
+_COBRA_RULE_NAME = "CobraSolveRule"
 
 
 def test_installed_extension_reregisters_after_production_package_reload() -> None:
@@ -21,12 +23,16 @@ def test_installed_extension_reregisters_after_production_package_reload() -> No
             "dedicated runner process"
         )
     pytest.importorskip("d810_egglog")
+    pytest.importorskip("d810_cobra")
 
     import d810
-    from d810._vendor.ida_reloader import reload_package
+    from d810._vendor.ida_reloader import (
+        evict_module_prefixes,
+        reload_package,
+    )
     from d810.backends import (
         load_extension_rules,
-        prepare_extension_rules_for_core_reload,
+        registry,
     )
     from d810.optimizers.microcode.instructions.handler import (
         InstructionOptimizationRule,
@@ -34,13 +40,22 @@ def test_installed_extension_reregisters_after_production_package_reload() -> No
 
     load_extension_rules()
     assert InstructionOptimizationRule.find(_EGGLOG_RULE_NAME) is not None
+    assert InstructionOptimizationRule.find(_COBRA_RULE_NAME) is not None
     extension_module = sys.modules[_EGGLOG_RULE_MODULE]
     extension_runtime = importlib.import_module("d810_egglog.saturation")
+    cobra_module = sys.modules[_COBRA_RULE_MODULE]
+    cobra_runtime = importlib.import_module("d810_cobra.expr")
     original_rule_base = InstructionOptimizationRule
 
-    evicted = prepare_extension_rules_for_core_reload()
+    original_backend_registry = registry()
+    extension_prefixes = original_backend_registry.extension_reload_module_prefixes()
+    assert "d810_egglog" in extension_prefixes
+    assert "d810_cobra" in extension_prefixes
+    evicted = evict_module_prefixes(extension_prefixes)
     assert _EGGLOG_RULE_MODULE in evicted
     assert "d810_egglog.saturation" in evicted
+    assert _COBRA_RULE_MODULE in evicted
+    assert "d810_cobra.expr" in evicted
     assert not any(
         name == "d810_egglog" or name.startswith("d810_egglog.")
         for name in sys.modules
@@ -50,8 +65,14 @@ def test_installed_extension_reregisters_after_production_package_reload() -> No
         skip=["d810.core.registry", "d810._vendor"],
         suppress_errors=False,
     )
+    assert not any(
+        name == prefix or name.startswith(prefix + ".")
+        for prefix in extension_prefixes
+        for name in sys.modules
+    )
 
     reloaded_backends = importlib.import_module("d810.backends")
+    assert reloaded_backends.registry() is not original_backend_registry
     reloaded_handler = importlib.import_module(
         "d810.optimizers.microcode.instructions.handler"
     )
@@ -59,10 +80,13 @@ def test_installed_extension_reregisters_after_production_package_reload() -> No
     reloaded_extension_runtime = importlib.import_module(
         "d810_egglog.saturation"
     )
+    reloaded_cobra_runtime = importlib.import_module("d810_cobra.expr")
 
     assert reloaded_handler.InstructionOptimizationRule is not original_rule_base
     assert sys.modules[_EGGLOG_RULE_MODULE] is not extension_module
     assert reloaded_extension_runtime is not extension_runtime
+    assert sys.modules[_COBRA_RULE_MODULE] is not cobra_module
+    assert reloaded_cobra_runtime is not cobra_runtime
     reloaded_extension_runtime.assert_current_typed_term_type(
         reloaded_extension_runtime.TypedBvTerm
     )
@@ -71,3 +95,8 @@ def test_installed_extension_reregisters_after_production_package_reload() -> No
     )
     assert rule_class is not None
     assert rule_class().name == _EGGLOG_RULE_NAME
+    cobra_rule_class = reloaded_handler.InstructionOptimizationRule.find(
+        _COBRA_RULE_NAME
+    )
+    assert cobra_rule_class is not None
+    assert cobra_rule_class().name == _COBRA_RULE_NAME

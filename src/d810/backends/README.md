@@ -270,10 +270,18 @@ builtins would let the backend list describe one version while another
 executes.
 
 Hot reload treats the entry point's manifest module as the extension-owned
-reload prefix. In the example above, `d810_backend_mything` and every loaded
-submodule beneath it are evicted after D810 stops and then cold-imported against
-the rebuilt core. This keeps rule classes and portable contract types from
-surviving with stale identities.
+reload prefix. D810 snapshots those declarations, stops the old plugin, and
+uses the generic reloader's exact-prefix eviction primitive. The reloader then
+rebuilds only `d810.*`; it does not discover providers or decide their order.
+Afterward a newly constructed D810 state creates a new `BackendRegistry`, reads
+the installed entry points again, and cold-imports every declared rule module
+against the rebuilt core. This keeps rule classes and portable contract types
+from surviving with stale identities.
+
+An extension must not import while the D810 core is still reloading. D810 checks
+the snapshotted prefixes before constructing the replacement plugin and aborts
+hot reload if one has reappeared. Restart IDA after that failure: Python class
+identity changes cannot be rolled back transactionally.
 
 If D810-coupled runtime code lives outside the manifest package, declare the
 additional exact module prefix rather than relying on shared-namespace

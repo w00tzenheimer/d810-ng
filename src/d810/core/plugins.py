@@ -75,10 +75,13 @@ An out-of-tree extension looks like this (dependency-free flavour; using
                 "provides": "d810_cobra.binding:api"}
 
 The module named by ``provides`` may import d810 freely: it is resolved long
-after d810 has finished loading. Hot reload evicts the extension entry point's
-manifest module prefix and cold-imports it against the rebuilt D810 core. A
-manifest whose coupled runtime lives under another prefix declares it in
-``reload_modules``.
+after d810 has finished loading. D810 snapshots extension-owned prefixes and
+uses the generic reloader's policy-free eviction primitive before rebuilding
+the core. The replacement D810 runtime then constructs a new registry and
+cold-imports the manifests and rule modules. A manifest whose coupled runtime
+lives under another prefix declares it in ``reload_modules``. Importing an
+extension before the core reload finishes is a fail-closed ordering error that
+requires an IDA restart.
 """
 
 from __future__ import annotations

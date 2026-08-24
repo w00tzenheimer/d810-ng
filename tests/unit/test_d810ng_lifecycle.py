@@ -20,6 +20,7 @@ def _load_plugin_module(
     *,
     initially_loaded: bool,
     initially_started: bool,
+    prematurely_import_extension: bool = False,
 ) -> tuple[ModuleType, list[str]]:
     events: list[str] = []
 
@@ -82,16 +83,43 @@ def _load_plugin_module(
 
     reloader = ModuleType("d810._vendor.ida_reloader")
     reloader.ReloadablePluginBase = ReloadablePluginBase
-    reloader.reload_package = lambda *_args, **_kwargs: events.append(
-        "reload-package"
-    )
+    def reload_package(*_args, **_kwargs) -> None:
+        events.append("reload-package")
+        if prematurely_import_extension:
+            monkeypatch.setitem(
+                sys.modules,
+                "d810_cobra.rules.cobra_solve",
+                ModuleType("d810_cobra.rules.cobra_solve"),
+            )
+
+    reloader.reload_package = reload_package
+    def evict_module_prefixes(prefixes) -> tuple[str, ...]:
+        prefixes = tuple(prefixes)
+        events.append("evict:" + ",".join(prefixes))
+        evicted = tuple(
+            module_name
+            for module_name in tuple(sys.modules)
+            if any(
+                module_name == prefix or module_name.startswith(prefix + ".")
+                for prefix in prefixes
+            )
+        )
+        for module_name in evicted:
+            monkeypatch.delitem(sys.modules, module_name)
+        return evicted
+
+    reloader.evict_module_prefixes = evict_module_prefixes
 
     typing_module = ModuleType("d810.core.typing")
     typing_module.override = lambda function: function
     backends = ModuleType("d810.backends")
-    backends.prepare_extension_rules_for_core_reload = lambda: events.append(
-        "prepare-extension-rules"
-    )
+
+    class BackendRegistry:
+        def extension_reload_module_prefixes(self) -> tuple[str, ...]:
+            events.append("snapshot-extension-prefixes")
+            return ("d810_cobra", "d810_egglog")
+
+    backends.registry = lambda: BackendRegistry()
 
     for name, module in (
         ("idaapi", idaapi),
@@ -155,8 +183,9 @@ def test_late_init_starts_core_exactly_when_needed(
         (
             True,
             [
+                "snapshot-extension-prefixes",
                 "base-reload-enter",
-                "prepare-extension-rules",
+                "evict:d810_cobra,d810_egglog",
                 "reload-package",
                 "base-reload-exit",
                 "core-is-loaded",
@@ -166,8 +195,9 @@ def test_late_init_starts_core_exactly_when_needed(
         (
             False,
             [
+                "snapshot-extension-prefixes",
                 "base-reload-enter",
-                "prepare-extension-rules",
+                "evict:d810_cobra,d810_egglog",
                 "reload-package",
                 "base-reload-exit",
             ],
@@ -204,10 +234,36 @@ def test_reload_action_enters_plugin_lifecycle_once(
     assert plugin.activate(None) == 1
 
     assert events == [
+        "snapshot-extension-prefixes",
         "base-reload-enter",
-        "prepare-extension-rules",
+        "evict:d810_cobra,d810_egglog",
         "reload-package",
         "base-reload-exit",
         "core-is-loaded",
         "core-start",
+    ]
+
+
+def test_reload_rejects_extension_imported_before_core_reload_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, events = _load_plugin_module(
+        monkeypatch,
+        initially_loaded=True,
+        initially_started=True,
+        prematurely_import_extension=True,
+    )
+
+    plugin = module.D810Plugin()
+    with pytest.raises(
+        module.ExtensionReloadOrderingError,
+        match="d810_cobra.rules.cobra_solve",
+    ):
+        plugin.reload()
+
+    assert events == [
+        "snapshot-extension-prefixes",
+        "base-reload-enter",
+        "evict:d810_cobra,d810_egglog",
+        "reload-package",
     ]

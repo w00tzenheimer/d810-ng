@@ -1,12 +1,35 @@
+import sys
+
 import ida_hexrays
 import ida_kernwin
 import idaapi
 
 import d810
-from d810._vendor.ida_reloader import ReloadablePluginBase, reload_package
+from d810._vendor.ida_reloader import (
+    ReloadablePluginBase,
+    evict_module_prefixes,
+    reload_package,
+)
 from d810.core.typing import override
 
 D810_VERSION = d810.__version__
+
+
+class ExtensionReloadOrderingError(RuntimeError):
+    """An extension imported before the D810 core reload completed."""
+
+
+def _loaded_extension_modules(prefixes: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            module_name
+            for module_name in sys.modules
+            if any(
+                module_name == prefix or module_name.startswith(prefix + ".")
+                for prefix in prefixes
+            )
+        )
+    )
 
 
 # Processor id -> Hex-Rays decompiler plugin name. Copied verbatim from
@@ -176,22 +199,33 @@ class D810Plugin(
         3. Produces a deterministic topological order of those components.
         4. Reloads modules in that order, guaranteeing that **all in-package
            dependencies are reloaded before the code that relies on them**.
+        5. Reconstructs the plugin state only after the core reload, at which
+           point a new backend registry cold-imports extension rule modules.
 
         Modules whose names match prefixes in ``d810.registry`` are skipped.
         The helper prints a concise warning listing only the *core* cycles it
         found; modules merely *blocked* by a cycle are ordered automatically.
+        Extension package ordering is D810 policy rather than dependency-graph
+        inference: manifest-owned roots are evicted before core reload and may
+        not reappear until replacement plugin construction begins.
         """
 
         was_started = bool(
             getattr(getattr(self.plugin, "manager", None), "started", False)
         )
-        with self.plugin_setup_reload():
-            # The core reloader only owns d810.* modules.  Installed rule
-            # packages must be evicted after the running manager stops so their
-            # full dependency graphs cold-import against the reloaded core.
-            from d810.backends import prepare_extension_rules_for_core_reload
+        from d810.backends import registry as backend_registry
 
-            prepare_extension_rules_for_core_reload()
+        extension_prefixes = tuple(
+            prefix
+            for prefix in backend_registry().extension_reload_module_prefixes()
+            if prefix != self.base_package_name
+            and not prefix.startswith(self.base_package_name + ".")
+        )
+        with self.plugin_setup_reload():
+            # D810 owns extension ordering because only its manifest registry
+            # knows which independently installed packages participate.  The
+            # generic reloader owns only the exact-prefix eviction mechanism.
+            evict_module_prefixes(extension_prefixes)
             reload_package(
                 d810,
                 skip=[
@@ -200,6 +234,15 @@ class D810Plugin(
                 ],
                 suppress_errors=self.suppress_reload_errors,
             )
+            if prematurely_loaded := _loaded_extension_modules(
+                extension_prefixes
+            ):
+                raise ExtensionReloadOrderingError(
+                    "extension module(s) imported before the D810 core reload "
+                    "completed; restart IDA to restore coherent class "
+                    "identities: "
+                    + ", ".join(prematurely_loaded)
+                )
         manager = getattr(self.plugin, "manager", None)
         if (
             was_started

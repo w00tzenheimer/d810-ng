@@ -11,6 +11,7 @@ __version__ = _ida_reloader.__version__
 DependencyGraph = _ida_reloader.DependencyGraph
 Reloader = _ida_reloader.Reloader
 Scanner = _ida_reloader.Scanner
+evict_module_prefixes = _ida_reloader.evict_module_prefixes
 reload_package = _ida_reloader.reload_package
 Plugin = _ida_reloader.Plugin
 LateInitPlugin = _ida_reloader.LateInitPlugin
@@ -21,6 +22,7 @@ __all__ = [
     "DependencyGraph",
     "Reloader",
     "Scanner",
+    "evict_module_prefixes",
     "reload_package",
     "Plugin",
     "LateInitPlugin",

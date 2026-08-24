@@ -30,7 +30,6 @@ See the module docstrings in each file for full details.
 """
 
 import importlib
-import sys
 
 from d810.core import getLogger
 from d810.core.plugins import (
@@ -45,7 +44,6 @@ __all__ = [
     "BUILTIN_BACKENDS",
     "load_extension_rule_for_candidate",
     "load_extension_rules",
-    "prepare_extension_rules_for_core_reload",
     "registry",
 ]
 
@@ -148,56 +146,3 @@ def load_extension_rules() -> None:
             backend_registry.record_rule_module_result(module_name, None)
             logger.info("extension rule module loaded: %s", module_name)
     backend_registry.finalize_rule_module_loading()
-
-
-def prepare_extension_rules_for_core_reload() -> tuple[str, ...]:
-    """Evict contributed rule packages before D810 reloads its core.
-
-    The package reloader owns only ``d810.*`` modules.  Extension rule modules
-    and their sibling runtime modules otherwise remain cached with references
-    to the old D810 classes.  Remove each declared extension's complete
-    top-level package after the running manager has stopped; the normal rule
-    loader will then cold-import the whole dependency graph against the new
-    core.
-
-    This is a reload lifecycle operation, not a catalogue refresh.  It must be
-    called only from the serialized plugin reload path.
-    """
-    prefixes = tuple(
-        module_name
-        for module_name in registry().extension_reload_module_prefixes()
-        if module_name != "d810" and not module_name.startswith("d810.")
-    )
-    evicted = tuple(
-        sorted(
-            (
-                module_name
-                for module_name in tuple(sys.modules)
-                if any(
-                    module_name == prefix
-                    or module_name.startswith(prefix + ".")
-                    for prefix in prefixes
-                )
-            ),
-            key=lambda module_name: (module_name.count("."), module_name),
-            reverse=True,
-        )
-    )
-    evicted_names = frozenset(evicted)
-    for module_name in evicted:
-        module = sys.modules.get(module_name)
-        parent_name, separator, child_name = module_name.rpartition(".")
-        if separator and parent_name not in evicted_names:
-            parent = sys.modules.get(parent_name)
-            if (
-                parent is not None
-                and getattr(parent, child_name, None) is module
-            ):
-                delattr(parent, child_name)
-        sys.modules.pop(module_name, None)
-    if evicted:
-        logger.info(
-            "extension rule packages prepared for core reload: %s",
-            ", ".join(prefixes),
-        )
-    return evicted

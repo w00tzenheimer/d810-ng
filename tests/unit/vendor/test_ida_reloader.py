@@ -5,6 +5,8 @@ import py_compile
 import sys
 from pathlib import Path
 
+import d810._vendor.ida_reloader as ida_reloader
+import pytest
 from d810._vendor.ida_reloader import DependencyGraph, reload_package
 
 
@@ -324,3 +326,169 @@ def test_reload_package_rejects_unchecked_bytecode_stale_against_source(
                 f"{package_name}."
             ):
                 sys.modules.pop(module_name, None)
+
+
+def test_evict_module_prefixes_preserves_shared_namespace_siblings(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Cold eviction must not remove a shared parent or sibling package."""
+    source_root = tmp_path / "source"
+    namespace = source_root / "acme_shared_namespace"
+    extension = namespace / "d810"
+    sibling = namespace / "other_plugin"
+    _write_module(namespace / "__init__.py", "")
+    _write_module(extension / "__init__.py", "TOKEN = object()\n")
+    _write_module(sibling / "__init__.py", "TOKEN = object()\n")
+    monkeypatch.syspath_prepend(str(source_root))
+
+    parent = importlib.import_module("acme_shared_namespace")
+    old_extension = importlib.import_module("acme_shared_namespace.d810")
+    sibling_module = importlib.import_module(
+        "acme_shared_namespace.other_plugin"
+    )
+
+    try:
+        evicted = ida_reloader.evict_module_prefixes(
+            ["acme_shared_namespace.d810"]
+        )
+
+        assert evicted == ("acme_shared_namespace.d810",)
+        assert "acme_shared_namespace" in sys.modules
+        assert "acme_shared_namespace.other_plugin" in sys.modules
+        assert not hasattr(parent, "d810")
+
+        imported: dict[str, object] = {}
+        exec("from acme_shared_namespace import d810", imported)
+        assert imported["d810"] is not old_extension
+        assert parent.other_plugin is sibling_module
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name == "acme_shared_namespace" or module_name.startswith(
+                "acme_shared_namespace."
+            ):
+                sys.modules.pop(module_name, None)
+
+
+def test_evict_module_prefixes_removes_the_complete_owned_tree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source"
+    package_name = "d810_extension_tree_probe"
+    package = source_root / package_name
+    _write_module(package / "__init__.py", "")
+    _write_module(package / "runtime.py", "TOKEN = object()\n")
+    _write_module(package / "rules" / "__init__.py", "")
+    _write_module(
+        package / "rules" / "solver.py",
+        f"from {package_name}.runtime import TOKEN\n",
+    )
+    monkeypatch.syspath_prepend(str(source_root))
+    for module_name in (
+        package_name,
+        f"{package_name}.runtime",
+        f"{package_name}.rules",
+        f"{package_name}.rules.solver",
+    ):
+        importlib.import_module(module_name)
+
+    evicted = ida_reloader.evict_module_prefixes([package_name])
+
+    assert evicted == (
+        f"{package_name}.rules.solver",
+        f"{package_name}.runtime",
+        f"{package_name}.rules",
+        package_name,
+    )
+    assert not any(
+        module_name == package_name
+        or module_name.startswith(package_name + ".")
+        for module_name in sys.modules
+    )
+
+
+class _ReloadLifecycleProbe(ida_reloader.ReloadablePluginBase):
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        super().__init__(
+            global_name="D810_TEST",
+            base_package_name="probe",
+            plugin_class="probe.State",
+            hook_cls=lambda: object(),
+            skip_code=0,
+            ok_code=1,
+        )
+
+    def _import_plugin_cls(self):
+        events = self.events
+
+        class State:
+            def is_loaded(self) -> bool:
+                return True
+
+            def unload(self) -> None:
+                events.append("unload")
+
+            def reset(self) -> None:
+                events.append("reset")
+
+            def load(self) -> None:
+                events.append("load")
+
+        events.append("construct")
+        return State()
+
+    def register_reload_action(self) -> None:
+        self.events.append("register")
+
+    def unregister_reload_action(self) -> None:
+        self.events.append("unregister")
+
+    def add_plugin_to_console(self) -> None:
+        self.events.append("publish")
+
+    def reload(self) -> None:
+        raise NotImplementedError
+
+    def run(self, args) -> None:
+        raise NotImplementedError
+
+
+def test_reloadable_plugin_constructs_replacement_after_reload_body() -> None:
+    events: list[str] = []
+    plugin = _ReloadLifecycleProbe(events)
+    events.clear()
+
+    with plugin.plugin_setup_reload():
+        events.append("reload-core")
+
+    assert events == [
+        "unregister",
+        "unload",
+        "reload-core",
+        "construct",
+        "reset",
+        "register",
+        "publish",
+        "load",
+    ]
+
+
+def test_reloadable_plugin_does_not_construct_after_reload_failure() -> None:
+    events: list[str] = []
+    plugin = _ReloadLifecycleProbe(events)
+    original_plugin = plugin.plugin
+    events.clear()
+
+    with pytest.raises(RuntimeError, match="reload failed"):
+        with plugin.plugin_setup_reload():
+            events.append("reload-core")
+            raise RuntimeError("reload failed")
+
+    assert plugin.plugin is original_plugin
+    assert events == [
+        "unregister",
+        "unload",
+        "reload-core",
+    ]

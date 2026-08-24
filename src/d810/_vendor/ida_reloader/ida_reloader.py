@@ -639,6 +639,31 @@ class Scanner:
         return discovered
 
 
+def _evict_module_names(module_names: Iterable[str]) -> tuple[str, ...]:
+    evicted = tuple(
+        sorted(
+            set(module_names),
+            key=lambda module_name: (module_name.count("."), module_name),
+            reverse=True,
+        )
+    )
+    evicted_names = frozenset(evicted)
+    for module_name in evicted:
+        module = sys.modules.get(module_name)
+        parent_name, separator, child_name = module_name.rpartition(".")
+        if separator and parent_name not in evicted_names:
+            parent = sys.modules.get(parent_name)
+            if parent is not None and getattr(parent, child_name, None) is module:
+                try:
+                    delattr(parent, child_name)
+                except (AttributeError, TypeError):
+                    pass
+        sys.modules.pop(module_name, None)
+    if evicted:
+        importlib.invalidate_caches()
+    return evicted
+
+
 def _discard_modules_outside_package_paths(
     *,
     base_package: str,
@@ -672,17 +697,28 @@ def _discard_modules_outside_package_paths(
         and not belongs_to_current_checkout(module)
     ]
 
-    for name in sorted(stale_names, key=lambda value: value.count("."), reverse=True):
-        module = sys.modules.pop(name, None)
-        parent_name, _, child_name = name.rpartition(".")
-        parent = sys.modules.get(parent_name)
-        if parent is not None and getattr(parent, child_name, None) is module:
-            try:
-                delattr(parent, child_name)
-            except (AttributeError, TypeError):
-                pass
+    _evict_module_names(stale_names)
 
     return sorted(stale_names)
+
+
+def evict_module_prefixes(prefixes: Iterable[str]) -> tuple[str, ...]:
+    """Remove exact module trees so they cold-import after a core reload.
+
+    Prefix matching respects module boundaries: ``company.ext`` owns that
+    module and its descendants, but never ``company.extension``.  Preserved
+    parent packages also lose stale child attributes that would otherwise let
+    ``from company import ext`` recover the evicted module object.
+    """
+    owned_prefixes = tuple(dict.fromkeys(prefixes))
+    return _evict_module_names(
+        module_name
+        for module_name in tuple(sys.modules)
+        if any(
+            module_name == prefix or module_name.startswith(prefix + ".")
+            for prefix in owned_prefixes
+        )
+    )
 
 
 def _reload_package_with_graph(
@@ -1046,16 +1082,17 @@ class ReloadablePluginBase(LateInitPlugin):
     @contextlib.contextmanager
     def plugin_setup_reload(self):
         """Hot-reload the plugin core."""
-        # Unload existing plugin if loaded
-        if self.plugin.is_loaded():
-            self.unregister_reload_action()
-            self.term()
-            self.plugin = self._import_plugin_cls()
-            self.plugin.reset()
+        self.unregister_reload_action()
+        if self.plugin.is_loaded() and hasattr(self.plugin, "unload"):
+            self.plugin.unload()
 
         yield
 
-        # Re-register action and load plugin
+        # Construct only after the caller has rebuilt its package.  Creating
+        # the replacement before ``yield`` leaves it bound to the old class
+        # generation even though its modules are reloaded underneath it.
+        self.plugin = self._import_plugin_cls()
+        self.plugin.reset()
         self.register_reload_action()
         print(f"{self.global_name} reloading...")
         self.add_plugin_to_console()
