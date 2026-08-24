@@ -192,7 +192,6 @@ class HexRaysMutationBackend:
         """Execute one already-lowered PatchPlan through the shared coordinator."""
         del safety_policy
         from d810.hexrays.mutation.patch_transaction import (
-            PatchTransactionPostObservationRejected,
             PatchTransactionPreflightRejected,
             execute_patch_transaction,
         )
@@ -224,168 +223,22 @@ class HexRaysMutationBackend:
             )
         except PatchTransactionPreflightRejected as error:
             self._last_patch_failure = error
-            self._observe_dispatcher_transaction_outcome(
-                rewrite_plan,
-                pre_cfg=pre_cfg,
-                application_status="rejected_preflight",
-                outcome_reason=str(error),
-                attempt_id=attempt_authority.attempt_id,
-                projected_verdict=getattr(error, "unflatten_verdict", None),
-                projected_validation=(error.projected_dispatcher_removal_validation),
-                projected_coverage_validation=(
-                    error.projected_dispatcher_coverage_validation
-                ),
-            )
             logger.warning("Rejecting Hex-Rays PatchPlan preflight: %s", error)
             return pre_cfg
         except CfgGenerationPoisoned as error:
             self._last_patch_failure = error
-            observed_validation = getattr(
-                error,
-                "observed_dispatcher_removal_validation",
-                None,
-            )
-            observed_coverage_validation = getattr(
-                error,
-                "observed_dispatcher_coverage_validation",
-                None,
-            )
-            observed_verdict = getattr(error, "unflatten_verdict", None)
-            cause = error.__cause__
-            if isinstance(cause, PatchTransactionPostObservationRejected):
-                observed_verdict = cause.unflatten_verdict
-                observed_validation = cause.observed_dispatcher_removal_validation
-                observed_coverage_validation = (
-                    cause.observed_dispatcher_coverage_validation
-                )
-            self._observe_dispatcher_transaction_outcome(
-                rewrite_plan,
-                pre_cfg=pre_cfg,
-                application_status="poisoned_restart_required",
-                outcome_reason=str(error.failure.reason),
-                attempt_id=attempt_authority.attempt_id,
-                observed_verdict=observed_verdict,
-                observed_validation=observed_validation,
-                observed_coverage_validation=observed_coverage_validation,
-            )
             raise
         except Exception as error:
-            # Projection/contract/binding failures happen before mutation, but
-            # a coverage-bearing plan still needs a terminal diagnostic record
-            # rather than a permanently pending corridor fact.  Preserve the
-            # original exception contract for callers.
+            # Preserve the original exception contract for callers. Canonical
+            # phase observers already publish any verdict that exists.
             self._last_patch_failure = error
-            self._observe_dispatcher_transaction_outcome(
-                rewrite_plan,
-                pre_cfg=pre_cfg,
-                application_status="rejected_clean",
-                outcome_reason=str(error) or type(error).__name__,
-                attempt_id=attempt_authority.attempt_id,
-                projected_verdict=getattr(error, "unflatten_verdict", None),
-                projected_validation=getattr(
-                    error,
-                    "projected_dispatcher_removal_validation",
-                    None,
-                ),
-                projected_coverage_validation=getattr(
-                    error,
-                    "projected_dispatcher_coverage_validation",
-                    None,
-                ),
-            )
             raise
-        self._observe_dispatcher_transaction_outcome(
-            rewrite_plan,
-            pre_cfg=pre_cfg,
-            application_status="applied",
-            attempt_id=attempt_authority.attempt_id,
-            projected_verdict=getattr(
-                self._last_patch_execution,
-                "projected_unflatten_verdict",
-                None,
-            ),
-            observed_verdict=getattr(
-                self._last_patch_execution,
-                "observed_unflatten_verdict",
-                None,
-            ),
-            projected_validation=getattr(
-                self._last_patch_execution,
-                "projected_dispatcher_removal_validation",
-                None,
-            ),
-            projected_coverage_validation=getattr(
-                self._last_patch_execution,
-                "projected_dispatcher_coverage_validation",
-                None,
-            ),
-            observed_validation=getattr(
-                self._last_patch_execution,
-                "observed_dispatcher_removal_validation",
-                None,
-            ),
-            observed_coverage_validation=getattr(
-                self._last_patch_execution,
-                "observed_dispatcher_coverage_validation",
-                None,
-            ),
-        )
         self._last_mutation_receipt = getattr(
             self._last_patch_execution,
             "receipt",
             None,
         )
         return self._last_patch_execution.graph
-
-    @staticmethod
-    def _observe_dispatcher_transaction_outcome(
-        rewrite_plan: PatchPlan,
-        *,
-        pre_cfg: FlowGraph,
-        application_status: str,
-        outcome_reason: str | None = None,
-        attempt_id: str | None = None,
-        projected_verdict: object | None = None,
-        observed_verdict: object | None = None,
-        observed_validation: object | None = None,
-        observed_coverage_validation: object | None = None,
-        projected_validation: object | None = None,
-        projected_coverage_validation: object | None = None,
-    ) -> None:
-        """Publish immutable plan outcome facts; SQLite remains subscriber-owned."""
-        try:
-            from d810.core.observability_preanalysis import (
-                observe_unflatten_dispatcher_corridor_coverage,
-            )
-            from d810.transforms.unflatten_authority.diagnostics import (
-                dispatcher_outcome_observations,
-            )
-
-            envelope = rewrite_plan.source_maturity
-            ir = None if envelope is None else getattr(envelope, "ir", None)
-            maturity = str(getattr(ir, "value", None) or ir or "unknown")
-            if projected_verdict is None and observed_verdict is None:
-                return
-            observations = dispatcher_outcome_observations(
-                projected_verdict=projected_verdict,
-                observed_verdict=observed_verdict,
-                function_ea=int(pre_cfg.func_ea),
-                maturity=maturity,
-                application_status=application_status,
-                outcome_reason=outcome_reason,
-                plan_id=rewrite_plan.plan_id,
-                attempt_id=attempt_id,
-            )
-            if observations:
-                observe_unflatten_dispatcher_corridor_coverage(
-                    func_ea=int(pre_cfg.func_ea),
-                    observations=observations,
-                )
-        except Exception:  # noqa: BLE001 - diagnostics must not mask transaction state
-            try:
-                logger.exception("Failed to publish dispatcher transaction outcome")
-            except Exception:
-                pass
 
     def _apply_fragment(
         self,

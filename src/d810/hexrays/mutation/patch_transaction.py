@@ -677,7 +677,16 @@ class HexRaysPatchTransactionParticipant:
         else:
             semantic_verdict = semantic_result.verdict
             semantic_authority = None
-        if semantic_verdict is not None:
+        # A preparation rejection is already the final projected-phase truth.
+        # Accepted preparation remains provisional until the exact live patch
+        # binding is sealed in ``bind``; publishing it here would allow a later
+        # binding rejection to contradict the single projected observation.
+        if (
+            semantic_verdict is not None
+            and not isinstance(
+                semantic_result, UnflattenAuthorityPreparationAccepted
+            )
+        ):
             from d810.hexrays.observability import observe_unflatten_authority_phase
             from d810.transforms.unflatten_authority.diagnostics import phase_observation
             observe_unflatten_authority_phase(
@@ -797,12 +806,18 @@ class HexRaysPatchTransactionParticipant:
             if bind_result is None:
                 bound_authority = None
             elif not isinstance(bind_result, UnflattenAuthorityBindingAccepted):
+                self._observe_projected_unflatten_verdict(bind_result.verdict)
                 raise PatchTransactionPreflightRejected(
                     "bound unflatten authority rejected",
                     unflatten_verdict=bind_result.verdict,
                 )
             else:
                 bound_authority = bind_result.authority
+                if prepared.projected_unflatten_verdict is None:
+                    raise TypeError("bound unflatten authority lacks projected verdict")
+                self._observe_projected_unflatten_verdict(
+                    prepared.projected_unflatten_verdict
+                )
         self.gateway.register_patch_plan_reservations(patch_binding.reservations)
         self.gateway._record_cfg_bound()
         bound = BoundPatchCfgTransaction(
@@ -816,6 +831,35 @@ class HexRaysPatchTransactionParticipant:
         )
         self._bound = bound
         return bound
+
+    def _observe_projected_unflatten_verdict(self, verdict: object) -> None:
+        """Publish the one final projected-phase authority observation."""
+
+        from d810.transforms.unflatten_authority.model import (
+            UnflattenAuthorityVerdict,
+        )
+
+        if type(verdict) is not UnflattenAuthorityVerdict:
+            raise TypeError("projected observation requires a canonical verdict")
+        snapshot = self._snapshot
+        if snapshot is None:
+            raise RuntimeError("projected observation lacks immutable source snapshot")
+        from d810.hexrays.observability import observe_unflatten_authority_phase
+        from d810.transforms.unflatten_authority.diagnostics import phase_observation
+
+        observe_unflatten_authority_phase(
+            mba=self.mba,
+            verdict=verdict,
+            observation_factory=lambda: (
+                phase_observation(
+                    verdict,
+                    maturity=str(self.plan.source_maturity),
+                    source_ea=int(snapshot.func_ea),
+                    timings=self._projected_unflatten_timing,
+                    correlation=self.attempt_id,
+                ),
+            ),
+        )
 
     def realize(self, bound: BoundCfgTransaction, gateway: object) -> object:
         if bound is not self._bound:
@@ -991,6 +1035,11 @@ class _PatchTransactionLifecycle:
                     maturity=str(self.plan.source_maturity),
                     source_ea=int(observed.func_ea),
                     timings=self.participant._observed_unflatten_timing,
+                    projected_case=(
+                        None
+                        if self.prepared.projected_unflatten_verdict is None
+                        else self.prepared.projected_unflatten_verdict.safety_case
+                    ),
                     correlation=self.participant.attempt_id,
                 ),),
             )

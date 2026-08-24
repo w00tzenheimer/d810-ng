@@ -4827,68 +4827,6 @@ class SemanticPhaseMetrics:
 
 
 @dataclass(frozen=True, slots=True)
-class UnflattenPhaseDiagnosticContext:
-    """Complete typed context for one phase observation.
-
-    Diagnostics consume this value as a projection only; it is never an
-    authority input and contains no live SDK object or duck-typed payload.
-    """
-
-    plan_id: str
-    attempt_id: TransactionAttemptId | None
-    rule_set_version: int
-    schema_version: int
-    snapshot_id: str
-    maturity: str
-    source_fingerprint: str | None
-    candidate_fingerprint: str | None
-    authority_id: str | None
-    binding_id: str | None
-    case_id: str | None
-    phase: UnflattenAuthorityPhase
-    obligation_states: tuple[ObligationEvidenceCell, ...]
-    loss_rows: tuple[tuple[str, int, int | None], ...]
-    handler_summary: tuple[str, ...]
-    terminal_summary: tuple[str, ...]
-    coverage_summary: tuple[str, ...]
-    phase_metrics: SemanticPhaseMetrics | None
-
-    def __post_init__(self) -> None:
-        _text(self.plan_id, "plan_id")
-        if self.attempt_id is not None and type(self.attempt_id) is not TransactionAttemptId:
-            raise TypeError("attempt_id must be TransactionAttemptId or None")
-        if type(self.rule_set_version) is not int or self.rule_set_version < 1:
-            raise ValueError("rule_set_version must be positive")
-        if type(self.schema_version) is not int or self.schema_version < 1:
-            raise ValueError("schema_version must be positive")
-        _text(self.snapshot_id, "snapshot_id")
-        _text(self.maturity, "maturity")
-        for name in ("source_fingerprint", "candidate_fingerprint", "authority_id", "binding_id", "case_id"):
-            value = getattr(self, name)
-            if value is not None:
-                _id(value, name)
-        _enum(self.phase, UnflattenAuthorityPhase, "phase")
-        states = _tuple(self.obligation_states, "obligation_states")
-        if any(type(value) is not ObligationEvidenceCell for value in states):
-            raise TypeError("obligation_states must contain ObligationEvidenceCell values")
-        object.__setattr__(self, "obligation_states", states)
-        rows = _tuple(self.loss_rows, "loss_rows")
-        for row in rows:
-            if type(row) is not tuple or len(row) != 3 or type(row[0]) is not str or type(row[1]) is not int:
-                raise TypeError("loss_rows must contain (label, serial, ea) rows")
-            if row[1] < 0 or (row[2] is not None and (type(row[2]) is not int or row[2] < 0)):
-                raise ValueError("loss row coordinates must be non-negative")
-        object.__setattr__(self, "loss_rows", rows)
-        for name in ("handler_summary", "terminal_summary", "coverage_summary"):
-            values = _tuple(getattr(self, name), name, sort=True)
-            if any(type(value) is not str for value in values):
-                raise TypeError(f"{name} must contain strings")
-            object.__setattr__(self, name, values)
-        if self.phase_metrics is not None and type(self.phase_metrics) is not SemanticPhaseMetrics:
-            raise TypeError("phase_metrics must be SemanticPhaseMetrics or None")
-
-
-@dataclass(frozen=True, slots=True)
 class DerivedUnflattenPreparationInputs:
     proposal: ProposedUnflattenContract
     claims: tuple[UnflattenClaim, ...]

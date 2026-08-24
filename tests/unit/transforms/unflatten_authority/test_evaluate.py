@@ -4322,7 +4322,8 @@ def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
     payload = build_phase_payload(evaluate_case(case))
     payload_row = next(
         row for row in payload["loss_ledger"]
-        if row["subject"].startswith(discarded.subject_id)
+        if row["anchor"] == "blk3@0x4000"
+        and row["classification"] == model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT.value
     )
     assert payload["source_fingerprint"] == case.source_fingerprint
     assert payload_row["classification"] == model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT.value

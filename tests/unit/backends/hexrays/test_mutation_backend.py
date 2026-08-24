@@ -771,9 +771,7 @@ def _typed_bootstrap_authority_plan(
     )
 
 
-def test_apply_rejects_unbound_comparison_dispatcher_removal_below_raw_threshold(
-    monkeypatch,
-) -> None:
+def test_apply_rejects_unbound_comparison_dispatcher_removal_below_raw_threshold() -> None:
     """Stamped producer metadata cannot bypass the generic entry-count gate."""
     cfg = _comparison_dispatcher_forest_cfg()
     plan = _ordinary_plan(
@@ -806,12 +804,6 @@ def test_apply_rejects_unbound_comparison_dispatcher_removal_below_raw_threshold
     )
 
     translator = _FakeTranslator(cfg)
-    observed_outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: observed_outcomes.append(kwargs),
-    )
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, plan),
         translator=translator,
@@ -822,17 +814,9 @@ def test_apply_rejects_unbound_comparison_dispatcher_removal_below_raw_threshold
     assert result is cfg
     assert translator.lower_calls == []
     assert translator.lift_count == 1
-    assert len(observed_outcomes) == 1
-    assert observed_outcomes[0]["observations"]
-    assert all(
-        observation.payload["canonical"]
-        for observation in observed_outcomes[0]["observations"]
-    )
 
 
-def test_apply_rejects_dispatcher_removal_proof_when_one_handler_is_lost(
-    monkeypatch,
-) -> None:
+def test_apply_rejects_dispatcher_removal_proof_when_one_handler_is_lost() -> None:
     cfg = _comparison_dispatcher_forest_cfg()
     raw_plan = _ordinary_plan(
         PatchRedirectGoto,
@@ -871,12 +855,6 @@ def test_apply_rejects_dispatcher_removal_proof_when_one_handler_is_lost(
     )
 
     translator = _FakeTranslator(cfg)
-    observed_outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: observed_outcomes.append(kwargs),
-    )
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, plan),
         translator=translator,
@@ -887,31 +865,9 @@ def test_apply_rejects_dispatcher_removal_proof_when_one_handler_is_lost(
     assert result is cfg
     assert translator.lower_calls == []
     assert translator.lift_count == 1
-    assert len(observed_outcomes) == 1
-    rejected_payloads = [
-        observation.payload
-        for observation in observed_outcomes[0]["observations"]
-    ]
-    assert {payload["application_status"] for payload in rejected_payloads} == {
-        "rejected_preflight"
-    }
-    assert any(
-        payload.get("projected_validation", {}).get("reason")
-        == "obligation_violated"
-        for payload in rejected_payloads
-    )
-    projected = next(
-        payload["projected_validation"]
-        for payload in rejected_payloads
-        if "projected_validation" in payload
-    )
-    assert projected["failed_obligation_states"] == ("violated",)
-    assert projected["retirement_subject_ids"] == ()
 
 
-def test_apply_rejects_recomputed_stale_dispatcher_coverage_proof(
-    monkeypatch,
-) -> None:
+def test_apply_rejects_recomputed_stale_dispatcher_coverage_proof() -> None:
     """A plan cannot relabel an actual residual corridor out of existence."""
     cfg = _comparison_dispatcher_forest_cfg()
     template = _ordinary_plan(
@@ -941,12 +897,6 @@ def test_apply_rejects_recomputed_stale_dispatcher_coverage_proof(
     )
 
     translator = _FakeTranslator(cfg)
-    observed_outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: observed_outcomes.append(kwargs),
-    )
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, stale_plan),
         translator=translator,
@@ -960,16 +910,9 @@ def test_apply_rejects_recomputed_stale_dispatcher_coverage_proof(
     assert result is cfg
     assert translator.lower_calls == []
     assert translator.lift_count == 1
-    assert len(observed_outcomes) == 1
-    assert {
-        observation.payload["outcome_reason"]
-        for observation in observed_outcomes[0]["observations"]
-    } == {"projected unflatten authority rejected"}
 
 
-def test_small_full_retirement_poisons_when_observed_graph_differs_from_projection(
-    monkeypatch,
-) -> None:
+def test_small_full_retirement_poisons_when_observed_graph_differs_from_projection() -> None:
     """Projected retirement may lower, but an unchanged live CFG poisons it."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
@@ -1010,12 +953,6 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
             proof.passed, proof.reason, proof,
         ),
     )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
     translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(
@@ -1043,25 +980,9 @@ def test_small_full_retirement_poisons_when_observed_graph_differs_from_projecti
     assert observed_verdict is not None
     assert observed_verdict.phase is authority_model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
     assert observed_verdict.accepted is False
-    payloads = [item.payload for item in outcomes[0]["observations"]]
-    assert payloads
-    observed = next(
-        payload["observed_validation"]
-        for payload in payloads
-        if "observed_validation" in payload
-    )
-    assert observed["phase"] == "observed_post_apply"
-    assert observed["reason"] == "live_binding_failed"
-    assert observed["authority_id"].startswith("sha256:")
-    assert all(
-        payload["application_status"] == "poisoned_restart_required"
-        for payload in payloads
-    )
 
 
-def test_partial_coverage_drift_never_publishes_nonexistent_applied_corridor(
-    monkeypatch,
-) -> None:
+def test_partial_coverage_drift_rejects_before_any_mutation() -> None:
     """A partial plan must reconcile every applied corridor with live CFG fact."""
     cfg = _make_cfg(
         [(0, 1), (0, 5), (1, 2), (5, 2), (2, 3), (2, 4)],
@@ -1090,12 +1011,6 @@ def test_partial_coverage_drift_never_publishes_nonexistent_applied_corridor(
         coverage=coverage,
         route_edge=(1, 3),
     )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(
             cfg,
@@ -1114,15 +1029,6 @@ def test_partial_coverage_drift_never_publishes_nonexistent_applied_corridor(
     assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
     assert translator.lower_calls == []
     assert translator.lift_count == 1
-    payloads = [item.payload for item in outcomes[0]["observations"]]
-    projected = next(
-        payload["projected_validation"]
-        for payload in payloads
-        if "projected_validation" in payload
-    )
-    assert projected["phase"] == "projected_preflight"
-    assert projected["reason"] == "obligation_violated"
-    assert projected["authority_id"].startswith("sha256:")
 
 
 def test_project_patch_plan_lowers_conditional_state_to_canonical_two_way() -> None:
@@ -1331,9 +1237,7 @@ def test_observed_native_call_serial_shift_does_not_poison() -> None:
     assert translator.lower_calls == [plan]
 
 
-def test_partial_coverage_without_proof_never_publishes_nonexistent_applied_corridor(
-    monkeypatch,
-) -> None:
+def test_partial_coverage_without_proof_rejects_before_any_mutation() -> None:
     """Coverage truth is required even when a partial plan lacks a proof."""
     cfg = _make_cfg(
         [(0, 1), (0, 5), (1, 2), (5, 2), (2, 3), (2, 4)],
@@ -1362,12 +1266,6 @@ def test_partial_coverage_without_proof_never_publishes_nonexistent_applied_corr
         coverage=coverage,
         route_edge=(1, 3),
     )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
     translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(
@@ -1385,23 +1283,10 @@ def test_partial_coverage_without_proof_never_publishes_nonexistent_applied_corr
     assert backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks)) is cfg
     assert translator.lower_calls == []
 
-    rejected = [item.payload for item in outcomes[0]["observations"]]
-    assert rejected
-    assert all(payload["application_status"] == "rejected_preflight" for payload in rejected)
-    projected = next(
-        payload["projected_validation"]
-        for payload in rejected
-        if "projected_validation" in payload
-    )
-    assert projected["phase"] == "projected_preflight"
-    assert projected["reason"] == "obligation_violated"
-    assert projected["authority_id"].startswith("sha256:")
 
 
-def test_clean_binding_failure_publishes_terminal_dispatcher_outcome(
-    monkeypatch,
-) -> None:
-    """A pre-mutation error cannot leave coverage permanently pending."""
+def test_clean_binding_failure_preserves_original_exception(monkeypatch) -> None:
+    """A pre-mutation binding error preserves the original failure."""
     # A partial plan needs no narrow full-retirement authority, so binding is
     # the first failure after its valid projected coverage check.
     cfg = _make_cfg(
@@ -1415,12 +1300,6 @@ def test_clean_binding_failure_publishes_terminal_dispatcher_outcome(
         old_target=2,
         new_target=3,
     )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
     monkeypatch.setattr(
         "d810.hexrays.mutation.patch_transaction.bind_patch_plan",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("binding boom")),
@@ -1433,13 +1312,10 @@ def test_clean_binding_failure_publishes_terminal_dispatcher_outcome(
     with pytest.raises(RuntimeError, match="binding boom"):
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
-    assert outcomes == []
-
-
-def test_same_plan_clean_retries_publish_distinct_transaction_attempt_ids(
+def test_same_plan_clean_retries_mint_distinct_transaction_attempt_ids(
     monkeypatch,
 ) -> None:
-    """Two clean retries must not collapse to the collector's unknown attempt."""
+    """Two clean retries receive distinct transaction attempt IDs."""
     cfg = _make_cfg(
         [(0, 1), (0, 5), (1, 2), (5, 2), (2, 3), (2, 4)],
         stop_serials=(3, 4),
@@ -1450,12 +1326,6 @@ def test_same_plan_clean_retries_publish_distinct_transaction_attempt_ids(
         from_serial=1,
         old_target=2,
         new_target=3,
-    )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
     )
     failure_reasons = iter(("binding retry one", "binding retry two"))
 
@@ -1475,11 +1345,8 @@ def test_same_plan_clean_retries_publish_distinct_transaction_attempt_ids(
         with pytest.raises(RuntimeError, match=reason):
             backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
 
-    assert outcomes == []
-
-
-def test_early_transaction_failure_publishes_minted_attempt_id(monkeypatch) -> None:
-    """A failure before participant construction cannot fall back to unknown."""
+def test_early_transaction_failure_mints_attempt_id(monkeypatch) -> None:
+    """A failure before participant construction still mints an attempt ID."""
     cfg = _make_cfg(
         [(0, 1), (0, 5), (1, 2), (5, 2), (2, 3), (2, 4)],
         stop_serials=(3, 4),
@@ -1491,13 +1358,6 @@ def test_early_transaction_failure_publishes_minted_attempt_id(monkeypatch) -> N
         old_target=2,
         new_target=3,
     )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
-
     def fail_before_participant(*_args, **_kwargs):
         raise RuntimeError("early transaction setup failure")
 
@@ -1512,9 +1372,6 @@ def test_early_transaction_failure_publishes_minted_attempt_id(monkeypatch) -> N
 
     with pytest.raises(RuntimeError, match="early transaction setup failure"):
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert outcomes == []
-
 
 def test_apply_lowers_plan_when_reachability_is_preserved() -> None:
     cfg = _make_cfg(
@@ -2228,6 +2085,12 @@ def test_backend_typed_authority_emits_two_canonical_phase_payloads(monkeypatch)
             observation_factory()
         ),
     )
+    legacy_observations = []
+    monkeypatch.setattr(
+        observability_preanalysis,
+        "observe_unflatten_dispatcher_corridor_coverage",
+        lambda **kwargs: legacy_observations.append(kwargs),
+    )
 
     result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
 
@@ -2246,6 +2109,120 @@ def test_backend_typed_authority_emits_two_canonical_phase_payloads(monkeypatch)
     assert observed_payload["authority_id"] == execution.observed_unflatten_verdict.authority_id
     assert projected_payload["case_id"] == execution.projected_unflatten_verdict.case_id
     assert observed_payload["case_id"] == execution.observed_unflatten_verdict.case_id
+    assert projected_payload["phase"] == "projected_preflight"
+    assert observed_payload["phase"] == "observed_post_apply"
+    assert projected_payload["authority_id"] == observed_payload["authority_id"]
+    assert projected_payload["case_id"] and observed_payload["case_id"]
+    assert projected_payload["case_id"] != observed_payload["case_id"]
+    assert projected_payload["binding_id"] is None
+    assert observed_payload["binding_id"]
+    for payload in (projected_payload, observed_payload):
+        assert payload["plan_id"] == plan.plan_id
+        assert payload["attempt_id"]
+        assert payload["session_id"]
+    assert projected_payload["generation"] == execution.projected_unflatten_verdict.safety_case.candidate_generation
+    assert observed_payload["generation"] == execution.observed_unflatten_verdict.safety_case.candidate_generation
+    assert legacy_observations == []
+
+
+def test_canonical_phase_observer_contains_subscriber_failure(
+    monkeypatch,
+) -> None:
+    """The fire-and-forget diagnostic boundary contains subscriber failures."""
+
+    import d810.hexrays.observability as authority_observability
+    from d810.transforms.unflatten_authority.diagnostics import phase_observation
+
+    verdict = authority_model.UnflattenAuthorityVerdict(
+        False,
+        authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        authority_id("observer-authority"),
+        None,
+        None,
+        authority_id("observer-candidate"),
+        None,
+        (),
+    )
+    observation = phase_observation(
+        verdict,
+        maturity="MMAT_GLBOPT1",
+        source_ea=0x401000,
+    )
+
+    monkeypatch.setattr(authority_observability, "diagnostics_enabled", lambda: True)
+    monkeypatch.setattr(authority_observability, "mba_to_block_snapshots", lambda _mba: ())
+    monkeypatch.setattr(
+        authority_observability,
+        "request_capture_mba_snapshot",
+        lambda **_kwargs: object(),
+    )
+    subscriber_calls = []
+
+    def fail_subscriber(*args, **kwargs):
+        subscriber_calls.append((args, kwargs))
+        raise RuntimeError("diagnostic subscriber failed")
+
+    monkeypatch.setattr(
+        observability_preanalysis,
+        "observe_fact_observation",
+        fail_subscriber,
+    )
+
+    authority_observability.observe_unflatten_authority_phase(
+        mba=SimpleNamespace(func_ea=0x401000, maturity=0),
+        verdict=verdict,
+        observations=(observation,),
+    )
+    assert len(subscriber_calls) == 1
+
+
+def test_canonical_phase_observer_contains_registry_probe_failure(
+    monkeypatch,
+) -> None:
+    import d810.hexrays.observability as authority_observability
+
+    monkeypatch.setattr(
+        authority_observability,
+        "diagnostics_enabled",
+        lambda: (_ for _ in ()).throw(RuntimeError("registry failed")),
+    )
+    authority_observability.observe_unflatten_authority_phase(
+        mba=SimpleNamespace(func_ea=0x401000, maturity=0),
+        verdict=object(),
+    )
+
+
+def test_canonical_phase_observer_rejects_non_singleton_rows(
+    monkeypatch,
+) -> None:
+    import d810.hexrays.observability as authority_observability
+
+    verdict = authority_model.UnflattenAuthorityVerdict(
+        False,
+        authority_model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        authority_model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED,
+        authority_id("observer-cardinality-authority"),
+        None,
+        None,
+        authority_id("observer-cardinality-candidate"),
+        None,
+        (),
+    )
+    captures = []
+    monkeypatch.setattr(authority_observability, "diagnostics_enabled", lambda: True)
+    monkeypatch.setattr(
+        authority_observability,
+        "request_capture_mba_snapshot",
+        lambda **kwargs: captures.append(kwargs),
+    )
+    for observations in ((), (object(),), (object(), object())):
+        authority_observability.observe_unflatten_authority_phase(
+            mba=SimpleNamespace(func_ea=0x401000, maturity=0),
+            verdict=verdict,
+            observations=observations,
+        )
+    assert captures == []
 
 
 def test_typed_canonical_acceptance_does_not_reapply_failed_generic_gate(monkeypatch) -> None:
@@ -2464,7 +2441,17 @@ def test_backend_canonical_bind_rejection_is_decisive(monkeypatch) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
     observed_cfg = pre_cfg
     backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
+    import d810.hexrays.observability as authority_observability
     from d810.transforms.unflatten_authority import transaction_api
+
+    phase_observations = []
+    monkeypatch.setattr(
+        authority_observability,
+        "observe_unflatten_authority_phase",
+        lambda *, observation_factory, **_kwargs: phase_observations.extend(
+            observation_factory()
+        ),
+    )
 
     rejected = authority_model.UnflattenAuthorityVerdict(
         False,
@@ -2485,6 +2472,10 @@ def test_backend_canonical_bind_rejection_is_decisive(monkeypatch) -> None:
     assert backend.last_patch_execution is None
     assert backend.last_patch_failure is not None
     assert backend.last_patch_failure.unflatten_verdict is rejected
+    assert len(phase_observations) == 1
+    assert phase_observations[0].payload["accepted"] is False
+    assert phase_observations[0].payload["reason"] == "projected_binding_failed"
+    assert phase_observations[0].payload["authority_id"] == rejected.authority_id
 
 
 def test_backend_canonical_bind_exception_is_decisive(monkeypatch) -> None:
@@ -2591,6 +2582,11 @@ def test_backend_accepts_exact_reachable_local_alias_store_scalarization(monkeyp
     )
     assert "parity" not in projected_payload
     assert "parity" not in observed_payload
+    assert projected_payload["observed_only_loss"] == ()
+    assert len(observed_payload["observed_only_loss"]) == 1
+    observed_only = observed_payload["observed_only_loss"][0]
+    assert observed_only["anchor"] == "blk2@0x3000"
+    assert observed_only["classification"] == "local_alias_scalarization"
     for payload in (projected_payload, observed_payload):
         timings = payload["timings"]
         assert all(
@@ -3134,9 +3130,7 @@ def test_backend_rejects_foreign_native_binding_before_lowering() -> None:
     assert not gateway.generation_poisoned
 
 
-def test_backend_persists_observed_dispatcher_verdict_after_late_contract_poison(
-    monkeypatch,
-) -> None:
+def test_backend_persists_observed_dispatcher_verdict_after_late_contract_poison() -> None:
     """A post-observation contract failure cannot erase computed CFG evidence."""
     cfg = _make_cfg(
         [(0, 1), (0, 5), (1, 2), (5, 2), (2, 3), (2, 4)],
@@ -3176,12 +3170,6 @@ def test_backend_persists_observed_dispatcher_verdict_after_late_contract_poison
             assert projection is not None
             assert phase == "pre"
 
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
     translator = _ProjectedTranslator(cfg)
     translator.contract = _LateFailingContract()
     backend = HexRaysMutationBackend(
@@ -3191,9 +3179,6 @@ def test_backend_persists_observed_dispatcher_verdict_after_late_contract_poison
 
     with pytest.raises(CfgGenerationPoisoned):
         backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
-
-    assert outcomes == []
-
 
 def test_backend_commits_the_complete_ordinary_patch_transaction_timeline() -> None:
     cfg = _make_cfg([(0, 1)], stop_serials=(1,))
@@ -3733,9 +3718,7 @@ def test_full_dispatcher_retirement_uses_ordinary_contract_when_entry_reachabili
     assert backend.last_patch_execution.projected_unflatten_verdict.accepted
 
 
-def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proof(
-    monkeypatch,
-):
+def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proof():
     """A rejected narrow proof alone must not disable ordinary safe rewrites."""
     cfg = _make_cfg(
         [(0, 1), (1, 2), (2, 3), (2, 5), (3, 4), (5, 4)],
@@ -3782,12 +3765,6 @@ def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proo
             return projected.graph if self.lower_calls else cfg
 
     translator = _ProjectedTranslator(cfg)
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, plan),
         translator=translator,
@@ -3799,14 +3776,6 @@ def test_small_noncyclic_retirement_uses_ordinary_contract_despite_rejected_proo
     assert translator.lower_calls == []
     assert translator.lift_count == 1
     assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
-    assert outcomes
-    removal = next(
-        item.payload["projected_validation"]
-        for item in outcomes[0]["observations"]
-        if "projected_validation" in item.payload
-    )
-    assert removal["phase"] == "projected_preflight"
-    assert removal["reason"] == "obligation_violated"
 
 def test_backend_reports_unclaimed_typed_local_alias_sibling_store_loss() -> None:
     pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
@@ -4022,9 +3991,7 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
     assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
 
 
-def test_small_switch_retirement_accepts_exact_terminal_cycle_break(
-    monkeypatch,
-) -> None:
+def test_small_switch_retirement_accepts_exact_terminal_cycle_break() -> None:
     """A typed merge redirect may break the otherwise detached switch SCC."""
     cfg = _make_cfg(
         [
@@ -4127,12 +4094,6 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break(
             return projected.graph if self.lower_calls else cfg
 
     translator = _ProjectedTranslator(cfg)
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, plan),
         translator=translator,
@@ -4146,16 +4107,9 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break(
     assert result is cfg
     assert translator.lower_calls == []
     assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
-    assert len(outcomes) == 1
-    assert all(
-        observation.payload["canonical"]
-        for observation in outcomes[0]["observations"]
-    )
 
 
-def test_below_threshold_dispatcher_retirement_still_requires_narrow_proof(
-    monkeypatch,
-):
+def test_below_threshold_dispatcher_retirement_still_requires_narrow_proof():
     """A failed ordinary entry gate may not be waived by an unbound claim."""
     cfg = _comparison_dispatcher_forest_cfg()
     plan = _ordinary_plan(
@@ -4174,12 +4128,6 @@ def test_below_threshold_dispatcher_retirement_still_requires_narrow_proof(
     plan = plan.with_metadata(
         **{DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata()}
     )
-    outcomes = []
-    monkeypatch.setattr(
-        observability_preanalysis,
-        "observe_unflatten_dispatcher_corridor_coverage",
-        lambda **kwargs: outcomes.append(kwargs),
-    )
     translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, plan),
@@ -4192,9 +4140,6 @@ def test_below_threshold_dispatcher_retirement_still_requires_narrow_proof(
     assert translator.lower_calls == []
     assert backend.last_patch_failure is not None
     assert "projected unflatten authority rejected" in str(backend.last_patch_failure)
-    assert outcomes
-
-
 def test_corridor_coverage_drift_is_rejected_by_stronger_projected_obligation():
     """An impossible downstream drift case fails at the stronger projected gate."""
     cfg = _make_cfg(

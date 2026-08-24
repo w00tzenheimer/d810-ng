@@ -140,13 +140,26 @@ def observe_unflatten_authority_phase(
     observation_factory=None,
 ) -> None:
     """Publish one canonical authority-phase observation when subscribed."""
-    if not diagnostics_enabled():
-        return
     try:
+        if not diagnostics_enabled():
+            return
+        from d810.analyses.value_flow.observation import FactObservation
+        from d810.transforms.unflatten_authority.model import (
+            UnflattenAuthorityVerdict,
+        )
+
+        if type(verdict) is not UnflattenAuthorityVerdict:
+            raise TypeError("authority phase observer requires a canonical verdict")
         if observation_factory is not None:
             if not callable(observation_factory):
                 raise TypeError("observation_factory must be callable")
             observations = tuple(observation_factory())
+        else:
+            observations = tuple(observations)
+        if len(observations) != 1 or type(observations[0]) is not FactObservation:
+            raise TypeError(
+                "authority phase observer requires exactly one FactObservation"
+            )
         phase = getattr(getattr(verdict, "phase", None), "value", "unknown")
         phase_label = "post_apply" if phase == "observed_post_apply" else "unknown"
         blocks = mba_to_block_snapshots(mba)
@@ -163,7 +176,11 @@ def observe_unflatten_authority_phase(
             return
         from d810.core.observability_preanalysis import observe_fact_observation
 
-        observe_fact_observation(snapshot, int(getattr(mba, "func_ea", 0)), tuple(observations))
+        observe_fact_observation(
+            snapshot,
+            int(getattr(mba, "func_ea", 0)),
+            observations,
+        )
     except Exception:
         _LOGGER.exception("unflatten authority diagnostics failed")
 
