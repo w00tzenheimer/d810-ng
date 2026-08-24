@@ -1125,6 +1125,7 @@ class Z3MopProver:
         else:
             ast = mop_to_ast(mop, node_budget=budget)
         visitor_needs_budget = False
+        recursive_anchor_ins = ins
 
         is_resolvable = mop.t in (ida_hexrays.mop_r, ida_hexrays.mop_S)
         if not is_resolvable and mop.t == ida_hexrays.mop_d:
@@ -1145,6 +1146,14 @@ class Z3MopProver:
                     )
                 if resolved_ast is not None:
                     ast = resolved_ast
+                    # The recovered root is a reaching definition at an
+                    # earlier instruction.  Its input leaves must be resolved
+                    # before that definition, not before the later proof use
+                    # site.  Otherwise a register reused after the definition
+                    # can be selected as though it fed the recovered root.
+                    definition_ins = getattr(resolved_ast, "ins", None)
+                    if definition_ins is not None:
+                        recursive_anchor_ins = definition_ins
                     if self._policy is not None:
                         # The resolver uses this same budget while building
                         # contextual definition ASTs.  Keep it live through
@@ -1163,7 +1172,7 @@ class Z3MopProver:
             resolved_ast = _recursively_resolve_ast(
                 ast,
                 blk,
-                ins,
+                recursive_anchor_ins,
                 node_budget=budget,
             )
             if (

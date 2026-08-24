@@ -1255,6 +1255,61 @@ class TestZ3MopProverAPI:
         assert result.observed_expression_nodes == 1
         assert constructed == []
 
+    def test_contextual_root_expansion_starts_at_reaching_definition(
+        self, monkeypatch
+    ):
+        """Do not resolve a reaching definition's inputs from the later use site.
+
+        A root such as ``rcx = call_result & mask`` is first recovered while
+        proving a later ``setz rcx, 0``.  Its children must be expanded from
+        the defining ``and`` instruction.  Expanding them from ``setz`` can
+        select later redefinitions of a source register and turn an unknown
+        call result into an unrelated constant.
+        """
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+
+        class _FakeAst:
+            def __init__(self, *, leaf, ins=None):
+                self._leaf = leaf
+                self.ins = ins
+
+            def is_leaf(self):
+                return self._leaf
+
+        use_ins = object()
+        definition_ins = object()
+        blk = SimpleNamespace(mba=object())
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=8)
+        initial_leaf = _FakeAst(leaf=True)
+        reaching_root = _FakeAst(leaf=False, ins=definition_ins)
+        recursive_anchors = []
+
+        monkeypatch.setattr(z3mod, "mop_to_ast", lambda _mop: initial_leaf)
+        monkeypatch.setattr(
+            z3mod,
+            "_resolve_mop_to_ast",
+            lambda _mop, _blk, _ins: reaching_root,
+        )
+        monkeypatch.setattr(
+            z3mod,
+            "_recursively_resolve_ast",
+            lambda ast, _blk, ins, *, node_budget=None: (
+                recursive_anchors.append(ins) or ast
+            ),
+        )
+
+        prepared = Z3MopProver()._prepare_single_ast(
+            mop,
+            blk=blk,
+            ins=use_ins,
+            operation="prove_always_zero",
+        )
+
+        assert prepared is not None
+        assert prepared[1] is reaching_root
+        assert recursive_anchors == [definition_ins]
+
     def test_bounded_minsn_gateway_routes_to_python_builder(self, monkeypatch):
         import d810.hexrays.ir.minsn_utils as minsn_utils
         from d810.backends.ast.z3_proof_policy import (
