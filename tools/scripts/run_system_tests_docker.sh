@@ -523,15 +523,17 @@ fi
 # install step is omitted. A stale runtime is refreshed and then probed again;
 # an unusable solver must fail setup rather than surface as a collection error.
 # Native Cython compilation runs when explicitly enabled and fails closed. The
-# default D810_NO_CYTHON=1 skips this build. Remove ignored extension artifacts
-# first so a failed rebuild cannot silently import a stale native module. The
-# build needs a C++
+# default D810_NO_CYTHON=1 skips this build. Remove ignored Linux extension
+# artifacts first so a failed rebuild cannot silently import a stale native
+# module. The checkout is a read-write host mount, so cleanup must preserve
+# Darwin extensions and Windows ``.pyd`` files built for the developer host.
+# The build needs a C++
 # toolchain + the IDA SDK; setup.py auto-downloads the SDK from GitHub when
 # IDA_SDK is unset and links against the live IDA runtime (libida.so) via
 # IDA_INSTALL_DIR. NOTE: do NOT pass --no-build-isolation — the IDA venv has
 # neither setuptools nor Cython, so pip MUST build-isolate to install the
 # build-system.requires (setuptools/wheel/Cython).
-SPEEDUPS_CLEAN_CMD="find src/d810/speedups -type f \\( -name '*.so' -o -name '*.pyd' \\) -delete"
+SPEEDUPS_CLEAN_CMD="find src/d810/speedups -type f -name '*-linux-gnu.so' -delete"
 if [ "$NO_CYTHON" = "1" ]; then
   SPEEDUPS_BUILD_CMD="$SPEEDUPS_CLEAN_CMD && echo '[speedups] native build disabled by D810_NO_CYTHON=1'"
 elif [ "$CYTHON_PROFILE" = "1" ]; then

@@ -552,8 +552,9 @@ def test_native_speedups_build_cleans_extensions_and_fails_closed(
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
     assert "find src/d810/speedups -type f" in command
-    assert "-name '*.so'" in command
-    assert "-name '*.pyd'" in command
+    assert "-name '*-linux-gnu.so'" in command
+    assert "-name '*.so'" not in command
+    assert "-name '*.pyd'" not in command
     assert "D810_BUILD_SPEEDUPS=1" in command
     assert "falling back to pure-Python" not in command
     assert "|| echo" not in command
@@ -575,3 +576,15 @@ def test_python_mode_cleans_extensions_without_building(
     assert "D810_BUILD_SPEEDUPS=1" not in command
     assert disabled < command.rindex("pytest")
     assert "d810.speedups.install --solver-only" in command
+
+
+def test_container_cleanup_preserves_foreign_platform_extensions(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(tmp_path, "test", "--", "-q", no_cython="0")
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "-name '*-linux-gnu.so'" in command
+    assert "-name '*-darwin.so'" not in command
+    assert "-name '*.pyd'" not in command
