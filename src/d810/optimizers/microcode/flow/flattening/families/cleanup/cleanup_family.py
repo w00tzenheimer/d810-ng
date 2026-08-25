@@ -87,8 +87,15 @@ from d810.passes.tail_goto_merge import (
     serialize_tail_goto_merge_candidates,
 )
 from d810.passes.dead_store import (
+    DEAD_STORE_EVIDENCE_METADATA_KEY,
     DeadStoreEliminationStrategy,
 )
+from d810.analyses.value_flow.dead_store import DeadStoreEvidence
+from d810.evaluator.hexrays_microcode.dead_store_liveness import (
+    HexRaysDeadStoreLivenessBackend,
+)
+from d810.hexrays.ir_maturity import ida_maturity_to_ir
+from d810.ir.maturity import IRMaturity
 from d810.analyses.control_flow.graph_reachability import compute_reachable_blocks
 from d810.analyses.control_flow.guarded_state_machine import (
     GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
@@ -178,6 +185,8 @@ class SimpleFlatteningCleanupMetadata:
     selected_side_effect_select_loop_fixes: int = 0
     collected_selector_shell_facts: int = 0
     selected_selector_shell_facts: int = 0
+    dead_store_candidates: int = 0
+    dead_store_rejections: int = 0
 
 
 class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
@@ -190,11 +199,15 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         cfg_translator: IDAIRTranslator | None = None,
         logger=None,
         dead_store_elimination_enabled: bool = False,
+        dead_store_backend: object | None = None,
     ) -> None:
         self._backend = backend or LiveSimpleFlatteningCleanupBackend()
         self._cfg_translator = cfg_translator or IDAIRTranslator()
         self._logger = logger or family_logger
         self._dead_store_elimination_enabled = bool(dead_store_elimination_enabled)
+        self._dead_store_backend = (
+            dead_store_backend or HexRaysDeadStoreLivenessBackend()
+        )
         self._strategies = [
             FakeJumpStrategy(),
             SingleIterationStrategy(),
@@ -232,15 +245,31 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         return list(self._strategies)
 
     def strategies_for_maturity(self, maturity: int | None = None) -> list:
-        return list(self._strategies)
+        if maturity is None or not self._dead_store_elimination_enabled:
+            return list(self._strategies)
+        try:
+            portable_maturity = ida_maturity_to_ir(int(maturity))
+        except (TypeError, ValueError):
+            portable_maturity = None
+        if portable_maturity is IRMaturity.GLOBAL_OPTIMIZED:
+            return list(self._strategies)
+        return [
+            strategy
+            for strategy in self._strategies
+            if strategy.name != DeadStoreEliminationStrategy.name
+        ]
 
-    def _strategy_scopes(self) -> tuple[tuple[str, str], ...]:
+    def _strategy_scopes(
+        self,
+        strategies: list | None = None,
+    ) -> tuple[tuple[str, str], ...]:
+        selected = self._strategies if strategies is None else strategies
         return tuple(
             (
                 strategy.name,
                 _STRATEGY_SCOPES.get(strategy.name, ENGINE_CLEANUP_SCOPE),
             )
-            for strategy in self._strategies
+            for strategy in selected
         )
 
     def detect(self, mba: object) -> SimpleFlatteningCleanupDetection:
@@ -254,6 +283,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         detection: SimpleFlatteningCleanupDetection,
     ) -> AnalysisSnapshot:
         flow_graph = self._cfg_translator.lift(mba)
+        flow_graph = self._attach_dead_store_evidence(mba, flow_graph)
         flow_graph = self._attach_cleanup_metadata(flow_graph, detection)
         return AnalysisSnapshot(
             mba=mba,
@@ -267,12 +297,42 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             ),
         )
 
+    def _attach_dead_store_evidence(
+        self,
+        mba: object,
+        flow_graph: FlowGraph,
+    ) -> FlowGraph:
+        if not self._dead_store_elimination_enabled:
+            return flow_graph
+        try:
+            maturity = ida_maturity_to_ir(int(getattr(mba, "maturity", -1)))
+        except (TypeError, ValueError):
+            return flow_graph
+        if maturity is not IRMaturity.GLOBAL_OPTIMIZED:
+            return flow_graph
+        evidence = self._dead_store_backend.collect(mba)
+        if not isinstance(evidence, DeadStoreEvidence):
+            self._logger.warning("Dead-store backend returned invalid evidence")
+            return flow_graph
+        metadata = dict(flow_graph.metadata)
+        metadata[DEAD_STORE_EVIDENCE_METADATA_KEY] = evidence
+        return FlowGraph(
+            blocks=flow_graph.blocks,
+            entry_serial=flow_graph.entry_serial,
+            func_ea=flow_graph.func_ea,
+            metadata=metadata,
+        )
+
     def _attach_cleanup_metadata(
         self,
         flow_graph: FlowGraph,
         detection: SimpleFlatteningCleanupDetection,
     ) -> FlowGraph:
         metadata = dict(flow_graph.metadata)
+        dead_store_evidence = metadata.get(DEAD_STORE_EVIDENCE_METADATA_KEY)
+        if not isinstance(dead_store_evidence, DeadStoreEvidence):
+            dead_store_evidence = DeadStoreEvidence()
+        scheduled_strategies = self.strategies_for_maturity(detection.maturity)
         if detection.fake_jump_fixes:
             metadata[FAKE_JUMP_FIXES_METADATA_KEY] = serialize_fake_jump_fixes(
                 detection.fake_jump_fixes
@@ -491,8 +551,8 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         )
         metadata[CLEANUP_FAMILY_METADATA_KEY] = SimpleFlatteningCleanupMetadata(
             family_name=self.name,
-            strategy_names=tuple(strategy.name for strategy in self._strategies),
-            strategy_scopes=self._strategy_scopes(),
+            strategy_names=tuple(strategy.name for strategy in scheduled_strategies),
+            strategy_scopes=self._strategy_scopes(scheduled_strategies),
             maturity=detection.maturity,
             func_ea=detection.func_ea,
             collected_fake_jump_fixes=len(detection.fake_jump_fixes),
@@ -517,6 +577,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
                 or selected_local_select_loop_fixes
                 or selected_side_effect_select_loop_fixes
                 or selected_selector_shell_facts
+                or dead_store_evidence.candidates
             ),
             collection_errors=detection.collection_errors,
             collected_bad_while_loop_edits=(
@@ -580,6 +641,8 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             ),
             collected_selector_shell_facts=len(detection.selector_shell_facts),
             selected_selector_shell_facts=len(selected_selector_shell_facts),
+            dead_store_candidates=len(dead_store_evidence.candidates),
+            dead_store_rejections=len(dead_store_evidence.rejections),
         )
         return FlowGraph(
             blocks=flow_graph.blocks,

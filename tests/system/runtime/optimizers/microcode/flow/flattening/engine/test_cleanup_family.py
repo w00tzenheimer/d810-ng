@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.analyses.value_flow.dead_store import DeadStoreEvidence
+
 from d810.analyses.control_flow.native_preanalysis_session import (
     GeneratedRestartConsumer,
     NativePreanalysisSessionState,
@@ -126,6 +128,7 @@ from d810.passes.tail_goto_merge import (
     collect_tail_goto_merge_candidates,
     extract_tail_goto_merge_candidates,
 )
+from d810.passes.dead_store import DEAD_STORE_EVIDENCE_METADATA_KEY
 from d810.optimizers.microcode.flow.flattening.unflattener_cleanup_family import (
     SimpleFlatteningCleanupUnflattener,
 )
@@ -333,6 +336,77 @@ def test_simple_cleanup_family_adds_dead_store_strategy_only_when_enabled() -> N
     )
 
     assert family.strategies[-1].name == "dead_store_elimination"
+
+
+def test_simple_cleanup_family_schedules_dead_store_only_at_glbopt2() -> None:
+    family = SimpleFlatteningCleanupFamily(
+        cfg_translator=_FakeTranslator(_cleanup_flow_graph()),
+        dead_store_elimination_enabled=True,
+    )
+
+    assert "dead_store_elimination" not in {
+        strategy.name
+        for strategy in family.strategies_for_maturity(ida_hexrays.MMAT_GLBOPT1)
+    }
+    assert "dead_store_elimination" in {
+        strategy.name
+        for strategy in family.strategies_for_maturity(ida_hexrays.MMAT_GLBOPT2)
+    }
+
+
+def test_simple_cleanup_family_attaches_authoritative_dse_evidence_at_glbopt2() -> None:
+    expected = DeadStoreEvidence(authoritative=True)
+
+    class _DeadStoreBackend:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def collect(self, mba):
+            self.calls.append(mba)
+            return expected
+
+    live_backend = _DeadStoreBackend()
+    mba = _fake_mba()
+    mba.maturity = ida_hexrays.MMAT_GLBOPT2
+    family = SimpleFlatteningCleanupFamily(
+        cfg_translator=_FakeTranslator(_cleanup_flow_graph()),
+        dead_store_elimination_enabled=True,
+        dead_store_backend=live_backend,
+    )
+    detection = SimpleFlatteningCleanupDetection(
+        maturity=mba.maturity,
+        func_ea=mba.entry_ea,
+    )
+
+    snapshot = family.build_snapshot(mba, detection)
+
+    assert live_backend.calls == [mba]
+    assert snapshot.flow_graph.metadata[DEAD_STORE_EVIDENCE_METADATA_KEY] is expected
+    metadata = snapshot.flow_graph.metadata[CLEANUP_FAMILY_METADATA_KEY]
+    assert metadata.strategy_names[-1] == "dead_store_elimination"
+    assert metadata.dead_store_candidates == 0
+    assert metadata.dead_store_rejections == 0
+
+
+def test_simple_cleanup_family_does_not_query_dse_backend_at_glbopt1() -> None:
+    class _DeadStoreBackend:
+        def collect(self, _mba):
+            raise AssertionError("GLBOPT1 must not collect exact DSE evidence")
+
+    mba = _fake_mba()
+    family = SimpleFlatteningCleanupFamily(
+        cfg_translator=_FakeTranslator(_cleanup_flow_graph()),
+        dead_store_elimination_enabled=True,
+        dead_store_backend=_DeadStoreBackend(),
+    )
+    detection = SimpleFlatteningCleanupDetection(
+        maturity=mba.maturity,
+        func_ea=mba.entry_ea,
+    )
+
+    snapshot = family.build_snapshot(mba, detection)
+
+    assert DEAD_STORE_EVIDENCE_METADATA_KEY not in snapshot.flow_graph.metadata
 
 
 def test_simple_cleanup_rule_configures_dead_store_elimination_opt_in() -> None:

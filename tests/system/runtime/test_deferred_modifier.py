@@ -343,6 +343,7 @@ def test_guarded_instruction_removal_requires_full_fingerprint_and_marks_dirty()
             size=8,
         ),
         next=None,
+        has_side_effects=lambda _include_ldx_and_divs: False,
     )
     block = FakeBlock(instruction)
     mba = SimpleNamespace(chains_dirty=0)

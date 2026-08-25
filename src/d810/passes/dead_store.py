@@ -1,8 +1,13 @@
-"""Conservative dead-store discovery for direct microcode scalar writes."""
+"""Plan dead-store removals from portable or live authoritative evidence."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from d810.analyses.value_flow.dead_store import (
+    DeadStoreCandidate,
+    DeadStoreEvidence,
+)
 
 from d810.ir.flowgraph import (
     FlowGraph,
@@ -12,9 +17,13 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.transforms.graph_modification import RemoveInstruction
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+
+DEAD_STORE_EVIDENCE_METADATA_KEY = "dead_store_evidence"
 
 __all__ = [
     "DeadStoreCandidate",
+    "DEAD_STORE_EVIDENCE_METADATA_KEY",
     "DeadStoreEliminationStrategy",
     "build_dead_store_modifications",
     "collect_dead_store_candidates",
@@ -26,32 +35,6 @@ class _Storage:
     kind: str
     identifier: int
     size: int
-
-
-@dataclass(frozen=True)
-class DeadStoreCandidate:
-    """One direct scalar write proven overwritten on every outgoing path."""
-
-    block_serial: int
-    block_start_ea: int
-    insn_ea: int
-    ordinal: int
-    opcode: int
-    destination_kind: str
-    destination_id: int
-    destination_size: int
-
-    def to_modification(self) -> RemoveInstruction:
-        return RemoveInstruction(
-            block_serial=self.block_serial,
-            block_start_ea=self.block_start_ea,
-            insn_ea=self.insn_ea,
-            ordinal=self.ordinal,
-            opcode=self.opcode,
-            destination_kind=self.destination_kind,
-            destination_id=self.destination_id,
-            destination_size=self.destination_size,
-        )
 
 
 def _storage(operand: object | None) -> _Storage | None:
@@ -219,9 +202,13 @@ def collect_dead_store_candidates(graph: FlowGraph | None) -> tuple[DeadStoreCan
                     insn_ea=int(insn.ea),
                     ordinal=ordinal,
                     opcode=int(insn.opcode),
-                    destination_kind=destination.kind,
-                    destination_id=destination.identifier,
-                    destination_size=destination.size,
+                    destination=StorageIdentity(
+                        StorageIdentityKind.REGISTER
+                        if destination.kind == "register"
+                        else StorageIdentityKind.STACK,
+                        destination.identifier,
+                    ),
+                    destination_width=destination.size,
                 )
             )
     return tuple(candidates)
@@ -234,7 +221,16 @@ def build_dead_store_modifications(
     # Removing a later instruction first preserves the live ordinal fingerprint
     # of every earlier candidate in the same block.
     return [
-        candidate.to_modification()
+        RemoveInstruction(
+            block_serial=candidate.block_serial,
+            block_start_ea=candidate.block_start_ea,
+            insn_ea=candidate.insn_ea,
+            ordinal=candidate.ordinal,
+            opcode=candidate.opcode,
+            destination_kind=candidate.destination_kind,
+            destination_id=candidate.destination_id,
+            destination_size=candidate.destination_size,
+        )
         for candidate in sorted(
             candidates,
             key=lambda candidate: (candidate.block_serial, -candidate.ordinal),
@@ -248,8 +244,18 @@ class DeadStoreEliminationStrategy:
     name = "dead_store_elimination"
     family = "cleanup"
 
+    @staticmethod
+    def _candidates(snapshot) -> tuple[DeadStoreCandidate, ...]:
+        graph = snapshot.flow_graph
+        if graph is None:
+            return ()
+        evidence = graph.metadata.get(DEAD_STORE_EVIDENCE_METADATA_KEY)
+        if isinstance(evidence, DeadStoreEvidence) and evidence.authoritative:
+            return evidence.candidates
+        return collect_dead_store_candidates(graph)
+
     def is_applicable(self, snapshot) -> bool:
-        return bool(collect_dead_store_candidates(snapshot.flow_graph))
+        return bool(self._candidates(snapshot))
 
     def plan(self, snapshot):
         from d810.transforms.plan_fragment import (
@@ -259,7 +265,7 @@ class DeadStoreEliminationStrategy:
             PlanFragment,
         )
 
-        candidates = collect_dead_store_candidates(snapshot.flow_graph)
+        candidates = self._candidates(snapshot)
         if not candidates:
             return None
         modifications = build_dead_store_modifications(candidates)

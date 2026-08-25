@@ -24,6 +24,12 @@ from d810.analyses.value_flow.call_effect_summary import (
 from d810.analyses.value_flow.call_return_value import (
     CALL_RETURN_VALUE_FACT_TYPE,
 )
+from d810.analyses.value_flow.dead_store import (
+    DeadStoreCandidate,
+    DeadStoreEvidence,
+    DeadStoreRejection,
+    DeadStoreRejectionReason,
+)
 from d810.analyses.value_flow.global_constness import (
     GlobalConstDecision,
     GlobalConstEvidence,
@@ -120,6 +126,10 @@ __all__ = [
     "GlobalConstReason",
     "GlobalItemKind",
     "ContractEvidenceToken",
+    "DeadStoreCandidate",
+    "DeadStoreEvidence",
+    "DeadStoreRejection",
+    "DeadStoreRejectionReason",
     "INDUCTION_VARIABLE_FACT_TYPE",
     "LOOP_PREDICATE_VALUE_FACT_TYPE",
     "LIFECYCLE_PRODUCTION_PROVEN",

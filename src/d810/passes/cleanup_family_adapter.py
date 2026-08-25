@@ -119,7 +119,9 @@ def register_cleanup_family_adapter_passes(registry: PassRegistry) -> PassRegist
                     label="Enable dead-store elimination",
                     path=("enable_dead_store_elimination",),
                     control=FieldControlKind.BOOLEAN,
-                    description="Remove proven-dead direct register and stack writes.",
+                    description=(
+                        "Remove proven-dead pure register and stack definitions."
+                    ),
                     default=False,
                 ),
             ),

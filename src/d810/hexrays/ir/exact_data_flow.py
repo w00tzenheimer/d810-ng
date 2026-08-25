@@ -175,6 +175,107 @@ def instruction_storage_access_roles(
     )
 
 
+def _operand_overlaps_stack_storage(
+    operand: object | None,
+    *,
+    stack_offset: int,
+    size: int,
+) -> bool:
+    try:
+        if int(operand.t) != int(ida_hexrays.mop_S):
+            return False
+        operand_offset = int(operand.s.off)
+        operand_size = int(operand.size)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return operand_offset < stack_offset + size and stack_offset < (
+        operand_offset + operand_size
+    )
+
+
+def _operand_takes_stack_address(
+    operand: object | None,
+    *,
+    stack_offset: int,
+    size: int,
+    seen: set[int],
+    depth: int = 0,
+) -> bool:
+    if operand is None or depth > 32 or id(operand) in seen:
+        return False
+    seen.add(id(operand))
+    try:
+        operand_type = int(operand.t)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+    if operand_type == int(ida_hexrays.mop_a):
+        return _operand_overlaps_stack_storage(
+            getattr(operand, "a", None),
+            stack_offset=stack_offset,
+            size=size,
+        )
+
+    children: tuple[object | None, ...] = ()
+    if operand_type == int(ida_hexrays.mop_d):
+        nested = getattr(operand, "d", None)
+        if nested is not None:
+            children = (
+                getattr(nested, "l", None),
+                getattr(nested, "r", None),
+                getattr(nested, "d", None),
+            )
+    elif operand_type == int(ida_hexrays.mop_f):
+        call_info = getattr(operand, "f", None)
+        children = tuple(getattr(call_info, "args", ()))
+    elif operand_type == int(ida_hexrays.mop_p):
+        pair = getattr(operand, "pair", None)
+        children = (
+            getattr(pair, "lop", None),
+            getattr(pair, "hop", None),
+        )
+
+    return any(
+        _operand_takes_stack_address(
+            child,
+            stack_offset=stack_offset,
+            size=size,
+            seen=set(seen),
+            depth=depth + 1,
+        )
+        for child in children
+    )
+
+
+def instruction_takes_stack_address(
+    instruction: object,
+    *,
+    stack_offset: int,
+    size: int,
+) -> bool:
+    """Return whether an instruction forms the address of a stack interval.
+
+    This is the exact escape boundary used by storage-sensitive analyses.  A
+    broad ``mba.aliased_memory`` classification does not identify which local
+    escaped; an explicit ``mop_a`` rooted at the interval does.
+    """
+    if size <= 0:
+        raise ValueError("stack address query requires a positive size")
+    return any(
+        _operand_takes_stack_address(
+            operand,
+            stack_offset=int(stack_offset),
+            size=int(size),
+            seen=set(),
+        )
+        for operand in (
+            getattr(instruction, "l", None),
+            getattr(instruction, "r", None),
+            getattr(instruction, "d", None),
+        )
+    )
+
+
 def _block_storage_accesses(
     mba: object,
     block_serial: int,

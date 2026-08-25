@@ -11,10 +11,16 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.passes.dead_store import (
+    DEAD_STORE_EVIDENCE_METADATA_KEY,
     DeadStoreEliminationStrategy,
     build_dead_store_modifications,
     collect_dead_store_candidates,
 )
+from d810.analyses.value_flow.dead_store import (
+    DeadStoreCandidate as ProvenDeadStoreCandidate,
+    DeadStoreEvidence,
+)
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.graph_modification import RemoveInstruction
 
 
@@ -231,6 +237,77 @@ def test_strategy_emits_fingerprinted_remove_instruction() -> None:
             block_start_ea=0x401000,
             insn_ea=0x401000,
             ordinal=0,
+            opcode=0x55,
+            destination_kind="register",
+            destination_id=7,
+            destination_size=8,
+        )
+    ]
+
+
+def test_strategy_prefers_authoritative_live_evidence_over_portable_fallback() -> None:
+    target = _reg(7)
+    graph = FlowGraph(
+        blocks={
+            0: _block(
+                0,
+                instructions=(
+                    _mov(0x401000, _number(1), target),
+                    _mov(0x401004, _number(2), target),
+                ),
+            )
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+        metadata={
+            DEAD_STORE_EVIDENCE_METADATA_KEY: DeadStoreEvidence(
+                candidates=(),
+                rejections=(),
+                authoritative=True,
+            )
+        },
+    )
+
+    assert collect_dead_store_candidates(graph)
+    assert DeadStoreEliminationStrategy().plan(SimpleNamespace(flow_graph=graph)) is None
+
+
+def test_strategy_maps_precollected_computed_rhs_candidate_to_guarded_remove() -> None:
+    graph = FlowGraph(
+        blocks={0: _block(0, instructions=())},
+        entry_serial=0,
+        func_ea=0x401000,
+        metadata={
+            DEAD_STORE_EVIDENCE_METADATA_KEY: DeadStoreEvidence(
+                candidates=(
+                    ProvenDeadStoreCandidate(
+                        block_serial=0,
+                        block_start_ea=0x401000,
+                        insn_ea=0x401020,
+                        ordinal=2,
+                        opcode=0x55,
+                        destination=StorageIdentity(
+                            StorageIdentityKind.REGISTER,
+                            7,
+                        ),
+                        destination_width=8,
+                    ),
+                ),
+                rejections=(),
+                authoritative=True,
+            )
+        },
+    )
+
+    fragment = DeadStoreEliminationStrategy().plan(SimpleNamespace(flow_graph=graph))
+
+    assert fragment is not None
+    assert fragment.modifications == [
+        RemoveInstruction(
+            block_serial=0,
+            block_start_ea=0x401000,
+            insn_ea=0x401020,
+            ordinal=2,
             opcode=0x55,
             destination_kind="register",
             destination_id=7,

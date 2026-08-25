@@ -7446,6 +7446,18 @@ class DeferredGraphModifier:
                     mod.host_text_sha1,
                     mod.value_size,
                 )
+            elif mod.mod_type == ModificationType.INSN_GUARDED_REMOVE:
+                key = (
+                    mod.mod_type,
+                    mod.block_serial,
+                    mod.block_start_ea,
+                    mod.insn_ea,
+                    mod.expected_ordinal,
+                    mod.expected_opcode,
+                    mod.expected_destination_kind,
+                    mod.expected_destination_id,
+                    mod.expected_destination_size,
+                )
             elif mod.mod_type == ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL:
                 key = (
                     mod.mod_type,
@@ -11614,6 +11626,18 @@ class DeferredGraphModifier:
         if not destination_matches:
             logger.warning(
                 "guarded instruction removal destination mismatch: block=%d ordinal=%d",
+                blk.serial,
+                ordinal,
+            )
+            return False
+
+        try:
+            has_side_effects = bool(insn.has_side_effects(False))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            has_side_effects = True
+        if has_side_effects:
+            logger.warning(
+                "guarded instruction removal effect-safety mismatch: block=%d ordinal=%d",
                 blk.serial,
                 ordinal,
             )

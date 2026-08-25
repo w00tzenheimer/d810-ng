@@ -1319,8 +1319,8 @@ class TestZ3MopProverAPI:
 
         compiled_calls = []
         python_calls = []
-        compiled_result = object()
-        python_result = object()
+        compiled_result = SimpleNamespace(ea=0x401000)
+        python_result = SimpleNamespace(ea=0x401000)
 
         monkeypatch.setattr(
             minsn_utils,
@@ -1334,7 +1334,7 @@ class TestZ3MopProverAPI:
             or python_result,
         )
 
-        instruction = object()
+        instruction = SimpleNamespace(ea=0x401000)
         budget = Z3ExpressionNodeBudget(
             Z3ProofPolicy(max_expression_nodes=4, proof_timeout_ms=100)
         )

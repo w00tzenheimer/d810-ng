@@ -53,7 +53,7 @@ class SimpleFlatteningCleanupUnflattener(ComposedUnflatteningRule):
             "enable_dead_store_elimination",
             bool,
             False,
-            "Remove proven-dead direct register and stack writes",
+            "Remove proven-dead pure register and stack definitions",
         ),
     )
 
