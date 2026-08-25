@@ -6,12 +6,9 @@ from d810.core import typing
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstBase
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
-from d810.hexrays.utils.hexrays_formatters import (
-    format_mop_t,
-    opcode_to_string,
-    sanitize_ea,
-)
+from d810.hexrays.utils.hexrays_formatters import sanitize_ea
 from d810.hexrays.utils.hexrays_helpers import AND_TABLE
+from d810.hexrays.utils.hexrays_helpers import check_ins_mop_size_are_ok
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -197,7 +194,7 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
         # Attempt bottom-up constant folding.
         try:
             folded, changed = _fold_bottom_up(ast, bits, blk=blk, ins=ins)
-        except Exception as exc:
+        except Exception:
             return None
 
         if not changed:
@@ -264,6 +261,13 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
             dst_mop.size = dst_size
             new_ins = folded.create_minsn(sanitize_ea(ins.ea), dst_mop)
             _clamp_shift_amount(new_ins)
+            if not check_ins_mop_size_are_ok(new_ins):
+                # Folding a constant conversion such as xds.16(#0x64.8) can
+                # erase the widening node while a variable sibling retains
+                # xds.16, leaving mixed-width operands.  The outer optimizer
+                # rejects that malformed candidate too, but the rule itself
+                # owns the reconstruction and must abstain at this boundary.
+                return None
             return new_ins
-        except Exception as exc:
+        except Exception:
             return None

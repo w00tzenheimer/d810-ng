@@ -114,3 +114,44 @@ class TestConstantSubtreeFoldWidths:
         assert replacement.l.d.r.size == 1
         assert replacement.l.d.r.nnn.value == 0x66
         assert check_ins_mop_size_are_ok(replacement)
+
+    def test_partial_fold_abstains_when_signed_extension_is_required(self) -> None:
+        """Folding must not erase ``xds.16`` from one operand of a wide multiply.
+
+        The live failure rebuilt ``xds.16(#0x64.8) * xds.16(rax.8)`` as
+        ``#0x64.8 * xds.16(rax.8)``.  The mixed 8/16-byte operands are not a
+        valid Hex-Rays multiply, so the rule must leave the original tree alone.
+        """
+
+        variable, ea = _first_64_bit_register()
+
+        extended_constant = ida_hexrays.minsn_t(ea)
+        extended_constant.opcode = ida_hexrays.m_xds
+        extended_constant.l = _number(0x64, 8, ea)
+        extended_constant.r = _empty()
+        extended_constant.d = _empty()
+        extended_constant.d.size = 16
+
+        extended_variable = ida_hexrays.minsn_t(ea)
+        extended_variable.opcode = ida_hexrays.m_xds
+        extended_variable.l = _copy(variable)
+        extended_variable.r = _empty()
+        extended_variable.d = _empty()
+        extended_variable.d.size = 16
+
+        wide_multiply = ida_hexrays.minsn_t(ea)
+        wide_multiply.opcode = ida_hexrays.m_mul
+        wide_multiply.l = _nested(extended_constant, 16)
+        wide_multiply.r = _nested(extended_variable, 16)
+        wide_multiply.d = _empty()
+        wide_multiply.d.size = 16
+
+        original = ida_hexrays.minsn_t(ea)
+        original.opcode = ida_hexrays.m_high
+        original.l = _nested(wide_multiply, 16)
+        original.r = _empty()
+        original.d = _copy(variable)
+
+        replacement = ConstantSubtreeFoldRule().check_and_replace(None, original)
+
+        assert replacement is None

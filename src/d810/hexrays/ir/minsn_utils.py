@@ -140,8 +140,18 @@ def minsn_to_ast(
     the Cython module directly.
     """
     if _minsn_to_ast_impl is not None and node_budget is None:
-        return _minsn_to_ast_impl(ins)
-    return _py_slow_minsn_to_ast(ins, node_budget=node_budget)
+        ast = _minsn_to_ast_impl(ins)
+    else:
+        ast = _py_slow_minsn_to_ast(ins, node_budget=node_budget)
+    if ast is not None:
+        # Structural AST templates are shared across nested decompilations.
+        # Register/constant-only trees have no MBA owner in their cache key, so
+        # the cached root can carry the EA of an equal instruction from another
+        # function.  EA is use-site metadata, not structural template state.
+        current_ea = int(ins.ea)
+        if ast.ea != current_ea:
+            ast.ea = current_ea
+    return ast
 
 
 def get_minsn_to_ast_backend() -> str:
