@@ -12751,6 +12751,61 @@ def test_candidate_prefix_preserved_feeder_uses_existing_pred_split_clone(
     ]
 
 
+def test_candidate_prefix_preserved_setup_corridor_uses_multi_block_clone(
+    _seam,
+) -> None:
+    """Retarget only after replaying feeder and post-state setup blocks."""
+
+    graph, _dag = _candidate_prefix_partitioned_emitter_fixture()
+    blocks = dict(graph.blocks)
+    feeder = blocks[330]
+    prefix = blocks[4]
+    blocks[330] = replace(feeder, succs=(331,))
+    blocks[331] = _b(331, (4,), (330,))
+    blocks[4] = replace(prefix, preds=(331,))
+    graph = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+    transition = StateWriteTransition(
+        402,
+        _PREFIX_SELECTED_STATE,
+        101,
+        False,
+        None,
+        via_block=330,
+        proof=TransitionProof(
+            "decision_dag_state_route_reconciliation",
+            "decision_dag_reconciled",
+            True,
+            route_source_kinds=(
+                "candidate_scoped_prefix_arm",
+                "preserved_feeder_clone",
+            ),
+        ),
+        preserve_via_block=True,
+        preserve_via_until=331,
+    )
+
+    modifications = build_state_write_redirects(
+        graph,
+        _disp({_PREFIX_SELECTED_STATE: 101}, exit_block=200),
+        (transition,),
+        dispatcher_entry_serial=15,
+        pre_header_serial=None,
+        initial_state=None,
+        state_var_stkoff=_STATE,
+        suppress_legacy_endpoint_bridges=True,
+    )
+
+    assert modifications == [
+        EdgeRedirectViaPredSplit(
+            src_block=330,
+            old_target=331,
+            new_target=101,
+            via_pred=402,
+            clone_until=331,
+        )
+    ]
+
+
 def test_candidate_prefix_incomplete_feeder_partition_stays_residual(
     monkeypatch,
     _seam,

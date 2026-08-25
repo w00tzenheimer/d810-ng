@@ -458,6 +458,8 @@ class StateWriteTransition:
     # it, None = unattributed (legacy fold)
     preserve_via_block: bool = False  # clone the source-specific via path instead
     # of bypassing semantic feeder instructions
+    preserve_via_until: int | None = None  # final block in a proven one-way
+    # semantic setup corridor cloned with ``via_block``
 
 
 def _attach_route_source_kinds(
@@ -1002,7 +1004,7 @@ def _candidate_prefix_transition_entry(
     transition: StateWriteTransition,
     authority: CandidateScopedPrefixAuthority,
 ) -> _CandidatePrefixTransitionEntry | None:
-    """Classify direct and one-feeder prefix entrants, failing closed on drift."""
+    """Classify direct and bounded-feeder prefix entrants, failing closed on drift."""
 
     source_serial = int(transition.write_block)
     source = flow_graph.get_block(source_serial)
@@ -1032,21 +1034,35 @@ def _candidate_prefix_transition_entry(
     feeder = flow_graph.get_block(via_serial)
     if feeder is None:
         return None
-    feeder_successors = tuple(int(target) for target in feeder.succs)
-    feeder_observed = bool(
-        prefix_serial in feeder_successors
-        or via_serial in tuple(int(pred) for pred in prefix.preds)
-    )
-    if not feeder_observed:
-        return _CandidatePrefixTransitionEntry(False)
     if (
         source_successors != (via_serial,)
         or source_serial not in tuple(int(pred) for pred in feeder.preds)
-        or feeder_successors != (prefix_serial,)
-        or via_serial not in tuple(int(pred) for pred in prefix.preds)
     ):
         return None
-    return _CandidatePrefixTransitionEntry(True, feeder_serial=via_serial)
+    previous = via_serial
+    cursor = feeder
+    seen = {source_serial, via_serial}
+    for _ in range(5):
+        successors = tuple(int(target) for target in cursor.succs)
+        if len(successors) != 1:
+            return _CandidatePrefixTransitionEntry(False)
+        successor = successors[0]
+        if successor == prefix_serial:
+            if previous not in tuple(int(pred) for pred in prefix.preds):
+                return None
+            return _CandidatePrefixTransitionEntry(True, feeder_serial=via_serial)
+        if successor in seen:
+            return None
+        next_block = flow_graph.get_block(successor)
+        if (
+            next_block is None
+            or previous not in tuple(int(pred) for pred in next_block.preds)
+        ):
+            return None
+        seen.add(successor)
+        previous = successor
+        cursor = next_block
+    return _CandidatePrefixTransitionEntry(False)
 
 
 def collect_candidate_prefix_alternate_corridor_proofs(
@@ -2547,6 +2563,7 @@ def _reconcile_transition_routes_with_decision_dag(
                 target_handler=None if weak_state_superseded else transition.target_handler,
                 via_block=int(carrier_proof.feeder_serial),
                 preserve_via_block=bool(carrier_proof.requires_feeder_clone),
+                preserve_via_until=carrier_proof.clone_until_serial,
             )
 
         entered_candidate_prefix = False

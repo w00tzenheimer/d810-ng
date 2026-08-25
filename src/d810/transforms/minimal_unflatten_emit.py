@@ -3969,7 +3969,11 @@ def build_state_write_redirects(
                         old_target=via_successors[0],
                         new_target=int(new),
                         via_pred=src,
-                        clone_until=vbi,
+                        clone_until=(
+                            vbi
+                            if transition.preserve_via_until is None
+                            else int(transition.preserve_via_until)
+                        ),
                     )
                 )
                 continue

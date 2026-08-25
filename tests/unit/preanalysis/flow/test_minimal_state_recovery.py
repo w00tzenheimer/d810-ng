@@ -9163,7 +9163,6 @@ def test_candidate_prefix_selected_carrier_preserves_semantic_feeder_body(
     )
     assert observation.authority is not None
     _alternate, selected, direct, *_rest = _candidate_prefix_partitioned_transitions()
-
     resolved = resolve_materialized_indirect_transfer_targets(
         (selected, direct),
         graph,
@@ -9233,7 +9232,6 @@ def test_selected_carrier_preserves_pure_stack_read_feeder_suffix(
     )
     assert observation.authority is not None
     _alternate, selected, direct, *_rest = _candidate_prefix_partitioned_transitions()
-
     resolved = resolve_materialized_indirect_transfer_targets(
         (selected, direct),
         graph,
@@ -9249,6 +9247,169 @@ def test_selected_carrier_preserves_pure_stack_read_feeder_suffix(
     assert resolved[0].preserve_via_block is True
     assert resolved[0].proof is not None
     assert "preserved_feeder_clone" in resolved[0].proof.route_source_kinds
+
+
+def test_selected_carrier_preserves_post_state_setup_corridor(_seam) -> None:
+    """Clone setup blocks between the state feeder and comparison prefix.
+
+    The live target route writes the recovered state through a shared feeder,
+    initializes non-state registers in a separate one-way block, and only then
+    re-enters the dispatcher prefix.  The setup block must execute on the
+    rewritten route; bypassing it would change program semantics.
+    """
+
+    graph, dag = _candidate_prefix_partitioned_feeder_fixture()
+    blocks = dict(graph.blocks)
+    source = blocks[402]
+    feeder = blocks[330]
+    prefix = blocks[4]
+    carrier = MopSnapshot(
+        size=4,
+        kind=OperandKind.LVAR,
+        lvar_off=0,
+    )
+    blocks[402] = replace(
+        source,
+        insn_snapshots=(
+            _mov(int(source.start_ea) + 4, _num(_PREFIX_SELECTED_STATE), carrier),
+        ),
+    )
+    blocks[330] = replace(
+        feeder,
+        succs=(331,),
+        insn_snapshots=(
+            _mov(int(feeder.start_ea) + 4, carrier, _stk(_STATE_OFF)),
+            _goto(int(feeder.start_ea) + 8, 331),
+        ),
+    )
+    blocks[331] = _blk(
+        331,
+        (4,),
+        (330,),
+        (
+            _mov(0x180042940, _num(0x11111111), _reg(12)),
+            _mov(0x180042944, _num(0x22222222), _reg(13)),
+            _mov(
+                0x180042948,
+                _addr(0x88),
+                MopSnapshot(
+                    size=8,
+                    kind=OperandKind.LVAR,
+                    lvar_off=0,
+                    lvar_stkoff=_STATE_OFF + 8,
+                ),
+            ),
+            _mov(0x18004294C, _num(0x44444444), _reg(15)),
+        ),
+        ea=0x180042940,
+    )
+    blocks[4] = replace(prefix, preds=(331,))
+    graph = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+    carrier_proof = state_carrier.prove_exact_u32_carrier_state_write(
+        graph,
+        402,
+        330,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({4}),
+    )
+    assert carrier_proof is not None
+    assert carrier_proof.clone_until_serial == 331
+    observation = minimal_state_recovery.observe_candidate_scoped_prefix_authority(
+        graph,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+    _alternate, selected, direct, *_rest = _candidate_prefix_partitioned_transitions()
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        (selected, direct),
+        graph,
+        _candidate_prefix_partitioned_dispatcher(),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({100, 101}),
+        state_var_stkoff=_STATE_OFF,
+        candidate_prefix_authority=observation.authority,
+    )
+
+    assert tuple(int(row.write_block) for row in resolved) == (402, 403)
+    assert resolved[0].preserve_via_block is True
+    assert resolved[0].preserve_via_until == 331
+    assert resolved[0].proof is not None
+    assert "preserved_feeder_clone" in resolved[0].proof.route_source_kinds
+
+
+@pytest.mark.parametrize("setup_kind", ("effectful", "state_overwrite"))
+def test_selected_carrier_rejects_unsafe_post_state_setup_corridor(
+    _seam, setup_kind: str
+) -> None:
+    """An effect or second state write rejects the whole fragment."""
+
+    graph, dag = _candidate_prefix_partitioned_feeder_fixture()
+    blocks = dict(graph.blocks)
+    source = blocks[402]
+    feeder = blocks[330]
+    prefix = blocks[4]
+    blocks[402] = replace(
+        source,
+        insn_snapshots=(
+            _mov(int(source.start_ea) + 4, _num(_PREFIX_SELECTED_STATE), _reg(8)),
+        ),
+    )
+    blocks[330] = replace(
+        feeder,
+        succs=(331,),
+        insn_snapshots=(
+            _mov(int(feeder.start_ea) + 4, _reg(8), _stk(_STATE_OFF)),
+        ),
+    )
+    setup_insns = (
+        (
+            InsnSnapshot(
+                opcode=0x41,
+                ea=0x180042940,
+                operands=(),
+                kind=InsnKind.CALL,
+                call_kind=CallKind.DIRECT,
+            ),
+        )
+        if setup_kind == "effectful"
+        else (_mov(0x180042940, _num(0xDEADBEEF), _stk(_STATE_OFF)),)
+    )
+    blocks[331] = _blk(
+        331,
+        (4,),
+        (330,),
+        setup_insns,
+        ea=0x180042940,
+    )
+    blocks[4] = replace(prefix, preds=(331,))
+    graph = FlowGraph(blocks, graph.entry_serial, graph.func_ea)
+    observation = minimal_state_recovery.observe_candidate_scoped_prefix_authority(
+        graph,
+        dag,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert observation.authority is not None
+    _alternate, selected, direct, *_rest = _candidate_prefix_partitioned_transitions()
+
+    assert (
+        resolve_materialized_indirect_transfer_targets(
+            (selected, direct),
+            graph,
+            _candidate_prefix_partitioned_dispatcher(),
+            (),
+            condition_chain_dag=dag,
+            condition_chain_handlers=frozenset({100, 101}),
+            state_var_stkoff=_STATE_OFF,
+            candidate_prefix_authority=observation.authority,
+        )
+        == ()
+    )
 
 
 @pytest.mark.parametrize("feeder_kind", ("sub", "carrier"))

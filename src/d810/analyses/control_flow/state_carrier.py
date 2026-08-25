@@ -59,6 +59,7 @@ class ExactCarrierStateWrite:
     carrier: Varnode
     state_identity: StorageIdentity
     requires_feeder_clone: bool = False
+    clone_until_serial: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,11 +125,112 @@ def _is_exact_const_carrier_definition(
         and instruction.control is None
         and instruction.result == carrier
         and int(carrier.size) == 4
-        and carrier.space in {Space.REGISTER, Space.STACK, Space.TEMP}
+        and carrier.space in {Space.REGISTER, Space.STACK, Space.LVAR, Space.TEMP}
         and len(instruction.inputs) == 1
         and instruction.inputs[0].space is Space.CONST
         and int(instruction.inputs[0].size) == 4
     )
+
+
+_MAX_POST_STATE_SETUP_BLOCKS = 4
+_MAX_POST_STATE_SETUP_INSTRUCTIONS = 16
+
+
+def _is_pure_non_state_setup_assignment(
+    instruction: Instruction,
+    expected_identities: frozenset[StorageIdentity],
+) -> bool:
+    """Return whether an instruction is safe to preserve as setup plumbing.
+
+    The assignment is cloned verbatim, so its input does not need to be
+    interpreted. Only its effect boundary matters: it must be a pure MOVE to
+    local storage and may not overwrite the recovered state cell.
+    """
+
+    result = instruction.result
+    return bool(
+        instruction.operation is ValueOpKind.MOVE
+        and instruction.control is None
+        and instruction.memory is None
+        and not instruction.effects
+        and result is not None
+        and result.space in {Space.REGISTER, Space.STACK, Space.LVAR, Space.TEMP}
+        and storage_identity_from_varnode(result) not in expected_identities
+        and len(instruction.inputs) <= 1
+        and (
+            not instruction.inputs
+            or int(instruction.inputs[0].size) == int(result.size)
+        )
+    )
+
+
+def _prove_post_state_setup_corridor(
+    flow_graph: FlowGraph,
+    *,
+    feeder_serial: int,
+    first_serial: int,
+    required_comparison_serials: frozenset[int],
+    expected_identities: frozenset[StorageIdentity],
+) -> tuple[int, int | None] | None:
+    """Prove a bounded one-way setup corridor after a state feeder.
+
+    Returns ``(comparison_entry, clone_until)``. ``clone_until`` is ``None``
+    for the legacy direct feeder-to-comparison shape; otherwise it identifies
+    the last setup block that must be cloned with the feeder.
+    """
+
+    required = {int(serial) for serial in required_comparison_serials}
+    previous = int(feeder_serial)
+    cursor = int(first_serial)
+    seen = {previous}
+    setup_blocks = 0
+    setup_instructions = 0
+    clone_until: int | None = None
+    while True:
+        if cursor in seen:
+            return None
+        seen.add(cursor)
+        block = flow_graph.get_block(cursor)
+        if block is None or previous not in tuple(int(pred) for pred in block.preds):
+            return None
+        if cursor in required:
+            return cursor, clone_until
+        setup_blocks += 1
+        if setup_blocks > _MAX_POST_STATE_SETUP_BLOCKS:
+            return None
+        instructions = InstructionProjection.from_block(block)
+        value_instructions = tuple(
+            instruction for instruction in instructions if instruction.control is None
+        )
+        control_instructions = tuple(
+            instruction for instruction in instructions if instruction.control is not None
+        )
+        setup_instructions += len(value_instructions)
+        if (
+            not value_instructions
+            or setup_instructions > _MAX_POST_STATE_SETUP_INSTRUCTIONS
+            or len(control_instructions) > 1
+            or any(
+                not _is_pure_non_state_setup_assignment(
+                    instruction,
+                    expected_identities,
+                )
+                for instruction in value_instructions
+            )
+        ):
+            return None
+        successors = tuple(int(target) for target in block.succs)
+        if len(successors) != 1:
+            return None
+        successor = successors[0]
+        if control_instructions and not _pure_goto_to(
+            control_instructions[0], successor
+        ):
+            return None
+        if control_instructions and instructions[-1] is not control_instructions[0]:
+            return None
+        clone_until = cursor
+        previous, cursor = cursor, successor
 
 
 def observes_u32_state_feeder_candidate(
@@ -186,7 +288,8 @@ def observes_u32_carrier_feeder_candidate(
         and instruction.inputs[0].space is Space.CONST
         and int(instruction.inputs[0].size) == 4
         and instruction.result is not None
-        and instruction.result.space in {Space.REGISTER, Space.STACK, Space.TEMP}
+        and instruction.result.space
+        in {Space.REGISTER, Space.STACK, Space.LVAR, Space.TEMP}
         and int(instruction.result.size) == 4
     )
     if not carriers:
@@ -786,16 +889,7 @@ def prove_exact_u32_carrier_state_write(
     if source_serial not in tuple(int(pred) for pred in feeder.preds):
         return None
     feeder_successors = tuple(int(target) for target in feeder.succs)
-    if len(feeder_successors) != 1 or feeder_successors[0] not in {
-        int(s) for s in required_comparison_serials
-    }:
-        return None
-    comparison_entry = feeder_successors[0]
-    comparison = flow_graph.get_block(comparison_entry)
-    if (
-        comparison is None
-        or feeder_serial not in tuple(int(pred) for pred in comparison.preds)
-    ):
+    if len(feeder_successors) != 1:
         return None
 
     expected_identities = expected_u32_state_identities(
@@ -804,6 +898,16 @@ def prove_exact_u32_carrier_state_write(
     )
     if not expected_identities:
         return None
+    setup_corridor = _prove_post_state_setup_corridor(
+        flow_graph,
+        feeder_serial=feeder_serial,
+        first_serial=feeder_successors[0],
+        required_comparison_serials=required_comparison_serials,
+        expected_identities=expected_identities,
+    )
+    if setup_corridor is None:
+        return None
+    comparison_entry, clone_until_serial = setup_corridor
 
     feeder_instructions = InstructionProjection.from_block(feeder)
     value_instructions = tuple(
@@ -838,14 +942,14 @@ def prove_exact_u32_carrier_state_write(
     carrier = feeder_move.inputs[0]
     carrier_identity = storage_identity_from_varnode(carrier)
     if (
-        carrier.space not in {Space.REGISTER, Space.STACK, Space.TEMP}
+        carrier.space not in {Space.REGISTER, Space.STACK, Space.LVAR, Space.TEMP}
         or int(carrier.size) != 4
         or carrier_identity is None
         or carrier_identity in expected_identities
     ):
         return None
     if control_instructions and not _pure_goto_to(
-        control_instructions[0], comparison_entry
+        control_instructions[0], feeder_successors[0]
     ):
         return None
     if control_instructions and feeder_instructions[-1] is not control_instructions[0]:
@@ -905,5 +1009,6 @@ def prove_exact_u32_carrier_state_write(
         comparison_entry_serial=comparison_entry,
         carrier=carrier,
         state_identity=feeder_state_identity,
-        requires_feeder_clone=bool(semantic_suffix),
+        requires_feeder_clone=bool(semantic_suffix) or clone_until_serial is not None,
+        clone_until_serial=clone_until_serial,
     )
