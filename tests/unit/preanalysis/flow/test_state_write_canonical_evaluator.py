@@ -87,6 +87,42 @@ def test_public_forward_eval_accepts_canonical_instruction_without_seams() -> No
     assert stk[_STATE_STKOFF] == 0xAAFFAAFF
 
 
+@pytest.mark.parametrize(
+    ("operation", "left", "count", "expected"),
+    (
+        (ValueOpKind.SHL, 0x80000001, 0, 0x80000001),
+        (ValueOpKind.SHL, 1, 31, 0x80000000),
+        (ValueOpKind.SHL, 0x12345678, 32, 0x12345678),
+        (ValueOpKind.SHL, 0x12345678, 33, 0x2468ACF0),
+        (ValueOpKind.SHR, 0x80000001, 0, 0x80000001),
+        (ValueOpKind.SHR, 0x80000001, 31, 1),
+        (ValueOpKind.SHR, 0x92345678, 32, 0x92345678),
+        (ValueOpKind.SHR, 0x80000001, 33, 0x40000000),
+        (ValueOpKind.SAR, 0x80000001, 0, 0x80000001),
+        (ValueOpKind.SAR, 0x80000001, 31, 0xFFFFFFFF),
+        (ValueOpKind.SAR, 0x92345678, 32, 0x92345678),
+        (ValueOpKind.SAR, 0x92345678, 33, 0xC91A2B3C),
+    ),
+)
+def test_canonical_u32_shifts_use_modulo_width_counts(
+    operation: ValueOpKind,
+    left: int,
+    count: int,
+    expected: int,
+) -> None:
+    stk: dict[int, int] = {}
+    instruction = Instruction(
+        operation,
+        inputs=(_const(left), _const(count, size=1)),
+        result=_stack(_STATE_STKOFF),
+    )
+
+    result = forward_eval_instruction(instruction, stk, {}, _STATE_STKOFF)
+
+    assert result == expected
+    assert stk[_STATE_STKOFF] == expected
+
+
 def test_registered_backend_provider_accepts_canonical_instruction() -> None:
     stk: dict[int, int] = {}
     reg = {1: 0xAA00AA00}

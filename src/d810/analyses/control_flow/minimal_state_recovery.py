@@ -61,6 +61,7 @@ from d810.analyses.value_flow.global_init_fold import (
     compute_initializer_stable_global_reads,
 )
 from d810.analyses.value_flow.state_write import (
+    FORWARD_EVAL_SUPPORTED_BINARY_OPS,
     forward_eval_instruction,
     isolate_temporaries_for_forward_evaluation,
 )
@@ -4544,17 +4545,8 @@ def _block_folds_strictly(ctx, blk, in_stk, in_reg) -> bool:
 
 
 _STRICT_PROJECTED_VALUE_OPS = frozenset(
-    {
-        ValueOpKind.MOVE,
-        ValueOpKind.ZEXT,
-        ValueOpKind.SEXT,
-        ValueOpKind.ADD,
-        ValueOpKind.SUB,
-        ValueOpKind.AND,
-        ValueOpKind.OR,
-        ValueOpKind.XOR,
-        ValueOpKind.MUL,
-    }
+    {ValueOpKind.MOVE, ValueOpKind.ZEXT, ValueOpKind.SEXT}
+    | FORWARD_EVAL_SUPPORTED_BINARY_OPS
 )
 
 

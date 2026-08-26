@@ -699,6 +699,19 @@ _EFFECT_FREE_PURE_SUBINSNS = frozenset(
         InsnKind.MUL,
     }
 )
+_EFFECT_FREE_SUPPORTED_BINARY_VALUE_OPS = frozenset(
+    {
+        ValueOpKind.ADD,
+        ValueOpKind.SUB,
+        ValueOpKind.MUL,
+        ValueOpKind.AND,
+        ValueOpKind.OR,
+        ValueOpKind.XOR,
+        ValueOpKind.SHL,
+        ValueOpKind.SHR,
+        ValueOpKind.SAR,
+    }
+)
 
 
 def is_effect_free_operand_tree(
@@ -728,7 +741,11 @@ def is_effect_free_operand_tree(
     if identity in seen:
         return False
     seen.add(identity)
-    if getattr(operand, "sub_kind", None) not in _EFFECT_FREE_PURE_SUBINSNS:
+    if (
+        getattr(operand, "sub_kind", None) not in _EFFECT_FREE_PURE_SUBINSNS
+        and _subinsn_value_op(operand)
+        not in _EFFECT_FREE_SUPPORTED_BINARY_VALUE_OPS
+    ):
         return False
     if tuple(getattr(operand, "args", ()) or ()):
         return False

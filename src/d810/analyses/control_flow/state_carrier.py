@@ -6,7 +6,7 @@ The admitted shapes are intentionally small::
     feeder: carrier -> exact recovered state32 -> comparison region
 
 or a bounded expression variant where exact source-owned CONST32 register/temp
-definitions feed a pure canonical XOR/ADD/SUB program into recovered state32.
+definitions feed an evaluator-supported pure binary program into recovered state32.
 The program may finish in one following state-feeder block when Hex-Rays splits
 the final arithmetic state write from the preceding arithmetic instruction.
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.analyses.value_flow.state_write import (
+    FORWARD_EVAL_SUPPORTED_BINARY_OPS,
     forward_eval_instruction,
     isolate_temporaries_for_forward_evaluation,
     resolve_varnode_from_maps,
@@ -350,23 +351,23 @@ def _exact_const_definition(
         and not instruction.effects
         and instruction.result == destination
         and destination.space in {Space.REGISTER, Space.TEMP}
-        and int(destination.size) == 4
+        and int(destination.size) in {1, 2, 4}
         and len(instruction.inputs) == 1
         and instruction.inputs[0].space is Space.CONST
-        and int(instruction.inputs[0].size) == 4
+        and int(instruction.inputs[0].size) == int(destination.size)
     )
 
 
-_STATE_TRANSFORM_VALUE_OPS = frozenset(
-    {ValueOpKind.XOR, ValueOpKind.ADD, ValueOpKind.SUB}
-)
 _MAX_STATE_TRANSFORM_VALUE_INSTRUCTIONS = 3
 _MAX_SOURCE_STATE_TRANSFORM_VALUE_INSTRUCTIONS = 12
+_STATE_TRANSFORM_SHIFT_OPS = frozenset(
+    {ValueOpKind.SHL, ValueOpKind.SHR, ValueOpKind.SAR}
+)
 
 
 def _is_exact_u32_value_instruction(instruction: Instruction) -> bool:
     return bool(
-        instruction.operation in _STATE_TRANSFORM_VALUE_OPS
+        instruction.operation in FORWARD_EVAL_SUPPORTED_BINARY_OPS
         and instruction.control is None
         and instruction.memory is None
         and not instruction.effects
@@ -374,9 +375,13 @@ def _is_exact_u32_value_instruction(instruction: Instruction) -> bool:
         and int(instruction.result.size) == 4
         and len(instruction.inputs) == 2
         and instruction.inputs[0] != instruction.inputs[1]
-        and all(
-            operand.space in {Space.REGISTER, Space.TEMP} and int(operand.size) == 4
-            for operand in instruction.inputs
+        and instruction.inputs[0].space in {Space.REGISTER, Space.TEMP}
+        and int(instruction.inputs[0].size) == 4
+        and instruction.inputs[1].space in {Space.REGISTER, Space.TEMP}
+        and (
+            int(instruction.inputs[1].size) in {1, 2, 4}
+            if instruction.operation in _STATE_TRANSFORM_SHIFT_OPS
+            else int(instruction.inputs[1].size) == 4
         )
     )
 

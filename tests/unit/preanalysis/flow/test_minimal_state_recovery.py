@@ -318,6 +318,43 @@ def _or(
     )
 
 
+def _mul(
+    ea: int,
+    left: MopSnapshot,
+    right: MopSnapshot,
+    dst: MopSnapshot,
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0,
+        ea=ea,
+        operands=(),
+        l=left,
+        r=right,
+        d=dst,
+        kind=InsnKind.MUL,
+        value_op_kind=ValueOpKind.MUL,
+    )
+
+
+def _shift(
+    ea: int,
+    operation: ValueOpKind,
+    left: MopSnapshot,
+    count: MopSnapshot,
+    dst: MopSnapshot,
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=0,
+        ea=ea,
+        operands=(),
+        l=left,
+        r=count,
+        d=dst,
+        kind=InsnKind.UNKNOWN,
+        value_op_kind=operation,
+    )
+
+
 def _blk(
     serial, succs, preds, insns, *, ea=None, kind=BlockKind.UNKNOWN
 ) -> BlockSnapshot:
@@ -3725,7 +3762,11 @@ def test_shared_store_partitions_through_a_bottom_glue_merge(_seam) -> None:
     assert by_write_block[50].via_block == 40
 
 
-def _nested_transitive_merge_fg(*, supported: bool) -> FlowGraph:
+def _nested_transitive_merge_fg(
+    *,
+    supported: bool,
+    nested_operation: ValueOpKind = ValueOpKind.SUB,
+) -> FlowGraph:
     """Real residual shape with the source and handler anchors from MMORPG.
 
     ``blk123@0x7FF859C08D35`` computes ``edx = eax ^ (edx - ecx)`` and
@@ -3733,7 +3774,16 @@ def _nested_transitive_merge_fg(*, supported: bool) -> FlowGraph:
     entering ``blk4@0x7FF859C070C4``.  Each source has a distinct concrete
     register environment, so the producer must split the two incoming paths.
     """
-    nested = _nested_sub(_reg(10), _reg(9))
+    count = (
+        replace(_reg(9), size=1)
+        if nested_operation in {ValueOpKind.SHL, ValueOpKind.SHR, ValueOpKind.SAR}
+        else _reg(9)
+    )
+    nested = (
+        _nested_sub(_reg(10), count)
+        if nested_operation is ValueOpKind.SUB
+        else _nested_value(nested_operation, _reg(10), count)
+    )
     if not supported:
         nested = MopSnapshot(
             t=-1,
@@ -3754,7 +3804,11 @@ def _nested_transitive_merge_fg(*, supported: bool) -> FlowGraph:
                 (4,),
                 (
                     _mov(0x7FF859C07656, _num(0), _reg(8)),
-                    _mov(0x7FF859C0765A, _num(0), _reg(9)),
+                    _mov(
+                        0x7FF859C0765A,
+                        replace(_num(0), size=1) if count.size == 1 else _num(0),
+                        count,
+                    ),
                     _mov(0x7FF859C0765E, _num(0x764595C6), _reg(10)),
                 ),
                 ea=0x7FF859C07656,
@@ -3766,7 +3820,11 @@ def _nested_transitive_merge_fg(*, supported: bool) -> FlowGraph:
                 (4,),
                 (
                     _mov(0x7FF859C08BFE, _num(0), _reg(8)),
-                    _mov(0x7FF859C08C02, _num(0), _reg(9)),
+                    _mov(
+                        0x7FF859C08C02,
+                        replace(_num(0), size=1) if count.size == 1 else _num(0),
+                        count,
+                    ),
                     _mov(0x7FF859C08C06, _num(0x078CAFFE), _reg(10)),
                 ),
                 ea=0x7FF859C08BFE,
@@ -3828,6 +3886,28 @@ def test_nested_subinsn_transitive_merge_partitions_real_mmorpg_corridors(
     assert by_source[122].via_block == 123
     assert by_source[122].proof is not None
     assert by_source[122].proof.kind == "transitive_glue_partitioned"
+
+
+def test_nested_shift_subinsn_reaches_shared_evaluator(_seam) -> None:
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
+        _nested_transitive_merge_fg(
+            supported=True,
+            nested_operation=ValueOpKind.SHL,
+        ),
+        _dispatcher({0x764595C6: 121, 0x078CAFFE: 34}, exit_block=99),
+        _STATE_OFF,
+        dispatcher_entry_serial=4,
+    )
+    by_source = {
+        int(transition.write_block): transition
+        for transition in transitions
+        if int(transition.via_block or -1) == 123
+    }
+
+    assert by_source[45].next_state == 0x764595C6
+    assert by_source[45].target_handler == 121
+    assert by_source[122].next_state == 0x078CAFFE
+    assert by_source[122].target_handler == 34
 
 
 def test_nested_subinsn_transitive_merge_abstains_for_unsupported_expression(
@@ -5657,12 +5737,32 @@ def _arithmetic_state_feeder_fixture(
 ]:
     """One exact binary state-transform feeder entering equality root15."""
 
+    shift_operation = operation in {
+        ValueOpKind.SHL,
+        ValueOpKind.SHR,
+        ValueOpKind.SAR,
+    }
+    right_operand = replace(_reg(9), size=1) if shift_operation else _reg(9)
     if operation is ValueOpKind.XOR:
         transform = _xor(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
     elif operation is ValueOpKind.ADD:
         transform = _add(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
     elif operation is ValueOpKind.SUB:
         transform = _sub(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
+    elif operation is ValueOpKind.AND:
+        transform = _and(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
+    elif operation is ValueOpKind.OR:
+        transform = _or(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
+    elif operation is ValueOpKind.MUL:
+        transform = _mul(feeder_ea, _reg(8), _reg(9), _stk(_STATE_OFF))
+    elif operation in {ValueOpKind.SHL, ValueOpKind.SHR, ValueOpKind.SAR}:
+        transform = _shift(
+            feeder_ea,
+            operation,
+            _reg(8),
+            right_operand,
+            _stk(_STATE_OFF),
+        )
     else:
         raise AssertionError(operation)
 
@@ -5674,7 +5774,11 @@ def _arithmetic_state_feeder_fixture(
                 (),
                 (
                     _mov(source_ea, _num(left), _reg(8)),
-                    _mov(source_ea + 5, _num(right), _reg(9)),
+                    _mov(
+                        source_ea + 5,
+                        replace(_num(right), size=1) if shift_operation else _num(right),
+                        right_operand,
+                    ),
                     _goto(source_ea + 10, feeder_serial),
                 ),
                 ea=source_ea,
@@ -7321,7 +7425,7 @@ def test_captured_nested_u32_state_transform_rejects_non_exact_programs(
         )
     elif variant == "unsupported-expression-op":
         expression = _nested_value(
-            ValueOpKind.AND,
+            ValueOpKind.SHL,
             _reg(16),
             _nested_value(ValueOpKind.XOR, _reg(8), _reg(72)),
         )
@@ -7497,6 +7601,72 @@ def test_captured_nested_u32_state_transform_rejects_non_exact_programs(
             0x180030060,
             "multi_entry_global_fold",
         ),
+        (
+            ValueOpKind.AND,
+            0x12345678,
+            0x00FF00FF,
+            0x00340078,
+            706,
+            707,
+            0x1800300C0,
+            0x1800300E0,
+            "predecessor_partitioned",
+        ),
+        (
+            ValueOpKind.OR,
+            0x12345678,
+            0x00FF00FF,
+            0x12FF56FF,
+            708,
+            709,
+            0x180030100,
+            0x180030120,
+            "predecessor_partitioned",
+        ),
+        (
+            ValueOpKind.MUL,
+            0x12345678,
+            0x00010203,
+            0xF5C1F368,
+            710,
+            711,
+            0x180030140,
+            0x180030160,
+            "predecessor_partitioned",
+        ),
+        (
+            ValueOpKind.SHL,
+            0x12345678,
+            5,
+            0x468ACF00,
+            712,
+            713,
+            0x180030180,
+            0x1800301A0,
+            "predecessor_partitioned",
+        ),
+        (
+            ValueOpKind.SHR,
+            0x92345678,
+            5,
+            0x0491A2B3,
+            714,
+            715,
+            0x1800301C0,
+            0x1800301E0,
+            "predecessor_partitioned",
+        ),
+        (
+            ValueOpKind.SAR,
+            0x92345678,
+            5,
+            0xFC91A2B3,
+            716,
+            717,
+            0x180030200,
+            0x180030220,
+            "predecessor_partitioned",
+        ),
     ),
     ids=(
         "xor-403-predecessor",
@@ -7505,6 +7675,12 @@ def test_captured_nested_u32_state_transform_rejects_non_exact_programs(
         "sub-u32-underflow",
         "add-u32-overflow",
         "xor-multi-entry-parity",
+        "and",
+        "or",
+        "mul-u32-overflow",
+        "shl",
+        "shr",
+        "sar-negative",
     ),
 )
 def test_trusted_arithmetic_state_feeder_reconciles_without_const_carrier_proof(
@@ -8070,7 +8246,7 @@ def test_arithmetic_state_feeder_malformed_evidence_rejects_atomically(
                 transform,
                 opcode=0xDE,
                 kind=InsnKind.UNKNOWN,
-                value_op_kind=ValueOpKind.AND,
+                value_op_kind=ValueOpKind.SHL,
             ),
             *feeder_insns[1:],
         )

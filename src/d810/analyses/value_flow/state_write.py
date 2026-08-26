@@ -21,12 +21,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from d810.analyses.abstract_domains.operations import BinaryOp, eval_const_binary
 from d810.core.typing import Callable, Dict, List, Optional
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import InsnSnapshot
 from d810.ir.insn_projection import project_instruction_sequence
 from d810.ir.instructions import Instruction, InstructionEffectKind
 from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
+
+
+_FORWARD_EVAL_BINARY_OPS = {
+    ValueOpKind.ADD: BinaryOp.ADD,
+    ValueOpKind.SUB: BinaryOp.SUB,
+    ValueOpKind.MUL: BinaryOp.MUL,
+    ValueOpKind.AND: BinaryOp.AND,
+    ValueOpKind.OR: BinaryOp.OR,
+    ValueOpKind.XOR: BinaryOp.XOR,
+    ValueOpKind.SHL: BinaryOp.SHL,
+    ValueOpKind.SHR: BinaryOp.SHR_U,
+    ValueOpKind.SAR: BinaryOp.SHR_S,
+}
+FORWARD_EVAL_SUPPORTED_BINARY_OPS = frozenset(_FORWARD_EVAL_BINARY_OPS)
 
 
 @dataclass(frozen=True)
@@ -165,19 +180,12 @@ def _binary_result(
     left: int,
     right: int,
 ) -> Optional[int]:
-    if operation is ValueOpKind.XOR:
-        return left ^ right
-    if operation is ValueOpKind.SUB:
-        return left - right
-    if operation is ValueOpKind.ADD:
-        return left + right
-    if operation is ValueOpKind.AND:
-        return left & right
-    if operation is ValueOpKind.OR:
-        return left | right
-    if operation is ValueOpKind.MUL:
-        return left * right
-    return None
+    binary_op = _FORWARD_EVAL_BINARY_OPS.get(operation)
+    return (
+        None
+        if binary_op is None
+        else eval_const_binary(binary_op, left, right, width=32)
+    )
 
 
 def _extended_result(
@@ -300,14 +308,7 @@ def forward_eval_instruction(
                 source_size=int(source.size if source is not None else 4),
                 output_size=int(dest.size if dest is not None else 4),
             )
-    elif operation in {
-        ValueOpKind.ADD,
-        ValueOpKind.SUB,
-        ValueOpKind.AND,
-        ValueOpKind.OR,
-        ValueOpKind.XOR,
-        ValueOpKind.MUL,
-    }:
+    elif operation in FORWARD_EVAL_SUPPORTED_BINARY_OPS:
         left = resolve(instruction.inputs[0] if len(instruction.inputs) >= 1 else None)
         right = resolve(instruction.inputs[1] if len(instruction.inputs) >= 2 else None)
         if left is not None and right is not None:
