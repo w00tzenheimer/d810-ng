@@ -123,6 +123,35 @@ def test_canonical_u32_shifts_use_modulo_width_counts(
     assert stk[_STATE_STKOFF] == expected
 
 
+@pytest.mark.parametrize(
+    ("operation", "count", "expected"),
+    (
+        (ValueOpKind.ROL, 0, 0x0123456789ABCDEF),
+        (ValueOpKind.ROL, 8, 0x23456789ABCDEF01),
+        (ValueOpKind.ROL, 64, 0x0123456789ABCDEF),
+        (ValueOpKind.ROL, 65, 0x02468ACF13579BDE),
+        (ValueOpKind.ROR, 8, 0xEF0123456789ABCD),
+        (ValueOpKind.ROR, 63, 0x02468ACF13579BDE),
+    ),
+)
+def test_canonical_u64_rotates_use_the_result_width(
+    operation: ValueOpKind,
+    count: int,
+    expected: int,
+) -> None:
+    stk: dict[int, int] = {}
+    instruction = Instruction(
+        operation,
+        inputs=(_const(0x0123456789ABCDEF, size=8), _const(count, size=1)),
+        result=_stack(_STATE_STKOFF, size=8),
+    )
+
+    result = forward_eval_instruction(instruction, stk, {}, _STATE_STKOFF)
+
+    assert result == expected
+    assert stk[_STATE_STKOFF] == expected
+
+
 def test_registered_backend_provider_accepts_canonical_instruction() -> None:
     stk: dict[int, int] = {}
     reg = {1: 0xAA00AA00}
@@ -213,6 +242,55 @@ def test_public_forward_eval_uses_projected_subinstruction_sequence() -> None:
 
     assert result == 0x2910FD05
     assert stk[_STATE_STKOFF] == 0x2910FD05
+
+
+def test_public_forward_eval_uses_projected_u64_rotate_subinstruction() -> None:
+    stk: dict[int, int] = {}
+    nested = MopSnapshot(
+        size=8,
+        kind=OperandKind.SUBINSN,
+        sub_value_op_kind=ValueOpKind.ROR,
+        sub_l=_num_mop(0x0123456789ABCDEF, size=8),
+        sub_r=_num_mop(8, size=1),
+    )
+    snapshot = InsnSnapshot(
+        opcode=0,
+        ea=0x180012348,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=nested,
+        d=_stk_mop(_STATE_STKOFF, size=8),
+    )
+
+    result = forward_eval_insn(snapshot, stk, {}, _STATE_STKOFF)
+
+    assert result == 0xEF0123456789ABCD
+    assert stk[_STATE_STKOFF] == 0xEF0123456789ABCD
+
+
+def test_projected_rotate_temp_does_not_alias_source_register_zero() -> None:
+    stk: dict[int, int] = {}
+    reg = {0: 0x0123456789ABCDEF}
+    nested = MopSnapshot(
+        size=8,
+        kind=OperandKind.SUBINSN,
+        sub_value_op_kind=ValueOpKind.ROR,
+        sub_l=_reg_mop(0, size=8),
+        sub_r=_num_mop(8, size=1),
+    )
+    snapshot = InsnSnapshot(
+        opcode=0,
+        ea=0x18001234C,
+        operands=(),
+        kind=InsnKind.MOV,
+        l=nested,
+        d=_stk_mop(_STATE_STKOFF, size=8),
+    )
+
+    result = forward_eval_insn(snapshot, stk, reg, _STATE_STKOFF)
+
+    assert result == 0xEF0123456789ABCD
+    assert stk[_STATE_STKOFF] == 0xEF0123456789ABCD
 
 
 def test_canonical_store_to_global_state_cell() -> None:

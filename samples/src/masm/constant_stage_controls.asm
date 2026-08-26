@@ -52,6 +52,20 @@ readonly_then_subtree:
     xor eax, ecx
     ret
 
+; D810_EXPORT state_rotate_rol4
+PUBLIC state_rotate_rol4
+state_rotate_rol4:
+    mov eax, ecx
+    rol eax, 0Dh
+    ret
+
+; D810_EXPORT state_rotate_ror8
+PUBLIC state_rotate_ror8
+state_rotate_ror8:
+    mov rax, rcx
+    ror rax, 11h
+    ret
+
 ; D810_EXPORT forward_selected_maturity
 PUBLIC forward_selected_maturity
 forward_selected_maturity:

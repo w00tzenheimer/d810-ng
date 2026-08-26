@@ -40,6 +40,8 @@ _FORWARD_EVAL_BINARY_OPS = {
     ValueOpKind.SHL: BinaryOp.SHL,
     ValueOpKind.SHR: BinaryOp.SHR_U,
     ValueOpKind.SAR: BinaryOp.SHR_S,
+    ValueOpKind.ROL: BinaryOp.ROL,
+    ValueOpKind.ROR: BinaryOp.ROR,
 }
 FORWARD_EVAL_SUPPORTED_BINARY_OPS = frozenset(_FORWARD_EVAL_BINARY_OPS)
 
@@ -179,12 +181,14 @@ def _binary_result(
     operation: ValueOpKind,
     left: int,
     right: int,
+    *,
+    width: int,
 ) -> Optional[int]:
     binary_op = _FORWARD_EVAL_BINARY_OPS.get(operation)
     return (
         None
         if binary_op is None
-        else eval_const_binary(binary_op, left, right, width=32)
+        else eval_const_binary(binary_op, left, right, width=width)
     )
 
 
@@ -312,14 +316,24 @@ def forward_eval_instruction(
         left = resolve(instruction.inputs[0] if len(instruction.inputs) >= 1 else None)
         right = resolve(instruction.inputs[1] if len(instruction.inputs) >= 2 else None)
         if left is not None and right is not None:
-            val = _binary_result(operation, left, right)
+            result_size = int(dest.size if dest is not None else 0)
+            if result_size <= 0 and instruction.inputs:
+                result_size = int(instruction.inputs[0].size)
+            val = _binary_result(
+                operation,
+                left,
+                right,
+                width=max(result_size, 1) * 8,
+            )
     else:
         return None
 
     if val is None:
         return None
 
-    val = int(val) & 0xFFFFFFFF
+    result_size = int(dest.size if dest is not None else 0)
+    result_width = max(result_size, 1) * 8 if result_size > 0 else 32
+    val = int(val) & ((1 << result_width) - 1)
     if _store_varnode_value(
         dest,
         val,

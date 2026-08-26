@@ -34,6 +34,8 @@ class BinaryOp(Enum):
     SHL = "shl"
     SHR_U = "shr_u"  # logical right shift
     SHR_S = "shr_s"  # arithmetic right shift
+    ROL = "rol"
+    ROR = "ror"
 
 
 class UnaryOp(Enum):
@@ -87,6 +89,12 @@ def eval_const_binary(op: BinaryOp, left: int, right: int, width: int) -> int:
         return a >> (b % width)
     if op is BinaryOp.SHR_S:
         return (_to_signed(a, width) >> (b % width)) & m
+    if op is BinaryOp.ROL:
+        count = b % width
+        return ((a << count) | (a >> ((width - count) % width))) & m
+    if op is BinaryOp.ROR:
+        count = b % width
+        return ((a >> count) | (a << ((width - count) % width))) & m
     raise ValueError(f"unhandled binary op {op!r}")
 
 

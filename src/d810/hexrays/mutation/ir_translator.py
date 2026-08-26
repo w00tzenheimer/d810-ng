@@ -13,6 +13,7 @@ import os
 import ida_hexrays
 import idaapi
 
+from d810.core.bits import rotate_helper_spec
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING, Callable
 
@@ -33,6 +34,7 @@ from d810.ir.flowgraph import (
 )
 from d810.ir.maturity import SnapshotForm, snapshot_form_for_maturity
 from d810.ir.flowgraph import MopSnapshot as CfgMopSnapshot
+from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.transforms.plan import (
     ExecutionPolicy,
@@ -408,6 +410,57 @@ def _address_inner_mop(mop: object | None) -> object | None:
     return inner if inner is not None else addr
 
 
+def _capture_rotate_helper_subinstruction(
+    inner: object,
+    *,
+    result_size: int,
+    lvar_stkoff_map: dict[int, int] | None,
+) -> tuple[ValueOpKind, CfgMopSnapshot, CfgMopSnapshot] | None:
+    """Normalize one exact value-producing Hex-Rays rotate helper call."""
+
+    if (
+        inner is None
+        or getattr(inner, "opcode", None) != ida_hexrays.m_call
+        or getattr(getattr(inner, "r", None), "t", None) != ida_hexrays.mop_z
+    ):
+        return None
+    helper_mop = getattr(inner, "l", None)
+    if helper_mop is None or getattr(helper_mop, "t", None) != ida_hexrays.mop_h:
+        return None
+    spec = rotate_helper_spec(getattr(helper_mop, "helper", None))
+    if spec is None:
+        return None
+    operation_name, width = spec
+    width_size = width // 8
+    if int(result_size) != width_size:
+        return None
+    callinfo_mop = getattr(inner, "d", None)
+    if callinfo_mop is None or getattr(callinfo_mop, "t", None) != ida_hexrays.mop_f:
+        return None
+    callinfo = getattr(callinfo_mop, "f", None)
+    args = tuple(getattr(callinfo, "args", ()) if callinfo is not None else ())
+    if len(args) != 2:
+        return None
+    value = capture_mop_snapshot(args[0], lvar_stkoff_map)
+    count = capture_mop_snapshot(args[1], lvar_stkoff_map)
+    if (
+        value is None
+        or int(value.size) != width_size
+        or count is None
+        or int(count.size) != 1
+        or count.kind
+        not in {
+            OperandKind.NUMBER,
+            OperandKind.REGISTER,
+            OperandKind.STACK,
+            OperandKind.LVAR,
+        }
+    ):
+        return None
+    operation = ValueOpKind.ROL if operation_name == "rol" else ValueOpKind.ROR
+    return operation, value, count
+
+
 def capture_mop_snapshot(
     mop: "ida_hexrays.mop_t",
     lvar_stkoff_map: dict[int, int] | None = None,
@@ -451,6 +504,24 @@ def capture_mop_snapshot(
         sub_kind = sub_value_op_kind = sub_raw_opcode = sub_predicate_kind = None
         sub_l = sub_r = None
         if inner is not None:
+            rotate = _capture_rotate_helper_subinstruction(
+                inner,
+                result_size=int(size),
+                lvar_stkoff_map=lvar_stkoff_map,
+            )
+            if rotate is not None:
+                sub_value_op_kind, sub_l, sub_r = rotate
+                return CfgMopSnapshot(
+                    t=t,
+                    size=size,
+                    stack_refs=_stack_refs_from_mop(mop),
+                    sub_kind=InsnKind.UNKNOWN,
+                    sub_value_op_kind=sub_value_op_kind,
+                    sub_raw_opcode=int(ida_hexrays.m_call),
+                    sub_l=sub_l,
+                    sub_r=sub_r,
+                    kind=kind,
+                )
             # Match the defensive ``getattr`` used for ``l``/``r`` below so a
             # partial sub-instruction (a minsn without an opcode, or a test
             # mock that models only operands) degrades ``sub_kind`` to None

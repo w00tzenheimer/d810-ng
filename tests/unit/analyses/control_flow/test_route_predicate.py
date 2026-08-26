@@ -85,6 +85,21 @@ def test_route_from_materialized_midtree_target_uses_that_root():
     assert dag.route_from(53, state) == 57
 
 
+def test_u64_route_preserves_state_high_half() -> None:
+    """States that collide in low U32 remain distinct in a U64 dispatcher."""
+
+    low = 0x00000000DEADBEEF
+    high = 0x12345678DEADBEEF
+    dag = DecisionDag(
+        64,
+        {1: _node(1, "jz", high, 100, 200)},
+        root=1,
+    )
+
+    assert dag.route(high) == 100
+    assert dag.route(low) == 200
+
+
 def test_blk56_partition_cell_is_exactly_0x7D9C16EC():
     # What routes to blk56? Only state 0x7D9C16EC -- proven by the partition.
     dag = _sub7ffd_condition_chain()

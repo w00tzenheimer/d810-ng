@@ -1,6 +1,7 @@
 import pytest
 
 # Import from d810.core.bits (IDA-independent bitwise utilities)
+from d810.core import bits
 from d810.core.bits import (
     signed_to_unsigned,
     unsigned_to_signed,
@@ -152,6 +153,27 @@ def test_invalid_sizes():
         unsigned_to_signed(42, 32)
     with pytest.raises(KeyError):
         get_parity_flag(1, 2, 64)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    (
+        ("__ROL1__", ("rol", 8)),
+        ("!__ROR2__", ("ror", 16)),
+        ("__ROL4__", ("rol", 32)),
+        ("!__ROR8__", ("ror", 64)),
+    ),
+)
+def test_rotate_helper_spec_accepts_exact_supported_helpers(name, expected):
+    assert bits.rotate_helper_spec(name) == expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    (None, "", "ROL8", "__ROL16__", "__ROL8___", "!!__ROL8__"),
+)
+def test_rotate_helper_spec_rejects_noncanonical_helpers(name):
+    assert bits.rotate_helper_spec(name) is None
 
 
 class TestPopcount:

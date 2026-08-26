@@ -39,7 +39,7 @@ def test_effect_free_operand_tree_accepts_supported_shift_subinstructions(
 
 
 @pytest.mark.parametrize("operation", (ValueOpKind.ROL, ValueOpKind.ROR))
-def test_effect_free_operand_tree_rejects_unsupported_rotate_subinstructions(
+def test_effect_free_operand_tree_accepts_pure_rotate_subinstructions(
     operation: ValueOpKind,
 ) -> None:
-    assert not is_effect_free_operand_tree(_binary_subinstruction(operation))
+    assert is_effect_free_operand_tree(_binary_subinstruction(operation))

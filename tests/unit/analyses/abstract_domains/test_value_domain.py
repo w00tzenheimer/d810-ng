@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from d810.analyses.abstract_domains import KnownBits, WrappedInterval, Satisfiability
-from d810.analyses.abstract_domains.operations import BinaryOp, CompareOp, UnaryOp
+from d810.analyses.abstract_domains.operations import (
+    BinaryOp,
+    CompareOp,
+    eval_const_binary,
+)
 from d810.analyses.abstract_domains.value_domain import (
     KnownBitsValueDomain,
     WrappedIntervalValueDomain,
@@ -63,6 +67,23 @@ def test_known_bits_shift_by_constant_is_precise():
     d = KnownBitsValueDomain()
     shl = d.eval_binary(BinaryOp.SHL, d.const(1, W), d.const(4, W), W)
     assert shl.to_const() == (1 << 4)
+
+
+def test_concrete_rotates_are_width_aware_without_symbolic_solving():
+    assert eval_const_binary(BinaryOp.ROL, 0x81, 1, 8) == 0x03
+    assert eval_const_binary(BinaryOp.ROR, 0x81, 1, 8) == 0xC0
+    assert eval_const_binary(BinaryOp.ROL, 0x12345678, 8, 32) == 0x34567812
+    assert (
+        eval_const_binary(BinaryOp.ROR, 0x0123456789ABCDEF, 8, 64) == 0xEF0123456789ABCD
+    )
+
+
+def test_concrete_rotates_reduce_counts_modulo_result_width():
+    value = 0x0123456789ABCDEF
+    assert eval_const_binary(BinaryOp.ROL, value, 0, 64) == value
+    assert eval_const_binary(BinaryOp.ROL, value, 64, 64) == value
+    assert eval_const_binary(BinaryOp.ROL, value, 65, 64) == 0x02468ACF13579BDE
+    assert eval_const_binary(BinaryOp.ROR, value, 63, 64) == 0x02468ACF13579BDE
 
 
 def test_satisfies_constant_compare():

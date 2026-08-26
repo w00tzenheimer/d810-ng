@@ -710,6 +710,8 @@ _EFFECT_FREE_SUPPORTED_BINARY_VALUE_OPS = frozenset(
         ValueOpKind.SHL,
         ValueOpKind.SHR,
         ValueOpKind.SAR,
+        ValueOpKind.ROL,
+        ValueOpKind.ROR,
     }
 )
 
@@ -743,8 +745,7 @@ def is_effect_free_operand_tree(
     seen.add(identity)
     if (
         getattr(operand, "sub_kind", None) not in _EFFECT_FREE_PURE_SUBINSNS
-        and _subinsn_value_op(operand)
-        not in _EFFECT_FREE_SUPPORTED_BINARY_VALUE_OPS
+        and _subinsn_value_op(operand) not in _EFFECT_FREE_SUPPORTED_BINARY_VALUE_OPS
     ):
         return False
     if tuple(getattr(operand, "args", ()) or ()):
@@ -867,8 +868,7 @@ def operand_sizes(
     fail-closed width checks used by portable analyses.
     """
     return tuple(
-        int(getattr(operand, "size", 0) or 0)
-        for operand in operand_snapshots(insn)
+        int(getattr(operand, "size", 0) or 0) for operand in operand_snapshots(insn)
     )
 
 

@@ -4277,9 +4277,7 @@ def test_exact_state_normalizer_chain_routes_to_semantic_destination() -> None:
     assert resolved.is_return is False
 
 
-def test_recovered_semantic_handler_is_not_reclassified_as_invalid_normalizer() -> (
-    None
-):
+def test_recovered_semantic_handler_is_not_reclassified_as_invalid_normalizer() -> None:
     """A semantic handler may end with the shared next-state carrier shape.
 
     Target B has several handlers whose real computation precedes a final
@@ -4491,9 +4489,7 @@ def test_missing_transition_state_is_recovered_from_exact_stack_carrier() -> Non
             **graph.blocks,
             3: replace(
                 feeder,
-                insn_snapshots=(
-                    _mov(0x1300, carrier, _stk(_STATE_OFF)),
-                ),
+                insn_snapshots=(_mov(0x1300, carrier, _stk(_STATE_OFF)),),
             ),
             15: replace(
                 source,
@@ -4534,9 +4530,7 @@ def test_stack_carrier_enters_reciprocal_decision_dag_alias() -> None:
             3: replace(
                 feeder,
                 succs=(17,),
-                insn_snapshots=(
-                    _mov(0x1300, carrier, _stk(_STATE_OFF)),
-                ),
+                insn_snapshots=(_mov(0x1300, carrier, _stk(_STATE_OFF)),),
             ),
             4: replace(root, preds=(17,)),
             15: replace(
@@ -4576,9 +4570,7 @@ def test_state_cell_cannot_alias_itself_as_a_source_carrier() -> None:
             **graph.blocks,
             3: replace(
                 feeder,
-                insn_snapshots=(
-                    _mov(0x1300, _stk(_STATE_OFF), _stk(_STATE_OFF)),
-                ),
+                insn_snapshots=(_mov(0x1300, _stk(_STATE_OFF), _stk(_STATE_OFF)),),
             ),
             15: replace(
                 source,
@@ -4857,9 +4849,7 @@ def test_state_writing_feeder_without_source_carrier_uses_recovered_route() -> N
             16: replace(source, insn_snapshots=(goto_feeder,)),
             3: replace(
                 feeder,
-                insn_snapshots=(
-                    _mov(0x1300, _num(0x079323F9), _stk(_STATE_OFF)),
-                ),
+                insn_snapshots=(_mov(0x1300, _num(0x079323F9), _stk(_STATE_OFF)),),
             ),
         },
         entry_serial=graph.entry_serial,
@@ -4906,9 +4896,7 @@ def test_trusted_route_with_nonexact_transform_feeder_rejects_atomically() -> No
             ),
             3: replace(
                 feeder,
-                insn_snapshots=(
-                    _xor(0x1300, _reg(8), _reg(24), _stk(_STATE_OFF)),
-                ),
+                insn_snapshots=(_xor(0x1300, _reg(8), _reg(24), _stk(_STATE_OFF)),),
             ),
         },
         entry_serial=graph.entry_serial,
@@ -4924,15 +4912,18 @@ def test_trusted_route_with_nonexact_transform_feeder_rejects_atomically() -> No
         ),
     )
 
-    assert resolve_materialized_indirect_transfer_targets(
-        (transition,),
-        graph,
-        _dispatcher({}, exit_block=99),
-        (),
-        condition_chain_dag=dag,
-        condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
-        state_var_stkoff=_STATE_OFF,
-    ) == ()
+    assert (
+        resolve_materialized_indirect_transfer_targets(
+            (transition,),
+            graph,
+            _dispatcher({}, exit_block=99),
+            (),
+            condition_chain_dag=dag,
+            condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
+            state_var_stkoff=_STATE_OFF,
+        )
+        == ()
+    )
 
 
 @pytest.mark.parametrize(
@@ -5496,9 +5487,7 @@ def _two_stage_state_transform_fixture():
 
 
 def test_exact_state_transform_accepts_one_pure_state_store_hop(_seam) -> None:
-    graph, dag, _transitions, _unresolved, state = (
-        _two_stage_state_transform_fixture()
-    )
+    graph, dag, _transitions, _unresolved, state = _two_stage_state_transform_fixture()
 
     receipt = state_carrier.prove_exact_u32_state_transform_feeder(
         graph,
@@ -5515,6 +5504,74 @@ def test_exact_state_transform_accepts_one_pure_state_store_hop(_seam) -> None:
     assert receipt.feeder_serial == 4
     assert receipt.state_feeder_serial == 5
     assert receipt.comparison_entry_serial == 6
+
+
+def test_exact_state_transform_accepts_u64_rotate_program(_seam) -> None:
+    source_serial = 810
+    feeder_serial = 811
+    comparison_serial = 812
+    source_ea = 0x180031000
+    feeder_ea = 0x180031020
+    value = 0x0123456789ABCDEF
+    expected_state = 0xEF0123456789ABCD
+    value_reg = replace(_reg(8), size=8)
+    count = replace(_num(8), size=1)
+    state_slot = replace(_stk(_STATE_OFF), size=8)
+    rotate = InsnSnapshot(
+        opcode=0,
+        ea=feeder_ea,
+        operands=(),
+        l=value_reg,
+        r=count,
+        d=state_slot,
+        kind=InsnKind.UNKNOWN,
+        value_op_kind=ValueOpKind.ROR,
+    )
+    graph = FlowGraph(
+        {
+            source_serial: _blk(
+                source_serial,
+                (feeder_serial,),
+                (),
+                (
+                    _mov(source_ea, replace(_num(value), size=8), value_reg),
+                    _goto(source_ea + 8, feeder_serial),
+                ),
+                ea=source_ea,
+            ),
+            feeder_serial: _blk(
+                feeder_serial,
+                (comparison_serial,),
+                (source_serial,),
+                (rotate, _goto(feeder_ea + 4, comparison_serial)),
+                ea=feeder_ea,
+            ),
+            comparison_serial: _blk(
+                comparison_serial,
+                (),
+                (feeder_serial,),
+                (),
+                ea=0x180031040,
+            ),
+        },
+        source_serial,
+        0x180031000,
+    )
+
+    receipt = state_carrier.prove_exact_state_transform_feeder(
+        graph,
+        source_serial,
+        feeder_serial,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        state_size=8,
+        required_comparison_serials=frozenset({comparison_serial}),
+        expected_state=expected_state,
+    )
+
+    assert receipt is not None
+    assert receipt.state == expected_state
+    assert receipt.operation is ValueOpKind.ROR
 
 
 def test_exact_state_transform_accepts_split_final_arithmetic_state_hop(
@@ -5665,9 +5722,7 @@ def test_two_stage_transform_malformed_shapes_fail_closed(
     _seam,
     variant: str,
 ) -> None:
-    graph, dag, _transitions, _unresolved, state = (
-        _two_stage_state_transform_fixture()
-    )
+    graph, dag, _transitions, _unresolved, state = _two_stage_state_transform_fixture()
     blocks = dict(graph.blocks)
     if variant == "missing-state-feeder-reciprocity":
         blocks[5] = replace(blocks[5], preds=())
@@ -5682,16 +5737,12 @@ def test_two_stage_transform_malformed_shapes_fail_closed(
     elif variant == "foreign-state-identity":
         blocks[5] = replace(
             blocks[5],
-            insn_snapshots=(
-                _mov(0x18002D4FA, _reg(8), _stk(_STATE_OFF + 4)),
-            ),
+            insn_snapshots=(_mov(0x18002D4FA, _reg(8), _stk(_STATE_OFF + 4)),),
         )
     elif variant == "unexpected-state-feeder-input":
         blocks[5] = replace(
             blocks[5],
-            insn_snapshots=(
-                _mov(0x18002D4FA, _reg(24), _stk(_STATE_OFF)),
-            ),
+            insn_snapshots=(_mov(0x18002D4FA, _reg(24), _stk(_STATE_OFF)),),
         )
     elif variant == "transform-extra-successor":
         blocks[4] = replace(blocks[4], succs=(5, 101))
@@ -5776,7 +5827,9 @@ def _arithmetic_state_feeder_fixture(
                     _mov(source_ea, _num(left), _reg(8)),
                     _mov(
                         source_ea + 5,
-                        replace(_num(right), size=1) if shift_operation else _num(right),
+                        replace(_num(right), size=1)
+                        if shift_operation
+                        else _num(right),
                         right_operand,
                     ),
                     _goto(source_ea + 10, feeder_serial),
@@ -6134,15 +6187,18 @@ def test_state_transform_source_prefix_remains_exact_and_bounded(
         feeder_insns=feeder_program,
     )
 
-    assert minimal_state_recovery.prove_exact_u32_state_transform_feeder(
-        graph,
-        285,
-        446,
-        state_var_stkoff=_STATE_OFF,
-        state_var_reg=None,
-        required_comparison_serials=frozenset({4, *dag.nodes}),
-        expected_state=0x28F25B96,
-    ) is None
+    assert (
+        minimal_state_recovery.prove_exact_u32_state_transform_feeder(
+            graph,
+            285,
+            446,
+            state_var_stkoff=_STATE_OFF,
+            state_var_reg=None,
+            required_comparison_serials=frozenset({4, *dag.nodes}),
+            expected_state=0x28F25B96,
+        )
+        is None
+    )
 
 
 def test_xdu_widened_u32_state_transform_reuses_low_register_result(_seam) -> None:
@@ -7073,20 +7129,16 @@ def test_multi_entry_shared_transform_partitions_physical_internal_sources(
         dispatcher_entry_serial=5,
         include_multi_entry_back_edges=True,
     )
-    physical = tuple(
-        row for row in recovered if row.write_block in {517, 531}
-    )
+    physical = tuple(row for row in recovered if row.write_block in {517, 531})
 
     assert tuple(
-        (row.write_block, row.via_block, row.next_state)
-        for row in physical
+        (row.write_block, row.via_block, row.next_state) for row in physical
     ) == (
         (517, 518, states[0]),
         (531, 518, states[1]),
     )
     assert all(
-        row.proof is not None
-        and row.proof.kind == "predecessor_partitioned"
+        row.proof is not None and row.proof.kind == "predecessor_partitioned"
         for row in physical
     )
     assert not any(row.write_block == 518 for row in recovered)
@@ -7105,9 +7157,7 @@ def test_partitioned_transform_routes_from_omitted_physical_comparison_forest(
         dispatcher_entry_serial=5,
         include_multi_entry_back_edges=True,
     )
-    physical = tuple(
-        row for row in recovered if row.write_block in {517, 531}
-    )
+    physical = tuple(row for row in recovered if row.write_block in {517, 531})
 
     resolved = resolve_materialized_indirect_transfer_targets(
         physical,
@@ -7155,9 +7205,7 @@ def test_partitioned_internal_transform_malformed_topology_fails_closed(
         dispatcher_entry_serial=5,
         include_multi_entry_back_edges=True,
     )
-    physical = tuple(
-        row for row in recovered if row.write_block in {517, 518, 531}
-    )
+    physical = tuple(row for row in recovered if row.write_block in {517, 518, 531})
     resolved = resolve_materialized_indirect_transfer_targets(
         physical,
         malformed,
@@ -8963,7 +9011,10 @@ def test_empty_switch_table_dag_is_not_candidate_prefix_authority(_seam) -> None
         state_var_reg=None,
     )
 
-    assert observation.status is minimal_state_recovery.CandidatePrefixStatus.NOT_APPLICABLE
+    assert (
+        observation.status
+        is minimal_state_recovery.CandidatePrefixStatus.NOT_APPLICABLE
+    )
     assert observation.authority is None
 
 
@@ -9272,6 +9323,7 @@ def test_candidate_prefix_concrete_alternate_rows_complete_feeder_partition(
         365,
         496,
     )
+
 
 def test_candidate_prefix_reconciliation_filters_only_physical_feeder_arm(
     _seam,
@@ -9632,9 +9684,7 @@ def test_selected_carrier_rejects_unsafe_post_state_setup_corridor(
     blocks[330] = replace(
         feeder,
         succs=(331,),
-        insn_snapshots=(
-            _mov(int(feeder.start_ea) + 4, _reg(8), _stk(_STATE_OFF)),
-        ),
+        insn_snapshots=(_mov(int(feeder.start_ea) + 4, _reg(8), _stk(_STATE_OFF)),),
     )
     setup_insns = (
         (

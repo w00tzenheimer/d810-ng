@@ -349,6 +349,75 @@ def test_capture_mop_snapshot_preserves_nested_value_op_kind():
     assert nested_snapshot.sub_l.stack_refs == (0x38,)
 
 
+@pytest.mark.parametrize(
+    ("helper", "size", "operation"),
+    (
+        ("!__ROL1__", 1, ValueOpKind.ROL),
+        ("!__ROR2__", 2, ValueOpKind.ROR),
+        ("!__ROL4__", 4, ValueOpKind.ROL),
+        ("!__ROR8__", 8, ValueOpKind.ROR),
+    ),
+)
+def test_capture_mop_snapshot_normalizes_exact_rotate_helper_calls(
+    helper,
+    size,
+    operation,
+):
+    value_arg = SimpleNamespace(t=ida_hexrays.mop_r, size=size, r=17)
+    count_arg = SimpleNamespace(
+        t=ida_hexrays.mop_n,
+        size=1,
+        nnn=SimpleNamespace(value=7),
+    )
+    call = SimpleNamespace(
+        opcode=ida_hexrays.m_call,
+        l=SimpleNamespace(t=ida_hexrays.mop_h, size=0, helper=helper),
+        r=SimpleNamespace(t=ida_hexrays.mop_z, size=0),
+        d=SimpleNamespace(
+            t=ida_hexrays.mop_f,
+            size=0,
+            f=SimpleNamespace(args=(value_arg, count_arg)),
+        ),
+    )
+    nested_snapshot = capture_mop_snapshot(
+        SimpleNamespace(t=ida_hexrays.mop_d, size=size, d=call)
+    )
+
+    assert nested_snapshot is not None
+    assert nested_snapshot.sub_value_op_kind is operation
+    assert nested_snapshot.sub_l is not None
+    assert nested_snapshot.sub_l.kind is OperandKind.REGISTER
+    assert nested_snapshot.sub_l.size == size
+    assert nested_snapshot.sub_r is not None
+    assert nested_snapshot.sub_r.kind is OperandKind.NUMBER
+    assert nested_snapshot.sub_r.size == 1
+
+
+def test_capture_mop_snapshot_does_not_purify_malformed_rotate_helper_call():
+    value_arg = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=17)
+    wrong_width_count = SimpleNamespace(
+        t=ida_hexrays.mop_n,
+        size=4,
+        nnn=SimpleNamespace(value=7),
+    )
+    call = SimpleNamespace(
+        opcode=ida_hexrays.m_call,
+        l=SimpleNamespace(t=ida_hexrays.mop_h, size=0, helper="!__ROL4__"),
+        r=SimpleNamespace(t=ida_hexrays.mop_z, size=0),
+        d=SimpleNamespace(
+            t=ida_hexrays.mop_f,
+            size=0,
+            f=SimpleNamespace(args=(value_arg, wrong_width_count)),
+        ),
+    )
+    nested_snapshot = capture_mop_snapshot(
+        SimpleNamespace(t=ida_hexrays.mop_d, size=4, d=call)
+    )
+
+    assert nested_snapshot is not None
+    assert nested_snapshot.sub_value_op_kind is not ValueOpKind.ROL
+
+
 def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():
     assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jnz) is (PredicateKind.NE)
     assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jz) is PredicateKind.EQ

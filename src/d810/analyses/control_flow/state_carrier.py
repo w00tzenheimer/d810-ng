@@ -47,6 +47,7 @@ __all__ = [
     "observes_u32_state_feeder_candidate",
     "observes_u32_state_transform_feeder_candidate",
     "prove_exact_u32_carrier_state_write",
+    "prove_exact_state_transform_feeder",
     "prove_exact_u32_state_transform_feeder",
 ]
 
@@ -67,7 +68,7 @@ class ExactCarrierStateWrite:
 
 @dataclass(frozen=True, slots=True)
 class ExactStateTransformFeeder:
-    """One exact bounded U32 expression into recovered state."""
+    """One exact bounded fixed-width expression into recovered state."""
 
     state: int
     source_serial: int
@@ -206,7 +207,9 @@ def _prove_post_state_setup_corridor(
             instruction for instruction in instructions if instruction.control is None
         )
         control_instructions = tuple(
-            instruction for instruction in instructions if instruction.control is not None
+            instruction
+            for instruction in instructions
+            if instruction.control is not None
         )
         setup_instructions += len(value_instructions)
         if (
@@ -351,7 +354,7 @@ def _exact_const_definition(
         and not instruction.effects
         and instruction.result == destination
         and destination.space in {Space.REGISTER, Space.TEMP}
-        and int(destination.size) in {1, 2, 4}
+        and int(destination.size) in {1, 2, 4, 8}
         and len(instruction.inputs) == 1
         and instruction.inputs[0].space is Space.CONST
         and int(instruction.inputs[0].size) == int(destination.size)
@@ -360,30 +363,45 @@ def _exact_const_definition(
 
 _MAX_STATE_TRANSFORM_VALUE_INSTRUCTIONS = 3
 _MAX_SOURCE_STATE_TRANSFORM_VALUE_INSTRUCTIONS = 12
-_STATE_TRANSFORM_SHIFT_OPS = frozenset(
-    {ValueOpKind.SHL, ValueOpKind.SHR, ValueOpKind.SAR}
+_STATE_TRANSFORM_COUNT_OPS = frozenset(
+    {
+        ValueOpKind.SHL,
+        ValueOpKind.SHR,
+        ValueOpKind.SAR,
+        ValueOpKind.ROL,
+        ValueOpKind.ROR,
+    }
 )
 
 
-def _is_exact_u32_value_instruction(instruction: Instruction) -> bool:
+def _is_exact_value_instruction(
+    instruction: Instruction,
+    *,
+    value_size: int,
+) -> bool:
     return bool(
         instruction.operation in FORWARD_EVAL_SUPPORTED_BINARY_OPS
         and instruction.control is None
         and instruction.memory is None
         and not instruction.effects
         and instruction.result is not None
-        and int(instruction.result.size) == 4
+        and int(instruction.result.size) == value_size
         and len(instruction.inputs) == 2
         and instruction.inputs[0] != instruction.inputs[1]
         and instruction.inputs[0].space in {Space.REGISTER, Space.TEMP}
-        and int(instruction.inputs[0].size) == 4
-        and instruction.inputs[1].space in {Space.REGISTER, Space.TEMP}
+        and int(instruction.inputs[0].size) == value_size
         and (
-            int(instruction.inputs[1].size) in {1, 2, 4}
-            if instruction.operation in _STATE_TRANSFORM_SHIFT_OPS
-            else int(instruction.inputs[1].size) == 4
+            instruction.inputs[1].space in {Space.CONST, Space.REGISTER, Space.TEMP}
+            and int(instruction.inputs[1].size) in {1, 2, 4, value_size}
+            if instruction.operation in _STATE_TRANSFORM_COUNT_OPS
+            else instruction.inputs[1].space in {Space.REGISTER, Space.TEMP}
+            and int(instruction.inputs[1].size) == value_size
         )
     )
+
+
+def _is_exact_u32_value_instruction(instruction: Instruction) -> bool:
+    return _is_exact_value_instruction(instruction, value_size=4)
 
 
 def _is_exact_u32_zext_shell(
@@ -440,17 +458,18 @@ def _is_low_u32_register_alias(wide: Varnode, narrow: Varnode) -> bool:
     )
 
 
-def prove_exact_u32_state_transform_feeder(
+def prove_exact_state_transform_feeder(
     flow_graph: FlowGraph,
     source_serial: int,
     feeder_serial: int,
     *,
     state_var_stkoff: int | None,
     state_var_reg: int | None,
+    state_size: int,
     required_comparison_serials: frozenset[int],
     expected_state: int | None,
 ) -> ExactStateTransformFeeder | None:
-    """Prove ``CONST32 definitions -> bounded pure expression -> state32``.
+    """Prove exact constants through a bounded fixed-width state expression.
 
     The expression is a canonical U32 XOR/ADD/SUB program of at most three
     value instructions.  It may finish in one following state-feeder block,
@@ -464,6 +483,10 @@ def prove_exact_u32_state_transform_feeder(
     instruction or effect.
     """
 
+    state_size = int(state_size)
+    if state_size not in {4, 8}:
+        return None
+    state_mask = (1 << (state_size * 8)) - 1
     source_serial = int(source_serial)
     feeder_serial = int(feeder_serial)
     source = flow_graph.get_block(source_serial)
@@ -491,8 +514,7 @@ def prove_exact_u32_state_transform_feeder(
         if (
             state_feeder is None
             or state_feeder_ea is None
-            or feeder_serial
-            not in tuple(int(pred) for pred in state_feeder.preds)
+            or feeder_serial not in tuple(int(pred) for pred in state_feeder.preds)
             or len(state_feeder.succs) != 1
         ):
             return None
@@ -504,9 +526,7 @@ def prove_exact_u32_state_transform_feeder(
     if (
         comparison is None
         or comparison_ea is None
-        or (
-            state_feeder_serial if state_feeder_serial is not None else feeder_serial
-        )
+        or (state_feeder_serial if state_feeder_serial is not None else feeder_serial)
         not in tuple(int(pred) for pred in comparison.preds)
     ):
         return None
@@ -540,14 +560,18 @@ def prove_exact_u32_state_transform_feeder(
         values = values[:-1]
     width_shell = (
         values[-1]
-        if values and values[-1].operation is ValueOpKind.ZEXT
+        if state_size == 4 and values and values[-1].operation is ValueOpKind.ZEXT
         else None
     )
     feeder_arithmetic_values = values[:-1] if width_shell is not None else values
-    if not 1 <= len(feeder_arithmetic_values) <= _MAX_STATE_TRANSFORM_VALUE_INSTRUCTIONS:
+    if (
+        not 1
+        <= len(feeder_arithmetic_values)
+        <= _MAX_STATE_TRANSFORM_VALUE_INSTRUCTIONS
+    ):
         return None
     if any(
-        not _is_exact_u32_value_instruction(instruction)
+        not _is_exact_value_instruction(instruction, value_size=state_size)
         for instruction in feeder_arithmetic_values
     ):
         return None
@@ -578,7 +602,10 @@ def prove_exact_u32_state_transform_feeder(
             or len(state_controls) > 1
             or len(state_value_instructions) + len(state_controls)
             != len(state_feeder_instructions)
-            or (state_controls and state_feeder_instructions[-1] is not state_controls[0])
+            or (
+                state_controls
+                and state_feeder_instructions[-1] is not state_controls[0]
+            )
             or (
                 state_controls
                 and not _pure_goto_to(state_controls[0], comparison_entry)
@@ -590,7 +617,10 @@ def prove_exact_u32_state_transform_feeder(
             state_move = state_feeder_value
         elif (
             width_shell is None
-            and _is_exact_u32_value_instruction(state_feeder_value)
+            and _is_exact_value_instruction(
+                state_feeder_value,
+                value_size=state_size,
+            )
             and state_feeder_value.result is not None
             and storage_identity_from_varnode(state_feeder_value.result)
             in expected_identities
@@ -611,7 +641,7 @@ def prove_exact_u32_state_transform_feeder(
             or state_move.memory is not None
             or len(state_move.inputs) != 1
             or state_move.result is None
-            or int(state_move.result.size) != 4
+            or int(state_move.result.size) != state_size
         ):
             return None
         state_input = state_move.inputs[0]
@@ -634,7 +664,7 @@ def prove_exact_u32_state_transform_feeder(
         )
     if (
         transform.result is None
-        or int(transform.result.size) != 4
+        or int(transform.result.size) != state_size
         or state_identity not in expected_identities
         or len(transform.inputs) != 2
     ):
@@ -666,7 +696,8 @@ def prove_exact_u32_state_transform_feeder(
         operand
         for index, instruction in enumerate(program_values)
         for operand in instruction.inputs
-        if feeder_producer_indexes.get(operand, index) >= index
+        if operand.space is not Space.CONST
+        and feeder_producer_indexes.get(operand, index) >= index
     )
     if not external_operands:
         return None
@@ -704,7 +735,10 @@ def prove_exact_u32_state_transform_feeder(
             selected_constants[operand] = index
             return True
         if (
-            not _is_exact_u32_value_instruction(instruction)
+            not _is_exact_value_instruction(
+                instruction,
+                value_size=state_size,
+            )
             or storage_identity_from_varnode(operand) in expected_identities
         ):
             return False
@@ -720,9 +754,7 @@ def prove_exact_u32_state_transform_feeder(
         return None
     if len(selected_arithmetic) > _MAX_SOURCE_STATE_TRANSFORM_VALUE_INSTRUCTIONS:
         return None
-    selected_indexes = frozenset(
-        (*selected_constants.values(), *selected_arithmetic)
-    )
+    selected_indexes = frozenset((*selected_constants.values(), *selected_arithmetic))
     if not selected_indexes:
         return None
     first_definition = min(selected_indexes)
@@ -817,7 +849,7 @@ def prove_exact_u32_state_transform_feeder(
         shadow_definitions,
         strict=True,
     ):
-        expected_value = int(instruction.inputs[0].offset) & 0xFFFFFFFF
+        expected_value = int(instruction.inputs[0].offset) & state_mask
         forward_eval_instruction(
             proof_instruction,
             stk_map,
@@ -829,7 +861,7 @@ def prove_exact_u32_state_transform_feeder(
             stk_map,
             reg_map,
         )
-        if resolved is None or (int(resolved) & 0xFFFFFFFF) != expected_value:
+        if resolved is None or (int(resolved) & state_mask) != expected_value:
             return None
         source_bindings.append((operand, expected_value))
 
@@ -857,7 +889,7 @@ def prove_exact_u32_state_transform_feeder(
         if resolved is None:
             return None
         if instruction is transform or instruction is state_move:
-            state = int(resolved) & 0xFFFFFFFF
+            state = int(resolved) & state_mask
             if (
                 instruction.result is not None
                 and instruction.result.space is Space.STACK
@@ -866,7 +898,7 @@ def prove_exact_u32_state_transform_feeder(
                 return None
     if state is None:
         return None
-    if expected_state is not None and state != (int(expected_state) & 0xFFFFFFFF):
+    if expected_state is not None and state != (int(expected_state) & state_mask):
         return None
     return ExactStateTransformFeeder(
         state=state,
@@ -884,6 +916,30 @@ def prove_exact_u32_state_transform_feeder(
         comparison_entry_ea=comparison_ea,
         state_feeder_serial=state_feeder_serial,
         state_feeder_ea=state_feeder_ea,
+    )
+
+
+def prove_exact_u32_state_transform_feeder(
+    flow_graph: FlowGraph,
+    source_serial: int,
+    feeder_serial: int,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    required_comparison_serials: frozenset[int],
+    expected_state: int | None,
+) -> ExactStateTransformFeeder | None:
+    """Compatibility wrapper for the established U32 state proof."""
+
+    return prove_exact_state_transform_feeder(
+        flow_graph,
+        source_serial,
+        feeder_serial,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        state_size=4,
+        required_comparison_serials=required_comparison_serials,
+        expected_state=expected_state,
     )
 
 
@@ -996,8 +1052,7 @@ def prove_exact_u32_carrier_state_write(
         or instruction.result is None
         or storage_identity_from_varnode(instruction.result) in expected_identities
         or len(instruction.inputs) != 1
-        or instruction.inputs[0].space
-        not in {Space.REGISTER, Space.TEMP, Space.STACK}
+        or instruction.inputs[0].space not in {Space.REGISTER, Space.TEMP, Space.STACK}
         or instruction.result.space not in {Space.REGISTER, Space.TEMP}
         or int(instruction.inputs[0].size) != int(instruction.result.size)
         for instruction in semantic_suffix

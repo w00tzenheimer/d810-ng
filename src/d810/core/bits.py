@@ -256,9 +256,7 @@ def fold_binary_opcode(
     ):
         return None
 
-    if opcode in {"cfshl", "cfshr"} and (
-        right_bytes != 1 or result_bytes != 1
-    ):
+    if opcode in {"cfshl", "cfshr"} and (right_bytes != 1 or result_bytes != 1):
         return None
 
     left &= AND_TABLE[left_bytes]
@@ -386,6 +384,20 @@ def fold_unary_opcode(
 # =============================================================================
 # Rotation Functions
 # =============================================================================
+
+_ROTATE_HELPER_SPECS = {
+    f"__{direction}{size}__": (direction.lower(), size * 8)
+    for direction in ("ROL", "ROR")
+    for size in (1, 2, 4, 8)
+}
+
+
+def rotate_helper_spec(name: object) -> tuple[str, int] | None:
+    """Return the operation and bit width for one exact rotate helper name."""
+    if type(name) is not str:
+        return None
+    canonical = name[1:] if name.startswith("!") else name
+    return _ROTATE_HELPER_SPECS.get(canonical)
 
 
 def ror(x: int, n: int, nb_bits: int = 32) -> int:
@@ -526,6 +538,7 @@ __all__ = [
     "get_sub_of",
     "get_parity_flag",
     # Rotation functions
+    "rotate_helper_spec",
     "ror",
     "rol",
     "__rol__",
