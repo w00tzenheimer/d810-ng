@@ -10,7 +10,9 @@ import pytest
 
 from d810.mba import extension_api
 from d810.mba.differential_report import outcome_from_dict
+from d810.mba import residual_corpus
 from d810.mba.provider_outcome import (
+    MatcherOutcomeMetadata,
     MbaProviderKind,
     MbaProviderOutcome,
     ProviderOutcomeStatus,
@@ -36,6 +38,7 @@ def _outcome(
     provider: MbaProviderKind = MbaProviderKind.CATALOGUE,
     refusal_reason: str | None = "not_simplified",
     metadata: dict[str, object] | None = None,
+    matcher: MatcherOutcomeMetadata | None = None,
 ) -> MbaProviderOutcome:
     return MbaProviderOutcome(
         provider=provider,
@@ -45,6 +48,7 @@ def _outcome(
         output_cost=output_cost,
         refusal_reason=refusal_reason,
         metadata={} if metadata is None else metadata,
+        matcher=matcher,
     )
 
 
@@ -316,6 +320,66 @@ def test_observation_decoder_rejects_noncanonical_provider_rows(mutate) -> None:
         MbaResidualObservation.from_dict(encoded)
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda row: row.update(elapsed_ms=0),
+        lambda row: row.update(input_cost=[4.0, 7]),
+        lambda row: row.update(input_cost=[True, 7]),
+        lambda row: row.update(
+            matcher={
+                "comparisons": 1.0,
+                "lazy_swaps": 0,
+                "flattened_arity": 2,
+                "stop_reason": "cap",
+            }
+        ),
+        lambda row: row.update(
+            matcher={
+                "comparisons": True,
+                "lazy_swaps": 0,
+                "flattened_arity": 2,
+                "stop_reason": "cap",
+            }
+        ),
+    ),
+)
+def test_observation_decoder_rejects_noncanonical_provider_value_types(mutate) -> None:
+    base = _outcome(
+        metadata={"nested": {"count": 1}},
+        matcher=MatcherOutcomeMetadata(1, 0, 2, "cap"),
+    )
+    row = dict(base.to_dict())
+    mutate(row)
+    encoded = _observation(outcomes=(base,)).to_dict()
+    encoded["outcomes"] = [row]
+    with pytest.raises(ValueError, match="provider outcome"):
+        MbaResidualObservation.from_dict(encoded)
+
+
+@pytest.mark.parametrize("value", (1.0, True))
+def test_canonical_json_comparison_rejects_nested_metadata_numeric_type_mismatch(
+    value: object,
+) -> None:
+    assert not residual_corpus._canonical_json_equal(
+        {"metadata": {"nested": {"count": 1}}},
+        {"metadata": {"nested": {"count": value}}},
+    )
+
+
+def test_decoder_applies_exact_comparison_recursively_to_nested_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _outcome(metadata={"nested": {"count": 1}})
+    row = dict(base.to_dict())
+    row["metadata"] = {"nested": {"count": 1.0}}
+    encoded = _observation(outcomes=(base,)).to_dict()
+    encoded["outcomes"] = [row]
+    monkeypatch.setattr("d810.mba.residual_corpus.outcome_from_dict", lambda _: base)
+    with pytest.raises(ValueError, match="provider outcome"):
+        MbaResidualObservation.from_dict(encoded)
+
+
 def test_observation_decoder_rejects_non_mapping_provider_rows() -> None:
     encoded = _observation().to_dict()
     encoded["outcomes"] = ["not-a-row"]
@@ -403,6 +467,12 @@ def test_residual_records_are_immutable_and_nested_metadata_does_not_leak() -> N
             setattr(record, field, value)
     with pytest.raises(TypeError):
         observation.outcomes[0].metadata["new"] = True
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        observation.source.case_id = "changed"  # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        observation.outcomes = ()  # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        group.observations = ()  # type: ignore[misc]
 
 
 def test_task3_extension_api_exports_all_public_names() -> None:

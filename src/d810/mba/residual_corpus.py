@@ -74,6 +74,26 @@ def _observation_sort_key(observation: "MbaResidualObservation") -> tuple[object
     )
 
 
+def _canonical_json_equal(left: object, right: object) -> bool:
+    """Compare JSON wire values without Python's bool/int numeric coercion."""
+
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        if set(left) != set(right):  # type: ignore[arg-type]
+            return False
+        return all(
+            _canonical_json_equal(left[key], right[key])  # type: ignore[index]
+            for key in left  # type: ignore[union-attr]
+        )
+    if type(left) is list:
+        return len(left) == len(right) and all(  # type: ignore[arg-type]
+            _canonical_json_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right)  # type: ignore[arg-type]
+        )
+    return left == right
+
+
 def _decode_outcome(data: object) -> MbaProviderOutcome:
     """Decode one exact canonical provider-outcome wire row."""
 
@@ -84,7 +104,7 @@ def _decode_outcome(data: object) -> MbaProviderOutcome:
             raise ValueError("provider outcome has invalid fields")
         canonical = dict(data)
         outcome = outcome_from_dict(canonical)
-        if outcome.to_dict() != canonical:
+        if not _canonical_json_equal(outcome.to_dict(), canonical):
             raise ValueError("provider outcome is not canonical")
         return outcome
     except Exception as exc:
