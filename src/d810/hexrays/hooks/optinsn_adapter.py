@@ -203,6 +203,7 @@ class InstructionOptimizerRuntimeState:
     dump_intermediate_microcode: object
     decompilation_lifecycle: object
     fact_consumer_callback: object
+    validated_fact_view_provider: object
     run_later_scheduler: object
     active_rule_names_store: object
     active_rule_names_by_maturity: dict[int, frozenset[str]]
@@ -276,6 +277,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # the callback-local FlowGraph event.
         self._decompilation_lifecycle = None
         self._fact_consumer_callback = None
+        self._validated_fact_view_provider = None
 
         self.instruction_optimizers = []
         self._active_optimizers: list = []
@@ -350,6 +352,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             set_run_later_callback(self._record_run_later_requests)
         self.instruction_optimizers.append(optimizer)
         self._invalidate_residual_admission_cache()
+
+    def configure_validated_fact_view_provider(self, provider) -> None:
+        """Install the callback-local validated fact-view provider."""
+        if provider is not None and not callable(provider):
+            raise TypeError("validated fact view provider must be callable or None")
+        self._validated_fact_view_provider = provider
 
     def add_rule(self, rule: InstructionOptimizationRule):
         # optimizer_log.info("Trying to add rule {0}".format(rule))
@@ -478,6 +486,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             dump_intermediate_microcode=self.dump_intermediate_microcode,
             decompilation_lifecycle=self._decompilation_lifecycle,
             fact_consumer_callback=self._fact_consumer_callback,
+            validated_fact_view_provider=self._validated_fact_view_provider,
             run_later_scheduler=self._run_later_scheduler,
             active_rule_names_store=active_rule_names_store,
             active_rule_names_by_maturity={
@@ -575,6 +584,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self.dump_intermediate_microcode = snapshot.dump_intermediate_microcode
         self._decompilation_lifecycle = snapshot.decompilation_lifecycle
         self._fact_consumer_callback = snapshot.fact_consumer_callback
+        self._validated_fact_view_provider = snapshot.validated_fact_view_provider
         self._run_later_scheduler = snapshot.run_later_scheduler
         self._active_instruction_rule_names_by_maturity = (
             snapshot.active_rule_names_store
@@ -806,6 +816,36 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 exc_info=True,
             )
 
+    def _bind_validated_fact_view_for_callback(
+        self,
+        blk: ida_hexrays.mblock_t,
+    ) -> list[object]:
+        """Bind one lifecycle view to children for this callback only."""
+        mba = getattr(blk, "mba", None)
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        maturity = int(getattr(mba, "maturity", -1))
+        provider = getattr(self, "_validated_fact_view_provider", None)
+        view = None if provider is None else provider(function_ea, maturity)
+        bound: list[object] = []
+        try:
+            for optimizer in getattr(self, "instruction_optimizers", ()):
+                binder = getattr(optimizer, "bind_validated_fact_view", None)
+                if not callable(binder):
+                    continue
+                bound.append(binder)
+                binder(view)
+        except BaseException:
+            for binder in reversed(bound):
+                try:
+                    binder(None)
+                except Exception:
+                    optimizer_logger.debug(
+                        "failed to clear validated fact view after bind failure",
+                        exc_info=True,
+                    )
+            raise
+        return bound
+
     def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
         lifecycle = getattr(self, "_decompilation_lifecycle", None)
         mba = getattr(blk, "mba", None)
@@ -860,7 +900,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         callback_nop_sites = self._capture_callback_nop_sites(blk)
         callback_result: bool | None = None
         callback_exception_name: str | None = None
+        fact_view_binders: list[object] = []
         try:
+            fact_view_binders = InstructionOptimizerManager._bind_validated_fact_view_for_callback(
+                self,
+                blk,
+            )
             if self.log_info_on_input(blk, ins):
                 # An early-maturity gateway may have structurally changed the MBA. Do not
                 # touch this callback's instruction pointer again; returning true
@@ -927,6 +972,14 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             callback_exception_name = type(error).__name__
             raise
         finally:
+            for binder in reversed(fact_view_binders):
+                try:
+                    binder(None)
+                except Exception:
+                    optimizer_logger.debug(
+                        "failed to clear validated fact view after callback",
+                        exc_info=True,
+                    )
             self._report_callback_nop_delta(
                 blk,
                 before=callback_nop_sites,

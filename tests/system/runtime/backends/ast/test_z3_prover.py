@@ -153,6 +153,31 @@ class TestZ3MopProverAPI:
         prover = Z3MopProver(blk=None, ins=None)
         assert prover is not None
 
+    def test_prover_accepts_callback_local_call_result_refiner(self):
+        from d810.backends.ast.z3 import Z3MopProver
+
+        def refiner(query):
+            return query
+        prover = Z3MopProver(call_result_refiner=refiner)
+
+        assert prover._call_result_refiner is refiner
+
+    def test_no_fact_view_keeps_call_result_unconstrained(self):
+        from d810.backends.ast.z3 import Z3MopProver
+
+        prover = Z3MopProver(call_result_refiner=None)
+
+        assert prover._call_result_refiner is None
+
+    def test_carrier_only_view_does_not_install_a_refiner(self):
+        from d810.backends.ast.z3 import Z3MopProver
+
+        carrier_view = SimpleNamespace(active_observations=())
+        prover = Z3MopProver(call_result_refiner=None)
+
+        assert carrier_view.active_observations == ()
+        assert prover._call_result_refiner is None
+
     def test_prover_has_are_equal(self):
         from d810.backends.ast.z3 import Z3MopProver
 

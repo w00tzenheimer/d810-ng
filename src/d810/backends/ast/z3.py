@@ -653,12 +653,14 @@ class Z3MopProver:
         blk: ida_hexrays.mblock_t | None = None,
         ins: ida_hexrays.minsn_t | None = None,
         policy: Z3ProofPolicy | None = None,
+        call_result_refiner: typing.Callable[..., typing.Any] | None = None,
     ):
         if policy is not None and not isinstance(policy, Z3ProofPolicy):
             raise TypeError("policy must be a Z3ProofPolicy or None")
         self._blk = blk
         self._ins = ins
         self._policy = policy
+        self._call_result_refiner = call_result_refiner
         self._eq_cache: Dict[
             typing.Tuple[
                 Z3ProofPolicy | None,
@@ -1136,13 +1138,28 @@ class Z3MopProver:
         if ast is None or (hasattr(ast, "is_leaf") and ast.is_leaf() and is_resolvable):
             if blk is not None and ins is not None:
                 if budget is None:
-                    resolved_ast = _resolve_mop_to_ast(mop, blk, ins)
-                else:
+                    resolver_kwargs = {}
+                    if self._call_result_refiner is not None:
+                        resolver_kwargs["call_result_refiner"] = (
+                            self._call_result_refiner
+                        )
                     resolved_ast = _resolve_mop_to_ast(
                         mop,
                         blk,
                         ins,
-                        node_budget=budget,
+                        **resolver_kwargs,
+                    )
+                else:
+                    resolver_kwargs = {"node_budget": budget}
+                    if self._call_result_refiner is not None:
+                        resolver_kwargs["call_result_refiner"] = (
+                            self._call_result_refiner
+                        )
+                    resolved_ast = _resolve_mop_to_ast(
+                        mop,
+                        blk,
+                        ins,
+                        **resolver_kwargs,
                     )
                 if resolved_ast is not None:
                     ast = resolved_ast
@@ -1169,11 +1186,14 @@ class Z3MopProver:
                         )
 
         if ast is not None and blk is not None and ins is not None:
+            resolver_kwargs = {"node_budget": budget}
+            if self._call_result_refiner is not None:
+                resolver_kwargs["call_result_refiner"] = self._call_result_refiner
             resolved_ast = _recursively_resolve_ast(
                 ast,
                 blk,
                 recursive_anchor_ins,
-                node_budget=budget,
+                **resolver_kwargs,
             )
             if (
                 self._policy is not None

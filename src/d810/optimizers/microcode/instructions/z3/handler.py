@@ -1,9 +1,12 @@
 import abc
+import functools
 from d810.core import typing
 
 import ida_hexrays
 
 from d810.backends.ast.z3_proof_policy import Z3ProofPolicy
+from d810.backends.ast.z3 import Z3MopProver
+from d810.analyses.value_flow.call_return_value import refine_call_result
 from d810.core.observability import emit as emit_observation
 from d810.core.observability_events import Z3PredicateProofObserved
 from d810.core.z3_proof import Z3ProofAbstentionReason, Z3ProofStatus
@@ -32,6 +35,36 @@ class Z3Rule(GenericPatternRule):
         self._current_ins: ida_hexrays.minsn_t | None = None
         self._definition_search_ins: ida_hexrays.minsn_t | None = None
         self._z3_proof_policy = Z3ProofPolicy()
+        self._validated_fact_view = None
+
+    @property
+    def validated_fact_view(self):
+        """Return the callback-local validated fact view, if any."""
+        return self._validated_fact_view
+
+    def bind_validated_fact_view(self, view) -> None:
+        """Bind or clear the callback-local fact view."""
+        self._validated_fact_view = view
+
+    def make_z3_mop_prover(self, *, prover_cls=None) -> Z3MopProver:
+        """Construct a prover carrying this rule's transient context."""
+        refiner = None
+        if self.validated_fact_view is not None:
+            refiner = functools.partial(
+                refine_call_result,
+                view=self.validated_fact_view,
+            )
+        constructor = Z3MopProver if prover_cls is None else prover_cls
+        kwargs = {
+            "blk": self._current_blk,
+            "ins": self.definition_search_ins,
+            "policy": self.z3_proof_policy,
+        }
+        if refiner is not None:
+            kwargs["call_result_refiner"] = refiner
+        return constructor(
+            **kwargs,
+        )
 
     def configure(self, kwargs) -> None:
         """Configure maturity and an independent policy for generic predicates."""
@@ -162,11 +195,23 @@ class Z3Optimizer(InstructionOptimizer):
         self._allowed_root_opcodes: set[int] = set()
         # Track if any rule has no PATTERN (pattern-less rules match any opcode)
         self._has_patternless_rule: bool = False
+        self._validated_fact_view = None
+
+    def bind_validated_fact_view(self, view) -> None:
+        """Bind a callback-local view to all current and future rules."""
+        self._validated_fact_view = view
+        for rule in self.rules:
+            binder = getattr(rule, "bind_validated_fact_view", None)
+            if callable(binder):
+                binder(view)
 
     def add_rule(self, rule: Z3Rule) -> bool:  # type: ignore[override]
         ok = super().add_rule(rule)
         if not ok:
             return False
+        binder = getattr(rule, "bind_validated_fact_view", None)
+        if callable(binder):
+            binder(self._validated_fact_view)
         try:
             pat = rule.PATTERN
             if pat is None:

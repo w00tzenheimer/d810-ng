@@ -2679,6 +2679,9 @@ class D810Manager:
                 project_config=dict(self.config),
             )
         if self._analysis_runtime is not None:
+            self.instruction_optimizer.configure_validated_fact_view_provider(
+                self._analysis_runtime.validated_fact_view
+            )
             self.instruction_optimizer.configure(
                 fact_consumer_callback=(self._analysis_runtime.record_fact_consumers),
             )
