@@ -58,6 +58,11 @@ from d810.mba.typed_term import (
     term_cost,
     term_fingerprint,
 )
+from d810.mba.term_codec import (
+    TERM_WIRE_SCHEMA_VERSION,
+    typed_term_from_dict,
+    typed_term_to_dict,
+)
 from d810.mba.performance_timing import (
     EMPTY_MBA_STAGE_TIMINGS,
     MbaStageTimer,
@@ -502,5 +507,8 @@ __all__ = [
     "structural_rule_semantic_fingerprint",
     "term_cost",
     "term_fingerprint",
+    "TERM_WIRE_SCHEMA_VERSION",
+    "typed_term_from_dict",
+    "typed_term_to_dict",
     "typed_term_identity_is_current",
 ]
