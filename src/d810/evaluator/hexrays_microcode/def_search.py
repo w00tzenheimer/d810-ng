@@ -439,11 +439,15 @@ def operand_to_mlist(
 
 
 def instruction_uses(
-    blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
+    blk: ida_hexrays.mblock_t,
+    ins: ida_hexrays.minsn_t,
+    access: int = ida_hexrays.MUST_ACCESS,
 ) -> ida_hexrays.mlist_t:
     """Return ``mlist_t`` of all locations read by *ins*.
 
-    Uses ``blk.build_use_list(ins, MUST_ACCESS)``.
+    Uses ``blk.build_use_list(ins, access)``. The default preserves the exact
+    access policy used by existing callers; instruction value-flow callers can
+    request ``MAY_ACCESS`` for conservatively aliased register reads.
 
     Args:
         blk: The block containing *ins*.
@@ -452,15 +456,18 @@ def instruction_uses(
     Returns:
         An ``mlist_t`` with all read locations.
     """
-    return blk.build_use_list(ins, ida_hexrays.MUST_ACCESS)
+    return blk.build_use_list(ins, int(access))
 
 
 def instruction_defs(
-    blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t
+    blk: ida_hexrays.mblock_t,
+    ins: ida_hexrays.minsn_t,
+    access: int = ida_hexrays.MUST_ACCESS,
 ) -> ida_hexrays.mlist_t:
     """Return ``mlist_t`` of all locations written by *ins*.
 
-    Uses ``blk.build_def_list(ins, MUST_ACCESS)``.
+    Uses ``blk.build_def_list(ins, access)``. The default preserves the exact
+    access policy used by existing callers.
 
     Args:
         blk: The block containing *ins*.
@@ -469,7 +476,7 @@ def instruction_defs(
     Returns:
         An ``mlist_t`` with all written locations.
     """
-    return blk.build_def_list(ins, ida_hexrays.MUST_ACCESS)
+    return blk.build_def_list(ins, int(access))
 
 
 # ---------------------------------------------------------------------------

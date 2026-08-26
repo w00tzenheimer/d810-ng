@@ -11550,6 +11550,7 @@ class DeferredGraphModifier:
         destination_size: int | None,
     ) -> bool:
         """Remove exactly one direct register or stack write after revalidation."""
+        live_block_ea = max(0, int(getattr(blk, "start", -1)))
         if any(
             value is None
             for value in (
@@ -11563,16 +11564,17 @@ class DeferredGraphModifier:
             )
         ):
             logger.warning(
-                "guarded instruction removal has incomplete fingerprint for block %d",
+                "guarded instruction removal has incomplete fingerprint for blk%d@0x%x",
                 blk.serial,
+                live_block_ea,
             )
             return False
         if int(getattr(blk, "start", -1)) != int(block_start_ea):
             logger.warning(
-                "guarded instruction removal block-start mismatch: block %d expected=%s got=%s",
+                "guarded instruction removal block-start mismatch: blk%d@0x%x expected=%s",
                 blk.serial,
+                live_block_ea,
                 hex(int(block_start_ea)),
-                hex(int(getattr(blk, "start", -1))),
             )
             return False
 
@@ -11586,18 +11588,22 @@ class DeferredGraphModifier:
 
         if insn is None:
             logger.warning(
-                "guarded instruction removal ordinal %d not found in block %d",
+                "guarded instruction removal ordinal %d not found in blk%d@0x%x planned_insn=0x%x",
                 ordinal,
                 blk.serial,
+                live_block_ea,
+                int(insn_ea),
             )
             return False
         if int(getattr(insn, "ea", -1)) != int(insn_ea) or int(
             getattr(insn, "opcode", -1)
         ) != int(opcode):
             logger.warning(
-                "guarded instruction removal instruction mismatch: block=%d ordinal=%d",
+                "guarded instruction removal instruction mismatch: blk%d@0x%x ordinal=%d planned_insn=0x%x",
                 blk.serial,
+                live_block_ea,
                 ordinal,
+                int(insn_ea),
             )
             return False
 
@@ -11625,9 +11631,11 @@ class DeferredGraphModifier:
             return False
         if not destination_matches:
             logger.warning(
-                "guarded instruction removal destination mismatch: block=%d ordinal=%d",
+                "guarded instruction removal destination mismatch: blk%d@0x%x ordinal=%d insn=0x%x",
                 blk.serial,
+                live_block_ea,
                 ordinal,
+                int(insn_ea),
             )
             return False
 
@@ -11637,9 +11645,11 @@ class DeferredGraphModifier:
             has_side_effects = True
         if has_side_effects:
             logger.warning(
-                "guarded instruction removal effect-safety mismatch: block=%d ordinal=%d",
+                "guarded instruction removal effect-safety mismatch: blk%d@0x%x ordinal=%d insn=0x%x",
                 blk.serial,
+                live_block_ea,
                 ordinal,
+                int(insn_ea),
             )
             return False
 

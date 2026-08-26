@@ -2,31 +2,29 @@
 
 The Slice-1b backend half. Where ``analyses/value_flow/stack_value_flow`` reads
 the *portable* FlowGraph operand snapshots (an approximation good enough for the
-synthetic unit tests), this provider builds the per-block facts from **IDA's own
-def/use lists** -- ``build_def_list`` / ``build_use_list`` per instruction and
-``mustbdef`` per block, via the verified read-only wrappers in
-``evaluator/hexrays_microcode/{def_search,liveness}`` -- so the
+synthetic unit tests), this provider folds the shared instruction facts built
+from **IDA's own def/use lists** -- ``build_def_list`` / ``build_use_list`` per
+instruction -- so the
 ``ReachingDefsDomain`` / ``LivenessDomain`` run on facts that match IDA exactly.
 
 A tracked location is a ``(stkoff, width)`` stack interval (the return-slot
 carrier, the real carrier such as ``a5+0xD0``, and the dispatcher state var). A
-location is *defined*/​*used* by an instruction iff IDA's def/use ``mlist_t``
-``has_common`` its interval -- the same membership test ``liveness.py`` uses.
+Uses and possible writes use ``has_common`` interval overlap. A full definition
+additionally requires IDA's exact def list to ``include`` the whole interval.
 """
 
 from __future__ import annotations
 
-import ida_hexrays
-
 from d810.core.logging import getLogger
 from d810.core.typing import Mapping
-from d810.evaluator.hexrays_microcode.def_search import (
-    instruction_defs,
-    instruction_uses,
+from d810.backends.hexrays.evidence.instruction_value_flow_live import (
+    LiveInstructionFlow,
+    build_live_instruction_flow,
 )
 from d810.evaluator.hexrays_microcode.liveness import is_var_live_at_block_entry
 from d810.analyses.value_flow.liveness import BlockLivenessFacts
 from d810.analyses.value_flow.reaching_defs import BlockReachingFacts
+from d810.ir.locations import StackSlot
 
 logger = getLogger(__name__)
 
@@ -37,18 +35,14 @@ __all__ = [
 ]
 
 
-def _loc_mlist(stkoff: int, width: int) -> "ida_hexrays.mlist_t":
-    """Build an ``mlist_t`` covering the stack interval ``[stkoff, stkoff+width)``."""
-    ml = ida_hexrays.mlist_t()
-    ml.mem.add(ida_hexrays.ivl_t(int(stkoff), int(width)))
-    return ml
-
-
-def _iter_insns(blk: "ida_hexrays.mblock_t"):
-    ins = blk.head
-    while ins is not None:
-        yield ins
-        ins = ins.next
+def _instruction_flow(
+    mba: object, tracked: Mapping[int, int]
+) -> tuple[LiveInstructionFlow, dict[StackSlot, int]]:
+    offsets = {
+        StackSlot(offset=int(offset), size=int(width)): int(offset)
+        for offset, width in tracked.items()
+    }
+    return build_live_instruction_flow(mba, tuple(offsets)), offsets
 
 
 def build_live_reaching_facts(
@@ -58,21 +52,25 @@ def build_live_reaching_facts(
 
     ``tracked`` maps each watched stack offset to its width in bytes.
     """
-    locs = [(int(off), int(width)) for off, width in tracked.items()]
+    instruction_flow, offsets = _instruction_flow(mba, tracked)
+    allowed_blocks = {int(serial) for serial in flow_graph.blocks}
     facts: dict[int, BlockReachingFacts] = {}
-    for serial in flow_graph.blocks:
-        blk = mba.get_mblock(int(serial))
-        if blk is None:
+    generated: dict[int, dict[int, set[tuple[int, int]]]] = {}
+    for handle in instruction_flow.graph.nodes:
+        coordinate = instruction_flow.coordinate(handle)
+        serial = int(coordinate.block_serial)
+        if serial not in allowed_blocks:
             continue
-        blk.make_lists_ready()
-        gen: dict[int, set] = {}
-        for ins in _iter_insns(blk):
-            def_list = instruction_defs(blk, ins)
-            for off, width in locs:
-                if def_list.has_common(_loc_mlist(off, width)):
-                    gen.setdefault(off, set()).add((int(serial), int(ins.ea)))
+        gen = generated.setdefault(serial, {})
+        access = instruction_flow.graph.facts_by_node[handle]
+        for location in access.must_defs:
+            if location in offsets:
+                gen.setdefault(offsets[location], set()).add(
+                    (serial, int(coordinate.insn_ea))
+                )
+    for serial, gen in generated.items():
         if gen:
-            facts[int(serial)] = BlockReachingFacts(
+            facts[serial] = BlockReachingFacts(
                 gen={loc: frozenset(sites) for loc, sites in gen.items()}
             )
     return facts
@@ -82,26 +80,30 @@ def build_live_liveness_facts(
     mba: object, flow_graph: object, tracked: Mapping[int, int]
 ) -> dict[int, BlockLivenessFacts]:
     """Per-block use/def from IDA's def/use lists (``used`` upward-exposed)."""
-    locs = [(int(off), int(width)) for off, width in tracked.items()]
+    instruction_flow, offsets = _instruction_flow(mba, tracked)
+    allowed_blocks = {int(serial) for serial in flow_graph.blocks}
     facts: dict[int, BlockLivenessFacts] = {}
-    for serial in flow_graph.blocks:
-        blk = mba.get_mblock(int(serial))
-        if blk is None:
-            continue
-        blk.make_lists_ready()
+    by_block: dict[int, list] = {}
+    for handle in instruction_flow.graph.nodes:
+        serial = int(instruction_flow.coordinate(handle).block_serial)
+        if serial in allowed_blocks:
+            by_block.setdefault(serial, []).append(
+                instruction_flow.graph.facts_by_node[handle]
+            )
+    for serial, instruction_facts in by_block.items():
         used: set[int] = set()
         defined: set[int] = set()
-        for ins in _iter_insns(blk):
-            use_list = instruction_uses(blk, ins)
-            def_list = instruction_defs(blk, ins)
-            for off, width in locs:
-                ml = _loc_mlist(off, width)
-                if use_list.has_common(ml) and off not in defined:
-                    used.add(off)
-                if def_list.has_common(ml):
-                    defined.add(off)
+        for access in instruction_facts:
+            for location in access.uses | access.partial_defs:
+                offset = offsets.get(location)
+                if offset is not None and offset not in defined:
+                    used.add(offset)
+            for location in access.must_defs:
+                offset = offsets.get(location)
+                if offset is not None:
+                    defined.add(offset)
         if used or defined:
-            facts[int(serial)] = BlockLivenessFacts(
+            facts[serial] = BlockLivenessFacts(
                 used=frozenset(used), defined=frozenset(defined)
             )
     return facts

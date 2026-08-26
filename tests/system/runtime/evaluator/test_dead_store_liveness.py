@@ -10,10 +10,11 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.analyses.value_flow.dead_store import DeadStoreRejectionReason  # noqa: E402
-from d810.evaluator.hexrays_microcode.dead_store_liveness import (  # noqa: E402
+from d810.backends.hexrays.evidence.dead_store_liveness_live import (  # noqa: E402
     HexRaysDeadStoreLivenessBackend,
 )
 import d810.evaluator.hexrays_microcode.dead_store_liveness as dead_store_liveness  # noqa: E402
+import d810.backends.hexrays.evidence.instruction_value_flow_live as instruction_flow_live  # noqa: E402
 
 
 class _Mop:
@@ -88,22 +89,14 @@ class _Intervals:
         return int(offset) in self.offsets
 
     def has_common(self, location: _LocationList) -> bool:
-        stack_bytes = {
-            item[1]
-            for item in location.locations
-            if item[0] == "S"
-        }
+        stack_bytes = {item[1] for item in location.locations if item[0] == "S"}
         return bool(stack_bytes & self.offsets)
 
 
 def _location(mop: _Mop) -> _LocationList:
     if mop.t == ida_hexrays.mop_r:
-        return _LocationList(
-            ("r", mop.r, byte) for byte in range(mop.size)
-        )
-    return _LocationList(
-        ("S", mop.s.off + byte) for byte in range(mop.size)
-    )
+        return _LocationList(("r", mop.r, byte) for byte in range(mop.size))
+    return _LocationList(("S", mop.s.off + byte) for byte in range(mop.size))
 
 
 @pytest.fixture(autouse=True)
@@ -112,15 +105,28 @@ def _patch_location_lists(monkeypatch):
         storage = dead_store_liveness._live_storage(destination)
         if storage.identity.kind.value == "r":
             return _LocationList(
-                ("r", storage.identity.offset, byte)
-                for byte in range(storage.width)
+                ("r", storage.identity.offset, byte) for byte in range(storage.width)
             )
         return _LocationList(
-            ("S", storage.identity.offset + byte)
-            for byte in range(storage.width)
+            ("S", storage.identity.offset + byte) for byte in range(storage.width)
         )
 
     monkeypatch.setattr(dead_store_liveness, "_location_list", location_list)
+
+    def portable_location_list(location):
+        if hasattr(location, "register_id"):
+            return _LocationList(
+                ("r", location.register_id, byte) for byte in range(location.size)
+            )
+        return _LocationList(
+            ("S", location.offset + byte) for byte in range(location.size)
+        )
+
+    monkeypatch.setattr(
+        instruction_flow_live,
+        "_location_mlist",
+        portable_location_list,
+    )
 
 
 class _Block:
@@ -178,10 +184,7 @@ class _Mba:
         self.maturity = int(maturity)
         self.aliased_memory = _Intervals(aliased_offsets)
         self.restricted_memory = _Intervals()
-        self.nodel_memory = _LocationList(
-            ("S", offset)
-            for offset in nodel_offsets
-        )
+        self.nodel_memory = _LocationList(("S", offset) for offset in nodel_offsets)
 
     def get_mblock(self, serial: int) -> _Block:
         return self._blocks[serial]
@@ -213,6 +216,28 @@ def test_accepts_pure_computed_stack_definition_across_unrelated_call() -> None:
     assert evidence.authoritative is True
 
 
+def test_collection_does_not_use_the_legacy_definition_walk(monkeypatch) -> None:
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
+    dead = _Insn(0x401010, destination=target)
+    overwrite = _Insn(0x401020, destination=target, effectful=True)
+
+    def legacy_walk(*args, **kwargs):
+        raise AssertionError("legacy definition walk was invoked")
+
+    monkeypatch.setattr(
+        dead_store_liveness,
+        "_definition_outcome",
+        legacy_walk,
+        raising=False,
+    )
+
+    evidence = HexRaysDeadStoreLivenessBackend().collect(
+        _Mba((_Block(0, (dead, overwrite)),))
+    )
+
+    assert [candidate.insn_ea for candidate in evidence.candidates] == [0x401010]
+
+
 def test_ignores_call_wide_may_alias_for_unescaped_stack_storage() -> None:
     target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
     dead = _Insn(0x401010, destination=target)
@@ -242,6 +267,75 @@ def test_rejects_definition_read_by_call_argument() -> None:
 
     assert evidence.candidates == ()
     assert DeadStoreRejectionReason.REACHED_USE in _reasons(evidence)
+
+
+def test_partial_overwrite_consumes_the_reaching_definition() -> None:
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40, size=8)
+    partial_target = _Mop(ida_hexrays.mop_S, stack_offset=0x40, size=4)
+    dead = _Insn(0x401010, destination=target)
+    partial = _Insn(0x401020, destination=partial_target, effectful=True)
+
+    evidence = HexRaysDeadStoreLivenessBackend().collect(
+        _Mba((_Block(0, (dead, partial)),))
+    )
+
+    assert evidence.candidates == ()
+    assert DeadStoreRejectionReason.PARTIAL_DEFINITION in _reasons(evidence)
+
+
+def test_use_on_one_branch_keeps_the_definition() -> None:
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
+    dead = _Insn(0x401010, destination=target)
+    use = _Insn(0x402010, uses=(target,), opcode=ida_hexrays.m_call)
+    unrelated = _Insn(0x403010, opcode=ida_hexrays.m_call)
+    evidence = HexRaysDeadStoreLivenessBackend().collect(
+        _Mba(
+            (
+                _Block(0, (dead,), successors=(1, 2)),
+                _Block(1, (use,)),
+                _Block(2, (unrelated,)),
+            )
+        )
+    )
+
+    assert evidence.candidates == ()
+    assert DeadStoreRejectionReason.REACHED_USE in _reasons(evidence)
+
+
+def test_closed_cycle_with_live_definition_fails_closed() -> None:
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
+    dead = _Insn(0x401010, destination=target)
+    evidence = HexRaysDeadStoreLivenessBackend().collect(
+        _Mba((_Block(0, (dead,), successors=(0,)),))
+    )
+
+    assert evidence.candidates == ()
+    assert DeadStoreRejectionReason.CHAIN_UNAVAILABLE in _reasons(evidence)
+
+
+def test_conflicting_native_location_mappings_fail_closed(monkeypatch) -> None:
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
+    first = _Insn(0x401010, destination=target)
+    second = _Insn(0x401020, destination=target, effectful=True)
+    calls = 0
+
+    def conflicting_location(_block, _destination):
+        nonlocal calls
+        calls += 1
+        marker = 0x40 if calls % 2 else 0x50
+        return _LocationList({("S", marker)})
+
+    monkeypatch.setattr(
+        dead_store_liveness,
+        "_location_list",
+        conflicting_location,
+    )
+    evidence = HexRaysDeadStoreLivenessBackend().collect(
+        _Mba((_Block(0, (first, second)),))
+    )
+
+    assert evidence.candidates == ()
+    assert DeadStoreRejectionReason.CHAIN_UNAVAILABLE in _reasons(evidence)
 
 
 def test_rejects_stack_storage_whose_exact_address_escapes() -> None:

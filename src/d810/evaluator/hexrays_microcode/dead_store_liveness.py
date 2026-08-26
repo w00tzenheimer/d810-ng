@@ -15,6 +15,12 @@ from d810.analyses.value_flow.dead_store import (
     DeadStoreRejection,
     DeadStoreRejectionReason,
 )
+from d810.analyses.value_flow.instruction_value_flow import (
+    InstructionValueFlowResult,
+    analyze_instruction_value_flow,
+)
+from d810.ir.locations import RegisterLocation, StackSlot, StorageLocation
+from d810.ir.value_refs import DefinitionRef, InstructionUseKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.hexrays.ir.exact_data_flow import instruction_takes_stack_address
 
@@ -77,6 +83,26 @@ def _location_list(block: object, destination: object):
     return location
 
 
+def _portable_location(storage: _LiveStorage) -> StorageLocation:
+    if storage.identity.kind is StorageIdentityKind.REGISTER:
+        return RegisterLocation(
+            register_id=int(storage.identity.offset),
+            size=int(storage.width),
+        )
+    return StackSlot(
+        offset=int(storage.identity.offset),
+        size=int(storage.width),
+    )
+
+
+def _same_native_location(left: object, right: object) -> bool:
+    """Require two live destination mappings to denote the same exact bytes."""
+    try:
+        return bool(left.includes(right)) and bool(right.includes(left))
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def _block_start_ea(block: object) -> int:
     try:
         return int(block.start)
@@ -123,152 +149,34 @@ def _stack_alias_rejection(
     return None
 
 
-def _access_lists(
-    block: object,
-    instruction: object,
-    *,
-    storage_kind: StorageIdentityKind,
-):
-    try:
-        use_access = (
-            ida_hexrays.MUST_ACCESS
-            if storage_kind is StorageIdentityKind.STACK
-            else ida_hexrays.MAY_ACCESS
+def _retained_definition_reason(
+    instruction_flow: object,
+    value_flow: InstructionValueFlowResult,
+    definition: DefinitionRef,
+) -> tuple[DeadStoreRejectionReason, str]:
+    uses = value_flow.def_use.uses_of(definition)
+    if uses:
+        use = uses[0]
+        coordinate = instruction_flow.coordinate(use.insn)
+        reason = (
+            DeadStoreRejectionReason.PARTIAL_DEFINITION
+            if any(item.kind is InstructionUseKind.PARTIAL_DEFINITION for item in uses)
+            else DeadStoreRejectionReason.REACHED_USE
         )
-        use_list = block.build_use_list(instruction, use_access)
-        must_def = block.build_def_list(instruction, ida_hexrays.MUST_ACCESS)
-        may_def = (
-            must_def
-            if storage_kind is StorageIdentityKind.STACK
-            else block.build_def_list(instruction, ida_hexrays.MAY_ACCESS)
+        return (
+            reason,
+            f"blk{coordinate.block_serial}@0x{coordinate.insn_ea:x}",
         )
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return None
-    return use_list, may_def, must_def
-
-
-def _definition_outcome(
-    mba: object,
-    *,
-    start_block: object,
-    start_instruction: object,
-    storage: _LiveStorage,
-    location: object,
-) -> tuple[DeadStoreRejectionReason | None, str]:
-    """Prove every path kills or exits without reading this exact definition."""
-    initial_accesses = _access_lists(
-        start_block,
-        start_instruction,
-        storage_kind=storage.identity.kind,
-    )
-    if initial_accesses is None:
-        return DeadStoreRejectionReason.CHAIN_UNAVAILABLE, "definition_lists"
-    initial_uses, _initial_may_def, initial_must_def = initial_accesses
-    try:
-        if bool(initial_uses.has_common(location)):
-            return DeadStoreRejectionReason.REACHED_USE, "read_modify_write"
-        if not bool(initial_must_def.includes(location)):
-            return DeadStoreRejectionReason.PARTIAL_DEFINITION, "definition_not_full"
-    except (AttributeError, RuntimeError, TypeError, ValueError):
-        return DeadStoreRejectionReason.CHAIN_UNAVAILABLE, "definition_membership"
-
-    visiting: set[tuple[int, int]] = set()
-    complete: dict[tuple[int, int], tuple[DeadStoreRejectionReason | None, str]] = {}
-
-    def visit(block: object, first_instruction: object | None):
-        serial = int(getattr(block, "serial", -1))
-        key = (serial, id(first_instruction))
-        if key in complete:
-            return complete[key]
-        if key in visiting:
-            return DeadStoreRejectionReason.CHAIN_UNAVAILABLE, "live_cycle"
-        visiting.add(key)
-        try:
-            instruction = first_instruction
-            while instruction is not None:
-                accesses = _access_lists(
-                    block,
-                    instruction,
-                    storage_kind=storage.identity.kind,
-                )
-                if accesses is None:
-                    result = (
-                        DeadStoreRejectionReason.CHAIN_UNAVAILABLE,
-                        f"lists@0x{int(getattr(instruction, 'ea', 0)):x}",
-                    )
-                    complete[key] = result
-                    return result
-                uses, may_def, must_def = accesses
-                try:
-                    if bool(uses.has_common(location)):
-                        result = (
-                            DeadStoreRejectionReason.REACHED_USE,
-                            f"blk{serial}@0x{int(getattr(instruction, 'ea', 0)):x}",
-                        )
-                        complete[key] = result
-                        return result
-                    if bool(must_def.includes(location)):
-                        result = (None, "killed")
-                        complete[key] = result
-                        return result
-                    if bool(may_def.has_common(location)):
-                        result = (
-                            DeadStoreRejectionReason.PARTIAL_DEFINITION,
-                            f"blk{serial}@0x{int(getattr(instruction, 'ea', 0)):x}",
-                        )
-                        complete[key] = result
-                        return result
-                except (AttributeError, RuntimeError, TypeError, ValueError):
-                    result = (
-                        DeadStoreRejectionReason.CHAIN_UNAVAILABLE,
-                        "access_membership",
-                    )
-                    complete[key] = result
-                    return result
-                if instruction is getattr(block, "tail", None):
-                    break
-                instruction = getattr(instruction, "next", None)
-
-            try:
-                successor_count = int(block.nsucc())
-            except (AttributeError, RuntimeError, TypeError, ValueError):
-                result = (DeadStoreRejectionReason.CHAIN_UNAVAILABLE, "successors")
-                complete[key] = result
-                return result
-            if successor_count == 0:
-                result = (
-                    (None, "dead_at_exit")
-                    if storage.identity.kind is StorageIdentityKind.STACK
-                    else (DeadStoreRejectionReason.RETURN_CARRIER, "register_at_exit")
-                )
-                complete[key] = result
-                return result
-            for index in range(successor_count):
-                try:
-                    successor = mba.get_mblock(int(block.succ(index)))
-                except (AttributeError, IndexError, RuntimeError, TypeError, ValueError):
-                    result = (DeadStoreRejectionReason.CHAIN_UNAVAILABLE, "successor")
-                    complete[key] = result
-                    return result
-                if successor is None:
-                    result = (DeadStoreRejectionReason.CHAIN_UNAVAILABLE, "successor")
-                    complete[key] = result
-                    return result
-                result = visit(successor, getattr(successor, "head", None))
-                if result[0] is not None:
-                    complete[key] = result
-                    return result
-            result = (None, "all_paths_dead")
-            complete[key] = result
-            return result
-        finally:
-            visiting.remove(key)
-
-    return visit(start_block, getattr(start_instruction, "next", None))
+    if isinstance(definition.location, RegisterLocation):
+        return DeadStoreRejectionReason.RETURN_CARRIER, "register_at_exit"
+    return DeadStoreRejectionReason.CHAIN_UNAVAILABLE, "live_cycle"
 
 
 class HexRaysDeadStoreLivenessBackend:
     """Collect exact scalar dead-store evidence from one live GLBOPT2 MBA."""
+
+    def __init__(self, instruction_flow_builder) -> None:
+        self._instruction_flow_builder = instruction_flow_builder
 
     def collect(self, mba: object) -> DeadStoreEvidence:
         maturity = int(getattr(mba, "maturity", -1))
@@ -301,6 +209,73 @@ class HexRaysDeadStoreLivenessBackend:
                         insn_ea=0,
                         reason=DeadStoreRejectionReason.CHAIN_UNAVAILABLE,
                         detail="build_graph",
+                    ),
+                ),
+            )
+
+        tracked_locations: list[StorageLocation] = []
+        native_locations: dict[StorageLocation, object] = {}
+        unavailable_locations: set[StorageLocation] = set()
+        for serial in range(int(getattr(mba, "qty", 0) or 0)):
+            block = mba.get_mblock(serial)
+            if block is None:
+                continue
+            for instruction in _iter_instructions(block):
+                storage = _live_storage(getattr(instruction, "d", None))
+                if storage is None:
+                    continue
+                location = _portable_location(storage)
+                if location not in tracked_locations:
+                    tracked_locations.append(location)
+                try:
+                    native_location = _location_list(
+                        block, getattr(instruction, "d", None)
+                    )
+                    if bool(native_location.empty()):
+                        unavailable_locations.add(location)
+                    elif location not in native_locations:
+                        native_locations[location] = native_location
+                    elif not _same_native_location(
+                        native_locations[location], native_location
+                    ):
+                        unavailable_locations.add(location)
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    unavailable_locations.add(location)
+        if not tracked_locations:
+            return DeadStoreEvidence(authoritative=True)
+
+        for location in unavailable_locations:
+            native_locations.pop(location, None)
+        analyzable_locations = tuple(
+            location
+            for location in tracked_locations
+            if location not in unavailable_locations
+        )
+
+        try:
+            instruction_flow = self._instruction_flow_builder(
+                mba,
+                analyzable_locations,
+                native_locations=native_locations,
+            )
+            value_flow = analyze_instruction_value_flow(
+                instruction_flow.graph,
+                live_at_exit=frozenset(
+                    location
+                    for location in analyzable_locations
+                    if isinstance(location, RegisterLocation)
+                ),
+            )
+        except (RuntimeError, ValueError) as exc:
+            return DeadStoreEvidence(
+                authoritative=True,
+                rejections=(
+                    DeadStoreRejection(
+                        block_serial=0,
+                        block_start_ea=0,
+                        insn_ea=0,
+                        reason=DeadStoreRejectionReason.CHAIN_UNAVAILABLE,
+                        detail=f"instruction_value_flow:{exc}",
                     ),
                 ),
             )
@@ -357,6 +332,7 @@ class HexRaysDeadStoreLivenessBackend:
                 storage = _live_storage(getattr(instruction, "d", None))
                 if storage is None:
                     continue
+                portable_location = _portable_location(storage)
                 ea = int(getattr(instruction, "ea", -1))
                 if ea < 0 or ea_counts.get(ea, 0) != 1:
                     rejections.append(
@@ -399,9 +375,7 @@ class HexRaysDeadStoreLivenessBackend:
                 if storage.identity.kind is StorageIdentityKind.STACK:
                     alias_reason = _stack_alias_rejection(mba, location)
                     if alias_reason is not None:
-                        rejections.append(
-                            _rejection(block, instruction, alias_reason)
-                        )
+                        rejections.append(_rejection(block, instruction, alias_reason))
                         continue
                     if stack_address_escapes(storage):
                         rejections.append(
@@ -413,14 +387,62 @@ class HexRaysDeadStoreLivenessBackend:
                             )
                         )
                         continue
-                reason, detail = _definition_outcome(
-                    mba,
-                    start_block=block,
-                    start_instruction=instruction,
-                    storage=storage,
-                    location=location,
+                if portable_location in unavailable_locations:
+                    rejections.append(
+                        _rejection(
+                            block,
+                            instruction,
+                            DeadStoreRejectionReason.CHAIN_UNAVAILABLE,
+                            "destination_location_consensus",
+                        )
+                    )
+                    continue
+                try:
+                    handle = instruction_flow.handle_for(serial, ordinal)
+                    access = instruction_flow.graph.facts_by_node[handle]
+                except (KeyError, TypeError, ValueError):
+                    rejections.append(
+                        _rejection(
+                            block,
+                            instruction,
+                            DeadStoreRejectionReason.CHAIN_UNAVAILABLE,
+                            "instruction_coordinate",
+                        )
+                    )
+                    continue
+                if portable_location in access.uses:
+                    rejections.append(
+                        _rejection(
+                            block,
+                            instruction,
+                            DeadStoreRejectionReason.REACHED_USE,
+                            "read_modify_write",
+                        )
+                    )
+                    continue
+                if portable_location not in access.must_defs:
+                    reason = (
+                        DeadStoreRejectionReason.PARTIAL_DEFINITION
+                        if portable_location in access.may_defs
+                        else DeadStoreRejectionReason.CHAIN_UNAVAILABLE
+                    )
+                    detail = (
+                        "definition_not_full"
+                        if reason is DeadStoreRejectionReason.PARTIAL_DEFINITION
+                        else "definition_membership"
+                    )
+                    rejections.append(_rejection(block, instruction, reason, detail))
+                    continue
+                definition = DefinitionRef(
+                    location=portable_location,
+                    version=int(handle),
                 )
-                if reason is not None:
+                if not value_flow.is_definition_dead(definition):
+                    reason, detail = _retained_definition_reason(
+                        instruction_flow,
+                        value_flow,
+                        definition,
+                    )
                     rejections.append(_rejection(block, instruction, reason, detail))
                     continue
                 candidates.append(
