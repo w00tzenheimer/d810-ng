@@ -18,6 +18,13 @@ import sys
 
 Run = Callable[..., subprocess.CompletedProcess]
 
+ISOLATED_NODEIDS = frozenset(
+    {
+        "tests/system/e2e/test_ollvm_fla_bcf_sub_oracle.py::"
+        "TestOllvmFlaBcfSubOracle::test_fla_bcf_sub_oracle",
+    }
+)
+
 
 def parse_collected_nodeids(output: str) -> tuple[str, ...]:
     return tuple(
@@ -30,7 +37,9 @@ def parse_collected_nodeids(output: str) -> tuple[str, ...]:
 def _batches(values: Sequence[str], size: int) -> tuple[tuple[str, ...], ...]:
     if size < 1:
         raise ValueError("batch size must be positive")
-    return tuple(tuple(values[index : index + size]) for index in range(0, len(values), size))
+    return tuple(
+        tuple(values[index : index + size]) for index in range(0, len(values), size)
+    )
 
 
 def run_batches(
@@ -62,16 +71,22 @@ def run_batches(
         sys.stderr.write("[system-batch] collection selected no tests\n")
         return 5
 
-    batches = _batches(nodeids, batch_size)
+    regular_nodeids = tuple(
+        nodeid for nodeid in nodeids if nodeid not in ISOLATED_NODEIDS
+    )
+    isolated_nodeids = tuple(nodeid for nodeid in nodeids if nodeid in ISOLATED_NODEIDS)
+    batches = _batches(regular_nodeids, batch_size) + tuple(
+        (nodeid,) for nodeid in isolated_nodeids
+    )
     if start_batch < 1 or start_batch > len(batches):
         sys.stderr.write(
-            f"[system-batch] start_batch={start_batch} outside "
-            f"1..{len(batches)}\n"
+            f"[system-batch] start_batch={start_batch} outside 1..{len(batches)}\n"
         )
         return 5
     print(
         f"[system-batch] collected={len(nodeids)} "
         f"batch_size={batch_size} batches={len(batches)} "
+        f"isolated={len(isolated_nodeids)} "
         f"start_batch={start_batch}",
         flush=True,
     )

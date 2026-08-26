@@ -96,3 +96,45 @@ def test_run_batches_can_resume_at_a_diagnostic_batch_boundary() -> None:
     assert result == 0
     assert len(calls) == 2
     assert calls[1][3:] == ["-v", "tests/system/test_x.py::test_4"]
+
+
+def test_run_batches_runs_memory_heavy_oracle_after_regular_batches() -> None:
+    module = _module()
+    calls: list[list[str]] = []
+    oracle = (
+        "tests/system/e2e/test_ollvm_fla_bcf_sub_oracle.py::"
+        "TestOllvmFlaBcfSubOracle::test_fla_bcf_sub_oracle"
+    )
+
+    def fake_run(command, **kwargs):
+        calls.append(list(command))
+        if "--collect-only" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="\n".join(
+                    (
+                        "tests/system/test_x.py::test_0",
+                        oracle,
+                        "tests/system/test_x.py::test_1",
+                        "tests/system/test_x.py::test_2",
+                    )
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(command, 0)
+
+    result = module.run_batches(
+        python="/runtime/python",
+        root="tests/system",
+        pytest_args=(),
+        batch_size=2,
+        run=fake_run,
+    )
+
+    assert result == 0
+    assert [call[4:] for call in calls[1:]] == [
+        ["tests/system/test_x.py::test_0", "tests/system/test_x.py::test_1"],
+        ["tests/system/test_x.py::test_2"],
+        [oracle],
+    ]
