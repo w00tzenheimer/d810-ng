@@ -166,12 +166,14 @@ from d810.transforms.exit_path_effect_emission import (
 )
 from d810.transforms.dispatcher_corridor_coverage import (
     DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+    DETACHED_DEAD_HANDLER_COMPONENT_METADATA,
     DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
     FULL_UNFLATTENING_CLAIM_METADATA,
     USE_DEF_SEVERANCE_AUDIT_METADATA,
     UNFLATTEN_COMPLETION_STATUS_METADATA,
     analyze_dispatcher_corridor_coverage,
     build_dispatcher_removal_preflight_proof,
+    build_detached_dead_handler_component_proof,
 )
 from d810.transforms.use_def_redirect_filter import (
     audit_use_def_severances,
@@ -6089,16 +6091,11 @@ def _merge_effect_safe_source_keyed_redirect_group(
         )
     ]
     candidate = [*candidate_base, *source_keyed_modifications]
-    base_effects = check_effectful_reachability_preserved(
+    newly_lost = _incremental_effect_loss_for_redirect_group(
         flow_graph,
-        post_cfg=project_modifications(tuple(base_modifications)),
-    )
-    candidate_effects = check_effectful_reachability_preserved(
-        flow_graph,
-        post_cfg=project_modifications(tuple(candidate)),
-    )
-    newly_lost = (
-        candidate_effects.lost_block_serials - base_effects.lost_block_serials
+        base_modifications,
+        candidate,
+        project_modifications=project_modifications,
     )
     if newly_lost:
         if logger.info_on:
@@ -6112,6 +6109,33 @@ def _merge_effect_safe_source_keyed_redirect_group(
             )
         return list(base_modifications), False
     return candidate, True
+
+
+def _incremental_effect_loss_for_redirect_group(
+    flow_graph,
+    base_modifications: list[object],
+    candidate_modifications: list[object],
+    *,
+    project_modifications: Callable[[tuple[object, ...]], object],
+) -> frozenset[int]:
+    """Return effects lost only after replacing a base redirect group.
+
+    Optional refinements such as conditional-arm or source-keyed redirects are
+    fragment-atomic.  An already unsafe base remains the final transaction
+    gate's responsibility; this helper attributes only new loss introduced by
+    the candidate group.
+    """
+    base_effects = check_effectful_reachability_preserved(
+        flow_graph,
+        post_cfg=project_modifications(tuple(base_modifications)),
+    )
+    candidate_effects = check_effectful_reachability_preserved(
+        flow_graph,
+        post_cfg=project_modifications(tuple(candidate_modifications)),
+    )
+    return frozenset(
+        candidate_effects.lost_block_serials - base_effects.lost_block_serials
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -9382,9 +9406,29 @@ def emit_minimal_unflatten(
                 ",".join(anchor.label for anchor in proof.lost_block_anchors)
                 or "none",
             )
-        return plan.with_metadata(
-            **{DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata()}
+        metadata: dict[str, object] = {
+            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata()
+        }
+        dead_component = build_detached_dead_handler_component_proof(
+            flow_graph,
+            post_graph=projected.graph,
+            coverage=coverage,
+            authoritative_handler_serials=authoritative_handlers,
+            patch_plan=plan,
         )
+        if dead_component is not None:
+            metadata[DETACHED_DEAD_HANDLER_COMPONENT_METADATA] = (
+                dead_component.to_payload()
+            )
+            if logger.info_on:
+                logger.info(
+                    "unflat detached dead-handler component: handlers=%s "
+                    "blocks=%d effects=%s",
+                    ",".join(item.label for item in dead_component.dead_handlers),
+                    len(dead_component.component),
+                    ",".join(item.label for item in dead_component.lost_effects),
+                )
+        return plan.with_metadata(**metadata)
 
     def log_dispatcher_coverage(coverage) -> None:
         if not logger.info_on:
@@ -10564,6 +10608,24 @@ def emit_minimal_unflatten(
         state_var_stkoff=_soff,
         state_var_reg=state_var_reg,
     )
+    if arm_mods:
+        newly_lost_arm_effects = _incremental_effect_loss_for_redirect_group(
+            flow_graph,
+            mods,
+            [*mods, *arm_mods],
+            project_modifications=project_modifications,
+        )
+        if newly_lost_arm_effects:
+            if logger.info_on:
+                logger.info(
+                    "unflat conditional-arm: abstain group "
+                    "reason=incremental_effect_loss lost=%s",
+                    ",".join(
+                        _format_block_label(flow_graph, int(serial))
+                        for serial in sorted(newly_lost_arm_effects)
+                    ),
+                )
+            arm_mods = []
     guard_candidates = build_loop_carrier_guard_transitions(
         flow_graph,
         dispatcher,
@@ -10739,6 +10801,7 @@ def emit_minimal_unflatten(
         handler_transitions,
         dispatcher_entry_serial=int(dispatcher_entry_serial),
     )
+    pre_shared_merge_mods = list(mods)
     if cond_suppressed:
         mods = [
             m
@@ -10768,6 +10831,26 @@ def emit_minimal_unflatten(
             if key not in _existing:
                 mods = list(mods) + [m]
                 _existing.add(key)
+    if cond_redirects or cond_suppressed:
+        newly_lost_shared_merge_effects = (
+            _incremental_effect_loss_for_redirect_group(
+                flow_graph,
+                pre_shared_merge_mods,
+                mods,
+                project_modifications=project_modifications,
+            )
+        )
+        if newly_lost_shared_merge_effects:
+            if logger.info_on:
+                logger.info(
+                    "unflat shared-merge conditional: abstain group "
+                    "reason=incremental_effect_loss lost=%s",
+                    ",".join(
+                        _format_block_label(flow_graph, int(serial))
+                        for serial in sorted(newly_lost_shared_merge_effects)
+                    ),
+                )
+            mods = pre_shared_merge_mods
     # Loop-guard exit (ticket d81-c733): a ``while(state != K)`` flattener with no
     # dispatcher default routes its terminal through the guard's exit arm.  Wire
     # the sentinel-writing handler to that exit corridor so severing the

@@ -5437,6 +5437,100 @@ def test_exact_state_transform_accepts_one_pure_state_store_hop(_seam) -> None:
     assert receipt.comparison_entry_serial == 6
 
 
+def test_exact_state_transform_accepts_split_final_arithmetic_state_hop(
+    _seam,
+) -> None:
+    """A source-bound arithmetic program may finish in the state feeder."""
+
+    source_serial = 34
+    feeder_serial = 101
+    state_feeder_serial = 102
+    comparison_serial = 4
+    source_ea = 0x18020F748
+    feeder_ea = 0x18021245E
+    state_feeder_ea = 0x180212460
+    expected_state = 0x008FE79A
+    graph = FlowGraph(
+        {
+            source_serial: _blk(
+                source_serial,
+                (feeder_serial,),
+                (),
+                (
+                    _mov(source_ea, _num(0x5615EA58), _reg(8)),
+                    _mov(source_ea + 2, _num(0x33573E44), _reg(24)),
+                    _mov(source_ea + 8, _num(0x89EEC436), _reg(16)),
+                    _goto(source_ea + 13, feeder_serial),
+                ),
+                ea=source_ea,
+            ),
+            100: _blk(100, (feeder_serial,), (), (), ea=0x180212440),
+            feeder_serial: _blk(
+                feeder_serial,
+                (state_feeder_serial,),
+                (source_serial, 100),
+                (
+                    _sub(feeder_ea, _reg(16), _reg(8), _reg(16)),
+                    _goto(feeder_ea + 2, state_feeder_serial),
+                ),
+                ea=feeder_ea,
+            ),
+            131: _blk(131, (state_feeder_serial,), (), (), ea=0x180215000),
+            state_feeder_serial: _blk(
+                state_feeder_serial,
+                (comparison_serial,),
+                (feeder_serial, 131),
+                (
+                    _xor(
+                        state_feeder_ea,
+                        _reg(24),
+                        _reg(16),
+                        _stk(_STATE_OFF),
+                    ),
+                    _goto(state_feeder_ea + 4, comparison_serial),
+                ),
+                ea=state_feeder_ea,
+            ),
+            comparison_serial: _blk(
+                comparison_serial,
+                (200, 201),
+                (state_feeder_serial,),
+                (
+                    _jz_stack_const(
+                        0x18020ECE0,
+                        _STATE_OFF,
+                        expected_state,
+                        200,
+                    ),
+                ),
+                ea=0x18020ECE0,
+            ),
+            200: _blk(200, (), (comparison_serial,), (), ea=0x180218000),
+            201: _blk(201, (), (comparison_serial,), (), ea=0x180218100),
+        },
+        source_serial,
+        0x18020EC90,
+    )
+
+    receipt = state_carrier.prove_exact_u32_state_transform_feeder(
+        graph,
+        source_serial,
+        feeder_serial,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({comparison_serial}),
+        expected_state=expected_state,
+    )
+
+    assert receipt is not None
+    assert receipt.state == expected_state
+    assert receipt.state_feeder_serial == state_feeder_serial
+    assert tuple(instruction.operation for instruction in receipt.program) == (
+        ValueOpKind.SUB,
+        ValueOpKind.XOR,
+    )
+
+
 def test_complete_two_stage_transform_partitions_omit_unresolved_glue(_seam) -> None:
     graph, dag, transitions, unresolved, state = _two_stage_state_transform_fixture()
     rows = (transitions[0], unresolved, *transitions[1:])

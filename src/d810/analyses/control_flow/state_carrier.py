@@ -7,6 +7,8 @@ The admitted shapes are intentionally small::
 
 or a bounded expression variant where exact source-owned CONST32 register/temp
 definitions feed a pure canonical XOR/ADD/SUB program into recovered state32.
+The program may finish in one following state-feeder block when Hex-Rays splits
+the final arithmetic state write from the preceding arithmetic instruction.
 
 The source block is retained, so effects before the final exact carrier
 definition are harmless.  A wholly pure feeder may be bypassed.  A feeder with
@@ -446,13 +448,15 @@ def prove_exact_u32_state_transform_feeder(
     """Prove ``CONST32 definitions -> bounded pure expression -> state32``.
 
     The expression is a canonical U32 XOR/ADD/SUB program of at most three
-    value instructions, optionally followed by the exact U32-to-register64
-    shell emitted for Hex-Rays ``m_xdu``.  Every external input has one exact
-    constant definition in the direct source block; canonical evaluation is
-    delegated to the shared portable forward evaluator.  Operand order is
-    preserved.  Both graph edges are reciprocal sole edges, and neither the
-    selected source suffix nor the feeder may contain an unproved instruction
-    or effect.
+    value instructions.  It may finish in one following state-feeder block,
+    or be followed by the exact U32-to-register64 shell emitted for Hex-Rays
+    ``m_xdu`` and a state move.  Every external input has one exact constant
+    definition in the direct source block; canonical evaluation is delegated
+    to the shared portable forward evaluator.  Operand order is preserved.
+    Each corridor block has one successor and every traversed edge is
+    reciprocal; shared predecessor joins remain source-partitioned.  Neither
+    the selected source suffix nor either feeder may contain an unproved
+    instruction or effect.
     """
 
     source_serial = int(source_serial)
@@ -534,21 +538,22 @@ def prove_exact_u32_state_transform_feeder(
         if values and values[-1].operation is ValueOpKind.ZEXT
         else None
     )
-    arithmetic_values = values[:-1] if width_shell is not None else values
-    if not 1 <= len(arithmetic_values) <= _MAX_STATE_TRANSFORM_VALUE_INSTRUCTIONS:
+    feeder_arithmetic_values = values[:-1] if width_shell is not None else values
+    if not 1 <= len(feeder_arithmetic_values) <= _MAX_STATE_TRANSFORM_VALUE_INSTRUCTIONS:
         return None
     if any(
         not _is_exact_u32_value_instruction(instruction)
-        for instruction in arithmetic_values
+        for instruction in feeder_arithmetic_values
     ):
         return None
-    transform = arithmetic_values[-1]
+    feeder_transform = feeder_arithmetic_values[-1]
     if width_shell is not None and not _is_exact_u32_zext_shell(
         width_shell,
-        transform.result,
+        feeder_transform.result,
     ):
         return None
     state_move: Instruction | None = inline_state_move
+    split_state_transform: Instruction | None = None
     if state_feeder is not None:
         if state_move is not None:
             return None
@@ -575,7 +580,25 @@ def prove_exact_u32_state_transform_feeder(
             )
         ):
             return None
-        state_move = state_value_instructions[0]
+        state_feeder_value = state_value_instructions[0]
+        if state_feeder_value.operation is ValueOpKind.MOVE:
+            state_move = state_feeder_value
+        elif (
+            width_shell is None
+            and _is_exact_u32_value_instruction(state_feeder_value)
+            and state_feeder_value.result is not None
+            and storage_identity_from_varnode(state_feeder_value.result)
+            in expected_identities
+        ):
+            split_state_transform = state_feeder_value
+        else:
+            return None
+    arithmetic_values = feeder_arithmetic_values + (
+        () if split_state_transform is None else (split_state_transform,)
+    )
+    if len(arithmetic_values) > _MAX_STATE_TRANSFORM_VALUE_INSTRUCTIONS:
+        return None
+    transform = arithmetic_values[-1]
     if state_move is not None:
         if (
             state_move.operation is not ValueOpKind.MOVE
@@ -620,8 +643,11 @@ def prove_exact_u32_state_transform_feeder(
     if controls and not _pure_goto_to(controls[0], feeder_successors[0]):
         return None
 
+    program_values = values + (
+        () if split_state_transform is None else (split_state_transform,)
+    )
     feeder_producer_indexes: dict[Varnode, int] = {}
-    for index, instruction in enumerate(values):
+    for index, instruction in enumerate(program_values):
         result = instruction.result
         if result is None or result in feeder_producer_indexes:
             return None
@@ -633,7 +659,7 @@ def prove_exact_u32_state_transform_feeder(
         feeder_producer_indexes[result] = index
     external_operands = frozenset(
         operand
-        for index, instruction in enumerate(values)
+        for index, instruction in enumerate(program_values)
         for operand in instruction.inputs
         if feeder_producer_indexes.get(operand, index) >= index
     )
@@ -733,7 +759,7 @@ def prove_exact_u32_state_transform_feeder(
     source_arithmetic = tuple(
         source_instructions[index] for index in sorted(selected_arithmetic)
     )
-    combined_values = source_arithmetic + values
+    combined_values = source_arithmetic + program_values
     combined_producers: dict[Varnode, int] = {}
     for index, instruction in enumerate(combined_values):
         result = instruction.result
@@ -756,7 +782,7 @@ def prove_exact_u32_state_transform_feeder(
     )
     evaluation_program = (
         source_arithmetic
-        + values
+        + program_values
         + (() if state_move is None else (state_move,))
     )
     proof_sequence, _ = isolate_temporaries_for_forward_evaluation(

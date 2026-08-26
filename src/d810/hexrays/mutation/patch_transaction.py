@@ -700,6 +700,20 @@ class HexRaysPatchTransactionParticipant:
                 patch_plan=self.plan,
                 removal_validation=candidate_allowance,
             )
+            dead_component = getattr(
+                candidate_allowance,
+                "detached_dead_handler_component",
+                None,
+            )
+            if dead_component is not None:
+                dead_effects = frozenset(
+                    int(anchor.serial)
+                    for anchor in dead_component.lost_effects
+                )
+                effectful_reachability = _apply_exact_effect_exclusions(
+                    effectful_reachability,
+                    dead_effects,
+                )
             candidate_allowance = _transaction_reachability_removal_validation(
                 candidate_allowance,
                 coverage_validation=projected_coverage_validation,
@@ -1048,6 +1062,19 @@ class _PatchTransactionLifecycle:
                 patch_plan=self.plan,
                 removal_validation=candidate_validation,
             )
+            dead_component = getattr(
+                candidate_validation,
+                "detached_dead_handler_component",
+                None,
+            )
+            if dead_component is not None:
+                effectful_reachability = _apply_exact_effect_exclusions(
+                    effectful_reachability,
+                    frozenset(
+                        int(anchor.serial)
+                        for anchor in dead_component.lost_effects
+                    ),
+                )
             candidate_validation = _transaction_reachability_removal_validation(
                 candidate_validation,
                 coverage_validation=observed_coverage_validation,

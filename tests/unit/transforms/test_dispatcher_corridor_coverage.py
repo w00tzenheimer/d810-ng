@@ -26,6 +26,7 @@ from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms import dispatcher_corridor_coverage as corridor_module
 from d810.transforms import minimal_unflatten_emit as emit_module
 from d810.transforms.dispatcher_corridor_coverage import (
+    DETACHED_DEAD_HANDLER_COMPONENT_METADATA,
     DISPATCHER_CORRIDOR_COVERAGE_METADATA,
     DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
     USE_DEF_SEVERANCE_AUDIT_METADATA,
@@ -33,6 +34,7 @@ from d810.transforms.dispatcher_corridor_coverage import (
     DispatcherRemovalPreflightValidation,
     analyze_dispatcher_corridor_coverage,
     build_dispatcher_removal_preflight_proof,
+    build_detached_dead_handler_component_proof,
     canonicalize_observed_dispatcher_graph,
     collect_dispatcher_corridor_coverage_observations,
     collect_dispatcher_corridor_coverage_observations_from_metadata,
@@ -4135,6 +4137,181 @@ def test_dispatcher_removal_proof_rejects_lost_handler_near_miss() -> None:
     assert not proof.passed
     assert proof.reason == "authoritative_handler_lost"
 
+
+def _detached_dead_handler_component_fixture(
+    *, external_ingress: bool = False
+) -> tuple[FlowGraph, FlowGraph, object]:
+    state = MopSnapshot(kind=OperandKind.STACK, stkoff=40, size=4)
+    branch = InsnSnapshot(
+        opcode=42,
+        ea=0x1200,
+        operands=(),
+        l=state,
+        r=MopSnapshot(kind=OperandKind.NUMBER, value=7, size=4),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=21),
+        kind=InsnKind.COND_JUMP,
+        predicate_kind=PredicateKind.EQ,
+    )
+    dead_local_write = InsnSnapshot(
+        opcode=1,
+        ea=0x1310,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.NUMBER, value=1, size=4),
+        d=MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=4),
+        kind=InsnKind.MOV,
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    move_state = InsnSnapshot(
+        opcode=2,
+        ea=0x1320,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.NUMBER, value=9, size=4),
+        d=state,
+        kind=InsnKind.MOV,
+        value_op_kind=ValueOpKind.MOVE,
+    )
+    entry_succs = (10, 12, 21) if external_ingress else (10, 12)
+    root_preds = (4, 0) if external_ingress else (4,)
+    pre_graph = FlowGraph(
+        blocks={
+            0: _block(0, entry_succs, (), 0x1000, kind=BlockKind.N_WAY),
+            10: _block(10, (123,), (0,), 0x1010, kind=BlockKind.ONE_WAY),
+            12: _block(12, (112,), (0,), 0x1020, kind=BlockKind.ONE_WAY),
+            123: _block(123, (3,), (10,), 0x1100, kind=BlockKind.ONE_WAY),
+            3: _block(3, (4,), (123,), 0x1110, kind=BlockKind.ONE_WAY),
+            112: _block(112, (4,), (12,), 0x1120, kind=BlockKind.ONE_WAY),
+            4: _block(
+                4,
+                (20, 21),
+                (3, 112, 113),
+                0x1200,
+                kind=BlockKind.TWO_WAY,
+                insns=(branch,),
+            ),
+            20: _block(20, (), (4,), 0x1300, kind=BlockKind.STOP),
+            21: _block(
+                21,
+                (113,),
+                root_preds,
+                0x1310,
+                kind=BlockKind.ONE_WAY,
+                insns=(dead_local_write,),
+            ),
+            113: _block(
+                113,
+                (4,),
+                (21,),
+                0x1320,
+                kind=BlockKind.ONE_WAY,
+                insns=(move_state,),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    modifications = (
+        RedirectGoto(from_serial=10, old_target=123, new_target=20),
+        RedirectGoto(from_serial=12, old_target=112, new_target=20),
+        RedirectGoto(from_serial=21, old_target=113, new_target=20),
+    )
+    coverage = analyze_dispatcher_corridor_coverage(
+        pre_graph,
+        modifications=modifications,
+        dispatcher_entry_serial=4,
+    )
+    post_graph = _replace_observed_edges(
+        pre_graph,
+        {
+            **{serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()},
+            0: (10, 12),
+            10: (20,),
+            12: (20,),
+            21: (20,),
+        },
+    )
+    return pre_graph, post_graph, coverage
+
+
+def test_detached_dead_handler_component_accepts_closed_dispatcher_only_island() -> None:
+    pre_graph, post_graph, coverage = _detached_dead_handler_component_fixture()
+
+    proof = build_detached_dead_handler_component_proof(
+        pre_graph,
+        post_graph=post_graph,
+        coverage=coverage,
+        authoritative_handler_serials=frozenset({20, 21}),
+    )
+
+    assert proof is not None
+    assert {item.serial for item in proof.dead_handlers} == {21}
+    assert {item.serial for item in proof.component} == {21, 113}
+    assert not proof.lost_effects
+
+    removal = build_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        coverage=coverage,
+        dispatcher_entry_serial=4,
+        authoritative_handler_serials=frozenset({20, 21}),
+        dispatcher_region_serials=frozenset({4}),
+        producer_safety=_executed_fragment_safety(),
+    )
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
+            DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: removal.to_metadata(),
+            DETACHED_DEAD_HANDLER_COMPONENT_METADATA: proof.to_payload(),
+        },
+    )
+    assert validation.passed
+    assert validation.reason == "detached_dead_handler_component_retirement"
+
+
+def test_detached_dead_handler_component_rejects_non_dispatcher_ingress() -> None:
+    pre_graph, post_graph, coverage = _detached_dead_handler_component_fixture(
+        external_ingress=True
+    )
+    assert (
+        build_detached_dead_handler_component_proof(
+            pre_graph,
+            post_graph=post_graph,
+            coverage=coverage,
+            authoritative_handler_serials=frozenset({20, 21}),
+        )
+        is None
+    )
+
+
+def test_detached_dead_handler_component_rejects_lost_call() -> None:
+    pre_graph, post_graph, coverage = _detached_dead_handler_component_fixture()
+    call = InsnSnapshot(opcode=1, ea=0x1310, operands=(), kind=InsnKind.CALL)
+    call_graph = FlowGraph(
+        blocks={
+            **pre_graph.blocks,
+            21: _block(
+                21,
+                (113,),
+                (4,),
+                0x1310,
+                kind=BlockKind.ONE_WAY,
+                insns=(call,),
+            ),
+        },
+        entry_serial=pre_graph.entry_serial,
+        func_ea=pre_graph.func_ea,
+    )
+
+    assert (
+        build_detached_dead_handler_component_proof(
+            call_graph,
+            post_graph=post_graph,
+            coverage=coverage,
+            authoritative_handler_serials=frozenset({20, 21}),
+        )
+        is None
+    )
 
 def test_dispatcher_removal_proof_rejects_empty_authoritative_handlers() -> None:
     graph = _nested_merge_corridor_graph()

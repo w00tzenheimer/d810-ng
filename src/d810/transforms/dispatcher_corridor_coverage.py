@@ -17,7 +17,10 @@ from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
-from d810.analyses.control_flow.graph_checks import reachable_terminal_blocks
+from d810.analyses.control_flow.graph_checks import (
+    check_effectful_reachability_preserved,
+    reachable_terminal_blocks,
+)
 from d810.analyses.control_flow.edit_simulation import simulate_edits
 from d810.analyses.control_flow.state_carrier import (
     prove_exact_u32_carrier_state_write,
@@ -36,6 +39,7 @@ from d810.analyses.control_flow.instruction_semantics import (
     split_const_storage_identity_from_branch,
 )
 from d810.analyses.value_flow.observation import FactObservation
+from d810.core.logging import getLogger
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
     BlockKind,
@@ -79,13 +83,17 @@ DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA = "dispatcher_removal_preflight_proo
 UNFLATTEN_COMPLETION_STATUS_METADATA = "unflatten_completion_status"
 FULL_UNFLATTENING_CLAIM_METADATA = "full_unflattening_claim"
 USE_DEF_SEVERANCE_AUDIT_METADATA = "use_def_severance_audit"
+DETACHED_DEAD_HANDLER_COMPONENT_METADATA = "detached_dead_handler_component"
 
 _MAX_CORRIDOR_DEPTH = 64
 _MAX_CORRIDORS = 128
 
+logger = getLogger(__name__)
+
 __all__ = [
     "DISPATCHER_CORRIDOR_COVERAGE_METADATA",
     "DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA",
+    "DETACHED_DEAD_HANDLER_COMPONENT_METADATA",
     "FULL_UNFLATTENING_CLAIM_METADATA",
     "USE_DEF_SEVERANCE_AUDIT_METADATA",
     "UNFLATTEN_COMPLETION_STATUS_METADATA",
@@ -96,6 +104,7 @@ __all__ = [
     "ComparisonCorridorRetirementProof",
     "DispatcherRemovalPreflightProof",
     "DispatcherRemovalPreflightValidation",
+    "DetachedDeadHandlerComponentProof",
     "IntervalStateNormalizerRetirementProof",
     "IntervalStateNormalizerRouteProof",
     "IntervalStateSourceRouteProof",
@@ -105,6 +114,7 @@ __all__ = [
     "RetiredDispatcherInfrastructure",
     "analyze_dispatcher_corridor_coverage",
     "build_dispatcher_removal_preflight_proof",
+    "build_detached_dead_handler_component_proof",
     "collect_dispatcher_corridor_coverage_observations",
     "collect_dispatcher_corridor_coverage_observations_from_metadata",
     "collect_dispatcher_removal_preflight_proof_observations_from_metadata",
@@ -406,6 +416,35 @@ class ComparisonCorridorRetirementProof:
 
 
 @dataclass(frozen=True, slots=True)
+class DetachedDeadHandlerComponentProof:
+    """Exact topology proof for a dispatcher-only dead semantic component.
+
+    This is deliberately not a general unreachable-code allowance.  Every root
+    must be an authoritative handler whose only live ingress is the proven
+    comparison dispatcher, the whole component must be detached by a complete
+    no-residual dispatcher rewrite, and the rewrite must lose no effectful
+    block.
+    """
+
+    dispatcher: DispatcherBlockAnchor
+    dead_handlers: tuple[DispatcherBlockAnchor, ...]
+    component: tuple[DispatcherBlockAnchor, ...]
+    lost_effects: tuple[DispatcherBlockAnchor, ...]
+    retained_handlers: tuple[DispatcherBlockAnchor, ...]
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "dispatcher": self.dispatcher.to_payload(),
+            "dead_handlers": [item.to_payload() for item in self.dead_handlers],
+            "component": [item.to_payload() for item in self.component],
+            "lost_effects": [item.to_payload() for item in self.lost_effects],
+            "retained_handlers": [
+                item.to_payload() for item in self.retained_handlers
+            ],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DispatcherRemovalPreflightValidation:
     """Result of recomputing a plan's narrow removal proof at preflight."""
 
@@ -420,6 +459,7 @@ class DispatcherRemovalPreflightValidation:
         StateTransitionPlumbingRetirementProof | None
     ) = None
     comparison_corridor_retirement: ComparisonCorridorRetirementProof | None = None
+    detached_dead_handler_component: DetachedDeadHandlerComponentProof | None = None
 
     def to_payload(self) -> dict[str, object]:
         """Return compact typed evidence for a projected or observed verdict."""
@@ -443,6 +483,10 @@ class DispatcherRemovalPreflightValidation:
         if self.comparison_corridor_retirement is not None:
             payload["comparison_corridor_retirement"] = (
                 self.comparison_corridor_retirement.to_payload()
+            )
+        if self.detached_dead_handler_component is not None:
+            payload["detached_dead_handler_component"] = (
+                self.detached_dead_handler_component.to_payload()
             )
         return payload
 
@@ -2352,6 +2396,255 @@ def build_dispatcher_removal_preflight_proof(
         residual_corridor_count=len(coverage.residual_corridors),
         passed=passed,
         reason=reason,
+    )
+
+
+def build_detached_dead_handler_component_proof(
+    flow_graph: FlowGraph,
+    *,
+    post_graph: FlowGraph,
+    coverage: DispatcherCorridorCoverage,
+    authoritative_handler_serials: frozenset[int],
+    patch_plan: PatchPlan | None = None,
+) -> DetachedDeadHandlerComponentProof | None:
+    """Prove one or more handler roots are a closed dispatcher-only dead island.
+
+    The proof is recomputed at transaction preflight.  It accepts no terminal
+    loss, no residual dispatcher corridor, no effect loss, and no ingress to
+    the island except from the exact comparison forest.
+    """
+
+    def reject(reason: str) -> None:
+        if logger.info_on:
+            logger.info("unflat dead-handler component: rejected reason=%s", reason)
+
+    dispatcher = coverage.dispatcher
+    handlers = frozenset(int(value) for value in authoritative_handler_serials)
+    if (
+        dispatcher is None
+        or not coverage.enumeration_complete
+        or coverage.residual_corridors
+        or len(handlers) < 2
+    ):
+        reject("coverage_or_handler_count")
+        return None
+    dispatcher_serial = int(dispatcher.serial)
+    state_identity = _dispatcher_state_identity(flow_graph, dispatcher_serial)
+    if state_identity is None:
+        reject("state_identity_missing")
+        return None
+    comparison_region = _independent_comparison_dispatcher_region(
+        flow_graph,
+        dispatcher_entry_serial=dispatcher_serial,
+    )
+    if dispatcher_serial not in comparison_region:
+        decision_forest = build_current_u32_decision_forest(
+            flow_graph,
+            dispatcher_serial,
+            expected_identities=frozenset({state_identity}),
+        )
+        if decision_forest is not None:
+            comparison_region = frozenset(
+                {
+                    *decision_forest.nodes,
+                    *decision_forest.aliases,
+                }
+            )
+    if dispatcher_serial not in comparison_region:
+        # Some Hex-Rays comparison trees carry an operand wrapper that the
+        # strict operand-tree classifier cannot normalize, even though the
+        # canonical instructions are still pure control.  Rebuild only the
+        # dispatcher-connected pure-control region; a semantic handler entry
+        # stops the walk because it contains a value/effect instruction.
+        relaxed_region: set[int] = set()
+        pending = [dispatcher_serial]
+        while pending:
+            serial = int(pending.pop())
+            if serial in relaxed_region:
+                continue
+            if serial != dispatcher_serial and serial in handlers:
+                continue
+            block = flow_graph.get_block(serial)
+            if block is None or len(tuple(block.succs)) not in {1, 2}:
+                continue
+            instructions = InstructionProjection.from_block(block)
+            if serial != dispatcher_serial and any(
+                instruction.effects
+                or instruction.memory is not None
+                or (
+                    instruction.control is None
+                    and not (
+                        instruction.operation is ValueOpKind.VENDOR
+                        and not instruction.inputs
+                        and instruction.result is None
+                    )
+                )
+                for instruction in instructions
+            ):
+                continue
+            if serial != dispatcher_serial and instructions and not any(
+                instruction.control is not None for instruction in instructions
+            ):
+                continue
+            relaxed_region.add(serial)
+            pending.extend(int(target) for target in block.succs)
+        comparison_region = frozenset(relaxed_region)
+    if dispatcher_serial in comparison_region:
+        bounded_region: set[int] = set()
+        pending = [dispatcher_serial]
+        while pending:
+            serial = int(pending.pop())
+            if serial in bounded_region or serial not in comparison_region:
+                continue
+            if serial != dispatcher_serial and serial in handlers:
+                continue
+            bounded_region.add(serial)
+            block = flow_graph.get_block(serial)
+            if block is not None:
+                pending.extend(int(target) for target in block.succs)
+        comparison_region = frozenset(bounded_region)
+    if dispatcher_serial not in comparison_region:
+        reject("comparison_region_missing_dispatcher")
+        return None
+
+    pre_reachable = _reachable_from_entry(
+        flow_graph.as_adjacency_dict(), int(flow_graph.entry_serial)
+    )
+    post_reachable = _reachable_from_entry(
+        post_graph.as_adjacency_dict(), int(post_graph.entry_serial)
+    )
+    dead_handlers = frozenset(handlers - post_reachable)
+    retained_handlers = frozenset(handlers & post_reachable)
+    if not dead_handlers or not retained_handlers or not dead_handlers <= pre_reachable:
+        reject("dead_or_retained_handler_partition")
+        return None
+    if set(reachable_terminal_blocks(flow_graph)) != set(
+        reachable_terminal_blocks(post_graph)
+    ):
+        reject("terminal_identity_drift")
+        return None
+
+    # A dead root is admitted only when the original dispatcher comparison
+    # forest was its sole reachable ingress.  This excludes ordinary handler
+    # loss caused by cutting a real semantic predecessor.
+    for serial in dead_handlers:
+        block = flow_graph.get_block(serial)
+        if block is None:
+            reject("dead_handler_missing")
+            return None
+        reachable_preds = frozenset(
+            int(pred) for pred in block.preds if int(pred) in pre_reachable
+        )
+        if not reachable_preds or not reachable_preds <= comparison_region:
+            reject("dead_handler_external_ingress")
+            return None
+
+    lost = _semantic_lost_blocks(
+        flow_graph,
+        post_graph=post_graph,
+        patch_plan=patch_plan,
+    )
+    lost_effects = check_effectful_reachability_preserved(
+        flow_graph,
+        post_adj=post_graph.as_adjacency_dict(),
+    ).lost_block_serials
+    if lost_effects:
+        reject(
+            "lost_effects_not_allowed:"
+            f"effects={tuple(sorted(lost_effects))}"
+        )
+        return None
+
+    # Walk each dead handler only through blocks that the exact projection also
+    # detaches.  Stop at the comparison forest and at retained/shared blocks.
+    component: set[int] = set()
+    pending = list(dead_handlers)
+    while pending:
+        serial = int(pending.pop())
+        if (
+            serial in component
+            or serial == dispatcher_serial
+            or serial in post_reachable
+            or serial not in lost
+        ):
+            continue
+        component.add(serial)
+        block = flow_graph.get_block(serial)
+        if block is not None:
+            pending.extend(int(target) for target in block.succs)
+    if not dead_handlers <= component:
+        reject(
+            "component_does_not_cover_handlers:"
+            f"dead={tuple(sorted(dead_handlers))}:"
+            f"component={tuple(sorted(component))}"
+        )
+        return None
+
+    # A detached handler may contain local/register setup that is meaningful
+    # only when its dispatcher state is selected, but it may never contain an
+    # observable call or store.  Complete zero-residual corridor coverage proves
+    # that no selected state still enters the component; this explicit effect
+    # veto keeps the exception from laundering a dropped semantic body.
+    for serial in component:
+        block = flow_graph.get_block(serial)
+        if block is None or any(
+            insn.is_call or insn.kind in {InsnKind.CALL, InsnKind.STORE}
+            for insn in block.insn_snapshots
+        ):
+            reject("effectful_component")
+            return None
+
+    # The component must remain closed modulo the comparison forest.  Any
+    # semantic predecessor outside these sets means the island is not dead.
+    for serial in component:
+        block = flow_graph.get_block(serial)
+        if block is None:
+            reject("component_block_missing")
+            return None
+        if any(
+            int(pred) in pre_reachable
+            and int(pred) not in component
+            and int(pred) not in comparison_region
+            for pred in block.preds
+        ):
+            reject("component_external_ingress")
+            return None
+
+    # Everything else lost by the projection must be effect-free router/state
+    # plumbing and must flow back into that plumbing.  This keeps the allowance
+    # from laundering an unrelated semantic island alongside the dead roots.
+    remainder = frozenset(lost - component - comparison_region)
+    for serial in remainder:
+        block = flow_graph.get_block(serial)
+        if block is None or any(
+            insn.is_call or insn.kind in {InsnKind.CALL, InsnKind.STORE}
+            for insn in block.insn_snapshots
+        ):
+            reject("effectful_remainder")
+            return None
+        if not tuple(int(target) for target in block.succs):
+            reject("terminal_remainder")
+            return None
+        if any(
+            int(target) not in remainder
+            and int(target) not in comparison_region
+            and int(target) not in component
+            for target in block.succs
+        ):
+            reject("remainder_escapes_retired_region")
+            return None
+
+    # Bound the exception to a minority island; widespread semantic loss is
+    # still a hard failure even if its ingress happens to be dispatcher-shaped.
+    if len(component) * 2 >= max(1, len(pre_reachable)):
+        reject("component_too_large")
+        return None
+    return DetachedDeadHandlerComponentProof(
+        dispatcher=dispatcher,
+        dead_handlers=_anchors_for_serials(flow_graph, dead_handlers),
+        component=_anchors_for_serials(flow_graph, frozenset(component)),
+        lost_effects=_anchors_for_serials(flow_graph, lost_effects),
+        retained_handlers=_anchors_for_serials(flow_graph, retained_handlers),
     )
 
 
@@ -5098,6 +5391,28 @@ def validate_dispatcher_removal_preflight_proof(
         state_plumbing_serials=frozenset(),
         patch_plan=patch_plan,
     )
+    raw_dead_component = plan_metadata.get(
+        DETACHED_DEAD_HANDLER_COMPONENT_METADATA
+    )
+    if raw_dead_component is not None:
+        detached_dead_component = build_detached_dead_handler_component_proof(
+            pre_graph,
+            post_graph=post_graph,
+            coverage=projected_coverage,
+            authoritative_handler_serials=handlers,
+            patch_plan=patch_plan,
+        )
+        if (
+            detached_dead_component is not None
+            and isinstance(raw_dead_component, Mapping)
+            and dict(raw_dead_component) == detached_dead_component.to_payload()
+        ):
+            return DispatcherRemovalPreflightValidation(
+                passed=True,
+                reason="detached_dead_handler_component_retirement",
+                proof=proof,
+                detached_dead_handler_component=detached_dead_component,
+            )
     interval_normalizer = _interval_state_normalizer_retirement_allowance(
         pre_graph,
         post_graph=post_graph,

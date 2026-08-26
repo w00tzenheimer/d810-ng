@@ -3770,6 +3770,16 @@ def test_source_keyed_group_abstains_when_last_default_effect_route_is_lost(
         minimal_unflatten_emit_module,
         "_merge_effect_safe_source_keyed_redirect_group",
     )
+    incremental_effect_loss = getattr(
+        minimal_unflatten_emit_module,
+        "_incremental_effect_loss_for_redirect_group",
+    )
+    assert incremental_effect_loss(
+        fg,
+        base,
+        [*base, *source_keyed],
+        project_modifications=project,
+    ) == frozenset({546})
     safe = RedirectGoto(610, 611, 612)
     merged, accepted = merge_group(
         fg,
