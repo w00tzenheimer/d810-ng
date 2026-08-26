@@ -191,6 +191,58 @@ def test_recursive_decoder_limit_rejects_depth_over_256() -> None:
         typed_term_from_dict(payload)
 
 
+def _nested_tuple_component(depth: int) -> list[dict[str, object]]:
+    component: dict[str, object] = {"kind": "str", "value": "leaf"}
+    for _ in range(depth):
+        component = {"kind": "tuple", "items": [component]}
+    return [component]
+
+
+def _leaf_payload_with_nested_tuple(depth: int) -> dict[str, object]:
+    payload = typed_term_to_dict(TypedBvTerm(None, 8, value=0))
+    payload["leaf_key"] = _nested_tuple_component(depth)
+    payload["value"] = None
+    return payload
+
+
+@pytest.mark.parametrize("depth", (255, 256))
+def test_leaf_key_tuple_nesting_at_or_below_decoder_limit_is_accepted(
+    depth: int,
+) -> None:
+    decoded = typed_term_from_dict(_leaf_payload_with_nested_tuple(depth))
+
+    assert decoded.width == 8
+    assert decoded.leaf_key is not None
+
+
+@pytest.mark.parametrize("depth", (257, 1000))
+def test_leaf_key_tuple_nesting_over_decoder_limit_is_rejected_as_codec_error(
+    depth: int,
+) -> None:
+    with pytest.raises(ValueError, match="depth"):
+        typed_term_from_dict(_leaf_payload_with_nested_tuple(depth))
+
+
+def test_decoder_delegates_operation_vocabulary_and_arity_to_typed_term(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import d810.mba.typed_term as typed_term_module
+
+    future_operation = "future_binary"
+    monkeypatch.setattr(
+        typed_term_module,
+        "SUPPORTED_OPERATIONS",
+        typed_term_module.SUPPORTED_OPERATIONS | {future_operation},
+    )
+    payload = _valid_payload()
+    payload["operation"] = future_operation
+
+    decoded = typed_term_from_dict(payload)
+
+    assert decoded.operation == future_operation
+    assert len(decoded.children) == 2
+
+
 def test_extension_api_re_exports_codec_without_ida_imports() -> None:
     import sys
 

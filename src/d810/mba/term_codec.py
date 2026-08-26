@@ -4,11 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from d810.mba.typed_term import (
-    FIXED_SHIFT_OPERATIONS,
-    SUPPORTED_OPERATIONS,
-    TypedBvTerm,
-)
+from d810.mba.typed_term import TypedBvTerm
 
 
 TERM_WIRE_SCHEMA_VERSION = 1
@@ -66,7 +62,11 @@ def _encode_leaf_key_part(value: object) -> dict[str, object]:
     raise TypeError(f"unsupported leaf-key part type: {type(value).__qualname__}")
 
 
-def _decode_leaf_key_part(value: object) -> object:
+def _decode_leaf_key_part(value: object, *, depth: int) -> object:
+    if depth > _MAX_DECODER_DEPTH:
+        raise ValueError(
+            f"typed-term decoder depth exceeds {_MAX_DECODER_DEPTH} levels"
+        )
     data = _require_mapping(value, context="leaf-key component")
     kind = data.get("kind")
     if type(kind) is not str:
@@ -117,7 +117,9 @@ def _decode_leaf_key_part(value: object) -> object:
         items = data["items"]
         if type(items) is not list:
             raise ValueError("tuple component items must be a list")
-        return tuple(_decode_leaf_key_part(item) for item in items)
+        return tuple(
+            _decode_leaf_key_part(item, depth=depth + 1) for item in items
+        )
     raise ValueError(f"unknown leaf-key component kind: {kind}")
 
 
@@ -171,8 +173,6 @@ def _decode_term(data: object, *, depth: int) -> TypedBvTerm:
     if operation is not None:
         if type(operation) is not str:
             raise ValueError("operation must be a string or None")
-        if operation not in SUPPORTED_OPERATIONS:
-            raise ValueError(f"unknown typed-term operation: {operation}")
 
     width = payload["width"]
     if type(width) is not int or width <= 0:
@@ -188,7 +188,9 @@ def _decode_term(data: object, *, depth: int) -> TypedBvTerm:
     else:
         if type(raw_leaf_key) is not list:
             raise ValueError("leaf_key must be a list or None")
-        leaf_key = tuple(_decode_leaf_key_part(part) for part in raw_leaf_key)
+        leaf_key = tuple(
+            _decode_leaf_key_part(part, depth=depth) for part in raw_leaf_key
+        )
 
     shift_count = payload["shift_count"]
     if shift_count is not None and type(shift_count) is not int:
@@ -197,15 +199,6 @@ def _decode_term(data: object, *, depth: int) -> TypedBvTerm:
     raw_children = payload["children"]
     if type(raw_children) is not list:
         raise ValueError("children must be a list")
-    expected_arity = 0
-    if operation in {"bnot", "neg"} | FIXED_SHIFT_OPERATIONS:
-        expected_arity = 1
-    elif operation in {"add", "and", "mul", "or", "sub", "xor"}:
-        expected_arity = 2
-    if len(raw_children) != expected_arity:
-        raise ValueError(
-            f"{operation or 'terminal'} requires exactly {expected_arity} children"
-        )
     children = tuple(
         _decode_term(child, depth=depth + 1) for child in raw_children
     )
