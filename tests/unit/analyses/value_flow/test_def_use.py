@@ -7,7 +7,8 @@ import dataclasses
 import pytest
 
 from d810.analyses.value_flow.def_use import DefUseFacts
-from d810.ir.value_refs import SSAValueRef
+from d810.ir.handles import InsnHandle
+from d810.ir.value_refs import InstructionUseKind, InstructionUseRef, SSAValueRef
 
 
 def test_empty_def_use_has_no_uses() -> None:
@@ -37,3 +38,15 @@ def test_facts_are_frozen() -> None:
 def test_default_mapping_is_independent_per_instance() -> None:
     a, b = DefUseFacts(), DefUseFacts()
     assert a.uses_by_def is not b.uses_by_def
+
+
+def test_instruction_use_ref_records_occurrence_kind() -> None:
+    use = InstructionUseRef(
+        InsnHandle(7),
+        operand_index=1,
+        kind=InstructionUseKind.PARTIAL_DEFINITION,
+    )
+
+    assert use.insn == InsnHandle(7)
+    assert use.operand_index == 1
+    assert use.kind is InstructionUseKind.PARTIAL_DEFINITION

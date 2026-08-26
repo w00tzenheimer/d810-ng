@@ -30,6 +30,12 @@ from d810.analyses.value_flow.dead_store import (
     DeadStoreRejection,
     DeadStoreRejectionReason,
 )
+from d810.analyses.value_flow.instruction_value_flow import (
+    InstructionAccessFacts,
+    InstructionFlowGraph,
+    InstructionValueFlowResult,
+    analyze_instruction_value_flow,
+)
 from d810.analyses.value_flow.global_constness import (
     GlobalConstDecision,
     GlobalConstEvidence,
@@ -131,6 +137,9 @@ __all__ = [
     "DeadStoreRejection",
     "DeadStoreRejectionReason",
     "INDUCTION_VARIABLE_FACT_TYPE",
+    "InstructionAccessFacts",
+    "InstructionFlowGraph",
+    "InstructionValueFlowResult",
     "LOOP_PREDICATE_VALUE_FACT_TYPE",
     "LIFECYCLE_PRODUCTION_PROVEN",
     "MATERIALIZATION_POINT_FACT_TYPE",
@@ -149,6 +158,7 @@ __all__ = [
     "SYMBOLIC_EXPRESSION_FACT_TYPE",
     "VALUE_FLOW_FACT_TYPES",
     "accepted_kind_aliases_for",
+    "analyze_instruction_value_flow",
     "all_accepted_kind_aliases",
     "all_canonical_fact_types",
     "canonical_fact_type",

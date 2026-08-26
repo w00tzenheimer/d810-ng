@@ -12,6 +12,7 @@ need.  ``ValueRef`` is the closed union over them.  Extend on demand.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from d810.core.typing import Union
 from d810.ir.handles import InsnHandle
@@ -20,6 +21,8 @@ from d810.ir.locations import StorageLocation
 __all__ = [
     "DefinitionRef",
     "InstructionResultRef",
+    "InstructionUseKind",
+    "InstructionUseRef",
     "SSAValueRef",
     "TemporaryRef",
     "ValueRef",
@@ -56,5 +59,27 @@ class InstructionResultRef:
     result_index: int = 0
 
 
-ValueRef = Union[DefinitionRef, SSAValueRef, TemporaryRef, InstructionResultRef]
+class InstructionUseKind(Enum):
+    """Why a reaching value is consumed at one instruction."""
+
+    READ = "read"
+    PARTIAL_DEFINITION = "partial_definition"
+
+
+@dataclass(frozen=True)
+class InstructionUseRef:
+    """One operand-level use of a reaching definition."""
+
+    insn: InsnHandle
+    operand_index: int = 0
+    kind: InstructionUseKind = InstructionUseKind.READ
+
+
+ValueRef = Union[
+    DefinitionRef,
+    SSAValueRef,
+    TemporaryRef,
+    InstructionResultRef,
+    InstructionUseRef,
+]
 """Closed union of the concrete value-reference families."""
