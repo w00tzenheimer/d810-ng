@@ -169,17 +169,10 @@ class TestZ3MopProverAPI:
 
         assert prover._call_result_refiner is None
 
-    def test_carrier_only_view_does_not_install_a_refiner(self):
-        from d810.backends.ast.z3 import Z3MopProver
-
-        carrier_view = SimpleNamespace(active_observations=())
-        prover = Z3MopProver(call_result_refiner=None)
-
-        assert carrier_view.active_observations == ()
-        assert prover._call_result_refiner is None
-
     def test_assigned_call_leaf_without_view_is_top(self, monkeypatch):
+        from d810.backends.ast import z3 as z3_backend
         from d810.evaluator.hexrays_microcode import def_search
+        from d810.hexrays.expr.ast import AstLeaf
         from tests.system.runtime.evaluator.test_def_search_mop_snapshot import (
             _call_result_test_parts,
         )
@@ -189,16 +182,31 @@ class TestZ3MopProverAPI:
         monkeypatch.setattr(
             def_search, "_materialize_mop_for_tracking", lambda mop, *_a, **_k: mop
         )
-
-        leaf = def_search.resolve_mop_via_predecessors(
-            use, block, SimpleNamespace(ea=0x401100)
+        monkeypatch.setattr(
+            z3_backend, "mop_to_ast", lambda *_args, **_kwargs: AstLeaf("operand")
         )
 
+        prepared = z3_backend.Z3MopProver()._prepare_single_ast(
+            use,
+            blk=block,
+            ins=SimpleNamespace(ea=0x401100),
+            operation="prove_always_zero",
+        )
+
+        assert prepared is not None
+        _mop, leaf, _budget, _visitor_needs_budget = prepared
         assert def_search.is_call_result_leaf(leaf)
         assert leaf.concolic_value.status.name == "TOP"
 
     def test_assigned_call_leaf_with_carrier_only_view_is_top(self, monkeypatch):
+        from functools import partial
+
+        from d810.analyses.value_flow import CALL_RETURN_VALUE_FACT_TYPE
+        import d810.analyses.value_flow.call_return_value as call_results
+        from d810.analyses.value_flow.model import FactObservation, ValidatedFactView
+        from d810.backends.ast import z3 as z3_backend
         from d810.evaluator.hexrays_microcode import def_search
+        from d810.hexrays.expr.ast import AstLeaf
         from tests.system.runtime.evaluator.test_def_search_mop_snapshot import (
             _call_result_test_parts,
         )
@@ -208,29 +216,56 @@ class TestZ3MopProverAPI:
         monkeypatch.setattr(
             def_search, "_materialize_mop_for_tracking", lambda mop, *_a, **_k: mop
         )
-        carrier_view = SimpleNamespace(active_observations=())
-
-        def refiner(_query):
-            from d810.analyses.data_flow.concolic.values import ConcolicValue
-            from d810.analyses.value_flow.call_return_value import (
-                CallResultRefinement,
-                CallResultRefinementStatus,
-            )
-
-            return CallResultRefinement(
-                ConcolicValue.top(32), CallResultRefinementStatus.NO_EVIDENCE
-            )
-
-        leaf = def_search.resolve_mop_via_predecessors(
-            use,
-            block,
-            SimpleNamespace(ea=0x401100),
-            call_result_refiner=refiner,
+        monkeypatch.setattr(
+            z3_backend, "mop_to_ast", lambda *_args, **_kwargs: AstLeaf("operand")
         )
 
-        assert carrier_view.active_observations == ()
+        carrier = FactObservation(
+            fact_id="legacy-carrier",
+            kind=CALL_RETURN_VALUE_FACT_TYPE,
+            semantic_key="carrier",
+            maturity="MMAT_PREOPTIMIZED",
+            phase="value-flow",
+            confidence=1.0,
+            source_ea=0x401000,
+            payload={
+                "storage_kind": "register",
+                "source_ea": 0x401000,
+                "lifecycle_status": "production_proven",
+                "source_identity": {"call_ea": 0x401000},
+                "details": {"carrier_class": "PASSWORD_COMPARE_RESULT"},
+            },
+        )
+        carrier_view = ValidatedFactView(
+            maturity="MMAT_PREOPTIMIZED", observations=(carrier,)
+        )
+        seen = []
+        original_refine_call_result = call_results.refine_call_result
+
+        def recording_refiner(query, view):
+            result = original_refine_call_result(query, view)
+            seen.append((query, view, result))
+            return result
+
+        monkeypatch.setattr(call_results, "refine_call_result", recording_refiner)
+        refiner = partial(call_results.refine_call_result, view=carrier_view)
+        prepared = z3_backend.Z3MopProver(
+            call_result_refiner=refiner
+        )._prepare_single_ast(
+            use,
+            blk=block,
+            ins=SimpleNamespace(ea=0x401100),
+            operation="prove_always_zero",
+        )
+
+        assert prepared is not None
+        _mop, leaf, _budget, _visitor_needs_budget = prepared
+        assert carrier_view.active_observations == (carrier,)
         assert def_search.is_call_result_leaf(leaf)
         assert leaf.concolic_value.status.name == "TOP"
+        assert len(seen) == 1
+        assert seen[0][1] is carrier_view
+        assert seen[0][2].status.name == "INVALID_EVIDENCE"
 
     def test_prover_has_are_equal(self):
         from d810.backends.ast.z3 import Z3MopProver

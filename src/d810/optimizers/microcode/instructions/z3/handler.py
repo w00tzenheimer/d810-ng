@@ -197,6 +197,11 @@ class Z3Optimizer(InstructionOptimizer):
         self._has_patternless_rule: bool = False
         self._validated_fact_view = None
 
+    @property
+    def validated_fact_view(self):
+        """Return the callback-local validated fact view, if any."""
+        return self._validated_fact_view
+
     def bind_validated_fact_view(self, view) -> None:
         """Bind a callback-local view to all current and future rules."""
         self._validated_fact_view = view

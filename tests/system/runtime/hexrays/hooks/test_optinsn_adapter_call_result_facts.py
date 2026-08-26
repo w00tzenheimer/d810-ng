@@ -1,17 +1,11 @@
-"""Callback-local validated fact-view plumbing for instruction optimizers."""
+"""Runtime lifecycle coverage for callback-local validated fact views."""
 
 from types import SimpleNamespace
 
 import pytest
+import ida_hexrays
 
-pytest_plugins = ("tests.system.conftest",)
-
-import tests.system.conftest  # noqa: F401,E402
-import ida_hexrays  # noqa: E402
-
-from d810.hexrays.hooks.optinsn_adapter import (  # noqa: E402
-    InstructionOptimizerManager,
-)
+from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 
 
 class _RecordingOptimizer:
@@ -210,6 +204,64 @@ def test_nested_callbacks_restore_outer_view():
 
     assert nested_state == ["outer", "inner", "outer"]
     assert optimizer.validated_fact_view is None
+
+
+def test_nested_callbacks_restore_outer_view_for_production_z3_optimizer(monkeypatch):
+    from d810.optimizers.microcode.instructions.z3.handler import Z3Optimizer
+
+    optimizer = Z3Optimizer([], None)
+    views = iter(("outer", "inner"))
+    manager = _callback_manager(optimizer, lambda *_args: next(views))
+    manager.log_info_on_input = lambda *_args: False
+    nested_state = []
+    entered = False
+
+    def optimize(*_args, **_kwargs):
+        nonlocal entered
+        nested_state.append(optimizer.validated_fact_view)
+        if entered:
+            return True
+        entered = True
+        assert manager.func(_block(), _instruction(0x401011)) is True
+        nested_state.append(optimizer.validated_fact_view)
+        return True
+
+    manager.optimize = optimize
+    import d810.hexrays.hooks.optinsn_adapter as adapter
+
+    monkeypatch.setattr(adapter, "safe_verify", lambda *_args, **_kwargs: None)
+    assert manager.func(_block(), _instruction()) is True
+
+    assert nested_state == ["outer", "inner", "outer"]
+    assert optimizer.validated_fact_view is None
+
+
+def test_partial_bind_failure_restores_production_z3_optimizer_view():
+    from d810.optimizers.microcode.instructions.z3.handler import Z3Optimizer
+
+    class FailingOptimizer(Z3Optimizer):
+        def __init__(self, *args):
+            super().__init__(*args)
+            self.fail_once = True
+
+        def bind_validated_fact_view(self, view):
+            if self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("production binder failed")
+            super().bind_validated_fact_view(view)
+
+    first = Z3Optimizer([], None)
+    second = FailingOptimizer([], None)
+    first.bind_validated_fact_view("first-prior")
+    second._validated_fact_view = "second-prior"
+    manager = _callback_manager(first, lambda *_args: object())
+    manager.instruction_optimizers = [first, second]
+
+    with pytest.raises(RuntimeError, match="production binder failed"):
+        manager.func(_block(), _instruction())
+
+    assert first.validated_fact_view == "first-prior"
+    assert second.validated_fact_view == "second-prior"
 
 
 def test_manager_binding_reaches_z3_predicate_and_records_call_query(monkeypatch):
