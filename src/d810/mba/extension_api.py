@@ -63,6 +63,11 @@ from d810.mba.term_codec import (
     typed_term_from_dict,
     typed_term_to_dict,
 )
+from d810.mba.subterm_atomization import (
+    AtomizedMbaTerm,
+    MbaAtomBinding,
+    atomize_repeated_subterms,
+)
 from d810.mba.performance_timing import (
     EMPTY_MBA_STAGE_TIMINGS,
     MbaStageTimer,
@@ -375,6 +380,59 @@ class NativeMbaCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class AtomizedNativeMbaCandidate:
+    """Portable atomized view paired with one opaque native candidate."""
+
+    candidate: NativeMbaCandidate
+    view: AtomizedMbaTerm
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.candidate, NativeMbaCandidate):
+            raise TypeError("candidate must be a NativeMbaCandidate")
+        if not isinstance(self.view, AtomizedMbaTerm):
+            raise TypeError("view must be an AtomizedMbaTerm")
+        expected_width = self.candidate.destination_size * 8
+        if self.candidate.term.width != expected_width:
+            raise ValueError("candidate width does not match destination_size")
+        if self.view.original_term.width != expected_width:
+            raise ValueError("atomization view width does not match candidate")
+        if self.view.original_term != self.candidate.term:
+            raise ValueError("atomization view does not match candidate term")
+
+    @property
+    def term(self) -> TypedBvTerm:
+        """Return the atomized portable term consumed by a provider."""
+
+        return self.view.atomized_term
+
+    def restore_replacement(self, replacement: TypedBvTerm) -> TypedBvTerm:
+        """Restore a provider replacement while preserving native width."""
+
+        if not isinstance(replacement, TypedBvTerm):
+            raise TypeError("replacement must be a TypedBvTerm")
+        expected_width = self.candidate.destination_size * 8
+        if replacement.width != expected_width:
+            raise ValueError("replacement width does not match candidate")
+        restored = self.view.restore(replacement)
+        if restored.width != expected_width:
+            raise ValueError("restored replacement width does not match candidate")
+        return restored
+
+
+def atomize_native_candidate(
+    candidate: NativeMbaCandidate,
+    *,
+    max_atoms: int = 4,
+) -> AtomizedNativeMbaCandidate:
+    """Build the shared portable atomization view for a native candidate."""
+
+    if not isinstance(candidate, NativeMbaCandidate):
+        raise TypeError("candidate must be a NativeMbaCandidate")
+    view = atomize_repeated_subterms(candidate.term, max_atoms=max_atoms)
+    return AtomizedNativeMbaCandidate(candidate=candidate, view=view)
+
+
+@dataclass(frozen=True, slots=True)
 class NativeMbaReconstruction:
     """Native replacement AST and instruction produced by the host facade."""
 
@@ -469,6 +527,8 @@ __all__ = [
     "CanonicalPatternComparisonBudgetExceeded",
     "CanonicalPatternMalformed",
     "CanonicalPatternUnsupported",
+    "AtomizedMbaTerm",
+    "AtomizedNativeMbaCandidate",
     "CompiledMbaRule",
     "compiled_rules_for_families",
     "build_certified_catalogue_snapshot",
@@ -483,6 +543,7 @@ __all__ = [
     "NativeMbaHostServices",
     "NativeMbaReconstruction",
     "NativeMbaUnsupportedCandidate",
+    "MbaAtomBinding",
     "MbaProviderOutcome",
     "ProviderOutcomeHistory",
     "ProviderOutcomeStatus",
@@ -510,5 +571,7 @@ __all__ = [
     "TERM_WIRE_SCHEMA_VERSION",
     "typed_term_from_dict",
     "typed_term_to_dict",
+    "atomize_native_candidate",
+    "atomize_repeated_subterms",
     "typed_term_identity_is_current",
 ]
