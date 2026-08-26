@@ -77,6 +77,21 @@ from d810.mba.residual_corpus import (
     RESIDUAL_CORPUS_SCHEMA_VERSION,
     source_identity,
 )
+from d810.mba.bounded_synthesis import (
+    CERTIFICATION_WIDTHS,
+    EnumeratedTerm,
+    MbaCertification,
+    MbaExhaustionReceipt,
+    MbaSynthesisBudget,
+    MbaSynthesisResult,
+    ProofReceipt,
+    certify_terms,
+    deterministic_witnesses,
+    enumerate_terms,
+    generalize_terms,
+    synthesize_residual,
+)
+from d810.mba.rule_proposal import MbaRuleProposal, render_rule_source
 from d810.mba.performance_timing import (
     EMPTY_MBA_STAGE_TIMINGS,
     MbaStageTimer,
@@ -591,4 +606,18 @@ __all__ = [
     "RESIDUAL_CORPUS_METADATA_KEY",
     "RESIDUAL_CORPUS_SCHEMA_VERSION",
     "source_identity",
+    "CERTIFICATION_WIDTHS",
+    "EnumeratedTerm",
+    "MbaCertification",
+    "MbaExhaustionReceipt",
+    "MbaSynthesisBudget",
+    "MbaSynthesisResult",
+    "ProofReceipt",
+    "certify_terms",
+    "deterministic_witnesses",
+    "enumerate_terms",
+    "generalize_terms",
+    "synthesize_residual",
+    "MbaRuleProposal",
+    "render_rule_source",
 ]
