@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 
-from d810.core.typing import Callable
+from d810.core.typing import Annotated, Callable
 from d810.ir.maturity import IRMaturity
 from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
 from d810.analyses.data_flow.concolic.refs import LocationRef
@@ -34,7 +34,7 @@ SUPPORTED_CALL_RESULT_WIDTHS = frozenset({8, 16, 32, 64, 128})
 @dataclass(frozen=True)
 class CallResultQuery:
     function_ea: int
-    maturity: int | IRMaturity
+    maturity: Annotated[int, IRMaturity]
     call_ea: int
     callee_ea: int | None
     result_location: LocationRef
@@ -206,11 +206,10 @@ def refine_call_result(
             reasons=("query result_width_bits is unsupported",),
         )
 
-    used: list[str] = []
+    candidates: list[tuple[str, ConcolicValue]] = []
     rejected: list[str] = []
-    invalid_reasons: list[str] = []
-    incompatible_reasons: list[str] = []
-    value: ConcolicValue | None = None
+    invalid_reasons: list[tuple[str, str]] = []
+    incompatible_reasons: list[tuple[str, str]] = []
     observations = getattr(view, "active_observations", ()) if view is not None else ()
     for observation in observations or ():
         if getattr(observation, "kind", None) != CALL_RETURN_VALUE_FACT_TYPE:
@@ -218,7 +217,7 @@ def refine_call_result(
         fact_id = str(getattr(observation, "fact_id", ""))
         if not production_value_flow_fact(observation, CALL_RETURN_VALUE_FACT_TYPE):
             rejected.append(fact_id)
-            invalid_reasons.append(f"{fact_id}: not production-proven")
+            invalid_reasons.append((fact_id, f"{fact_id}: not production-proven"))
             continue
         try:
             payload = getattr(observation, "payload", None)
@@ -227,7 +226,7 @@ def refine_call_result(
             )
         except (KeyError, TypeError, ValueError) as exc:
             rejected.append(fact_id)
-            invalid_reasons.append(f"{fact_id}: {exc}")
+            invalid_reasons.append((fact_id, f"{fact_id}: {exc}"))
             continue
         reason = _compatible(
             query,
@@ -238,13 +237,21 @@ def refine_call_result(
         )
         if reason is not None:
             rejected.append(fact_id)
-            incompatible_reasons.append(f"{fact_id}: {reason}")
+            incompatible_reasons.append((fact_id, f"{fact_id}: {reason}"))
             continue
-        used.append(fact_id)
+        candidates.append((fact_id, candidate))
+
+    candidates.sort(key=lambda item: (item[0], repr(item[1])))
+    used_ids = tuple(sorted(fact_id for fact_id, _ in candidates))
+    rejected_ids = tuple(sorted(rejected))
+    value: ConcolicValue | None = None
+    for _, candidate in candidates:
         value = candidate if value is None else value.meet(candidate)
 
-    used_ids = tuple(sorted(used))
-    rejected_ids = tuple(sorted(rejected))
+    diagnostic_records = sorted(
+        (*invalid_reasons, *incompatible_reasons), key=lambda item: item[0]
+    )
+    diagnostic_reasons = tuple(reason for _, reason in diagnostic_records)
     if value is not None:
         if value.status is PrecisionStatus.BOTTOM:
             return CallResultRefinement(
@@ -252,21 +259,21 @@ def refine_call_result(
                 CallResultRefinementStatus.CONFLICTING_EVIDENCE,
                 used_ids,
                 rejected_ids,
-                tuple(invalid_reasons + incompatible_reasons + ["compatible facts meet to bottom"]),
+                diagnostic_reasons + ("compatible facts meet to bottom",),
             )
         return CallResultRefinement(
             value,
             CallResultRefinementStatus.REFINED,
             used_ids,
             rejected_ids,
-            tuple(invalid_reasons + incompatible_reasons),
+            diagnostic_reasons,
         )
     if invalid_reasons:
         status = CallResultRefinementStatus.INVALID_EVIDENCE
-        reasons = invalid_reasons + incompatible_reasons
+        reasons = diagnostic_reasons
     elif incompatible_reasons:
         status = CallResultRefinementStatus.INCOMPATIBLE_EVIDENCE
-        reasons = incompatible_reasons
+        reasons = diagnostic_reasons
     else:
         status = CallResultRefinementStatus.NO_EVIDENCE
         reasons = []

@@ -204,6 +204,40 @@ def test_multiple_compatible_facts_meet():
     assert result.value.abstract.bits.one == 0x01
 
 
+def test_equal_cardinality_intervals_refine_independently_of_observation_order():
+    first = _observation(
+        "first",
+        _envelope({"kind": "wrapped_interval", "lo": 0, "hi": 10}),
+    )
+    second = _observation(
+        "second",
+        _envelope({"kind": "wrapped_interval", "lo": 5, "hi": 15}),
+    )
+
+    forward = refine_call_result(_query(), _view(first, second))
+    reverse = refine_call_result(_query(), _view(second, first))
+
+    assert forward == reverse
+    assert forward.value.abstract.interval.lo == 0
+    assert forward.value.abstract.interval.hi == 10
+
+
+def test_reversed_rejections_have_identical_refinement_and_reasons():
+    first = _observation(
+        "first",
+        _envelope({"kind": "exact", "value": 1}, call_ea=CALL_EA + 1),
+    )
+    second = _observation(
+        "second",
+        _envelope({"kind": "exact", "value": 1}, call_ea=CALL_EA + 2),
+    )
+
+    forward = refine_call_result(_query(), _view(first, second))
+    reverse = refine_call_result(_query(), _view(second, first))
+
+    assert forward == reverse
+
+
 def test_stale_fact_is_ignored_even_when_exact():
     observation = _observation("stale", _envelope({"kind": "exact", "value": 42}))
 
@@ -285,6 +319,14 @@ def test_conflicting_exact_facts_fail_open_to_top():
         ("missing-variant-field", _envelope({"kind": "exact"})),
         ("unknown-evidence-kind", _envelope({"kind": "unknown", "value": 1})),
         ("overlapping-masks", _envelope({"kind": "known_bits", "known_zero": 1, "known_one": 1})),
+        ("missing-known-zero", _envelope({"kind": "known_bits", "known_one": 1})),
+        ("missing-known-one", _envelope({"kind": "known_bits", "known_zero": 1})),
+        ("missing-lo", _envelope({"kind": "wrapped_interval", "hi": 1})),
+        ("missing-hi", _envelope({"kind": "wrapped_interval", "lo": 0})),
+        ("missing-product-known-zero", _envelope({"kind": "reduced_product", "known_one": 0, "lo": 0, "hi": 1})),
+        ("missing-product-known-one", _envelope({"kind": "reduced_product", "known_zero": 0, "lo": 0, "hi": 1})),
+        ("missing-product-lo", _envelope({"kind": "reduced_product", "known_zero": 0, "known_one": 0, "hi": 1})),
+        ("missing-product-hi", _envelope({"kind": "reduced_product", "known_zero": 0, "known_one": 0, "lo": 0})),
         ("negative-value", _envelope({"kind": "exact", "value": -1})),
         ("overflow-value", _envelope({"kind": "exact", "value": 1 << WIDTH})),
         ("unsupported-width-zero", _envelope({"kind": "exact", "value": 1}, result_width_bits=0)),
