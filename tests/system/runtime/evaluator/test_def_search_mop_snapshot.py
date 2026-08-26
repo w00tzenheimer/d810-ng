@@ -8,31 +8,52 @@ import pytest
 from d810.evaluator.hexrays_microcode import def_search
 
 
-def _call_result_test_parts(*, call_ea=0x401000, reg=0, valnum=0):
+def _call_result_test_parts(
+    *,
+    call_ea=0x401000,
+    opcode=None,
+    width=4,
+    destination_type=None,
+    reg=0,
+    valnum=0,
+    callee_ea=0x402000,
+):
     from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
+    opcode = ida_hexrays.m_call if opcode is None else opcode
+    destination_type = (
+        ida_hexrays.mop_r if destination_type is None else destination_type
+    )
     destination = MopSnapshot(
-        t=ida_hexrays.mop_r,
-        size=4,
-        reg=reg,
+        t=destination_type,
+        size=width,
+        reg=reg if destination_type == ida_hexrays.mop_r else None,
+        stkoff=0x40 if destination_type == ida_hexrays.mop_S else None,
         valnum=valnum,
     )
-    call = SimpleNamespace(
-        opcode=ida_hexrays.m_call,
+    callinfo = SimpleNamespace(args=(), callee=callee_ea)
+    nested_call = SimpleNamespace(
+        opcode=opcode,
         ea=call_ea,
-        l=SimpleNamespace(t=ida_hexrays.mop_v, g=0x402000),
+        l=SimpleNamespace(t=ida_hexrays.mop_v, g=callee_ea),
         r=SimpleNamespace(t=ida_hexrays.mop_z),
+        d=SimpleNamespace(t=ida_hexrays.mop_f, size=0, f=callinfo),
+    )
+    assignment = SimpleNamespace(
+        opcode=ida_hexrays.m_mov,
+        ea=call_ea,
+        l=SimpleNamespace(t=ida_hexrays.mop_d, size=width, d=nested_call),
         d=destination,
     )
     mba = SimpleNamespace(entry_ea=0x400000, maturity=ida_hexrays.MMAT_LOCOPT)
     block = SimpleNamespace(mba=mba, serial=7)
-    use = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=reg, valnum=valnum)
-    return call, destination, block, use
+    use = SimpleNamespace(t=ida_hexrays.mop_r, size=width, r=reg, valnum=valnum)
+    return assignment, nested_call, destination, block, use
 
 
 def test_call_destination_resolves_to_top_definition_scoped_leaf(monkeypatch):
-    call, destination, block, use = _call_result_test_parts()
-    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: call)
+    assignment, call, destination, block, use = _call_result_test_parts()
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
 
     result = def_search.resolve_mop_via_predecessors(
         use,
@@ -44,13 +65,15 @@ def test_call_destination_resolves_to_top_definition_scoped_leaf(monkeypatch):
     assert result.value_ref.location.key == destination.reg
     assert result.value_ref.location.width == destination.size
     assert result.value_ref.def_site == call.ea
+    assert result.value_ref.location.kind.name == "REGISTER"
+    assert result.concolic_value.status.name == "TOP"
     assert result.concolic_value.width == destination.size * 8
 
 
 def test_call_leaf_does_not_rebind_to_later_return_register_write(monkeypatch):
-    call, _destination, block, use = _call_result_test_parts()
+    assignment, call, _destination, block, use = _call_result_test_parts()
     later_write = SimpleNamespace(ea=0x401200)
-    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: call)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
     call_leaf = def_search.resolve_mop_via_predecessors(
         use,
         block,
@@ -73,8 +96,8 @@ def test_call_leaf_does_not_rebind_to_later_return_register_write(monkeypatch):
 
 
 def test_two_calls_returning_in_same_register_have_distinct_value_refs(monkeypatch):
-    first, _destination, block, use = _call_result_test_parts(call_ea=0x401000)
-    second, _destination, _block, _use = _call_result_test_parts(call_ea=0x401010)
+    first, first_call, _destination, block, use = _call_result_test_parts(call_ea=0x401000)
+    second, second_call, _destination, _block, _use = _call_result_test_parts(call_ea=0x401010)
     definitions = iter((first, second))
     monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: next(definitions))
 
@@ -87,12 +110,12 @@ def test_two_calls_returning_in_same_register_have_distinct_value_refs(monkeypat
 
     assert first_leaf.value_ref.location == second_leaf.value_ref.location
     assert first_leaf.value_ref != second_leaf.value_ref
-    assert first_leaf.value_ref.def_site == first.ea
-    assert second_leaf.value_ref.def_site == second.ea
+    assert first_leaf.value_ref.def_site == first_call.ea
+    assert second_leaf.value_ref.def_site == second_call.ea
 
 
 def test_call_destination_valnum_match_is_accepted_when_identity_matches(monkeypatch):
-    call, destination, block, use = _call_result_test_parts(valnum=13)
+    assignment, _call, destination, block, use = _call_result_test_parts(valnum=13)
     use.r = 99
     monkeypatch.setattr(def_search, "_USE_NATIVE_DEF_SEARCH", False)
 
@@ -105,7 +128,11 @@ def test_call_destination_valnum_match_is_accepted_when_identity_matches(monkeyp
             return None
 
         def search_backward(self, *_args):
-            return [SimpleNamespace(history=[SimpleNamespace(blk=block, ins_list=(call,))])]
+            return [
+                SimpleNamespace(
+                    history=[SimpleNamespace(blk=block, ins_list=(assignment,))]
+                )
+            ]
 
     monkeypatch.setitem(
         def_search.sys.modules,
@@ -120,12 +147,12 @@ def test_call_destination_valnum_match_is_accepted_when_identity_matches(monkeyp
 
 
 def test_rotate_helper_call_uses_pure_evaluator_not_generic_call_leaf(monkeypatch):
-    call, _destination, block, use = _call_result_test_parts()
+    assignment, call, _destination, block, use = _call_result_test_parts()
     call.l = SimpleNamespace(t=ida_hexrays.mop_h, helper="__ROL4")
     from d810.hexrays.expr.ast import AstLeaf
 
     evaluator_ast = AstLeaf("rotate_result")
-    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: call)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
     monkeypatch.setattr(def_search, "minsn_to_ast", lambda *_args, **_kwargs: evaluator_ast)
 
     result = def_search.resolve_mop_via_predecessors(
@@ -142,7 +169,7 @@ def test_refiner_receives_exact_call_query_and_refines_leaf(monkeypatch):
         CallResultRefinementStatus,
     )
 
-    call, _destination, block, use = _call_result_test_parts()
+    assignment, call, _destination, block, use = _call_result_test_parts()
     seen = []
 
     def refine(query):
@@ -151,7 +178,7 @@ def test_refiner_receives_exact_call_query_and_refines_leaf(monkeypatch):
             ConcolicValue.of(0x40, 32), CallResultRefinementStatus.REFINED
         )
 
-    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: call)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
     result = def_search.resolve_mop_via_predecessors(
         use,
         block,
@@ -168,8 +195,8 @@ def test_refiner_receives_exact_call_query_and_refines_leaf(monkeypatch):
 
 
 def test_python_and_compiled_resolvers_produce_equivalent_call_leaf(monkeypatch):
-    call, _destination, block, use = _call_result_test_parts()
-    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: call)
+    assignment, _call, _destination, block, use = _call_result_test_parts()
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
     leaf = def_search.resolve_mop_via_predecessors(
         use, block, SimpleNamespace(ea=0x401100)
     )
@@ -185,6 +212,110 @@ def test_python_and_compiled_resolvers_produce_equivalent_call_leaf(monkeypatch)
     assert def_search.is_call_result_leaf(compiled_result)
     assert python_result.value_ref == compiled_result.value_ref
     assert python_result.concolic_value == compiled_result.concolic_value
+
+
+@pytest.mark.parametrize(
+    "destination_type,width",
+    [
+        (ida_hexrays.mop_r, 1),
+        (ida_hexrays.mop_r, 4),
+        (ida_hexrays.mop_r, 8),
+        (ida_hexrays.mop_S, 4),
+    ],
+)
+def test_call_result_leaf_preserves_destination_location_and_width(
+    monkeypatch, destination_type, width
+):
+    assignment, _call, destination, block, use = _call_result_test_parts(
+        destination_type=destination_type, width=width
+    )
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+
+    result = def_search.resolve_mop_via_predecessors(
+        use, block, SimpleNamespace(ea=0x401100)
+    )
+
+    assert def_search.is_call_result_leaf(result)
+    assert result.value_ref.location.width == width
+    assert result.concolic_value.width == width * 8
+    if destination_type == ida_hexrays.mop_S:
+        assert result.value_ref.location.kind.name == "STACK"
+        assert result.value_ref.location.key == destination.stkoff
+
+
+def test_indirect_call_assignment_retains_optional_callee(monkeypatch):
+    assignment, call, _destination, block, use = _call_result_test_parts(
+        opcode=ida_hexrays.m_icall, callee_ea=None
+    )
+    call.l = SimpleNamespace(t=ida_hexrays.mop_r, r=4)
+    call.d.f.callee = None
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+
+    result = def_search.resolve_mop_via_predecessors(
+        use, block, SimpleNamespace(ea=0x401100)
+    )
+
+    assert def_search.is_call_result_leaf(result)
+    assert def_search._call_result_query(call, block, result.value_ref).callee_ea is None
+
+
+def test_compiled_resolver_propagates_refiner_to_valid_call_assignment(monkeypatch):
+    from d810.analyses.data_flow.concolic.values import ConcolicValue
+    from d810.analyses.value_flow.call_return_value import (
+        CallResultRefinement,
+        CallResultRefinementStatus,
+    )
+    from d810.hexrays.expr.ast import AstLeaf
+
+    assignment, _call, _destination, block, use = _call_result_test_parts()
+    source = AstLeaf("return_register")
+    source.mop = use
+    source.dest_size = use.size
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    seen = []
+
+    def refine(query):
+        seen.append(query)
+        return CallResultRefinement(
+            ConcolicValue.of(0x40, 32), CallResultRefinementStatus.REFINED
+        )
+
+    result = def_search.recursively_resolve_ast(
+        source,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=refine,
+    )
+
+    assert def_search.is_call_result_leaf(result)
+    assert result.concolic_value.concrete == 0x40
+    assert seen and seen[0].call_ea == assignment.l.d.ea
+
+
+def test_call_result_leaf_clone_preserves_terminal_metadata(monkeypatch):
+    assignment, _call, _destination, block, use = _call_result_test_parts()
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    leaf = def_search.resolve_mop_via_predecessors(
+        use, block, SimpleNamespace(ea=0x401100)
+    )
+
+    clone = leaf.clone()
+
+    assert def_search.is_call_result_leaf(clone)
+    assert clone.value_ref == leaf.value_ref
+    assert clone.concolic_value == leaf.concolic_value
+
+
+def test_bare_call_with_callinfo_destination_is_not_a_result_leaf(monkeypatch):
+    _assignment, call, _destination, block, use = _call_result_test_parts()
+    bare_call = call
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: bare_call)
+
+    result = def_search.resolve_mop_via_predecessors(
+        use, block, SimpleNamespace(ea=0x401100)
+    )
+
+    assert result is None
 
 
 def test_terminal_origin_rejects_non_native_before_mlist(monkeypatch):

@@ -71,9 +71,16 @@ class CallResultAstLeaf(AstLeaf):
         self.concolic_value = concolic_value
 
     def clone(self):
-        cloned = super().clone()
-        cloned.value_ref = self.value_ref
-        cloned.concolic_value = self.concolic_value
+        # Do not delegate to AstLeaf.clone(): the Cython AstLeaf implementation
+        # intentionally allocates a base AstLeaf, which cannot carry these
+        # terminal metadata fields. Construct the concrete subclass directly
+        # so Python and Cython clone routes preserve identity equally.
+        cloned = self.__class__(self.name, self.value_ref, self.concolic_value)
+        cloned.ast_index = self.ast_index
+        cloned.mop = self.mop
+        cloned.proof_origin = self.proof_origin
+        cloned.dest_size = self.dest_size
+        cloned.ea = self.ea
         return cloned
 
 
@@ -118,6 +125,34 @@ def _call_result_location(dst: ida_hexrays.mop_t | None) -> LocationRef | None:
     return None
 
 
+def _call_result_assignment(
+    ins: ida_hexrays.minsn_t,
+) -> tuple[ida_hexrays.minsn_t, ida_hexrays.mop_t] | None:
+    """Return ``(nested_call, assignment_destination)`` for a call owner.
+
+    Hex-Rays represents a value-producing call as ``m_mov l=mop_d(call)
+    d=result``. The nested call's destination is the ``mop_f`` call-info
+    object; a bare call therefore cannot be treated as a scalar result.
+    """
+
+    if ins is None or ins.opcode != ida_hexrays.m_mov:
+        return None
+    source = getattr(ins, "l", None)
+    nested = getattr(source, "d", None) if source is not None else None
+    if (
+        source is None
+        or source.t != ida_hexrays.mop_d
+        or nested is None
+        or nested.opcode not in (ida_hexrays.m_call, ida_hexrays.m_icall)
+        or getattr(nested, "d", None) is None
+        or nested.d.t != ida_hexrays.mop_f
+    ):
+        return None
+    if _call_result_location(getattr(ins, "d", None)) is None:
+        return None
+    return nested, ins.d
+
+
 def _valid_call_ea(value: object) -> int | None:
     try:
         ea = int(value)
@@ -134,10 +169,12 @@ def _call_result_value_ref(
 ) -> ValueRef:
     """Build the exact callback-local identity for a call's result."""
 
-    location = _call_result_location(getattr(ins, "d", None))
-    if location is None:
-        raise ValueError("ordinary call has no register or stack destination")
-    call_ea = _valid_call_ea(getattr(ins, "ea", None))
+    assignment = _call_result_assignment(ins)
+    if assignment is None:
+        raise ValueError("instruction is not a call-result assignment")
+    _nested_call, destination = assignment
+    location = _call_result_location(destination)
+    call_ea = _valid_call_ea(getattr(_nested_call, "ea", None))
     if call_ea is None:
         try:
             serial = int(blk.serial)
@@ -151,11 +188,19 @@ def _call_result_value_ref(
 def _call_result_callee_ea(ins: ida_hexrays.minsn_t) -> int | None:
     """Extract a direct callee EA from the live call operand when available."""
 
+    assignment = _call_result_assignment(ins)
+    if assignment is None:
+        return None
+    nested_call, _destination = assignment
+    callinfo = getattr(getattr(nested_call, "d", None), "f", None)
+    value = _valid_call_ea(getattr(callinfo, "callee", None))
+    if value is not None:
+        return value
     for attr in ("callee_ea", "func_ea"):
-        value = _valid_call_ea(getattr(ins, attr, None))
+        value = _valid_call_ea(getattr(nested_call, attr, None))
         if value is not None:
             return value
-    call_operand = getattr(ins, "l", None)
+    call_operand = getattr(nested_call, "l", None)
     operands = (call_operand, getattr(call_operand, "f", None))
     for operand in operands:
         for attr in ("callee_ea", "func_ea", "addr", "ea", "g"):
@@ -181,7 +226,10 @@ def _call_result_query(
         maturity = int(getattr(mba, "maturity", 0) or 0)
     except (TypeError, ValueError):
         maturity = 0
-    call_ea = _valid_call_ea(getattr(ins, "ea", None))
+    assignment = _call_result_assignment(ins)
+    call_ea = _valid_call_ea(
+        getattr(assignment[0], "ea", None) if assignment is not None else None
+    )
     if call_ea is None:
         call_ea = value_ref.def_site
     return CallResultQuery(
@@ -211,11 +259,13 @@ def _call_result_ast(
 ) -> AstNode | AstLeaf | None:
     """Build an ordinary call leaf, preserving rotate-helper evaluation."""
 
-    if ins is None or ins.opcode not in (ida_hexrays.m_call, ida_hexrays.m_icall):
+    assignment = _call_result_assignment(ins)
+    if assignment is None:
         return None
+    nested_call, destination = assignment
     # Rotate helpers are synthetic expressions, not unknown call results.
-    if is_rotate_helper_call(ins):
-        return _minsn_to_ast_with_budget(ins, node_budget)
+    if is_rotate_helper_call(nested_call):
+        return _minsn_to_ast_with_budget(nested_call, node_budget)
     value_ref = _call_result_value_ref(ins, blk)
     query = _call_result_query(ins, blk, value_ref)
     if call_result_refiner is None:
@@ -227,9 +277,9 @@ def _call_result_ast(
     )
     # Live IDA operands are snapshotted to avoid borrowed-mop lifetime hazards.
     # A pre-existing snapshot is already immutable and safe to retain.
-    setattr(leaf, "mop", _snapshot_call_destination(ins.d))
-    leaf.dest_size = ins.d.size
-    leaf.ea = ins.ea
+    setattr(leaf, "mop", _snapshot_call_destination(destination))
+    leaf.dest_size = destination.size
+    leaf.ea = nested_call.ea
     leaf.ins = ins
     return leaf
 
@@ -1394,7 +1444,7 @@ def recursively_resolve_ast(
     """Resolve AST definitions through the selected production backend."""
 
     if _compiled_recursively_resolve_ast is not None:
-        return _compiled_recursively_resolve_ast(
+        compiled_args = (
             ast,
             blk,
             ins,
@@ -1405,6 +1455,14 @@ def recursively_resolve_ast(
             _microcode_instruction_identity,
             _RESOLVE_NODE_BUDGET,
             node_budget,
+        )
+        if call_result_refiner is None:
+            return _compiled_recursively_resolve_ast(*compiled_args)
+        return _compiled_recursively_resolve_ast(
+            *compiled_args,
+            _ast_width_bytes,
+            _truncate_ast_to_use_width,
+            _terminal_proof_origin,
             call_result_refiner,
         )
     return _py_slow_recursively_resolve_ast(
