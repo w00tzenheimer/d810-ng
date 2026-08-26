@@ -176,6 +176,7 @@ MBA_RULE_FAMILIES: Mapping[str, tuple[type[VerifiableRule], ...]] = (
                 neg.NegXor_HackersDelightRule_2,
             ),
             "or": (
+                eid.Or_EidRepeatedMaskedOperand_1,
                 or_.Or_HackersDelightRule_2,
                 or_.Or_HackersDelightRule_2_variant_1,
                 or_.Or_MbaRule_1,
@@ -252,6 +253,9 @@ MBA_RULE_FAMILIES: Mapping[str, tuple[type[VerifiableRule], ...]] = (
                 xor.Xor_HackersDelightRule_3,
                 xor.Xor_HackersDelightRule_4,
                 xor.Xor_HackersDelightRule_5,
+                eid.Xor_EidComplementPartition_1,
+                eid.Xor_EidComplementPartition_2,
+                eid.Xor_EidComplementPartition_3,
                 eid.Xor_EidKeySchedule_1,
                 eid.Xor_EidKeySchedule_2,
                 eid.Xor_EidKeySchedule_3,

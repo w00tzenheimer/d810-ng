@@ -19,6 +19,12 @@ from d810.backends.mba.native_pod_matcher import (
     match_root_pod,
 )
 from d810.mba.rules.sub import Sub_HackersDelightRule_2
+from d810.mba.rules.eid import (
+    Or_EidRepeatedMaskedOperand_1,
+    Xor_EidComplementPartition_1,
+    Xor_EidComplementPartition_2,
+    Xor_EidComplementPartition_3,
+)
 from d810.mba.typed_term import term_fingerprint
 from d810.mba.dsl import Const, Var
 from d810.mba.rules._base import VerifiableRule
@@ -47,21 +53,23 @@ class _ValidAfterImpossibleRule(VerifiableRule):
     REPLACEMENT = _TIGHT_X
 
 
-def _leaf(name: str) -> NativeMbaTermView:
+def _leaf(name: str, *, width: int = 32) -> NativeMbaTermView:
     return NativeMbaTermView(
         None,
-        32,
+        width,
         leaf_key=("mop", "r", name),
         native_operand=object(),
     )
 
 
-def _constant(value: int) -> NativeMbaTermView:
-    return NativeMbaTermView(None, 32, constant_value=value)
+def _constant(value: int, *, width: int = 32) -> NativeMbaTermView:
+    return NativeMbaTermView(None, width, constant_value=value)
 
 
-def _node(name: str, *children: NativeMbaTermView) -> NativeMbaTermView:
-    return NativeMbaTermView(name, 32, children=children)
+def _node(
+    name: str, *children: NativeMbaTermView, width: int = 32
+) -> NativeMbaTermView:
+    return NativeMbaTermView(name, width, children=children)
 
 
 def _runtime_authorization_case(digest: str):
@@ -218,6 +226,202 @@ def test_pod_adapter_preserves_asymmetric_subtraction_bindings() -> None:
     pod = match_root_pod(catalogue, candidate, comparison_budget=64)
 
     assert replacement_fingerprints(pod) == replacement_fingerprints(portable)
+
+
+def test_eid_or_rule_binds_one_repeated_compound_operand() -> None:
+    rules = _compile_rule_families(
+        {"or": (Or_EidRepeatedMaskedOperand_1,)}
+    ).compiled_rules
+    catalogue = CompiledPatternCatalogue.from_rules(rules)
+    x = _leaf("x")
+    masked_source = _leaf("masked_source")
+
+    def masked_operand() -> NativeMbaTermView:
+        return _node("and", masked_source, _constant(0xFFFFFBFB))
+
+    candidate = _node(
+        "add",
+        _node(
+            "sub",
+            _node("xor", x, masked_operand()),
+            _node(
+                "add",
+                _node("and", x, masked_operand()),
+                _node(
+                    "mul",
+                    _constant(2),
+                    _node("and", masked_operand(), _node("bnot", x)),
+                ),
+            ),
+        ),
+        _node("mul", _constant(2), masked_operand()),
+    )
+
+    portable = catalogue._match_root_portable(candidate, comparison_budget=512)
+    pod = match_root_pod(catalogue, candidate, comparison_budget=512)
+
+    assert tuple(match.rule.source_name for match in portable.matches) == (
+        "Or_EidRepeatedMaskedOperand_1",
+    )
+    assert pod == portable
+
+
+def _assert_exact_eid_xor_candidate_matches(
+    rule_type: type[VerifiableRule], candidate: NativeMbaTermView
+) -> None:
+    rules = _compile_rule_families({"xor": (rule_type,)}).compiled_rules
+    catalogue = CompiledPatternCatalogue.from_rules(rules)
+
+    portable = catalogue._match_root_portable(candidate, comparison_budget=1024)
+    pod = match_root_pod(catalogue, candidate, comparison_budget=1024)
+
+    assert tuple(match.rule.source_name for match in portable.matches) == (
+        rule_type.__name__,
+    )
+    assert pod == portable
+
+
+def test_eid_complement_partition_1_matches_exact_64_bit_source_tree() -> None:
+    width = 64
+    x = _leaf("x", width=width)
+    c_left = _constant(0xF500C38D0EA2975A, width=width)
+    c_right = _constant(0x0AFF3C72F15D68A5, width=width)
+    right_minus_one = _constant(0x0AFF3C72F15D68A4, width=width)
+
+    candidate = _node(
+        "sub",
+        _node(
+            "sub",
+            _node(
+                "add",
+                _node(
+                    "add",
+                    _node(
+                        "add",
+                        _node(
+                            "mul",
+                            _constant(8, width=width),
+                            _node("bnot", _node("or", x, c_left, width=width), width=width),
+                            width=width,
+                        ),
+                        _node("or", x, c_left, width=width),
+                        width=width,
+                    ),
+                    _node("and", x, c_right, width=width),
+                    width=width,
+                ),
+                _node(
+                    "mul",
+                    _constant(6, width=width),
+                    _node("and", x, c_left, width=width),
+                    width=width,
+                ),
+                width=width,
+            ),
+            right_minus_one,
+            width=width,
+        ),
+        _node(
+            "mul",
+            _constant(5, width=width),
+            _node("xor", x, c_right, width=width),
+            width=width,
+        ),
+        width=width,
+    )
+
+    _assert_exact_eid_xor_candidate_matches(Xor_EidComplementPartition_1, candidate)
+
+
+def test_eid_complement_partition_2_matches_exact_64_bit_source_tree() -> None:
+    width = 64
+    x = _leaf("x", width=width)
+    c_left = _constant(0x4C8ADE951AD35D8C, width=width)
+    c_right = _constant(0xB375216AE52CA273, width=width)
+
+    candidate = _node(
+        "sub",
+        _node(
+            "add",
+            _node(
+                "add",
+                _node(
+                    "add",
+                    _node(
+                        "mul",
+                        _constant(6, width=width),
+                        _node("bnot", _node("or", x, c_left, width=width), width=width),
+                        width=width,
+                    ),
+                    _node("xor", x, c_left, width=width),
+                    width=width,
+                ),
+                _node(
+                    "mul",
+                    _constant(6, width=width),
+                    _node("and", x, c_right, width=width),
+                    width=width,
+                ),
+                width=width,
+            ),
+            _node(
+                "mul",
+                _constant(6, width=width),
+                _node("and", x, c_left, width=width),
+                width=width,
+            ),
+            width=width,
+        ),
+        _node(
+            "mul",
+            _constant(6, width=width),
+            _node("or", x, c_right, width=width),
+            width=width,
+        ),
+        width=width,
+    )
+
+    _assert_exact_eid_xor_candidate_matches(Xor_EidComplementPartition_2, candidate)
+
+
+def test_eid_complement_partition_3_matches_unsigned_minus_8_source_tree() -> None:
+    width = 64
+    x = _leaf("x", width=width)
+    mask = _constant(0x3C33682BB7D99927, width=width)
+
+    candidate = _node(
+        "sub",
+        _constant(0xFFFFFFFFFFFFFFF8, width=width),
+        _node(
+            "add",
+            _node(
+                "add",
+                _node(
+                    "add",
+                    _node("and", x, mask, width=width),
+                    _node(
+                        "mul",
+                        _constant(6, width=width),
+                        _node("or", x, mask, width=width),
+                        width=width,
+                    ),
+                    width=width,
+                ),
+                _node(
+                    "mul",
+                    _constant(8, width=width),
+                    _node("bnot", _node("or", x, mask, width=width), width=width),
+                    width=width,
+                ),
+                width=width,
+            ),
+            _node("or", x, mask, width=width),
+            width=width,
+        ),
+        width=width,
+    )
+
+    _assert_exact_eid_xor_candidate_matches(Xor_EidComplementPartition_3, candidate)
 
 
 def test_shared_feasibility_filter_preserves_later_match_under_tight_budget() -> None:

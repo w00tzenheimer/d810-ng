@@ -1,12 +1,12 @@
-"""Eid linear-MBA XOR rules.
+"""Eid MBA identities recovered from loader and VM expressions.
 
-Both rules are proved by the pure Z3 backend.  The regular package import and
+Every rule is proved by the pure Z3 backend.  The regular package import and
 the deterministic rule catalogue list this module explicitly; that is the
 startup path which makes the rules available outside IDA as well as after
 hot-reload.
 
-The encrypted error-message templates use rolling XORs whose per-byte operation
-is obfuscated by these six- and seven-term linear MBA forms.
+The catalogue includes rolling key-schedule XORs, a repeated masked-operand OR,
+and exact complementary-mask partitions observed in VM helper returns.
 """
 
 from d810.mba.dsl import Const, Var
@@ -29,7 +29,43 @@ _ALL_MATURITIES = [
 x, y = Var("x_0"), Var("x_1")
 ONE = Const("1", 1)
 TWO = Const("2", 2)
+FIVE = Const("5", 5)
 SIX = Const("6", 6)
+EIGHT = Const("8", 8)
+NEG_EIGHT = Const("-8", -8)
+
+COMPLEMENT_1_LEFT = Const("0xF500C38D0EA2975A", 0xF500C38D0EA2975A)
+COMPLEMENT_1_RIGHT = Const("0x0AFF3C72F15D68A5", 0x0AFF3C72F15D68A5)
+COMPLEMENT_1_RIGHT_MINUS_ONE = Const(
+    "0x0AFF3C72F15D68A4", 0x0AFF3C72F15D68A4
+)
+COMPLEMENT_2_LEFT = Const("0x4C8ADE951AD35D8C", 0x4C8ADE951AD35D8C)
+COMPLEMENT_2_RIGHT = Const("0xB375216AE52CA273", 0xB375216AE52CA273)
+COMPLEMENT_3_MASK = Const("0x3C33682BB7D99927", 0x3C33682BB7D99927)
+REPEATED_OPERAND_MASK = Const("0xFFFFFBFB", 0xFFFFFBFB)
+
+
+class Or_EidRepeatedMaskedOperand_1(VerifiableRule):
+    """Collapse an Eid MBA with one repeated masked operand.
+
+    Encoding the observed mask in the verified pattern lets the structural AC
+    matcher bind the underlying ``y`` leaf consistently even when an enclosing
+    AND flattens the compound operand.
+    """
+
+    maturities = _ALL_MATURITIES
+
+    masked_y = y & REPEATED_OPERAND_MASK
+
+    PATTERN = (
+        (x ^ masked_y)
+        - ((x & masked_y) + TWO * (masked_y & ~x))
+        + TWO * masked_y
+    )
+    REPLACEMENT = x | masked_y
+
+    DESCRIPTION = "Simplify the Eid repeated-mask MBA to x | (y & 0xFFFFFBFB)"
+    REFERENCE = "Eid VM dispatcher residual with a repeated masked operand"
 
 
 class Xor_EidKeySchedule_1(VerifiableRule):
@@ -106,3 +142,63 @@ class Xor_EidKeySchedule_3(VerifiableRule):
 
     DESCRIPTION = "Simplify the Eid coefficient-six linear-MBA XOR to x ^ y"
     REFERENCE = "Eid loader message-template rolling XOR"
+
+
+class Xor_EidComplementPartition_1(VerifiableRule):
+    """Collapse an observed complementary-mask partition to one XOR.
+
+    The constants satisfy ``right == ~left`` and
+    ``right_minus_one == right - 1``.  They remain fixed here so ordinary Z3
+    verification is fast and this rule does not need a bespoke certificate
+    prover owned by the residual-rule-discovery work.
+    """
+
+    maturities = _ALL_MATURITIES
+
+    PATTERN = (
+        EIGHT * (~(x | COMPLEMENT_1_LEFT))
+        + (x | COMPLEMENT_1_LEFT)
+        + (x & COMPLEMENT_1_RIGHT)
+        + SIX * (x & COMPLEMENT_1_LEFT)
+        - COMPLEMENT_1_RIGHT_MINUS_ONE
+        - FIVE * (x ^ COMPLEMENT_1_RIGHT)
+    )
+    REPLACEMENT = x ^ COMPLEMENT_1_RIGHT
+
+    DESCRIPTION = "Simplify the Eid complementary partition MBA to x ^ c_2"
+    REFERENCE = "Eid VM helper return using complementary 64-bit masks"
+
+
+class Xor_EidComplementPartition_2(VerifiableRule):
+    """Collapse the observed coefficient-six complement partition to XOR."""
+
+    maturities = _ALL_MATURITIES
+
+    PATTERN = (
+        SIX * (~(x | COMPLEMENT_2_LEFT))
+        + (x ^ COMPLEMENT_2_LEFT)
+        + SIX * (x & COMPLEMENT_2_RIGHT)
+        + SIX * (x & COMPLEMENT_2_LEFT)
+        - SIX * (x | COMPLEMENT_2_RIGHT)
+    )
+    REPLACEMENT = x ^ COMPLEMENT_2_LEFT
+
+    DESCRIPTION = "Simplify the Eid coefficient-six complement partition to XOR"
+    REFERENCE = "Eid VM helper switch case 0x52"
+
+
+class Xor_EidComplementPartition_3(VerifiableRule):
+    """Collapse an observed masked coefficient partition to one XOR."""
+
+    maturities = _ALL_MATURITIES
+
+    PATTERN = NEG_EIGHT - (
+        (x & COMPLEMENT_3_MASK)
+        + SIX * (x | COMPLEMENT_3_MASK)
+        + EIGHT * (~(x | COMPLEMENT_3_MASK))
+        + (x | COMPLEMENT_3_MASK)
+    )
+    REPLACEMENT = x ^ COMPLEMENT_3_MASK
+
+    DESCRIPTION = "Simplify the Eid masked coefficient partition to XOR"
+    REFERENCE = "Eid VM helper switch case 0x54"

@@ -135,7 +135,8 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "OR",
         (
             "or-bnot-factor-1", "or-bnot-factor-2", "or-bnot-factor-3",
-            "or-bnot-factor-4", "or-chain", "or-factor-1", "or-factor-2",
+            "or-bnot-factor-4", "or-chain", "or-eid-repeated-masked-operand-1",
+            "or-factor-1", "or-factor-2",
             "or-factor-3", "or-hackers-delight-1", "or-hackers-delight-2",
             "or-hackers-delight-2-variant-1", "or-hodur-1", "or-hodur-2",
             "or-mba-1", "or-mba-1-commuted", "or-mba-2", "or-mba-3",
@@ -212,6 +213,8 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "XOR",
         (
             "xor-1-mba-1", "xor-almost-1", "xor-chain",
+            "xor-eid-complement-partition-1", "xor-eid-complement-partition-2",
+            "xor-eid-complement-partition-3",
             "xor-eid-key-schedule-1", "xor-eid-key-schedule-2",
             "xor-eid-key-schedule-3", "xor-factor-1",
             "xor-factor-2", "xor-factor-3", "xor-hackers-delight-1",
