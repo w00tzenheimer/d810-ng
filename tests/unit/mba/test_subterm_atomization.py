@@ -358,17 +358,22 @@ def test_forward_nested_binding_dependency_is_rejected() -> None:
 
 
 def test_unknown_nested_binding_dependency_is_rejected() -> None:
-    unknown_key = ("d810.mba.atom.v1", 9, "unknown")
+    inner = _binary("and", _leaf("y"), _leaf("z"))
+    inner_key = ("d810.mba.atom.v1", 0, term_fingerprint(inner))
+    inner_binding = MbaAtomBinding(inner_key, inner, 2, 1)
+    unknown_key = ("d810.mba.atom.v1", 0, "wrong-fingerprint")
     outer = _binary("or", TypedBvTerm(None, 32, leaf_key=unknown_key), _leaf("x"))
-    outer_key = ("d810.mba.atom.v1", 0, term_fingerprint(outer))
-    binding = MbaAtomBinding(outer_key, outer, 2, 1)
-    original = _binary("add", _leaf("q"), _leaf("q"))
+    outer_key = ("d810.mba.atom.v1", 1, term_fingerprint(outer))
+    outer_binding = MbaAtomBinding(outer_key, outer, 2, 1)
+    original = _binary("add", inner, inner)
     atomized = _binary(
-        "add", TypedBvTerm(None, 32, leaf_key=outer_key), TypedBvTerm(None, 32, leaf_key=outer_key)
+        "add",
+        TypedBvTerm(None, 32, leaf_key=inner_key),
+        TypedBvTerm(None, 32, leaf_key=outer_key),
     )
 
-    with pytest.raises(ValueError, match="dependency|unknown"):
-        AtomizedMbaTerm(original, atomized, (binding,))
+    with pytest.raises(ValueError, match="^atom binding has an unknown dependency$"):
+        AtomizedMbaTerm(original, atomized, (inner_binding, outer_binding))
 
 
 def test_malformed_binding_width_is_rejected() -> None:
@@ -465,4 +470,41 @@ def test_native_candidate_wrapper_revalidates_adversarial_forged_views() -> None
     object.__setattr__(forged, "bindings", ())
 
     with pytest.raises(ValueError, match="derive|structure"):
+        AtomizedNativeMbaCandidate(candidate, forged)
+
+
+def test_native_candidate_wrapper_rejects_forged_reserved_original_leaf() -> None:
+    reserved = TypedBvTerm(None, 32, leaf_key=("d810.mba.atom.v1", 0, "bad"))
+    candidate = _native_candidate(reserved)
+    forged = object.__new__(AtomizedMbaTerm)
+    object.__setattr__(forged, "original_term", reserved)
+    object.__setattr__(forged, "atomized_term", reserved)
+    object.__setattr__(forged, "bindings", ())
+
+    with pytest.raises(ValueError, match="reserved"):
+        AtomizedNativeMbaCandidate(candidate, forged)
+
+
+def test_native_candidate_wrapper_rejects_forged_unknown_atomized_leaf() -> None:
+    source = _binary("add", _leaf("x"), _leaf("y"))
+    unknown = TypedBvTerm(None, 32, leaf_key=("d810.mba.atom.v1", 0, "unknown"))
+    candidate = _native_candidate(source)
+    forged = object.__new__(AtomizedMbaTerm)
+    object.__setattr__(forged, "original_term", source)
+    object.__setattr__(forged, "atomized_term", unknown)
+    object.__setattr__(forged, "bindings", ())
+
+    with pytest.raises(ValueError, match="unknown"):
+        AtomizedNativeMbaCandidate(candidate, forged)
+
+
+def test_native_candidate_wrapper_rejects_forged_mutable_bindings() -> None:
+    source = _binary("add", _leaf("x"), _leaf("y"))
+    candidate = _native_candidate(source)
+    forged = object.__new__(AtomizedMbaTerm)
+    object.__setattr__(forged, "original_term", source)
+    object.__setattr__(forged, "atomized_term", source)
+    object.__setattr__(forged, "bindings", [])
+
+    with pytest.raises((TypeError, ValueError), match="tuple|bindings"):
         AtomizedNativeMbaCandidate(candidate, forged)

@@ -391,7 +391,7 @@ class AtomizedNativeMbaCandidate:
             raise TypeError("candidate must be a NativeMbaCandidate")
         if not isinstance(self.view, AtomizedMbaTerm):
             raise TypeError("view must be an AtomizedMbaTerm")
-        self.view._validate_invariants()
+        self.view._validate_contract()
         expected_width = self.candidate.destination_size * 8
         if self.candidate.term.width != expected_width:
             raise ValueError("candidate width does not match destination_size")

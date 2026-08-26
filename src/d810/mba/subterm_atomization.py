@@ -135,6 +135,11 @@ class AtomizedMbaTerm:
     bindings: tuple[MbaAtomBinding, ...]
 
     def __post_init__(self) -> None:
+        self._validate_contract()
+
+    def _validate_contract(self) -> None:
+        """Validate the complete public view contract, including replay."""
+
         original = _validate_term(self.original_term, label="original_term")
         atomized = _validate_term(self.atomized_term, label="atomized_term")
         if original.width != atomized.width:
@@ -146,8 +151,9 @@ class AtomizedMbaTerm:
             for node in _walk(original)
         ):
             raise ValueError("original term contains a reserved atom namespace")
-        bindings = tuple(self.bindings)
-        object.__setattr__(self, "bindings", bindings)
+        bindings = self.bindings
+        if type(bindings) is not tuple:
+            raise TypeError("bindings must be a canonical tuple")
         if any(not isinstance(binding, MbaAtomBinding) for binding in bindings):
             raise TypeError("bindings must contain MbaAtomBinding values")
         keys = [binding.leaf_key for binding in bindings]
@@ -168,11 +174,6 @@ class AtomizedMbaTerm:
                     raise ValueError("atomized term contains an unknown reserved atom")
                 if node.width != binding.original_subterm.width:
                     raise ValueError("reserved atom width does not match its binding")
-        self._validate_invariants()
-
-    def _validate_invariants(self) -> None:
-        """Verify that bindings replay from the source into the atomized term."""
-
         current = self.original_term
         prior_bindings: dict[tuple[object, ...], MbaAtomBinding] = {}
         for ordinal, binding in enumerate(self.bindings):
