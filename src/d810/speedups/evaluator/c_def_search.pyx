@@ -28,6 +28,7 @@ cdef object _resolve(
     object origin_scope,
     list budget,
     object node_budget,
+    object call_result_refiner,
 ):
     cdef object mop
     cdef object nested
@@ -50,6 +51,12 @@ cdef object _resolve(
     if budget[0] <= 0:
         return ast
 
+    # Call-result leaves are anchored to their defining instruction and must
+    # not be rebound through the physical return register or stack slot.
+    from d810.evaluator.hexrays_microcode.def_search import is_call_result_leaf
+    if is_call_result_leaf(ast):
+        return ast
+
     if ast.is_leaf():
         mop = ast.mop
         if mop is None:
@@ -69,7 +76,13 @@ cdef object _resolve(
             return cache[cache_key]
 
         budget[0] -= 1
-        resolved = resolve_mop_to_ast(mop, blk, ins, node_budget=node_budget)
+        resolved = resolve_mop_to_ast(
+            mop,
+            blk,
+            ins,
+            node_budget=node_budget,
+            call_result_refiner=call_result_refiner,
+        )
         if resolved is not None and resolved is not ast:
             resolved_width = width_of_ast(resolved)
             # Never guess through a missing width or widen a partial-register
@@ -101,6 +114,7 @@ cdef object _resolve(
                 origin_scope,
                 budget,
                 node_budget,
+                call_result_refiner,
             )
             if resolved_width > use_width:
                 result = truncate_ast(result, use_width, node_budget)
@@ -134,6 +148,7 @@ cdef object _resolve(
             origin_scope,
             budget,
             node_budget,
+            call_result_refiner,
         )
         if ast.left is not None
         else None
@@ -154,6 +169,7 @@ cdef object _resolve(
             origin_scope,
             budget,
             node_budget,
+            call_result_refiner,
         )
         if ast.right is not None
         else None
@@ -188,6 +204,7 @@ def recursively_resolve_ast(
     object width_of_ast=None,
     object truncate_ast=None,
     object terminal_origin=None,
+    object call_result_refiner=None,
 ):
     """Compiled equivalent of the bounded Python recursive resolver."""
 
@@ -233,4 +250,5 @@ def recursively_resolve_ast(
         origin_scope,
         budget,
         node_budget,
+        call_result_refiner,
     )

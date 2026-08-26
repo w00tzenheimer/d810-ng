@@ -8,6 +8,185 @@ import pytest
 from d810.evaluator.hexrays_microcode import def_search
 
 
+def _call_result_test_parts(*, call_ea=0x401000, reg=0, valnum=0):
+    from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+    destination = MopSnapshot(
+        t=ida_hexrays.mop_r,
+        size=4,
+        reg=reg,
+        valnum=valnum,
+    )
+    call = SimpleNamespace(
+        opcode=ida_hexrays.m_call,
+        ea=call_ea,
+        l=SimpleNamespace(t=ida_hexrays.mop_v, g=0x402000),
+        r=SimpleNamespace(t=ida_hexrays.mop_z),
+        d=destination,
+    )
+    mba = SimpleNamespace(entry_ea=0x400000, maturity=ida_hexrays.MMAT_LOCOPT)
+    block = SimpleNamespace(mba=mba, serial=7)
+    use = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=reg, valnum=valnum)
+    return call, destination, block, use
+
+
+def test_call_destination_resolves_to_top_definition_scoped_leaf(monkeypatch):
+    call, destination, block, use = _call_result_test_parts()
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: call)
+
+    result = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+    )
+
+    assert def_search.is_call_result_leaf(result)
+    assert result.value_ref.location.key == destination.reg
+    assert result.value_ref.location.width == destination.size
+    assert result.value_ref.def_site == call.ea
+    assert result.concolic_value.width == destination.size * 8
+
+
+def test_call_leaf_does_not_rebind_to_later_return_register_write(monkeypatch):
+    call, _destination, block, use = _call_result_test_parts()
+    later_write = SimpleNamespace(ea=0x401200)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: call)
+    call_leaf = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+    )
+
+    monkeypatch.setattr(
+        def_search,
+        "resolve_mop_to_ast",
+        lambda *_args, **_kwargs: later_write,
+    )
+    result = def_search._py_slow_recursively_resolve_ast(
+        call_leaf,
+        block,
+        SimpleNamespace(ea=0x401300),
+    )
+
+    assert result is call_leaf
+    assert result.value_ref.def_site == call.ea
+
+
+def test_two_calls_returning_in_same_register_have_distinct_value_refs(monkeypatch):
+    first, _destination, block, use = _call_result_test_parts(call_ea=0x401000)
+    second, _destination, _block, _use = _call_result_test_parts(call_ea=0x401010)
+    definitions = iter((first, second))
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: next(definitions))
+
+    first_leaf = def_search.resolve_mop_via_predecessors(
+        use, block, SimpleNamespace(ea=0x401100)
+    )
+    second_leaf = def_search.resolve_mop_via_predecessors(
+        use, block, SimpleNamespace(ea=0x401100)
+    )
+
+    assert first_leaf.value_ref.location == second_leaf.value_ref.location
+    assert first_leaf.value_ref != second_leaf.value_ref
+    assert first_leaf.value_ref.def_site == first.ea
+    assert second_leaf.value_ref.def_site == second.ea
+
+
+def test_call_destination_valnum_match_is_accepted_when_identity_matches(monkeypatch):
+    call, destination, block, use = _call_result_test_parts(valnum=13)
+    use.r = 99
+    monkeypatch.setattr(def_search, "_USE_NATIVE_DEF_SEARCH", False)
+
+    class Tracker:
+        @staticmethod
+        def reset():
+            return None
+
+        def __init__(self, *_args, **_kwargs):
+            return None
+
+        def search_backward(self, *_args):
+            return [SimpleNamespace(history=[SimpleNamespace(blk=block, ins_list=(call,))])]
+
+    monkeypatch.setitem(
+        def_search.sys.modules,
+        "d810.evaluator.hexrays_microcode.tracker",
+        SimpleNamespace(MopTracker=Tracker),
+    )
+
+    result = def_search.resolve_mop_to_ast(use, block, SimpleNamespace(ea=0x401100))
+
+    assert def_search.is_call_result_leaf(result)
+    assert result.value_ref.location.key == destination.reg
+
+
+def test_rotate_helper_call_uses_pure_evaluator_not_generic_call_leaf(monkeypatch):
+    call, _destination, block, use = _call_result_test_parts()
+    call.l = SimpleNamespace(t=ida_hexrays.mop_h, helper="__ROL4")
+    from d810.hexrays.expr.ast import AstLeaf
+
+    evaluator_ast = AstLeaf("rotate_result")
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: call)
+    monkeypatch.setattr(def_search, "minsn_to_ast", lambda *_args, **_kwargs: evaluator_ast)
+
+    result = def_search.resolve_mop_via_predecessors(
+        use, block, SimpleNamespace(ea=0x401100)
+    )
+
+    assert result is evaluator_ast
+
+
+def test_refiner_receives_exact_call_query_and_refines_leaf(monkeypatch):
+    from d810.analyses.data_flow.concolic.values import ConcolicValue
+    from d810.analyses.value_flow.call_return_value import (
+        CallResultRefinement,
+        CallResultRefinementStatus,
+    )
+
+    call, _destination, block, use = _call_result_test_parts()
+    seen = []
+
+    def refine(query):
+        seen.append(query)
+        return CallResultRefinement(
+            ConcolicValue.of(0x40, 32), CallResultRefinementStatus.REFINED
+        )
+
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: call)
+    result = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=refine,
+    )
+
+    assert result.concolic_value.concrete == 0x40
+    assert seen[0].function_ea == block.mba.entry_ea
+    assert seen[0].maturity == block.mba.maturity
+    assert seen[0].call_ea == call.ea
+    assert seen[0].callee_ea == 0x402000
+    assert seen[0].result_width_bits == 32
+
+
+def test_python_and_compiled_resolvers_produce_equivalent_call_leaf(monkeypatch):
+    call, _destination, block, use = _call_result_test_parts()
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: call)
+    leaf = def_search.resolve_mop_via_predecessors(
+        use, block, SimpleNamespace(ea=0x401100)
+    )
+
+    python_result = def_search._py_slow_recursively_resolve_ast(
+        leaf, block, SimpleNamespace(ea=0x401100)
+    )
+    compiled_result = def_search.recursively_resolve_ast(
+        leaf, block, SimpleNamespace(ea=0x401100)
+    )
+
+    assert def_search.is_call_result_leaf(python_result)
+    assert def_search.is_call_result_leaf(compiled_result)
+    assert python_result.value_ref == compiled_result.value_ref
+    assert python_result.concolic_value == compiled_result.concolic_value
+
+
 def test_terminal_origin_rejects_non_native_before_mlist(monkeypatch):
     def explode():
         raise AssertionError("native mlist must not be constructed")

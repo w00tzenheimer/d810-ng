@@ -22,12 +22,18 @@ import ida_hexrays
 
 from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
+from d810.analyses.data_flow.concolic.refs import LocationRef, ValueRef
+from d810.analyses.data_flow.concolic.values import ConcolicValue
+from d810.analyses.value_flow.call_return_value import (
+    CallResultQuery,
+    CallResultRefiner,
+)
 from d810.hexrays.expr.ast import AstLeaf, AstNode, get_mop_key
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.ir.mop_utils import AstNodeBudget, mop_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t, format_mop_t
-from d810.hexrays.utils.hexrays_helpers import equal_mops_ignore_size
+from d810.hexrays.utils.hexrays_helpers import equal_mops_ignore_size, is_rotate_helper_call
 
 logger = getLogger(__name__)
 
@@ -47,6 +53,185 @@ _RESOLVE_NODE_BUDGET = 4096
 # Hard upper bound on single-predecessor chain walks (defensive; the loop itself
 # already caps at _MAX_PRED_DEPTH, this guards against a malformed CFG cycle).
 _MAX_PRED_DEPTH = 8
+
+
+class CallResultAstLeaf(AstLeaf):
+    """A terminal AST leaf anchored to one ordinary call definition."""
+
+    _is_call_result_leaf = True
+
+    def __init__(
+        self,
+        name: str,
+        value_ref: ValueRef,
+        concolic_value: ConcolicValue,
+    ):
+        super().__init__(name)
+        self.value_ref = value_ref
+        self.concolic_value = concolic_value
+
+    def clone(self):
+        cloned = super().clone()
+        cloned.value_ref = self.value_ref
+        cloned.concolic_value = self.concolic_value
+        return cloned
+
+
+def is_call_result_leaf(node: object) -> bool:
+    """Return whether *node* is a definition-scoped call-result leaf."""
+
+    return bool(
+        getattr(node, "_is_call_result_leaf", False)
+        and isinstance(getattr(node, "value_ref", None), ValueRef)
+        and isinstance(getattr(node, "concolic_value", None), ConcolicValue)
+    )
+
+
+def _call_result_location(dst: ida_hexrays.mop_t | None) -> LocationRef | None:
+    """Translate an ordinary call destination into a portable location."""
+
+    if dst is None:
+        return None
+    try:
+        width = int(dst.size)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if width <= 0:
+        return None
+    try:
+        mop_type = int(dst.t)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if mop_type == ida_hexrays.mop_r:
+        try:
+            register = dst.r if hasattr(dst, "r") else dst.reg
+            return LocationRef.reg(int(register), width)
+        except (AttributeError, TypeError, ValueError):
+            return None
+    if mop_type == ida_hexrays.mop_S:
+        try:
+            stack = getattr(dst, "s", None)
+            offset = stack.off if stack is not None else dst.stkoff
+            return LocationRef.stack(int(offset), width)
+        except (AttributeError, TypeError, ValueError):
+            return None
+    return None
+
+
+def _valid_call_ea(value: object) -> int | None:
+    try:
+        ea = int(value)
+    except (TypeError, ValueError):
+        return None
+    if ea <= 0 or ea == 0xFFFFFFFFFFFFFFFF:
+        return None
+    return ea
+
+
+def _call_result_value_ref(
+    ins: ida_hexrays.minsn_t,
+    blk: ida_hexrays.mblock_t,
+) -> ValueRef:
+    """Build the exact callback-local identity for a call's result."""
+
+    location = _call_result_location(getattr(ins, "d", None))
+    if location is None:
+        raise ValueError("ordinary call has no register or stack destination")
+    call_ea = _valid_call_ea(getattr(ins, "ea", None))
+    if call_ea is None:
+        try:
+            serial = int(blk.serial)
+        except (AttributeError, TypeError, ValueError):
+            serial = -1
+        # Negative callback-local IDs cannot collide with valid serialized EAs.
+        call_ea = -(((serial & 0xFFFFFFFF) << 64) | id(ins))
+    return ValueRef(location=location, def_site=call_ea)
+
+
+def _call_result_callee_ea(ins: ida_hexrays.minsn_t) -> int | None:
+    """Extract a direct callee EA from the live call operand when available."""
+
+    for attr in ("callee_ea", "func_ea"):
+        value = _valid_call_ea(getattr(ins, attr, None))
+        if value is not None:
+            return value
+    call_operand = getattr(ins, "l", None)
+    operands = (call_operand, getattr(call_operand, "f", None))
+    for operand in operands:
+        for attr in ("callee_ea", "func_ea", "addr", "ea", "g"):
+            value = _valid_call_ea(getattr(operand, attr, None))
+            if value is not None:
+                return value
+    return None
+
+
+def _call_result_query(
+    ins: ida_hexrays.minsn_t,
+    blk: ida_hexrays.mblock_t,
+    value_ref: ValueRef,
+) -> CallResultQuery:
+    """Construct the callback-local query sent to an injected refiner."""
+
+    mba = getattr(blk, "mba", None)
+    try:
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+    except (TypeError, ValueError):
+        function_ea = 0
+    try:
+        maturity = int(getattr(mba, "maturity", 0) or 0)
+    except (TypeError, ValueError):
+        maturity = 0
+    call_ea = _valid_call_ea(getattr(ins, "ea", None))
+    if call_ea is None:
+        call_ea = value_ref.def_site
+    return CallResultQuery(
+        function_ea=function_ea,
+        maturity=maturity,
+        call_ea=call_ea,
+        callee_ea=_call_result_callee_ea(ins),
+        result_location=value_ref.location,
+        result_width_bits=value_ref.location.width * 8,
+    )
+
+
+def _snapshot_call_destination(dst: ida_hexrays.mop_t | MopSnapshot) -> MopSnapshot:
+    """Return an immutable destination snapshot without retaining a borrowed mop."""
+
+    if isinstance(dst, MopSnapshot):
+        return dst
+    return MopSnapshot.from_mop(dst)
+
+
+def _call_result_ast(
+    ins: ida_hexrays.minsn_t,
+    blk: ida_hexrays.mblock_t,
+    *,
+    call_result_refiner: CallResultRefiner | None = None,
+    node_budget: AstNodeBudget | None = None,
+) -> AstNode | AstLeaf | None:
+    """Build an ordinary call leaf, preserving rotate-helper evaluation."""
+
+    if ins is None or ins.opcode not in (ida_hexrays.m_call, ida_hexrays.m_icall):
+        return None
+    # Rotate helpers are synthetic expressions, not unknown call results.
+    if is_rotate_helper_call(ins):
+        return _minsn_to_ast_with_budget(ins, node_budget)
+    value_ref = _call_result_value_ref(ins, blk)
+    query = _call_result_query(ins, blk, value_ref)
+    if call_result_refiner is None:
+        concolic_value = ConcolicValue.top(query.result_width_bits)
+    else:
+        concolic_value = call_result_refiner(query).value
+    leaf = CallResultAstLeaf(
+        f"call_result_{value_ref.def_site:x}", value_ref, concolic_value
+    )
+    # Live IDA operands are snapshotted to avoid borrowed-mop lifetime hazards.
+    # A pre-existing snapshot is already immutable and safe to retain.
+    setattr(leaf, "mop", _snapshot_call_destination(ins.d))
+    leaf.dest_size = ins.d.size
+    leaf.ea = ins.ea
+    leaf.ins = ins
+    return leaf
 
 
 @dataclass(frozen=True, slots=True)
@@ -610,6 +795,7 @@ def resolve_mop_via_predecessors(
     max_predecessor_blocks: int = 1,
     max_paths: int = 1,
     node_budget: AstNodeBudget | None = None,
+    call_result_refiner: CallResultRefiner | None = None,
 ) -> AstNode | AstLeaf | None:
     """Resolve *mop* to an AST by following single-predecessor chains.
 
@@ -648,7 +834,14 @@ def resolve_mop_via_predecessors(
     # Fast path: try the current block first.
     def_ins = find_def_in_block(mop, blk, ins)
     if def_ins is not None:
-        ast = _minsn_to_ast_with_budget(def_ins, node_budget)
+        ast = _call_result_ast(
+            def_ins,
+            blk,
+            call_result_refiner=call_result_refiner,
+            node_budget=node_budget,
+        )
+        if ast is None:
+            ast = _minsn_to_ast_with_budget(def_ins, node_budget)
         if ast is not None:
             ast.ea = def_ins.ea
             ast.ins = def_ins
@@ -704,7 +897,14 @@ def resolve_mop_via_predecessors(
         # Search from the tail of the predecessor (no before_ins restriction).
         def_ins = find_def_in_block(mop, pred_blk, None)
         if def_ins is not None:
-            ast = _minsn_to_ast_with_budget(def_ins, node_budget)
+            ast = _call_result_ast(
+                def_ins,
+                pred_blk,
+                call_result_refiner=call_result_refiner,
+                node_budget=node_budget,
+            )
+            if ast is None:
+                ast = _minsn_to_ast_with_budget(def_ins, node_budget)
             if ast is not None:
                 ast.ea = def_ins.ea
                 ast.ins = def_ins
@@ -734,6 +934,7 @@ def resolve_mop_to_ast(
     max_predecessor_blocks: int = 1,
     max_paths: int = 1,
     node_budget: AstNodeBudget | None = None,
+    call_result_refiner: CallResultRefiner | None = None,
 ) -> AstNode | AstLeaf | None:
     """Use MopTracker to find the instruction that defines mop, return its AST.
 
@@ -798,6 +999,7 @@ def resolve_mop_to_ast(
                         max_predecessor_blocks=max_predecessor_blocks,
                         max_paths=max_paths,
                         node_budget=node_budget,
+                        call_result_refiner=call_result_refiner,
                     )
             # If we can't resolve via destination, try the address operand
             # to find a matching store (m_stx) instruction
@@ -818,13 +1020,18 @@ def resolve_mop_to_ast(
     # Only follows single-predecessor chains -- guarantees one execution path
     # from definition to use, so no wrong definitions from CFF dispatchers.
     if _USE_NATIVE_DEF_SEARCH:
+        native_kwargs = {
+            "max_predecessor_blocks": max_predecessor_blocks,
+            "max_paths": max_paths,
+            "node_budget": node_budget,
+        }
+        if call_result_refiner is not None:
+            native_kwargs["call_result_refiner"] = call_result_refiner
         result = resolve_mop_via_predecessors(
             mop,
             blk,
             ins,
-            max_predecessor_blocks=max_predecessor_blocks,
-            max_paths=max_paths,
-            node_budget=node_budget,
+            **native_kwargs,
         )
         if result is not None:
             return result
@@ -891,9 +1098,24 @@ def resolve_mop_to_ast(
             # The defining instruction writes to our mop as its destination
             if def_ins.d is not None and def_ins.d.t == mop.t:
                 # For registers, check if it's the same register
-                if mop.t == ida_hexrays.mop_r and def_ins.d.r == mop.r:
+                if mop.t == ida_hexrays.mop_r and (
+                    def_ins.d.r == mop.r
+                    or (
+                        int(getattr(def_ins.d, "valnum", 0) or 0) != 0
+                        and int(getattr(mop, "valnum", 0) or 0) != 0
+                        and int(def_ins.d.valnum) == int(mop.valnum)
+                        and int(def_ins.d.size) == int(mop.size)
+                    )
+                ):
                     # Build AST from the instruction's source operands
-                    ast = _minsn_to_ast_with_budget(def_ins, node_budget)
+                    ast = _call_result_ast(
+                        def_ins,
+                        getattr(blk_info, "blk", blk),
+                        call_result_refiner=call_result_refiner,
+                        node_budget=node_budget,
+                    )
+                    if ast is None:
+                        ast = _minsn_to_ast_with_budget(def_ins, node_budget)
                     if ast is not None:
                         ast.ea = def_ins.ea
                         ast.ins = def_ins
@@ -908,8 +1130,20 @@ def resolve_mop_to_ast(
                 # For stack variables, compare the stack offset
                 elif mop.t == ida_hexrays.mop_S:
                     try:
-                        if def_ins.d.s.off == mop.s.off:
-                            ast = _minsn_to_ast_with_budget(def_ins, node_budget)
+                        if def_ins.d.s.off == mop.s.off or (
+                            int(getattr(def_ins.d, "valnum", 0) or 0) != 0
+                            and int(getattr(mop, "valnum", 0) or 0) != 0
+                            and int(def_ins.d.valnum) == int(mop.valnum)
+                            and int(def_ins.d.size) == int(mop.size)
+                        ):
+                            ast = _call_result_ast(
+                                def_ins,
+                                getattr(blk_info, "blk", blk),
+                                call_result_refiner=call_result_refiner,
+                                node_budget=node_budget,
+                            )
+                            if ast is None:
+                                ast = _minsn_to_ast_with_budget(def_ins, node_budget)
                             if ast is not None:
                                 ast.ea = def_ins.ea
                                 ast.ins = def_ins
@@ -938,6 +1172,7 @@ def _py_slow_recursively_resolve_ast(
     max_depth: int = 10,
     cache: dict | None = None,
     node_budget: AstNodeBudget | None = None,
+    call_result_refiner: CallResultRefiner | None = None,
 ) -> AstNode | AstLeaf | None:
     """Recursively resolve register/stack leaves in an AST to their defining expressions.
 
@@ -983,6 +1218,11 @@ def _py_slow_recursively_resolve_ast(
     if ast is None:
         return None
 
+    # A call result is definition-scoped.  Never follow its physical storage
+    # location into a later register/stack definition.
+    if is_call_result_leaf(ast):
+        return ast
+
     if budget[0] <= 0:
         if logger.debug_on:
             logger.debug("recursively_resolve_ast: node budget exhausted, stopping")
@@ -1018,6 +1258,7 @@ def _py_slow_recursively_resolve_ast(
                     blk,
                     ins,
                     node_budget=node_budget,
+                    call_result_refiner=call_result_refiner,
                 )
                 if resolved is not None and resolved is not ast:
                     resolved_width = _ast_width_bytes(resolved)
@@ -1047,6 +1288,7 @@ def _py_slow_recursively_resolve_ast(
                         max_depth,
                         cache,
                         node_budget,
+                        call_result_refiner,
                     )
                     if resolved_width > use_width:
                         res = _truncate_ast_to_use_width(res, use_width, node_budget)
@@ -1073,14 +1315,28 @@ def _py_slow_recursively_resolve_ast(
 
     new_left = (
         _py_slow_recursively_resolve_ast(
-            ast_node.left, blk, ins, depth, max_depth, cache, node_budget
+            ast_node.left,
+            blk,
+            ins,
+            depth,
+            max_depth,
+            cache,
+            node_budget,
+            call_result_refiner,
         )
         if ast_node.left
         else None
     )
     new_right = (
         _py_slow_recursively_resolve_ast(
-            ast_node.right, blk, ins, depth, max_depth, cache, node_budget
+            ast_node.right,
+            blk,
+            ins,
+            depth,
+            max_depth,
+            cache,
+            node_budget,
+            call_result_refiner,
         )
         if ast_node.right
         else None
@@ -1133,6 +1389,7 @@ def recursively_resolve_ast(
     max_depth: int = 10,
     cache: dict | None = None,
     node_budget: AstNodeBudget | None = None,
+    call_result_refiner: CallResultRefiner | None = None,
 ) -> AstNode | AstLeaf | None:
     """Resolve AST definitions through the selected production backend."""
 
@@ -1148,6 +1405,7 @@ def recursively_resolve_ast(
             _microcode_instruction_identity,
             _RESOLVE_NODE_BUDGET,
             node_budget,
+            call_result_refiner,
         )
     return _py_slow_recursively_resolve_ast(
         ast,
@@ -1157,6 +1415,7 @@ def recursively_resolve_ast(
         max_depth=max_depth,
         cache=cache,
         node_budget=node_budget,
+        call_result_refiner=call_result_refiner,
     )
 
 
