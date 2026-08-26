@@ -68,6 +68,15 @@ from d810.mba.subterm_atomization import (
     MbaAtomBinding,
     atomize_repeated_subterms,
 )
+from d810.mba.residual_corpus import (
+    MbaResidualCorpus,
+    MbaResidualGroup,
+    MbaResidualObservation,
+    MbaResidualSource,
+    RESIDUAL_CORPUS_METADATA_KEY,
+    RESIDUAL_CORPUS_SCHEMA_VERSION,
+    source_identity,
+)
 from d810.mba.performance_timing import (
     EMPTY_MBA_STAGE_TIMINGS,
     MbaStageTimer,
@@ -575,4 +584,11 @@ __all__ = [
     "atomize_native_candidate",
     "atomize_repeated_subterms",
     "typed_term_identity_is_current",
+    "MbaResidualCorpus",
+    "MbaResidualGroup",
+    "MbaResidualObservation",
+    "MbaResidualSource",
+    "RESIDUAL_CORPUS_METADATA_KEY",
+    "RESIDUAL_CORPUS_SCHEMA_VERSION",
+    "source_identity",
 ]

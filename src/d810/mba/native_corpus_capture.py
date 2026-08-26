@@ -23,6 +23,11 @@ from d810.mba.provider_outcome import (
     MbaProviderOutcome,
     ProviderOutcomeStatus,
 )
+from d810.mba.residual_corpus import (
+    MbaResidualCorpus,
+    MbaResidualObservation,
+    RESIDUAL_CORPUS_METADATA_KEY,
+)
 
 
 _NATIVE_PROFILE_METADATA_KEY = "native_profile"
@@ -349,6 +354,7 @@ class NativeMbaCorpusCapture:
     toolchain_identity: Mapping[str, str]
     _cases: list[MbaCorpusCaseReport] = field(default_factory=list)
     _capture_metadata: dict[str, object] = field(default_factory=dict)
+    _residual_corpus: MbaResidualCorpus | None = None
 
     def set_capture_metadata(self, metadata: Mapping[str, object]) -> None:
         """Attach measured run-level evidence before the report is rendered.
@@ -361,9 +367,20 @@ class NativeMbaCorpusCapture:
         for key, value in metadata.items():
             if type(key) is not str or not key:
                 raise ValueError("capture metadata keys must be non-empty strings")
+            if key == RESIDUAL_CORPUS_METADATA_KEY:
+                raise ValueError(f"capture metadata key {key} is reserved")
             if key in self._capture_metadata:
                 raise ValueError(f"capture metadata already records {key}")
             self._capture_metadata[key] = value
+
+    def add_residual(self, observation: MbaResidualObservation) -> None:
+        """Record one unresolved observation for optional report metadata."""
+
+        if not isinstance(observation, MbaResidualObservation):
+            raise TypeError("observation must be an MbaResidualObservation")
+        if self._residual_corpus is None:
+            self._residual_corpus = MbaResidualCorpus()
+        self._residual_corpus.add(observation)
 
     def add_case(
         self,
@@ -389,12 +406,21 @@ class NativeMbaCorpusCapture:
         return case
 
     def report(self) -> MbaDifferentialReport:
+        capture_metadata = dict(self._capture_metadata)
+        if self._residual_corpus is not None:
+            if RESIDUAL_CORPUS_METADATA_KEY in capture_metadata:
+                raise ValueError(
+                    f"capture metadata key {RESIDUAL_CORPUS_METADATA_KEY} is reserved"
+                )
+            capture_metadata[RESIDUAL_CORPUS_METADATA_KEY] = (
+                self._residual_corpus.to_dict()
+            )
         return MbaDifferentialReport(
             schema_version=1,
             corpus_identity=self.corpus_identity,
             toolchain_identity=self.toolchain_identity,
             cases=tuple(self._cases),
-            capture_metadata=self._capture_metadata,
+            capture_metadata=capture_metadata,
         )
 
     def write_json(self, path: Path) -> None:
@@ -463,6 +489,7 @@ __all__ = [
     "NativeMbaCorpusCapture",
     "NativeCaptureSelection",
     "NativeProviderHistorySnapshot",
+    "RESIDUAL_CORPUS_METADATA_KEY",
     "ManifestNativeCaptureCase",
     "capture_manifest_native_cases",
     "capture_native_provider_case",
