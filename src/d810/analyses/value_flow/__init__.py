@@ -23,6 +23,12 @@ from d810.analyses.value_flow.call_effect_summary import (
 )
 from d810.analyses.value_flow.call_return_value import (
     CALL_RETURN_VALUE_FACT_TYPE,
+    SUPPORTED_CALL_RESULT_WIDTHS,
+    CallResultQuery,
+    CallResultRefinement,
+    CallResultRefinementStatus,
+    CallResultRefiner,
+    refine_call_result,
 )
 from d810.analyses.value_flow.dead_store import (
     DeadStoreCandidate,
@@ -119,6 +125,11 @@ VALUE_FLOW_FACT_TYPES = frozenset(
 __all__ = [
     "CALL_EFFECT_SUMMARY_FACT_TYPE",
     "CALL_RETURN_VALUE_FACT_TYPE",
+    "SUPPORTED_CALL_RESULT_WIDTHS",
+    "CallResultQuery",
+    "CallResultRefinement",
+    "CallResultRefinementStatus",
+    "CallResultRefiner",
     "CONTRACT_EVIDENCE_KEY",
     "CONTRACT_EVIDENCE_TOKENS",
     "CONTRACT_EVIDENCE_TOKENS_KEY",
@@ -173,4 +184,5 @@ __all__ = [
     "producer_ontology_for",
     "production_value_flow_fact",
     "project_value_flow_facts",
+    "refine_call_result",
 ]
