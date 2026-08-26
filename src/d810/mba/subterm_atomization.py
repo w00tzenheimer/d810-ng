@@ -117,6 +117,8 @@ class MbaAtomBinding:
         original = _validate_term(self.original_subterm, label="original_subterm")
         if original.operation is None:
             raise ValueError("atom binding must describe an operator subterm")
+        if self.leaf_key[2] != term_fingerprint(original):
+            raise ValueError("atom key fingerprint does not match original_subterm")
         if type(self.occurrence_count) is not int or self.occurrence_count < 2:
             raise ValueError("atom occurrence_count must be at least two")
         if type(self.saved_operator_nodes) is not int or self.saved_operator_nodes <= 0:
@@ -166,6 +168,49 @@ class AtomizedMbaTerm:
                     raise ValueError("atomized term contains an unknown reserved atom")
                 if node.width != binding.original_subterm.width:
                     raise ValueError("reserved atom width does not match its binding")
+        self._validate_invariants()
+
+    def _validate_invariants(self) -> None:
+        """Verify that bindings replay from the source into the atomized term."""
+
+        current = self.original_term
+        prior_bindings: dict[tuple[object, ...], MbaAtomBinding] = {}
+        for ordinal, binding in enumerate(self.bindings):
+            key = _validate_atom_key(binding.leaf_key)
+            if key[1] != ordinal:
+                raise ValueError("atom binding ordinals must match sequence order")
+            expected_fingerprint = term_fingerprint(binding.original_subterm)
+            if key[2] != expected_fingerprint:
+                raise ValueError("atom binding fingerprint does not match provenance")
+            for node in _walk(binding.original_subterm):
+                if node.operation is None and node.leaf_key is not None:
+                    if not _is_reserved_namespace(node.leaf_key):
+                        continue
+                    dependency = _validate_atom_key(node.leaf_key)
+                    if dependency not in prior_bindings:
+                        if dependency[1] >= ordinal:
+                            raise ValueError("atom binding has a forward dependency")
+                        raise ValueError("atom binding has an unknown dependency")
+
+            counts, representatives = _count_operator_subterms(current)
+            actual_count = counts.get(expected_fingerprint, 0)
+            representative = representatives.get(expected_fingerprint)
+            if representative is None or representative != binding.original_subterm:
+                raise ValueError("atom binding cannot be replayed from original_term")
+            if actual_count != binding.occurrence_count:
+                raise ValueError("atom binding occurrence_count does not match replay")
+            atom = TypedBvTerm(None, current.width, leaf_key=key)
+            current = _replace_subterm(
+                current,
+                expected_fingerprint,
+                binding.original_subterm,
+                atom,
+                replace_root=False,
+            )
+            prior_bindings[key] = binding
+
+        if current != self.atomized_term:
+            raise ValueError("atomized_term does not derive from original_term")
 
     def restore(self, replacement: TypedBvTerm) -> TypedBvTerm:
         """Restore synthetic atoms in a provider replacement in reverse order."""
@@ -227,6 +272,13 @@ def atomize_repeated_subterms(
 ) -> AtomizedMbaTerm:
     """Replace repeated operator subtrees with deterministic synthetic leaves."""
 
+    if type(min_occurrences) is not int or min_occurrences < 2:
+        raise ValueError("min_occurrences must be an integer at least two")
+    if type(min_operator_nodes) is not int or min_operator_nodes < 1:
+        raise ValueError("min_operator_nodes must be an integer at least one")
+    if type(max_atoms) is not int or max_atoms < 0:
+        raise ValueError("max_atoms must be a non-negative integer")
+
     term = _validate_term(term, label="term")
     if any(
         node.operation is None
@@ -235,15 +287,6 @@ def atomize_repeated_subterms(
         for node in _walk(term)
     ):
         raise ValueError("term contains a reserved atom namespace collision")
-    for name, value in (
-        ("min_occurrences", min_occurrences),
-        ("min_operator_nodes", min_operator_nodes),
-        ("max_atoms", max_atoms),
-    ):
-        if type(value) is not int or value < 0:
-            raise ValueError(f"{name} must be a non-negative integer")
-    if min_occurrences == 0:
-        raise ValueError("min_occurrences must be positive")
 
     current = term
     bindings: list[MbaAtomBinding] = []

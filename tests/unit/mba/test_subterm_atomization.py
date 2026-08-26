@@ -107,6 +107,34 @@ def test_ranking_prefers_saved_operator_nodes_then_occurrences() -> None:
     assert result.bindings[0].saved_operator_nodes == 3
 
 
+def test_ranking_uses_occurrence_count_when_saved_nodes_tie() -> None:
+    one_node = _binary("and", _leaf("a"), _leaf("b"))
+    two_nodes = _binary("or", _binary("xor", _leaf("c"), _leaf("d")), _leaf("e"))
+    source = _binary(
+        "add", _repeated(one_node, count=3), _repeated(two_nodes, count=2)
+    )
+
+    result = atomize_repeated_subterms(source, max_atoms=1)
+
+    assert result.bindings[0].original_subterm == one_node
+    assert result.bindings[0].saved_operator_nodes == 2
+    assert result.bindings[0].occurrence_count == 3
+
+
+def test_distinct_operator_terms_with_forced_fingerprint_collision_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _binary("and", _leaf("a"), _leaf("b"))
+    second = _binary("or", _leaf("c"), _leaf("d"))
+    source = _binary("add", first, second)
+    monkeypatch.setattr(
+        "d810.mba.subterm_atomization.term_fingerprint", lambda _term: "collision"
+    )
+
+    with pytest.raises(ValueError, match="collision"):
+        atomize_repeated_subterms(source, min_occurrences=2)
+
+
 def test_nested_overlaps_select_outer_and_recompute_after_selection() -> None:
     x = _leaf("x")
     y = _leaf("y")
@@ -139,8 +167,52 @@ def test_atomization_limits_and_root_exclusion_are_deterministic() -> None:
     source = _binary("add", x, y)
 
     assert atomize_repeated_subterms(source, max_atoms=0).bindings == ()
-    assert atomize_repeated_subterms(source, min_occurrences=1).bindings == ()
+    with pytest.raises(ValueError, match="min_occurrences"):
+        atomize_repeated_subterms(source, min_occurrences=1)
     assert atomize_repeated_subterms(source).atomized_term == source
+
+
+@pytest.mark.parametrize(
+    ("min_occurrences", "min_operator_nodes", "max_atoms"),
+    ((2, 1, 0), (2, 1, 1)),
+)
+def test_threshold_valid_boundaries_are_accepted(
+    min_occurrences: int, min_operator_nodes: int, max_atoms: int
+) -> None:
+    source = _repeated(_binary("and", _leaf("x"), _leaf("y")))
+
+    result = atomize_repeated_subterms(
+        source,
+        min_occurrences=min_occurrences,
+        min_operator_nodes=min_operator_nodes,
+        max_atoms=max_atoms,
+    )
+
+    assert len(result.bindings) <= max_atoms
+
+
+@pytest.mark.parametrize("value", (0, 1, -1, True, 1.0))
+def test_min_occurrences_requires_exact_int_at_least_two(value: object) -> None:
+    source = _repeated(_binary("and", _leaf("x"), _leaf("y")))
+
+    with pytest.raises((TypeError, ValueError)):
+        atomize_repeated_subterms(source, min_occurrences=value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", (0, -1, False, 1.0))
+def test_min_operator_nodes_requires_exact_int_at_least_one(value: object) -> None:
+    source = _repeated(_binary("and", _leaf("x"), _leaf("y")))
+
+    with pytest.raises((TypeError, ValueError)):
+        atomize_repeated_subterms(source, min_operator_nodes=value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", (-1, False, 1.0))
+def test_max_atoms_requires_exact_non_negative_int(value: object) -> None:
+    source = _repeated(_binary("and", _leaf("x"), _leaf("y")))
+
+    with pytest.raises((TypeError, ValueError)):
+        atomize_repeated_subterms(source, max_atoms=value)  # type: ignore[arg-type]
 
 
 def test_same_shape_terms_at_different_widths_have_distinct_atoms() -> None:
@@ -190,12 +262,126 @@ def test_duplicate_binding_keys_are_rejected() -> None:
         )
 
 
+def test_no_binding_mismatch_is_rejected_by_constructor_replay() -> None:
+    original = _binary("add", _leaf("x"), _leaf("y"))
+    wrong_atomized = _binary("add", _leaf("x"), _leaf("x"))
+
+    with pytest.raises(ValueError, match="replay|derive|structure"):
+        AtomizedMbaTerm(original, wrong_atomized, ())
+
+
+def test_wrong_atomized_tree_is_rejected_by_constructor_replay() -> None:
+    original_subterm = _binary("and", _leaf("x"), _leaf("y"))
+    original = _binary("add", original_subterm, original_subterm)
+    atomized = atomize_repeated_subterms(original)
+    binding = atomized.bindings[0]
+    wrong_atomized = _binary(
+        "add",
+        TypedBvTerm(None, 32, leaf_key=binding.leaf_key),
+        _leaf("z"),
+    )
+
+    with pytest.raises(ValueError, match="replay|derive|structure"):
+        AtomizedMbaTerm(original, wrong_atomized, (binding,))
+
+
+def test_binding_fingerprint_must_match_original_subterm() -> None:
+    original_subterm = _binary("and", _leaf("x"), _leaf("y"))
+
+    with pytest.raises(ValueError, match="fingerprint"):
+        MbaAtomBinding(
+            ("d810.mba.atom.v1", 0, "wrong-fingerprint"),
+            original_subterm,
+            2,
+            1,
+        )
+
+
+def test_binding_ordinals_must_match_sequence_order() -> None:
+    original_subterm = _binary("and", _leaf("x"), _leaf("y"))
+    fingerprint = term_fingerprint(original_subterm)
+    key = ("d810.mba.atom.v1", 7, fingerprint)
+    binding = MbaAtomBinding(key, original_subterm, 2, 1)
+    original = _binary("add", original_subterm, original_subterm)
+    atomized = _binary("add", TypedBvTerm(None, 32, leaf_key=key), TypedBvTerm(None, 32, leaf_key=key))
+
+    with pytest.raises(ValueError, match="ordinal"):
+        AtomizedMbaTerm(original, atomized, (binding,))
+
+
+def test_reordered_binding_ordinals_are_rejected() -> None:
+    inner = _binary("and", _leaf("x"), _leaf("y"))
+    outer = _binary("or", inner, _leaf("z"))
+    inner_key = ("d810.mba.atom.v1", 0, term_fingerprint(inner))
+    outer_key = ("d810.mba.atom.v1", 1, term_fingerprint(outer))
+    inner_binding = MbaAtomBinding(inner_key, inner, 2, 1)
+    outer_binding = MbaAtomBinding(outer_key, outer, 2, 2)
+    original = _binary("add", _leaf("q"), _leaf("q"))
+    atomized = _binary(
+        "add",
+        TypedBvTerm(None, 32, leaf_key=outer_key),
+        TypedBvTerm(None, 32, leaf_key=outer_key),
+    )
+
+    with pytest.raises(ValueError, match="ordinal|dependency|replay"):
+        AtomizedMbaTerm(original, atomized, (outer_binding, inner_binding))
+
+
+def test_false_occurrence_metadata_is_rejected_by_forward_replay() -> None:
+    original_subterm = _binary("and", _leaf("x"), _leaf("y"))
+    original = _binary("add", original_subterm, original_subterm)
+    key = ("d810.mba.atom.v1", 0, term_fingerprint(original_subterm))
+    binding = MbaAtomBinding(key, original_subterm, 3, 2)
+    atomized = _binary(
+        "add", TypedBvTerm(None, 32, leaf_key=key), TypedBvTerm(None, 32, leaf_key=key)
+    )
+
+    with pytest.raises(ValueError, match="occurrence|replay"):
+        AtomizedMbaTerm(original, atomized, (binding,))
+
+
+def test_forward_nested_binding_dependency_is_rejected() -> None:
+    future_key = ("d810.mba.atom.v1", 1, "future")
+    outer = _binary("or", TypedBvTerm(None, 32, leaf_key=future_key), _leaf("x"))
+    outer_key = ("d810.mba.atom.v1", 0, term_fingerprint(outer))
+    outer_binding = MbaAtomBinding(outer_key, outer, 2, 1)
+    inner = _binary("and", _leaf("y"), _leaf("z"))
+    inner_key = ("d810.mba.atom.v1", 1, term_fingerprint(inner))
+    inner_binding = MbaAtomBinding(inner_key, inner, 2, 1)
+    original = _binary("add", _leaf("q"), _leaf("q"))
+    atomized = _binary(
+        "add", TypedBvTerm(None, 32, leaf_key=outer_key), TypedBvTerm(None, 32, leaf_key=outer_key)
+    )
+
+    with pytest.raises(ValueError, match="dependency|forward"):
+        AtomizedMbaTerm(original, atomized, (outer_binding, inner_binding))
+
+
+def test_unknown_nested_binding_dependency_is_rejected() -> None:
+    unknown_key = ("d810.mba.atom.v1", 9, "unknown")
+    outer = _binary("or", TypedBvTerm(None, 32, leaf_key=unknown_key), _leaf("x"))
+    outer_key = ("d810.mba.atom.v1", 0, term_fingerprint(outer))
+    binding = MbaAtomBinding(outer_key, outer, 2, 1)
+    original = _binary("add", _leaf("q"), _leaf("q"))
+    atomized = _binary(
+        "add", TypedBvTerm(None, 32, leaf_key=outer_key), TypedBvTerm(None, 32, leaf_key=outer_key)
+    )
+
+    with pytest.raises(ValueError, match="dependency|unknown"):
+        AtomizedMbaTerm(original, atomized, (binding,))
+
+
 def test_malformed_binding_width_is_rejected() -> None:
     original = _binary("and", _leaf("x"), _leaf("y"))
-    atom = TypedBvTerm(None, 32, leaf_key=("d810.mba.atom.v1", 0, "fp"))
+    original_subterm = _binary("and", _leaf("x", width=16), _leaf("y", width=16))
+    atom = TypedBvTerm(
+        None,
+        32,
+        leaf_key=("d810.mba.atom.v1", 0, term_fingerprint(original_subterm)),
+    )
     malformed = MbaAtomBinding(
         leaf_key=atom.leaf_key,
-        original_subterm=_binary("and", _leaf("x", width=16), _leaf("y", width=16)),
+        original_subterm=original_subterm,
         occurrence_count=2,
         saved_operator_nodes=1,
     )
@@ -208,21 +394,25 @@ def test_restore_uses_reverse_binding_order_for_nested_bindings() -> None:
     x = _leaf("x")
     y = _leaf("y")
     z = _leaf("z")
-    inner_key = ("d810.mba.atom.v1", 0, "inner")
-    outer_key = ("d810.mba.atom.v1", 1, "outer")
     inner = _binary("and", y, z)
+    inner_key = ("d810.mba.atom.v1", 0, term_fingerprint(inner))
+    outer_source = _binary("or", inner, x)
     outer = _binary("or", TypedBvTerm(None, 32, leaf_key=inner_key), x)
+    outer_key = ("d810.mba.atom.v1", 1, term_fingerprint(outer))
     inner_binding = MbaAtomBinding(inner_key, inner, 2, 1)
     outer_binding = MbaAtomBinding(outer_key, outer, 2, 1)
+    original = _binary("add", outer_source, outer_source)
     atomized = AtomizedMbaTerm(
-        original_term=_binary("or", inner, x),
-        atomized_term=TypedBvTerm(None, 32, leaf_key=outer_key),
+        original_term=original,
+        atomized_term=_binary(
+            "add",
+            TypedBvTerm(None, 32, leaf_key=outer_key),
+            TypedBvTerm(None, 32, leaf_key=outer_key),
+        ),
         bindings=(inner_binding, outer_binding),
     )
 
-    assert atomized.restore(TypedBvTerm(None, 32, leaf_key=outer_key)) == _binary(
-        "or", inner, x
-    )
+    assert atomized.restore(atomized.atomized_term) == original
 
 
 def _native_candidate(term: TypedBvTerm, *, context: object = None) -> NativeMbaCandidate:
@@ -264,3 +454,15 @@ def test_native_candidate_wrapper_rejects_candidate_view_identity_or_width_misma
     )
     with pytest.raises(ValueError, match="width"):
         AtomizedNativeMbaCandidate(candidate, width_view)
+
+
+def test_native_candidate_wrapper_revalidates_adversarial_forged_views() -> None:
+    source, _, _ = _triggering_fixture()
+    candidate = _native_candidate(source)
+    forged = object.__new__(AtomizedMbaTerm)
+    object.__setattr__(forged, "original_term", source)
+    object.__setattr__(forged, "atomized_term", _binary("add", _leaf("v17"), _leaf("v17")))
+    object.__setattr__(forged, "bindings", ())
+
+    with pytest.raises(ValueError, match="derive|structure"):
+        AtomizedNativeMbaCandidate(candidate, forged)
