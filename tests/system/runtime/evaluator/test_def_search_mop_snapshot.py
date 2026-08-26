@@ -190,7 +190,12 @@ def test_production_resolver_keeps_assigned_call_leaf_through_copy_shift_mask(
     assert def_search.is_call_result_leaf(result.left.left)
     assert result.left.left.value_ref.def_site == call.ea
     assert result.left.left.value_ref.location.key == destination.reg
-    assert later_write not in searched
+    assert [id(anchor) for anchor in searched] == [
+        id(predicate),
+        id(shift),
+        id(copy),
+    ]
+    assert all(anchor is not assignment for anchor in searched)
 
 
 def test_call_result_accepted_widths_agree_across_leaf_concolic_and_query(
