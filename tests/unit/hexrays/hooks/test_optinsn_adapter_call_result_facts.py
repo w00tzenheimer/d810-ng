@@ -4,7 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-ida_hexrays = pytest.importorskip("ida_hexrays")
+pytest_plugins = ("tests.system.conftest",)
+
+import tests.system.conftest  # noqa: F401,E402
+import ida_hexrays  # noqa: E402
 
 from d810.hexrays.hooks.optinsn_adapter import (  # noqa: E402
     InstructionOptimizerManager,
@@ -12,10 +15,18 @@ from d810.hexrays.hooks.optinsn_adapter import (  # noqa: E402
 
 
 class _RecordingOptimizer:
-    def __init__(self) -> None:
+    def __init__(self, *, current=None, fail=False) -> None:
         self.bound = []
+        self.validated_fact_view = current
+        self.fail = fail
+        self.rules = SimpleNamespace(_rules={})
 
     def bind_validated_fact_view(self, view) -> None:
+        if self.fail:
+            self.validated_fact_view = view
+            self.fail = False
+            raise RuntimeError("binder failed")
+        self.validated_fact_view = view
         self.bound.append(view)
 
 
@@ -41,6 +52,8 @@ def _snapshot_manager(provider=None):
     manager.instruction_optimizers = []
     manager._active_optimizers = []
     manager.analyzer = object()
+    manager._capture_child_runtime_state = lambda _optimizer: object()
+    manager._restore_child_runtime_state = lambda _snapshot: None
     return manager
 
 
@@ -61,7 +74,11 @@ def _callback_manager(optimizer, provider=None):
 
 def _block():
     mba = SimpleNamespace(entry_ea=0x401000, maturity=ida_hexrays.MMAT_LOCOPT)
-    return SimpleNamespace(mba=mba, serial=7)
+    return SimpleNamespace(mba=mba, serial=7, mark_lists_dirty=lambda: None)
+
+
+def _instruction(ea=0x401010):
+    return SimpleNamespace(ea=ea, _print=lambda: "instruction", optimize_solo=lambda: None)
 
 
 def test_provider_is_snapshotted_and_restored():
@@ -72,8 +89,6 @@ def test_provider_is_snapshotted_and_restored():
         return None
 
     manager = _snapshot_manager(original)
-    manager._capture_child_runtime_state = lambda _optimizer: object()
-
     snapshot = manager.capture_runtime_state()
     manager._validated_fact_view_provider = replacement
     manager.restore_runtime_state(snapshot)
@@ -109,12 +124,14 @@ def test_manager_binds_view_only_during_optimizer_callback():
 def test_manager_clears_view_when_optimizer_raises():
     optimizer = _RecordingOptimizer()
     manager = _callback_manager(optimizer, lambda *_args: object())
-    manager.log_info_on_input = lambda *_args: (_ for _ in ()).throw(
+    manager.log_info_on_input = lambda *_args: False
+    manager.optimize = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         RuntimeError("optimizer failed")
     )
 
-    with pytest.raises(RuntimeError, match="optimizer failed"):
-        manager.func(_block(), SimpleNamespace(ea=0x401010))
+    # RuntimeError from the optimizer is handled by the production callback,
+    # while its finally block must still restore the prior binding.
+    assert manager.func(_block(), _instruction()) is False
 
     assert optimizer.bound[-1] is None
 
@@ -123,6 +140,224 @@ def test_missing_provider_binds_none_and_preserves_safe_default():
     optimizer = _RecordingOptimizer()
     manager = _callback_manager(optimizer)
 
-    manager.func(_block(), SimpleNamespace(ea=0x401010))
+    manager.func(_block(), _instruction())
 
-    assert optimizer.bound == [None]
+    assert optimizer.bound[-1] is None
+
+
+def test_provider_exception_does_not_bind_children():
+    optimizer = _RecordingOptimizer(current="prior")
+
+    def provider(*_args):
+        raise RuntimeError("provider failed")
+
+    manager = _callback_manager(optimizer, provider)
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        manager.func(_block(), _instruction())
+
+    assert optimizer.bound == []
+    assert optimizer.validated_fact_view == "prior"
+
+
+def test_partial_bind_failure_restores_all_prior_views():
+    first = _RecordingOptimizer(current="first-prior")
+    second = _RecordingOptimizer(current="second-prior", fail=True)
+    manager = _callback_manager(first, lambda *_args: object())
+    manager.instruction_optimizers = [first, second]
+
+    with pytest.raises(RuntimeError, match="binder failed"):
+        manager.func(_block(), _instruction())
+
+    assert first.validated_fact_view == "first-prior"
+    assert second.validated_fact_view == "second-prior"
+
+
+def test_nested_callbacks_restore_outer_view():
+    optimizer = _RecordingOptimizer(current=None)
+    views = iter(("outer", "inner"))
+    manager = _callback_manager(optimizer, lambda *_args: next(views))
+    manager.log_info_on_input = lambda *_args: False
+    nested_state = []
+    entered = False
+
+    def optimize(*_args, **_kwargs):
+        nonlocal entered
+        nested_state.append(optimizer.validated_fact_view)
+        if entered:
+            return True
+        entered = True
+        assert manager.func(_block(), _instruction(0x401011)) is True
+        nested_state.append(optimizer.validated_fact_view)
+        return True
+
+    manager.optimize = optimize
+    manager.instruction_visitor = SimpleNamespace()
+    manager._capture_callback_nop_sites = lambda _blk: None
+    manager._report_callback_nop_delta = lambda *args, **kwargs: None
+    block = _block()
+    instruction = _instruction()
+
+    # Avoid invoking unrelated mutation verification in this lifecycle test.
+    import d810.hexrays.hooks.optinsn_adapter as adapter
+
+    original_verify = adapter.safe_verify
+    adapter.safe_verify = lambda *_args, **_kwargs: None
+    try:
+        assert manager.func(block, instruction) is True
+    finally:
+        adapter.safe_verify = original_verify
+
+    assert nested_state == ["outer", "inner", "outer"]
+    assert optimizer.validated_fact_view is None
+
+
+def test_manager_binding_reaches_z3_predicate_and_records_call_query(monkeypatch):
+    """The production callback seam carries its view into a real Z3 rule."""
+    from d810.analyses.value_flow.model import ValidatedFactView
+    from d810.backends.ast import z3 as z3_backend
+    from d810.evaluator.hexrays_microcode import def_search
+    from d810.hexrays.expr.ast import AstLeaf
+    from d810.optimizers.microcode.instructions.z3 import handler
+    from d810.optimizers.microcode.instructions.z3.predicates import Z3lnotRuleGeneric
+    from tests.system.runtime.evaluator.test_def_search_mop_snapshot import (
+        _call_result_test_parts,
+    )
+
+    assignment, call, destination, block, use = _call_result_test_parts()
+    block.mark_lists_dirty = lambda: None
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    monkeypatch.setattr(
+        def_search, "_materialize_mop_for_tracking", lambda mop, *_a, **_k: mop
+    )
+    # The fixture intentionally uses immutable MopSnapshots. Bypass only the
+    # native AST conversion so the real contextual resolver and Z3 prover can
+    # still run without constructing a live mop_t outside Hex-Rays.
+    monkeypatch.setattr(
+        z3_backend, "mop_to_ast", lambda *_args, **_kwargs: AstLeaf("call_result")
+    )
+    seen_queries = []
+    original_refiner = handler.refine_call_result
+
+    def recording_refiner(query, view):
+        seen_queries.append(query)
+        return original_refiner(query, view)
+
+    monkeypatch.setattr(handler, "refine_call_result", recording_refiner)
+
+    rule = Z3lnotRuleGeneric()
+
+    class _Candidate:
+        dst_mop = SimpleNamespace(size=1)
+
+        def __getitem__(self, name):
+            assert name == "x_0"
+            return SimpleNamespace(mop=use)
+
+        def add_constant_leaf(self, *_args):
+            raise AssertionError("an empty validated view must not prove lnot")
+
+    class _Z3Child:
+        rules = (rule,)
+
+        def __init__(self):
+            self.validated_fact_view = None
+
+        def bind_validated_fact_view(self, view):
+            self.validated_fact_view = view
+            rule.bind_validated_fact_view(view)
+
+        def get_optimized_instruction(self, blk, ins, **_kwargs):
+            rule._current_blk = blk
+            rule._current_ins = ins
+            rule._definition_search_ins = ins
+            try:
+                rule.check_candidate(_Candidate())
+            finally:
+                rule._current_blk = None
+                rule._current_ins = None
+                rule._definition_search_ins = None
+            return None
+
+    def assert_view(function_ea, maturity):
+        assert function_ea == block.mba.entry_ea
+        assert maturity == block.mba.maturity
+        return ValidatedFactView(maturity="MMAT_LOCOPT")
+
+    child = _Z3Child()
+    manager = _callback_manager(
+        child,
+        assert_view,
+    )
+    manager.log_info_on_input = lambda *_args: False
+    manager.optimize = lambda blk, ins: (
+        child.get_optimized_instruction(blk, ins),
+        True,
+    )[1]
+
+    import d810.hexrays.hooks.optinsn_adapter as adapter
+
+    monkeypatch.setattr(adapter, "safe_verify", lambda *_args, **_kwargs: None)
+    assert manager.func(block, SimpleNamespace(ea=0x401100, optimize_solo=lambda: None))
+    assert len(seen_queries) == 2
+    assert all(query.function_ea == block.mba.entry_ea for query in seen_queries)
+    assert all(query.maturity == block.mba.maturity for query in seen_queries)
+    assert all(query.call_ea == call.ea for query in seen_queries)
+    assert all(query.callee_ea == 0x402000 for query in seen_queries)
+    assert all(query.result_location.kind.name == "REGISTER" for query in seen_queries)
+    assert all(query.result_location.key == destination.reg for query in seen_queries)
+    assert all(query.result_width_bits == destination.size * 8 for query in seen_queries)
+    assert child.validated_fact_view is None
+
+
+def test_hot_replacement_clears_detached_rules_and_inherits_live_view():
+    from d810.optimizers.microcode.instructions.z3.handler import Z3Optimizer
+    from d810.optimizers.microcode.instructions.z3.predicates import Z3lnotRuleGeneric
+
+    optimizer = Z3Optimizer([], None)
+    old = Z3lnotRuleGeneric()
+    new = Z3lnotRuleGeneric()
+    optimizer.add_rule(old)
+    optimizer.bind_validated_fact_view("live")
+    assert old.validated_fact_view == "live"
+
+    optimizer.reset_rules()
+    assert old.validated_fact_view is None
+    optimizer.add_rule(new)
+
+    assert new.validated_fact_view == "live"
+
+
+def test_snapshot_restore_clears_removed_and_restored_rule_views():
+    old = _RecordingOptimizer()
+    old.rules = SimpleNamespace(_rules={old: None})
+    manager = _snapshot_manager()
+    manager.instruction_optimizers = [old]
+    manager.analyzer = old
+    del manager._restore_child_runtime_state
+    manager._capture_child_runtime_state = lambda optimizer: SimpleNamespace(
+        optimizer=optimizer,
+        rules_store=optimizer.rules,
+        rules=(old,),
+        pattern_storage_present=False,
+        pattern_storage=None,
+        indexed_storage_present=False,
+        indexed_storage=None,
+        allowed_root_opcodes_store=None,
+        allowed_root_opcodes=None,
+        structural_rules_store=None,
+        structural_rules=None,
+        has_patternless_rule=None,
+        compiled_view=None,
+        generation=None,
+    )
+    manager._validated_fact_view_provider = object()
+    # Use the production snapshot shape while a view is bound.
+    old.validated_fact_view = "bound"
+    snapshot = manager.capture_runtime_state()
+    detached = _RecordingOptimizer(current="detached")
+    manager.instruction_optimizers[0] = detached
+    manager.restore_runtime_state(snapshot)
+
+    assert detached.validated_fact_view is None
+    assert old.validated_fact_view is None

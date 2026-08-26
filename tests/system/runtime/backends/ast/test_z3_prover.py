@@ -178,6 +178,60 @@ class TestZ3MopProverAPI:
         assert carrier_view.active_observations == ()
         assert prover._call_result_refiner is None
 
+    def test_assigned_call_leaf_without_view_is_top(self, monkeypatch):
+        from d810.evaluator.hexrays_microcode import def_search
+        from tests.system.runtime.evaluator.test_def_search_mop_snapshot import (
+            _call_result_test_parts,
+        )
+
+        assignment, _call, _destination, block, use = _call_result_test_parts()
+        monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+        monkeypatch.setattr(
+            def_search, "_materialize_mop_for_tracking", lambda mop, *_a, **_k: mop
+        )
+
+        leaf = def_search.resolve_mop_via_predecessors(
+            use, block, SimpleNamespace(ea=0x401100)
+        )
+
+        assert def_search.is_call_result_leaf(leaf)
+        assert leaf.concolic_value.status.name == "TOP"
+
+    def test_assigned_call_leaf_with_carrier_only_view_is_top(self, monkeypatch):
+        from d810.evaluator.hexrays_microcode import def_search
+        from tests.system.runtime.evaluator.test_def_search_mop_snapshot import (
+            _call_result_test_parts,
+        )
+
+        assignment, _call, _destination, block, use = _call_result_test_parts()
+        monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+        monkeypatch.setattr(
+            def_search, "_materialize_mop_for_tracking", lambda mop, *_a, **_k: mop
+        )
+        carrier_view = SimpleNamespace(active_observations=())
+
+        def refiner(_query):
+            from d810.analyses.data_flow.concolic.values import ConcolicValue
+            from d810.analyses.value_flow.call_return_value import (
+                CallResultRefinement,
+                CallResultRefinementStatus,
+            )
+
+            return CallResultRefinement(
+                ConcolicValue.top(32), CallResultRefinementStatus.NO_EVIDENCE
+            )
+
+        leaf = def_search.resolve_mop_via_predecessors(
+            use,
+            block,
+            SimpleNamespace(ea=0x401100),
+            call_result_refiner=refiner,
+        )
+
+        assert carrier_view.active_observations == ()
+        assert def_search.is_call_result_leaf(leaf)
+        assert leaf.concolic_value.status.name == "TOP"
+
     def test_prover_has_are_equal(self):
         from d810.backends.ast.z3 import Z3MopProver
 

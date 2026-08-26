@@ -82,6 +82,9 @@ from d810.backends.ast.z3_proof_policy import (
     Z3ProofStatus,
 )
 
+if typing.TYPE_CHECKING:
+    from d810.analyses.value_flow.call_return_value import CallResultRefiner
+
 logger = getLogger(__name__)
 
 ensure_speedups_on_path()
@@ -653,7 +656,7 @@ class Z3MopProver:
         blk: ida_hexrays.mblock_t | None = None,
         ins: ida_hexrays.minsn_t | None = None,
         policy: Z3ProofPolicy | None = None,
-        call_result_refiner: typing.Callable[..., typing.Any] | None = None,
+        call_result_refiner: CallResultRefiner | None = None,
     ):
         if policy is not None and not isinstance(policy, Z3ProofPolicy):
             raise TypeError("policy must be a Z3ProofPolicy or None")

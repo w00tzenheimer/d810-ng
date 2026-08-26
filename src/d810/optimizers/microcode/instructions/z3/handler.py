@@ -231,6 +231,10 @@ class Z3Optimizer(InstructionOptimizer):
         return True
 
     def reset_rules(self) -> None:
+        for rule in self.rules:
+            binder = getattr(rule, "bind_validated_fact_view", None)
+            if callable(binder):
+                binder(None)
         super().reset_rules()
         self._allowed_root_opcodes.clear()
         self._has_patternless_rule = False

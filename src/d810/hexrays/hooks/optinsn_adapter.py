@@ -518,6 +518,16 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         rules_by_object = getattr(rules_store, "_rules", None)
         if not isinstance(rules_by_object, dict):
             raise TypeError("instruction child rule store cannot be restored")
+        # Fact views are callback-local and must never survive a runtime
+        # restoration. Clear both rules currently attached to this child and
+        # rules captured in the snapshot before replacing the ordered store.
+        clear_view = getattr(optimizer, "bind_validated_fact_view", None)
+        if callable(clear_view):
+            clear_view(None)
+        for rule in (*tuple(rules_by_object), *snapshot.rules):
+            rule_clear = getattr(rule, "bind_validated_fact_view", None)
+            if callable(rule_clear):
+                rule_clear(None)
         if getattr(optimizer, "rules", None) is not rules_store:
             optimizer.rules = rules_store
         rules_by_object.clear()
@@ -568,6 +578,25 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             raise TypeError("instruction adapter active store cannot be restored")
         if not isinstance(snapshot.active_rule_names_store, dict):
             raise TypeError("instruction adapter active-rule store cannot be restored")
+
+        # Clear transient fact views from the currently live children before
+        # replacing the worklist. This also handles children/rules detached
+        # since the snapshot was captured.
+        current_children_list: list[object] = []
+        seen_children: set[int] = set()
+        for optimizer in (*self.instruction_optimizers, self.analyzer):
+            if id(optimizer) in seen_children:
+                continue
+            seen_children.add(id(optimizer))
+            current_children_list.append(optimizer)
+        for optimizer in current_children_list:
+            clear_view = getattr(optimizer, "bind_validated_fact_view", None)
+            if callable(clear_view):
+                clear_view(None)
+            for rule in getattr(getattr(optimizer, "rules", None), "_rules", {}):
+                rule_clear = getattr(rule, "bind_validated_fact_view", None)
+                if callable(rule_clear):
+                    rule_clear(None)
 
         self.instruction_optimizers = snapshot.instruction_optimizers_store
         self.instruction_optimizers[:] = snapshot.instruction_optimizers
@@ -819,25 +848,26 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     def _bind_validated_fact_view_for_callback(
         self,
         blk: ida_hexrays.mblock_t,
-    ) -> list[object]:
+    ) -> list[tuple[object, object]]:
         """Bind one lifecycle view to children for this callback only."""
         mba = getattr(blk, "mba", None)
         function_ea = int(getattr(mba, "entry_ea", 0) or 0)
         maturity = int(getattr(mba, "maturity", -1))
         provider = getattr(self, "_validated_fact_view_provider", None)
         view = None if provider is None else provider(function_ea, maturity)
-        bound: list[object] = []
+        bound: list[tuple[object, object]] = []
         try:
             for optimizer in getattr(self, "instruction_optimizers", ()):
                 binder = getattr(optimizer, "bind_validated_fact_view", None)
                 if not callable(binder):
                     continue
-                bound.append(binder)
+                previous = getattr(optimizer, "validated_fact_view", None)
+                bound.append((binder, previous))
                 binder(view)
         except BaseException:
-            for binder in reversed(bound):
+            for binder, previous in reversed(bound):
                 try:
-                    binder(None)
+                    binder(previous)
                 except Exception:
                     optimizer_logger.debug(
                         "failed to clear validated fact view after bind failure",
@@ -972,9 +1002,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             callback_exception_name = type(error).__name__
             raise
         finally:
-            for binder in reversed(fact_view_binders):
+            for binder, previous in reversed(fact_view_binders):
                 try:
-                    binder(None)
+                    binder(previous)
                 except Exception:
                     optimizer_logger.debug(
                         "failed to clear validated fact view after callback",
