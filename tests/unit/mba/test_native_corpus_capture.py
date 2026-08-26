@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from d810.mba.differential_report import MbaDifferentialReport
 import pytest
 
 from d810.mba.island_profile import MbaIslandClass, MbaIslandProfile
@@ -428,3 +429,20 @@ def test_native_capture_without_residuals_preserves_existing_metadata_shape() ->
     capture = NativeMbaCorpusCapture("plain", {"runtime": "python"})
     capture.set_capture_metadata({"runner": "unit"})
     assert capture.report().capture_metadata == {"runner": "unit"}
+
+
+@pytest.mark.parametrize("metadata", ({}, {"runner": "unit", "count": 2}))
+def test_native_capture_without_residuals_is_byte_compatible_with_direct_report(
+    metadata: dict[str, object],
+) -> None:
+    capture = NativeMbaCorpusCapture("plain", {"runtime": "python"})
+    if metadata:
+        capture.set_capture_metadata(metadata)
+    direct = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="plain",
+        toolchain_identity={"runtime": "python"},
+        cases=(),
+        capture_metadata=metadata,
+    )
+    assert capture.report().to_json() == direct.to_json()

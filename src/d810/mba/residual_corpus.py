@@ -15,6 +15,21 @@ from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 RESIDUAL_CORPUS_SCHEMA_VERSION = 1
 RESIDUAL_CORPUS_METADATA_KEY = "mba_residual_corpus_v1"
 _SUPPORTED_WIDTHS = frozenset({8, 16, 32, 64})
+_OUTCOME_FIELDS = frozenset(
+    {
+        "provider",
+        "status",
+        "fingerprint",
+        "input_cost",
+        "output_cost",
+        "proof_verdict",
+        "elapsed_ms",
+        "source_provenance",
+        "refusal_reason",
+        "metadata",
+        "matcher",
+    }
+)
 
 
 def _validate_term(term: object) -> TypedBvTerm:
@@ -41,6 +56,39 @@ def _source_sort_key(source: "MbaResidualSource") -> tuple[object, ...]:
         -1 if source.instruction_ea is None else source.instruction_ea,
         "" if source.maturity is None else source.maturity,
     )
+
+
+def _observation_sort_key(observation: "MbaResidualObservation") -> tuple[object, ...]:
+    return (
+        _source_sort_key(observation.source),
+        json.dumps(
+            [
+                outcome.to_dict()
+                for outcome in observation.outcomes
+            ],
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+    )
+
+
+def _decode_outcome(data: object) -> MbaProviderOutcome:
+    """Decode one exact canonical provider-outcome wire row."""
+
+    try:
+        if not isinstance(data, Mapping):
+            raise ValueError("provider outcome must be a mapping")
+        if set(data) != _OUTCOME_FIELDS:
+            raise ValueError("provider outcome has invalid fields")
+        canonical = dict(data)
+        outcome = outcome_from_dict(canonical)
+        if outcome.to_dict() != canonical:
+            raise ValueError("provider outcome is not canonical")
+        return outcome
+    except Exception as exc:
+        raise ValueError(f"invalid residual provider outcome: {exc}") from exc
 
 
 def source_identity(source: "MbaResidualSource") -> str:
@@ -182,7 +230,7 @@ class MbaResidualObservation:
             schema_version=data["schema_version"],  # type: ignore[arg-type]
             source=MbaResidualSource.from_dict(data["source"]),  # type: ignore[arg-type]
             canonical_term=typed_term_from_dict(data["canonical_term"]),  # type: ignore[arg-type]
-            outcomes=tuple(outcome_from_dict(item) for item in raw_outcomes),  # type: ignore[arg-type]
+            outcomes=tuple(_decode_outcome(item) for item in raw_outcomes),
         )
 
 
@@ -264,7 +312,7 @@ class MbaResidualCorpus:
                 fingerprint=fingerprint,
                 canonical_term=term,
                 observations=tuple(
-                    sorted(observations, key=lambda item: _source_sort_key(item.source))
+                    sorted(observations, key=_observation_sort_key)
                 ),
             )
             for fingerprint, (term, observations) in sorted(grouped.items())

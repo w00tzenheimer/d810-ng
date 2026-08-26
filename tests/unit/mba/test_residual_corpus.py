@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import math
 
 import pytest
 
+from d810.mba import extension_api
 from d810.mba.differential_report import outcome_from_dict
 from d810.mba.provider_outcome import (
     MbaProviderKind,
@@ -275,3 +278,148 @@ def test_corpus_decoder_uses_existing_provider_outcome_decoder(
     corpus.add(_observation())
     MbaResidualCorpus.from_dict(corpus.to_dict())
     assert len(calls) == 1
+
+
+def test_observation_wire_round_trip_is_canonical() -> None:
+    observation = _observation(
+        outcomes=(
+            _outcome(
+                ProviderOutcomeStatus.OVER_BUDGET,
+                provider=MbaProviderKind.EGRAPH,
+                refusal_reason="time_budget",
+                metadata={"budget": 10},
+            ),
+        )
+    )
+    encoded = observation.to_dict()
+    assert MbaResidualObservation.from_dict(encoded).to_dict() == encoded
+    corpus = MbaResidualCorpus((observation,))
+    assert MbaResidualCorpus.from_json(corpus.to_json()).to_dict() == corpus.to_dict()
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda row: row.update(fingerprint=123),
+        lambda row: row.update(elapsed_ms="0.0"),
+        lambda row: row.pop("metadata"),
+        lambda row: row.update(unknown_field=True),
+        lambda row: row.update(elapsed_ms=math.inf),
+    ),
+)
+def test_observation_decoder_rejects_noncanonical_provider_rows(mutate) -> None:
+    row = dict(_outcome().to_dict())
+    mutate(row)
+    encoded = _observation().to_dict()
+    encoded["outcomes"] = [row]
+    with pytest.raises(ValueError, match="provider outcome"):
+        MbaResidualObservation.from_dict(encoded)
+
+
+def test_observation_decoder_rejects_non_mapping_provider_rows() -> None:
+    encoded = _observation().to_dict()
+    encoded["outcomes"] = ["not-a-row"]
+    with pytest.raises(ValueError, match="provider outcome"):
+        MbaResidualObservation.from_dict(encoded)
+
+
+def test_observation_decoder_normalizes_parser_exceptions_to_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoded = _observation().to_dict()
+
+    def explode(_row):
+        raise AttributeError("parser exploded")
+
+    monkeypatch.setattr("d810.mba.residual_corpus.outcome_from_dict", explode)
+    with pytest.raises(ValueError, match="provider outcome"):
+        MbaResidualObservation.from_dict(encoded)
+
+
+def test_same_source_observations_have_total_deterministic_order() -> None:
+    unchanged = _observation(
+        outcomes=(_outcome(ProviderOutcomeStatus.UNCHANGED),)
+    )
+    over_budget = _observation(
+        outcomes=(
+            _outcome(
+                ProviderOutcomeStatus.OVER_BUDGET,
+                refusal_reason="time_budget",
+                metadata={"budget": 10},
+            ),
+        )
+    )
+    first = MbaResidualCorpus((unchanged, over_budget))
+    second = MbaResidualCorpus((over_budget, unchanged))
+    assert first.to_json() == second.to_json()
+    assert first.groups[0].occurrence_count == 2
+    assert {
+        observation.outcomes[0].status
+        for observation in first.groups[0].observations
+    } == {
+        ProviderOutcomeStatus.UNCHANGED,
+        ProviderOutcomeStatus.OVER_BUDGET,
+    }
+
+
+def test_multi_provider_round_trip_preserves_distinct_statuses_and_metadata() -> None:
+    observation = _observation(
+        outcomes=(
+            _outcome(
+                ProviderOutcomeStatus.UNCHANGED,
+                provider=MbaProviderKind.CATALOGUE,
+                metadata={"catalogue": {"attempt": 1}},
+            ),
+            _outcome(
+                ProviderOutcomeStatus.PROOF_FAILED,
+                provider=MbaProviderKind.EGRAPH,
+                refusal_reason="proof_failed",
+                metadata={"egraph": {"nodes": 4}},
+            ),
+        )
+    )
+    restored = MbaResidualObservation.from_dict(observation.to_dict())
+    assert [outcome.status for outcome in restored.outcomes] == [
+        ProviderOutcomeStatus.UNCHANGED,
+        ProviderOutcomeStatus.PROOF_FAILED,
+    ]
+    assert restored.outcomes[0].metadata["catalogue"]["attempt"] == 1
+    assert restored.outcomes[1].metadata["egraph"]["nodes"] == 4
+
+
+def test_residual_records_are_immutable_and_nested_metadata_does_not_leak() -> None:
+    metadata = {"nested": {"values": [1]}}
+    outcome = _outcome(metadata=metadata)
+    observation = _observation(outcomes=(outcome,))
+    group = MbaResidualCorpus((observation,)).groups[0]
+    metadata["nested"]["values"].append(2)
+    assert observation.outcomes[0].metadata["nested"]["values"] == (1,)
+    for record, field, value in (
+        (observation, "source", observation.source),
+        (observation, "canonical_term", observation.canonical_term),
+        (group, "fingerprint", group.fingerprint),
+    ):
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            setattr(record, field, value)
+    with pytest.raises(TypeError):
+        observation.outcomes[0].metadata["new"] = True
+
+
+def test_task3_extension_api_exports_all_public_names() -> None:
+    for name in (
+        "MbaResidualCorpus",
+        "MbaResidualGroup",
+        "MbaResidualObservation",
+        "MbaResidualSource",
+        "RESIDUAL_CORPUS_METADATA_KEY",
+        "RESIDUAL_CORPUS_SCHEMA_VERSION",
+        "source_identity",
+    ):
+        assert name in extension_api.__all__
+        assert hasattr(extension_api, name)
+
+
+@pytest.mark.parametrize("payload", ("{not-json", "[]", '{"schema_version": 1}'))
+def test_malformed_corpus_json_is_rejected(payload: str) -> None:
+    with pytest.raises(ValueError, match="residual corpus"):
+        MbaResidualCorpus.from_json(payload)
