@@ -1,5 +1,6 @@
 """Regression coverage for MopSnapshot inputs to def_search."""
 
+import os
 from types import SimpleNamespace
 
 import ida_hexrays
@@ -47,7 +48,15 @@ def _call_result_test_parts(
     )
     mba = SimpleNamespace(entry_ea=0x400000, maturity=ida_hexrays.MMAT_LOCOPT)
     block = SimpleNamespace(mba=mba, serial=7)
-    use = SimpleNamespace(t=ida_hexrays.mop_r, size=width, r=reg, valnum=valnum)
+    if destination_type == ida_hexrays.mop_S:
+        use = SimpleNamespace(
+            t=ida_hexrays.mop_S,
+            size=width,
+            s=SimpleNamespace(off=0x40),
+            valnum=valnum,
+        )
+    else:
+        use = SimpleNamespace(t=ida_hexrays.mop_r, size=width, r=reg, valnum=valnum)
     return assignment, nested_call, destination, block, use
 
 
@@ -93,6 +102,129 @@ def test_call_leaf_does_not_rebind_to_later_return_register_write(monkeypatch):
 
     assert result is call_leaf
     assert result.value_ref.def_site == call.ea
+
+
+@pytest.mark.parametrize("resolver_name", ["_py_slow_recursively_resolve_ast", "recursively_resolve_ast"])
+def test_production_resolver_keeps_assigned_call_leaf_through_copy_shift_mask(
+    monkeypatch, resolver_name
+):
+    """A real recursive chain must stop at the assigned call result."""
+
+    from d810.hexrays.expr.ast import AstLeaf, AstNode
+    from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+    assignment, call, destination, block, use = _call_result_test_parts()
+    predicate = SimpleNamespace(ea=0x401300)
+    shift = SimpleNamespace(ea=0x401200, opcode=ida_hexrays.m_shl)
+    copy = SimpleNamespace(ea=0x401100, opcode=ida_hexrays.m_mov)
+    later_write = SimpleNamespace(ea=0x401400, opcode=ida_hexrays.m_mov)
+    searched = []
+
+    def leaf(name, mop):
+        result = AstLeaf(name)
+        result.mop = mop
+        result.dest_size = mop.size
+        return result
+
+    shift_ast = AstNode(
+        ida_hexrays.m_shl,
+        leaf(
+            "return_register",
+            MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=0, valnum=0),
+        ),
+        leaf(
+            "shift_count",
+            MopSnapshot(t=ida_hexrays.mop_n, size=1, value=1, valnum=0),
+        ),
+    )
+    shift_ast.dest_size = 4
+    shift_ast.ea = shift.ea
+    shift_ast.ins = shift
+    copy_ast = leaf(
+        "copied_return",
+        MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=0, valnum=0),
+    )
+    copy_ast.ea = copy.ea
+    copy_ast.ins = copy
+    mask = AstNode(
+        ida_hexrays.m_and,
+        leaf("masked_return", MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=1)),
+        leaf("mask", MopSnapshot(t=ida_hexrays.mop_n, size=4, value=0xFF)),
+    )
+    mask.dest_size = 4
+
+    def find_definition(_mop, _block, before):
+        searched.append(before)
+        if before is predicate:
+            return shift
+        if before is shift:
+            return copy
+        if before is copy:
+            return assignment
+        if before is assignment:
+            # This is the physical return-register/global write that must not
+            # be reached after the call leaf has become definition-scoped.
+            return later_write
+        return None
+
+    def build_ast(instruction, _node_budget=None, **_kwargs):
+        if instruction is shift:
+            return shift_ast
+        if instruction is copy:
+            return copy_ast
+        return None
+
+    monkeypatch.setattr(def_search, "find_def_in_block", find_definition)
+    monkeypatch.setattr(def_search, "_minsn_to_ast_with_budget", build_ast)
+    # The fixture uses immutable MopSnapshots rather than live IDA mops.  Keep
+    # the production resolver path while bypassing only native arena
+    # materialization, which is unsafe without a real microcode owner.
+    monkeypatch.setattr(
+        def_search, "_materialize_mop_for_tracking", lambda mop, *_a, **_k: mop
+    )
+
+    root = mask
+    root.left.mop = MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=1, valnum=0)
+    result = getattr(def_search, resolver_name)(root, block, predicate)
+
+    assert def_search.is_call_result_leaf(result.left.left)
+    assert result.left.left.value_ref.def_site == call.ea
+    assert result.left.left.value_ref.location.key == destination.reg
+    assert later_write not in searched
+
+
+def test_call_result_accepted_widths_agree_across_leaf_concolic_and_query(
+    monkeypatch,
+):
+    from d810.analyses.data_flow.concolic.values import ConcolicValue
+    from d810.analyses.value_flow.call_return_value import (
+        CallResultRefinement,
+        CallResultRefinementStatus,
+    )
+
+    for width in (1, 2, 4, 8, 16):
+        assignment, _call, _destination, block, use = _call_result_test_parts(width=width)
+        seen = []
+
+        def refine(query):
+            seen.append(query)
+            return CallResultRefinement(
+                ConcolicValue.top(query.result_width_bits),
+                CallResultRefinementStatus.REFINED,
+            )
+
+        monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+        result = def_search.resolve_mop_via_predecessors(
+            use,
+            block,
+            SimpleNamespace(ea=0x401100),
+            call_result_refiner=refine,
+        )
+
+        assert def_search.is_call_result_leaf(result)
+        assert result.value_ref.location.width == width
+        assert result.concolic_value.width == width * 8
+        assert seen[0].result_width_bits == width * 8
 
 
 def test_two_calls_returning_in_same_register_have_distinct_value_refs(monkeypatch):
@@ -155,8 +287,14 @@ def test_rotate_helper_call_uses_pure_evaluator_not_generic_call_leaf(monkeypatc
     monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
     monkeypatch.setattr(def_search, "minsn_to_ast", lambda *_args, **_kwargs: evaluator_ast)
 
+    def refine(_query):
+        raise AssertionError("rotate helpers must not invoke the call refiner")
+
     result = def_search.resolve_mop_via_predecessors(
-        use, block, SimpleNamespace(ea=0x401100)
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=refine,
     )
 
     assert result is evaluator_ast
@@ -212,14 +350,18 @@ def test_python_and_compiled_resolvers_produce_equivalent_call_leaf(monkeypatch)
     assert def_search.is_call_result_leaf(compiled_result)
     assert python_result.value_ref == compiled_result.value_ref
     assert python_result.concolic_value == compiled_result.concolic_value
+    if os.environ.get("D810_NO_CYTHON") == "0":
+        assert def_search.get_recursive_resolver_backend() == "cython"
 
 
 @pytest.mark.parametrize(
     "destination_type,width",
     [
         (ida_hexrays.mop_r, 1),
+        (ida_hexrays.mop_r, 2),
         (ida_hexrays.mop_r, 4),
         (ida_hexrays.mop_r, 8),
+        (ida_hexrays.mop_r, 16),
         (ida_hexrays.mop_S, 4),
     ],
 )
@@ -243,6 +385,47 @@ def test_call_result_leaf_preserves_destination_location_and_width(
         assert result.value_ref.location.key == destination.stkoff
 
 
+def test_call_result_invalid_ea_identity_uses_nested_call_object(monkeypatch):
+    first, first_call, _destination, block, use = _call_result_test_parts(call_ea=0)
+    second, second_call, _destination, _block, _use = _call_result_test_parts(call_ea=0)
+    definitions = iter((first, second))
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: next(definitions))
+
+    first_leaf = def_search.resolve_mop_via_predecessors(
+        use, block, SimpleNamespace(ea=0x401100)
+    )
+    second_leaf = def_search.resolve_mop_via_predecessors(
+        use, block, SimpleNamespace(ea=0x401100)
+    )
+
+    assert first_call.ea == second_call.ea == 0
+    assert first_leaf.value_ref.def_site < 0
+    assert second_leaf.value_ref.def_site < 0
+    assert first_leaf.value_ref.def_site != second_leaf.value_ref.def_site
+    assert first_leaf.value_ref.def_site == id(first_call) * -1 - (block.serial << 64)
+
+
+@pytest.mark.parametrize("width", [0, 3, 32])
+def test_call_result_rejects_unsupported_destination_width(monkeypatch, width):
+    assignment, _call, _destination, block, use = _call_result_test_parts(width=width)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    seen = []
+
+    def refine(query):
+        seen.append(query)
+        raise AssertionError("unsupported width reached the refiner")
+
+    result = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=refine,
+    )
+
+    assert result is None
+    assert seen == []
+
+
 def test_indirect_call_assignment_retains_optional_callee(monkeypatch):
     assignment, call, _destination, block, use = _call_result_test_parts(
         opcode=ida_hexrays.m_icall, callee_ea=None
@@ -256,7 +439,9 @@ def test_indirect_call_assignment_retains_optional_callee(monkeypatch):
     )
 
     assert def_search.is_call_result_leaf(result)
-    assert def_search._call_result_query(call, block, result.value_ref).callee_ea is None
+    query = def_search._call_result_query(assignment, block, result.value_ref)
+    assert query.callee_ea is None
+    assert query.call_ea == call.ea
 
 
 def test_compiled_resolver_propagates_refiner_to_valid_call_assignment(monkeypatch):

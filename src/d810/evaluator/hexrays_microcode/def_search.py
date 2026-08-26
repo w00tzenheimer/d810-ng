@@ -27,6 +27,7 @@ from d810.analyses.data_flow.concolic.values import ConcolicValue
 from d810.analyses.value_flow.call_return_value import (
     CallResultQuery,
     CallResultRefiner,
+    SUPPORTED_CALL_RESULT_WIDTHS,
 )
 from d810.hexrays.expr.ast import AstLeaf, AstNode, get_mop_key
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
@@ -103,7 +104,7 @@ def _call_result_location(dst: ida_hexrays.mop_t | None) -> LocationRef | None:
         width = int(dst.size)
     except (AttributeError, TypeError, ValueError):
         return None
-    if width <= 0:
+    if width <= 0 or width * 8 not in SUPPORTED_CALL_RESULT_WIDTHS:
         return None
     try:
         mop_type = int(dst.t)
@@ -172,16 +173,20 @@ def _call_result_value_ref(
     assignment = _call_result_assignment(ins)
     if assignment is None:
         raise ValueError("instruction is not a call-result assignment")
-    _nested_call, destination = assignment
+    nested_call, destination = assignment
     location = _call_result_location(destination)
-    call_ea = _valid_call_ea(getattr(_nested_call, "ea", None))
+    call_ea = _valid_call_ea(getattr(nested_call, "ea", None))
     if call_ea is None:
         try:
             serial = int(blk.serial)
         except (AttributeError, TypeError, ValueError):
             serial = -1
         # Negative callback-local IDs cannot collide with valid serialized EAs.
-        call_ea = -(((serial & 0xFFFFFFFF) << 64) | id(ins))
+        # The enclosing move is not the definition identity: two assignments
+        # can contain distinct calls while sharing an invalid EA.  Keep the
+        # nested call object and source block serial in this callback-local
+        # fallback so each call result remains distinct and terminal.
+        call_ea = -(((serial & 0xFFFFFFFF) << 64) | id(nested_call))
     return ValueRef(location=location, def_site=call_ea)
 
 
