@@ -198,6 +198,222 @@ class TestZ3MopProverAPI:
         assert def_search.is_call_result_leaf(leaf)
         assert leaf.concolic_value.status.name == "TOP"
 
+    @staticmethod
+    def _prepared_abstract_ast(value, *, mask=0x40, width=32):
+        from d810.evaluator.hexrays_microcode.def_search import CallResultAstLeaf
+        from d810.analyses.data_flow.concolic.refs import LocationRef, ValueRef
+        from d810.hexrays.ir.mop_snapshot import MopSnapshot
+        from d810.hexrays.expr.ast import AstConstant, AstNode
+
+        call_leaf = CallResultAstLeaf(
+            "call-result",
+            ValueRef(LocationRef.reg(0, width // 8), def_site=0x401000),
+            value,
+        )
+        call_leaf.mop = MopSnapshot(
+            t=ida_hexrays.mop_r, size=width // 8, reg=0
+        )
+        constant = AstConstant("mask", expected_value=mask, expected_size=width // 8)
+        constant.mop = MopSnapshot(
+            t=ida_hexrays.mop_n, size=width // 8, value=mask
+        )
+        root = AstNode(ida_hexrays.m_and, call_leaf, constant)
+        root.dest_size = width // 8
+        return root
+
+    def test_known_call_bit_decides_predicate_without_z3_construction(self, monkeypatch):
+        from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
+        from d810.analyses.data_flow.concolic.values import ConcolicValue, PrecisionStatus, reduce
+        from d810.analyses.abstract_domains.known_bits import KnownBits
+        from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
+        from d810.backends.ast import z3 as z3_backend
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofStatus
+
+        width = 32
+        value = reduce(ConcolicValue(
+            None, None,
+            AbstractEvidence(
+                width,
+                KnownBits(width, zero=((1 << width) - 1) ^ 0x40, one=0x40),
+                WrappedInterval.top(width),
+            ),
+            width,
+            PrecisionStatus.ABSTRACT,
+        ))
+        ast = self._prepared_abstract_ast(value)
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+        monkeypatch.setattr(z3_backend.Z3MopProver, "_prepare_single_ast", lambda *_a, **_k: (mop, ast, None, False))
+        counters = {"vars": 0, "visitor": 0, "solver": 0}
+        monkeypatch.setattr(z3_backend, "create_z3_vars", lambda *_a, **_k: counters.__setitem__("vars", counters["vars"] + 1))
+        monkeypatch.setattr(z3_backend, "AstNodeZ3Visitor", lambda *_a, **_k: counters.__setitem__("visitor", counters["visitor"] + 1))
+        monkeypatch.setattr(z3_backend, "_new_query_solver", lambda *_a, **_k: counters.__setitem__("solver", counters["solver"] + 1))
+
+        result = Z3MopProver().prove_always_nonzero(mop)
+
+        assert result.status is Z3ProofStatus.PROVED
+        assert counters == {"vars": 0, "visitor": 0, "solver": 0}
+
+    def test_exact_call_value_decides_predicate_without_z3_construction(self, monkeypatch):
+        from d810.analyses.data_flow.concolic.values import ConcolicValue
+        from d810.backends.ast import z3 as z3_backend
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofStatus
+
+        ast = self._prepared_abstract_ast(ConcolicValue.of(0, 32), mask=0)
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+        monkeypatch.setattr(z3_backend.Z3MopProver, "_prepare_single_ast", lambda *_a, **_k: (mop, ast, None, False))
+        counters = {"vars": 0, "visitor": 0, "solver": 0}
+        monkeypatch.setattr(z3_backend, "create_z3_vars", lambda *_a, **_k: counters.__setitem__("vars", counters["vars"] + 1))
+        monkeypatch.setattr(z3_backend, "AstNodeZ3Visitor", lambda *_a, **_k: counters.__setitem__("visitor", counters["visitor"] + 1))
+        monkeypatch.setattr(z3_backend, "_new_query_solver", lambda *_a, **_k: counters.__setitem__("solver", counters["solver"] + 1))
+
+        result = Z3MopProver().prove_always_zero(mop)
+
+        assert result.status is Z3ProofStatus.PROVED
+        assert counters == {"vars": 0, "visitor": 0, "solver": 0}
+
+    def test_known_call_zero_bit_decides_predicate_without_z3_construction(self, monkeypatch):
+        from d810.analyses.abstract_domains.known_bits import KnownBits
+        from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
+        from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
+        from d810.analyses.data_flow.concolic.values import ConcolicValue, PrecisionStatus, reduce
+        from d810.backends.ast import z3 as z3_backend
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofStatus
+
+        value = reduce(ConcolicValue(
+            None,
+            None,
+            AbstractEvidence(
+                32,
+                KnownBits(32, zero=0x40, one=0),
+                WrappedInterval.top(32),
+            ),
+            32,
+            PrecisionStatus.ABSTRACT,
+        ))
+        ast = self._prepared_abstract_ast(value)
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+        monkeypatch.setattr(z3_backend.Z3MopProver, "_prepare_single_ast", lambda *_a, **_k: (mop, ast, None, False))
+        counters = {"vars": 0, "visitor": 0, "solver": 0}
+        monkeypatch.setattr(z3_backend, "create_z3_vars", lambda *_a, **_k: counters.__setitem__("vars", counters["vars"] + 1))
+        monkeypatch.setattr(z3_backend, "AstNodeZ3Visitor", lambda *_a, **_k: counters.__setitem__("visitor", counters["visitor"] + 1))
+        monkeypatch.setattr(z3_backend, "_new_query_solver", lambda *_a, **_k: counters.__setitem__("solver", counters["solver"] + 1))
+
+        result = Z3MopProver().prove_always_zero(mop)
+
+        assert result.status is Z3ProofStatus.PROVED
+        assert counters == {"vars": 0, "visitor": 0, "solver": 0}
+
+    def test_indecisive_call_fact_falls_through_to_one_existing_z3_query(self, monkeypatch):
+        from d810.analyses.abstract_domains.known_bits import KnownBits
+        from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
+        from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
+        from d810.analyses.data_flow.concolic.values import ConcolicValue, PrecisionStatus, reduce
+        from d810.backends.ast import z3 as z3_backend
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofStatus
+
+        value = reduce(ConcolicValue(
+            None,
+            None,
+            AbstractEvidence(32, KnownBits(32, zero=0x20), WrappedInterval.top(32)),
+            32,
+            PrecisionStatus.ABSTRACT,
+        ))
+        ast = self._prepared_abstract_ast(value)
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+        monkeypatch.setattr(z3_backend.Z3MopProver, "_prepare_single_ast", lambda *_a, **_k: (mop, ast, None, False))
+        counters = {"vars": 0, "visitor": 0, "solver": 0}
+        monkeypatch.setattr(z3_backend, "create_z3_vars", lambda *_a, **_k: counters.__setitem__("vars", counters["vars"] + 1))
+        monkeypatch.setattr(z3_backend, "AstNodeZ3Visitor", lambda *_a, **_k: counters.__setitem__("visitor", counters["visitor"] + 1) or SimpleNamespace(visit=lambda _ast: z3_backend.z3.BitVecVal(1, 32)))
+        solvers = []
+        class _RecordingSolver(z3_backend.z3.Solver):
+            def __init__(self):
+                super().__init__()
+                self.added = []
+
+            def add(self, *constraints):
+                self.added.extend(constraints)
+                return super().add(*constraints)
+
+        def _new_solver(*_args, **_kwargs):
+            counters["solver"] += 1
+            solver = _RecordingSolver()
+            solvers.append(solver)
+            return solver
+        monkeypatch.setattr(z3_backend, "_new_query_solver", _new_solver)
+
+        result = Z3MopProver().prove_always_nonzero(mop)
+
+        assert result.status is Z3ProofStatus.PROVED
+        assert counters == {"vars": 1, "visitor": 1, "solver": 1}
+        assert len(solvers) == 1
+        assert len(solvers[0].added) == 1
+
+    def test_top_call_result_falls_through_as_one_unconstrained_bitvector(self, monkeypatch):
+        from d810.analyses.data_flow.concolic.values import ConcolicValue
+        from d810.backends.ast import z3 as z3_backend
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofStatus
+
+        ast = self._prepared_abstract_ast(ConcolicValue.top(32))
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+        monkeypatch.setattr(z3_backend.Z3MopProver, "_prepare_single_ast", lambda *_a, **_k: (mop, ast, None, False))
+        counters = {"vars": 0, "visitor": 0, "solver": 0}
+        monkeypatch.setattr(z3_backend, "create_z3_vars", lambda *_a, **_k: counters.__setitem__("vars", counters["vars"] + 1))
+        monkeypatch.setattr(z3_backend, "AstNodeZ3Visitor", lambda *_a, **_k: counters.__setitem__("visitor", counters["visitor"] + 1) or SimpleNamespace(visit=lambda _ast: z3_backend.z3.BitVecVal(1, 32)))
+        monkeypatch.setattr(z3_backend, "_new_query_solver", lambda *_a, **_k: counters.__setitem__("solver", counters["solver"] + 1) or z3_backend.z3.Solver())
+
+        result = Z3MopProver().prove_always_nonzero(mop)
+
+        assert result.status is Z3ProofStatus.PROVED
+        assert counters == {"vars": 1, "visitor": 1, "solver": 1}
+
+    def test_conflicting_facts_cannot_create_abstract_proof(self, monkeypatch):
+        from d810.analyses.data_flow.concolic.values import ConcolicValue
+        from d810.backends.ast import z3 as z3_backend
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofStatus
+
+        ast = self._prepared_abstract_ast(ConcolicValue.bottom(32))
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+        monkeypatch.setattr(z3_backend.Z3MopProver, "_prepare_single_ast", lambda *_a, **_k: (mop, ast, None, False))
+        counters = {"vars": 0, "visitor": 0, "solver": 0}
+        monkeypatch.setattr(z3_backend, "create_z3_vars", lambda *_a, **_k: counters.__setitem__("vars", counters["vars"] + 1))
+        monkeypatch.setattr(z3_backend, "AstNodeZ3Visitor", lambda *_a, **_k: counters.__setitem__("visitor", counters["visitor"] + 1) or SimpleNamespace(visit=lambda _ast: z3_backend.z3.BitVecVal(1, 32)))
+        monkeypatch.setattr(z3_backend, "_new_query_solver", lambda *_a, **_k: counters.__setitem__("solver", counters["solver"] + 1) or z3_backend.z3.Solver())
+
+        result = Z3MopProver().prove_always_nonzero(mop)
+
+        assert result.status is Z3ProofStatus.PROVED
+        assert counters == {"vars": 1, "visitor": 1, "solver": 1}
+
+    def test_call_result_refiner_disables_context_free_zero_cache(self, monkeypatch):
+        from d810.analyses.data_flow.concolic.values import ConcolicValue
+        from d810.backends.ast import z3 as z3_backend
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofStatus
+
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+        ast = self._prepared_abstract_ast(ConcolicValue.of(0, 32), mask=0)
+        prepared = []
+
+        def _prepare(*_args, **_kwargs):
+            prepared.append(True)
+            return mop, ast, None, False
+
+        monkeypatch.setattr(z3_backend.Z3MopProver, "_prepare_single_ast", _prepare)
+        prover = Z3MopProver(call_result_refiner=lambda _query: None)
+
+        first = prover.prove_always_zero(mop)
+        second = prover.prove_always_zero(mop)
+
+        assert first.status is Z3ProofStatus.PROVED
+        assert second.status is Z3ProofStatus.PROVED
+        assert len(prepared) == 2
+
     def test_assigned_call_leaf_with_carrier_only_view_is_top(self, monkeypatch):
         from functools import partial
 

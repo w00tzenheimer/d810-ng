@@ -61,6 +61,10 @@ from d810.errors import D810Z3Exception
 from d810.evaluator.hexrays_microcode.def_search import (
     recursively_resolve_ast as _recursively_resolve_ast,
 )
+from d810.evaluator.hexrays_microcode.abstract_ast import (
+    AbstractZeroStatus,
+    decide_zero_status,
+)
 from d810.evaluator.hexrays_microcode.def_search import (
     resolve_mop_to_ast as _resolve_mop_to_ast,
 )
@@ -1255,7 +1259,7 @@ class Z3MopProver:
             blk=blk,
             ins=ins,
             solver=solver,
-        )
+        ) and self._call_result_refiner is None
         try:
             identity = structural_mop_hash(native_mop, 0)
         except Exception:
@@ -1292,6 +1296,29 @@ class Z3MopProver:
         if prepared is None:
             return _unsupported_result(started_at)
         native_mop, ast, budget, visitor_needs_budget = prepared
+        abstract_status = decide_zero_status(ast)
+        if abstract_status is not AbstractZeroStatus.UNKNOWN:
+            proves_requested = (
+                abstract_status is AbstractZeroStatus.ALWAYS_NONZERO
+                if nonzero
+                else abstract_status is AbstractZeroStatus.ALWAYS_ZERO
+            )
+            result_status = (
+                Z3ProofStatus.PROVED if proves_requested else Z3ProofStatus.DISPROVED
+            )
+            logger.debug(
+                "abstract-call-result: status=%s operation=%s",
+                abstract_status.value,
+                operation,
+            )
+            return Z3ProofResult(
+                status=result_status,
+                reason=None,
+                observed_expression_nodes=(
+                    budget.observed_nodes if budget is not None else None
+                ),
+                elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+            )
         try:
             create_z3_vars(ast.get_leaf_list())
             visitor = (
