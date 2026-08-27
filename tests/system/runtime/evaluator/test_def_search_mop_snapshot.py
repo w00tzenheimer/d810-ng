@@ -584,8 +584,141 @@ def test_call_result_leaf_clone_preserves_refinement_metadata(monkeypatch):
     )
     clone = result.clone()
 
-    assert clone.refinement is refinement
-    assert clone.concolic_value == refinement.value
+    assert clone.refinement == result.refinement
+    assert clone.refinement is result.refinement
+    assert clone.concolic_value == result.refinement.value
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "NO_EVIDENCE",
+        "INVALID_EVIDENCE",
+        "INCOMPATIBLE_EVIDENCE",
+        "CONFLICTING_EVIDENCE",
+    ],
+)
+def test_non_refined_evidence_is_forced_to_top_before_abstract_proof(
+    monkeypatch, status
+):
+    from d810.analyses.data_flow.concolic.values import ConcolicValue
+    from d810.analyses.value_flow.call_return_value import (
+        CallResultRefinement,
+        CallResultRefinementStatus,
+    )
+    from d810.evaluator.hexrays_microcode.abstract_ast import (
+        AbstractZeroStatus,
+        decide_zero_status,
+    )
+
+    assignment, call, _destination, block, use = _call_result_test_parts()
+    original = CallResultRefinement(
+        ConcolicValue.of(1, 32),
+        CallResultRefinementStatus[status],
+        used_fact_ids=("used",),
+        rejected_fact_ids=("rejected",),
+        reasons=("diagnostic",),
+    )
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    leaf = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=lambda _query: original,
+    )
+
+    assert def_search.is_call_result_leaf(leaf)
+    assert leaf.value_ref.def_site == call.ea
+    assert leaf.refinement.status is original.status
+    assert leaf.refinement.used_fact_ids == original.used_fact_ids
+    assert leaf.refinement.rejected_fact_ids == original.rejected_fact_ids
+    assert leaf.refinement.reasons == original.reasons
+    assert leaf.concolic_value.status.name == "TOP"
+    assert decide_zero_status(leaf) is AbstractZeroStatus.UNKNOWN
+
+
+def test_refined_inconsistent_concolic_value_is_invalid_top(monkeypatch):
+    from d810.analyses.abstract_domains.known_bits import KnownBits
+    from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
+    from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
+    from d810.analyses.data_flow.concolic.values import ConcolicValue, PrecisionStatus
+    from d810.analyses.value_flow.call_return_value import (
+        CallResultRefinement,
+        CallResultRefinementStatus,
+    )
+
+    assignment, _call, _destination, block, use = _call_result_test_parts()
+    inconsistent = ConcolicValue(
+        1,
+        None,
+        AbstractEvidence(
+            16,
+            KnownBits(16, zero=0, one=1),
+            WrappedInterval.top(16),
+        ),
+        32,
+        PrecisionStatus.CONCRETE,
+    )
+    refinement = CallResultRefinement(inconsistent, CallResultRefinementStatus.REFINED)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    leaf = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=lambda _query: refinement,
+    )
+
+    assert leaf.refinement.status is CallResultRefinementStatus.INVALID_EVIDENCE
+    assert leaf.concolic_value.status.name == "TOP"
+
+
+@pytest.mark.parametrize("known_bits", [False, True])
+def test_valid_refined_evidence_remains_decisive(monkeypatch, known_bits):
+    from d810.analyses.abstract_domains.known_bits import KnownBits
+    from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
+    from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
+    from d810.analyses.data_flow.concolic.values import (
+        ConcolicValue,
+        PrecisionStatus,
+        reduce,
+    )
+    from d810.analyses.value_flow.call_return_value import (
+        CallResultRefinement,
+        CallResultRefinementStatus,
+    )
+    from d810.evaluator.hexrays_microcode.abstract_ast import (
+        AbstractZeroStatus,
+        decide_zero_status,
+    )
+
+    assignment, _call, _destination, block, use = _call_result_test_parts()
+    if known_bits:
+        value = reduce(
+            ConcolicValue(
+                None,
+                None,
+                AbstractEvidence(
+                    32,
+                    KnownBits(32, zero=((1 << 32) - 1) ^ 1, one=1),
+                    WrappedInterval.top(32),
+                ),
+                32,
+                PrecisionStatus.ABSTRACT,
+            )
+        )
+    else:
+        value = ConcolicValue.of(1, 32)
+    refinement = CallResultRefinement(value, CallResultRefinementStatus.REFINED)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    leaf = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=lambda _query: refinement,
+    )
+
+    assert leaf.refinement.status is CallResultRefinementStatus.REFINED
+    assert decide_zero_status(leaf) is AbstractZeroStatus.ALWAYS_NONZERO
 
 
 def test_bare_call_with_callinfo_destination_is_not_a_result_leaf(monkeypatch):

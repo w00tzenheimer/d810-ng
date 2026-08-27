@@ -22,8 +22,9 @@ import ida_hexrays
 
 from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
+from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
 from d810.analyses.data_flow.concolic.refs import LocationRef, ValueRef
-from d810.analyses.data_flow.concolic.values import ConcolicValue
+from d810.analyses.data_flow.concolic.values import ConcolicValue, reduce
 from d810.analyses.value_flow.call_return_value import (
     CallResultQuery,
     CallResultRefinement,
@@ -124,22 +125,60 @@ def _normalize_call_result_refinement(
 
     if not isinstance(result, CallResultRefinement):
         return _invalid_call_result_refinement(width, "refiner returned an invalid result")
-    value = getattr(result, "value", None)
-    if not isinstance(value, ConcolicValue):
-        return _invalid_call_result_refinement(width, "refiner returned an invalid value")
-    if value.width != width:
-        return _invalid_call_result_refinement(width, "refiner returned a width-mismatched value")
-    if getattr(value.status, "name", None) == "BOTTOM":
-        return _invalid_call_result_refinement(width, "refiner returned Bottom")
     if type(result.status) is not CallResultRefinementStatus:
         return _invalid_call_result_refinement(width, "refiner returned an invalid status")
+    metadata: dict[str, tuple[str, ...]] = {}
     for field_name in ("used_fact_ids", "rejected_fact_ids", "reasons"):
         field = getattr(result, field_name, None)
         if type(field) is not tuple or not all(type(item) is str for item in field):
             return _invalid_call_result_refinement(
                 width, f"refiner returned invalid {field_name} metadata"
             )
-    return result
+        metadata[field_name] = field
+    value = getattr(result, "value", None)
+    if not isinstance(value, ConcolicValue):
+        return _invalid_call_result_refinement(width, "refiner returned an invalid value")
+    if value.width != width:
+        return _invalid_call_result_refinement(width, "refiner returned a width-mismatched value")
+    if result.status is not CallResultRefinementStatus.REFINED:
+        return CallResultRefinement(
+            ConcolicValue.top(width),
+            result.status,
+            metadata["used_fact_ids"],
+            metadata["rejected_fact_ids"],
+            metadata["reasons"],
+        )
+    try:
+        evidence = value.abstract
+        if not isinstance(evidence, AbstractEvidence):
+            raise ValueError("refiner returned invalid abstract evidence")
+        if (
+            evidence.width != width
+            or evidence.bits.width != width
+            or evidence.interval.width != width
+        ):
+            raise ValueError("refiner returned mismatched abstract widths")
+        canonical = reduce(value)
+        if canonical.width != width or canonical.status.name == "BOTTOM":
+            raise ValueError("refiner returned Bottom or unreduced evidence")
+        canonical_evidence = canonical.abstract
+        if (
+            canonical_evidence.width != width
+            or canonical_evidence.bits.width != width
+            or canonical_evidence.interval.width != width
+        ):
+            raise ValueError("refiner reduction returned mismatched abstract widths")
+    except Exception:
+        return _invalid_call_result_refinement(
+            width, "refiner returned inconsistent refined evidence"
+        )
+    return CallResultRefinement(
+        canonical,
+        result.status,
+        metadata["used_fact_ids"],
+        metadata["rejected_fact_ids"],
+        metadata["reasons"],
+    )
 
 
 def _bounded_diagnostic_items(values: tuple[str, ...]) -> tuple[str, ...]:
