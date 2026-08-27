@@ -709,3 +709,78 @@ def test_task3_extension_api_exports_all_public_names() -> None:
 def test_malformed_corpus_json_is_rejected(payload: str) -> None:
     with pytest.raises(ValueError, match="residual corpus"):
         MbaResidualCorpus.from_json(payload)
+
+
+def _duplicate_member_payload(level: str) -> str:
+    observation = _observation(
+        outcomes=(_outcome(metadata={"outer": {"inner": 1}}),)
+    )
+    corpus = MbaResidualCorpus((observation,))
+    payload = json.dumps(corpus.to_dict(), sort_keys=True, separators=(",", ":"))
+    group = corpus.groups[0]
+    source_wire = json.dumps(
+        observation.source.to_dict(), sort_keys=True, separators=(",", ":")
+    )
+    replacements = {
+        "corpus": ('"groups":', '"groups":[],"groups":'),
+        "group": (
+            f'"fingerprint":{json.dumps(group.fingerprint)}',
+            f'"fingerprint":{json.dumps(group.fingerprint)},'
+            f'"fingerprint":{json.dumps(group.fingerprint)}',
+        ),
+        "observation": (
+            f'"source":{source_wire}',
+            f'"source":{source_wire},"source":{source_wire}',
+        ),
+        "typed-term": ('"width":32', '"width":32,"width":32'),
+        "leaf-key": ('"kind":"str"', '"kind":"str","kind":"str"'),
+        "outcome": (
+            '"provider":"catalogue"',
+            '"provider":"catalogue","provider":"catalogue"',
+        ),
+        "nested-metadata": ('"inner":1', '"inner":1,"inner":1'),
+    }
+    needle, replacement = replacements[level]
+    assert payload.count(needle) >= 1
+    return payload.replace(needle, replacement, 1)
+
+
+@pytest.mark.parametrize(
+    "level",
+    (
+        "corpus",
+        "group",
+        "observation",
+        "typed-term",
+        "leaf-key",
+        "outcome",
+        "nested-metadata",
+    ),
+)
+def test_public_corpus_json_rejects_duplicate_members_at_every_nesting_level(
+    level: str,
+) -> None:
+    with pytest.raises(ValueError, match="duplicate JSON member"):
+        MbaResidualCorpus.from_json(_duplicate_member_payload(level))
+
+
+@pytest.mark.parametrize("constant", ("NaN", "Infinity", "-Infinity"))
+def test_public_corpus_json_rejects_nonfinite_constants(constant: str) -> None:
+    payload = f'{{"schema_version":1,"groups":[],"metadata":{constant}}}'
+    with pytest.raises(ValueError, match="non-finite JSON constant"):
+        MbaResidualCorpus.from_json(payload)
+
+
+def test_public_corpus_json_rejects_float_overflow_to_infinity() -> None:
+    payload = '{"schema_version":1,"groups":[],"metadata":1e999}'
+    with pytest.raises(ValueError, match="non-finite JSON number"):
+        MbaResidualCorpus.from_json(payload)
+
+
+def test_public_strict_json_decoder_preserves_v1_and_v2_round_trips() -> None:
+    corpora = (
+        MbaResidualCorpus((_observation(),)),
+        MbaResidualCorpus((_v2_observation(_term()),)),
+    )
+    for corpus in corpora:
+        assert MbaResidualCorpus.from_json(corpus.to_json()).to_dict() == corpus.to_dict()

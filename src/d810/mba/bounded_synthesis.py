@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -159,8 +160,17 @@ class ProofReceipt:
             raise ValueError("proof width must be 8, 16, 32, or 64")
         if type(self.verdict) is not bool:
             raise TypeError("proof verdict must be a boolean")
-        if type(self.elapsed_ms) not in (int, float) or self.elapsed_ms < 0:
-            raise ValueError("proof elapsed_ms must be non-negative")
+        if type(self.elapsed_ms) not in (int, float):
+            raise TypeError("proof elapsed_ms must be a finite non-negative number")
+        try:
+            elapsed_ms = float(self.elapsed_ms)
+        except OverflowError as exc:
+            raise ValueError(
+                "proof elapsed_ms must be a finite non-negative number"
+            ) from exc
+        if not math.isfinite(elapsed_ms) or elapsed_ms < 0:
+            raise ValueError("proof elapsed_ms must be a finite non-negative number")
+        object.__setattr__(self, "elapsed_ms", elapsed_ms)
         if self.error is not None and (type(self.error) is not str or not self.error):
             raise ValueError("proof error must be a non-empty string or None")
         if self.counterexample is not None:
@@ -238,6 +248,7 @@ class MbaSynthesisResult:
         expected_fixed = _fixed_operation_descriptors(self.source, self.replacement)
         if self.fixed_operation_descriptors != expected_fixed:
             raise ValueError("fixed operation descriptors do not match result terms")
+        _validate_fixed_rotate_policy(self.source, self.replacement)
 
     @property
     def certified(self) -> bool:
@@ -384,23 +395,27 @@ def deterministic_witnesses(
     seed = hashlib.sha256(term_fingerprint(term).encode("ascii")).digest()
     alternating_a = int.from_bytes(bytes((0xAA,)) * ((width + 7) // 8), "big") & mask
     alternating_b = int.from_bytes(bytes((0x55,)) * ((width + 7) // 8), "big") & mask
+    fingerprint_count = max(1, count // 8)
+    structured_count = count - fingerprint_count
     rows: list[dict[tuple[object, ...], int]] = []
     for value in (0, mask, alternating_a, alternating_b):
+        if len(rows) >= structured_count:
+            break
         rows.append({key: value for key in keys})
     for bit in range(width):
-        rows.append({key: 1 << bit for key in keys})
-        if len(rows) >= count:
+        if len(rows) >= structured_count:
             break
+        rows.append({key: 1 << bit for key in keys})
     # Use the remaining rows for per-variable perturbations.  The shared
     # power rows above deliberately guarantee every bit for every variable.
     for key_index, key in enumerate(keys):
         for bit in range(width):
+            if len(rows) >= structured_count:
+                break
             row = {other: 0 for other in keys}
             row[key] = 1 << bit
             rows.append(row)
-            if len(rows) >= count:
-                break
-        if len(rows) >= count:
+        if len(rows) >= structured_count:
             break
     witnesses: list[dict[tuple[object, ...], int]] = []
     for index in range(count):
@@ -481,14 +496,8 @@ def _input_terminals(term: TypedBvTerm) -> tuple[TypedBvTerm, ...]:
 
 
 def _canonical_candidate(term: TypedBvTerm) -> TypedBvTerm:
-    # AC normalization is the hot-path discovery deduplicator.  The semantic
-    # canonicalizer is still applied to the small candidate frontier where its
-    # local rewrites can change cost; large generated trees are already bounded
-    # and do not need repeated fixed-point tracing during enumeration.
     candidate = canonicalize_ac_term(term)
-    if term_cost(candidate)[0] <= 2:
-        return canonicalize_mba_term(candidate).canonical_term
-    return candidate
+    return canonicalize_mba_term(candidate).canonical_term
 
 
 def enumerate_terms(
@@ -689,6 +698,22 @@ def _fixed_operation_descriptors(
     return tuple(sorted(descriptors))  # type: ignore[arg-type]
 
 
+def _validate_fixed_rotate_policy(*terms: TypedBvTerm) -> None:
+    minimum_width = min(CERTIFICATION_WIDTHS)
+    for term in terms:
+        for node in _walk_terms(term):
+            if node.operation not in {"rol", "ror"}:
+                continue
+            count = node.shift_count
+            if type(count) is not int:
+                raise ValueError("fixed rotate count must be an integer")
+            if count >= minimum_width:
+                raise ValueError(
+                    f"fixed rotate count {count} must be below "
+                    f"minimum proof width {minimum_width}"
+                )
+
+
 def _to_symbolic(
     term: TypedBvTerm,
     *,
@@ -731,7 +756,11 @@ def _to_symbolic(
             count = Const(f"shift_{node.shift_count}", node.shift_count)
             return children[0] << count if node.operation == "shl" else children[0] >> count
         if node.operation in {"rol", "ror"}:
-            count = node.shift_count % width
+            count = node.shift_count
+            if count >= width:
+                raise ValueError(
+                    f"fixed rotate count {count} is outside {width}-bit width"
+                )
             if count == 0:
                 return children[0]
             if node.operation == "rol":
@@ -784,6 +813,15 @@ def certify_terms(
 ) -> MbaCertification:
     verify = verify_transformation if verifier is None else verifier
     origins = tuple(width_relative_all_ones)
+    try:
+        _validate_fixed_rotate_policy(pattern, replacement)
+    except ValueError as exc:
+        return MbaCertification(
+            tuple(
+                ProofReceipt(width, False, 0.0, None, str(exc))
+                for width in CERTIFICATION_WIDTHS
+            )
+        )
     receipts: list[ProofReceipt] = []
     for width in CERTIFICATION_WIDTHS:
         started = time.monotonic()

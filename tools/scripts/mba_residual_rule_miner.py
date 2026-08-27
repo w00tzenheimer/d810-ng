@@ -53,28 +53,14 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _read_corpus(path: Path) -> MbaResidualCorpus:
-    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON member: {key}")
-            result[key] = value
-        return result
-
-    def reject_constant(value: str) -> object:
-        raise ValueError(f"non-finite JSON constant: {value}")
-
     try:
-        raw = json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=reject_duplicates,
-            parse_constant=reject_constant,
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        encoded = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
         raise ValueError(f"cannot read residual corpus: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise TypeError("residual corpus must contain a JSON object")
-    return MbaResidualCorpus.from_dict(raw)
+    try:
+        return MbaResidualCorpus.from_json(encoded)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"cannot read residual corpus: {exc}") from exc
 
 
 def _budget(args: argparse.Namespace) -> MbaSynthesisBudget:
@@ -297,14 +283,28 @@ def _render_outputs(
         artifacts.append(
             (
                 proposal_name,
-                json.dumps(payload["manifest"], ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+                json.dumps(
+                    payload["manifest"],
+                    allow_nan=False,
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
             )
         )
         artifacts.append((rule_name, render_rule_source(proposal)))
         artifacts.append(
             (
                 fixture_name,
-                json.dumps(payload["fixture"], ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+                json.dumps(
+                    payload["fixture"],
+                    allow_nan=False,
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
             )
         )
     output_dir.parent.mkdir(parents=True, exist_ok=True)

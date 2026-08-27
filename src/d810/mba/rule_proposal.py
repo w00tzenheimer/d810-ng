@@ -149,7 +149,13 @@ def proposal_fingerprint(**fields: object) -> str:
         ),
         "fixed_operation_descriptors": tuple(sorted(set(fixed_descriptors))),
     }
-    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(("mba-rule-proposal-v1:" + encoded).encode("ascii")).hexdigest()
 
 
@@ -186,8 +192,7 @@ def _expr_source(
         operator = "<<" if term.operation == "shl" else ">>"
         return f"({child[0]} {operator} Const(\"shift_{term.shift_count}\", {term.shift_count}))"
     if term.operation in {"rol", "ror"}:
-        count = term.shift_count % term.width
-        return f'FixedRotate("{term.operation}", {child[0]}, {count})'
+        return f'FixedRotate("{term.operation}", {child[0]}, {term.shift_count})'
     raise ValueError(f"cannot render unsupported operation: {term.operation}")
 
 
@@ -302,6 +307,10 @@ class MbaRuleProposal:
                 raise ValueError("fixed operation descriptor count is outside its width")
             if operation in {"rol", "ror"} and width not in {8, 16, 32, 64}:
                 raise ValueError("rotate descriptor width is unsupported")
+            if operation in {"rol", "ror"} and count >= min(CERTIFICATION_WIDTHS):
+                raise ValueError(
+                    "fixed rotate count must be below minimum proof width"
+                )
         object.__setattr__(self, "fixed_operation_descriptors", tuple(sorted(set(self.fixed_operation_descriptors))))
         if not set(_keys(self.replacement)).issubset(set(_keys(self.pattern))):
             raise ValueError("replacement introduces an unknown generalized leaf")

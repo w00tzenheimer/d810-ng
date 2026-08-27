@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import math
 import random
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -200,6 +203,57 @@ def test_capped_enumeration_is_prefix_of_uncapped_global_order() -> None:
     assert receipt.reason == "generation_budget"
 
 
+@pytest.mark.parametrize("cap", (1, 5, 37, 109))
+def test_capped_enumeration_is_exact_prefix_of_complete_semantic_order(
+    cap: int,
+) -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
+    from d810.mba.semantic_canonicalization import canonicalize_mba_term
+
+    x = leaf("x", 8)
+    full, receipt = enumerate_terms(
+        (x,),
+        budget=MbaSynthesisBudget(
+            max_candidate_operator_nodes=1,
+            max_generated_terms=50_000,
+        ),
+    )
+    capped, capped_receipt = enumerate_terms(
+        (x,),
+        budget=MbaSynthesisBudget(
+            max_candidate_operator_nodes=1,
+            max_generated_terms=cap,
+        ),
+    )
+
+    assert receipt.reason == "not_cheaper"
+    assert [item.fingerprint for item in capped] == [
+        item.fingerprint for item in full[:cap]
+    ]
+    assert all(
+        canonicalize_mba_term(item.term).canonical_term == item.term
+        for item in full
+    )
+    if cap < len(full):
+        assert capped_receipt.reason == "generation_budget"
+
+
+def test_greater_than_two_operator_candidate_uses_semantic_canonical_form() -> None:
+    from d810.mba.bounded_synthesis import _canonical_candidate
+    from d810.mba.semantic_canonicalization import canonicalize_mba_term
+
+    x, y, z = leaf("x"), leaf("y"), leaf("z")
+    generated = op("add", op("add", x, z), op("neg", y))
+    ac_only = canonicalize_ac_term(generated)
+    expected = canonicalize_mba_term(ac_only).canonical_term
+
+    assert term_cost(ac_only)[0] > 2
+    assert expected == op("sub", op("add", x, z), y)
+    assert term_cost(expected) < term_cost(ac_only)
+    assert term_fingerprint(expected) != term_fingerprint(ac_only)
+    assert _canonical_candidate(generated) == expected
+
+
 def test_exact_budget_and_variable_reasons_are_preserved() -> None:
     from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms, synthesize_residual
 
@@ -227,6 +281,42 @@ def test_witnesses_cover_full_width_structured_rows_and_all_variables() -> None:
         deterministic_witnesses(x, count=True)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("width", (8, 16, 32, 64))
+@pytest.mark.parametrize("variable_count", (1, 2, 3))
+def test_default_witness_schedule_reserves_fingerprint_derived_rows(
+    width: int,
+    variable_count: int,
+) -> None:
+    from d810.mba.bounded_synthesis import deterministic_witnesses
+
+    variables = tuple(leaf(f"x_{index}", width) for index in range(variable_count))
+    term = variables[0]
+    for variable in variables[1:]:
+        term = op("xor", term, variable)
+    rows = deterministic_witnesses(term, count=96)
+    keys = tuple(variable.leaf_key for variable in variables)
+    mask = (1 << width) - 1
+
+    assert len(rows) == 96
+    assert rows == deterministic_witnesses(term, count=96)
+    assert rows[0] == {key: 0 for key in keys}
+    assert rows[1] == {key: mask for key in keys}
+    for key in keys:
+        assert all(any(row[key] == 1 << bit for row in rows) for bit in range(width))
+
+    first_fingerprint_index = 96 - max(1, 96 // 8)
+    seed = hashlib.sha256(term_fingerprint(term).encode("ascii")).digest()
+    expected = {}
+    for key_index, key in enumerate(keys):
+        digest = hashlib.sha256(
+            seed
+            + first_fingerprint_index.to_bytes(4, "big")
+            + key_index.to_bytes(2, "big")
+        ).digest()
+        expected[key] = int.from_bytes(digest, "big") & mask
+    assert rows[first_fingerprint_index] == expected
+
+
 @pytest.mark.parametrize("operation", ("shl", "lshr", "rol", "ror"))
 def test_fixed_operations_certify_at_all_widths(operation: str) -> None:
     from d810.mba.bounded_synthesis import certify_terms
@@ -234,6 +324,50 @@ def test_fixed_operations_certify_at_all_widths(operation: str) -> None:
     x = leaf("x", 32)
     left = TypedBvTerm(operation, 32, children=(x,), shift_count=3)
     assert certify_terms(left, left).certified
+
+
+@pytest.mark.parametrize("count", (8, 31))
+def test_fixed_rotate_count_invalid_at_minimum_proof_width_cannot_certify(
+    count: int,
+) -> None:
+    from d810.mba.bounded_synthesis import certify_terms
+
+    calls: list[int] = []
+
+    def verify(pattern, replacement, *, options):
+        calls.append(options.bit_width)
+        return True, None
+
+    x = leaf("x", 32)
+    rotate = fixed_shift_term("ror", 32, x, count)
+    pattern = op("add", rotate, const(0))
+    certification = certify_terms(pattern, rotate, verifier=verify)
+
+    assert not certification.certified
+    assert tuple(receipt.width for receipt in certification.receipts) == (8, 16, 32, 64)
+    assert all(not receipt.certified for receipt in certification.receipts)
+    assert all(receipt.error and "fixed rotate" in receipt.error for receipt in certification.receipts)
+    assert calls == []
+
+
+@pytest.mark.parametrize("elapsed_ms", (True, -1, math.nan, math.inf, -math.inf))
+def test_proof_receipt_rejects_invalid_or_nonfinite_elapsed_time(
+    elapsed_ms: object,
+) -> None:
+    from d810.mba.bounded_synthesis import ProofReceipt
+
+    with pytest.raises((TypeError, ValueError), match="elapsed_ms"):
+        ProofReceipt(8, True, elapsed_ms)  # type: ignore[arg-type]
+
+
+def test_proof_receipt_normalizes_elapsed_time_and_remains_immutable() -> None:
+    from d810.mba.bounded_synthesis import ProofReceipt
+
+    receipt = ProofReceipt(8, True, 0)
+    assert receipt.elapsed_ms == 0.0
+    assert type(receipt.elapsed_ms) is float
+    with pytest.raises(FrozenInstanceError):
+        receipt.elapsed_ms = 1.0  # type: ignore[misc]
 
 
 def test_generalization_allows_eliminated_but_not_introduced_leaves() -> None:

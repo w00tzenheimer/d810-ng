@@ -531,6 +531,53 @@ for width in (8, 16, 32, 64):
     )
 
 
+@pytest.mark.parametrize("count", (8, 31))
+def test_unadmittable_fixed_rotate_cannot_form_certified_result_or_proposal(
+    count: int,
+) -> None:
+    from d810.mba.bounded_synthesis import MbaCertification, MbaSynthesisResult
+    from d810.mba.typed_term import fixed_shift_term
+
+    x = _term(None, key="x")
+    rotate = fixed_shift_term("ror", 32, x, count)
+    pattern = _term("add", children=(rotate, _term(None, value=0)))
+    proofs = tuple(
+        ProofReceipt(width=width, verdict=True, elapsed_ms=0.1)
+        for width in (8, 16, 32, 64)
+    )
+    descriptors = (("ror", count, 32),)
+
+    with pytest.raises(ValueError, match="fixed rotate|minimum proof width"):
+        MbaSynthesisResult(
+            source=pattern,
+            replacement=rotate,
+            source_cost=term_cost(pattern),
+            replacement_cost=term_cost(rotate),
+            certification=MbaCertification(proofs),
+            exhaustion=None,
+            fixed_operation_descriptors=descriptors,
+        )
+
+    with pytest.raises(ValueError, match="fixed rotate|minimum proof width"):
+        MbaRuleProposal(
+            proposal_fingerprint=None,
+            source_fingerprints=("rotate",),
+            occurrence_count=1,
+            pattern=pattern,
+            replacement=rotate,
+            source_cost=term_cost(pattern),
+            replacement_cost=term_cost(rotate),
+            atomization_bindings=(),
+            proof_receipts=proofs,
+            class_name="UnadmittableRotate",
+            family="add",
+            description="must not render",
+            provenance=("test",),
+            fixture={},
+            fixed_operation_descriptors=descriptors,
+        )
+
+
 def test_proposal_rejects_keywords_unicode_and_non_json_fixture() -> None:
     x = _term(None, key="x")
     pattern = _term("add", children=(_term("add", children=(x, x)), x))

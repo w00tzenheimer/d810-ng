@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -457,6 +458,55 @@ def test_cli_rejects_nonfinite_json_constants(tmp_path: Path) -> None:
         cwd=ROOT, env={"PYTHONPATH": str(ROOT / "src")}, text=True, capture_output=True, check=False,
     )
     assert result.returncode == 2
+
+
+def test_cli_corpus_reader_reuses_public_strict_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("mba_residual_rule_miner_decoder", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls: list[str] = []
+    original = module.MbaResidualCorpus.from_json
+
+    def decode(value: str):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(module.MbaResidualCorpus, "from_json", decode)
+    corpus = module._read_corpus(FIXTURE)
+
+    assert corpus.groups
+    assert calls == [FIXTURE.read_text(encoding="utf-8")]
+
+
+@pytest.mark.parametrize("artifact", ("manifest", "fixture"))
+def test_artifact_serializer_rejects_nonfinite_json_without_publication(
+    artifact: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("mba_residual_rule_miner_strict", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "render_rule_source", lambda _proposal: "")
+    payload = {
+        "manifest": {"proof_receipts": [{"elapsed_ms": 0.0}]},
+        "fixture": {"proof_widths": [8, 16, 32, 64]},
+    }
+    payload[artifact] = {"invalid_timing": float("nan")}
+    proposal = SimpleNamespace(fingerprint="f" * 64)
+    output = tmp_path / "out"
+
+    with pytest.raises(ValueError, match="Out of range float values"):
+        module._render_outputs(output, [(proposal, payload)], force=False)
+    assert not output.exists()
 
 
 def test_non_or_certifiable_group_gets_deterministic_non_or_family(tmp_path: Path) -> None:

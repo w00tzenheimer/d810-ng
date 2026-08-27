@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
@@ -33,6 +34,44 @@ _OUTCOME_FIELDS = frozenset(
         "matcher",
     }
 )
+
+
+def _reject_duplicate_json_members(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    decoded: dict[str, object] = {}
+    for key, value in pairs:
+        if key in decoded:
+            raise ValueError(f"duplicate JSON member: {key}")
+        decoded[key] = value
+    return decoded
+
+
+def _reject_nonfinite_json_constant(value: str) -> object:
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _parse_finite_json_float(value: str) -> float:
+    decoded = float(value)
+    if not math.isfinite(decoded):
+        raise ValueError(f"non-finite JSON number: {value}")
+    return decoded
+
+
+def _strict_json_loads(value: str) -> object:
+    """Decode strict JSON without duplicate members or non-finite numbers."""
+
+    if type(value) is not str:
+        raise TypeError("residual corpus JSON must be a string")
+    try:
+        return json.loads(
+            value,
+            object_pairs_hook=_reject_duplicate_json_members,
+            parse_constant=_reject_nonfinite_json_constant,
+            parse_float=_parse_finite_json_float,
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid residual corpus JSON") from exc
 
 
 def _validate_term(term: object) -> TypedBvTerm:
@@ -536,10 +575,7 @@ class MbaResidualCorpus:
 
     @classmethod
     def from_json(cls, value: str) -> "MbaResidualCorpus":
-        try:
-            data = json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise ValueError("invalid residual corpus JSON") from exc
+        data = _strict_json_loads(value)
         if not isinstance(data, Mapping):
             raise ValueError("residual corpus JSON must contain a mapping")
         return cls.from_dict(data)
