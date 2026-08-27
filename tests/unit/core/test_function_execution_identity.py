@@ -101,6 +101,11 @@ def test_invalid_identity_values_fail_closed(field: str, value: object) -> None:
         _identity(**{field: value})
 
 
+def test_function_identity_rejects_bad_address_function_anchor() -> None:
+    with pytest.raises(ValueError, match="function_ea must not be BADADDR"):
+        _identity(function_ea=(1 << 64) - 1)
+
+
 def test_external_evidence_requires_verified_sha_identity() -> None:
     with pytest.raises(ValueError, match="external evidence"):
         _identity(

@@ -188,7 +188,11 @@ class TestFunctionExecutionIdentityContext:
                     assert fallback.block_ea == original_first_ea
 
                     shared_start = original_first_ea
+                    first.start = shared_start
                     second.start = shared_start
+                    assert int(first.start) == int(second.start) == shared_start
+                    assert int(first.serial) != int(second.serial)
+                    assert idaapi.is_mapped(shared_start)
                     shared = manager.instruction_optimizer.mba_observation_context(
                         second, second_instruction, plugin
                     )
