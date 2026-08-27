@@ -250,6 +250,7 @@ _UNIQUE_COLUMNS = {
     "terms": {("canonical_fingerprint",)},
     "raw_terms": {("term_id", "raw_fingerprint")},
     "provider_attempts": {("attempt_uuid",)},
+    "residual_groups": {("term_id",)},
     "mining_runs": {("run_id",)},
     "proposals": {("proposal_id",), ("proposal_fingerprint",)},
 }
@@ -299,6 +300,18 @@ _NAMED_INDEX_COLUMNS = {
         ("group_id", "state", "created_at", "proposal_id"),
     ),
 }
+_INDEX_DDL = {
+    "idx_residual_groups_claim": "create index idx_residual_groups_claim on residual_groups(state, last_observed_at, group_id)",
+    "idx_mining_runs_lease": "create index idx_mining_runs_lease on mining_runs(state, heartbeat_at, group_id)",
+    "idx_provider_attempts_term": "create index idx_provider_attempts_term on provider_attempts(term_id, created_at, attempt_id)",
+    "idx_provider_attempts_function": "create index idx_provider_attempts_function on provider_attempts(function_id, created_at, attempt_id)",
+    "idx_provider_attempts_provider": "create index idx_provider_attempts_provider on provider_attempts(provider, created_at, attempt_id)",
+    "idx_proposals_group_state": "create index idx_proposals_group_state on proposals(group_id, state, created_at, proposal_id)",
+}
+
+
+def _normalized_ddl(value: str) -> str:
+    return " ".join(value.lower().split())
 
 
 def _strict_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -714,6 +727,24 @@ def _timestamp(value: object) -> str:
     raise TypeError("clock must return a datetime or timestamp string")
 
 
+def _parse_timestamp(
+    value: object, *, name: str, required: bool = True
+) -> datetime | None:
+    if value is None:
+        if required:
+            raise ValueError(f"{name} is required")
+        return None
+    if type(value) is not str:
+        raise ValueError(f"{name} must be a canonical timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a canonical timestamp") from exc
+    if parsed.tzinfo is None or _timestamp(parsed) != value:
+        raise ValueError(f"{name} must be a canonical UTC timestamp")
+    return parsed.astimezone(timezone.utc)
+
+
 def _seconds(value: object) -> float:
     if isinstance(value, timedelta):
         result = value.total_seconds()
@@ -789,9 +820,6 @@ class MbaDiscoveryStore:
             if self._connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
                 raise ValueError("foreign key enforcement is unavailable")
             self._connection.execute("PRAGMA busy_timeout=5000")
-            journal = self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-            if self.path != ":memory:" and str(journal).lower() != "wal":
-                raise ValueError("WAL journal mode could not be enabled")
             self._connection.execute("BEGIN IMMEDIATE")
             try:
                 migration_exists = self._connection.execute(
@@ -822,6 +850,9 @@ class MbaDiscoveryStore:
                 raise
             else:
                 self._connection.commit()
+            journal = self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            if self.path != ":memory:" and str(journal).lower() != "wal":
+                raise ValueError("WAL journal mode could not be enabled")
             self._validate_pragmas()
 
     def _validate_pragmas(self) -> None:
@@ -1001,6 +1032,71 @@ class MbaDiscoveryStore:
         }
         if indexes != _INDEXES:
             raise ValueError("partial schema: indexes")
+        expected_index_signatures: set[
+            tuple[int, str, int, tuple[tuple[int, str, int, str], ...]]
+        ] = set()
+        for table, columns in _NAMED_INDEX_COLUMNS.values():
+            expected_index_signatures.add(
+                (
+                    0,
+                    "c",
+                    0,
+                    tuple(
+                        (tuple(_TABLES[table]).index(column), column, 0, "BINARY")
+                        for column in columns
+                    ),
+                )
+            )
+        for table, expected_unique in _UNIQUE_COLUMNS.items():
+            expected_index_signatures |= {
+                (
+                    1,
+                    "pk"
+                    if columns == ("run_id",)
+                    and table == "mining_runs"
+                    or columns == ("proposal_id",)
+                    and table == "proposals"
+                    else "u",
+                    0,
+                    tuple(
+                        (tuple(_TABLES[table]).index(column), column, 0, "BINARY")
+                        for column in columns
+                    ),
+                )
+                for columns in expected_unique
+            }
+        actual_index_signatures: set[
+            tuple[int, str, int, tuple[tuple[int, str | None, int, str], ...]]
+        ] = set()
+        for table in _TABLES:
+            for index_row in self._connection.execute(f"PRAGMA index_list('{table}')"):
+                index_name = index_row[1]
+                xinfo = tuple(
+                    (item[1], item[2], item[3], item[4])
+                    for item in self._connection.execute(
+                        f"PRAGMA index_xinfo('{index_name}')"
+                    )
+                    if item[5] == 1
+                )
+                actual_index_signatures.add(
+                    (index_row[2], index_row[3], index_row[4], xinfo)
+                )
+        if actual_index_signatures != expected_index_signatures:
+            raise ValueError("partial schema: index metadata")
+        for index_name, expected_ddl in _INDEX_DDL.items():
+            ddl_row = self._connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+                (index_name,),
+            ).fetchone()
+            if ddl_row is None or _normalized_ddl(ddl_row[0]) != expected_ddl:
+                raise ValueError("partial schema: index definition")
+        for table in _TABLES:
+            ddl = self._connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()[0]
+            normalized = _normalized_ddl(ddl)
+            if " collate " in normalized or " on conflict " in normalized:
+                raise ValueError("partial schema: unique definition")
         for table, expected_unique in _UNIQUE_COLUMNS.items():
             actual_unique = {
                 tuple(
@@ -1253,7 +1349,7 @@ class MbaDiscoveryStore:
                     SELECT pa.*, f.function_ea, f.function_rva, f.function_fingerprint,
                            d.database_uuid, d.database_identity, i.input_identity,
                            i.identity_provenance, i.external_evidence_allowed,
-                           t.canonical_fingerprint, rt.raw_fingerprint,
+                           t.canonical_fingerprint, rt.raw_fingerprint, rt.term_id,
                            t.width, t.canonical_term, t.canonical_codec_version,
                            rt.raw_term, rt.raw_codec_version
                     FROM provider_attempts pa
@@ -1268,17 +1364,18 @@ class MbaDiscoveryStore:
                 ).fetchone()
                 if existing is not None:
                     stored_canonical = _decode_term(
-                        bytes(existing[36]), name="canonical term"
+                        bytes(existing[37]), name="canonical term"
                     )
-                    stored_raw = _decode_term(bytes(existing[38]), name="raw term")
+                    stored_raw = _decode_term(bytes(existing[39]), name="raw term")
                     if (
-                        stored_canonical != attempt.canonical_term
+                        existing[35] != existing[3]
+                        or stored_canonical != attempt.canonical_term
                         or stored_raw != attempt.raw_term
                         or existing[33] != term_fingerprint(stored_canonical)
                         or existing[34] != term_fingerprint(stored_raw)
-                        or existing[35] != stored_canonical.width
-                        or existing[37] != TERM_WIRE_SCHEMA_VERSION
-                        or existing[39] != TERM_WIRE_SCHEMA_VERSION
+                        or existing[36] != stored_canonical.width
+                        or existing[38] != TERM_WIRE_SCHEMA_VERSION
+                        or existing[40] != TERM_WIRE_SCHEMA_VERSION
                     ):
                         raise ValueError("stored term identity is corrupt")
                     identity = attempt.context.function_identity
@@ -1297,11 +1394,11 @@ class MbaDiscoveryStore:
                         and existing[32] == int(identity.external_evidence_allowed)
                         and existing[33] == term_fingerprint(attempt.canonical_term)
                         and existing[34] == term_fingerprint(attempt.raw_term)
-                        and existing[35] == attempt.canonical_term.width
-                        and existing[36] == canonical
-                        and existing[37] == TERM_WIRE_SCHEMA_VERSION
-                        and existing[38] == raw
-                        and existing[39] == TERM_WIRE_SCHEMA_VERSION
+                        and existing[36] == attempt.canonical_term.width
+                        and existing[37] == canonical
+                        and existing[38] == TERM_WIRE_SCHEMA_VERSION
+                        and existing[39] == raw
+                        and existing[40] == TERM_WIRE_SCHEMA_VERSION
                         and existing[5] == identity.decompilation_session_id
                         and existing[6] == identity.top_level_epoch
                         and existing[7] == identity.evidence_generation
@@ -1418,6 +1515,10 @@ class MbaDiscoveryStore:
         ).fetchone()
         if row is None:
             raise ValueError("unknown group")
+        try:
+            state = ResidualGroupState(row[2])
+        except ValueError as exc:
+            raise ValueError("unknown residual group state") from exc
         term = conn.execute("SELECT * FROM terms WHERE term_id=?", (row[1],)).fetchone()
         if term is None:
             raise ValueError("group term is missing")
@@ -1437,19 +1538,76 @@ class MbaDiscoveryStore:
         )
         if any(raw.width != canonical.width for raw in raws):
             raise ValueError("raw and canonical term widths are inconsistent")
-        try:
-            state = ResidualGroupState(row[2])
-        except ValueError as exc:
-            raise ValueError("unknown residual group state") from exc
+        raw_ids = {
+            int(raw[0])
+            for raw in conn.execute(
+                "SELECT raw_term_id FROM raw_terms WHERE term_id=?", (row[1],)
+            )
+        }
+        eligible_count = 0
+        for attempt in conn.execute(
+            "SELECT raw_term_id, term_id, outcome_payload, created_at FROM provider_attempts WHERE term_id=?",
+            (row[1],),
+        ):
+            if int(attempt[0]) not in raw_ids or int(attempt[1]) != int(row[1]):
+                raise ValueError("provider attempt term links are corrupt")
+            _eligible, outcome = _validate_attempt_payload(bytes(attempt[2]))
+            if outcome.fingerprint != term[1]:
+                raise ValueError("provider attempt outcome is corrupt")
+            _parse_timestamp(attempt[3], name="created_at")
+            eligible_count += int(_eligible)
+        if int(row[3]) != eligible_count:
+            raise ValueError("eligible observation count is corrupt")
+        observed_at = _parse_timestamp(row[4], name="last_observed_at")
+        mined_at = _parse_timestamp(row[5], name="last_mined_at", required=False)
+        materialized_at = _parse_timestamp(
+            row[6], name="materialized_at", required=False
+        )
+        admitted_at = _parse_timestamp(row[7], name="admitted_at", required=False)
+        if state is ResidualGroupState.NO_PROPOSAL and mined_at is None:
+            raise ValueError("no-proposal group requires last_mined_at")
+        if (
+            state
+            in {
+                ResidualGroupState.OBSERVED,
+                ResidualGroupState.ELIGIBLE,
+                ResidualGroupState.MINING,
+            }
+            and mined_at is not None
+        ):
+            raise ValueError("active group has terminal timestamps")
+        if state in {
+            ResidualGroupState.OBSERVED,
+            ResidualGroupState.ELIGIBLE,
+            ResidualGroupState.MINING,
+            ResidualGroupState.NO_PROPOSAL,
+        } and (materialized_at is not None or admitted_at is not None):
+            raise ValueError("pre-proposal group has terminal timestamps")
+        if state is ResidualGroupState.MATERIALIZED:
+            if materialized_at is None or admitted_at is not None:
+                raise ValueError("materialized group timestamps are inconsistent")
+        if state is ResidualGroupState.ADMITTED:
+            if materialized_at is None or admitted_at is None:
+                raise ValueError("admitted group timestamps are incomplete")
+        if state is ResidualGroupState.REJECTED and admitted_at is not None:
+            raise ValueError("rejected group cannot have admitted_at")
+        if (
+            materialized_at is not None
+            and mined_at is not None
+            and materialized_at < mined_at
+        ):
+            raise ValueError("group timestamps are out of order")
+        if admitted_at is not None and materialized_at is None:
+            raise ValueError("admitted group requires materialized_at")
         return ResidualGroup(
             int(row[0]),
             int(row[1]),
             state,
             int(row[3]),
-            row[4],
-            row[5],
-            row[6],
-            row[7],
+            _timestamp(observed_at),  # type: ignore[arg-type]
+            None if mined_at is None else _timestamp(mined_at),
+            None if materialized_at is None else _timestamp(materialized_at),
+            None if admitted_at is None else _timestamp(admitted_at),
             int(row[8]),
             canonical,
             raws,
@@ -1466,6 +1624,29 @@ class MbaDiscoveryStore:
             state = MiningRunState(row[5])
         except ValueError as exc:
             raise ValueError("unknown mining run state") from exc
+        started = _parse_timestamp(row[6], name="started_at")
+        heartbeat = _parse_timestamp(row[7], name="heartbeat_at")
+        finished = _parse_timestamp(row[8], name="finished_at", required=False)
+        if heartbeat < started or finished is not None and finished < heartbeat:
+            raise ValueError("mining run timestamps are out of order")
+        if state is MiningRunState.ACTIVE:
+            if finished is not None or row[9] is not None:
+                raise ValueError("active run has terminal fields")
+        elif finished is None:
+            raise ValueError("terminal run requires finished_at")
+        if state is MiningRunState.PROPOSED and row[9] is not None:
+            raise ValueError("proposed run cannot have failure_reason")
+        if (
+            state
+            in {
+                MiningRunState.NO_PROPOSAL,
+                MiningRunState.EXPIRED,
+                MiningRunState.FAILED,
+                MiningRunState.SUPERSEDED,
+            }
+            and not row[9]
+        ):
+            raise ValueError("terminal run requires failure_reason")
         return MiningRun(
             row[0],
             int(row[1]),
@@ -1473,9 +1654,9 @@ class MbaDiscoveryStore:
             row[3],
             row[4],
             state,
-            row[6],
-            row[7],
-            row[8],
+            _timestamp(started),  # type: ignore[arg-type]
+            _timestamp(heartbeat),  # type: ignore[arg-type]
+            None if finished is None else _timestamp(finished),
             row[9],
         )
 
@@ -1498,6 +1679,11 @@ class MbaDiscoveryStore:
         ).fetchone()
         if group is None or run is None or run[1] != group[0] or run[2] > group[8]:
             raise ValueError("proposal ownership is corrupt")
+        self._project_group(conn, int(group[0]))
+        try:
+            self._project_run(run)
+        except ValueError as exc:
+            raise ValueError("proposal lifecycle ownership is corrupt") from exc
         group_term = conn.execute(
             "SELECT width, canonical_term FROM terms WHERE term_id=?", (group[1],)
         ).fetchone()
@@ -1514,6 +1700,40 @@ class MbaDiscoveryStore:
             group_state = ResidualGroupState(group[2])
         except ValueError as exc:
             raise ValueError("unknown proposal ownership state") from exc
+        created_at = _parse_timestamp(row[8], name="created_at")
+        materialized_at = _parse_timestamp(
+            row[11], name="materialized_at", required=False
+        )
+        admitted_at = _parse_timestamp(row[13], name="admitted_at", required=False)
+        if state is ProposalState.PROPOSED:
+            if any(row[index] is not None for index in (9, 10, 11, 12, 13, 14)):
+                raise ValueError("proposed proposal has terminal fields")
+        elif state is ProposalState.MATERIALIZED:
+            if (
+                any(row[index] is None for index in (9, 10, 11))
+                or row[12] is not None
+                or row[13] is not None
+                or row[14] is not None
+            ):
+                raise ValueError("materialized proposal fields are inconsistent")
+        elif state is ProposalState.ADMITTED:
+            if (
+                any(row[index] is None for index in (9, 10, 11, 12, 13))
+                or row[14] is not None
+            ):
+                raise ValueError("admitted proposal fields are inconsistent")
+        elif state is ProposalState.REJECTED:
+            if row[14] is None or row[12] is not None or row[13] is not None:
+                raise ValueError("rejected proposal fields are inconsistent")
+            if row[9] is None or row[10] is None or row[11] is None:
+                if any(row[index] is not None for index in (9, 10, 11)):
+                    raise ValueError("rejected materialization fields are incomplete")
+        if materialized_at is not None and materialized_at < created_at:
+            raise ValueError("proposal timestamps are out of order")
+        if admitted_at is not None and (
+            materialized_at is None or admitted_at < materialized_at
+        ):
+            raise ValueError("proposal timestamps are out of order")
         expected_group_state = {
             ProposalState.PROPOSED: ResidualGroupState.PROPOSED,
             ProposalState.MATERIALIZED: ResidualGroupState.MATERIALIZED,
@@ -1535,12 +1755,12 @@ class MbaDiscoveryStore:
             bytes(row[5]),
             bytes(row[6]),
             state,
-            row[8],
+            _timestamp(created_at),  # type: ignore[arg-type]
             row[9],
             row[10],
-            row[11],
+            None if materialized_at is None else _timestamp(materialized_at),
             row[12],
-            row[13],
+            None if admitted_at is None else _timestamp(admitted_at),
             row[14],
         )
 
@@ -1995,7 +2215,7 @@ class MbaDiscoveryStore:
                     )
                 original_retry = (
                     requested_state is ProposalState.PROPOSED
-                    and expected_revision == run[0]
+                    and expected_revision == group[8]
                 )
                 current_retry = (
                     requested_state is ProposalState.MATERIALIZED
@@ -2024,6 +2244,9 @@ class MbaDiscoveryStore:
             if (
                 group is None
                 or group[2] != ResidualGroupState.PROPOSED.value
+                or not valid_group_transition(
+                    ResidualGroupState.PROPOSED, ResidualGroupState.MATERIALIZED
+                )
                 or not valid_proposal_transition(
                     ProposalState.PROPOSED, ProposalState.MATERIALIZED
                 )
@@ -2164,10 +2387,13 @@ class MbaDiscoveryStore:
                     return LifecycleReceipt(
                         ReceiptStatus.REFUSED, reason="invalid_transition"
                     )
+                source_state = (
+                    ProposalState.MATERIALIZED
+                    if row[9] is not None
+                    else ProposalState.PROPOSED
+                )
                 original_retry = (
-                    requested_state
-                    in {ProposalState.PROPOSED, ProposalState.MATERIALIZED}
-                    and expected_revision == run[0]
+                    requested_state is source_state and expected_revision == group[8]
                 )
                 current_retry = (
                     requested_state is target and expected_revision == group[8]
@@ -2249,6 +2475,12 @@ class MbaDiscoveryStore:
             self._ensure_open()
             self._connection.execute("BEGIN")
             try:
+                for row in self._connection.execute("SELECT * FROM residual_groups"):
+                    self._project_group(self._connection, int(row[0]))
+                for row in self._connection.execute("SELECT * FROM mining_runs"):
+                    self._project_run(row)
+                for row in self._connection.execute("SELECT * FROM proposals"):
+                    self._project_proposal(self._connection, row)
                 group_rows = self._connection.execute(
                     "SELECT state, COUNT(*) FROM residual_groups GROUP BY state"
                 ).fetchall()
