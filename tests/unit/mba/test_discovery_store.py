@@ -837,6 +837,56 @@ def test_unversioned_foreign_database_is_not_adopted(tmp_path: Path) -> None:
     connection.close()
 
 
+@pytest.mark.parametrize(
+    ("name", "table", "needle", "replacement"),
+    (
+        ("type", "terms", "width INTEGER NOT NULL", "width TEXT NOT NULL"),
+        ("null", "terms", "width INTEGER NOT NULL", "width INTEGER"),
+        (
+            "default",
+            "terms",
+            "width INTEGER NOT NULL",
+            "width INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("pk", "terms", "term_id INTEGER PRIMARY KEY", "term_id INTEGER"),
+        (
+            "fk-target",
+            "raw_terms",
+            "term_id INTEGER NOT NULL REFERENCES terms",
+            "term_id INTEGER NOT NULL REFERENCES inputs",
+        ),
+        (
+            "fk-action",
+            "raw_terms",
+            "term_id INTEGER NOT NULL REFERENCES terms",
+            "term_id INTEGER NOT NULL REFERENCES terms ON DELETE CASCADE",
+        ),
+    ),
+)
+def test_reopen_rejects_each_declared_metadata_or_fk_drift(
+    tmp_path: Path, name: str, table: str, needle: str, replacement: str
+) -> None:
+    source = tmp_path / f"source-{name}.sqlite3"
+    mutated = tmp_path / f"mutated-{name}.sqlite3"
+    store = MbaDiscoveryStore(source)
+    store.close()
+    source_connection = sqlite3.connect(source)
+    dump = list(source_connection.iterdump())
+    source_connection.close()
+    changed = False
+    with sqlite3.connect(mutated) as connection:
+        for statement in dump:
+            if statement.startswith(f"CREATE TABLE {table} "):
+                assert needle in statement
+                statement = statement.replace(needle, replacement, 1)
+                changed = True
+            connection.execute(statement)
+        connection.commit()
+    assert changed
+    with pytest.raises(ValueError, match="partial schema"):
+        MbaDiscoveryStore(mutated)
+
+
 @pytest.mark.parametrize("column", ("canonical_term", "width", "raw_term_id"))
 def test_attempt_duplicate_path_rejects_corrupt_term_identity(
     tmp_path: Path, column: str
