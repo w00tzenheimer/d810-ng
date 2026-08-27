@@ -417,7 +417,6 @@ def compile_config_v2_hook_schedule(project_config) -> ConfigV2HookSchedule:
                 MBA_EGRAPH_PASS_ID,
                 install_hint="d810-egglog",
             )
-            backend_registry.activate_implementation(candidate)
             instruction_bindings.append(
                 _rule_config(candidate.rule_name, _mba_egraph_options(config))
             )

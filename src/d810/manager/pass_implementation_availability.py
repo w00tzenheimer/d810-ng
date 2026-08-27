@@ -178,15 +178,7 @@ def project_pass_implementation_availability(
                 f"Resolved backend origin is {info.origin!r}, not the declared "
                 f"origin {candidates[0].backend_origin!r}"
             )
-        elif (
-            requirement.activation_required
-            and not backend_registry.implementation_is_active(candidates[0])
-        ) or (
-            not requirement.activation_required
-            and not backend_registry.implementation_registration_available(
-                candidates[0]
-            )
-        ):
+        elif not backend_registry.implementation_is_active(candidates[0]):
             backend_status = BackendStatus.NOT_LOADED
             activation_reason = "Implementation is installed but not activated"
     status_map = {

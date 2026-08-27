@@ -433,7 +433,7 @@ class TestMbaEgraphRegistration(unittest.TestCase):
             [rule.name for rule in activation.instruction_rules],
             [candidate.rule_name],
         )
-        self.assertEqual(backend_registry.activated, [candidate])
+        self.assertEqual(backend_registry.activated, [])
         rule = activation.instruction_rules[0]
         self.assertEqual(
             rule.config,
@@ -501,7 +501,7 @@ class TestMbaEgraphRegistration(unittest.TestCase):
                 with self.assertRaises(PassImplementationAmbiguous):
                     pipeline_v2_hook_activation(project)
 
-    def test_selected_extension_uses_strict_registry_activation(self):
+    def test_selected_extension_is_declaration_only(self):
         project = ProjectConfiguration(
             path=Path("mba-egraph.strict-activation.runtime-config-v2.json"),
             additional_configuration={
@@ -509,25 +509,13 @@ class TestMbaEgraphRegistration(unittest.TestCase):
             },
         )
         candidate = _candidate("DeclaredEgglogOptimizer")
-        activation_calls = []
+        backend_registry = _FakeImplementationRegistry((candidate,))
+        with patch("d810.backends.registry", return_value=backend_registry):
+            pipeline_v2_hook_activation(project)
 
-        class _StrictRegistry(_FakeImplementationRegistry):
-            def __init__(self):
-                super().__init__((candidate,))
+        self.assertEqual(backend_registry.activated, [])
 
-            def activate_implementation(self, selected):
-                activation_calls.append(selected)
-
-        with patch("d810.backends.registry", return_value=_StrictRegistry()):
-            with patch(
-                "d810.backends.load_extension_rule_for_candidate",
-                side_effect=AssertionError("raw lookup bypassed strict activation"),
-            ):
-                pipeline_v2_hook_activation(project)
-
-        self.assertEqual(activation_calls, [candidate])
-
-    def test_malformed_unselected_extension_keeps_public_registry_startable(self):
+    def test_malformed_unselected_extension_keeps_public_registry_declaration(self):
         manifest = BackendManifest(
             name="egglog",
             api_version=PLUGIN_API_VERSION,
@@ -549,4 +537,10 @@ class TestMbaEgraphRegistration(unittest.TestCase):
 
         self.assertIn(MBA_EGRAPH_PASS_ID, registry.public_pass_ids())
         self.assertIsNotNone(registry.editor_spec_for(MBA_EGRAPH_PASS_ID))
-        self.assertEqual(registry.stages_for(MBA_EGRAPH_PASS_ID), ())
+        self.assertEqual(
+            tuple(
+                stage.implementation_name
+                for stage in registry.stages_for(MBA_EGRAPH_PASS_ID)
+            ),
+            ("EgglogOptimizer",),
+        )

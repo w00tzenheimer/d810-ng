@@ -841,8 +841,9 @@ class BackendRegistry:
         self._implementation_instances: dict[
             PassImplementationCandidate, list[object]
         ] = {}
-        #: Injected to keep optimizer-layer imports out of ``core.plugins``.
-        self._registration_lookup = registration_lookup
+        # Kept as an ignored constructor argument for callers that construct a
+        # registry directly; external implementations are factory-owned and
+        # never resolved through a registrant lookup.
 
     # -- discovery ---------------------------------------------------------
 
@@ -1402,19 +1403,8 @@ class BackendRegistry:
     def implementation_registration_available(
         self, candidate: PassImplementationCandidate
     ) -> bool:
-        """Whether an already-loaded rule registration matches ``candidate``.
-
-        This is a read-only lookup for non-strict implementations whose rule
-        modules are loaded by the normal optimizer catalogue lifecycle rather
-        than :meth:`activate_implementation`.
-        """
-        lookup = self._registration_lookup
-        if lookup is None:
-            return False
-        try:
-            return lookup(candidate) is not None
-        except Exception:
-            return False
+        """Return whether a factory-created implementation is active."""
+        return self.implementation_is_active(candidate)
 
     def implementation_failure(
         self, candidate: PassImplementationCandidate
@@ -1429,68 +1419,12 @@ class BackendRegistry:
     def record_rule_module_result(
         self, module_name: str, error: BaseException | None
     ) -> None:
-        """Record or clear normal extension-loader evidence for one module."""
-        source = f"module:{module_name}"
-        with self._lock:
-            candidates: list[PassImplementationCandidate] = []
-            for backend_name, manifest in self._manifests.items():
-                spec = self._settled.get(backend_name)
-                if spec is None:
-                    continue
-                candidates.extend(
-                    PassImplementationCandidate(
-                        pass_id=str(pass_id),
-                        backend_name=backend_name,
-                        backend_origin=spec.origin,
-                        rule_modules=(),
-                        rule_name=rule_name,
-                    )
-                    for pass_id, rule_name in manifest.implements.items()
-                )
-            for candidate in candidates:
-                failures = self._implementation_failures.setdefault(candidate, {})
-                if error is None:
-                    failures.pop(source, None)
-                    if not failures:
-                        self._implementation_failures.pop(candidate, None)
-                else:
-                    failures[source] = f"{type(error).__name__}: {error}"
+        """Ignore obsolete registrant-loader evidence."""
+        del module_name, error
 
     def finalize_rule_module_loading(self) -> None:
-        """Validate declarations after the normal extension loader finishes."""
-        with self._lock:
-            candidates = tuple(
-                PassImplementationCandidate(
-                    pass_id=str(pass_id),
-                    backend_name=backend_name,
-                    backend_origin=spec.origin,
-                    rule_modules=(),
-                    rule_name=rule_name,
-                )
-                for backend_name, manifest in self._manifests.items()
-                if (spec := self._settled.get(backend_name)) is not None
-                and self._status.get(backend_name) is BackendStatus.AVAILABLE
-                for pass_id, rule_name in manifest.implements.items()
-            )
-        for candidate in candidates:
-            reason: str | None = None
-            lookup = self._registration_lookup
-            if lookup is None:
-                reason = "no registration lookup was injected"
-            else:
-                try:
-                    if lookup(candidate) is None:
-                        reason = f"rule {candidate.rule_name!r} is not registered"
-                except Exception as exc:
-                    reason = f"registration lookup raised {type(exc).__name__}: {exc}"
-            with self._lock:
-                failures = self._implementation_failures.setdefault(candidate, {})
-                if reason is None:
-                    failures.pop("registration", None)
-                    if not failures:
-                        self._implementation_failures.pop(candidate, None)
-                else:
-                    failures["registration"] = reason
+        """No-op compatibility seam; factories own implementation validation."""
+        return None
 
     def require_unique_implementation(
         self, pass_id: PassId | str, *, install_hint: str
@@ -1507,7 +1441,7 @@ class BackendRegistry:
     def activate_implementation(self, candidate: PassImplementationCandidate) -> object:
         """Activate exactly one declaration and retain truthful failure state."""
         with self._lock:
-            self._active_implementations.discard(candidate)
+            was_active = candidate in self._active_implementations
             failures = self._implementation_failures.get(candidate)
             if failures is not None:
                 failures.pop("activation", None)
@@ -1517,6 +1451,8 @@ class BackendRegistry:
             implementation = self._activate_implementation_once(candidate)
         except Exception as exc:
             with self._lock:
+                if was_active:
+                    self._active_implementations.add(candidate)
                 self._implementation_failures.setdefault(candidate, {})[
                     "activation"
                 ] = f"{type(exc).__name__}: {exc}"
@@ -1529,9 +1465,8 @@ class BackendRegistry:
         """Probe, import, and verify one selected implementation.
 
         The sequence is intentionally explicit: backend availability is known
-        before any extension rule module is imported, and registration lookup
-        remains injected so this portable registry never imports optimizer
-        layers.
+        before the declared implementation factory is called, and this
+        portable registry never imports optimizer layers.
         """
         try:
             info = self.probe(candidate.backend_name)
@@ -1595,13 +1530,21 @@ class BackendRegistry:
                     self._implementation_failures.pop(candidate, None)
         return implementation
 
-    def implementation_instance_for(
-        self, candidate: PassImplementationCandidate
-    ) -> object | None:
-        """Return the most recently materialized implementation for a candidate."""
+    def discard_implementation_instances(self, instances: Sequence[object]) -> None:
+        """Discard only exact staged implementation objects from registry truth."""
+        identities = {id(instance) for instance in instances}
+        if not identities:
+            return
         with self._lock:
-            instances = self._implementation_instances.get(candidate, ())
-            return instances[-1] if instances else None
+            for candidate, owned in tuple(self._implementation_instances.items()):
+                remaining = [
+                    instance for instance in owned if id(instance) not in identities
+                ]
+                if remaining:
+                    self._implementation_instances[candidate] = remaining
+                else:
+                    self._implementation_instances.pop(candidate, None)
+                    self._active_implementations.discard(candidate)
 
     def activation_for_candidate(
         self, candidate: PassImplementationCandidate
@@ -1629,7 +1572,7 @@ class BackendRegistry:
         return PluginRuleServices(plugin=context.identity, host=context.host)
 
     def rule_modules(self) -> tuple[str, ...]:
-        """External implementations no longer register rule modules."""
+        """External implementations are never discovered through modules."""
         return ()
 
     def load(self, name: str) -> Any:

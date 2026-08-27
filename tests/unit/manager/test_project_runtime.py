@@ -104,6 +104,7 @@ def test_project_runtime_snapshot_type_contains_only_canonical_fields() -> None:
         "preparation_scripts",
         "global_const_persistence_enabled",
         "activated_plugins",
+        "activated_implementations",
     )
 
 

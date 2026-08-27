@@ -17,15 +17,6 @@ def load_optimizer_registries(*, scanner=Scanner) -> None:
         prefix=f"{__name__}.",
         skip_packages=False,
     )
-    # The scan above is path-scoped to this package, so it cannot reach a rule
-    # that lives inside an installed extension. That half lives with the
-    # backend registry, which is what knows which extensions resolved.
-    #
-    # Imported here rather than at module scope: this runs during d810 startup
-    # and backend discovery reads installed distribution metadata.
-    from d810.backends import load_extension_rules
-
-    load_extension_rules()
 
 
 __all__ = ["load_optimizer_registries"]

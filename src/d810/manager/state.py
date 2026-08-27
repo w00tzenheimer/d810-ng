@@ -464,7 +464,13 @@ class D810State(metaclass=SingletonMeta):
             if previous_runtime_snapshot is not None
             else ()
         )
+        previous_implementations = (
+            previous_runtime_snapshot.activated_implementations
+            if previous_runtime_snapshot is not None
+            else ()
+        )
         backend_registry = self.manager.backend_registry
+        staged_implementations: list[object] = []
         rolled_back = False
 
         def _rollback_activation(activation_error: BaseException) -> None:
@@ -473,6 +479,9 @@ class D810State(metaclass=SingletonMeta):
                 return
             rolled_back = True
             try:
+                backend_registry.discard_implementation_instances(
+                    tuple(staged_implementations)
+                )
                 self._restore_project_activation_state(
                     activation_snapshot,
                     activation_error,
@@ -486,6 +495,9 @@ class D810State(metaclass=SingletonMeta):
             except BaseException as activation_error:
                 _rollback_activation(activation_error)
                 raise
+
+        def _raise(error: BaseException):
+            raise error
 
         schedule = _stage_call(compile_config_v2_hook_schedule, project)
         candidate_known_ins_rules = _stage_call(self._build_known_instruction_rules)
@@ -514,27 +526,24 @@ class D810State(metaclass=SingletonMeta):
                     continue
                 external_key = (candidate.pass_id, candidate.rule_name)
                 if external_key in external_rules:
-                    raise PipelineConfigError(
-                        f"pass implementation {candidate.rule_name!r} is ambiguous"
+                    _stage_call(
+                        _raise,
+                        PipelineConfigError(
+                            f"pass implementation {candidate.rule_name!r} is ambiguous"
+                        ),
                     )
-                if candidate.pass_id == "mba-egraph":
-                    implementation = backend_registry.implementation_instance_for(
-                        candidate
-                    )
-                    if implementation is None:
-                        implementation = _stage_call(
-                            backend_registry.activate_implementation,
-                            candidate,
-                        )
-                else:
-                    implementation = _stage_call(
-                        backend_registry.activate_implementation,
-                        candidate,
-                    )
+                implementation = _stage_call(
+                    backend_registry.activate_implementation,
+                    candidate,
+                )
+                staged_implementations.append(implementation)
                 if not isinstance(implementation, InstructionOptimizationRule):
-                    raise TypeError(
-                        f"plugin implementation {candidate.rule_name!r} must be "
-                        "an InstructionOptimizationRule"
+                    _stage_call(
+                        _raise,
+                        TypeError(
+                            f"plugin implementation {candidate.rule_name!r} must be "
+                            "an InstructionOptimizationRule"
+                        ),
                     )
                 _stage_call(
                     implementation.bind_plugin_services,
@@ -556,6 +565,7 @@ class D810State(metaclass=SingletonMeta):
             project=project,
             schedule=schedule,
             activated_plugins=tuple(staged_activations),
+            activated_implementations=tuple(staged_implementations),
         )
         _stage_call(
             _require_registered_schedule_bindings,
@@ -793,6 +803,7 @@ class D810State(metaclass=SingletonMeta):
 
         # Publication is complete before retiring the prior plugin ownership.
         backend_registry.close_activations_except(snapshot.activated_plugins)
+        backend_registry.discard_implementation_instances(previous_implementations)
 
         emit_project_reloading(
             old_project_name=old_project_name,
