@@ -16,8 +16,10 @@ from d810.mba.extension_api import (
     NativeMbaHostServices,
     NativeMbaReconstruction,
     TypedBvTerm,
+    reconstruct_native_provider_result,
 )
 from d810.mba.island_profile import profile_typed_term
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 
 
 def _candidate(*, destination_size: int = 4) -> NativeMbaCandidate:
@@ -29,6 +31,39 @@ def _candidate(*, destination_size: int = 4) -> NativeMbaCandidate:
         profile=profile_typed_term(term),
         native_context=object(),
     )
+
+
+def _atomizable_candidate() -> NativeMbaCandidate:
+    x = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    y = TypedBvTerm(None, 32, leaf_key=("register", "y"))
+    repeated = TypedBvTerm("and", 32, children=(x, y))
+    term = TypedBvTerm("add", 32, children=(repeated, repeated))
+    return NativeMbaCandidate(
+        destination_size=4,
+        term=term,
+        raw_term=term,
+        profile=profile_typed_term(term),
+        native_context=object(),
+    )
+
+
+class _FakeProviderHost:
+    def __init__(self, *, proof: bool = True, proof_error: Exception | None = None):
+        self.proof_result = proof
+        self.proof_error = proof_error
+        self.rebuild_calls: list[TypedBvTerm] = []
+        self.prove_calls: list[dict[str, object]] = []
+        self.reconstruction = NativeMbaReconstruction(object(), object())
+
+    def rebuild(self, candidate, replacement):
+        self.rebuild_calls.append(replacement)
+        return self.reconstruction
+
+    def prove(self, candidate, reconstruction, **kwargs):
+        self.prove_calls.append(kwargs)
+        if self.proof_error is not None:
+            raise self.proof_error
+        return self.proof_result
 
 
 def test_public_api_exports_frozen_dtos_and_protocols() -> None:
@@ -103,6 +138,124 @@ def test_reconstruction_requires_native_objects() -> None:
         NativeMbaReconstruction(None, object())
     with pytest.raises(TypeError):
         NativeMbaReconstruction(object(), None)
+
+
+def test_provider_result_forwards_proof_inputs_and_returns_only_after_proof() -> None:
+    candidate = _atomizable_candidate()
+    host = _FakeProviderHost()
+    received: list[TypedBvTerm] = []
+
+    result = reconstruct_native_provider_result(
+        host,
+        candidate,
+        lambda term: received.append(term) or term,
+        proof_certificate="cert-v1",
+        known_constants={("register", "x"): 7},
+        proof_timeout_ms=125,
+    )
+
+    assert result is host.reconstruction
+    assert len(received) == 1
+    assert host.rebuild_calls
+    assert host.prove_calls == [
+        {
+            "certificate": "cert-v1",
+            "known_constants": {("register", "x"): 7},
+            "proof_timeout_ms": 125,
+        }
+    ]
+
+
+def test_native_atomization_uses_raw_capture_without_changing_canonical_identity() -> None:
+    x = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    y = TypedBvTerm(None, 32, leaf_key=("register", "y"))
+    raw = TypedBvTerm(
+        "and", 32, children=(x, TypedBvTerm("and", 32, children=(y, x)))
+    )
+    canonical = canonicalize_mba_term(raw).canonical_term
+    candidate = NativeMbaCandidate(
+        destination_size=4,
+        term=canonical,
+        raw_term=raw,
+        profile=profile_typed_term(raw),
+        native_context=object(),
+    )
+
+    atomized = extension_api.atomize_native_candidate(candidate)
+
+    assert candidate.term == canonical
+    assert atomized.view.original_term is raw
+    assert atomized.term != candidate.term
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [
+        pytest.param(lambda _term: (_ for _ in ()).throw(RuntimeError("provider")), id="provider-exception"),
+        pytest.param(lambda _term: object(), id="malformed-provider-result"),
+        pytest.param(
+            lambda term: TypedBvTerm(
+                "or",
+                term.width,
+                children=(
+                    term,
+                    TypedBvTerm(
+                        None,
+                        term.width,
+                        leaf_key=("d810.mba.atom.v1", 99, "unknown"),
+                    ),
+                ),
+            ),
+            id="unknown-atom",
+        ),
+    ],
+)
+def test_provider_or_restoration_failure_happens_before_rebuild(provider) -> None:
+    candidate = _atomizable_candidate()
+    host = _FakeProviderHost()
+
+    assert reconstruct_native_provider_result(host, candidate, provider) is None
+    assert host.rebuild_calls == []
+    assert host.prove_calls == []
+
+
+def test_provider_rebuild_refusal_exposes_no_reconstruction() -> None:
+    candidate = _atomizable_candidate()
+    host = _FakeProviderHost()
+    host.reconstruction = None
+
+    assert reconstruct_native_provider_result(host, candidate, lambda term: term) is None
+    assert host.rebuild_calls
+    assert host.prove_calls == []
+
+
+@pytest.mark.parametrize(
+    "host",
+    [_FakeProviderHost(proof=False), _FakeProviderHost(proof_error=RuntimeError("proof"))],
+    ids=["proof-false", "proof-exception"],
+)
+def test_provider_proof_failure_exposes_no_reconstruction(host) -> None:
+    candidate = _atomizable_candidate()
+
+    assert reconstruct_native_provider_result(host, candidate, lambda term: term) is None
+    assert host.rebuild_calls
+    assert len(host.prove_calls) == 1
+
+
+@pytest.mark.parametrize("timeout", [0, -1, 251, "250"])
+def test_provider_rejects_illegal_proof_timeout_before_provider(timeout) -> None:
+    candidate = _atomizable_candidate()
+    host = _FakeProviderHost()
+    called = []
+
+    assert (
+        reconstruct_native_provider_result(
+            host, candidate, lambda term: called.append(term) or term, proof_timeout_ms=timeout
+        )
+        is None
+    )
+    assert called == []
+    assert host.rebuild_calls == []
 
 
 def test_json_values_are_recursively_copied_frozen_and_validated() -> None:

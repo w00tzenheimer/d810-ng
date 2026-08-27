@@ -393,7 +393,8 @@ class TestNativeMbaExtensionHost:
         self, monkeypatch
     ):
         host = native_mba_host_services()
-        source = _residual_source_ast()
+        repeated = _node(ida_hexrays.m_and, _leaf("x", 1), _leaf("y", 2))
+        source = _node(ida_hexrays.m_add, repeated, repeated)
         source.dst_mop = _leaf("out", 7).create_mop(0x401000)
         instruction = _instruction(source)
         candidate = host.capture_instruction(instruction)
@@ -409,30 +410,20 @@ class TestNativeMbaExtensionHost:
             and node.leaf_key is not None
             and node.leaf_key[0] == "d810.mba.atom.v1"
         )
-        x = next(
-            node.children[0]
-            for node in _walk_terms(atomized.term)
-            if node.operation == "bnot"
-        )
         received: list[TypedBvTerm] = []
 
         def provider(term):
             received.append(term)
-            return TypedBvTerm("or", term.width, children=(x, atom))
-
-        monkeypatch.setattr(
-            extension_host,
-            "prove_native_ast_equivalence",
-            lambda *args, **kwargs: True,
-        )
+            return term
 
         reconstruction = reconstruct_native_provider_result(
             host,
             candidate,
             provider,
-            proof_timeout_ms=1000,
+            proof_timeout_ms=250,
         )
         assert received == [atomized.term]
+        assert atom in tuple(_walk_terms(received[0]))
         assert reconstruction is not None
 
         unknown_atom = TypedBvTerm(
@@ -442,7 +433,7 @@ class TestNativeMbaExtensionHost:
         )
         with pytest.raises(ValueError, match="unknown reserved atom"):
             atomized.restore_replacement(
-                TypedBvTerm("or", atomized.term.width, children=(x, unknown_atom))
+                TypedBvTerm("add", atomized.term.width, children=(unknown_atom, unknown_atom))
             )
 
         rebuild_called = False
@@ -453,14 +444,16 @@ class TestNativeMbaExtensionHost:
             raise AssertionError("unknown atom reached host.rebuild")
 
         monkeypatch.setattr(host, "rebuild", unexpected_rebuild)
-        with pytest.raises(ValueError, match="unknown reserved atom"):
+        assert (
             reconstruct_native_provider_result(
                 host,
                 candidate,
                 lambda term: TypedBvTerm(
-                    "or", term.width, children=(x, unknown_atom)
+                    "add", term.width, children=(unknown_atom, unknown_atom)
                 ),
             )
+            is None
+        )
         assert rebuild_called is False
 
         monkeypatch.undo()
@@ -488,7 +481,11 @@ class TestNativeMbaExtensionHost:
         candidate = host.capture_instruction(instruction)
         assert candidate is not None
         assert candidate.term.width == 32
-        captured_wire = typed_term_to_dict(candidate.term)
+        # ``term`` is the shared canonical identity; the capture view retains
+        # the exact raw source needed by the offline residual miner.
+        captured_source = atomize_native_candidate(candidate).view.original_term
+        assert candidate.raw_term == captured_source
+        captured_wire = typed_term_to_dict(captured_source)
         outcome = MbaProviderOutcome(
             provider=MbaProviderKind.CATALOGUE,
             status=ProviderOutcomeStatus.UNCHANGED,
@@ -505,7 +502,7 @@ class TestNativeMbaExtensionHost:
                 instruction_ea=0x401024,
                 maturity="MMAT_BUILT",
             ),
-            canonical_term=candidate.term,
+            canonical_term=captured_source,
             outcomes=(outcome,),
         )
         capture = NativeMbaCorpusCapture(

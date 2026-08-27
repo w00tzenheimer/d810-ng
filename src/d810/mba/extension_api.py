@@ -424,8 +424,13 @@ class AtomizedNativeMbaCandidate:
             raise ValueError("candidate width does not match destination_size")
         if self.view.original_term.width != expected_width:
             raise ValueError("atomization view width does not match candidate")
-        if self.view.original_term != self.candidate.term:
-            raise ValueError("atomization view does not match candidate term")
+        expected_term = (
+            self.candidate.raw_term
+            if self.candidate.raw_term is not None
+            else self.candidate.term
+        )
+        if self.view.original_term != expected_term:
+            raise ValueError("atomization view does not match candidate source term")
 
     @property
     def term(self) -> TypedBvTerm:
@@ -456,7 +461,11 @@ def atomize_native_candidate(
 
     if not isinstance(candidate, NativeMbaCandidate):
         raise TypeError("candidate must be a NativeMbaCandidate")
-    view = atomize_repeated_subterms(candidate.term, max_atoms=max_atoms)
+    # Canonical ``term`` remains the shared identity used by catalogues and
+    # fingerprints.  Atomization consumes the immutable source view so AC
+    # canonicalization cannot erase repeated raw evidence needed by a provider.
+    source = candidate.raw_term if candidate.raw_term is not None else candidate.term
+    view = atomize_repeated_subterms(source, max_atoms=max_atoms)
     return AtomizedNativeMbaCandidate(candidate=candidate, view=view)
 
 
@@ -465,7 +474,7 @@ def reconstruct_native_provider_result(
     candidate: NativeMbaCandidate,
     provider: Callable[[TypedBvTerm], TypedBvTerm],
     *,
-    certificate: str | None = None,
+    proof_certificate: str | None = None,
     known_constants: object | None = None,
     proof_timeout_ms: int | None = None,
 ) -> NativeMbaReconstruction | None:
@@ -476,21 +485,28 @@ def reconstruct_native_provider_result(
     to apply or swap until the final native equivalence proof accepts it.
     """
 
-    atomized = atomize_native_candidate(candidate)
-    replacement = provider(atomized.term)
-    restored = atomized.restore_replacement(replacement)
-    reconstruction = host.rebuild(candidate, restored)
-    if reconstruction is None:
-        return None
-    if not host.prove(
-        candidate,
-        reconstruction,
-        certificate=certificate,
-        known_constants=known_constants,
-        proof_timeout_ms=proof_timeout_ms,
+    if proof_timeout_ms is not None and (
+        type(proof_timeout_ms) is not int or not 0 < proof_timeout_ms <= 250
     ):
         return None
-    return reconstruction
+    try:
+        atomized = atomize_native_candidate(candidate)
+        replacement = provider(atomized.term)
+        restored = atomized.restore_replacement(replacement)
+        reconstruction = host.rebuild(candidate, restored)
+        if reconstruction is None:
+            return None
+        if not host.prove(
+            candidate,
+            reconstruction,
+            certificate=proof_certificate,
+            known_constants=known_constants,
+            proof_timeout_ms=proof_timeout_ms,
+        ):
+            return None
+        return reconstruction
+    except Exception:
+        return None
 
 
 @dataclass(frozen=True, slots=True)

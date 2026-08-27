@@ -99,26 +99,41 @@ def test_deterministic_ac_order_after_local_normalization():
     assert any(step.kind is CanonicalizationKind.AC_REORDER for step in first.steps)
 
 
-def test_repeated_ac_subterms_remain_atomizable_after_canonicalization():
+@pytest.mark.parametrize("operation", ["add", "and", "mul", "or", "xor"])
+@pytest.mark.parametrize("repeated", [False, True])
+def test_ac_canonicalization_is_association_permutation_invariant(
+    operation: str, repeated: bool
+):
+    width = 32
+    x = leaf("x", width)
+    y = leaf("y", width)
+    z = leaf("z", width)
+    operands = (x, x, y) if repeated else (x, y, z)
+    variants = (
+        node(operation, width, operands[0], node(operation, width, operands[1], operands[2])),
+        node(operation, width, node(operation, width, operands[2], operands[0]), operands[1]),
+        node(operation, width, operands[1], node(operation, width, operands[0], operands[2])),
+    )
+    views = tuple(canonicalize_mba_term(variant) for variant in variants)
+
+    assert all(view.canonical_term == views[0].canonical_term for view in views)
+    assert len({term_fingerprint(view.canonical_term) for view in views}) == 1
+    assert all(
+        canonicalize_mba_term(view.canonical_term).canonical_term == view.canonical_term
+        for view in views
+    )
+
+
+def test_repeated_raw_residual_evidence_is_separate_from_canonical_identity():
     width = 32
     x = leaf("x", width)
     masked = node("and", width, leaf("mask", width), const(0xFFFFFBFB, width))
-    source = node(
-        "add",
-        width,
-        node("and", width, x, masked),
-        node("and", width, masked, node("bnot", width, x)),
-    )
+    source = node("add", width, node("and", width, x, masked), node("and", width, masked, neg(x)))
+    canonical = canonicalize_mba_term(source)
 
-    canonical = canonicalize_mba_term(source).canonical_term
-
-    def occurrences(term, target):
-        return (1 if term == target else 0) + sum(
-            occurrences(child, target) for child in term.children
-        )
-
-    canonical_mask = canonicalize_mba_term(masked).canonical_term
-    assert occurrences(canonical, canonical_mask) == 2
+    assert canonical.raw_term is source
+    assert canonical.canonical_term != source
+    assert canonicalize_mba_term(source).canonical_term == canonical.canonical_term
 
 
 def test_signed_addition_is_association_invariant_and_trace_stable():
