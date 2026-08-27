@@ -364,21 +364,60 @@ def test_add_rejects_mixed_wire_versions_immediately(
 
 
 @pytest.mark.parametrize(
-    "observations",
+    ("matching", "mismatching"),
     (
         (_observation(), _v2_observation(_term())),
         (_v2_observation(_term()), _observation()),
     ),
 )
-def test_extend_rejects_mixed_wire_versions_before_materialization(
-    observations: tuple[MbaResidualObservation, MbaResidualObservation],
+@pytest.mark.parametrize("prepopulated", (False, True))
+def test_extend_rejects_mixed_wire_versions_transactionally(
+    matching: MbaResidualObservation,
+    mismatching: MbaResidualObservation,
+    prepopulated: bool,
 ) -> None:
-    corpus = MbaResidualCorpus(schema_version=observations[0].schema_version)
+    initial = (matching,) if prepopulated else ()
+    corpus = MbaResidualCorpus(initial, schema_version=matching.schema_version)
+    before = corpus.observations
 
     with pytest.raises(ValueError, match="cannot mix schema versions"):
-        corpus.extend(observations)
+        corpus.extend((matching, mismatching))
 
-    assert corpus.observations == observations[:1]
+    assert corpus.observations == before
+
+
+@pytest.mark.parametrize("prepopulated", (False, True))
+def test_extend_rejects_late_invalid_type_transactionally(
+    prepopulated: bool,
+) -> None:
+    matching = _observation()
+    initial = (matching,) if prepopulated else ()
+    corpus = MbaResidualCorpus(initial, schema_version=matching.schema_version)
+    before = corpus.observations
+
+    with pytest.raises(TypeError, match="MbaResidualObservation"):
+        corpus.extend((matching, object()))  # type: ignore[arg-type]
+
+    assert corpus.observations == before
+
+
+def test_extend_materializes_one_shot_iterable_once() -> None:
+    observations = (
+        _observation(source=_source(case_id="first")),
+        _observation(source=_source(case_id="second")),
+    )
+    iteration_count = 0
+
+    def one_shot_observations():
+        nonlocal iteration_count
+        iteration_count += 1
+        yield from observations
+
+    corpus = MbaResidualCorpus(schema_version=1)
+    corpus.extend(one_shot_observations())
+
+    assert corpus.observations == observations
+    assert iteration_count == 1
 
 
 def test_v2_observation_rejects_missing_or_noncanonical_evidence() -> None:

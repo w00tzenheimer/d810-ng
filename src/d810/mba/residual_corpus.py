@@ -419,8 +419,13 @@ class MbaResidualCorpus:
     add_observation = add
 
     def extend(self, observations: Iterable[MbaResidualObservation]) -> None:
-        for observation in observations:
-            self.add(observation)
+        batch = tuple(observations)
+        for observation in batch:
+            if not isinstance(observation, MbaResidualObservation):
+                raise TypeError("observation must be an MbaResidualObservation")
+            if observation.schema_version != self.schema_version:
+                raise ValueError("residual corpus cannot mix schema versions")
+        self._observations.extend(batch)
 
     @property
     def observations(self) -> tuple[MbaResidualObservation, ...]:
