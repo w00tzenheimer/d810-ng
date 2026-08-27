@@ -5,8 +5,11 @@ from __future__ import annotations
 from d810.core.plugins import (
     BackendRegistry,
     BackendStatus,
+    BackendUnavailable,
+    PLUGIN_API_VERSION,
     PassImplementationMisdeclared,
     PassImplementationRequirement,
+    manifest_of,
 )
 from d810.manager.workbench_recipe_models import (
     PassImplementationAvailability,
@@ -37,6 +40,51 @@ def _detail(
     if reason:
         prefix = f"{reason.rstrip('.')}."
     return f"{prefix} {suffix}"
+
+
+def _host_requirement_failure(
+    backend_registry: BackendRegistry,
+    pass_id: str,
+    backend_name: str,
+) -> tuple[PassImplementationStatus, str] | None:
+    """Validate a cheap manifest before availability projects activation state.
+
+    ``BackendRegistry.implementation_candidates_for`` intentionally returns
+    declaration-only candidates, not manifests.  The availability projection
+    still needs to expose a missing host requirement without resolving
+    ``provides``, so use the registry's already-discovered candidate/spec
+    tables to read the inert manifest and invoke its explicit validator seam.
+    The normal probe path performs the same gate before provider resolution.
+    """
+    validator = getattr(backend_registry, "_requirement_validator", None)
+    if validator is None:
+        return None
+    backend_registry.discover()
+    candidates = getattr(backend_registry, "_candidates", {}).get(backend_name, ())
+    settled = getattr(backend_registry, "_settled", {}).get(backend_name)
+    specs = (settled,) if settled is not None else candidates
+    for spec in specs:
+        try:
+            manifest = manifest_of(spec.load_manifest())
+        except Exception:
+            continue
+        if (
+            manifest.api_version != PLUGIN_API_VERSION
+            or pass_id not in manifest.implements
+        ):
+            continue
+        try:
+            validator(manifest.requires)
+        except BackendUnavailable as exc:
+            return PassImplementationStatus.UNAVAILABLE, str(exc)
+        except Exception as exc:
+            return (
+                PassImplementationStatus.BROKEN,
+                f"host capability requirement validator raised "
+                f"{type(exc).__name__}: {exc}",
+            )
+        return None
+    return None
 
 
 def project_pass_implementation_availability(
@@ -109,6 +157,23 @@ def project_pass_implementation_availability(
         )
 
     backend_names = tuple(candidate.backend_name for candidate in candidates)
+    requirement_failure = _host_requirement_failure(
+        backend_registry, pass_id, candidates[0].backend_name
+    )
+    if requirement_failure is not None:
+        status, reason = requirement_failure
+        label = {
+            PassImplementationStatus.UNAVAILABLE: "Unavailable",
+            PassImplementationStatus.BROKEN: "Broken",
+        }[status]
+        return PassImplementationAvailability(
+            distribution=requirement.distribution,
+            status=status,
+            status_label=label,
+            detail=_detail(requirement, status, reason),
+            activation_required=requirement.activation_required,
+            backend_names=(candidates[0].backend_name,),
+        )
     if len(candidates) > 1:
         status = PassImplementationStatus.AMBIGUOUS
         return PassImplementationAvailability(
@@ -178,11 +243,11 @@ def project_pass_implementation_availability(
         status=status,
         status_label=label,
         detail=_detail(
-        requirement,
-        status,
-        activation_reason if activation_reason is not None else (
-            None if info is None else info.reason
-        ),
+            requirement,
+            status,
+            activation_reason
+            if activation_reason is not None
+            else (None if info is None else info.reason),
         ),
         activation_required=requirement.activation_required,
         backend_names=backend_names,

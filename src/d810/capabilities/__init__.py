@@ -23,6 +23,7 @@ from .native_cfg_normalization import (
     NativeCfgFreezeObserver,
     NativeEdgeStateProofCapability,
 )
+from .plugin_host import PluginCapabilityAccessError, PluginHostCapabilityRegistry
 from .recurrence import ExternalRecurrenceCapability, RecurrenceAnalysis
 from .source_lifter import (
     LiveLifter,
@@ -44,6 +45,8 @@ __all__ = [
     "LiveLifter",
     "NativeCfgFreezeObserver",
     "NativeEdgeStateProofCapability",
+    "PluginCapabilityAccessError",
+    "PluginHostCapabilityRegistry",
     "RecurrenceAnalysis",
     "SeveranceViolation",
     "SourceLifter",
