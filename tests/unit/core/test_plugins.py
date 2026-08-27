@@ -440,6 +440,72 @@ class TestActivation(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(plugin.activation.close_calls, 1)
 
+    def test_activation_and_close_callbacks_can_read_registry(self):
+        plugin = FakePlugin(FakeActivation())
+        reg = registry_for(plugin)
+        activation_entered = threading.Event()
+        activation_errors = []
+        original_activate = plugin.activate
+
+        def activate(context):
+            activation_entered.set()
+            worker_done = threading.Event()
+
+            def read_registry():
+                try:
+                    reg.info("example")
+                except BaseException as exc:  # pragma: no cover - assertion aid
+                    activation_errors.append(exc)
+                finally:
+                    worker_done.set()
+
+            worker = threading.Thread(target=read_registry)
+            worker.start()
+            if not worker_done.wait(timeout=1):
+                activation_errors.append(
+                    AssertionError("registry read blocked during activation")
+                )
+            worker.join(timeout=1)
+            return original_activate(context)
+
+        plugin.activate = activate
+        activation_thread = threading.Thread(
+            target=lambda: reg.activate("example")
+        )
+        activation_thread.start()
+        self.assertTrue(activation_entered.wait(timeout=2))
+        activation_thread.join(timeout=2)
+        self.assertFalse(activation_thread.is_alive())
+        self.assertEqual(activation_errors, [])
+
+        close_errors = []
+        original_close = plugin.activation.close
+
+        def close():
+            worker_done = threading.Event()
+
+            def read_registry():
+                try:
+                    reg.info("example")
+                except BaseException as exc:  # pragma: no cover - assertion aid
+                    close_errors.append(exc)
+                finally:
+                    worker_done.set()
+
+            worker = threading.Thread(target=read_registry)
+            worker.start()
+            if not worker_done.wait(timeout=1):
+                close_errors.append(
+                    AssertionError("registry read blocked during close")
+                )
+            worker.join(timeout=1)
+            original_close()
+
+        plugin.activation.close = close
+        reg.close_activations()
+        self.assertEqual(close_errors, [])
+        self.assertEqual(plugin.activation.close_calls, 1)
+
     def test_forced_rediscovery_closes_live_activation_before_reset(self):
         plugin = FakePlugin(FakeActivation())
         reg = registry_for(plugin)

@@ -772,6 +772,16 @@ def entry_point_source() -> list[BackendSpec]:
     ]
 
 
+@dataclass
+class _ActivationRecord:
+    condition: threading.Condition
+    generation: int
+    owner_thread: int
+    in_progress: bool = True
+    activation: PluginActivation | None = None
+    error: BaseException | None = None
+
+
 class BackendRegistry:
     """Discovers backends, gates them by version, and loads them on demand.
 
@@ -794,6 +804,10 @@ class BackendRegistry:
         self._builtins = tuple(builtins)
         self._source = source if source is not None else entry_point_source
         self._lock = threading.RLock()
+        self._lifecycle = threading.Condition(self._lock)
+        self._generation = 0
+        self._rediscovering = False
+        self._closing = False
         self._discovered = False
         #: name -> candidates, most preferred first (entry points, then builtins)
         self._candidates: dict[str, tuple[BackendSpec, ...]] = {}
@@ -813,6 +827,7 @@ class BackendRegistry:
         self._host = host if host is not None else _EmptyHostCapabilities()
         self._requirement_validator = requirement_validator
         self._activated: dict[str, PluginActivation] = {}
+        self._activation_records: dict[str, _ActivationRecord] = {}
         #: Injected to keep optimizer-layer imports out of ``core.plugins``.
         self._registration_lookup = registration_lookup
 
@@ -820,11 +835,32 @@ class BackendRegistry:
 
     def discover(self, *, force: bool = False) -> None:
         """Populate the registry. Cheap after the first call unless *force*."""
+        force_cycle = False
         with self._lock:
             if self._discovered and not force:
                 return
             if self._discovered and force:
-                self._close_activations_locked()
+                while self._rediscovering or self._closing:
+                    self._lifecycle.wait()
+                self._rediscovering = True
+                self._generation += 1
+                force_cycle = True
+
+        if force_cycle:
+            try:
+                self._close_activations_impl()
+            except BaseException:
+                with self._lock:
+                    self._rediscovering = False
+                    self._lifecycle.notify_all()
+                raise
+
+        with self._lock:
+            if self._discovered and not force:
+                if force_cycle:
+                    self._rediscovering = False
+                    self._lifecycle.notify_all()
+                return
 
             try:
                 discovered = list(self._source())
@@ -865,6 +901,9 @@ class BackendRegistry:
             self._implementation_failures = {}
             self._activated = {}
             self._discovered = True
+            if force_cycle:
+                self._rediscovering = False
+                self._lifecycle.notify_all()
 
     # -- introspection (never imports) -------------------------------------
 
@@ -926,11 +965,27 @@ class BackendRegistry:
         """Validate and activate one resolved plugin transactionally."""
         self.discover()
         with self._lock:
+            while self._rediscovering or self._closing:
+                self._lifecycle.wait()
             if name not in self._candidates:
                 raise BackendUnavailable(f"no backend named {name!r}")
             existing = self._activated.get(name)
             if existing is not None:
                 return existing
+            record = self._activation_records.get(name)
+            if record is not None:
+                while record.in_progress:
+                    record.condition.wait()
+                existing = self._activated.get(name)
+                if existing is not None:
+                    return existing
+                if record.error is not None:
+                    raise record.error
+                while self._rediscovering or self._closing:
+                    self._lifecycle.wait()
+                existing = self._activated.get(name)
+                if existing is not None:
+                    return existing
             info = self.probe(name)
             if not info.usable:
                 raise BackendUnavailable(
@@ -955,37 +1010,89 @@ class BackendRegistry:
                 ),
                 host=self._host,
             )
-            partial: Any = None
-            try:
-                partial = activate(context)
-                self._validate_activation(partial)
-            except Exception:
-                if partial is not None:
-                    close = getattr(partial, "close", None)
-                    if callable(close):
-                        try:
-                            close()
-                        except Exception:
-                            logger.exception(
-                                "plugin %r failed while rolling back", name
-                            )
-                raise
+            record = _ActivationRecord(
+                condition=threading.Condition(self._lock),
+                generation=self._generation,
+                owner_thread=threading.get_ident(),
+            )
+            self._activation_records[name] = record
+
+        partial: Any = None
+        try:
+            partial = activate(context)
+            self._validate_activation(partial)
+        except Exception as exc:
+            if partial is not None:
+                close = getattr(partial, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logger.exception(
+                            "plugin %r failed while rolling back", name
+                        )
+            with self._lock:
+                record.error = exc
+                record.in_progress = False
+                if (
+                    self._activation_records.get(name) is record
+                    and not self._closing
+                    and not self._rediscovering
+                ):
+                    del self._activation_records[name]
+                record.condition.notify_all()
+            raise
+
+        with self._lock:
+            record.in_progress = False
             self._activated[name] = partial
+            if self._closing or self._rediscovering:
+                # Keep the record until the concurrent close has claimed it;
+                # this also lets duplicate activation callers receive the
+                # same ownership while shutdown drains the lifecycle.
+                record.activation = partial
+            if (
+                self._activation_records.get(name) is record
+                and not self._closing
+                and not self._rediscovering
+            ):
+                del self._activation_records[name]
+            record.condition.notify_all()
             return partial
 
     def close_activations(self) -> None:
         """Close every activation once, retaining progress after failures."""
         with self._lock:
-            self._close_activations_locked()
+            while self._rediscovering or self._closing:
+                self._lifecycle.wait()
+            self._closing = True
+        self._close_activations_impl()
 
-    def _close_activations_locked(self) -> None:
-        activations = tuple(self._activated.items())
-        self._activated.clear()
-        for name, activation in activations:
+    def _close_activations_impl(self) -> None:
+        with self._lock:
+            records = tuple(self._activation_records.items())
+            activations = dict(self._activated)
+            self._activated.clear()
+
+        for name, record in records:
+            with self._lock:
+                while record.in_progress:
+                    record.condition.wait()
+                if record.activation is not None:
+                    activations[name] = record.activation
+
+        for name, activation in activations.items():
             try:
                 activation.close()
             except Exception:
                 logger.exception("plugin %r failed while closing", name)
+
+        with self._lock:
+            for name, record in records:
+                if self._activation_records.get(name) is record:
+                    del self._activation_records[name]
+            self._closing = False
+            self._lifecycle.notify_all()
 
     def _validate_requirements(self, requirements: Sequence[str]) -> None:
         if not requirements:
