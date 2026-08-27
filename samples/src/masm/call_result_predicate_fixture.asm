@@ -8,7 +8,9 @@ _TEXT SEGMENT ALIGN(16) 'CODE'
 ; D810_EXPORT call_result_predicate_helper
 PUBLIC call_result_predicate_helper
 call_result_predicate_helper:
-    mov eax, 40h
+    ; Deliberately opaque to the caller: production fact injection supplies
+    ; the result bits, while the no-fact route must retain the branch.
+    mov eax, ecx
     ret
 
 PUBLIC call_result_predicate_fixture
@@ -23,7 +25,9 @@ call_result_predicate_fixture:
     shr ecx, 0Ah
     shr eax, 6
     and eax, 1
-    cmp eax, ecx
+    ; The branch predicate is the call-result bit itself.  ECX remains a
+    ; deliberately live decoy in the later materializable path.
+    cmp eax, 0
     jne short call_result_predicate_taken
     mov eax, DWORD PTR call_result_later_value
     ; Keep the decoy ECX definition live in the materializable path.
@@ -31,7 +35,7 @@ call_result_predicate_fixture:
     jmp short call_result_predicate_done
 
 call_result_predicate_taken:
-    xor eax, eax
+    mov eax, 0CAFEBABEh
 
 call_result_predicate_done:
     add rsp, 28h
