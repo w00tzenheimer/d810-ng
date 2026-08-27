@@ -1,9 +1,11 @@
 """Unit tests for the API 1 plugin manifest and activation contract."""
 
 import unittest
+import threading
 
 from d810.core.plugins import (
     PLUGIN_API_VERSION,
+    BackendInfo,
     BackendManifest,
     BackendRegistry,
     BackendSpec,
@@ -11,6 +13,10 @@ from d810.core.plugins import (
     BackendUnavailable,
     ENTRY_POINT_GROUP,
     ManifestError,
+    PassImplementationAmbiguous,
+    PassImplementationCandidate,
+    PassImplementationMisdeclared,
+    PassImplementationMissing,
     PluginActivationContext,
     PluginCapabilityOffer,
     PluginFunctionContext,
@@ -32,6 +38,17 @@ class Recorder:
         if self.raises is not None:
             raise self.raises
         return self.result
+
+
+def spec(name, load, *, api_version=PLUGIN_API_VERSION, origin="test"):
+    manifest = BackendManifest(name=name, api_version=api_version, provides=load)
+    return BackendSpec(name=name, origin=origin, load_manifest=lambda: manifest)
+
+
+def registry(specs=(), builtins=()):
+    return BackendRegistry(
+        builtins=tuple(builtins), source=lambda: list(specs)
+    )
 
 
 class TestManifest(unittest.TestCase):
@@ -180,6 +197,14 @@ class FakeHost:
                 raise BackendUnavailable(f"missing host capability: {requirement}")
 
 
+class ProtocolOnlyHost:
+    def require(self, capability):
+        return capability
+
+    def optional(self, capability):
+        return None
+
+
 class FakeActivation:
     def __init__(self, *, offers=(), close_error=None):
         self.offers = tuple(offers)
@@ -225,6 +250,7 @@ def registry_for(plugin, *, requires=(), host=None, name="example"):
             )
         ],
         host=host,
+        requirement_validator=getattr(host, "validate", None),
     )
 
 
@@ -280,6 +306,151 @@ class TestActivation(unittest.TestCase):
         self.assertEqual(first.close_calls, 1)
         self.assertEqual(second.close_calls, 1)
 
+    def test_activation_uses_the_settled_fallback_manifest_and_plugin(self):
+        preferred_plugin = FakePlugin(FakeActivation())
+        builtin_plugin = FakePlugin(FakeActivation())
+        preferred_manifest = {
+            "name": "example",
+            "api_version": PLUGIN_API_VERSION,
+            "provides": lambda: (_ for _ in ()).throw(
+                ImportError("preferred binding missing")
+            ),
+        }
+        builtin_manifest = {
+            "name": "example",
+            "api_version": PLUGIN_API_VERSION,
+            "provides": lambda: builtin_plugin,
+        }
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="preferred 1.0",
+                    load_manifest=lambda: preferred_manifest,
+                )
+            ],
+            builtins=(
+                BackendSpec(
+                    name="example",
+                    origin="builtin",
+                    load_manifest=lambda: builtin_manifest,
+                ),
+            ),
+        )
+
+        activation = reg.activate("example")
+
+        self.assertIs(activation, builtin_plugin.activation)
+        self.assertEqual(len(preferred_plugin.activate_calls), 0)
+        self.assertEqual(
+            builtin_plugin.activate_calls[0].identity.origin, "builtin"
+        )
+
+    def test_protocol_only_host_cannot_satisfy_string_requirements(self):
+        plugin = FakePlugin(FakeActivation())
+        reg = registry_for(
+            plugin,
+            requires=("d810.example.v1",),
+            host=ProtocolOnlyHost(),
+        )
+
+        info = reg.probe("example")
+
+        self.assertEqual(info.status, BackendStatus.UNAVAILABLE)
+        self.assertIn("validator", info.reason)
+        self.assertEqual(plugin.activate_calls, [])
+
+    def test_requirement_validator_defect_is_broken(self):
+        plugin = FakePlugin(FakeActivation())
+
+        def broken_validator(requirements):
+            raise RuntimeError("validator defect")
+
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example 1.0",
+                    load_manifest=lambda: {
+                        "name": "example",
+                        "api_version": PLUGIN_API_VERSION,
+                        "provides": lambda: plugin,
+                        "requires": ("d810.example.v1",),
+                    },
+                )
+            ],
+            requirement_validator=broken_validator,
+        )
+
+        info = reg.probe("example")
+
+        self.assertEqual(info.status, BackendStatus.BROKEN)
+        self.assertIn("validator defect", info.reason)
+        self.assertEqual(plugin.activate_calls, [])
+
+    def test_concurrent_activation_is_once_only_and_close_waits_for_it(self):
+        plugin = FakePlugin(FakeActivation())
+        entered = threading.Barrier(2)
+        release = threading.Event()
+        calls = []
+        original_activate = plugin.activate
+
+        def blocked_activate(context):
+            calls.append(context)
+            entered.wait(timeout=2)
+            self.assertTrue(release.wait(timeout=2))
+            return original_activate(context)
+
+        plugin.activate = blocked_activate
+        reg = registry_for(plugin)
+        results = []
+        errors = []
+
+        def activate():
+            try:
+                results.append(reg.activate("example"))
+            except BaseException as exc:  # pragma: no cover - assertion aid
+                errors.append(exc)
+
+        first = threading.Thread(target=activate)
+        second = threading.Thread(target=activate)
+        first.start()
+        entered.wait(timeout=2)
+        second.start()
+        self.assertFalse(reg._activated)
+        self.assertEqual(len(calls), 1)
+        closed = threading.Event()
+
+        def close():
+            reg.close_activations()
+            closed.set()
+
+        closer = threading.Thread(target=close)
+        closer.start()
+        self.assertFalse(closed.wait(timeout=0.05))
+        release.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+        closer.join(timeout=2)
+
+        self.assertFalse(first.is_alive() or second.is_alive() or closer.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertIs(results[0], results[1])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(plugin.activation.close_calls, 1)
+
+    def test_forced_rediscovery_closes_live_activation_before_reset(self):
+        plugin = FakePlugin(FakeActivation())
+        reg = registry_for(plugin)
+        reg.activate("example")
+
+        reg.discover(force=True)
+
+        self.assertEqual(plugin.activation.close_calls, 1)
+        reg.close_activations()
+        self.assertEqual(plugin.activation.close_calls, 1)
+
 
 class TestDiscovery(unittest.TestCase):
     def test_discovery_is_lazy_and_status_is_reportable(self):
@@ -308,6 +479,613 @@ class TestDiscovery(unittest.TestCase):
         self.assertEqual(format_report([]), "no backends registered")
         info = BackendRegistry(source=lambda: []).report()
         self.assertFalse(has_defects(info))
+
+
+class TestHealthRegression(unittest.TestCase):
+    def info(self, status):
+        return BackendInfo(
+            name="x", status=status, origin="test", api_version=PLUGIN_API_VERSION
+        )
+
+    def test_absent_optional_dependency_is_not_a_defect(self):
+        for status in (
+            BackendStatus.AVAILABLE,
+            BackendStatus.UNAVAILABLE,
+            BackendStatus.NOT_LOADED,
+        ):
+            self.assertFalse(has_defects([self.info(status)]), status)
+
+    def test_broken_and_incompatible_are_defects(self):
+        for status in (BackendStatus.BROKEN, BackendStatus.INCOMPATIBLE):
+            self.assertTrue(has_defects([self.info(status)]), status)
+
+    def test_one_defect_among_healthy_backends_still_counts(self):
+        self.assertTrue(
+            has_defects(
+                [self.info(BackendStatus.AVAILABLE), self.info(BackendStatus.BROKEN)]
+            )
+        )
+
+
+class TestFormatReportRegression(unittest.TestCase):
+    def test_report_names_status_origin_and_reason(self):
+        text = format_report(
+            [
+                BackendInfo(
+                    name="cobra",
+                    status=BackendStatus.UNAVAILABLE,
+                    origin="builtin",
+                    api_version=PLUGIN_API_VERSION,
+                    reason="native binding not built",
+                )
+            ]
+        )
+        for fragment in ("cobra", "unavailable", "builtin", "binding"):
+            self.assertIn(fragment, text)
+
+    def test_report_surfaces_shadowing(self):
+        text = format_report(
+            [
+                BackendInfo(
+                    name="cobra",
+                    status=BackendStatus.AVAILABLE,
+                    origin="d810-cobra 1.0",
+                    api_version=PLUGIN_API_VERSION,
+                    shadowed=("builtin",),
+                )
+            ]
+        )
+        self.assertIn("shadows", text)
+        self.assertIn("builtin", text)
+
+    def test_report_explains_a_fallback(self):
+        text = format_report(
+            [
+                BackendInfo(
+                    name="cobra",
+                    status=BackendStatus.AVAILABLE,
+                    origin="builtin",
+                    api_version=PLUGIN_API_VERSION,
+                    rejected=(("d810-cobra 0.1", "built for API v99"),),
+                )
+            ]
+        )
+        for fragment in ("d810-cobra 0.1", "v99", "rejected"):
+            self.assertIn(fragment, text)
+
+
+class TestPassImplementationRegression(unittest.TestCase):
+    def manifest(self, implements, *, provides=None):
+        return BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION,
+            provides=provides if provides is not None else Recorder(result=object()),
+            implements=implements,
+        )
+
+    def test_declared_implementation_is_found_by_pass_id(self):
+        reg = registry(
+            [
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: self.manifest(
+                        {"mba-solve": "CobraSolveRule"}
+                    ),
+                )
+            ]
+        )
+        self.assertEqual(reg.implementation_for("mba-solve"), "CobraSolveRule")
+
+    def test_no_extension_means_no_implementation(self):
+        self.assertIsNone(registry().implementation_for("mba-solve"))
+
+    def test_unrelated_pass_id_is_not_matched(self):
+        reg = registry(
+            [
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: self.manifest(
+                        {"mba-solve": "CobraSolveRule"}
+                    ),
+                )
+            ]
+        )
+        self.assertIsNone(reg.implementation_for("unflatten"))
+
+    def test_duck_typed_manifest_may_declare_implementations(self):
+        raw = {
+            "name": "cobra",
+            "api_version": 1,
+            "provides": Recorder(result=object()),
+            "implements": {"mba-solve": "CobraSolveRule"},
+        }
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: raw)]
+        )
+        self.assertEqual(reg.implementation_for("mba-solve"), "CobraSolveRule")
+
+    def test_malformed_implementation_ids_are_rejected(self):
+        for implements in (
+            {1: "Rule"},
+            {"": "Rule"},
+            {"mba-egraph": object()},
+            {"mba-egraph": ""},
+        ):
+            with self.subTest(implements=implements):
+                manifest = self.manifest(implements)
+                reg = registry(
+                    [
+                        BackendSpec(
+                            name="cobra",
+                            origin="test",
+                            load_manifest=lambda manifest=manifest: manifest,
+                        )
+                    ]
+                )
+                with self.assertRaises(PassImplementationMisdeclared):
+                    reg.implementation_candidates_for("mba-egraph")
+
+    def test_resolution_does_not_import_the_backend(self):
+        load = Recorder(result=object())
+        manifest = self.manifest(
+            {"mba-solve": "CobraSolveRule"}, provides=load
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+        reg.implementation_for("mba-solve")
+        self.assertEqual(load.calls, 0)
+
+    def test_incompatible_backend_contributes_no_implementation(self):
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION - 1,
+            provides=Recorder(result=object()),
+            implements={"mba-solve": "CobraSolveRule"},
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+        self.assertIsNone(reg.implementation_for("mba-solve"))
+
+    def test_first_compatible_declaration_remains_the_legacy_answer(self):
+        first = self.manifest({"mba-solve": "FirstSolver"})
+        second = self.manifest({"mba-solve": "SecondSolver"})
+        reg = registry(
+            [
+                BackendSpec(
+                    name="first", origin="first-origin", load_manifest=lambda: first
+                ),
+                BackendSpec(
+                    name="second", origin="second-origin", load_manifest=lambda: second
+                ),
+            ]
+        )
+        self.assertEqual(reg.implementation_for("mba-solve"), "FirstSolver")
+
+    def test_compatible_manifest_produces_an_immutable_candidate(self):
+        manifest = self.manifest({"mba-egraph": "EgglogOptimizer"})
+        reg = registry(
+            [
+                BackendSpec(
+                    name="cobra", origin="d810-cobra 1.0", load_manifest=lambda: manifest
+                )
+            ]
+        )
+        self.assertEqual(
+            reg.implementation_candidates_for("mba-egraph"),
+            (
+                PassImplementationCandidate(
+                    pass_id="mba-egraph",
+                    backend_name="cobra",
+                    backend_origin="d810-cobra 1.0",
+                    rule_modules=(),
+                    rule_name="EgglogOptimizer",
+                ),
+            ),
+        )
+
+    def test_incompatible_manifest_is_ignored_without_resolving_provides(self):
+        load = Recorder(result=object())
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION - 1,
+            provides=load,
+            implements={"mba-egraph": "EgglogOptimizer"},
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="old", load_manifest=lambda: manifest)]
+        )
+        self.assertEqual(reg.implementation_candidates_for("mba-egraph"), ())
+        self.assertEqual(load.calls, 0)
+
+    def test_two_compatible_declarations_are_ambiguous_in_deterministic_order(self):
+        first = self.manifest({"mba-egraph": "FirstRule"})
+        second = self.manifest({"mba-egraph": "SecondRule"})
+        reg = registry(
+            [
+                BackendSpec(name="zeta", origin="z-origin", load_manifest=lambda: second),
+                BackendSpec(name="acme", origin="a-origin", load_manifest=lambda: first),
+            ]
+        )
+        with self.assertRaises(PassImplementationAmbiguous) as ctx:
+            reg.require_unique_implementation("mba-egraph", install_hint="d810-egglog")
+        self.assertEqual(
+            [candidate.backend_origin for candidate in ctx.exception.candidates],
+            ["a-origin", "z-origin"],
+        )
+
+    def test_no_declaration_reports_install_hint(self):
+        with self.assertRaises(PassImplementationMissing) as ctx:
+            registry().require_unique_implementation(
+                "mba-egraph", install_hint="d810-egglog"
+            )
+        self.assertIn("install d810-egglog", str(ctx.exception))
+
+    def test_candidate_read_does_not_probe_or_resolve_backend(self):
+        probe_calls = []
+
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                probe_calls.append("probe")
+                return None
+
+        load = Recorder(result=Backend)
+        manifest = self.manifest({"mba-egraph": "EgglogOptimizer"}, provides=load)
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+        reg.implementation_candidates_for("mba-egraph")
+        self.assertEqual(probe_calls, [])
+        self.assertEqual(load.calls, 0)
+
+    def test_manifest_info_classifies_failures_without_loading_backend(self):
+        cases = (
+            (ImportError("binding missing"), BackendStatus.UNAVAILABLE),
+            (RuntimeError("manifest exploded"), BackendStatus.BROKEN),
+        )
+        for error, expected in cases:
+            with self.subTest(expected=expected):
+                reg = registry(
+                    [
+                        BackendSpec(
+                            name="cobra",
+                            origin="test",
+                            load_manifest=lambda error=error: (_ for _ in ()).throw(
+                                error
+                            ),
+                        )
+                    ]
+                )
+                info = reg.implementation_manifest_info("cobra")
+                self.assertEqual(info.status, expected)
+                self.assertEqual(reg.info("cobra").status, BackendStatus.NOT_LOADED)
+
+    def test_manifest_info_classifies_incompatible_without_loading_backend(self):
+        load = Recorder(result=object())
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION - 1,
+            provides=load,
+            implements={"mba-egraph": "EgglogOptimizer"},
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="old", load_manifest=lambda: manifest)]
+        )
+        info = reg.implementation_manifest_info("cobra")
+        self.assertEqual(info.status, BackendStatus.INCOMPATIBLE)
+        self.assertEqual(load.calls, 0)
+
+    def test_implementation_is_ready_only_after_exact_candidate_activation(self):
+        manifest = self.manifest(
+            {"mba-egraph": "EgglogOptimizer"}, provides=lambda: object()
+        )
+        reg = BackendRegistry(
+            source=lambda: (
+                BackendSpec(
+                    name="cobra", origin="test", load_manifest=lambda: manifest
+                ),
+            ),
+            registration_lookup=lambda _candidate: object(),
+        )
+        candidate = reg.require_unique_implementation(
+            "mba-egraph", install_hint="d810-egglog"
+        )
+        reg.probe("cobra")
+        self.assertFalse(reg.implementation_is_active(candidate))
+        reg.activate_implementation(candidate)
+        self.assertTrue(reg.implementation_is_active(candidate))
+
+
+class TestLegacyDiscoveryRegressionContinued(unittest.TestCase):
+
+    def test_empty_source_yields_no_backends(self):
+        self.assertEqual(registry().names(), [])
+
+    def test_discovery_does_not_import_the_target(self):
+        load = Recorder()
+        reg = registry([spec("acme", load)])
+        self.assertEqual(reg.names(), ["acme"])
+        self.assertEqual(load.calls, 0)
+
+    def test_discovery_is_cached_until_forced(self):
+        calls = []
+
+        def source():
+            calls.append(1)
+            return []
+
+        reg = BackendRegistry(builtins=(), source=source)
+        reg.discover()
+        reg.discover()
+        self.assertEqual(len(calls), 1)
+        reg.discover(force=True)
+        self.assertEqual(len(calls), 2)
+
+    def test_builtins_present_with_no_entry_points(self):
+        load = Recorder()
+        reg = registry(
+            builtins=[spec("hexrays", load, origin="builtin")]
+        )
+        self.assertEqual(reg.names(), ["hexrays"])
+        self.assertEqual(reg.info("hexrays").origin, "builtin")
+
+    def test_reload_prefixes_include_unavailable_provider_without_reprobe(self):
+        load = Recorder(raises=ImportError("native binding unavailable"))
+        manifest = BackendManifest(
+            name="acme",
+            api_version=PLUGIN_API_VERSION,
+            provides=load,
+            reload_modules=("acme_runtime",),
+        )
+        backend = BackendSpec(
+            name="acme",
+            origin="acme-dist",
+            load_manifest=lambda: manifest,
+            reload_modules=("company.acme_manifest",),
+        )
+        reg = registry([backend])
+        self.assertEqual(reg.probe("acme").status, BackendStatus.UNAVAILABLE)
+        self.assertEqual(
+            reg.extension_reload_module_prefixes(),
+            ("acme_runtime", "company.acme_manifest"),
+        )
+        self.assertEqual(load.calls, 1)
+
+    def test_load_returns_object_and_caches_it(self):
+        sentinel = object()
+        load = Recorder(result=sentinel)
+        reg = registry([spec("acme", load)])
+        self.assertIs(reg.load("acme"), sentinel)
+        self.assertIs(reg.load("acme"), sentinel)
+        self.assertEqual(load.calls, 1)
+
+    def test_unknown_name_raises_from_load_and_is_none_from_optional(self):
+        reg = registry()
+        with self.assertRaises(BackendUnavailable):
+            reg.load("nope")
+        self.assertIsNone(reg.optional("nope"))
+
+    def test_info_on_unknown_name_raises_keyerror(self):
+        with self.assertRaises(KeyError):
+            registry().info("nope")
+
+    def test_import_error_is_unavailable_not_broken(self):
+        reg = registry([spec("z3", Recorder(raises=ImportError("no z3")))])
+        info = reg.probe("z3")
+        self.assertEqual(info.status, BackendStatus.UNAVAILABLE)
+        self.assertIn("z3", info.reason)
+
+    def test_other_exception_is_broken(self):
+        reg = registry([spec("acme", Recorder(raises=AttributeError("typo")))])
+        self.assertEqual(reg.probe("acme").status, BackendStatus.BROKEN)
+
+    def test_failure_never_escapes_optional(self):
+        reg = registry(
+            [
+                spec("a", Recorder(raises=ImportError("gone"))),
+                spec("b", Recorder(raises=RuntimeError("boom"))),
+            ]
+        )
+        self.assertIsNone(reg.optional("a"))
+        self.assertIsNone(reg.optional("b"))
+
+    def test_load_raises_with_underlying_cause_attached(self):
+        cause = ImportError("libcobra missing")
+        reg = registry([spec("cobra", Recorder(raises=cause))])
+        with self.assertRaises(BackendUnavailable) as ctx:
+            reg.load("cobra")
+        self.assertIs(ctx.exception.__cause__, cause)
+
+    def test_broken_plugin_does_not_break_probe_all(self):
+        reg = registry(
+            [
+                spec("good", Recorder()),
+                spec("bad", Recorder(raises=RuntimeError("boom"))),
+            ]
+        )
+        by_name = {i.name: i.status for i in reg.probe_all()}
+        self.assertEqual(by_name["good"], BackendStatus.AVAILABLE)
+        self.assertEqual(by_name["bad"], BackendStatus.BROKEN)
+
+    def test_source_explosion_degrades_to_builtins(self):
+        def source():
+            raise RuntimeError("corrupt dist-info")
+
+        reg = BackendRegistry(
+            builtins=(spec("hexrays", Recorder(), origin="builtin"),),
+            source=source,
+        )
+        self.assertEqual(reg.names(), ["hexrays"])
+
+    def test_incompatible_version_rejected_without_resolving_backend(self):
+        load = Recorder()
+        reg = registry([spec("old", load, api_version=PLUGIN_API_VERSION - 1)])
+        info = reg.probe("old")
+        self.assertEqual(info.status, BackendStatus.INCOMPATIBLE)
+        self.assertEqual(load.calls, 0)
+        self.assertIn(str(PLUGIN_API_VERSION), info.reason)
+        self.assertIn("old", {i.name for i in reg.report()})
+
+    def test_incompatible_backend_is_not_loadable(self):
+        reg = registry([spec("old", Recorder(), api_version=0)])
+        self.assertIsNone(reg.optional("old"))
+        with self.assertRaises(BackendUnavailable):
+            reg.load("old")
+
+    def test_version_is_unknown_until_probed(self):
+        reg = registry([spec("acme", Recorder())])
+        self.assertIsNone(reg.info("acme").api_version)
+        self.assertEqual(reg.probe("acme").api_version, PLUGIN_API_VERSION)
+
+    def test_probe_hook_returning_reason_marks_unavailable(self):
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                return "native binding unavailable"
+
+        reg = registry([spec("cobra", Recorder(result=Backend))])
+        info = reg.probe("cobra")
+        self.assertEqual(info.status, BackendStatus.UNAVAILABLE)
+        self.assertIn("native", info.reason)
+
+    def test_probe_hook_returning_none_marks_available(self):
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                return None
+
+        reg = registry([spec("cobra", Recorder(result=Backend))])
+        self.assertEqual(reg.probe("cobra").status, BackendStatus.AVAILABLE)
+        self.assertIs(reg.optional("cobra"), Backend)
+
+    def test_probe_hook_raising_is_broken(self):
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                raise ValueError("bad probe")
+
+        reg = registry([spec("acme", Recorder(result=Backend))])
+        self.assertEqual(reg.probe("acme").status, BackendStatus.BROKEN)
+
+    def test_probe_all_returns_ground_truth_for_every_backend(self):
+        reg = registry(
+            [
+                spec("good", Recorder()),
+                spec("missing", Recorder(raises=ImportError("nope"))),
+            ]
+        )
+        by_name = {i.name: i.status for i in reg.probe_all()}
+        self.assertEqual(
+            by_name,
+            {"good": BackendStatus.AVAILABLE, "missing": BackendStatus.UNAVAILABLE},
+        )
+
+    def test_entry_point_overrides_builtin_and_conflict_is_reported(self):
+        builtin = Recorder()
+        external = Recorder()
+        reg = registry(
+            specs=[spec("cobra", external, origin="d810-cobra 1.0")],
+            builtins=[spec("cobra", builtin, origin="builtin")],
+        )
+        self.assertIs(reg.load("cobra"), external.result)
+        self.assertEqual(builtin.calls, 0)
+        info = reg.info("cobra")
+        self.assertEqual(info.origin, "d810-cobra 1.0")
+        self.assertEqual(info.shadowed, ("builtin",))
+
+    def test_unusable_entry_point_falls_back_to_builtin(self):
+        in_tree = Recorder()
+        reg = registry(
+            specs=[spec("cobra", Recorder(), api_version=99, origin="ext 0.1")],
+            builtins=[spec("cobra", in_tree, origin="builtin")],
+        )
+        self.assertIs(reg.load("cobra"), in_tree.result)
+        info = reg.info("cobra")
+        self.assertEqual(info.status, BackendStatus.AVAILABLE)
+        self.assertEqual(info.origin, "builtin")
+
+    def test_falling_back_surfaces_rejected_candidate(self):
+        reg = registry(
+            specs=[spec("cobra", Recorder(), api_version=99, origin="ext 0.1")],
+            builtins=[spec("cobra", Recorder(), origin="builtin")],
+        )
+        info = reg.probe("cobra")
+        self.assertEqual([origin for origin, _ in info.rejected], ["ext 0.1"])
+        self.assertIn("v99", info.rejected[0][1])
+        self.assertTrue(has_defects([info]))
+
+    def test_fallback_does_not_report_itself_as_shadowed(self):
+        reg = registry(
+            specs=[spec("cobra", Recorder(), api_version=99, origin="ext 0.1")],
+            builtins=[spec("cobra", Recorder(), origin="builtin")],
+        )
+        info = reg.probe("cobra")
+        self.assertEqual(info.origin, "builtin")
+        self.assertEqual(info.shadowed, ())
+
+    def test_all_candidates_unusable_reports_last_failure(self):
+        reg = registry(
+            specs=[spec("cobra", Recorder(), api_version=99, origin="ext 0.1")],
+            builtins=[
+                spec(
+                    "cobra",
+                    Recorder(raises=ImportError("no _cobra")),
+                    origin="builtin",
+                )
+            ],
+        )
+        info = reg.probe("cobra")
+        self.assertEqual(info.status, BackendStatus.UNAVAILABLE)
+        self.assertIn("_cobra", info.reason)
+        self.assertEqual([o for o, _ in info.rejected], ["ext 0.1"])
+
+    def test_report_is_sorted_and_typed(self):
+        reg = registry([spec("zeta", Recorder()), spec("alpha", Recorder())])
+        report = reg.report()
+        self.assertEqual([i.name for i in report], ["alpha", "zeta"])
+        self.assertTrue(all(isinstance(i, BackendInfo) for i in report))
+
+    def test_report_does_not_import_unloaded_backends(self):
+        load = Recorder()
+        registry([spec("acme", load)]).report()
+        self.assertEqual(load.calls, 0)
+
+
+class TestBuiltinBackendsRegression(unittest.TestCase):
+    EXPECTED = {
+        "mba.z3",
+        "emulation.triton",
+        "emulation.unicorn",
+        "ast.z3",
+        "llvm",
+    }
+
+    def make(self):
+        from d810.backends import BUILTIN_BACKENDS
+
+        return BackendRegistry(builtins=BUILTIN_BACKENDS, source=lambda: [])
+
+    def test_expected_backends_are_registered(self):
+        self.assertEqual(set(self.make().names()), self.EXPECTED)
+
+    def test_no_builtin_is_broken(self):
+        broken = [
+            (info.name, info.reason)
+            for info in self.make().probe_all()
+            if info.status is BackendStatus.BROKEN
+        ]
+        self.assertEqual(broken, [])
+
+    def test_every_builtin_settles_with_a_reason_when_unusable(self):
+        for info in self.make().probe_all():
+            with self.subTest(backend=info.name):
+                self.assertNotEqual(info.status, BackendStatus.NOT_LOADED)
+                if info.status is BackendStatus.UNAVAILABLE:
+                    self.assertTrue(info.reason)
 
 
 if __name__ == "__main__":

@@ -786,6 +786,7 @@ class BackendRegistry:
         builtins: Sequence[BackendSpec] = (),
         source: Callable[[], Iterable[BackendSpec]] | None = None,
         host: PluginHostCapabilities | None = None,
+        requirement_validator: Callable[[Sequence[str]], None] | None = None,
         registration_lookup: Callable[
             [PassImplementationCandidate], Any | None
         ] | None = None,
@@ -810,6 +811,7 @@ class BackendRegistry:
             PassImplementationCandidate, dict[str, str]
         ] = {}
         self._host = host if host is not None else _EmptyHostCapabilities()
+        self._requirement_validator = requirement_validator
         self._activated: dict[str, PluginActivation] = {}
         #: Injected to keep optimizer-layer imports out of ``core.plugins``.
         self._registration_lookup = registration_lookup
@@ -821,6 +823,8 @@ class BackendRegistry:
         with self._lock:
             if self._discovered and not force:
                 return
+            if self._discovered and force:
+                self._close_activations_locked()
 
             try:
                 discovered = list(self._source())
@@ -927,82 +931,71 @@ class BackendRegistry:
             existing = self._activated.get(name)
             if existing is not None:
                 return existing
-            manifest = self._manifest_for_activation(name)
-            self._validate_requirements(manifest.requires)
-
-        info = self.probe(name)
-        if not info.usable:
-            raise BackendUnavailable(
-                f"backend {name!r} is {info.status.value}: {info.reason}"
-            ) from self._errors.get(name)
-        with self._lock:
+            info = self.probe(name)
+            if not info.usable:
+                raise BackendUnavailable(
+                    f"backend {name!r} is {info.status.value}: {info.reason}"
+                ) from self._errors.get(name)
+            manifest = self._manifests[name]
             plugin = self._loaded[name]
             spec = self._settled[name]
-        activate = getattr(plugin, "activate", None)
-        if not callable(activate):
-            raise ManifestError(f"backend {name!r} does not provide activate(context)")
+            activate = getattr(plugin, "activate", None)
+            if not callable(activate):
+                raise ManifestError(
+                    f"backend {name!r} does not provide activate(context)"
+                )
 
-        distribution, version = _distribution_version(spec.origin)
-        context = PluginActivationContext(
-            identity=PluginIdentity(
-                name=manifest.name,
-                distribution=distribution,
-                version=version,
-                origin=spec.origin,
-            ),
-            host=self._host,
-        )
-        partial: Any = None
-        try:
-            partial = activate(context)
-            self._validate_activation(partial)
-        except Exception:
-            if partial is not None:
-                close = getattr(partial, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except Exception:
-                        logger.exception("plugin %r failed while rolling back", name)
-            raise
-        with self._lock:
+            distribution, version = _distribution_version(spec.origin)
+            context = PluginActivationContext(
+                identity=PluginIdentity(
+                    name=manifest.name,
+                    distribution=distribution,
+                    version=version,
+                    origin=spec.origin,
+                ),
+                host=self._host,
+            )
+            partial: Any = None
+            try:
+                partial = activate(context)
+                self._validate_activation(partial)
+            except Exception:
+                if partial is not None:
+                    close = getattr(partial, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            logger.exception(
+                                "plugin %r failed while rolling back", name
+                            )
+                raise
             self._activated[name] = partial
-        return partial
+            return partial
 
     def close_activations(self) -> None:
         """Close every activation once, retaining progress after failures."""
         with self._lock:
-            activations = tuple(self._activated.items())
-            self._activated.clear()
+            self._close_activations_locked()
+
+    def _close_activations_locked(self) -> None:
+        activations = tuple(self._activated.items())
+        self._activated.clear()
         for name, activation in activations:
             try:
                 activation.close()
             except Exception:
                 logger.exception("plugin %r failed while closing", name)
 
-    def _manifest_for_activation(self, name: str) -> BackendManifest:
-        for spec in self._candidates[name]:
-            try:
-                manifest = manifest_of(spec.load_manifest())
-            except ImportError:
-                continue
-            if manifest.api_version == PLUGIN_API_VERSION:
-                return manifest
-        raise BackendUnavailable(f"backend {name!r} has no compatible manifest")
-
     def _validate_requirements(self, requirements: Sequence[str]) -> None:
         if not requirements:
             return
-        if self._host is None:
+        validate = self._requirement_validator
+        if validate is None:
             raise BackendUnavailable(
-                f"missing host capability: {requirements[0]}"
+                "no host capability requirement validator configured"
             )
-        validate = getattr(self._host, "validate", None)
-        if callable(validate):
-            try:
-                validate(tuple(requirements))
-            except Exception as exc:
-                raise BackendUnavailable(str(exc)) from exc
+        validate(tuple(requirements))
 
     @staticmethod
     def _validate_activation(activation: Any) -> None:
@@ -1506,6 +1499,12 @@ class BackendRegistry:
             self._validate_requirements(manifest.requires)
         except BackendUnavailable as exc:
             return BackendStatus.UNAVAILABLE, str(exc), exc, None, version
+        except Exception as exc:
+            reason = (
+                f"host capability requirement validator raised "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return BackendStatus.BROKEN, reason, exc, None, version
 
         try:
             obj = _resolve_provides(manifest.provides)
