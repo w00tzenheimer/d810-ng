@@ -21,7 +21,6 @@ from d810.core.plugins import (
     BackendStatus,
     PassImplementationAmbiguous,
     PassImplementationMissing,
-    PassImplementationUnavailable,
 )
 from d810.passes.config_v2_hook_runtime import (
     compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
@@ -70,8 +69,7 @@ def test_egglog_runtime_evidence_is_owned_by_the_extension_repository():
     repository = Path(__file__).resolve().parents[3]
     provider_owned_paths = (
         repository / "samples/bins/hodur_egglog_probe.dll",
-        repository
-        / "samples/src/masm_probes/Hodur_ComplementMaskResidual.asm",
+        repository / "samples/src/masm_probes/Hodur_ComplementMaskResidual.asm",
         repository / "tools/scripts/run_egglog_native_performance_ci.sh",
     )
 
@@ -81,9 +79,9 @@ def test_egglog_runtime_evidence_is_owned_by_the_extension_repository():
         if path.exists()
     ] == []
 
-    assert "hodur-egglog-probe" not in (
-        repository / "samples/Makefile"
-    ).read_text(encoding="utf-8")
+    assert "hodur-egglog-probe" not in (repository / "samples/Makefile").read_text(
+        encoding="utf-8"
+    )
     assert "Hodur Egglog probe" not in (
         repository / "samples/src/masm/README.md"
     ).read_text(encoding="utf-8")
@@ -104,7 +102,6 @@ def _manifest(
     *,
     origin: str,
     api_version: int = PLUGIN_API_VERSION,
-    rule_modules: tuple[str, ...] = ("task16_extension_rule",),
     rule_name: str = "EgglogOptimizer",
     pass_id: str = "mba-egraph",
 ) -> BackendSpec:
@@ -112,7 +109,6 @@ def _manifest(
         name=name,
         api_version=api_version,
         provides=provides,
-        rules=rule_modules,
         implements={pass_id: rule_name},
     )
     return BackendSpec(
@@ -122,33 +118,18 @@ def _manifest(
     )
 
 
-def _registry(specs, *, registration_lookup=None) -> BackendRegistry:
-    return BackendRegistry(
-        source=lambda: tuple(specs),
-        registration_lookup=registration_lookup or (lambda _candidate: object()),
-    )
-
-
-def _rule_module(tmp_path: Path, monkeypatch, marker: Path) -> str:
-    module_name = f"task16_extension_rule_{marker.stem.replace('-', '_')}"
-    (tmp_path / f"{module_name}.py").write_text(
-        f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n",
-        encoding="utf-8",
-    )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    return module_name
+def _registry(specs) -> BackendRegistry:
+    return BackendRegistry(source=lambda: tuple(specs))
 
 
 @pytest.mark.parametrize("row", MATRIX_ROWS, ids=MATRIX_ROWS)
-def test_core_only_egraph_extension_resolution_matrix(row, tmp_path, monkeypatch):
+def test_core_only_egraph_extension_resolution_matrix(row, monkeypatch):
     """Every selected/unselected extension state has an explicit outcome."""
 
     import d810.backends as backends
 
     runtime_calls: list[str] = []
     manifest_calls: list[str] = []
-    marker = tmp_path / f"{row}.marker"
-    module_name = _rule_module(tmp_path, monkeypatch, marker)
 
     def backend_object():
         runtime_calls.append(row)
@@ -174,7 +155,6 @@ def test_core_only_egraph_extension_resolution_matrix(row, tmp_path, monkeypatch
             name=name,
             api_version=api_version,
             provides=backend_object if provides is None else provides,
-            rules=(module_name,),
             implements={"mba-egraph": "EgglogOptimizer"},
         )
 
@@ -262,7 +242,6 @@ def test_core_only_egraph_extension_resolution_matrix(row, tmp_path, monkeypatch
         with pytest.raises(PassImplementationMissing, match="install d810-egglog"):
             pipeline_v2_hook_activation(_project("mba-egraph", _EGRAPH_OPTIONS))
         assert runtime_calls == []
-        assert not marker.exists()
         return
 
     if row in {"unavailable_selected", "broken_selected"}:
@@ -274,9 +253,10 @@ def test_core_only_egraph_extension_resolution_matrix(row, tmp_path, monkeypatch
         info = registry.probe("egglog")
         assert info.status is expected_status
         assert info.reason
-        with pytest.raises(PassImplementationUnavailable):
-            pipeline_v2_hook_activation(_project("mba-egraph", _EGRAPH_OPTIONS))
-        assert not marker.exists()
+        activation = pipeline_v2_hook_activation(
+            _project("mba-egraph", _EGRAPH_OPTIONS)
+        )
+        assert activation.configured_pass_ids == ("mba-egraph",)
         assert runtime_calls == [row]
         return
 
@@ -287,7 +267,6 @@ def test_core_only_egraph_extension_resolution_matrix(row, tmp_path, monkeypatch
         assert "first-origin" in message
         assert "second-origin" in message
         assert runtime_calls == []
-        assert not marker.exists()
         return
 
     if row == "usable_unselected":
@@ -300,7 +279,6 @@ def test_core_only_egraph_extension_resolution_matrix(row, tmp_path, monkeypatch
         )
         assert manifest_calls == ["usable-origin", "usable-origin"]
         assert runtime_calls == []
-        assert not marker.exists()
         return
 
     assert row == "usable_selected"
@@ -312,6 +290,5 @@ def test_core_only_egraph_extension_resolution_matrix(row, tmp_path, monkeypatch
     assert rule.config == {
         **_EGRAPH_OPTIONS,
     }
-    assert manifest_calls == ["usable-origin"] * 4
-    assert runtime_calls == [row]
-    assert marker.read_text(encoding="utf-8") == "imported"
+    assert manifest_calls == ["usable-origin"] * 3
+    assert runtime_calls == []

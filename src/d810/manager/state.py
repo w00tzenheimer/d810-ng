@@ -27,6 +27,7 @@ from d810.core.diagnostics_capture_preferences import (
     set_diagnostics_capture_enabled as persist_diagnostics_capture_enabled,
 )
 from d810.core.logging import clear_logs, configure_loggers, getLogger
+from d810.core.plugins import ImplementationOwnership
 from d810.core.platform import resolve_arch_config
 from d810.core.project import (
     ProjectContext,
@@ -470,7 +471,7 @@ class D810State(metaclass=SingletonMeta):
             else ()
         )
         backend_registry = self.manager.backend_registry
-        staged_implementations: list[object] = []
+        staged_implementations: list[ImplementationOwnership] = []
         rolled_back = False
 
         def _rollback_activation(activation_error: BaseException) -> None:
@@ -536,7 +537,8 @@ class D810State(metaclass=SingletonMeta):
                     backend_registry.activate_implementation,
                     candidate,
                 )
-                staged_implementations.append(implementation)
+                staged_ownership = ImplementationOwnership(candidate, implementation)
+                staged_implementations.append(staged_ownership)
                 if not isinstance(implementation, InstructionOptimizationRule):
                     _stage_call(
                         _raise,
@@ -545,10 +547,11 @@ class D810State(metaclass=SingletonMeta):
                             "an InstructionOptimizationRule"
                         ),
                     )
-                _stage_call(
-                    implementation.bind_plugin_services,
-                    backend_registry.plugin_rule_services(candidate),
+                services = _stage_call(
+                    backend_registry.plugin_rule_services,
+                    candidate,
                 )
+                _stage_call(implementation.bind_plugin_services, services)
                 external_rules[external_key] = (candidate, implementation)
                 activation = _stage_call(
                     backend_registry.activation_for_candidate, candidate

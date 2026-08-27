@@ -7,6 +7,7 @@ import pathlib
 
 from d810.capabilities.idb_preparation import PreparationScriptDescriptor
 from d810.core.config import ProjectConfiguration
+from d810.core.plugins import ImplementationOwnership
 from d810.core.project_config_persistence import (
     ProjectConfigurationWriteError,
     clone_project_configuration,
@@ -36,7 +37,7 @@ class ProjectRuntimeSnapshot:
     preparation_scripts: tuple[PreparationScriptDescriptor, ...] = ()
     global_const_persistence_enabled: bool = False
     activated_plugins: tuple[object, ...] = ()
-    activated_implementations: tuple[object, ...] = ()
+    activated_implementations: tuple[ImplementationOwnership, ...] = ()
 
 
 def _identity(project: ProjectConfiguration) -> ProjectIdentitySnapshot:
@@ -53,7 +54,7 @@ def build_project_runtime_snapshot(
     project: ProjectConfiguration,
     schedule: ConfigV2HookSchedule,
     activated_plugins: tuple[object, ...] = (),
-    activated_implementations: tuple[object, ...] = (),
+    activated_implementations: tuple[ImplementationOwnership, ...] = (),
 ) -> ProjectRuntimeSnapshot:
     """Capture one canonical project and its validated executable schedule."""
     preparation_registry = PreparationScriptRegistry.from_project(

@@ -371,6 +371,49 @@ class TestActivation(unittest.TestCase):
         with self.assertRaises(PassImplementationMisdeclared):
             reg.activate_implementation(candidate)
 
+    def test_declared_factory_must_not_reuse_instance_across_pass_ids(self):
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
+        manifest = BackendManifest(
+            name="example",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: plugin,
+            implements={
+                "first-pass": "first-implementation",
+                "second-pass": "second-implementation",
+            },
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example-wheel",
+                    load_manifest=lambda: manifest,
+                )
+            ],
+            host_view_factory=lambda _requirements: FakeHost(),
+            requirement_validator=lambda _requirements: None,
+        )
+        first = reg.require_unique_implementation(
+            "first-pass", install_hint="example-package"
+        )
+        second = reg.require_unique_implementation(
+            "second-pass", install_hint="example-package"
+        )
+
+        reg.activate_implementation(first)
+
+        with self.assertRaisesRegex(PassImplementationMisdeclared, "reused"):
+            reg.activate_implementation(second)
+
+        self.assertTrue(reg.implementation_is_active(first))
+        self.assertFalse(reg.implementation_is_active(second))
+        self.assertEqual(
+            reg._implementation_instances[first], [activation.implementation]
+        )
+        self.assertNotIn(second, reg._implementation_instances)
+        self.assertEqual(activation.close_calls, 0)
+
     def test_factory_rejects_candidate_for_undeclared_implementation_id(self):
         activation = FakeActivation()
         plugin = FakePlugin(activation)

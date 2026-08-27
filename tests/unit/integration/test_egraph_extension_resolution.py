@@ -36,7 +36,6 @@ def test_declaration_resolution_never_imports_runtime_or_rule_module(
         name="egglog",
         api_version=PLUGIN_API_VERSION,
         provides=provides,
-        rules=(module_name,),
         implements={"mba-egraph": "EgglogOptimizer"},
     )
     registry = BackendRegistry(
@@ -47,14 +46,13 @@ def test_declaration_resolution_never_imports_runtime_or_rule_module(
                 load_manifest=lambda: manifest,
             ),
         ),
-        registration_lookup=lambda _candidate: object(),
     )
 
     candidates = registry.implementation_candidates_for("mba-egraph")
 
     assert len(candidates) == 1
     assert candidates[0].backend_origin == "declaration-only"
-    assert candidates[0].rule_modules == (module_name,)
+    assert candidates[0].rule_modules == ()
     assert not runtime_marker.exists()
     assert not rule_marker.exists()
 
@@ -89,7 +87,6 @@ def test_mba_solve_still_uses_first_compatible_declaration(monkeypatch):
                 load_manifest=lambda: second_manifest,
             ),
         ),
-        registration_lookup=lambda _candidate: object(),
     )
     monkeypatch.setattr(backends, "registry", lambda: registry)
 

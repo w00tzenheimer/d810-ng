@@ -1,176 +1,105 @@
-"""An extension's rules must register BEFORE the known-rule catalogue is built.
-
-``D810State.load()`` snapshots ``InstructionOptimizationRule.registry`` into
-``known_ins_rules``, and ``load_project`` activates a rule only when a
-configured rule name matches an entry in that snapshot.  Rules contributed by
-an installed extension are imported by ``load_extension_rules()``, which used
-to run only from ``manager.start()`` -- 88 ms *after* the snapshot, measured on
-a live dump::
-
-    45,037  Instruction rules configured                     <- snapshot + match
-    45,041  Starting manager...
-    45,125  extension rule module loaded: d810_cobra...      <- too late
-
-So ``CobraSolveRule`` never reached the catalogue, never matched its config,
-and never had ``configure()`` called.  The pass was configured, routed and
-silently inert -- indistinguishable from a solver that ran and found nothing.
-
-Deliberately independent of any real extension: the fixture below contributes
-its own rule module, so this measures the ordering rather than whether
-d810-cobra happens to be installed.
-
-IDA-dependent (``D810State`` pulls in the live manager) -> system/runtime.
-"""
+"""Runtime regressions for declaration-only external implementations."""
 
 from __future__ import annotations
 
-import builtins
-import sys
-import textwrap
-
-import pytest
-
-RULE_NAME = "FakeExtensionOrderingRule"
-MODULE_NAME = "d810_fake_ext_ordering_rule"
-
-SOURCE = textwrap.dedent(
-    '''
-    """Stand-in for a rule shipped inside an installed extension."""
-
-    from d810.optimizers.microcode.instructions.peephole.handler import (
-        PeepholeSimplificationRule,
-    )
-
-
-    class FakeExtensionOrderingRule(PeepholeSimplificationRule):
-        DESCRIPTION = "Test-only rule contributed by a fake extension"
-        CATEGORY = "Testing"
-
-        def check_and_replace(self, blk, ins):
-            return None
-    '''
+from d810.core.plugins import (
+    PLUGIN_API_VERSION,
+    BackendManifest,
+    BackendRegistry,
+    BackendSpec,
 )
 
 
-@pytest.fixture
-def contributed_rule_module(tmp_path, monkeypatch):
-    """Make one rule module reachable only through ``rule_modules()``.
+class _Activation:
+    def __init__(self, factory):
+        self.factory = factory
+        self.factory_calls: list[str] = []
+        self.close_calls = 0
 
-    The module lives outside ``d810.optimizers.__path__`` on purpose: that is
-    precisely the reach the package scan does not have, which is why extensions
-    need ``load_extension_rules()`` at all.
-    """
-    (tmp_path / f"{MODULE_NAME}.py").write_text(SOURCE, encoding="utf-8")
-    monkeypatch.syspath_prepend(str(tmp_path))
+    def create_implementation(self, implementation_id: str):
+        self.factory_calls.append(implementation_id)
+        return self.factory()
 
-    import d810.backends as backends
+    def capability_offers(self):
+        return ()
 
-    real_registry = backends.registry()
+    def close(self):
+        self.close_calls += 1
 
-    class _Contributing:
-        def __getattr__(self, item):
-            return getattr(real_registry, item)
 
-        def rule_modules(self):
-            return (*real_registry.rule_modules(), MODULE_NAME)
+class _Plugin:
+    def __init__(self, activation):
+        self.activation = activation
 
-    monkeypatch.setattr(backends, "registry", lambda: _Contributing())
-    yield MODULE_NAME
+    def activate(self, _context):
+        return self.activation
 
-    sys.modules.pop(MODULE_NAME, None)
-    from d810.optimizers.microcode.instructions.handler import (
-        InstructionOptimizationRule,
+
+def _registry(activation):
+    plugin = _Plugin(activation)
+    manifest = BackendManifest(
+        name="external",
+        api_version=PLUGIN_API_VERSION,
+        provides=lambda: plugin,
+        implements={"external-pass": "ExternalRule"},
+    )
+    return BackendRegistry(
+        source=lambda: (
+            BackendSpec(
+                name="external",
+                origin="external-wheel",
+                load_manifest=lambda: manifest,
+            ),
+        )
     )
 
-    InstructionOptimizationRule.registry.pop(RULE_NAME.lower(), None)
+
+def test_manifest_import_is_inert_and_does_not_create_an_implementation():
+    created: list[object] = []
+    activation = _Activation(lambda: created.append(object()) or created[-1])
+    registry = _registry(activation)
+
+    candidates = registry.implementation_candidates_for("external-pass")
+
+    assert len(candidates) == 1
+    assert activation.factory_calls == []
+    assert created == []
 
 
-def test_the_catalogue_includes_a_rule_only_an_extension_contributes(
-    d810_state, contributed_rule_module
-) -> None:
-    """The regression: the rule exists, but the catalogue was built too early."""
-    with d810_state() as state:
-        catalogue = state._build_known_instruction_rules()
+def test_only_explicitly_selected_candidate_calls_its_factory():
+    activation = _Activation(object)
+    registry = _registry(activation)
+    candidate = registry.require_unique_implementation(
+        "external-pass", install_hint="external-package"
+    )
 
-    assert RULE_NAME in {rule.name for rule in catalogue}
+    implementation = registry.activate_implementation(candidate)
 
-
-def test_building_the_catalogue_imports_extension_rule_modules(
-    d810_state, contributed_rule_module
-) -> None:
-    """Building the catalogue is what pulls the extension's module in."""
-    sys.modules.pop(contributed_rule_module, None)
-
-    with d810_state() as state:
-        state._build_known_instruction_rules()
-
-    assert contributed_rule_module in sys.modules
+    assert implementation is not None
+    assert activation.factory_calls == ["ExternalRule"]
 
 
-def test_the_catalogue_still_contains_in_tree_rules(d810_state) -> None:
-    """Loading extension rules must not replace the in-tree catalogue."""
-    with d810_state() as state:
-        names = {rule.name for rule in state._build_known_instruction_rules()}
+def test_reload_closes_old_d810_instance_before_creating_a_fresh_one():
+    created: list[object] = []
 
-    assert "FoldReadonlyDataRule" in names
-    assert len(names) > 10
+    def factory():
+        instance = object()
+        created.append(instance)
+        return instance
 
+    activation = _Activation(factory)
+    registry = _registry(activation)
+    candidate = registry.require_unique_implementation(
+        "external-pass", install_hint="external-package"
+    )
+    old_instance = registry.activate_implementation(candidate)
 
-def test_the_contributed_rule_is_registered_exactly_once(
-    d810_state, contributed_rule_module
-) -> None:
-    """Both catalogue builders load extension rules; neither may double-register.
+    registry.close_activations()
+    registry.discover(force=True)
+    new_instance = registry.activate_implementation(candidate)
 
-    ``load()`` builds the instruction and block catalogues, and each ensures
-    extension rules are present.  Were that import not idempotent, the rule
-    would appear twice and the activation loop would append two instances --
-    running it twice per instruction.
-
-    Deliberately not asserting global name uniqueness: 7 names are already
-    contributed by BOTH ``InstructionOptimizationRule.registry`` and
-    ``adapt_rules(VerifiableRule.instantiate_all())`` (Add_SpecialConstantRule_1
-    through _3, Add_OllvmRule_1, _2, AddXor_Rule_1, _2), which predates this
-    change and is tracked separately.
-    """
-    with d810_state() as state:
-        state._build_known_block_rules()
-        names = [rule.name for rule in state._build_known_instruction_rules()]
-
-    assert names.count(RULE_NAME) == 1
-
-
-def test_catalogue_build_does_not_import_deleted_in_tree_egglog_modules(
-    d810_state, monkeypatch
-) -> None:
-    """Egglog rules enter only through the installed-extension boundary."""
-    blocked = {
-        "d810.backends.mba.egglog_add_rule_compiler",
-        "d810.backends.mba.egglog_backend",
-        "d810.optimizers.microcode.instructions.egraph",
-    }
-    real_import = builtins.__import__
-
-    def guarded_import(name, *args, **kwargs):
-        if name in blocked or any(
-            name.startswith(prefix + ".") for prefix in blocked
-        ):
-            raise AssertionError(f"deleted in-tree Egglog import: {name}")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", guarded_import)
-    with d810_state() as state:
-        state._build_known_instruction_rules()
-
-
-def test_real_egglog_rule_reaches_the_catalogue_before_snapshot(d810_state) -> None:
-    """The installed Egglog extension follows the same ordering contract."""
-
-    pytest.importorskip("d810_egglog")
-    with d810_state() as state:
-        names = [
-            rule.name
-            for rule in state._build_known_instruction_rules()
-            if rule.name == "EgglogOptimizer"
-        ]
-
-    assert names == ["EgglogOptimizer"]
+    assert old_instance is not new_instance
+    assert len(created) == 2
+    assert activation.close_calls == 1
+    assert registry.implementation_is_active(candidate)
+    assert registry._implementation_instances[candidate] == [new_instance]

@@ -121,6 +121,7 @@ __all__ = [
     "ManifestError",
     "PassImplementationAmbiguous",
     "PassImplementationCandidate",
+    "ImplementationOwnership",
     "PassImplementationRequirement",
     "PassImplementationError",
     "PassImplementationMisdeclared",
@@ -373,6 +374,14 @@ class PassImplementationCandidate:
     backend_origin: str
     rule_modules: tuple[str, ...]
     rule_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImplementationOwnership:
+    """Exact registry ownership of one factory-created implementation."""
+
+    candidate: PassImplementationCandidate
+    instance: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -802,8 +811,6 @@ class BackendRegistry:
         requirement_validator: Callable[[Sequence[str]], None] | None = None,
         host_view_factory: Callable[[Sequence[str]], PluginHostCapabilities]
         | None = None,
-        registration_lookup: Callable[[PassImplementationCandidate], Any | None]
-        | None = None,
     ) -> None:
         self._builtins = tuple(builtins)
         self._source = source if source is not None else entry_point_source
@@ -841,9 +848,6 @@ class BackendRegistry:
         self._implementation_instances: dict[
             PassImplementationCandidate, list[object]
         ] = {}
-        # Kept as an ignored constructor argument for callers that construct a
-        # registry directly; external implementations are factory-owned and
-        # never resolved through a registrant lookup.
 
     # -- discovery ---------------------------------------------------------
 
@@ -1400,12 +1404,6 @@ class BackendRegistry:
         with self._lock:
             return candidate in self._active_implementations
 
-    def implementation_registration_available(
-        self, candidate: PassImplementationCandidate
-    ) -> bool:
-        """Return whether a factory-created implementation is active."""
-        return self.implementation_is_active(candidate)
-
     def implementation_failure(
         self, candidate: PassImplementationCandidate
     ) -> str | None:
@@ -1415,16 +1413,6 @@ class BackendRegistry:
             if not failures:
                 return None
             return "; ".join(failures[key] for key in sorted(failures))
-
-    def record_rule_module_result(
-        self, module_name: str, error: BaseException | None
-    ) -> None:
-        """Ignore obsolete registrant-loader evidence."""
-        del module_name, error
-
-    def finalize_rule_module_loading(self) -> None:
-        """No-op compatibility seam; factories own implementation validation."""
-        return None
 
     def require_unique_implementation(
         self, pass_id: PassId | str, *, install_hint: str
@@ -1511,8 +1499,11 @@ class BackendRegistry:
                 reason="implementation factory returned None",
             )
         with self._lock:
-            prior = self._implementation_instances.setdefault(candidate, [])
-            if any(existing is implementation for existing in prior):
+            if any(
+                existing is implementation
+                for instances in self._implementation_instances.values()
+                for existing in instances
+            ):
                 raise PassImplementationMisdeclared(
                     candidate.pass_id,
                     backend_name=candidate.backend_name,
@@ -1520,7 +1511,9 @@ class BackendRegistry:
                     candidate=candidate,
                     reason="implementation factory reused an instance",
                 )
-            prior.append(implementation)
+            self._implementation_instances.setdefault(candidate, []).append(
+                implementation
+            )
         with self._lock:
             self._active_implementations.add(candidate)
             failures = self._implementation_failures.get(candidate)
@@ -1530,21 +1523,25 @@ class BackendRegistry:
                     self._implementation_failures.pop(candidate, None)
         return implementation
 
-    def discard_implementation_instances(self, instances: Sequence[object]) -> None:
-        """Discard only exact staged implementation objects from registry truth."""
-        identities = {id(instance) for instance in instances}
-        if not identities:
+    def discard_implementation_instances(
+        self, ownership: Sequence[ImplementationOwnership]
+    ) -> None:
+        """Discard only exact candidate/object ownership from registry truth."""
+        if not ownership:
             return
         with self._lock:
-            for candidate, owned in tuple(self._implementation_instances.items()):
+            for owner in ownership:
+                owned = self._implementation_instances.get(owner.candidate)
+                if not owned:
+                    continue
                 remaining = [
-                    instance for instance in owned if id(instance) not in identities
+                    instance for instance in owned if instance is not owner.instance
                 ]
                 if remaining:
-                    self._implementation_instances[candidate] = remaining
+                    self._implementation_instances[owner.candidate] = remaining
                 else:
-                    self._implementation_instances.pop(candidate, None)
-                    self._active_implementations.discard(candidate)
+                    self._implementation_instances.pop(owner.candidate, None)
+                    self._active_implementations.discard(owner.candidate)
 
     def activation_for_candidate(
         self, candidate: PassImplementationCandidate
@@ -1570,10 +1567,6 @@ class BackendRegistry:
         if context is None:
             raise PassImplementationUnavailable(candidate, "activation context missing")
         return PluginRuleServices(plugin=context.identity, host=context.host)
-
-    def rule_modules(self) -> tuple[str, ...]:
-        """External implementations are never discovered through modules."""
-        return ()
 
     def load(self, name: str) -> Any:
         """Return the backend object, or raise :class:`BackendUnavailable`."""
