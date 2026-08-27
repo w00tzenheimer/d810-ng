@@ -96,6 +96,37 @@ class Z3setnzRuleGeneric(Z3Rule):
         res_size = candidate.dst_mop.size if candidate.dst_mop else 1
         x0_mop = candidate["x_0"].mop
         x1_mop = candidate["x_1"].mop
+        abstract_checked = False
+
+        # A callback-bound fact view can make the call-result predicate
+        # decisive without constructing a Z3 query.  Do this before the
+        # generic equality probes; those probes are only a fallback when the
+        # abstract evidence cannot decide the predicate.  Keep the legacy
+        # order when no view is bound so ordinary Z3 predicates retain their
+        # existing behavior.
+        if (
+            self.validated_fact_view is not None
+            and x1_mop is not None
+            and x1_mop.t == ida_hexrays.mop_n
+            and x1_mop.nnn.value == 0
+        ):
+            abstract_checked = True
+            zero_result = self.make_z3_mop_prover(
+                prover_cls=Z3MopProver
+            ).prove_always_zero(x0_mop)
+            if self.observe_z3_proof("prove_always_zero", zero_result) and (
+                zero_result.status is Z3ProofStatus.PROVED
+            ):
+                candidate.add_constant_leaf("val_res", 0, res_size)
+                return True
+            nonzero_result = self.make_z3_mop_prover(
+                prover_cls=Z3MopProver
+            ).prove_always_nonzero(x0_mop)
+            if self.observe_z3_proof("prove_always_nonzero", nonzero_result) and (
+                nonzero_result.status is Z3ProofStatus.PROVED
+            ):
+                candidate.add_constant_leaf("val_res", 1, res_size)
+                return True
 
         equal_result = self.make_z3_mop_prover(prover_cls=Z3MopProver).prove_equal(
             x0_mop, x1_mop
@@ -117,7 +148,8 @@ class Z3setnzRuleGeneric(Z3Rule):
         # Check if comparing expression against constant 0
         # This handles opaque predicates like setnz((x * (x-1)) & 1, 0)
         if (
-            x1_mop is not None
+            not abstract_checked
+            and x1_mop is not None
             and x1_mop.t == ida_hexrays.mop_n
             and x1_mop.nnn.value == 0
         ):

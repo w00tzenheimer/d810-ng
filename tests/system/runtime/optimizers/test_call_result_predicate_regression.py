@@ -265,10 +265,9 @@ class TestCallResultPredicateRegression:
         nested_call, _destination = def_search._call_result_assignment(assignment)
         call_ea = int(nested_call.ea)
         helper_ea = idc.get_name_ea_simple("call_result_predicate_helper")
-        # Build untouched native snapshots before starting D-810.  Starting the
-        # manager may run its regular optimizer callbacks and consume the
-        # materialized SETNZ candidate; each production probe therefore gets a
-        # distinct pre-callback MBA snapshot.
+        # Build one untouched native MBA/candidate per fact case.  Each callback
+        # must own its candidate so a decisive rewrite cannot affect the next
+        # fact's production result.
         case_mbas = {
             kind: gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_CALLS)
             for kind in (
@@ -293,9 +292,13 @@ class TestCallResultPredicateRegression:
             production_refiner_calls = []
             production_decisions = []
             current_case = {"value": None}
+            z3_construction_counts = {}
             real_refine_call_result = z3_handler.refine_call_result
             real_decide_zero_status = z3_backend.decide_zero_status
             real_make_z3_mop_prover = z3_handler.Z3Rule.make_z3_mop_prover
+            real_create_z3_vars = z3_backend.create_z3_vars
+            real_ast_node_z3_visitor = z3_backend.AstNodeZ3Visitor
+            real_new_query_solver = z3_backend._new_query_solver
             production_rule_views = []
 
             def recording_refine_call_result(query, view):
@@ -351,9 +354,29 @@ class TestCallResultPredicateRegression:
                 )
                 return real_make_z3_mop_prover(rule, **kwargs)
 
+            def recording_create_z3_vars(*args, **kwargs):
+                z3_construction_counts[current_case["value"]]["create_z3_vars"] += 1
+                return real_create_z3_vars(*args, **kwargs)
+
+            class RecordingAstNodeZ3Visitor(real_ast_node_z3_visitor):
+                def __init__(self, *args, **kwargs):
+                    z3_construction_counts[current_case["value"]][
+                        "AstNodeZ3Visitor"
+                    ] += 1
+                    super().__init__(*args, **kwargs)
+
+            def recording_new_query_solver(*args, **kwargs):
+                z3_construction_counts[current_case["value"]][
+                    "_new_query_solver"
+                ] += 1
+                return real_new_query_solver(*args, **kwargs)
+
             z3_handler.refine_call_result = recording_refine_call_result
             z3_backend.decide_zero_status = recording_decide_zero_status
             z3_handler.Z3Rule.make_z3_mop_prover = recording_make_z3_mop_prover
+            z3_backend.create_z3_vars = recording_create_z3_vars
+            z3_backend.AstNodeZ3Visitor = RecordingAstNodeZ3Visitor
+            z3_backend._new_query_solver = recording_new_query_solver
             reset_diagnostic_bus()
             subscribe(Z3PredicateProofObserved, proof_events.append)
             production_rule_outcomes = {}
@@ -381,25 +404,26 @@ class TestCallResultPredicateRegression:
                         case_mba, ida_hexrays.m_setnz
                     )
                     assert setnz_block is not None and setnz_instruction is not None
-                    z3_optimizer = next(
-                        optimizer
-                        for optimizer in manager.instruction_optimizers
-                        if type(optimizer).__name__ == "Z3Optimizer"
-                    )
-                    z3_rule = next(
-                        rule
-                        for rule in z3_optimizer.rules
-                        if type(rule).__name__ == "Z3setnzRuleGeneric"
-                    )
-                    bound = manager._bind_validated_fact_view_for_callback(setnz_block)
-                    try:
-                        replacement = z3_rule.check_and_replace(
-                            setnz_block, setnz_instruction
-                        )
-                    finally:
-                        for binder, previous_view in reversed(bound):
-                            binder(previous_view)
-                    production_rule_outcomes[kind] = replacement
+                    z3_construction_counts[kind] = {
+                        "create_z3_vars": 0,
+                        "AstNodeZ3Visitor": 0,
+                        "_new_query_solver": 0,
+                    }
+                    before_opcode = setnz_instruction.opcode
+                    before_text = format_minsn_t(setnz_instruction)
+                    callback_result = manager.func(setnz_block, setnz_instruction)
+                    production_rule_outcomes[kind] = callback_result
+                    after_text = format_minsn_t(setnz_instruction)
+                    if kind in ("zero", "one"):
+                        assert callback_result is True
+                        assert setnz_instruction.opcode == ida_hexrays.m_mov
+                        assert setnz_instruction.l.t == ida_hexrays.mop_n
+                        assert setnz_instruction.l.nnn.value == (0 if kind == "zero" else 1)
+                    else:
+                        assert callback_result is False
+                        assert setnz_instruction.opcode == before_opcode
+                        assert after_text == before_text
+
                 manager.configure_validated_fact_view_provider(
                     lambda _function_ea, _maturity: ValidatedFactView(
                         maturity="MMAT_CALLS"
@@ -414,31 +438,27 @@ class TestCallResultPredicateRegression:
                     empty_setnz_block is not None
                     and empty_setnz_instruction is not None
                 )
-                z3_optimizer = next(
-                    optimizer
-                    for optimizer in manager.instruction_optimizers
-                    if type(optimizer).__name__ == "Z3Optimizer"
+                z3_construction_counts["empty"] = {
+                    "create_z3_vars": 0,
+                    "AstNodeZ3Visitor": 0,
+                    "_new_query_solver": 0,
+                }
+                empty_before_opcode = empty_setnz_instruction.opcode
+                empty_before_text = format_minsn_t(empty_setnz_instruction)
+                production_rule_outcomes["empty"] = manager.func(
+                    empty_setnz_block, empty_setnz_instruction
                 )
-                z3_rule = next(
-                    rule
-                    for rule in z3_optimizer.rules
-                    if type(rule).__name__ == "Z3setnzRuleGeneric"
-                )
-                empty_bound = manager._bind_validated_fact_view_for_callback(
-                    empty_setnz_block
-                )
-                try:
-                    production_rule_outcomes["empty"] = z3_rule.check_and_replace(
-                        empty_setnz_block, empty_setnz_instruction
-                    )
-                finally:
-                    for binder, previous_view in reversed(empty_bound):
-                        binder(previous_view)
+                assert production_rule_outcomes["empty"] is False
+                assert empty_setnz_instruction.opcode == empty_before_opcode
+                assert format_minsn_t(empty_setnz_instruction) == empty_before_text
             finally:
                 manager.configure_validated_fact_view_provider(previous)
                 z3_handler.refine_call_result = real_refine_call_result
                 z3_backend.decide_zero_status = real_decide_zero_status
                 z3_handler.Z3Rule.make_z3_mop_prover = real_make_z3_mop_prover
+                z3_backend.create_z3_vars = real_create_z3_vars
+                z3_backend.AstNodeZ3Visitor = real_ast_node_z3_visitor
+                z3_backend._new_query_solver = real_new_query_solver
                 unsubscribe(Z3PredicateProofObserved, proof_events.append)
             assert set(provider_calls) == {
                 "none",
@@ -478,11 +498,12 @@ class TestCallResultPredicateRegression:
                 )
             )
             print("production_rule_outcomes=" + repr(production_rule_outcomes))
-            assert production_rule_outcomes["none"] is None
-            assert production_rule_outcomes["zero"] is not None
-            assert production_rule_outcomes["one"] is not None
+            print("z3_construction_counts=" + repr(z3_construction_counts))
+            assert production_rule_outcomes["none"] is False
+            assert production_rule_outcomes["zero"] is True
+            assert production_rule_outcomes["one"] is True
             for kind in ("stale", "malformed", "conflicting", "carrier", "empty"):
-                assert production_rule_outcomes[kind] is None
+                assert production_rule_outcomes[kind] is False
             relevant_refiners = [
                 record
                 for record in production_refiner_calls
@@ -524,6 +545,16 @@ class TestCallResultPredicateRegression:
             assert "always_zero" in zero_decisions
             assert "always_nonzero" in one_decisions
             assert empty_decisions == {"unknown"}
+            assert z3_construction_counts["zero"] == {
+                "create_z3_vars": 0,
+                "AstNodeZ3Visitor": 0,
+                "_new_query_solver": 0,
+            }
+            assert z3_construction_counts["one"] == {
+                "create_z3_vars": 0,
+                "AstNodeZ3Visitor": 0,
+                "_new_query_solver": 0,
+            }
 
     @staticmethod
     def _fact_view(kind, *, call_ea, callee_ea):
