@@ -278,6 +278,45 @@ def registry_for(plugin, *, requires=(), host=None, name="example"):
 
 
 class TestActivation(unittest.TestCase):
+    def test_host_view_factory_can_read_registry_without_deadlock(self):
+        plugin = FakePlugin(FakeActivation())
+        host = ProtocolOnlyHost()
+
+        def view_factory(_requirements):
+            read_complete = threading.Event()
+
+            def read_registry():
+                reg.info("example")
+                read_complete.set()
+
+            reader = threading.Thread(target=read_registry)
+            reader.start()
+            self.assertTrue(
+                read_complete.wait(timeout=1),
+                "registry read blocked while host view was constructed",
+            )
+            reader.join(timeout=1)
+            return host
+
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example 1.0",
+                    load_manifest=lambda: {
+                        "name": "example",
+                        "api_version": PLUGIN_API_VERSION,
+                        "provides": lambda: plugin,
+                    },
+                )
+            ],
+            host=host,
+            requirement_validator=lambda _requirements: None,
+            host_view_factory=view_factory,
+        )
+
+        reg.activate("example")
+
     def test_activation_rejects_host_without_explicit_view_factory(self):
         plugin = FakePlugin(FakeActivation())
         host = ProtocolOnlyHost()
@@ -698,6 +737,53 @@ class TestFormatReportRegression(unittest.TestCase):
 
 
 class TestPassImplementationRegression(unittest.TestCase):
+    def test_declarations_wait_for_force_rediscovery_publication(self):
+        phase = ["old"]
+        force_entered = threading.Event()
+        release_force = threading.Event()
+
+        def source():
+            return [
+                BackendSpec(
+                    name="example",
+                    origin=f"{phase[0]}-origin",
+                    load_manifest=lambda: self.manifest({"mba-solve": "ExampleRule"}),
+                )
+            ]
+
+        reg = BackendRegistry(source=source)
+        self.assertEqual(
+            reg.implementation_declarations_for("mba-solve")[0][0].backend_origin,
+            "old-origin",
+        )
+        phase[0] = "new"
+        original_close = reg._close_activations_impl
+
+        def paused_close():
+            force_entered.set()
+            self.assertTrue(release_force.wait(timeout=1))
+            original_close()
+
+        reg._close_activations_impl = paused_close
+        force_thread = threading.Thread(target=lambda: reg.discover(force=True))
+        force_thread.start()
+        self.assertTrue(force_entered.wait(timeout=1))
+
+        result = []
+
+        def read_declarations():
+            result.extend(reg.implementation_declarations_for("mba-solve"))
+
+        reader = threading.Thread(target=read_declarations)
+        reader.start()
+        reader.join(timeout=0.05)
+
+        release_force.set()
+        force_thread.join(timeout=1)
+        reader.join(timeout=1)
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(result[0][0].backend_origin, "new-origin")
+
     def test_declaration_manifest_loader_can_read_registry_without_deadlock(self):
         reg_holder = {}
         manifest = self.manifest({"mba-solve": "ExampleRule"})

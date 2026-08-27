@@ -838,6 +838,8 @@ class BackendRegistry:
         force_cycle = False
         with self._lock:
             if self._discovered and not force:
+                while self._rediscovering:
+                    self._lifecycle.wait()
                 return
             if self._discovered and force:
                 while self._rediscovering or self._closing:
@@ -1003,18 +1005,15 @@ class BackendRegistry:
                 )
 
             distribution, version = _distribution_version(spec.origin)
+            identity = PluginIdentity(
+                name=manifest.name,
+                distribution=distribution,
+                version=version,
+                origin=spec.origin,
+            )
             view_factory = self._host_view_factory
             if view_factory is None:
                 raise BackendUnavailable("no host view factory configured")
-            context = PluginActivationContext(
-                identity=PluginIdentity(
-                    name=manifest.name,
-                    distribution=distribution,
-                    version=version,
-                    origin=spec.origin,
-                ),
-                host=view_factory(manifest.requires),
-            )
             record = _ActivationRecord(
                 condition=threading.Condition(self._lock),
                 generation=self._generation,
@@ -1024,6 +1023,10 @@ class BackendRegistry:
 
         partial: Any = None
         try:
+            host_view = view_factory(manifest.requires)
+            if host_view is None:
+                raise BackendUnavailable("host view factory returned None")
+            context = PluginActivationContext(identity=identity, host=host_view)
             partial = activate(context)
             self._validate_activation(partial)
         except Exception as exc:
@@ -1191,6 +1194,8 @@ class BackendRegistry:
         while True:
             self.discover()
             with self._lock:
+                while self._rediscovering or self._closing:
+                    self._lifecycle.wait()
                 generation = self._generation
                 specs = tuple(
                     spec
@@ -1239,7 +1244,11 @@ class BackendRegistry:
                 )
 
             with self._lock:
-                if generation != self._generation:
+                if (
+                    generation != self._generation
+                    or self._rediscovering
+                    or self._closing
+                ):
                     continue
                 return tuple(
                     sorted(
