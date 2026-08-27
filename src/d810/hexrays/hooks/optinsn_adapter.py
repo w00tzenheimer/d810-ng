@@ -23,6 +23,7 @@ from d810.core.execution_journal import (
     ExecutionEffectRef,
 )
 from d810.core.execution_journal_store import TerminalExecutionAttempt
+from d810.core.function_execution_identity import MbaObservationContext
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
@@ -370,6 +371,42 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         if provider is not None and not callable(provider):
             raise TypeError("validated fact view provider must be callable or None")
         self._validated_fact_view_provider = provider
+
+    def mba_observation_context(
+        self,
+        blk: ida_hexrays.mblock_t,
+        ins: ida_hexrays.minsn_t,
+        plugin_identity: object,
+    ) -> MbaObservationContext | None:
+        """Build callback-local portable identity for one MBA instruction."""
+        try:
+            mba = getattr(blk, "mba", None)
+            lifecycle = getattr(self, "_decompilation_lifecycle", None)
+            if mba is None or lifecycle is None:
+                return None
+            function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            maturity = ida_maturity_to_ir(int(getattr(mba, "maturity", -1)))
+            function_identity = lifecycle.current_function_execution_identity(
+                function_ea, maturity
+            )
+            instruction_ea = getattr(ins, "ea", None)
+            if instruction_ea is None:
+                return None
+            block_serial = getattr(blk, "serial", None)
+            block_ea = getattr(blk, "start", None) if block_serial is not None else None
+            return MbaObservationContext(
+                function_identity=function_identity,
+                plugin_identity=plugin_identity,
+                instruction_ea=instruction_ea,
+                block_serial=block_serial,
+                block_ea=block_ea,
+            )
+        except Exception:
+            optimizer_logger.debug(
+                "failed to construct callback-local MBA observation context",
+                exc_info=True,
+            )
+            return None
 
     def add_rule(self, rule: InstructionOptimizationRule):
         # optimizer_log.info("Trying to add rule {0}".format(rule))
@@ -984,9 +1021,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         callback_exception_name: str | None = None
         fact_view_binders: list[object] = []
         try:
-            fact_view_binders = InstructionOptimizerManager._bind_validated_fact_view_for_callback(
-                self,
-                blk,
+            fact_view_binders = (
+                InstructionOptimizerManager._bind_validated_fact_view_for_callback(
+                    self,
+                    blk,
+                )
             )
             if self.log_info_on_input(blk, ins):
                 # An early-maturity gateway may have structurally changed the MBA. Do not

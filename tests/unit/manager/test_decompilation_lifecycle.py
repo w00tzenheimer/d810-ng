@@ -25,6 +25,8 @@ from d810.core.input_identity_attestation import (
     InputIdentityRecoveryStatus,
     InputIdentityResolution,
 )
+from d810.core.function_execution_identity import FunctionExecutionIdentity
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.execution_journal import (
     DecompilationSessionId,
     ExecutionAttemptStatus,
@@ -33,6 +35,10 @@ from d810.core.execution_journal import (
 from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.maturity import IRMaturity
+from d810.backends.hexrays.native_preanalysis_key import (
+    NativePreanalysisIdentityResolution,
+)
 from d810.manager.decompilation_lifecycle import (
     AttestedExternalOracleGate,
     DecompilationLifecycleCoordinator,
@@ -244,6 +250,98 @@ def test_native_fact_session_api_is_idempotent_and_generation_aware() -> None:
     changed = _native_facts(blocks=(NativeBlock(0x401000, 0x401010),))
     assert coordinator.merge_facts(NATIVE_KEY, changed) is True
     assert session.native_preanalysis.evidence_generation == 2
+
+
+def test_current_function_execution_identity_uses_verified_resolution() -> None:
+    calls: list[tuple[str, object]] = []
+    verified_key = NativePreanalysisKey(
+        input_identity="sha256:" + "a" * 64,
+        processor="metapc",
+        bitness=64,
+        function_rva=NATIVE_KEY.function_rva,
+        function_fingerprint=NATIVE_KEY.function_fingerprint,
+        profile_fingerprint=NATIVE_KEY.profile_fingerprint,
+        sdk_fingerprint=NATIVE_KEY.sdk_fingerprint,
+    )
+    resolution = InputIdentityResolution(
+        status=InputIdentityRecoveryStatus.LOADER_SHA_CAPTURED,
+        input_identity=verified_key.input_identity,
+        provenance="verified_loader_sha256",
+        external_evidence_allowed=True,
+        database_uuid="12345678-1234-5678-1234-567812345678",
+    )
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=_PreanalysisRuntime(calls),
+        analysis_runtime=_AnalysisRuntime(calls),
+        execution_scope_service=_ExecutionScopeService(calls),
+        native_preanalysis_key_provider=lambda _function_ea: (
+            NativePreanalysisIdentityResolution(verified_key, resolution)
+        ),
+    )
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    coordinator.merge_facts(verified_key, _native_facts(key=verified_key))
+
+    identity = coordinator.current_function_execution_identity(
+        0x401000, IRMaturity.CANONICAL
+    )
+
+    assert isinstance(identity, FunctionExecutionIdentity)
+    assert identity.input_identity == verified_key.input_identity
+    assert identity.external_evidence_allowed is True
+    assert identity.decompilation_session_id == session.session_id.value
+    assert identity.top_level_epoch == session.top_level_epoch
+    assert identity.evidence_generation == 1
+
+
+def test_current_function_execution_identity_fails_without_active_session() -> None:
+    coordinator, _runtime = _coordinator([])
+
+    with pytest.raises(ValueError, match="active session"):
+        coordinator.current_function_execution_identity(0x401000, IRMaturity.CANONICAL)
+
+
+def test_current_function_execution_identity_falls_back_to_idb_local() -> None:
+    calls: list[tuple[str, object]] = []
+    database_uuid = "12345678-1234-5678-1234-567812345678"
+    local_key = NativePreanalysisKey(
+        input_identity=f"idb-local:{database_uuid}",
+        processor=NATIVE_KEY.processor,
+        bitness=NATIVE_KEY.bitness,
+        function_rva=NATIVE_KEY.function_rva,
+        function_fingerprint=NATIVE_KEY.function_fingerprint,
+        profile_fingerprint=NATIVE_KEY.profile_fingerprint,
+        sdk_fingerprint=NATIVE_KEY.sdk_fingerprint,
+    )
+    resolution = InputIdentityResolution(
+        status=InputIdentityRecoveryStatus.IDB_LOCAL,
+        input_identity=local_key.input_identity,
+        provenance="current_idb",
+        external_evidence_allowed=False,
+        database_uuid=database_uuid,
+    )
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=_PreanalysisRuntime(calls),
+        analysis_runtime=_AnalysisRuntime(calls),
+        execution_scope_service=_ExecutionScopeService(calls),
+        native_preanalysis_key_provider=lambda _function_ea: (
+            NativePreanalysisIdentityResolution(local_key, resolution)
+        ),
+    )
+    coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    identity = coordinator.current_function_execution_identity(
+        0x401000, IRMaturity.CANONICAL
+    )
+
+    assert identity.input_identity == f"idb-local:{database_uuid}"
+    assert identity.external_evidence_allowed is False
+    assert identity.input_identity_provenance == "current_idb"
 
 
 def test_coordinator_owns_canonical_semantic_publication_lifecycle() -> None:

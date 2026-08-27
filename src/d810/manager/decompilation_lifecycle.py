@@ -30,6 +30,7 @@ from d810.core.logging import getLogger
 from d810.core.input_identity_attestation import (
     InputIdentityResolution,
 )
+from d810.core.function_execution_identity import FunctionExecutionIdentity
 from d810.core.native_preanalysis_key import (
     NativePreanalysisKey,
     NativePreanalysisKeyMismatch,
@@ -46,6 +47,7 @@ from d810.capabilities.semantic_routes import SemanticRouteReferenceOracleCapabi
 from d810.manager.frontend_normalization import (
     SessionFrontendNormalizationPlanAuthority,
 )
+from d810.ir.maturity import IRMaturity
 
 logger = getLogger("d810.decompilation_lifecycle")
 
@@ -631,6 +633,38 @@ class DecompilationLifecycleCoordinator:
             if session.function_ea == function_ea:
                 return session
         return None
+
+    def current_function_execution_identity(
+        self,
+        function_ea: int,
+        maturity: IRMaturity,
+    ) -> FunctionExecutionIdentity:
+        """Return a fresh portable identity from the active session authority."""
+        function_ea = int(function_ea)
+        session = self.current_session(function_ea)
+        if session is None:
+            raise ValueError(f"no active session for function 0x{function_ea:X}")
+        if not isinstance(maturity, IRMaturity):
+            raise ValueError("maturity must be a portable IRMaturity")
+        resolution = session.input_identity_resolution
+        database_uuid = None if resolution is None else resolution.database_uuid
+        if database_uuid is None:
+            native_identity = session.native_key.input_identity
+            if native_identity.startswith("idb-local:"):
+                database_uuid = native_identity.removeprefix("idb-local:")
+        if not database_uuid:
+            raise ValueError("active session has no database UUID authority")
+        return FunctionExecutionIdentity.from_native_key(
+            native_key=session.native_key,
+            identity_resolution=resolution,
+            database_uuid=database_uuid,
+            database_identity=session.database_identity,
+            function_ea=function_ea,
+            decompilation_session_id=session.session_id,
+            top_level_epoch=session.top_level_epoch,
+            maturity=maturity,
+            evidence_generation=session.native_preanalysis.evidence_generation,
+        )
 
     def has_pending_generated_restart(self, function_ea: int) -> bool:
         """Return whether the active owner needs one controller follow-up."""
