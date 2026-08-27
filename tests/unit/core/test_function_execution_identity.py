@@ -52,6 +52,23 @@ def test_verified_sha_is_normalized_and_external_eligible() -> None:
     assert identity.function_fingerprint == f"sha256:{'b' * 64}"
 
 
+def test_maturity_is_canonicalized_across_enum_and_reload_shaped_string() -> None:
+    from_enum = _identity()
+    from_string = _identity(maturity="ir.canonical")
+
+    assert from_enum.maturity == from_string.maturity == "ir.canonical"
+    assert from_enum == from_string
+    assert from_enum.to_json() == from_string.to_json()
+
+
+def test_mutable_maturity_impostor_is_rejected() -> None:
+    class MutableMaturity:
+        value = "ir.canonical"
+
+    with pytest.raises((TypeError, ValueError)):
+        _identity(maturity=MutableMaturity())
+
+
 def test_idb_local_identity_is_normalized_and_not_external_eligible() -> None:
     identity = _identity(
         input_identity=f"idb-local:{UUID(DATABASE_UUID).hex}",
@@ -93,6 +110,53 @@ def test_external_evidence_requires_verified_sha_identity() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "provenance",
+    ("verified_loader_sha256", "captured_from_ida", "recovered_from_d810_attestation"),
+)
+def test_external_sha_requires_verified_provenance(provenance: str) -> None:
+    identity = _identity(input_identity_provenance=provenance)
+
+    assert identity.external_evidence_allowed is True
+
+
+def test_local_identity_requires_local_provenance() -> None:
+    with pytest.raises(ValueError, match="provenance"):
+        _identity(
+            input_identity=f"idb-local:{DATABASE_UUID}",
+            input_identity_provenance="verified_loader_sha256",
+            external_evidence_allowed=False,
+        )
+
+
+def test_verified_sha_cannot_claim_local_provenance() -> None:
+    with pytest.raises(ValueError, match="provenance"):
+        _identity(
+            input_identity=f"sha256:{SHA}",
+            input_identity_provenance="current_idb",
+            external_evidence_allowed=True,
+        )
+
+
+def test_unverified_sha_cannot_claim_verified_provenance() -> None:
+    with pytest.raises(ValueError, match="provenance"):
+        _identity(
+            input_identity=f"sha256:{SHA}",
+            input_identity_provenance="verified_loader_sha256",
+            external_evidence_allowed=False,
+        )
+
+
+def test_local_identity_database_uuid_must_agree() -> None:
+    with pytest.raises(ValueError, match="database UUID"):
+        _identity(
+            input_identity=f"idb-local:{DATABASE_UUID}",
+            input_identity_provenance="current_idb",
+            external_evidence_allowed=False,
+            database_uuid="87654321-4321-8765-4321-876543218765",
+        )
+
+
 def test_bool_is_not_accepted_as_numeric_identity() -> None:
     with pytest.raises(TypeError):
         _identity(function_ea=True)
@@ -119,6 +183,31 @@ def test_mba_context_requires_block_anchor_when_serial_is_present() -> None:
             instruction_ea=0x401005,
             block_serial=7,
             block_ea=None,
+        )
+
+
+def test_mba_context_allows_block_ea_without_serial_explicitly() -> None:
+    """A physical EA may be retained without a transient Hex-Rays serial."""
+    context = MbaObservationContext(
+        function_identity=_identity(),
+        plugin_identity=PLUGIN,
+        instruction_ea=0x401005,
+        block_serial=None,
+        block_ea=0x401000,
+    )
+
+    assert context.block_ea == 0x401000
+    assert context.block_identity is None
+
+
+def test_mba_context_rejects_bad_address_block_anchor() -> None:
+    with pytest.raises(ValueError, match="block EA"):
+        MbaObservationContext(
+            function_identity=_identity(),
+            plugin_identity=PLUGIN,
+            instruction_ea=0x401005,
+            block_serial=7,
+            block_ea=(1 << 64) - 1,
         )
 
 
@@ -153,6 +242,24 @@ def test_context_rejects_invalid_plugin_and_instruction_anchor() -> None:
         MbaObservationContext(
             function_identity=_identity(),
             plugin_identity=PluginIdentity("", "d810-cobra", "1.0", "test"),
+            instruction_ea=0x401005,
+        )
+    with pytest.raises(ValueError, match="plugin origin"):
+        MbaObservationContext(
+            function_identity=_identity(),
+            plugin_identity=PluginIdentity("cobra", "d810-cobra", "1.0", " runtime "),
+            instruction_ea=0x401005,
+        )
+    with pytest.raises(ValueError, match="plugin distribution"):
+        MbaObservationContext(
+            function_identity=_identity(),
+            plugin_identity=PluginIdentity("cobra", " d810-cobra ", "1.0", "test"),
+            instruction_ea=0x401005,
+        )
+    with pytest.raises(ValueError, match="plugin version"):
+        MbaObservationContext(
+            function_identity=_identity(),
+            plugin_identity=PluginIdentity("cobra", "d810-cobra", " 1.0 ", "test"),
             instruction_ea=0x401005,
         )
 

@@ -31,6 +31,10 @@ _MATURITY_VALUES = frozenset(
         "ir.variable.recovered",
     }
 )
+_VERIFIED_SHA_PROVENANCE = frozenset(
+    {"captured_from_ida", "recovered_from_d810_attestation", "verified_loader_sha256"}
+)
+_LOCAL_PROVENANCE = frozenset({"current_idb", "idb_local", "legacy_idb_local"})
 
 
 def _non_negative_int(value: object, *, field: str) -> int:
@@ -86,10 +90,25 @@ def _normalize_session_id(value: object) -> str:
 
 
 def _normalize_maturity(value: object) -> object:
-    normalized = getattr(value, "value", value)
+    if (
+        type(value).__module__ == "d810.ir.maturity"
+        and type(value).__name__ == "IRMaturity"
+    ):
+        normalized = getattr(value, "value", None)
+    elif isinstance(value, str):
+        normalized = str(value)
+    else:
+        raise TypeError("maturity must be an IRMaturity or stable maturity string")
     if not isinstance(normalized, str) or normalized not in _MATURITY_VALUES:
         raise ValueError("maturity must be a portable IRMaturity")
-    return value
+    return normalized
+
+
+def _canonical_plugin_text(value: object, *, field: str) -> str:
+    result = _text(value, field=field)
+    if result != value:
+        raise ValueError(f"{field} must use canonical whitespace")
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +136,19 @@ class FunctionExecutionIdentity:
             "input_identity_provenance",
             _text(self.input_identity_provenance, field="input_identity_provenance"),
         )
+        provenance = self.input_identity_provenance
+        if input_identity.startswith("sha256:"):
+            if provenance in _VERIFIED_SHA_PROVENANCE:
+                if not self.external_evidence_allowed:
+                    raise ValueError(
+                        "verified SHA provenance requires external evidence"
+                    )
+            elif self.external_evidence_allowed:
+                raise ValueError("verified SHA identity requires verified provenance")
+            if not self.external_evidence_allowed and provenance in _LOCAL_PROVENANCE:
+                raise ValueError("SHA identity cannot use local IDB provenance")
+        elif provenance not in _LOCAL_PROVENANCE:
+            raise ValueError("IDB-local identity requires local provenance")
         if not isinstance(self.external_evidence_allowed, bool):
             raise TypeError("external_evidence_allowed must be a bool")
         if self.external_evidence_allowed and not input_identity.startswith("sha256:"):
@@ -126,6 +158,13 @@ class FunctionExecutionIdentity:
             "database_uuid",
             _normalize_uuid(self.database_uuid, field="database_uuid"),
         )
+        if input_identity.startswith("idb-local:"):
+            local_uuid = _normalize_uuid(
+                input_identity.removeprefix("idb-local:"),
+                field="input identity database UUID",
+            )
+            if local_uuid != self.database_uuid:
+                raise ValueError("input identity and database UUID disagree")
         object.__setattr__(
             self,
             "database_identity",
@@ -190,6 +229,27 @@ class FunctionExecutionIdentity:
             identity_resolution.input_identity != native_key.input_identity
         ):
             raise ValueError("native key disagrees with identity resolution")
+        normalized_database_uuid = _normalize_uuid(database_uuid, field="database_uuid")
+        native_local_uuid = None
+        if native_key.input_identity.startswith("idb-local:"):
+            native_local_uuid = _normalize_uuid(
+                native_key.input_identity.removeprefix("idb-local:"),
+                field="native key database UUID",
+            )
+        resolution_uuid = (
+            None if identity_resolution is None else identity_resolution.database_uuid
+        )
+        if resolution_uuid is not None:
+            resolution_uuid = _normalize_uuid(
+                resolution_uuid, field="resolution database UUID"
+            )
+        local_authorities = {
+            value
+            for value in (native_local_uuid, resolution_uuid, normalized_database_uuid)
+            if value is not None
+        }
+        if len(local_authorities) != 1:
+            raise ValueError("local database UUID authorities disagree")
         verified = bool(
             identity_resolution is not None
             and identity_resolution.external_evidence_allowed
@@ -208,7 +268,7 @@ class FunctionExecutionIdentity:
             input_identity=input_identity,
             input_identity_provenance=provenance,
             external_evidence_allowed=verified,
-            database_uuid=database_uuid,
+            database_uuid=normalized_database_uuid,
             database_identity=database_identity,
             function_ea=function_ea,
             function_rva=native_key.function_rva,
@@ -231,7 +291,7 @@ class FunctionExecutionIdentity:
             "function_fingerprint": self.function_fingerprint,
             "decompilation_session_id": self.decompilation_session_id,
             "top_level_epoch": self.top_level_epoch,
-            "maturity": self.maturity.value,
+            "maturity": self.maturity,
             "evidence_generation": self.evidence_generation,
         }
 
@@ -254,12 +314,12 @@ class MbaObservationContext:
             raise TypeError("function_identity must be a FunctionExecutionIdentity")
         if not isinstance(self.plugin_identity, PluginIdentity):
             raise TypeError("plugin_identity must be a PluginIdentity")
-        _text(self.plugin_identity.name, field="plugin name")
-        _text(self.plugin_identity.origin, field="plugin origin")
+        _canonical_plugin_text(self.plugin_identity.name, field="plugin name")
+        _canonical_plugin_text(self.plugin_identity.origin, field="plugin origin")
         for field_name in ("distribution", "version"):
             value = getattr(self.plugin_identity, field_name)
             if value is not None:
-                _text(value, field=f"plugin {field_name}")
+                _canonical_plugin_text(value, field=f"plugin {field_name}")
         object.__setattr__(
             self,
             "instruction_ea",
@@ -277,6 +337,8 @@ class MbaObservationContext:
             object.__setattr__(
                 self, "block_ea", _non_negative_int(self.block_ea, field="block_ea")
             )
+            if self.block_ea == (1 << 64) - 1:
+                raise ValueError("block EA must not be BADADDR")
 
     @property
     def identity(self) -> FunctionExecutionIdentity:

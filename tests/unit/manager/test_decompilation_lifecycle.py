@@ -344,6 +344,119 @@ def test_current_function_execution_identity_falls_back_to_idb_local() -> None:
     assert identity.input_identity_provenance == "current_idb"
 
 
+def test_key_only_legacy_local_identity_reuses_native_uuid_and_session() -> None:
+    calls: list[tuple[str, object]] = []
+    database_uuid = "12345678-1234-5678-1234-567812345678"
+    local_key = NativePreanalysisKey(
+        input_identity=f"idb-local:{database_uuid}",
+        processor=NATIVE_KEY.processor,
+        bitness=NATIVE_KEY.bitness,
+        function_rva=NATIVE_KEY.function_rva,
+        function_fingerprint=NATIVE_KEY.function_fingerprint,
+        profile_fingerprint=NATIVE_KEY.profile_fingerprint,
+        sdk_fingerprint=NATIVE_KEY.sdk_fingerprint,
+    )
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=_PreanalysisRuntime(calls),
+        analysis_runtime=_AnalysisRuntime(calls),
+        execution_scope_service=_ExecutionScopeService(calls),
+        native_preanalysis_key_provider=lambda _function_ea: local_key,
+    )
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    identity = coordinator.current_function_execution_identity(
+        0x401000, IRMaturity.CANONICAL
+    )
+
+    assert identity.input_identity == local_key.input_identity
+    assert identity.database_uuid == database_uuid
+    assert identity.decompilation_session_id == session.session_id.value
+    assert identity.external_evidence_allowed is False
+
+
+def test_key_only_legacy_sha_identity_fails_without_uuid_authority() -> None:
+    coordinator, _runtime = _coordinator([])
+    coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    with pytest.raises(ValueError, match="database UUID authority"):
+        coordinator.current_function_execution_identity(0x401000, IRMaturity.CANONICAL)
+
+
+def test_unverified_sha_resolution_is_forced_to_local_identity() -> None:
+    calls: list[tuple[str, object]] = []
+    database_uuid = "12345678-1234-5678-1234-567812345678"
+    unverified_key = make_native_key(input_identity="sha256:" + "a" * 64)
+    resolution = InputIdentityResolution(
+        status=InputIdentityRecoveryStatus.RECOVERED_LOCAL_ONLY,
+        input_identity=unverified_key.input_identity,
+        provenance="recovered_from_d810_attestation",
+        external_evidence_allowed=False,
+        database_uuid=database_uuid,
+    )
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=_PreanalysisRuntime(calls),
+        analysis_runtime=_AnalysisRuntime(calls),
+        execution_scope_service=_ExecutionScopeService(calls),
+        native_preanalysis_key_provider=lambda _function_ea: (
+            NativePreanalysisIdentityResolution(unverified_key, resolution)
+        ),
+    )
+    coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    identity = coordinator.current_function_execution_identity(
+        0x401000, IRMaturity.CANONICAL
+    )
+
+    assert identity.input_identity == f"idb-local:{database_uuid}"
+    assert identity.external_evidence_allowed is False
+
+
+def test_mismatched_local_uuid_authority_fails_closed() -> None:
+    calls: list[tuple[str, object]] = []
+    key_uuid = "12345678-1234-5678-1234-567812345678"
+    resolution_uuid = "87654321-4321-8765-4321-876543218765"
+    local_key = NativePreanalysisKey(
+        input_identity=f"idb-local:{key_uuid}",
+        processor=NATIVE_KEY.processor,
+        bitness=NATIVE_KEY.bitness,
+        function_rva=NATIVE_KEY.function_rva,
+        function_fingerprint=NATIVE_KEY.function_fingerprint,
+        profile_fingerprint=NATIVE_KEY.profile_fingerprint,
+        sdk_fingerprint=NATIVE_KEY.sdk_fingerprint,
+    )
+    resolution = InputIdentityResolution(
+        status=InputIdentityRecoveryStatus.IDB_LOCAL,
+        input_identity=local_key.input_identity,
+        provenance="current_idb",
+        external_evidence_allowed=False,
+        database_uuid=resolution_uuid,
+    )
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=_PreanalysisRuntime(calls),
+        analysis_runtime=_AnalysisRuntime(calls),
+        execution_scope_service=_ExecutionScopeService(calls),
+        native_preanalysis_key_provider=lambda _function_ea: (
+            NativePreanalysisIdentityResolution(local_key, resolution)
+        ),
+    )
+    coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    with pytest.raises(ValueError, match="UUID authorities disagree"):
+        coordinator.current_function_execution_identity(0x401000, IRMaturity.CANONICAL)
+
+
 def test_coordinator_owns_canonical_semantic_publication_lifecycle() -> None:
     coordinator, _runtime = _coordinator([])
     session, _created = coordinator.ensure(

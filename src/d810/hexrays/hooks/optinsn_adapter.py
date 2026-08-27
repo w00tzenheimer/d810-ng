@@ -4,6 +4,7 @@ import dataclasses
 import pathlib
 from collections import defaultdict
 
+import idaapi
 import ida_hexrays
 
 from d810.hexrays.hooks.optimization_suppression import (
@@ -87,6 +88,25 @@ def hash_minsn(ins: ida_hexrays.minsn_t, func_entry_ea: int = 0) -> int:
         except Exception:
             pass
     return _hash_minsn_fallback(ins, func_entry_ea)
+
+
+def _valid_native_ea(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value == int(idaapi.BADADDR):
+        return None
+    if not idaapi.is_mapped(value):
+        return None
+    return int(value)
+
+
+def _block_ea_anchor(blk: object, ins: object) -> int | None:
+    """Return a conservative physical anchor for one live MBA block."""
+    block_ea = _valid_native_ea(getattr(blk, "start", None))
+    instruction_ea = _valid_native_ea(getattr(ins, "ea", None))
+    if instruction_ea is not None and (block_ea is None or instruction_ea != block_ea):
+        return instruction_ea
+    return block_ea
 
 
 def _rewrite_history_key(
@@ -389,11 +409,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             function_identity = lifecycle.current_function_execution_identity(
                 function_ea, maturity
             )
-            instruction_ea = getattr(ins, "ea", None)
+            instruction_ea = _valid_native_ea(getattr(ins, "ea", None))
             if instruction_ea is None:
                 return None
             block_serial = getattr(blk, "serial", None)
-            block_ea = getattr(blk, "start", None) if block_serial is not None else None
+            block_ea = _block_ea_anchor(blk, ins) if block_serial is not None else None
             return MbaObservationContext(
                 function_identity=function_identity,
                 plugin_identity=plugin_identity,
