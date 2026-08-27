@@ -453,14 +453,18 @@ class D810State(metaclass=SingletonMeta):
         # fields or lifecycle events are published.  In particular, rules are
         # rebuilt for every candidate project: configuring a candidate can
         # never poison the rule objects used by the active project.
-        schedule = compile_config_v2_hook_schedule(project)
-        snapshot = build_project_runtime_snapshot(project=project, schedule=schedule)
-
         # Capture manager-owned objects and profile-global registries before
         # constructing/configuring any candidate rule.  Tigress-indirect
         # configuration registers reload/materialization handlers as a side
         # effect, so those globals are part of the same rollback boundary.
         activation_snapshot = self._capture_project_activation_state()
+        previous_runtime_snapshot = self.current_project_runtime_snapshot
+        previous_activations = (
+            previous_runtime_snapshot.activated_plugins
+            if previous_runtime_snapshot is not None
+            else ()
+        )
+        backend_registry = self.manager.backend_registry
         rolled_back = False
 
         def _rollback_activation(activation_error: BaseException) -> None:
@@ -468,10 +472,13 @@ class D810State(metaclass=SingletonMeta):
             if rolled_back:
                 return
             rolled_back = True
-            self._restore_project_activation_state(
-                activation_snapshot,
-                activation_error,
-            )
+            try:
+                self._restore_project_activation_state(
+                    activation_snapshot,
+                    activation_error,
+                )
+            finally:
+                backend_registry.close_activations_except(previous_activations)
 
         def _stage_call(callable_, *args, **kwargs):
             try:
@@ -480,8 +487,76 @@ class D810State(metaclass=SingletonMeta):
                 _rollback_activation(activation_error)
                 raise
 
+        schedule = _stage_call(compile_config_v2_hook_schedule, project)
         candidate_known_ins_rules = _stage_call(self._build_known_instruction_rules)
         candidate_known_blk_rules = _stage_call(self._build_known_block_rules)
+
+        instruction_names = {
+            str(binding.name)
+            for binding in schedule.instruction_bindings
+            if binding.is_activated
+        }
+        block_names = {
+            str(binding.name)
+            for binding in schedule.block_bindings
+            if binding.is_activated
+        }
+        external_rules: dict[tuple[str, str], tuple[object, object]] = {}
+        staged_activations: list[object] = []
+        all_binding_names = instruction_names | block_names
+        for pass_id in schedule.configured_pass_ids:
+            declarations = _stage_call(
+                backend_registry.implementation_declarations_for,
+                pass_id,
+            )
+            for candidate, _manifest in declarations:
+                if candidate.rule_name not in all_binding_names:
+                    continue
+                external_key = (candidate.pass_id, candidate.rule_name)
+                if external_key in external_rules:
+                    raise PipelineConfigError(
+                        f"pass implementation {candidate.rule_name!r} is ambiguous"
+                    )
+                if candidate.pass_id == "mba-egraph":
+                    implementation = backend_registry.implementation_instance_for(
+                        candidate
+                    )
+                    if implementation is None:
+                        implementation = _stage_call(
+                            backend_registry.activate_implementation,
+                            candidate,
+                        )
+                else:
+                    implementation = _stage_call(
+                        backend_registry.activate_implementation,
+                        candidate,
+                    )
+                if not isinstance(implementation, InstructionOptimizationRule):
+                    raise TypeError(
+                        f"plugin implementation {candidate.rule_name!r} must be "
+                        "an InstructionOptimizationRule"
+                    )
+                _stage_call(
+                    implementation.bind_plugin_services,
+                    backend_registry.plugin_rule_services(candidate),
+                )
+                external_rules[external_key] = (candidate, implementation)
+                activation = _stage_call(
+                    backend_registry.activation_for_candidate, candidate
+                )
+                if not any(existing is activation for existing in staged_activations):
+                    staged_activations.append(activation)
+                if candidate.rule_name in instruction_names:
+                    candidate_known_ins_rules.append(implementation)
+                if candidate.rule_name in block_names:
+                    candidate_known_blk_rules.append(implementation)
+
+        snapshot = _stage_call(
+            build_project_runtime_snapshot,
+            project=project,
+            schedule=schedule,
+            activated_plugins=tuple(staged_activations),
+        )
         _stage_call(
             _require_registered_schedule_bindings,
             schedule,
@@ -715,6 +790,9 @@ class D810State(metaclass=SingletonMeta):
         self.current_shadow_matcher_parity_ledger = (
             candidate_shadow_matcher_parity_ledger
         )
+
+        # Publication is complete before retiring the prior plugin ownership.
+        backend_registry.close_activations_except(snapshot.activated_plugins)
 
         emit_project_reloading(
             old_project_name=old_project_name,
@@ -1322,30 +1400,11 @@ class D810State(metaclass=SingletonMeta):
 
     @staticmethod
     def _ensure_extension_rules_registered() -> None:
-        """Import extension-contributed rules before the catalogue is read.
-
-        d810 registers its own rules by scanning ``d810.optimizers.__path__``,
-        which by construction cannot reach a rule shipped inside an installed
-        extension; ``load_extension_rules()`` closes that gap.  It used to run
-        only from ``manager.start()`` -- 88 ms *after* :meth:`load` had already
-        snapshotted the registry and matched configured rule names against it.
-        An extension's rule therefore never entered the catalogue, never
-        matched, and never had ``configure()`` called, leaving its pass
-        configured and silently inert (ticket d81-ix9c).
-
-        Calling ``load_extension_rules()`` rather than the whole
-        ``load_optimizer_registries()`` is deliberate: the latter re-runs the
-        module scanner, and running that twice can leave two copies of one rule
-        class in a single process.  Module imports are cached, so the later
-        call from ``manager.start()`` stays correct and costs nothing.
-        """
-        from d810.backends import load_extension_rules
-
-        load_extension_rules()
+        """Retain the builtin catalogue boundary; plugins use factories."""
+        return None
 
     def _build_known_instruction_rules(self) -> list:
         """Every instruction rule available to be matched against a config."""
-        self._ensure_extension_rules_registered()
         # Analysis rules share the instruction-rule registry but are not
         # imported by the peephole package.  Project activation snapshots this
         # catalogue before D810Manager.start() performs its broad optimizer
@@ -1364,7 +1423,6 @@ class D810State(metaclass=SingletonMeta):
 
     def _build_known_block_rules(self) -> list:
         """Every block rule available to be matched against a config."""
-        self._ensure_extension_rules_registered()
         from d810.optimizers.microcode.instructions.peephole import (  # noqa: F401
             modular_product_nonzero_native,
             predicate_root_recovery_native,

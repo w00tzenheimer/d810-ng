@@ -35,6 +35,7 @@ class ProjectRuntimeSnapshot:
     effective_pass_ids: tuple[str, ...]
     preparation_scripts: tuple[PreparationScriptDescriptor, ...] = ()
     global_const_persistence_enabled: bool = False
+    activated_plugins: tuple[object, ...] = ()
 
 
 def _identity(project: ProjectConfiguration) -> ProjectIdentitySnapshot:
@@ -50,6 +51,7 @@ def build_project_runtime_snapshot(
     *,
     project: ProjectConfiguration,
     schedule: ConfigV2HookSchedule,
+    activated_plugins: tuple[object, ...] = (),
 ) -> ProjectRuntimeSnapshot:
     """Capture one canonical project and its validated executable schedule."""
     preparation_registry = PreparationScriptRegistry.from_project(
@@ -61,6 +63,7 @@ def build_project_runtime_snapshot(
         effective_pass_ids=tuple(schedule.configured_pass_ids),
         preparation_scripts=preparation_registry.descriptors,
         global_const_persistence_enabled=schedule.global_const_persistence_enabled,
+        activated_plugins=tuple(activated_plugins),
     )
 
 

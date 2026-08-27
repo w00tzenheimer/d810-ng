@@ -206,9 +206,12 @@ class FakeActivation:
         self.offers = tuple(offers)
         self.close_error = close_error
         self.close_calls = 0
+        self.implementation_ids = []
+        self.implementation = object()
 
     def create_implementation(self, implementation_id):
-        return object()
+        self.implementation_ids.append(implementation_id)
+        return self.implementation
 
     def capability_offers(self):
         return self.offers
@@ -278,6 +281,157 @@ def registry_for(plugin, *, requires=(), host=None, name="example"):
 
 
 class TestActivation(unittest.TestCase):
+    def test_selected_implementation_is_created_by_declared_factory(self):
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
+        manifest = BackendManifest(
+            name="example",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: plugin,
+            implements={"example-pass": "example-implementation"},
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example-wheel",
+                    load_manifest=lambda: manifest,
+                )
+            ],
+            host_view_factory=lambda _requirements: FakeHost(),
+            requirement_validator=lambda _requirements: None,
+        )
+
+        candidate = reg.require_unique_implementation(
+            "example-pass", install_hint="example-package"
+        )
+
+        implementation = reg.activate_implementation(candidate)
+
+        self.assertIs(implementation, activation.implementation)
+        self.assertEqual(activation.implementation_ids, ["example-implementation"])
+
+    def test_plugin_rule_services_preserve_activation_identity_and_host_view(self):
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
+        host = FakeHost()
+        manifest = BackendManifest(
+            name="example",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: plugin,
+            implements={"example-pass": "example-implementation"},
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example-wheel",
+                    load_manifest=lambda: manifest,
+                )
+            ],
+            host_view_factory=lambda _requirements: host,
+            requirement_validator=lambda _requirements: None,
+        )
+        candidate = reg.require_unique_implementation(
+            "example-pass", install_hint="example-package"
+        )
+        reg.activate_implementation(candidate)
+
+        services = reg.plugin_rule_services(candidate)
+
+        self.assertEqual(services.plugin.name, "example")
+        self.assertEqual(services.plugin.origin, "example-wheel")
+        self.assertIs(services.host, host)
+
+    def test_declared_factory_must_not_reuse_an_implementation_instance(self):
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
+        manifest = BackendManifest(
+            name="example",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: plugin,
+            implements={"example-pass": "example-implementation"},
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example-wheel",
+                    load_manifest=lambda: manifest,
+                )
+            ],
+            host_view_factory=lambda _requirements: FakeHost(),
+            requirement_validator=lambda _requirements: None,
+        )
+        candidate = reg.require_unique_implementation(
+            "example-pass", install_hint="example-package"
+        )
+        reg.activate_implementation(candidate)
+
+        with self.assertRaises(PassImplementationMisdeclared):
+            reg.activate_implementation(candidate)
+
+    def test_factory_rejects_candidate_for_undeclared_implementation_id(self):
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
+        manifest = BackendManifest(
+            name="example",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: plugin,
+            implements={"example-pass": "declared-implementation"},
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example-wheel",
+                    load_manifest=lambda: manifest,
+                )
+            ],
+            host_view_factory=lambda _requirements: FakeHost(),
+            requirement_validator=lambda _requirements: None,
+        )
+        undeclared = PassImplementationCandidate(
+            pass_id="example-pass",
+            backend_name="example",
+            backend_origin="example-wheel",
+            rule_modules=(),
+            rule_name="not-declared",
+        )
+
+        with self.assertRaises(PassImplementationMisdeclared):
+            reg.activate_implementation(undeclared)
+
+        self.assertEqual(activation.implementation_ids, [])
+
+    def test_close_activations_except_retains_project_owned_activation(self):
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
+        manifest = BackendManifest(
+            name="example",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: plugin,
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example-wheel",
+                    load_manifest=lambda: manifest,
+                )
+            ],
+            host_view_factory=lambda _requirements: FakeHost(),
+            requirement_validator=lambda _requirements: None,
+        )
+        retained = reg.activate("example")
+
+        reg.close_activations_except((retained,))
+
+        self.assertEqual(activation.close_calls, 0)
+        self.assertIs(reg.activate("example"), retained)
+        reg.close_activations()
+        self.assertEqual(activation.close_calls, 1)
+
     def test_host_view_factory_can_read_registry_without_deadlock(self):
         plugin = FakePlugin(FakeActivation())
         host = ProtocolOnlyHost()
@@ -1093,8 +1247,10 @@ class TestPassImplementationRegression(unittest.TestCase):
         self.assertEqual(load.calls, 0)
 
     def test_implementation_is_ready_only_after_exact_candidate_activation(self):
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
         manifest = self.manifest(
-            {"mba-egraph": "EgglogOptimizer"}, provides=lambda: object()
+            {"mba-egraph": "EgglogOptimizer"}, provides=lambda: plugin
         )
         reg = BackendRegistry(
             source=lambda: (
@@ -1102,14 +1258,15 @@ class TestPassImplementationRegression(unittest.TestCase):
                     name="cobra", origin="test", load_manifest=lambda: manifest
                 ),
             ),
-            registration_lookup=lambda _candidate: object(),
+            host_view_factory=lambda _requirements: FakeHost(),
+            requirement_validator=lambda _requirements: None,
         )
         candidate = reg.require_unique_implementation(
             "mba-egraph", install_hint="d810-egglog"
         )
         reg.probe("cobra")
         self.assertFalse(reg.implementation_is_active(candidate))
-        reg.activate_implementation(candidate)
+        self.assertIs(reg.activate_implementation(candidate), activation.implementation)
         self.assertTrue(reg.implementation_is_active(candidate))
 
 

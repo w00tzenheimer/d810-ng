@@ -131,6 +131,7 @@ __all__ = [
     "PluginActivationContext",
     "PluginFunctionContext",
     "PluginHostCapabilities",
+    "PluginRuleServices",
     "BackendPlugin",
     "PluginActivation",
     "builtin",
@@ -200,6 +201,14 @@ class PluginHostCapabilities(Protocol):
 @dataclass(frozen=True, slots=True)
 class PluginActivationContext:
     identity: PluginIdentity
+    host: PluginHostCapabilities
+
+
+@dataclass(frozen=True, slots=True)
+class PluginRuleServices:
+    """Activation-scoped services bound to one plugin-created rule."""
+
+    plugin: PluginIdentity
     host: PluginHostCapabilities
 
 
@@ -827,7 +836,11 @@ class BackendRegistry:
             else host_view_factory
         )
         self._activated: dict[str, PluginActivation] = {}
+        self._activation_contexts: dict[str, PluginActivationContext] = {}
         self._activation_records: dict[str, _ActivationRecord] = {}
+        self._implementation_instances: dict[
+            PassImplementationCandidate, list[object]
+        ] = {}
         #: Injected to keep optimizer-layer imports out of ``core.plugins``.
         self._registration_lookup = registration_lookup
 
@@ -900,6 +913,8 @@ class BackendRegistry:
             self._active_implementations = set()
             self._implementation_failures = {}
             self._activated = {}
+            self._activation_contexts = {}
+            self._implementation_instances = {}
             self._discovered = True
             if force_cycle:
                 self._rediscovering = False
@@ -1056,6 +1071,7 @@ class BackendRegistry:
                 record.activation = partial
             else:
                 self._activated[name] = partial
+                self._activation_contexts[name] = context
             if (
                 self._activation_records.get(name) is record
                 and not self._closing
@@ -1067,24 +1083,59 @@ class BackendRegistry:
 
     def close_activations(self) -> None:
         """Close every activation once, retaining progress after failures."""
+        self._close_selected_activations(())
+
+    def close_activations_except(self, keep: Sequence[PluginActivation] = ()) -> None:
+        """Close registry-owned activations not present in *keep*."""
+        self._close_selected_activations(tuple(keep))
+
+    def _close_selected_activations(self, keep: Sequence[PluginActivation]) -> None:
+        keep_ids = {id(activation) for activation in keep}
         with self._lock:
             while self._rediscovering or self._closing:
                 self._lifecycle.wait()
             self._closing = True
-        self._close_activations_impl()
+        self._close_activations_impl(keep_ids=keep_ids)
 
-    def _close_activations_impl(self) -> None:
+    def _close_activations_impl(self, *, keep_ids: set[int] | None = None) -> None:
+        keep_ids = set() if keep_ids is None else set(keep_ids)
         with self._lock:
             records = tuple(self._activation_records.items())
-            activations = dict(self._activated)
-            self._activated.clear()
+            activations = {
+                name: activation
+                for name, activation in self._activated.items()
+                if id(activation) not in keep_ids
+            }
+            retained = {
+                name: activation
+                for name, activation in self._activated.items()
+                if id(activation) in keep_ids
+            }
+            self._activated = retained
+            self._activation_contexts = {
+                name: context
+                for name, context in self._activation_contexts.items()
+                if name in retained
+            }
+            retained_names = set(retained)
+            self._active_implementations = {
+                candidate
+                for candidate in self._active_implementations
+                if candidate.backend_name in retained_names
+            }
+            self._implementation_instances = {
+                candidate: instances
+                for candidate, instances in self._implementation_instances.items()
+                if candidate.backend_name in retained_names
+            }
 
         for name, record in records:
             with self._lock:
                 while record.in_progress:
                     record.condition.wait()
                 if record.activation is not None:
-                    activations[name] = record.activation
+                    if id(record.activation) not in keep_ids:
+                        activations[name] = record.activation
 
         for name, activation in activations.items():
             try:
@@ -1453,7 +1504,7 @@ class BackendRegistry:
             raise PassImplementationAmbiguous(pass_name, candidates)
         return candidates[0]
 
-    def activate_implementation(self, candidate: PassImplementationCandidate) -> None:
+    def activate_implementation(self, candidate: PassImplementationCandidate) -> object:
         """Activate exactly one declaration and retain truthful failure state."""
         with self._lock:
             self._active_implementations.discard(candidate)
@@ -1463,17 +1514,18 @@ class BackendRegistry:
                 if not failures:
                     self._implementation_failures.pop(candidate, None)
         try:
-            self._activate_implementation_once(candidate)
+            implementation = self._activate_implementation_once(candidate)
         except Exception as exc:
             with self._lock:
                 self._implementation_failures.setdefault(candidate, {})[
                     "activation"
                 ] = f"{type(exc).__name__}: {exc}"
             raise
+        return implementation
 
     def _activate_implementation_once(
         self, candidate: PassImplementationCandidate
-    ) -> None:
+    ) -> object:
         """Probe, import, and verify one selected implementation.
 
         The sequence is intentionally explicit: backend availability is known
@@ -1497,43 +1549,43 @@ class BackendRegistry:
                 f"resolved backend origin is {info.origin!r}",
             )
 
-        for module_name in candidate.rule_modules:
-            try:
-                importlib.import_module(module_name)
-            except Exception as exc:
-                raise PassImplementationUnavailable(
-                    candidate,
-                    f"rule module {module_name!r} failed to import: "
-                    f"{type(exc).__name__}: {exc}",
-                ) from exc
-            self.record_rule_module_result(module_name, None)
-
-        if self._registration_lookup is None:
+        declarations = self.implementation_declarations_for(candidate.pass_id)
+        exact = [item for item in declarations if item[0] == candidate]
+        if not exact:
             raise PassImplementationMisdeclared(
                 candidate.pass_id,
                 backend_name=candidate.backend_name,
                 backend_origin=candidate.backend_origin,
                 candidate=candidate,
-                reason="no registration lookup was injected",
+                reason="implementation ID is not declared by the manifest",
             )
+        activation = self.activate(candidate.backend_name)
         try:
-            registered = self._registration_lookup(candidate)
+            implementation = activation.create_implementation(candidate.rule_name)
         except Exception as exc:
-            raise PassImplementationMisdeclared(
-                candidate.pass_id,
-                backend_name=candidate.backend_name,
-                backend_origin=candidate.backend_origin,
-                candidate=candidate,
-                reason=(f"registration lookup raised {type(exc).__name__}: {exc}"),
+            raise PassImplementationUnavailable(
+                candidate,
+                f"implementation factory raised {type(exc).__name__}: {exc}",
             ) from exc
-        if registered is None:
+        if implementation is None:
             raise PassImplementationMisdeclared(
                 candidate.pass_id,
                 backend_name=candidate.backend_name,
                 backend_origin=candidate.backend_origin,
                 candidate=candidate,
-                reason=f"rule {candidate.rule_name!r} is not registered",
+                reason="implementation factory returned None",
             )
+        with self._lock:
+            prior = self._implementation_instances.setdefault(candidate, [])
+            if any(existing is implementation for existing in prior):
+                raise PassImplementationMisdeclared(
+                    candidate.pass_id,
+                    backend_name=candidate.backend_name,
+                    backend_origin=candidate.backend_origin,
+                    candidate=candidate,
+                    reason="implementation factory reused an instance",
+                )
+            prior.append(implementation)
         with self._lock:
             self._active_implementations.add(candidate)
             failures = self._implementation_failures.get(candidate)
@@ -1541,6 +1593,40 @@ class BackendRegistry:
                 failures.pop("registration", None)
                 if not failures:
                     self._implementation_failures.pop(candidate, None)
+        return implementation
+
+    def implementation_instance_for(
+        self, candidate: PassImplementationCandidate
+    ) -> object | None:
+        """Return the most recently materialized implementation for a candidate."""
+        with self._lock:
+            instances = self._implementation_instances.get(candidate, ())
+            return instances[-1] if instances else None
+
+    def activation_for_candidate(
+        self, candidate: PassImplementationCandidate
+    ) -> PluginActivation:
+        """Return the activation owning an exact implementation candidate."""
+        activation = self.activate(candidate.backend_name)
+        with self._lock:
+            spec = self._settled.get(candidate.backend_name)
+            if spec is None or spec.origin != candidate.backend_origin:
+                raise PassImplementationUnavailable(
+                    candidate,
+                    "resolved backend origin changed",
+                )
+        return activation
+
+    def plugin_rule_services(
+        self, candidate: PassImplementationCandidate
+    ) -> PluginRuleServices:
+        """Return immutable services for rules created by *candidate*."""
+        self.activation_for_candidate(candidate)
+        with self._lock:
+            context = self._activation_contexts.get(candidate.backend_name)
+        if context is None:
+            raise PassImplementationUnavailable(candidate, "activation context missing")
+        return PluginRuleServices(plugin=context.identity, host=context.host)
 
     def rule_modules(self) -> tuple[str, ...]:
         """External implementations no longer register rule modules."""

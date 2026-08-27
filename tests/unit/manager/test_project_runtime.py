@@ -96,12 +96,28 @@ def test_clone_project_rejects_missing_canonical_pipeline_before_write(
 
 
 def test_project_runtime_snapshot_type_contains_only_canonical_fields() -> None:
-    assert tuple(field.name for field in dataclasses.fields(ProjectRuntimeSnapshot)) == (
+    assert tuple(
+        field.name for field in dataclasses.fields(ProjectRuntimeSnapshot)
+    ) == (
         "project",
         "effective_pass_ids",
         "preparation_scripts",
         "global_const_persistence_enabled",
+        "activated_plugins",
     )
+
+
+def test_snapshot_owns_activated_plugin_lifetimes(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    activation = object()
+
+    snapshot = build_project_runtime_snapshot(
+        project=project,
+        schedule=compile_config_v2_hook_schedule(project),
+        activated_plugins=(activation,),
+    )
+
+    assert snapshot.activated_plugins == (activation,)
 
 
 def test_snapshot_projects_global_const_persistence_from_typed_pass(

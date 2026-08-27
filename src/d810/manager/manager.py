@@ -712,6 +712,7 @@ class D810Manager:
     )
     diagnostic_cleanup_service: DiagnosticCleanupService = dataclasses.field(init=False)
     config_v2_editing_service: ConfigV2EditingService = dataclasses.field(init=False)
+    backend_registry: typing.Any = dataclasses.field(init=False, repr=False)
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
@@ -828,9 +829,10 @@ class D810Manager:
         workbench_registry = operational_config_v2_pass_registry()
         from d810.backends import registry as backend_registry
 
+        self.backend_registry = backend_registry()
         self.recipe_service = RecipeService(
             workbench_registry,
-            backend_registry=backend_registry(),
+            backend_registry=self.backend_registry,
         )
         self.function_recipe_runtime = FunctionRecipeRuntime(
             storage_provider=lambda: self.function_storage_runtime.storage,
@@ -4641,6 +4643,10 @@ class D810Manager:
                 self._idb_preparation_journal = None
             self._idb_preparation_gateway = None
             self.pre_hex_preparation = None
+            self._safe_lifecycle_step(
+                "plugin activations.close",
+                self.backend_registry.close_activations,
+            )
             return None
         self._started = False
         telemetry_active = self._discard_telemetry_lifecycle()
@@ -4757,6 +4763,10 @@ class D810Manager:
         self._flowgraph_ready_subscriber = None
         self._stage_c_topology_consumer = None
         self._database_identity = ""
+        self._safe_lifecycle_step(
+            "plugin activations.close",
+            self.backend_registry.close_activations,
+        )
         if full_cleanup:
             self._cleanup_errors = cleanup_errors
             errors = tuple(

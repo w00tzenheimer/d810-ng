@@ -5,6 +5,7 @@ import abc
 import ida_hexrays
 
 from d810.core import Registrant, getLogger, typing
+from d810.core.plugins import PluginRuleServices
 from d810.errors import D810Exception
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
@@ -33,6 +34,20 @@ class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
         super().__init__()
         self.maturities = []
         self._run_later_requests: list[RunLater] = []
+        self._plugin_services: PluginRuleServices | None = None
+
+    @property
+    def plugin_services(self) -> PluginRuleServices | None:
+        """Activation-scoped host services for an external implementation."""
+        return self._plugin_services
+
+    def bind_plugin_services(self, services: PluginRuleServices) -> None:
+        """Bind host services exactly once to a plugin-created rule."""
+        if not isinstance(services, PluginRuleServices):
+            raise TypeError("services must be PluginRuleServices")
+        if self._plugin_services is not None:
+            raise RuntimeError("plugin services are already bound")
+        self._plugin_services = services
 
     def run_later(self, at: IRMaturity, reason: str = "") -> None:
         """Request that this rule run again at a later maturity."""
