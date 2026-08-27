@@ -209,16 +209,18 @@ class MbaSynthesisResult:
     def __post_init__(self) -> None:
         if self.source_cost != term_cost(self.source):
             raise ValueError("source_cost does not match source")
+        if self.discovery_receipt is not None and not isinstance(
+            self.discovery_receipt, MbaDiscoveryReceipt
+        ):
+            raise TypeError("discovery_receipt must be an MbaDiscoveryReceipt or None")
         if self.replacement is None:
             if self.replacement_cost is not None:
                 raise ValueError("replacement_cost requires a replacement")
             if self.width_relative_all_ones or self.fixed_operation_descriptors:
                 raise ValueError("failed synthesis cannot retain candidate descriptors")
+            if self.discovery_receipt is not None:
+                raise ValueError("discovery_receipt requires a replacement")
             return
-        if self.discovery_receipt is not None and not isinstance(
-            self.discovery_receipt, MbaDiscoveryReceipt
-        ):
-            raise TypeError("discovery_receipt must be an MbaDiscoveryReceipt or None")
         if (
             self.discovery_receipt is not None
             and self.discovery_receipt.selected_candidate_fingerprint

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
@@ -57,6 +58,20 @@ def _walk(term: object):
     yield term
     for child in term.children:  # type: ignore[union-attr]
         yield from _walk(child)
+
+
+def _tree_snapshot(root: Path) -> dict[str, tuple[object, ...]]:
+    snapshot: dict[str, tuple[object, ...]] = {}
+    for path in sorted(root.rglob("*")):
+        relative = str(path.relative_to(root))
+        stat = path.lstat()
+        if path.is_symlink():
+            snapshot[relative] = ("symlink", os.readlink(path))
+        elif path.is_dir():
+            snapshot[relative] = ("directory", stat.st_mode)
+        else:
+            snapshot[relative] = ("file", path.read_bytes())
+    return snapshot
 
 
 def test_cli_generates_three_deterministic_artifacts_and_complete_proof_receipt(tmp_path: Path) -> None:
@@ -292,7 +307,7 @@ def test_publication_failure_restores_preinvocation_tree(
     assert not list(tmp_path.glob(".existing.*"))
 
 
-@pytest.mark.parametrize("fail_at", (2, 3))
+@pytest.mark.parametrize("fail_at", (1, 2))
 def test_publication_failure_rolls_back_populated_force_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fail_at: int
 ) -> None:
@@ -321,6 +336,84 @@ def test_publication_failure_rolls_back_populated_force_dir(
     after = {path.relative_to(output): path.read_bytes() for path in output.rglob("*") if path.is_file()}
     assert after == before
     assert not list(tmp_path.glob(".existing.*"))
+
+
+def test_partial_stage_copy_failure_preserves_exact_live_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("mba_residual_rule_miner_copy", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    output = tmp_path / "existing"
+    output.mkdir()
+    (output / "keep.txt").write_bytes(b"keep")
+    (output / "nested").mkdir()
+    (output / "nested" / "keep.txt").write_bytes(b"nested")
+    (output / "link").symlink_to("keep.txt")
+    before = _tree_snapshot(output)
+
+    def fail_copy(source: Path, destination: Path) -> None:
+        assert source == output
+        destination.mkdir()
+        (destination / "partial.txt").write_bytes(b"partial")
+        raise OSError("partial stage copy failure")
+
+    monkeypatch.setattr(module, "_copy_tree", fail_copy)
+    result = module.main(
+        ["--input", str(FIXTURE), "--output-dir", str(output), "--force"]
+    )
+    assert result == 2
+    assert _tree_snapshot(output) == before
+    assert not list(tmp_path.glob(".existing.*"))
+
+
+def test_rollback_failure_retains_exact_recovery_backup(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("mba_residual_rule_miner_rollback", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    output = tmp_path / "existing"
+    output.mkdir()
+    (output / "keep.txt").write_bytes(b"keep")
+    before = _tree_snapshot(output)
+    original = module._publish_replace
+    calls = 0
+
+    def fail_publication(source: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls in (2, 3):
+            raise OSError("injected publication/rollback failure")
+        original(source, destination)
+
+    monkeypatch.setattr(module, "_publish_replace", fail_publication)
+    result = module.main(
+        ["--input", str(FIXTURE), "--output-dir", str(output), "--force"]
+    )
+    assert result == 2
+    assert not output.exists()
+    backups = sorted(tmp_path.glob(".existing.backup-*"))
+    assert len(backups) == 1
+    assert _tree_snapshot(backups[0]) == before
+    assert str(backups[0]) in capsys.readouterr().err
+
+
+def test_success_preserves_unrelated_symlink_tree_shape(tmp_path: Path) -> None:
+    output = tmp_path / "existing"
+    output.mkdir()
+    (output / "keep.txt").write_bytes(b"keep")
+    (output / "link").symlink_to("keep.txt")
+    assert _run(output, "--force").returncode == 0
+    assert (output / "keep.txt").read_bytes() == b"keep"
+    assert (output / "link").is_symlink()
+    assert os.readlink(output / "link") == "keep.txt"
 
 
 @pytest.mark.parametrize(

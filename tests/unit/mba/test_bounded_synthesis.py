@@ -334,6 +334,37 @@ def test_synthesis_result_rejects_forged_origin_for_fixed_input_mask() -> None:
         )
 
 
+def test_synthesis_result_rejects_discovery_receipt_without_replacement() -> None:
+    from d810.mba.bounded_synthesis import (
+        MbaCertification,
+        MbaDiscoveryReceipt,
+        MbaSynthesisBudget,
+        MbaSynthesisResult,
+    )
+
+    source = const(0)
+    receipt = MbaDiscoveryReceipt(
+        budget=MbaSynthesisBudget(),
+        candidate_attempts=1,
+        generated_terms=1,
+        retained_terms=1,
+        witness_identity="witness",
+        selected_candidate_fingerprint="candidate",
+        selected_candidate_rank=0,
+        completion_reason="certified_candidate",
+    )
+    with pytest.raises(ValueError, match="discovery_receipt"):
+        MbaSynthesisResult(
+            source,
+            None,
+            term_cost(source),
+            None,
+            MbaCertification(()),
+            None,
+            discovery_receipt=receipt,
+        )
+
+
 def test_generic_synthesis_reaches_terminal_x_without_or_shortcut(monkeypatch: pytest.MonkeyPatch) -> None:
     from d810.mba import bounded_synthesis
     from d810.mba.bounded_synthesis import MbaCertification, ProofReceipt, synthesize_residual

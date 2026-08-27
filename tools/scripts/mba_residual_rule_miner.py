@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -217,7 +218,13 @@ def _atomic_write(path: Path, content: str) -> None:
 
 
 def _publish_replace(source: Path, destination: Path) -> None:
-    source.replace(destination)
+    os.replace(source, destination)
+
+
+def _copy_tree(source: Path, destination: Path) -> None:
+    """Copy an existing output tree without dereferencing its symlinks."""
+
+    shutil.copytree(source, destination, symlinks=True)
 
 
 def _publish_transaction(
@@ -227,10 +234,22 @@ def _publish_transaction(
     *,
     force: bool,
 ) -> None:
-    """Publish a complete staged set while retaining an exact rollback copy."""
+    """Publish a complete staged tree with atomic rename and rollback."""
 
     output_was_present = output_dir.exists()
     backup: Path | None = None
+    live_was_moved = False
+    stage_was_moved = False
+
+    if output_was_present and not force:
+        existing = [
+            name
+            for name in names
+            if (output_dir / name).exists() or (output_dir / name).is_symlink()
+        ]
+        if existing:
+            raise FileExistsError("output already exists; use --force")
+
     try:
         if output_was_present:
             backup = Path(
@@ -239,22 +258,26 @@ def _publish_transaction(
                 )
             )
             backup.rmdir()
-            shutil.copytree(output_dir, backup)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        for name in names:
-            if not force and (output_dir / name).exists():
-                raise FileExistsError("output already exists; use --force")
-            _publish_replace(stage / name, output_dir / name)
+            _publish_replace(output_dir, backup)
+            live_was_moved = True
+        _publish_replace(stage, output_dir)
+        stage_was_moved = True
     except Exception:
-        if output_was_present and backup is not None:
-            shutil.rmtree(output_dir)
-            shutil.copytree(backup, output_dir)
-        elif output_dir.exists():
-            shutil.rmtree(output_dir)
+        if live_was_moved and not stage_was_moved and backup is not None:
+            try:
+                _publish_replace(backup, output_dir)
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    f"publication failed; recovery backup retained at {backup}"
+                ) from rollback_exc
         raise
-    finally:
-        if backup is not None and backup.exists():
+    if backup is not None and backup.exists():
+        try:
             shutil.rmtree(backup)
+        except OSError as exc:
+            raise RuntimeError(
+                f"publication succeeded; recovery backup retained at {backup}"
+            ) from exc
 
 
 def _render_outputs(
@@ -285,8 +308,15 @@ def _render_outputs(
             )
         )
     output_dir.parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.transaction-", dir=output_dir.parent))
+    stage = Path(
+        tempfile.mkdtemp(prefix=f".{output_dir.name}.transaction-", dir=output_dir.parent)
+    )
+    stage.rmdir()
     try:
+        if output_dir.exists():
+            _copy_tree(output_dir, stage)
+        else:
+            stage.mkdir()
         for name, content in artifacts:
             _atomic_write(stage / name, content)
         _publish_transaction(stage, output_dir, names, force=force)
