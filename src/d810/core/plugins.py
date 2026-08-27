@@ -231,6 +231,10 @@ class _EmptyHostCapabilities:
     def optional(self, capability: type[C]) -> C | None:
         return None
 
+    def view_for(self, requirements: Sequence[str]) -> PluginHostCapabilities:
+        self.validate(requirements)
+        return self
+
     def validate(self, requirements: Sequence[str]) -> None:
         if requirements:
             raise BackendUnavailable(f"missing host capability: {requirements[0]}")
@@ -787,6 +791,8 @@ class BackendRegistry:
         source: Callable[[], Iterable[BackendSpec]] | None = None,
         host: PluginHostCapabilities | None = None,
         requirement_validator: Callable[[Sequence[str]], None] | None = None,
+        host_view_factory: Callable[[Sequence[str]], PluginHostCapabilities]
+        | None = None,
         registration_lookup: Callable[[PassImplementationCandidate], Any | None]
         | None = None,
     ) -> None:
@@ -815,6 +821,11 @@ class BackendRegistry:
         ] = {}
         self._host = host if host is not None else _EmptyHostCapabilities()
         self._requirement_validator = requirement_validator
+        self._host_view_factory = (
+            self._host.view_for
+            if host is None and host_view_factory is None
+            else host_view_factory
+        )
         self._activated: dict[str, PluginActivation] = {}
         self._activation_records: dict[str, _ActivationRecord] = {}
         #: Injected to keep optimizer-layer imports out of ``core.plugins``.
@@ -992,6 +1003,9 @@ class BackendRegistry:
                 )
 
             distribution, version = _distribution_version(spec.origin)
+            view_factory = self._host_view_factory
+            if view_factory is None:
+                raise BackendUnavailable("no host view factory configured")
             context = PluginActivationContext(
                 identity=PluginIdentity(
                     name=manifest.name,
@@ -999,11 +1013,7 @@ class BackendRegistry:
                     version=version,
                     origin=spec.origin,
                 ),
-                host=(
-                    self._host.view_for(manifest.requires)
-                    if callable(getattr(self._host, "view_for", None))
-                    else self._host
-                ),
+                host=view_factory(manifest.requires),
             )
             record = _ActivationRecord(
                 condition=threading.Condition(self._lock),
@@ -1178,11 +1188,15 @@ class BackendRegistry:
         of :meth:`probe`; this accessor only loads the cheap declaration.
         """
         pass_name = str(pass_id)
-        self.discover()
-        with self._lock:
-            specs = tuple(
-                spec for candidates in self._candidates.values() for spec in candidates
-            )
+        while True:
+            self.discover()
+            with self._lock:
+                generation = self._generation
+                specs = tuple(
+                    spec
+                    for candidates in self._candidates.values()
+                    for spec in candidates
+                )
 
             found: list[tuple[PassImplementationCandidate, BackendManifest]] = []
             for spec in specs:
@@ -1224,16 +1238,19 @@ class BackendRegistry:
                     )
                 )
 
-            return tuple(
-                sorted(
-                    found,
-                    key=lambda declaration: (
-                        declaration[0].backend_name,
-                        declaration[0].backend_origin,
-                        declaration[0].rule_name,
-                    ),
+            with self._lock:
+                if generation != self._generation:
+                    continue
+                return tuple(
+                    sorted(
+                        found,
+                        key=lambda declaration: (
+                            declaration[0].backend_name,
+                            declaration[0].backend_origin,
+                            declaration[0].rule_name,
+                        ),
+                    )
                 )
-            )
 
     def validate_requirements(self, requirements: Sequence[str]) -> None:
         """Validate host requirements without resolving a provider."""

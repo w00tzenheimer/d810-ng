@@ -257,6 +257,12 @@ def registry_for(plugin, *, requires=(), host=None, name="example"):
         "requires": requires,
         "implements": {"mba-solve": "example-solve"},
     }
+    view_factory = getattr(host, "view_for", None) if host is not None else None
+    if view_factory is None and host is not None:
+
+        def view_factory(_requirements):
+            return host
+
     return BackendRegistry(
         source=lambda: [
             BackendSpec(
@@ -267,10 +273,34 @@ def registry_for(plugin, *, requires=(), host=None, name="example"):
         ],
         host=host,
         requirement_validator=getattr(host, "validate", None),
+        host_view_factory=view_factory,
     )
 
 
 class TestActivation(unittest.TestCase):
+    def test_activation_rejects_host_without_explicit_view_factory(self):
+        plugin = FakePlugin(FakeActivation())
+        host = ProtocolOnlyHost()
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example 1.0",
+                    load_manifest=lambda: {
+                        "name": "example",
+                        "api_version": PLUGIN_API_VERSION,
+                        "provides": lambda: plugin,
+                    },
+                )
+            ],
+            host=host,
+            requirement_validator=lambda _requirements: None,
+        )
+
+        with self.assertRaisesRegex(BackendUnavailable, "host view factory"):
+            reg.activate("example")
+        self.assertEqual(plugin.activate_calls, [])
+
     def test_activation_context_scopes_registered_host_services_to_manifest(self):
         plugin = FakePlugin(FakeActivation())
         host = PluginHostCapabilityRegistry()
@@ -668,6 +698,41 @@ class TestFormatReportRegression(unittest.TestCase):
 
 
 class TestPassImplementationRegression(unittest.TestCase):
+    def test_declaration_manifest_loader_can_read_registry_without_deadlock(self):
+        reg_holder = {}
+        manifest = self.manifest({"mba-solve": "ExampleRule"})
+
+        def load_manifest():
+            read_complete = threading.Event()
+
+            def read_registry():
+                reg_holder["registry"].info("example")
+                read_complete.set()
+
+            reader = threading.Thread(target=read_registry)
+            reader.start()
+            self.assertTrue(
+                read_complete.wait(timeout=1),
+                "registry read blocked while manifest loaded",
+            )
+            reader.join(timeout=1)
+            return manifest
+
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example-wheel",
+                    load_manifest=load_manifest,
+                )
+            ]
+        )
+        reg_holder["registry"] = reg
+
+        declarations = reg.implementation_declarations_for("mba-solve")
+
+        self.assertEqual(len(declarations), 1)
+
     def manifest(self, implements, *, provides=None):
         return BackendManifest(
             name="cobra",
