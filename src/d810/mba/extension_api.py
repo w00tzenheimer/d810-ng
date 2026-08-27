@@ -91,7 +91,7 @@ from d810.mba.bounded_synthesis import (
     generalize_terms,
     synthesize_residual,
 )
-from d810.mba.rule_proposal import MbaRuleProposal, render_rule_source
+from d810.mba.rule_proposal import MbaRuleProposal, proposal_fingerprint, render_rule_source
 from d810.mba.performance_timing import (
     EMPTY_MBA_STAGE_TIMINGS,
     MbaStageTimer,
@@ -619,5 +619,6 @@ __all__ = [
     "generalize_terms",
     "synthesize_residual",
     "MbaRuleProposal",
+    "proposal_fingerprint",
     "render_rule_source",
 ]

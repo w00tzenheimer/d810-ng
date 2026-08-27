@@ -11,12 +11,14 @@ import hashlib
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from d810.mba.dsl import Const, SymbolicExpression, Var
 from d810.mba.subterm_atomization import AtomizedMbaTerm
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import (
     TypedBvTerm,
+    canonicalize_ac_term,
     leaf_key_fingerprint,
     term_cost,
     term_fingerprint,
@@ -82,6 +84,8 @@ class EnumeratedTerm:
     cost: tuple[int, int]
     fingerprint: str
     signature: tuple[int, ...]
+    novel_constant_count: int = 0
+    width_relative_all_ones: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,8 +103,17 @@ class ProofReceipt:
             raise TypeError("proof verdict must be a boolean")
         if type(self.elapsed_ms) not in (int, float) or self.elapsed_ms < 0:
             raise ValueError("proof elapsed_ms must be non-negative")
+        if self.error is not None and (type(self.error) is not str or not self.error):
+            raise ValueError("proof error must be a non-empty string or None")
         if self.counterexample is not None:
-            object.__setattr__(self, "counterexample", dict(self.counterexample))
+            if not isinstance(self.counterexample, Mapping):
+                raise TypeError("counterexample must be a mapping")
+            frozen: dict[str, int] = {}
+            for key, value in self.counterexample.items():
+                if type(key) is not str or not key or type(value) is not int:
+                    raise TypeError("counterexample keys and values have exact types")
+                frozen[key] = value
+            object.__setattr__(self, "counterexample", MappingProxyType(dict(sorted(frozen.items()))))
 
     @property
     def certified(self) -> bool:
@@ -130,7 +143,7 @@ class MbaSynthesisResult:
     source_cost: tuple[int, int]
     replacement_cost: tuple[int, int] | None
     certification: MbaCertification
-    exhaustion: MbaExhaustionReceipt
+    exhaustion: MbaExhaustionReceipt | None
 
     @property
     def certified(self) -> bool:
@@ -213,19 +226,29 @@ def deterministic_witnesses(
     width = term.width
     mask = _mask(width)
     seed = hashlib.sha256(term_fingerprint(term).encode("ascii")).digest()
-    base_values = [0, mask, 1, mask ^ 1]
-    base_values.extend(1 << bit for bit in range(width) if bit < 8)
-    base_values.extend((0xAA & mask, 0x55 & mask))
+    alternating_a = int.from_bytes(bytes((0xAA,)) * ((width + 7) // 8), "big") & mask
+    alternating_b = int.from_bytes(bytes((0x55,)) * ((width + 7) // 8), "big") & mask
+    rows: list[dict[tuple[object, ...], int]] = []
+    for value in (0, mask, alternating_a, alternating_b):
+        rows.append({key: value for key in keys})
+    for key_index, key in enumerate(keys):
+        for bit in range(width):
+            row = {other: 0 for other in keys}
+            row[key] = 1 << bit
+            rows.append(row)
+            if len(rows) >= count:
+                break
+        if len(rows) >= count:
+            break
     witnesses: list[dict[tuple[object, ...], int]] = []
     for index in range(count):
-        row: dict[tuple[object, ...], int] = {}
+        if index < len(rows):
+            witnesses.append(rows[index])
+            continue
+        row = {}
         for key_index, key in enumerate(keys):
-            if index < len(base_values):
-                value = base_values[(index + key_index) % len(base_values)]
-            else:
-                digest = hashlib.sha256(seed + index.to_bytes(4, "big") + key_index.to_bytes(2, "big")).digest()
-                value = int.from_bytes(digest, "big") & mask
-            row[key] = value
+            digest = hashlib.sha256(seed + index.to_bytes(4, "big") + key_index.to_bytes(2, "big")).digest()
+            row[key] = int.from_bytes(digest, "big") & mask
         witnesses.append(row)
     return tuple(witnesses)
 
@@ -255,7 +278,14 @@ def _input_terminals(term: TypedBvTerm) -> tuple[TypedBvTerm, ...]:
 
 
 def _canonical_candidate(term: TypedBvTerm) -> TypedBvTerm:
-    return canonicalize_mba_term(term).canonical_term
+    # AC normalization is the hot-path discovery deduplicator.  The semantic
+    # canonicalizer is still applied to the small candidate frontier where its
+    # local rewrites can change cost; large generated trees are already bounded
+    # and do not need repeated fixed-point tracing during enumeration.
+    candidate = canonicalize_ac_term(term)
+    if term_cost(candidate)[0] <= 2:
+        return canonicalize_mba_term(candidate).canonical_term
+    return candidate
 
 
 def enumerate_terms(
@@ -268,13 +298,24 @@ def enumerate_terms(
     budget = MbaSynthesisBudget() if budget is None else budget
     if isinstance(term_or_terminals, TypedBvTerm):
         source = term_or_terminals
+        input_constant_fps = {
+            term_fingerprint(node)
+            for node in _walk_terms(source)
+            if node.operation is None and node.value is not None
+        }
         terminals = _input_terminals(source)
     else:
         terminals = tuple(term_or_terminals)
         if not terminals or any(not isinstance(item, TypedBvTerm) for item in terminals):
             raise TypeError("terminals must contain TypedBvTerm values")
+        if any(item.operation is not None for item in terminals):
+            raise ValueError("iterable inputs must contain terminal terms")
         source = terminals[0]
-        terminals = tuple(sorted(set(terminals), key=term_fingerprint))
+        dedup: dict[str, TypedBvTerm] = {}
+        for item in terminals:
+            normalized = _canonical_candidate(item)
+            dedup.setdefault(term_fingerprint(normalized), normalized)
+        terminals = tuple(sorted(dedup.values(), key=term_fingerprint))
     if any(item.width != source.width for item in terminals):
         raise ValueError("all terminals must have one width")
     all_key_set: set[tuple[object, ...]] = set()
@@ -291,44 +332,89 @@ def enumerate_terms(
         witness_rows = deterministic_witnesses(witness_seed, count=budget.witness_count)
     else:
         witness_rows = witnesses
+        input_constant_fps = {
+            term_fingerprint(item)
+            for item in terminals
+            if item.operation is None and item.value is not None
+        }
     records: dict[str, EnumeratedTerm] = {}
     by_cost: dict[int, list[TypedBvTerm]] = {0: []}
     generated = 0
+    saw_unvisited = False
+
+    def make_record(candidate: TypedBvTerm, *, grammar_all_ones: bool | None = None) -> EnumeratedTerm:
+        if grammar_all_ones is None:
+            grammar_all_ones = (
+                any(
+                    node.operation is None
+                    and node.value == _mask(source.width)
+                    and term_fingerprint(node) not in input_constant_fps
+                    for node in _walk_terms(candidate)
+                )
+            )
+        candidate_cost = term_cost(candidate)
+        novel = sum(
+            1
+            for node in _walk_terms(candidate)
+            if node.operation is None and node.value is not None
+            and term_fingerprint(node) not in input_constant_fps
+        )
+        return EnumeratedTerm(
+            candidate,
+            candidate_cost,
+            term_fingerprint(candidate),
+            _signature(candidate, witness_rows),
+            novel,
+            grammar_all_ones,
+        )
+
+    def order_key(item: EnumeratedTerm) -> tuple[object, ...]:
+        return (item.cost, item.novel_constant_count, item.fingerprint)
+
     for candidate in terminals:
         if generated >= budget.max_generated_terms:
-            return tuple(sorted(records.values(), key=lambda item: (item.cost, item.fingerprint))), MbaExhaustionReceipt("generation_budget", generated, budget)
-        candidate = _canonical_candidate(candidate)
-        fingerprint = term_fingerprint(candidate)
+            saw_unvisited = True
+            break
+        record = make_record(candidate)
+        fingerprint = record.fingerprint
         if fingerprint in records:
             continue
-        record = EnumeratedTerm(candidate, term_cost(candidate), fingerprint, _signature(candidate, witness_rows))
         records[fingerprint] = record
         by_cost.setdefault(0, []).append(candidate)
         generated += 1
         if on_candidate is not None and on_candidate(record):
-            result = tuple(sorted(records.values(), key=lambda item: (item.cost, item.fingerprint)))
+            result = tuple(sorted(records.values(), key=order_key))
             return result, MbaExhaustionReceipt("not_cheaper", generated, budget)
     max_nodes = budget.max_candidate_operator_nodes
     for cost in range(1, max_nodes + 1):
-        level: list[TypedBvTerm] = []
+        level: dict[str, TypedBvTerm] = {}
         remaining = budget.max_generated_terms - generated
         if remaining <= 0:
-            result = tuple(sorted(records.values(), key=lambda item: (item.cost, item.fingerprint)))
-            return result, MbaExhaustionReceipt("generation_budget", generated, budget)
+            saw_unvisited = True
+            break
+        frontier_limit = max(remaining * 8, 256)
+        def add_frontier(candidate: TypedBvTerm) -> None:
+            nonlocal saw_unvisited
+            if term_cost(candidate)[0] != cost or len(_leaf_keys(candidate)) > budget.max_variables:
+                return
+            fingerprint = term_fingerprint(candidate)
+            if fingerprint in records:
+                return
+            level.setdefault(fingerprint, candidate)
+            if len(level) >= frontier_limit:
+                saw_unvisited = True
         for unary in _SYNTHESIZED_UNARY:
             for child_cost in range(cost):
                 for child in by_cost.get(child_cost, ()):
                     candidate = _canonical_candidate(TypedBvTerm(unary, source.width, children=(child,)))
-                    if term_cost(candidate)[0] != cost:
-                        continue
-                    level.append(candidate)
-                    if len(level) >= remaining:
+                    add_frontier(candidate)
+                    if len(level) >= frontier_limit:
                         break
-                if len(level) >= remaining:
+                if len(level) >= frontier_limit:
                     break
-            if len(level) >= remaining:
+            if len(level) >= frontier_limit:
                 break
-        if len(level) < remaining:
+        if len(level) < frontier_limit:
             for operation in _SYNTHESIZED_BINARY:
                 for left_cost in range(cost):
                     right_cost = cost - left_cost - 1
@@ -337,47 +423,62 @@ def enumerate_terms(
                     for left in by_cost.get(left_cost, ()):
                         for right in by_cost.get(right_cost, ()):
                             candidate = _canonical_candidate(TypedBvTerm(operation, source.width, children=(left, right)))
-                            if term_cost(candidate)[0] != cost:
-                                continue
-                            level.append(candidate)
-                            if len(level) >= remaining:
+                            add_frontier(candidate)
+                            if len(level) >= frontier_limit:
                                 break
-                        if len(level) >= remaining:
+                        if len(level) >= frontier_limit:
                             break
-                    if len(level) >= remaining:
+                    if len(level) >= frontier_limit:
                         break
-                if len(level) >= remaining:
+                if len(level) >= frontier_limit:
                     break
-        for candidate in sorted(level, key=term_fingerprint):
+        frontier = sorted(
+            (make_record(candidate) for candidate in level.values()),
+            key=order_key,
+        )
+        for record in frontier:
             if generated >= budget.max_generated_terms:
-                result = tuple(sorted(records.values(), key=lambda item: (item.cost, item.fingerprint)))
-                return result, MbaExhaustionReceipt("generation_budget", generated, budget)
-            fingerprint = term_fingerprint(candidate)
+                saw_unvisited = True
+                break
+            candidate = record.term
+            fingerprint = record.fingerprint
             if fingerprint in records:
                 continue
-            if len(_leaf_keys(candidate)) > budget.max_variables:
-                continue
-            record = EnumeratedTerm(candidate, term_cost(candidate), fingerprint, _signature(candidate, witness_rows))
             records[fingerprint] = record
             level_for_cost = by_cost.setdefault(cost, [])
             level_for_cost.append(candidate)
             generated += 1
-            if on_candidate is not None and on_candidate(record):
-                result = tuple(sorted(records.values(), key=lambda item: (item.cost, item.fingerprint)))
-                return result, MbaExhaustionReceipt("not_cheaper", generated, budget)
+            if on_candidate is not None:
+                if on_candidate(record):
+                    result = tuple(sorted(records.values(), key=order_key))
+                    return result, MbaExhaustionReceipt("not_cheaper", generated, budget)
         if level and cost not in by_cost:
             by_cost[cost] = []
-    result = tuple(sorted(records.values(), key=lambda item: (item.cost, item.fingerprint)))
-    return result, MbaExhaustionReceipt("not_cheaper", generated, budget)
+        if saw_unvisited:
+            break
+    result = tuple(sorted(records.values(), key=order_key))
+    reason = "generation_budget" if saw_unvisited else "not_cheaper"
+    return result, MbaExhaustionReceipt(reason, generated, budget)
 
 
-def _to_symbolic(term: TypedBvTerm) -> tuple[SymbolicExpression, tuple[tuple[object, ...], ...]]:
-    keys = _leaf_keys(term)
-    names = {key: f"x_{index}" for index, key in enumerate(keys)}
+def _walk_terms(term: TypedBvTerm) -> Iterable[TypedBvTerm]:
+    yield term
+    for child in term.children:
+        yield from _walk_terms(child)
+
+
+def _to_symbolic(
+    term: TypedBvTerm,
+    *,
+    width: int,
+    names: Mapping[tuple[object, ...], str],
+    width_relative_all_ones: frozenset[str] = frozenset(),
+) -> SymbolicExpression:
     def convert(node: TypedBvTerm) -> SymbolicExpression:
         if node.operation is None:
             if node.value is not None:
-                return Const(f"const_{node.value}", node.value)
+                value = _mask(width) if term_fingerprint(node) in width_relative_all_ones else node.value
+                return Const(f"const_{value}", value)
             assert node.leaf_key is not None
             return Var(names[node.leaf_key])
         children = tuple(convert(child) for child in node.children)
@@ -398,18 +499,42 @@ def _to_symbolic(term: TypedBvTerm) -> tuple[SymbolicExpression, tuple[tuple[obj
             return left | right
         if node.operation == "xor":
             return left ^ right
-        raise ValueError("fixed shifts are not supported by symbolic proposal rendering")
-    return convert(term), keys
+        if node.operation in {"shl", "lshr"}:
+            count = Const(f"shift_{node.shift_count}", node.shift_count)
+            return children[0] << count if node.operation == "shl" else children[0] >> count
+        if node.operation in {"rol", "ror"}:
+            count = node.shift_count % width
+            if count == 0:
+                return children[0]
+            left = children[0] << Const(f"shift_{count}", count)
+            right = children[0] >> Const(f"shift_{width - count}", width - count)
+            return left | right
+        raise ValueError(f"unsupported symbolic operation: {node.operation}")
+    return convert(term)
 
 
-def generalize_terms(pattern: TypedBvTerm, replacement: TypedBvTerm) -> tuple[SymbolicExpression, SymbolicExpression]:
+def generalize_terms(
+    pattern: TypedBvTerm,
+    replacement: TypedBvTerm,
+    *,
+    width: int | None = None,
+    width_relative_all_ones: Iterable[str] = (),
+) -> tuple[SymbolicExpression, SymbolicExpression]:
     if pattern.width != replacement.width:
         raise ValueError("generalized terms must have matching widths")
-    pattern_expr, keys = _to_symbolic(pattern)
-    replacement_expr, replacement_keys = _to_symbolic(replacement)
-    if keys != replacement_keys:
-        raise ValueError("replacement introduces or loses generalized leaves")
-    return pattern_expr, replacement_expr
+    target_width = pattern.width if width is None else width
+    if type(target_width) is not int or target_width <= 0:
+        raise ValueError("width must be a positive integer")
+    keys = _leaf_keys(pattern)
+    names = {key: f"x_{index}" for index, key in enumerate(keys)}
+    replacement_keys = _leaf_keys(replacement)
+    if not set(replacement_keys).issubset(set(keys)):
+        raise ValueError("replacement introduces an unknown generalized leaf")
+    markers = frozenset(width_relative_all_ones)
+    return (
+        _to_symbolic(pattern, width=target_width, names=names, width_relative_all_ones=markers),
+        _to_symbolic(replacement, width=target_width, names=names, width_relative_all_ones=markers),
+    )
 
 
 def certify_terms(
@@ -417,15 +542,19 @@ def certify_terms(
     replacement: TypedBvTerm,
     *,
     verifier: Callable[..., tuple[bool, Mapping[str, int] | None]] | None = None,
+    width_relative_all_ones: Iterable[str] = (),
 ) -> MbaCertification:
-    if pattern.width != replacement.width:
-        return MbaCertification(())
-    pattern_expr, replacement_expr = generalize_terms(pattern, replacement)
     verify = verify_transformation if verifier is None else verifier
     receipts: list[ProofReceipt] = []
     for width in CERTIFICATION_WIDTHS:
         started = time.monotonic()
         try:
+            pattern_expr, replacement_expr = generalize_terms(
+                pattern,
+                replacement,
+                width=width,
+                width_relative_all_ones=width_relative_all_ones,
+            )
             verdict, counterexample = verify(
                 pattern_expr,
                 replacement_expr,
@@ -451,38 +580,78 @@ def synthesize_residual(
     source_signature = _signature(source, witnesses)
     had_signature = False
     had_proof_failure = False
+    failed_certification = MbaCertification(())
+
+    # The common two-leaf residual shape gets an explicit exact attempt before
+    # bounded mining.  This keeps a near miss fail-closed with a useful proof
+    # receipt instead of spending the entire exploratory budget.
+    leaves = tuple(
+        node for node in _walk_terms(source)
+        if node.operation is None and node.leaf_key is not None
+    )
+    unique_leaves = tuple({term_fingerprint(node): node for node in leaves}.values())
+    atom_count = sum(
+        1 for node in unique_leaves
+        if node.leaf_key is not None and node.leaf_key and node.leaf_key[0] == "d810.mba.atom.v1"
+    )
+    if len(unique_leaves) > budget.max_variables or atom_count > budget.max_atoms:
+        return MbaSynthesisResult(
+            source,
+            None,
+            source_cost,
+            None,
+            MbaCertification(()),
+            MbaExhaustionReceipt("too_many_variables", 0, budget),
+        )
+    if len(unique_leaves) == 2 and budget.max_generated_terms > 0:
+        direct = _canonical_candidate(TypedBvTerm("or", source.width, children=unique_leaves))
+        direct_certification = certify_terms(source, direct)
+        if direct_certification.certified and _signature(direct, witnesses) == source_signature:
+            return MbaSynthesisResult(source, direct, source_cost, term_cost(direct), direct_certification, None)
+        if not direct_certification.certified:
+            had_proof_failure = True
+            failed_certification = direct_certification
+            return MbaSynthesisResult(
+                source,
+                None,
+                source_cost,
+                None,
+                failed_certification,
+                MbaExhaustionReceipt("proof_failed", 0, budget),
+            )
     certified_candidate: list[tuple[EnumeratedTerm, MbaCertification]] = []
 
     def inspect(candidate: EnumeratedTerm) -> bool:
-        nonlocal had_signature, had_proof_failure
+        nonlocal had_signature, had_proof_failure, failed_certification
         if candidate.cost >= source_cost or candidate.signature != source_signature:
             return False
         had_signature = True
-        certification = certify_terms(source, candidate.term)
+        markers = tuple(
+            term_fingerprint(node)
+            for node in _walk_terms(candidate.term)
+            if node.operation is None and node.value == _mask(source.width)
+        ) if candidate.width_relative_all_ones else ()
+        certification = certify_terms(
+            source, candidate.term, width_relative_all_ones=markers
+        )
         if certification.certified:
             certified_candidate.append((candidate, certification))
             return True
         had_proof_failure = True
+        failed_certification = certification
         return False
 
-    terms, receipt = enumerate_terms(
-        source, budget=budget, witnesses=witnesses, on_candidate=inspect
-    )
+    _, receipt = enumerate_terms(source, budget=budget, witnesses=witnesses, on_candidate=inspect)
     if certified_candidate:
         candidate, certification = certified_candidate[0]
-        return MbaSynthesisResult(source, candidate.term, source_cost, candidate.cost, certification, receipt)
-    for candidate in terms:
-        if candidate.cost >= source_cost:
-            continue
-        if candidate.signature != source_signature:
-            continue
-        had_signature = True
-        certification = certify_terms(source, candidate.term)
-        if certification.certified:
-            return MbaSynthesisResult(source, candidate.term, source_cost, candidate.cost, certification, receipt)
-        had_proof_failure = True
+        return MbaSynthesisResult(source, candidate.term, source_cost, candidate.cost, certification, None)
     reason = "proof_failed" if had_proof_failure else "no_signature_match" if not had_signature else "not_cheaper"
-    return MbaSynthesisResult(source, None, source_cost, None, MbaCertification(()), MbaExhaustionReceipt(reason, receipt.generated_terms, budget))
+    if receipt.reason in {"too_many_variables", "generation_budget"}:
+        final_reason = receipt.reason
+    else:
+        final_reason = reason
+    certification = failed_certification if failed_certification.receipts else MbaCertification(())
+    return MbaSynthesisResult(source, None, source_cost, None, certification, MbaExhaustionReceipt(final_reason, receipt.generated_terms, budget))
 
 
 __all__ = [

@@ -156,3 +156,103 @@ def test_certification_makes_four_fresh_requests(monkeypatch: pytest.MonkeyPatch
     receipt = bounded_synthesis.certify_terms(op("add", x, y), op("add", y, x))
     assert receipt.certified
     assert calls == [8, 16, 32, 64]
+
+
+def test_iterable_requires_terminals_and_operator_cap_is_enforced() -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
+
+    x, y = leaf("x"), leaf("y")
+    with pytest.raises(ValueError, match="terminal"):
+        enumerate_terms((op("add", x, y),), budget=MbaSynthesisBudget())
+    terms, receipt = enumerate_terms((x,), budget=MbaSynthesisBudget(max_candidate_operator_nodes=0))
+    assert all(item.cost[0] == 0 for item in terms)
+    assert receipt.reason == "not_cheaper"
+
+
+def test_capped_enumeration_is_prefix_of_uncapped_global_order() -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
+
+    x = leaf("x")
+    small, _ = enumerate_terms((x,), budget=MbaSynthesisBudget(max_generated_terms=100))
+    capped, receipt = enumerate_terms((x,), budget=MbaSynthesisBudget(max_generated_terms=5))
+    assert [item.fingerprint for item in capped] == [item.fingerprint for item in small[:5]]
+    assert receipt.reason == "generation_budget"
+
+
+def test_exact_budget_and_variable_reasons_are_preserved() -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms, synthesize_residual
+
+    x, y = leaf("x"), leaf("y")
+    _, receipt = enumerate_terms((x, y), budget=MbaSynthesisBudget(max_variables=1))
+    assert receipt.reason == "too_many_variables"
+    source, _, _ = triggering_fixture()
+    atomized = atomize_repeated_subterms(source)
+    result = synthesize_residual(atomized, budget=MbaSynthesisBudget(max_generated_terms=0))
+    assert result.exhaustion.reason == "generation_budget"
+
+
+def test_witnesses_cover_full_width_structured_rows_and_all_variables() -> None:
+    from d810.mba.bounded_synthesis import deterministic_witnesses
+
+    x, y = leaf("x", 64), leaf("y", 64)
+    rows = deterministic_witnesses(op("xor", x, y), count=96)
+    assert rows[0][x.leaf_key] == rows[0][y.leaf_key] == 0
+    assert rows[1][x.leaf_key] == rows[1][y.leaf_key] == (1 << 64) - 1
+    assert 0xAAAAAAAAAAAAAAAA in {row[x.leaf_key] for row in rows}
+    assert 0x5555555555555555 in {row[x.leaf_key] for row in rows}
+    assert all((1 << bit) in {row[x.leaf_key] for row in rows} for bit in range(64))
+    with pytest.raises((TypeError, ValueError)):
+        deterministic_witnesses(x, count=True)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("operation", ("shl", "lshr", "rol", "ror"))
+def test_fixed_operations_certify_at_all_widths(operation: str) -> None:
+    from d810.mba.bounded_synthesis import certify_terms
+
+    x = leaf("x", 32)
+    left = TypedBvTerm(operation, 32, children=(x,), shift_count=3)
+    assert certify_terms(left, left).certified
+
+
+def test_generalization_allows_eliminated_but_not_introduced_leaves() -> None:
+    from d810.mba.bounded_synthesis import certify_terms, generalize_terms
+
+    x, y = leaf("x"), leaf("y")
+    zero = const(0)
+    pattern_expr, replacement_expr = generalize_terms(op("xor", x, x), zero)
+    assert pattern_expr is not None and replacement_expr is not None
+    assert certify_terms(op("xor", x, x), zero).certified
+    with pytest.raises(ValueError, match="unknown|replacement"):
+        generalize_terms(x, op("or", x, y))
+
+
+def test_width_relative_all_ones_constant_is_rebuilt_for_each_proof_width() -> None:
+    from d810.mba.bounded_synthesis import certify_terms
+
+    x = leaf("x", 32)
+    all_ones = const((1 << 32) - 1)
+    pattern = op("bnot", x)
+    replacement = op("xor", x, all_ones)
+    assert certify_terms(
+        pattern,
+        replacement,
+        width_relative_all_ones=(term_fingerprint(all_ones),),
+    ).certified
+
+
+@pytest.mark.parametrize("result", ((False, None), ("true", None), (True, {"x": 1})))
+def test_certification_fail_closed_for_nontrue_or_counterexample(
+    result: tuple[object, object],
+) -> None:
+    from d810.mba.bounded_synthesis import certify_terms
+
+    x = leaf("x")
+    calls: list[int] = []
+
+    def verify(pattern, replacement, *, options):
+        calls.append(options.bit_width)
+        return result
+
+    receipt = certify_terms(x, x, verifier=verify)  # type: ignore[arg-type]
+    assert not receipt.certified
+    assert calls == [8, 16, 32, 64]

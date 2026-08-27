@@ -2,13 +2,45 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import keyword
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from d810.mba.bounded_synthesis import CERTIFICATION_WIDTHS, ProofReceipt
 from d810.mba.subterm_atomization import MbaAtomBinding
+from d810.mba.term_codec import typed_term_to_dict
 from d810.mba.typed_term import TypedBvTerm, leaf_key_fingerprint, term_cost, term_fingerprint
+
+
+def _freeze_json(value: object) -> object:
+    if value is None or type(value) in {bool, int, str}:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("fixture values must be finite JSON values")
+        return value
+    if isinstance(value, Mapping):
+        frozen = {}
+        for key in sorted(value):
+            if type(key) is not str:
+                raise TypeError("fixture mapping keys must be strings")
+            frozen[key] = _freeze_json(value[key])
+        return MappingProxyType(frozen)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    raise TypeError("fixture must contain only JSON-safe values")
+
+
+def _json_ready(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _json_ready(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_json_ready(item) for item in value]
+    return value
 
 
 def _keys(term: TypedBvTerm) -> tuple[tuple[object, ...], ...]:
@@ -22,6 +54,47 @@ def _keys(term: TypedBvTerm) -> tuple[tuple[object, ...], ...]:
             visit(child)
     visit(term)
     return tuple(sorted(found, key=leaf_key_fingerprint))
+
+
+def _binding_dict(binding: MbaAtomBinding) -> dict[str, object]:
+    return {
+        "leaf_key": _json_ready(binding.leaf_key),
+        "original_subterm": typed_term_to_dict(binding.original_subterm),
+        "occurrence_count": binding.occurrence_count,
+        "saved_operator_nodes": binding.saved_operator_nodes,
+    }
+
+
+def _proof_dict(receipt: ProofReceipt) -> dict[str, object]:
+    return {
+        "width": receipt.width,
+        "verdict": receipt.verdict,
+        "elapsed_ms": receipt.elapsed_ms,
+        "counterexample": _json_ready(receipt.counterexample),
+        "error": receipt.error,
+    }
+
+
+def proposal_fingerprint(**fields: object) -> str:
+    """Compute the versioned digest for proposal semantic/provenance fields."""
+    payload = {
+        "schema_version": 1,
+        "source_fingerprints": tuple(sorted(set(fields["source_fingerprints"]))),
+        "occurrence_count": fields["occurrence_count"],
+        "pattern": term_fingerprint(fields["pattern"]),
+        "replacement": term_fingerprint(fields["replacement"]),
+        "source_cost": tuple(fields["source_cost"]),
+        "replacement_cost": tuple(fields["replacement_cost"]),
+        "atomization_bindings": tuple(_binding_dict(item) for item in fields["atomization_bindings"]),
+        "proof_receipts": tuple(_proof_dict(item) for item in fields["proof_receipts"]),
+        "class_name": fields["class_name"],
+        "family": fields["family"],
+        "description": fields["description"],
+        "provenance": tuple(sorted(set(fields["provenance"]))),
+        "fixture": _json_ready(_freeze_json(fields["fixture"])),
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(("mba-rule-proposal-v1:" + encoded).encode("ascii")).hexdigest()
 
 
 def _expr_source(term: TypedBvTerm, names: Mapping[tuple[object, ...], str]) -> str:
@@ -38,12 +111,21 @@ def _expr_source(term: TypedBvTerm, names: Mapping[tuple[object, ...], str]) -> 
     if term.operation in {"add", "sub", "mul", "and", "or", "xor"}:
         operator = {"add": "+", "sub": "-", "mul": "*", "and": "&", "or": "|", "xor": "^"}[term.operation]
         return f"({child[0]} {operator} {child[1]})"
+    if term.operation in {"shl", "lshr"}:
+        operator = "<<" if term.operation == "shl" else ">>"
+        return f"({child[0]} {operator} Const(\"shift_{term.shift_count}\", {term.shift_count}))"
+    if term.operation in {"rol", "ror"}:
+        count = term.shift_count % term.width
+        if count == 0:
+            return child[0]
+        left_count, right_count = (count, term.width - count) if term.operation == "rol" else (term.width - count, count)
+        return f"(({child[0]} << Const(\"shift_{left_count}\", {left_count})) | ({child[0]} >> Const(\"shift_{right_count}\", {right_count})))"
     raise ValueError(f"cannot render unsupported operation: {term.operation}")
 
 
 @dataclass(frozen=True, slots=True)
 class MbaRuleProposal:
-    proposal_fingerprint: str
+    proposal_fingerprint: str | None
     source_fingerprints: tuple[str, ...]
     occurrence_count: int
     pattern: TypedBvTerm
@@ -59,49 +141,65 @@ class MbaRuleProposal:
     fixture: Mapping[str, object]
 
     def __post_init__(self) -> None:
-        if type(self.proposal_fingerprint) is not str or not self.proposal_fingerprint:
-            raise ValueError("proposal_fingerprint must be a non-empty string")
-        if not isinstance(self.source_fingerprints, tuple) or not self.source_fingerprints:
-            raise ValueError("source_fingerprints must be non-empty")
-        if any(type(item) is not str or not item for item in self.source_fingerprints):
-            raise ValueError("source_fingerprints must contain non-empty strings")
+        if self.proposal_fingerprint is not None and (type(self.proposal_fingerprint) is not str or not self.proposal_fingerprint):
+            raise ValueError("proposal_fingerprint must be a non-empty string or None")
         if type(self.occurrence_count) is not int or self.occurrence_count <= 0:
             raise ValueError("occurrence_count must be positive")
         if type(self.pattern) is not TypedBvTerm or type(self.replacement) is not TypedBvTerm:
             raise TypeError("pattern and replacement must be TypedBvTerm values")
         if self.pattern.width != self.replacement.width:
             raise ValueError("pattern and replacement widths must match")
-        if self.source_cost != term_cost(self.pattern):
-            raise ValueError("source_cost does not match pattern")
-        if self.replacement_cost != term_cost(self.replacement):
-            raise ValueError("replacement_cost does not match replacement")
+        for name, cost, expected in (("source_cost", self.source_cost, term_cost(self.pattern)), ("replacement_cost", self.replacement_cost, term_cost(self.replacement))):
+            if type(cost) is not tuple or len(cost) != 2 or any(type(item) is not int or isinstance(item, bool) or item < 0 for item in cost):
+                raise TypeError(f"{name} must be a pair of exact non-negative integers")
+            if cost != expected:
+                raise ValueError(f"{name} does not match its term")
         if self.replacement_cost >= self.source_cost:
             raise ValueError("replacement must be strictly cheaper")
-        if not isinstance(self.atomization_bindings, tuple) or any(
-            not isinstance(item, MbaAtomBinding) for item in self.atomization_bindings
-        ):
+        if type(self.source_fingerprints) is not tuple or any(type(item) is not str for item in self.source_fingerprints):
+            raise ValueError("source_fingerprints must contain non-empty strings")
+        if type(self.provenance) is not tuple or any(type(item) is not str for item in self.provenance):
+            raise ValueError("provenance must contain non-empty strings")
+        sources = tuple(sorted(set(self.source_fingerprints)))
+        provenance = tuple(sorted(set(self.provenance)))
+        if not sources or any(not item for item in sources):
+            raise ValueError("source_fingerprints must contain non-empty strings")
+        if any(not item for item in provenance):
+            raise ValueError("provenance must contain non-empty strings")
+        object.__setattr__(self, "source_fingerprints", sources)
+        object.__setattr__(self, "provenance", provenance)
+        if not isinstance(self.atomization_bindings, tuple) or any(not isinstance(item, MbaAtomBinding) for item in self.atomization_bindings):
             raise TypeError("atomization_bindings must contain MbaAtomBinding values")
-        if not isinstance(self.proof_receipts, tuple):
-            raise TypeError("proof_receipts must be a tuple")
-        if tuple(item.width for item in self.proof_receipts) != CERTIFICATION_WIDTHS:
+        if not isinstance(self.proof_receipts, tuple) or tuple(item.width for item in self.proof_receipts) != CERTIFICATION_WIDTHS:
             raise ValueError("proof receipts must cover exactly 8, 16, 32, and 64 bits")
         if any(not isinstance(item, ProofReceipt) or not item.certified for item in self.proof_receipts):
             raise ValueError("proposal requires four complete true proof receipts")
-        if type(self.class_name) is not str or not self.class_name.isidentifier() or self.class_name.startswith("_"):
-            raise ValueError("class_name must be a public Python identifier")
-        if type(self.family) is not str or not self.family:
-            raise ValueError("family must be a non-empty string")
+        if type(self.class_name) is not str or not self.class_name.isascii() or not self.class_name.isidentifier() or keyword.iskeyword(self.class_name) or self.class_name.startswith("_"):
+            raise ValueError("class_name must be an ASCII non-keyword public identifier")
+        if type(self.family) is not str or not self.family.isascii() or not self.family:
+            raise ValueError("family must be a non-empty ASCII string")
         if type(self.description) is not str or not self.description:
             raise ValueError("description must be a non-empty string")
-        if not isinstance(self.provenance, tuple) or any(type(item) is not str for item in self.provenance):
-            raise TypeError("provenance must be a tuple of strings")
-        if not isinstance(self.fixture, Mapping):
+        frozen_fixture = _freeze_json(self.fixture)
+        if not isinstance(frozen_fixture, Mapping):
             raise TypeError("fixture must be a mapping")
-        if _keys(self.pattern) != _keys(self.replacement):
-            raise ValueError("replacement leaves do not match generalized pattern leaves")
+        object.__setattr__(self, "fixture", frozen_fixture)
+        if not set(_keys(self.replacement)).issubset(set(_keys(self.pattern))):
+            raise ValueError("replacement introduces an unknown generalized leaf")
+        expected = proposal_fingerprint(
+            source_fingerprints=self.source_fingerprints, occurrence_count=self.occurrence_count,
+            pattern=self.pattern, replacement=self.replacement, source_cost=self.source_cost,
+            replacement_cost=self.replacement_cost, atomization_bindings=self.atomization_bindings,
+            proof_receipts=self.proof_receipts, class_name=self.class_name, family=self.family,
+            description=self.description, provenance=self.provenance, fixture=self.fixture,
+        )
+        if self.proposal_fingerprint is not None and self.proposal_fingerprint != expected:
+            raise ValueError("proposal_fingerprint does not match canonical payload")
+        object.__setattr__(self, "proposal_fingerprint", expected)
 
     @property
     def fingerprint(self) -> str:
+        assert self.proposal_fingerprint is not None
         return self.proposal_fingerprint
 
     @property
@@ -110,59 +208,36 @@ class MbaRuleProposal:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "proposal_fingerprint": self.proposal_fingerprint,
+            "schema_version": 1,
+            "proposal_fingerprint": self.fingerprint,
             "source_fingerprints": list(self.source_fingerprints),
             "occurrence_count": self.occurrence_count,
-            "pattern_fingerprint": term_fingerprint(self.pattern),
-            "replacement_fingerprint": term_fingerprint(self.replacement),
+            "pattern": typed_term_to_dict(self.pattern),
+            "replacement": typed_term_to_dict(self.replacement),
             "source_cost": list(self.source_cost),
             "replacement_cost": list(self.replacement_cost),
-            "proof_receipts": [
-                {
-                    "width": receipt.width,
-                    "verdict": receipt.verdict,
-                    "elapsed_ms": receipt.elapsed_ms,
-                    "counterexample": receipt.counterexample,
-                    "error": receipt.error,
-                }
-                for receipt in self.proof_receipts
-            ],
+            "atomization_bindings": [_binding_dict(item) for item in self.atomization_bindings],
+            "proof_receipts": [_proof_dict(item) for item in self.proof_receipts],
             "class_name": self.class_name,
             "family": self.family,
             "description": self.description,
-            "fixture": dict(self.fixture),
+            "provenance": list(self.provenance),
+            "fixture": _json_ready(self.fixture),
         }
 
 
 def render_rule_source(proposal: MbaRuleProposal) -> str:
-    """Render source for human review; this function never imports it."""
-
     keys = _keys(proposal.pattern)
     names = {key: f"x_{index}" for index, key in enumerate(keys)}
-    lines = [
-        '"""Proposed MBA rule; review and admit explicitly."""',
-        "",
-        "from d810.mba.dsl import Const, Var",
-        "from d810.mba.rules._base import VerifiableRule",
-        "",
-    ]
+    lines = ['"""Proposed MBA rule; review and admit explicitly."""', "", "from d810.mba.dsl import Const, Var", "from d810.mba.rules._base import VerifiableRule", ""]
     lines.extend(f'{name} = Var("{name}")' for name in names.values())
     if names:
         lines.append("")
-    description = json.dumps(proposal.description, ensure_ascii=True)
-    lines.extend(
-        [
-            f"class {proposal.class_name}(VerifiableRule):",
-            f"    DESCRIPTION = {description}",
-            f"    PATTERN = {_expr_source(proposal.pattern, names)}",
-            f"    REPLACEMENT = {_expr_source(proposal.replacement, names)}",
-            "",
-        ]
-    )
+    lines.extend([f"class {proposal.class_name}(VerifiableRule):", f"    DESCRIPTION = {json.dumps(proposal.description, ensure_ascii=True)}", f"    PATTERN = {_expr_source(proposal.pattern, names)}", f"    REPLACEMENT = {_expr_source(proposal.replacement, names)}", ""])
     source = "\n".join(lines)
     if not source.isascii():
         raise ValueError("proposal source must be ASCII-only")
     return source
 
 
-__all__ = ["MbaRuleProposal", "render_rule_source"]
+__all__ = ["MbaRuleProposal", "proposal_fingerprint", "render_rule_source"]
