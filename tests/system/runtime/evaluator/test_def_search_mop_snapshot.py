@@ -672,6 +672,127 @@ def test_refined_inconsistent_concolic_value_is_invalid_top(monkeypatch):
     assert leaf.concolic_value.status.name == "TOP"
 
 
+def test_refined_same_width_contradictory_product_is_invalid_top(monkeypatch):
+    from d810.analyses.abstract_domains.known_bits import KnownBits
+    from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
+    from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
+    from d810.analyses.data_flow.concolic.values import ConcolicValue, PrecisionStatus
+    from d810.analyses.value_flow.call_return_value import (
+        CallResultRefinement,
+        CallResultRefinementStatus,
+    )
+    from d810.evaluator.hexrays_microcode.abstract_ast import (
+        AbstractZeroStatus,
+        decide_zero_status,
+    )
+
+    assignment, _call, _destination, block, use = _call_result_test_parts()
+    raw = ConcolicValue(
+        None,
+        None,
+        AbstractEvidence(
+            32,
+            KnownBits(32, zero=((1 << 32) - 2), one=1),
+            WrappedInterval(32, lo=2, hi=2, kind="range"),
+        ),
+        32,
+        PrecisionStatus.ABSTRACT,
+    )
+    refinement = CallResultRefinement(raw, CallResultRefinementStatus.REFINED)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    leaf = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=lambda _query: refinement,
+    )
+
+    assert leaf.refinement.status is CallResultRefinementStatus.INVALID_EVIDENCE
+    assert leaf.concolic_value.status.name == "TOP"
+    assert decide_zero_status(leaf) is AbstractZeroStatus.UNKNOWN
+
+
+def test_refined_same_width_product_is_canonicalized(monkeypatch):
+    from d810.analyses.abstract_domains.known_bits import KnownBits
+    from d810.analyses.abstract_domains.wrapped_interval import WrappedInterval
+    from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
+    from d810.analyses.data_flow.concolic.values import ConcolicValue, PrecisionStatus
+    from d810.analyses.value_flow.call_return_value import (
+        CallResultRefinement,
+        CallResultRefinementStatus,
+    )
+
+    assignment, _call, _destination, block, use = _call_result_test_parts()
+    raw_evidence = AbstractEvidence(
+        32,
+        KnownBits(32, zero=((1 << 32) - 2), one=1),
+        WrappedInterval(32, lo=0, hi=3, kind="range"),
+    )
+    raw = ConcolicValue(None, None, raw_evidence, 32, PrecisionStatus.ABSTRACT)
+    refinement = CallResultRefinement(raw, CallResultRefinementStatus.REFINED)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    leaf = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=lambda _query: refinement,
+    )
+
+    assert leaf.refinement.status is CallResultRefinementStatus.REFINED
+    assert leaf.concolic_value.abstract.to_const() == 1
+
+
+def test_stack_mop_tracker_refiner_attribute_error_propagates(monkeypatch):
+    assignment, _call, _destination, block, _use = _call_result_test_parts(
+        destination_type=ida_hexrays.mop_S
+    )
+    assignment.d = SimpleNamespace(
+        t=ida_hexrays.mop_S,
+        size=4,
+        s=SimpleNamespace(off=0x40),
+        stkoff=0x40,
+        valnum=0,
+    )
+    stack_use = SimpleNamespace(
+        t=ida_hexrays.mop_S,
+        size=4,
+        s=SimpleNamespace(off=0x40),
+        stkoff=0x40,
+        valnum=0,
+    )
+    stack_block = SimpleNamespace(
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT), serial=7
+    )
+
+    class Tracker:
+        @staticmethod
+        def reset():
+            return None
+
+        def __init__(self, *_args, **_kwargs):
+            return None
+
+        def search_backward(self, *_args):
+            return [SimpleNamespace(history=[SimpleNamespace(blk=stack_block, ins_list=(assignment,))])]
+
+    monkeypatch.setattr(def_search, "_USE_NATIVE_DEF_SEARCH", False)
+    monkeypatch.setattr(def_search, "_materialize_mop_for_tracking", lambda mop, *_a, **_k: mop)
+    monkeypatch.setitem(def_search.sys.modules, "d810.evaluator.hexrays_microcode.tracker", SimpleNamespace(MopTracker=Tracker))
+    sentinel = AttributeError("refiner sentinel")
+
+    def malformed(_query):
+        raise sentinel
+
+    with pytest.raises(AttributeError) as caught:
+        def_search.resolve_mop_to_ast(
+            stack_use,
+            stack_block,
+            SimpleNamespace(ea=0x401100),
+            call_result_refiner=malformed,
+        )
+    assert caught.value is sentinel
+
+
 @pytest.mark.parametrize("known_bits", [False, True])
 def test_valid_refined_evidence_remains_decisive(monkeypatch, known_bits):
     from d810.analyses.abstract_domains.known_bits import KnownBits

@@ -138,8 +138,8 @@ def _normalize_call_result_refinement(
     value = getattr(result, "value", None)
     if not isinstance(value, ConcolicValue):
         return _invalid_call_result_refinement(width, "refiner returned an invalid value")
-    if value.width != width:
-        return _invalid_call_result_refinement(width, "refiner returned a width-mismatched value")
+        if value.width != width:
+            return _invalid_call_result_refinement(width, "refiner returned a width-mismatched value")
     if result.status is not CallResultRefinementStatus.REFINED:
         return CallResultRefinement(
             ConcolicValue.top(width),
@@ -158,7 +158,15 @@ def _normalize_call_result_refinement(
             or evidence.interval.width != width
         ):
             raise ValueError("refiner returned mismatched abstract widths")
-        canonical = reduce(value)
+        canonical_evidence = evidence.meet(AbstractEvidence.top(width))
+        canonical_value = ConcolicValue(
+            value.concrete,
+            value.symbolic,
+            canonical_evidence,
+            value.width,
+            value.status,
+        )
+        canonical = reduce(canonical_value)
         if canonical.width != width or canonical.status.name == "BOTTOM":
             raise ValueError("refiner returned Bottom or unreduced evidence")
         canonical_evidence = canonical.abstract
@@ -1297,33 +1305,40 @@ def resolve_mop_to_ast(
                 # For stack variables, compare the stack offset
                 elif mop.t == ida_hexrays.mop_S:
                     try:
-                        if def_ins.d.s.off == mop.s.off or (
-                            int(getattr(def_ins.d, "valnum", 0) or 0) != 0
-                            and int(getattr(mop, "valnum", 0) or 0) != 0
-                            and int(def_ins.d.valnum) == int(mop.valnum)
-                            and int(def_ins.d.size) == int(mop.size)
-                        ):
-                            ast = _call_result_ast(
-                                def_ins,
-                                getattr(blk_info, "blk", blk),
-                                call_result_refiner=call_result_refiner,
-                                node_budget=node_budget,
-                            )
-                            if ast is None:
-                                ast = _minsn_to_ast_with_budget(def_ins, node_budget)
-                            if ast is not None:
-                                ast.ea = def_ins.ea
-                                ast.ins = def_ins
-                            if logger.debug_on:
-                                logger.debug(
-                                    "resolve_mop_to_ast: Resolved %s to %s from %s",
-                                    format_mop_t(mop),
-                                    ast,
-                                    format_minsn_t(def_ins),
-                                )
-                            return ast
+                        destination_offset = def_ins.d.s.off
+                        requested_offset = mop.s.off
+                        destination_valnum = def_ins.d.valnum
+                        requested_valnum = mop.valnum
+                        destination_size = def_ins.d.size
+                        requested_size = mop.size
                     except AttributeError:
-                        pass
+                        continue
+                    stack_matches = destination_offset == requested_offset or (
+                        int(destination_valnum or 0) != 0
+                        and int(requested_valnum or 0) != 0
+                        and int(destination_valnum) == int(requested_valnum)
+                        and int(destination_size) == int(requested_size)
+                    )
+                    if stack_matches:
+                        ast = _call_result_ast(
+                            def_ins,
+                            getattr(blk_info, "blk", blk),
+                            call_result_refiner=call_result_refiner,
+                            node_budget=node_budget,
+                        )
+                        if ast is None:
+                            ast = _minsn_to_ast_with_budget(def_ins, node_budget)
+                        if ast is not None:
+                            ast.ea = def_ins.ea
+                            ast.ins = def_ins
+                        if logger.debug_on:
+                            logger.debug(
+                                "resolve_mop_to_ast: Resolved %s to %s from %s",
+                                format_mop_t(mop),
+                                ast,
+                                format_minsn_t(def_ins),
+                            )
+                        return ast
 
     logger.debug(
         "resolve_mop_to_ast: No defining instruction found for %s", format_mop_t(mop)
