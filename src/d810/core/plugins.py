@@ -99,6 +99,7 @@ from d810.core.typing import (
     Generic,
     Iterable,
     Mapping,
+    Protocol,
     Sequence,
     TypeVar,
 )
@@ -126,6 +127,12 @@ __all__ = [
     "PassImplementationMissing",
     "PassImplementationUnavailable",
     "PluginCapabilityOffer",
+    "PluginIdentity",
+    "PluginActivationContext",
+    "PluginFunctionContext",
+    "PluginHostCapabilities",
+    "BackendPlugin",
+    "PluginActivation",
     "builtin",
     "entry_point_source",
     "format_report",
@@ -176,6 +183,61 @@ class BackendStatus(enum.Enum):
 C = TypeVar("C")
 
 
+@dataclass(frozen=True, slots=True)
+class PluginIdentity:
+    name: str
+    distribution: str | None
+    version: str | None
+    origin: str
+
+
+class PluginHostCapabilities(Protocol):
+    def require(self, capability: type[C]) -> C: ...
+
+    def optional(self, capability: type[C]) -> C | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PluginActivationContext:
+    identity: PluginIdentity
+    host: PluginHostCapabilities
+
+
+@dataclass(frozen=True, slots=True)
+class PluginFunctionContext:
+    source: Any
+    identity: Any
+    host: PluginHostCapabilities
+
+
+class PluginActivation(Protocol):
+    def create_implementation(self, implementation_id: str) -> object: ...
+
+    def capability_offers(self) -> tuple[PluginCapabilityOffer[object], ...]: ...
+
+    def close(self) -> None: ...
+
+
+class BackendPlugin(Protocol):
+    def activate(self, context: PluginActivationContext) -> PluginActivation: ...
+
+
+class _EmptyHostCapabilities:
+    """Host view used for dependency-free activation contexts."""
+
+    def require(self, capability: type[C]) -> C:
+        raise BackendUnavailable(f"host capability {capability!r} is unavailable")
+
+    def optional(self, capability: type[C]) -> C | None:
+        return None
+
+    def validate(self, requirements: Sequence[str]) -> None:
+        if requirements:
+            raise BackendUnavailable(
+                f"missing host capability: {requirements[0]}"
+            )
+
+
 @dataclass(frozen=True)
 class PluginCapabilityOffer(Generic[C]):
     """A backend declaring it can satisfy one capability Protocol.
@@ -184,9 +246,9 @@ class PluginCapabilityOffer(Generic[C]):
     *class*, so at the plugin author's site a type checker infers ``C`` from
     ``type[C]`` and then verifies the factory returns it::
 
-        def _make_engine(source: FunctionSource) -> ConcolicEngine:
+        def _make_engine(context: PluginFunctionContext) -> ConcolicEngine:
             from d810_cobra.concolic import Engine   # deferred
-            return Engine(source.live_source)
+            return Engine(context.source)
 
         PluginCapabilityOffer(ConcolicEngine, _make_engine)
 
@@ -218,12 +280,12 @@ class PluginCapabilityOffer(Generic[C]):
     """
 
     capability: type[C]
-    factory: Callable[[Any], C]
+    factory: Callable[[PluginFunctionContext], C]
 
 
 def offers_capability(
     capability: type[C],
-) -> Callable[[Callable[[Any], C]], PluginCapabilityOffer[C]]:
+) -> Callable[[Callable[[PluginFunctionContext], C]], PluginCapabilityOffer[C]]:
     """Declare a capability offer with the factory actually type-checked.
 
     Curried so ``C`` is solved from *capability* alone; the returned binder then
@@ -234,14 +296,14 @@ def offers_capability(
     Usable as a decorator::
 
         @offers_capability(ConcolicEngine)
-        def make_engine(source: FunctionSource) -> ConcolicEngine:
+        def make_engine(context: PluginFunctionContext) -> ConcolicEngine:
             from d810_cobra.concolic import Engine   # deferred
-            return Engine(source.live_source)
+            return Engine(context.source)
 
-        MANIFEST = BackendManifest(..., capabilities=(make_engine,))
+        ACTIVATION = ...
     """
 
-    def bind(factory: Callable[[Any], C]) -> PluginCapabilityOffer[C]:
+    def bind(factory: Callable[[PluginFunctionContext], C]) -> PluginCapabilityOffer[C]:
         return PluginCapabilityOffer(capability, factory)
 
     return bind
@@ -264,28 +326,8 @@ class BackendManifest:
     name: str
     api_version: int
     provides: str | Callable[[], Any]
-    capabilities: tuple[PluginCapabilityOffer[Any], ...] = ()
-    #: Optimizer rule modules this backend contributes, as import paths.
-    #:
-    #: d810 loads rules by scanning ``d810.optimizers.__path__`` and letting
-    #: ``Registrant`` self-register on import. That scan is path-scoped, so a
-    #: rule shipped inside an installed extension is never imported and never
-    #: registers -- the backend reports ``available`` while its pass silently
-    #: does nothing, which looks exactly like the pass not matching anything.
-    #:
-    #: Declared rather than discovered: importing an extension's whole package
-    #: to find rules would drag in its heavy half (for CoBRA, the compiled
-    #: binding and ida_hexrays) during discovery, which is what ``provides``
-    #: being lazily resolved exists to avoid.
-    rules: tuple[str, ...] = ()
-    #: Which d810 pass each contributed rule implements: ``{pass_id: class}``.
-    #:
-    #: d810 derives a pass's ``allowed_rule_names`` from its stage descriptors,
-    #: and a rule outside that allowlist is skipped at dispatch. Naming the
-    #: class in d810 would mean core code hardcoding one vendor's class -- and
-    #: d810 could then host exactly one solver, forever.
-    #:
-    #: The extension knows what it implements; d810 asks.
+    #: Stable host capability identifiers required at activation time.
+    requires: tuple[str, ...] = ()
     implements: Mapping[str, str] = field(
         default_factory=lambda: types.MappingProxyType({})
     )
@@ -428,11 +470,11 @@ class PassImplementationMisdeclared(PassImplementationError):
 def manifest_of(raw: Any) -> BackendManifest:
     """Coerce a duck-typed manifest into a :class:`BackendManifest`."""
     if isinstance(raw, BackendManifest):
-        rules = _validate_rules(raw.rules)
+        requires = _validate_requires(raw.requires)
         implements = _coerce_implements(raw)
         reload_modules = _validate_reload_modules(raw.reload_modules)
         if (
-            rules == raw.rules
+            requires == raw.requires
             and implements == raw.implements
             and reload_modules == raw.reload_modules
         ):
@@ -441,8 +483,7 @@ def manifest_of(raw: Any) -> BackendManifest:
             name=raw.name,
             api_version=raw.api_version,
             provides=raw.provides,
-            capabilities=raw.capabilities,
-            rules=rules,
+            requires=requires,
             implements=implements,
             reload_modules=reload_modules,
         )
@@ -473,8 +514,19 @@ def manifest_of(raw: Any) -> BackendManifest:
             f"manifest api_version must be an int, got {values['api_version']!r}"
         ) from exc
 
-    offers = _coerce_offers(raw)
-    rules = _coerce_rules(raw)
+    if isinstance(raw, Mapping):
+        removed = {key for key in ("rules", "capabilities") if key in raw}
+    else:
+        removed = {
+            key
+            for key in ("rules", "capabilities")
+            if hasattr(raw, key)
+        }
+    if removed:
+        raise ManifestError(
+            "manifest contains removed field " + ", ".join(sorted(removed))
+        )
+    requires = _coerce_requires(raw)
     implements = _coerce_implements(raw)
     reload_modules = _coerce_reload_modules(raw)
 
@@ -482,85 +534,69 @@ def manifest_of(raw: Any) -> BackendManifest:
         name=str(values["name"]),
         api_version=api_version,
         provides=values["provides"],
-        capabilities=offers,
-        rules=rules,
+        requires=requires,
         implements=implements,
         reload_modules=reload_modules,
     )
 
 
-def _coerce_offers(raw: Any) -> tuple[PluginCapabilityOffer[Any], ...]:
-    """Read the optional ``capabilities`` field and check its shape.
-
-    Rejecting a bad entry here means the plugin author learns at declaration
-    time; the alternative is a pass discovering mid-run that its capability is
-    a string.
-    """
+def _coerce_requires(raw: Any) -> tuple[str, ...]:
+    """Read and validate stable, dependency-free host capability IDs."""
     try:
-        declared = raw["capabilities"] if isinstance(raw, Mapping) else raw.capabilities
+        declared = raw["requires"] if isinstance(raw, Mapping) else raw.requires
     except (KeyError, AttributeError):
         return ()
     if declared is None:
         return ()
-
-    offers = tuple(declared)
-    for offer in offers:
-        if not isinstance(offer, PluginCapabilityOffer):
-            raise ManifestError(
-                f"capabilities entries must be PluginCapabilityOffer, "
-                f"got {type(offer).__name__}: {offer!r}"
-            )
-    return offers
-
-
-def _coerce_rules(raw: Any) -> tuple[str, ...]:
-    """Read the optional ``rules`` field: import paths, checked at declaration.
-
-    A non-string here would otherwise surface much later as an obscure failure
-    inside ``import_module``, long after the manifest that caused it.
-    """
-    try:
-        declared = raw["rules"] if isinstance(raw, Mapping) else raw.rules
-    except (KeyError, AttributeError):
-        return ()
-    return _validate_rules(declared)
-
-
-def _validate_rules(declared: Any) -> tuple[str, ...]:
-    """Validate and freeze an ordered manifest rule-module declaration."""
     if declared is None:
         return ()
 
     if isinstance(declared, str):
         raise ManifestError(
-            f"rules must be an ordered sequence of import paths, not a bare string: "
+            "requires must be an ordered sequence of capability IDs, not a bare string: "
             f"{declared!r} (did you mean ({declared!r},)?)"
         )
     if isinstance(declared, (bytes, bytearray, memoryview)):
         raise ManifestError(
-            "rules must be an ordered sequence of text import paths, not "
+            "requires must be an ordered sequence of capability IDs, not "
             f"{type(declared).__name__}"
         )
     if isinstance(declared, Mapping):
         raise ManifestError(
-            "rules must be an ordered sequence of import paths, not a mapping"
+            "requires must be an ordered sequence of capability IDs, not a mapping"
         )
     if not isinstance(declared, Sequence):
         raise ManifestError(
-            "rules must be an ordered tuple/list-like sequence of import "
-            f"paths, got {type(declared).__name__}: {declared!r}"
+            "requires must be an ordered tuple/list-like sequence of capability "
+            f"IDs, got {type(declared).__name__}: {declared!r}"
         )
 
-    modules = tuple(declared)
-    for module in modules:
-        if not isinstance(module, str):
+    requirements = tuple(declared)
+    seen: set[str] = set()
+    for requirement in requirements:
+        if not isinstance(requirement, str):
             raise ManifestError(
-                f"rules entries must be import-path strings, "
-                f"got {type(module).__name__}: {module!r}"
+                "requires entries must be non-empty dotted strings, "
+                f"got {type(requirement).__name__}: {requirement!r}"
             )
-        if not module:
-            raise ManifestError("rules entries must be nonempty import paths")
-    return modules
+        if requirement in seen:
+            raise ManifestError("requires entries must be unique")
+        seen.add(requirement)
+        if (
+            not requirement
+            or "." not in requirement
+            or any(not part for part in requirement.split("."))
+            or any(part.isspace() for part in requirement.split("."))
+        ):
+            raise ManifestError(
+                "requires entries must be non-empty dotted capability IDs, "
+                f"got {requirement!r}"
+            )
+    return requirements
+
+
+def _validate_requires(declared: Any) -> tuple[str, ...]:
+    return _coerce_requires({"requires": declared})
 
 
 def _coerce_reload_modules(raw: Any) -> tuple[str, ...]:
@@ -707,6 +743,16 @@ def _origin_of(entry_point: Any) -> str:
         return "entry-point"
 
 
+def _distribution_version(origin: str) -> tuple[str | None, str | None]:
+    """Extract conventional distribution metadata from an origin label."""
+    distribution, separator, version = str(origin).rpartition(" ")
+    if not separator or not distribution or not version:
+        return None, None
+    if not version[0].isdigit():
+        return None, None
+    return distribution, version
+
+
 def entry_point_source() -> list[BackendSpec]:
     """Scan installed distributions for backends in the ``d810.backends`` group.
 
@@ -739,6 +785,7 @@ class BackendRegistry:
         *,
         builtins: Sequence[BackendSpec] = (),
         source: Callable[[], Iterable[BackendSpec]] | None = None,
+        host: PluginHostCapabilities | None = None,
         registration_lookup: Callable[
             [PassImplementationCandidate], Any | None
         ] | None = None,
@@ -762,6 +809,8 @@ class BackendRegistry:
         self._implementation_failures: dict[
             PassImplementationCandidate, dict[str, str]
         ] = {}
+        self._host = host if host is not None else _EmptyHostCapabilities()
+        self._activated: dict[str, PluginActivation] = {}
         #: Injected to keep optimizer-layer imports out of ``core.plugins``.
         self._registration_lookup = registration_lookup
 
@@ -810,6 +859,7 @@ class BackendRegistry:
             self._errors = {}
             self._active_implementations = set()
             self._implementation_failures = {}
+            self._activated = {}
             self._discovered = True
 
     # -- introspection (never imports) -------------------------------------
@@ -860,22 +910,116 @@ class BackendRegistry:
         return [self.probe(name) for name in self.names()]
 
     def capability_offers(self) -> tuple[PluginCapabilityOffer[Any], ...]:
-        """Every offer from backends that actually resolved.
-
-        Probes, because an offer from a backend that turns out UNAVAILABLE or
-        INCOMPATIBLE must not reach the pipeline -- binding a capability slot
-        to something that cannot run is worse than leaving the slot empty,
-        which callers already handle via ``CapabilitySet.optional``.
-        """
+        """Offers from currently activated plugins."""
         offers: list[PluginCapabilityOffer[Any]] = []
-        for name in self.names():
-            if not self.probe(name).usable:
-                continue
-            with self._lock:
-                manifest = self._manifests.get(name)
-            if manifest is not None:
-                offers.extend(manifest.capabilities)
+        with self._lock:
+            activations = tuple(self._activated.values())
+        for activation in activations:
+            offers.extend(activation.capability_offers())
         return tuple(offers)
+
+    def activate(self, name: str) -> PluginActivation:
+        """Validate and activate one resolved plugin transactionally."""
+        self.discover()
+        with self._lock:
+            if name not in self._candidates:
+                raise BackendUnavailable(f"no backend named {name!r}")
+            existing = self._activated.get(name)
+            if existing is not None:
+                return existing
+            manifest = self._manifest_for_activation(name)
+            self._validate_requirements(manifest.requires)
+
+        info = self.probe(name)
+        if not info.usable:
+            raise BackendUnavailable(
+                f"backend {name!r} is {info.status.value}: {info.reason}"
+            ) from self._errors.get(name)
+        with self._lock:
+            plugin = self._loaded[name]
+            spec = self._settled[name]
+        activate = getattr(plugin, "activate", None)
+        if not callable(activate):
+            raise ManifestError(f"backend {name!r} does not provide activate(context)")
+
+        distribution, version = _distribution_version(spec.origin)
+        context = PluginActivationContext(
+            identity=PluginIdentity(
+                name=manifest.name,
+                distribution=distribution,
+                version=version,
+                origin=spec.origin,
+            ),
+            host=self._host,
+        )
+        partial: Any = None
+        try:
+            partial = activate(context)
+            self._validate_activation(partial)
+        except Exception:
+            if partial is not None:
+                close = getattr(partial, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logger.exception("plugin %r failed while rolling back", name)
+            raise
+        with self._lock:
+            self._activated[name] = partial
+        return partial
+
+    def close_activations(self) -> None:
+        """Close every activation once, retaining progress after failures."""
+        with self._lock:
+            activations = tuple(self._activated.items())
+            self._activated.clear()
+        for name, activation in activations:
+            try:
+                activation.close()
+            except Exception:
+                logger.exception("plugin %r failed while closing", name)
+
+    def _manifest_for_activation(self, name: str) -> BackendManifest:
+        for spec in self._candidates[name]:
+            try:
+                manifest = manifest_of(spec.load_manifest())
+            except ImportError:
+                continue
+            if manifest.api_version == PLUGIN_API_VERSION:
+                return manifest
+        raise BackendUnavailable(f"backend {name!r} has no compatible manifest")
+
+    def _validate_requirements(self, requirements: Sequence[str]) -> None:
+        if not requirements:
+            return
+        if self._host is None:
+            raise BackendUnavailable(
+                f"missing host capability: {requirements[0]}"
+            )
+        validate = getattr(self._host, "validate", None)
+        if callable(validate):
+            try:
+                validate(tuple(requirements))
+            except Exception as exc:
+                raise BackendUnavailable(str(exc)) from exc
+
+    @staticmethod
+    def _validate_activation(activation: Any) -> None:
+        if activation is None:
+            raise ManifestError("plugin.activate(context) returned None")
+        for method in ("create_implementation", "capability_offers", "close"):
+            if not callable(getattr(activation, method, None)):
+                raise ManifestError(
+                    f"activation is missing callable {method}()"
+                )
+        offers = activation.capability_offers()
+        if not isinstance(offers, tuple):
+            raise ManifestError("activation capability_offers() must return a tuple")
+        if not all(isinstance(offer, PluginCapabilityOffer) for offer in offers):
+            raise ManifestError(
+                "activation capability_offers() returned an invalid offer"
+            )
 
     def implementation_for(self, pass_id: PassId | str) -> str | None:
         """The rule class name an installed extension declares for ``pass_id``.
@@ -962,22 +1106,12 @@ class BackendRegistry:
             rule_name = manifest.implements.get(pass_name)
             if not rule_name:
                 continue
-            if not manifest.rules:
-                raise PassImplementationMisdeclared(
-                    pass_name,
-                    backend_name=spec.name,
-                    backend_origin=spec.origin,
-                    reason=(
-                        f"implementation {rule_name!r} does not declare any "
-                        "rule modules"
-                    ),
-                )
             found.append(
                 PassImplementationCandidate(
                     pass_id=pass_name,
                     backend_name=spec.name,
                     backend_origin=spec.origin,
-                    rule_modules=tuple(manifest.rules),
+                    rule_modules=(),
                     rule_name=rule_name,
                 )
             )
@@ -1118,8 +1252,6 @@ class BackendRegistry:
         with self._lock:
             candidates: list[PassImplementationCandidate] = []
             for backend_name, manifest in self._manifests.items():
-                if module_name not in manifest.rules:
-                    continue
                 spec = self._settled.get(backend_name)
                 if spec is None:
                     continue
@@ -1128,7 +1260,7 @@ class BackendRegistry:
                         pass_id=str(pass_id),
                         backend_name=backend_name,
                         backend_origin=spec.origin,
-                        rule_modules=tuple(manifest.rules),
+                        rule_modules=(),
                         rule_name=rule_name,
                     )
                     for pass_id, rule_name in manifest.implements.items()
@@ -1150,7 +1282,7 @@ class BackendRegistry:
                     pass_id=str(pass_id),
                     backend_name=backend_name,
                     backend_origin=spec.origin,
-                    rule_modules=tuple(manifest.rules),
+                    rule_modules=(),
                     rule_name=rule_name,
                 )
                 for backend_name, manifest in self._manifests.items()
@@ -1286,26 +1418,8 @@ class BackendRegistry:
                     self._implementation_failures.pop(candidate, None)
 
     def rule_modules(self) -> tuple[str, ...]:
-        """Optimizer rule modules contributed by backends that resolved.
-
-        d810's rule loader scans ``d810.optimizers.__path__``, which cannot
-        reach a rule shipped inside an installed extension. These paths are
-        what closes that gap; see :attr:`BackendManifest.rules`.
-
-        Gated on ``usable`` for the same reason as :meth:`capability_offers`: a
-        rule whose backend is UNAVAILABLE would register and then fail on every
-        invocation, which is worse than never registering -- d810 already
-        handles a missing rule, but not one that raises mid-pass.
-        """
-        modules: list[str] = []
-        for name in self.names():
-            if not self.probe(name).usable:
-                continue
-            with self._lock:
-                manifest = self._manifests.get(name)
-            if manifest is not None:
-                modules.extend(manifest.rules)
-        return tuple(modules)
+        """External implementations no longer register rule modules."""
+        return ()
 
     def load(self, name: str) -> Any:
         """Return the backend object, or raise :class:`BackendUnavailable`."""
@@ -1387,6 +1501,11 @@ class BackendRegistry:
             return BackendStatus.INCOMPATIBLE, reason, None, None, version
 
         self._manifests[name] = manifest
+
+        try:
+            self._validate_requirements(manifest.requires)
+        except BackendUnavailable as exc:
+            return BackendStatus.UNAVAILABLE, str(exc), exc, None, version
 
         try:
             obj = _resolve_provides(manifest.provides)
