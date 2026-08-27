@@ -979,6 +979,8 @@ class BackendRegistry:
                 existing = self._activated.get(name)
                 if existing is not None:
                     return existing
+                if record.activation is not None:
+                    return record.activation
                 if record.error is not None:
                     raise record.error
                 while self._rediscovering or self._closing:
@@ -1045,12 +1047,13 @@ class BackendRegistry:
 
         with self._lock:
             record.in_progress = False
-            self._activated[name] = partial
             if self._closing or self._rediscovering:
-                # Keep the record until the concurrent close has claimed it;
-                # this also lets duplicate activation callers receive the
-                # same ownership while shutdown drains the lifecycle.
+                # Keep ownership solely in the claimed record until the
+                # concurrent close has drained it; never publish a closed
+                # object as active.
                 record.activation = partial
+            else:
+                self._activated[name] = partial
             if (
                 self._activation_records.get(name) is record
                 and not self._closing

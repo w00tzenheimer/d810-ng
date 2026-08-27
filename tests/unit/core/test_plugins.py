@@ -440,6 +440,19 @@ class TestActivation(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(plugin.activation.close_calls, 1)
 
+        reg.close_activations()
+        self.assertEqual(plugin.activation.close_calls, 1)
+        self.assertFalse(reg._activated)
+        self.assertEqual(reg.capability_offers(), ())
+
+        old_activation = plugin.activation
+        fresh_activation = FakeActivation()
+        plugin.activation = fresh_activation
+        plugin.activate = original_activate
+        reactivated = reg.activate("example")
+        self.assertIs(reactivated, fresh_activation)
+        self.assertIsNot(reactivated, old_activation)
+
     def test_activation_and_close_callbacks_can_read_registry(self):
         plugin = FakePlugin(FakeActivation())
         reg = registry_for(plugin)
