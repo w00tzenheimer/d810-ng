@@ -28,6 +28,11 @@ _MASK64 = 0xFFFFFFFFFFFFFFFF
 _SYNTHETIC_DAG_NODE_STATE_PREFIX = 0xD810000000000000
 _SYNTHETIC_DAG_NODE_STATE_MASK = 0x0000FFFFFFFFFFFF
 
+# Version for the independent instruction/block provenance carried by the
+# diagnostic capture schema.  ``None`` means an older snapshot that is not
+# eligible for authority replay; consumers must never infer the fields.
+DIAG_PROVENANCE_VERSION = 1
+
 
 def _fnv1a_64(text: str) -> int:
     value = 0xCBF29CE484222325
@@ -116,6 +121,8 @@ class InstructionSnapshot:
     src_r_value: int | None = None
     dstr: str = ""
     meta: str | None = None
+    raw_opcode: int | None = None
+    provenance_version: int | None = None
 
     def __str__(self) -> str:
         return self.dstr
@@ -150,6 +157,10 @@ class BlockSnapshot:
     preds: list[int] = field(default_factory=list)
     instructions: list[InstructionSnapshot] = field(default_factory=list)
     meta: str | None = None
+    tail_opcode: int | None = None
+    raw_tail_opcode: int | None = None
+    tail_kind: str | None = None
+    provenance_version: int | None = None
 
     def __str__(self) -> str:
         block_id = format_block_id(
@@ -244,6 +255,7 @@ class Modification:
 
 __all__ = [
     "BlockSnapshot",
+    "DIAG_PROVENANCE_VERSION",
     "DagEdge",
     "DagNode",
     "InstructionSnapshot",

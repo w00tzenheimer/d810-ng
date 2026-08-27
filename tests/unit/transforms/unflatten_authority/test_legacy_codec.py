@@ -13,7 +13,9 @@ import pytest
 
 
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
-from d810.transforms.cfg_transaction import LogicalBlockRef
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
+from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 
 from d810.transforms.unflatten_authority.model import (
     UnflattenAuthorityReason,
@@ -24,6 +26,15 @@ from d810.transforms.unflatten_authority.proposal import LEGACY_UNFLATTEN_KEYS
 from d810.transforms.unflatten_authority.legacy_keys import EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA
 from d810.transforms.unflatten_authority.legacy_keys import NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA
 from d810.transforms.unflatten_authority.ids import authority_id
+from d810.analyses.control_flow.semantic_route_evidence import canonical_semantic_evidence_from_proofs
+
+
+def _recanonicalize(evidence, proofs):
+    return canonical_semantic_evidence_from_proofs(
+        native_key=evidence.native_key,
+        generation=evidence.generation,
+        proofs=tuple(proofs),
+    )
 
 
 def _codec():
@@ -97,6 +108,39 @@ def test_native_bound_route_receipts_project_to_typed_codec_values():
     assert projection[0].operation_key == ("block_goto_change", 10, 2, 20)
 
 
+def test_legacy_retirement_anchor_only_lookup_rejects_shared_native_anchor() -> None:
+    codec = _codec()
+    key = NativePreanalysisKey(
+        "legacy-shared-anchor", "x86", 64, 0,
+        "f" * 64, "p" * 64, "s" * 64,
+    )
+
+    def native_ref(origin: int) -> NativeBlockRef:
+        return NativeBlockRef(StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x1000, 0x1020),),
+            native_key=key,
+            exact_instruction_eas=(origin,),
+        ))
+
+    first, second = native_ref(0x1004), native_ref(0x1014)
+    catalog = model.SourceIdentityCatalog(
+        key,
+        0,
+        (
+            model.SourceBlockIdentityWitness(first, 0x1000, (0x1004,)),
+            model.SourceBlockIdentityWitness(second, 0x1000, (0x1014,)),
+        ),
+    )
+    proposal = object.__new__(model.ProposedUnflattenContract)
+    object.__setattr__(proposal, "source_identity_catalog", catalog)
+    with pytest.raises(ValueError, match="ambiguous"):
+        codec.retirement_claim_from_legacy_proof(
+            {},
+            proposal=proposal,
+            block_refs_by_serial={0: first, 1: second},
+        )
+
+
 def _corridor_metadata(*, covered=True, path=None, **overrides):
     """Return one analyzer-shaped corridor record for the logical fixture."""
 
@@ -166,7 +210,7 @@ def _real_full_shadow_fixture():
             ("source_kinds", "legacy"), ("fact_id", "legacy-fact"),
         ),
     )
-    route_evidence = replace(route_base.route_evidence, route_proofs=(proof,))
+    route_evidence = _recanonicalize(route_base.route_evidence, (proof,))
     proposal = producer_api.build_proposal(
         plan_id=route_base.plan_id,
         source=source,
@@ -406,10 +450,13 @@ def _legacy_route_proposal(*, duplicate: bool = False):
             ("fact_id", "legacy-fact"),
         ),
     )
-    evidence = replace(original.route_evidence, route_proofs=(proof,))
+    evidence = _recanonicalize(original.route_evidence, (proof,))
     if duplicate:
-        sibling = replace(proof, proof_id=authority_id("legacy-duplicate-proof"))
-        evidence = replace(evidence, route_proofs=(proof, sibling))
+        sibling = replace(
+            proof,
+            predicate=replace(proof.predicate, compare_constant=6),
+        )
+        evidence = _recanonicalize(evidence, (proof, sibling))
         selected = tuple(item.proof_id for item in evidence.route_proofs)
     else:
         selected = (proof.proof_id,)
@@ -497,13 +544,14 @@ def test_legacy_decode_selects_row_proof_ids_before_building_proposal(monkeypatc
     )
     sibling = replace(
         proof,
-        proof_id=authority_id("legacy-sibling-proof"),
+        predicate=replace(proof.predicate, compare_constant=6),
         diagnostic_provenance=tuple(
             (key, "sibling-fact" if key == "fact_id" else value)
             for key, value in proof.diagnostic_provenance
         ),
     )
-    evidence = replace(original.route_evidence, route_proofs=(proof, sibling))
+    evidence = _recanonicalize(original.route_evidence, (proof, sibling))
+    proof, sibling = evidence.route_proofs
     proposal = producer_api.build_proposal(
         plan_id=original.plan_id, source=source, block_refs_by_serial=refs,
         source_generation=1, canonical_route_evidence=evidence,
@@ -847,12 +895,18 @@ def test_exact_legacy_decode_roundtrips_through_the_producer_builder() -> None:
     shape_context = _codec().LegacyUnflattenDecodeContext(
         proposal.plan_id, source, 1, tuple(sorted(refs.items())),
         proposal.route_evidence, replace(
-            proposal.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
+            proposal.plan_inputs, shape=model.UnflattenPlanShape.EXACT_EFFECT_ONLY,
         ), proposal.use_def_witness,
     )
-    assert _codec().decode_legacy_unflatten_contract(
+    exact_only = _codec().decode_legacy_unflatten_contract(
         payload, context=shape_context,
-    ).detail_code == "legacy_exact_effect_payload_invalid"
+    )
+    assert exact_only.route is UnflattenPlanRoute.LEGACY_ADAPTED
+    assert exact_only.proposal.plan_inputs == shape_context.plan_inputs
+    assert all(
+        claim.kind is model.UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT
+        for claim in exact_only.proposal.claims
+    )
     handler = proposal.plan_inputs.authoritative_handlers[0]
     handler_context = _codec().LegacyUnflattenDecodeContext(
         proposal.plan_id, source, 1, tuple(sorted(refs.items())),
@@ -864,6 +918,76 @@ def test_exact_legacy_decode_roundtrips_through_the_producer_builder() -> None:
     assert _codec().decode_legacy_unflatten_contract(
         payload, context=handler_context,
     ).detail_code == "legacy_exact_effect_payload_invalid"
+
+
+def test_exact_exclusion_metadata_schema_preserves_old_and_new_rows() -> None:
+    """The closed codec defaults old rows and preserves new site specificity."""
+    from .test_bind import _exact_fixture
+
+    codec = _codec()
+    source, proposal, exclusion, refs = _exact_fixture()
+    current = exclusion.to_metadata()
+    old = dict(current)
+    del old["site_specific"]
+
+    assert codec.exact_state_branch_effect_exclusion_from_metadata(old) == replace(
+        exclusion, site_specific=False,
+    )
+    old_payload = ((EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA, (old,)),)
+    old_context = codec.LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+        proposal.route_evidence, proposal.plan_inputs, proposal.use_def_witness,
+    )
+    old_decoded = codec.decode_legacy_unflatten_contract(
+        old_payload, context=old_context,
+    )
+    assert old_decoded.route is UnflattenPlanRoute.LEGACY_ADAPTED
+    assert old_decoded.proposal.claims == proposal.claims
+    assert codec.exact_state_branch_effect_exclusion_from_metadata(current) == exclusion
+
+    site_specific = {**current, "site_specific": True}
+    assert codec.exact_state_branch_effect_exclusion_from_metadata(
+        site_specific,
+    ) == replace(exclusion, site_specific=True)
+
+    class IntSubclass(int):
+        pass
+
+    for foreign in (0, 1, "true", None, IntSubclass(1)):
+        assert codec.exact_state_branch_effect_exclusion_from_metadata(
+            {**current, "site_specific": foreign},
+        ) is None
+    assert codec.exact_state_branch_effect_exclusion_from_metadata(
+        {**current, "unknown": False},
+    ) is None
+
+
+def test_exact_multi_site_legacy_roundtrip_preserves_site_specific_exclusions() -> None:
+    """A persisted two-site exact bundle rebuilds one canonical proposal."""
+    from .helpers import exact_fixture
+
+    source, proposal, exclusions, refs = exact_fixture(
+        discarded_effect_kind="call_store",
+    )
+    assert all(exclusion.site_specific is True for exclusion in exclusions)
+    payload = ((
+        EXACT_STATE_BRANCH_EFFECT_EXCLUSIONS_METADATA,
+        tuple(exclusion.to_metadata() for exclusion in exclusions),
+    ),)
+    context = _codec().LegacyUnflattenDecodeContext(
+        proposal.plan_id, source, 1, tuple(sorted(refs.items())),
+        proposal.route_evidence, proposal.plan_inputs, proposal.use_def_witness,
+    )
+
+    decoded = _codec().decode_legacy_unflatten_contract(payload, context=context)
+
+    assert decoded.route is UnflattenPlanRoute.LEGACY_ADAPTED
+    assert decoded.proposal is not None
+    assert decoded.proposal.claims == proposal.claims
+    assert decoded.proposal.plan_inputs == proposal.plan_inputs
+    assert _codec().decode_legacy_value(
+        _codec().encode_legacy_value(payload),
+    ) == payload
 
 
 def test_exact_raw_codec_rejects_lossy_scalar_and_shape_coercions() -> None:
@@ -1226,9 +1350,9 @@ def test_terminal_cycle_conversion_binds_terminal_route_and_actual_stop() -> Non
 
     nonterminal_route = replace(
         proposal,
-        route_evidence=replace(
+        route_evidence=_recanonicalize(
             proposal.route_evidence,
-            route_proofs=(replace(
+            (replace(
                 route,
                 destinations=tuple(
                     replace(destination, terminal=False)

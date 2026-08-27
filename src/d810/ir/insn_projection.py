@@ -39,6 +39,7 @@ from d810.ir.instructions import (
     InstructionControl,
     InstructionEffect,
     InstructionEffectKind,
+    InstructionEffectSite,
     InstructionMemoryAccess,
     InstructionMemoryAccessKind,
     InstructionSwitchCase,
@@ -70,6 +71,8 @@ __all__ = [
     "project_conditional_branch",
     "project_instruction",
     "project_instruction_sequence",
+    "project_instruction_effect_sites",
+    "instruction_references_stack_identity",
     "project_operand_expr",
     "result_storage",
 ]
@@ -567,6 +570,101 @@ def project_instruction_sequence(insn: InsnSnapshot) -> tuple[Instruction, ...]:
         ),
     )
     return (*projector.instructions, parent)
+
+
+def _nested_effect_sites(
+    mop: MopSnapshot | None,
+    *,
+    host_instruction_ea: int,
+    sites: list[InstructionEffectSite],
+    visited: set[int],
+) -> None:
+    """Collect effectful SUBINSNs while retaining their host EA provenance."""
+    if mop is None or id(mop) in visited:
+        return
+    visited.add(id(mop))
+    if mop.kind is OperandKind.SUBINSN and mop.sub_kind is InsnKind.CALL:
+        sites.append(
+            InstructionEffectSite(
+                instruction_ea=int(host_instruction_ea),
+                kind=InstructionEffectKind.CALL,
+                host_instruction_ea=int(host_instruction_ea),
+            )
+        )
+    elif mop.kind is OperandKind.SUBINSN and mop.sub_kind is InsnKind.STORE:
+        sites.append(
+            InstructionEffectSite(
+                instruction_ea=int(host_instruction_ea),
+                kind=InstructionEffectKind.STORE,
+                host_instruction_ea=int(host_instruction_ea),
+            )
+        )
+    for child in (mop.sub_l, mop.sub_r, *mop.args):
+        _nested_effect_sites(
+            child,
+            host_instruction_ea=host_instruction_ea,
+            sites=sites,
+            visited=visited,
+        )
+
+
+def project_instruction_effect_sites(block: BlockSnapshot) -> tuple[InstructionEffectSite, ...]:
+    """Return every top-level and nested portable effect in stable order.
+
+    Nested Hex-Rays SUBINs do not carry an independent portable EA. Their
+    host instruction EA is therefore retained on the typed site so callers
+    cannot silently drop a nested call/store or invent a new coordinate.
+    """
+    sites: list[InstructionEffectSite] = []
+    for snapshot in block.insn_snapshots:
+        host_ea = int(snapshot.ea)
+        _nested_effect_sites(
+            snapshot.l,
+            host_instruction_ea=host_ea,
+            sites=sites,
+            visited=set(),
+        )
+        _nested_effect_sites(
+            snapshot.r,
+            host_instruction_ea=host_ea,
+            sites=sites,
+            visited=set(),
+        )
+        _nested_effect_sites(
+            snapshot.d,
+            host_instruction_ea=host_ea,
+            sites=sites,
+            visited=set(),
+        )
+        for instruction in project_instruction_sequence(snapshot):
+            instruction_ea = int(instruction.attrs.get("ea", host_ea))
+            for effect in instruction.effects:
+                sites.append(
+                    InstructionEffectSite(
+                        instruction_ea=instruction_ea,
+                        kind=effect.kind,
+                        host_instruction_ea=host_ea,
+                    )
+                )
+    return tuple(
+        sorted(
+            sites,
+            key=lambda site: (
+                int(site.instruction_ea),
+                int(site.host_instruction_ea),
+                site.kind.value,
+            ),
+        )
+    )
+
+
+def instruction_references_stack_identity(
+    instruction: Instruction,
+    stack_offset: int,
+) -> bool:
+    """Return whether projection provenance mentions a stack identity."""
+    refs = instruction.attrs.get("address_stack_refs", ())
+    return int(stack_offset) in tuple(int(ref) for ref in refs)
 
 
 class InstructionProjection:

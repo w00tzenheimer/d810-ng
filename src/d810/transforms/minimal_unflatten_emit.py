@@ -72,6 +72,8 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     collect_candidate_prefix_alternate_corridor_proofs,
     recover_handler_transitions,
     enrich_native_bound_transition_routes,
+    _native_bound_route_receipt_index,
+    _unique_native_bound_receipt,
     resolve_materialized_handler_exit_states,
     resolve_materialized_handler_transition_targets,
     recover_state_write_transitions_via_partitioned_fixpoint,
@@ -83,7 +85,14 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     build_current_u32_decision_forest,
 )
 from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
-from d810.analyses.control_flow.semantic_route_evidence import CanonicalSemanticEvidence
+from d810.analyses.control_flow.semantic_route_evidence import (
+    CanonicalSemanticEvidence,
+    CanonicalSemanticEvidenceProductionContext,
+    build_canonical_semantic_evidence,
+    SemanticRouteFact,
+    SemanticRouteFactKind,
+    SemanticRouteProof,
+)
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
@@ -179,13 +188,13 @@ from d810.transforms.unflatten_authority.producer_api import (
     BootstrapEntryRouteForecast,
     ConcreteEntryRouteForecast,
     ConditionalEntryBridgeForecast,
-    adapt_bootstrap_entry_route_proof,
-    adapt_concrete_entry_route,
     adapt_conditional_entry_route,
-    adapt_native_bound_transition_route,
     adapt_state_transition_route,
     build_source_identity_catalog,
     build_use_def_fragment_witness,
+    resolve_concrete_entry_route,
+    resolve_bootstrap_entry_route,
+    TransitionRouteSelectionIndex,
 )
 from d810.transforms.unflatten_authority.proposal import (
     attach_typed_proposal,
@@ -3394,6 +3403,72 @@ def build_native_bound_state_entry_bridges(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class MissingSemanticRouteFactCoordinate:
+    """Structured coordinates for one final transition missing typed evidence."""
+
+    owner_serial: int
+    write_serial: int
+    via_serial: int | None
+    state: int | None
+    target: int | None
+    candidate_fact_ids: tuple[str, ...]
+
+
+def _missing_semantic_route_fact_coordinates(
+    transitions: tuple[StateWriteTransition, ...],
+    routes: tuple[NativeBoundTransitionRoute, ...],
+) -> tuple[MissingSemanticRouteFactCoordinate, ...]:
+    """Describe missing final facts without collapsing native candidates into text."""
+    fact_ids_by_source: dict[int, set[str]] = {}
+    for route in routes:
+        try:
+            source = int(route.source_block_serial)
+            fact_id = str(route.fact_id)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        fact_ids_by_source.setdefault(source, set()).add(fact_id)
+    coordinates: list[MissingSemanticRouteFactCoordinate] = []
+    for transition in transitions:
+        if transition.semantic_route_fact is not None:
+            continue
+        write_serial = int(transition.write_block)
+        via_serial = (
+            None if transition.via_block is None else int(transition.via_block)
+        )
+        sources = {write_serial}
+        if via_serial is not None:
+            sources.add(via_serial)
+        candidate_fact_ids = tuple(
+            sorted(
+                {
+                    fact_id
+                    for source in sources
+                    for fact_id in fact_ids_by_source.get(source, set())
+                }
+            )
+        )
+        coordinates.append(
+            MissingSemanticRouteFactCoordinate(
+                owner_serial=write_serial,
+                write_serial=write_serial,
+                via_serial=via_serial,
+                state=(
+                    None
+                    if transition.next_state is None
+                    else int(transition.next_state) & 0xFFFFFFFF
+                ),
+                target=(
+                    None
+                    if transition.target_handler is None
+                    else int(transition.target_handler)
+                ),
+                candidate_fact_ids=candidate_fact_ids,
+            )
+        )
+    return tuple(coordinates)
+
+
 def _seed_native_bound_backedge_transitions(
     flow_graph,
     transitions: tuple[StateWriteTransition, ...],
@@ -3401,7 +3476,7 @@ def _seed_native_bound_backedge_transitions(
     *,
     dispatcher_entry_serial: int,
     dispatcher_region_serials: frozenset[int],
-) -> tuple[StateWriteTransition, ...]:
+) -> tuple[StateWriteTransition, ...] | None:
     """Add exact current native routes that own a direct non-entry backedge.
 
     Native routes have already been rebound by instruction EA and reconciled
@@ -3426,14 +3501,20 @@ def _seed_native_bound_backedge_transitions(
         for serial in (transition.write_block, transition.via_block)
         if serial is not None
     }
-    grouped: dict[int, list[NativeBoundTransitionRoute]] = {}
-    for route in routes:
-        grouped.setdefault(int(route.source_block_serial), []).append(route)
+    candidates_by_source, _conflicting_fact_ids = _native_bound_route_receipt_index(
+        routes, dispatcher_region_serials
+    )
+    if _conflicting_fact_ids:
+        # A receipt ID is a fragment-wide correlation handle.  If its content
+        # changes anywhere in the current batch, do not seed unrelated valid
+        # sources from the same batch; the caller must reject the fragment.
+        return None
 
     seeded = list(transitions)
-    for source, source_routes in grouped.items():
+    for source, route_groups in candidates_by_source.items():
         if source in existing_sources or source in entry_sources or source in routers:
             continue
+        source_routes = [route for group in route_groups.values() for route in group]
         route_pairs = {
             (
                 int(route.state_constant) & 0xFFFFFFFF,
@@ -3444,6 +3525,9 @@ def _seed_native_bound_backedge_transitions(
         if len(route_pairs) != 1:
             continue
         state, target = next(iter(route_pairs))
+        route = _unique_native_bound_receipt(source_routes)
+        if route is None:
+            continue
         source_block = flow_graph.get_block(source)
         target_block = flow_graph.get_block(target)
         if (
@@ -3461,13 +3545,6 @@ def _seed_native_bound_backedge_transitions(
             or source not in {int(pred) for pred in router_block.preds}
         ):
             continue
-        route = min(
-            source_routes,
-            key=lambda candidate: (
-                str(candidate.fact_id),
-                int(candidate.source_instruction_ea),
-            ),
-        )
         seeded.append(
             StateWriteTransition(
                 write_block=source,
@@ -3483,6 +3560,27 @@ def _seed_native_bound_backedge_transitions(
                         f"fact_id={route.fact_id};"
                         f"native_ea=0x{int(route.source_instruction_ea):X}"
                     ),
+                ),
+                semantic_route_fact=SemanticRouteFact(
+                    kind=SemanticRouteFactKind.NATIVE_BOUND,
+                    owner_serial=source,
+                    source_serial=source,
+                    source_instruction_ea=int(route.source_instruction_ea),
+                    state_constant=state,
+                    target_serial=target,
+                    owner_anchor_ea=(
+                        None
+                        if source_block.native_start_ea is None
+                        else int(source_block.native_start_ea)
+                    ),
+                    target_anchor_ea=(
+                        None
+                        if target_block.native_start_ea is None
+                        else int(target_block.native_start_ea)
+                    ),
+                    path_serials=(source,),
+                    path_edges=(),
+                    fact_id=route.fact_id,
                 ),
             )
         )
@@ -9187,43 +9285,6 @@ def _must_reject_fragment_for_use_def_audit(
     )
 
 
-def _native_bound_transition_keys(
-    transitions: tuple[StateWriteTransition, ...],
-    routes: tuple[NativeBoundTransitionRoute, ...],
-) -> frozenset[tuple[int, int, int]]:
-    """Return transitions already owned by exact native-bound route evidence."""
-    matched: set[tuple[int, int, int]] = set()
-    for route in routes:
-        route_matches: list[StateWriteTransition] = []
-        for transition in transitions:
-            if transition.next_state is None or transition.target_handler is None:
-                continue
-            sources = {int(transition.write_block)}
-            if transition.via_block is not None:
-                sources.add(int(transition.via_block))
-            if (
-                int(route.source_block_serial) in sources
-                and int(route.state_constant) == int(transition.next_state)
-                and int(route.target_handler_serial)
-                == int(transition.target_handler)
-            ):
-                route_matches.append(transition)
-        if len(route_matches) != 1:
-            raise ValueError(
-                "native-bound route must resolve to exactly one state-write "
-                "transition"
-            )
-        transition = route_matches[0]
-        matched.add(
-            (
-                int(transition.write_block),
-                int(transition.next_state),
-                int(transition.target_handler),
-            )
-        )
-    return frozenset(matched)
-
-
 def emit_minimal_unflatten(
     flow_graph,
     dispatcher,
@@ -9557,14 +9618,7 @@ def emit_minimal_unflatten(
         include_entry_unreachable_back_edges=materialized_computed_goto_profile,
         state_route_resolver=state_route_resolver,
     )
-    transitions = enrich_native_bound_transition_routes(
-        transitions,
-        tuple(native_bound_transition_routes),
-        dispatcher_region_serials=frozenset(
-            int(serial) for serial in dispatcher_region_serials
-        ),
-    )
-    transitions = _seed_native_bound_backedge_transitions(
+    seeded_transitions = _seed_native_bound_backedge_transitions(
         flow_graph,
         transitions,
         tuple(native_bound_transition_routes),
@@ -9573,6 +9627,9 @@ def emit_minimal_unflatten(
             int(serial) for serial in dispatcher_region_serials
         ),
     )
+    if seeded_transitions is None:
+        return compile_with_dispatcher_coverage(())
+    transitions = seeded_transitions
     accepted_native_bound_backedge_routes = tuple(
         route
         for route in native_bound_transition_routes
@@ -9684,6 +9741,149 @@ def emit_minimal_unflatten(
         # a non-empty input means one transition contradicted the source graph;
         # no entry or back-edge modification may escape that conflict.
         return compile_with_dispatcher_coverage(())
+    # Route reconciliation can replace a provisional target with the final
+    # exact DAG route.  Correlate native receipts against that normalized set,
+    # so canonical evidence and the later transition selectors consume the
+    # same typed fact rather than snapshots taken on opposite sides of the
+    # reconciliation boundary.
+    transitions = enrich_native_bound_transition_routes(
+        transitions,
+        tuple(native_bound_transition_routes),
+        dispatcher_region_serials=frozenset(
+            int(serial) for serial in dispatcher_region_serials
+        ),
+    )
+    nonreturn_transitions = tuple(
+        transition for transition in transitions if not transition.is_return
+    )
+    route_facts = tuple(
+        transition.semantic_route_fact for transition in nonreturn_transitions
+    )
+    state_identity_for_evidence = (
+        StorageIdentity(StorageIdentityKind.STACK, int(_soff))
+        if _soff is not None
+        else StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
+        if state_var_reg is not None
+        else None
+    )
+    if (
+        canonical_route_evidence is None
+        and nonreturn_transitions
+        and native_key is not None
+        and state_identity_for_evidence is not None
+    ):
+        if any(fact is None for fact in route_facts):
+            missing_coordinates = _missing_semantic_route_fact_coordinates(
+                nonreturn_transitions,
+                tuple(native_bound_transition_routes),
+            )
+            if logger.info_on:
+                logger.info(
+                    "unflat canonical route evidence rejected: missing typed route fact "
+                    "coordinates=%s",
+                    missing_coordinates,
+                )
+            return compile_with_dispatcher_coverage(())
+        generation = 0 if source_generation is None else int(source_generation)
+        group_token = snapshot_id or f"{int(flow_graph.func_ea):X}"
+        production_context = CanonicalSemanticEvidenceProductionContext(
+            native_key=native_key,
+            generation=generation,
+            atomic_group_id=f"minimal-state-routes:{group_token}",
+            state_identity=state_identity_for_evidence,
+            blocks=tuple(flow_graph.blocks.values()),
+            identities_by_serial=tuple(
+                (int(serial), ref.identity)
+                for serial, ref in block_refs_by_serial.items()
+                if isinstance(ref, NativeBlockRef)
+            ),
+            entry_serial=int(flow_graph.entry_serial),
+        )
+        production_result = build_canonical_semantic_evidence(
+            tuple(fact for fact in route_facts if fact is not None),
+            production_context,
+        )
+        if production_result.abstention is not None:
+            abstention = production_result.abstention
+            coordinate = abstention.coordinate
+            if logger.info_on:
+                logger.info(
+                    "unflat canonical route evidence abstained: reason=%s stage=%s "
+                    "fact_kind=%s owner_serial=%s source_serial=%s "
+                    "source_instruction_ea=%s target_serial=%s state_constant=%s",
+                    abstention.reason.value,
+                    abstention.stage.value,
+                    None if coordinate is None else coordinate.fact_kind.value,
+                    None if coordinate is None else coordinate.owner_serial,
+                    None if coordinate is None else coordinate.source_serial,
+                    None if coordinate is None else f"0x{coordinate.source_instruction_ea:X}",
+                    None if coordinate is None else coordinate.target_serial,
+                    None if coordinate is None else coordinate.state_constant,
+                )
+            return compile_with_dispatcher_coverage(())
+        canonical_route_evidence = production_result.evidence
+    elif canonical_route_evidence is None and nonreturn_transitions and logger.info_on:
+        logger.info(
+            "unflat canonical route evidence abstained: reason=%s missing=%d total=%d missing_sources=%s missing_kinds=%s missing_native_routes=%s",
+            "missing_route_fact",
+            sum(fact is None for fact in route_facts),
+            len(route_facts),
+            tuple(
+                int(transition.write_block)
+                for transition in nonreturn_transitions
+                if transition.semantic_route_fact is None
+            ),
+            tuple(
+                (
+                    int(transition.write_block),
+                    "native_bound"
+                    if any(
+                        int(route.source_block_serial)
+                        in {
+                            int(transition.write_block),
+                            *(
+                                {int(transition.via_block)}
+                                if transition.via_block is not None
+                                else set()
+                            ),
+                        }
+                        and int(route.state_constant) == int(transition.next_state or -1)
+                        and int(route.target_handler_serial)
+                        == int(transition.target_handler or -1)
+                        for route in native_bound_transition_routes
+                    )
+                    else "decision_dag",
+                )
+                for transition in nonreturn_transitions
+                if transition.semantic_route_fact is None
+            ),
+            tuple(
+                (
+                    int(transition.write_block),
+                    tuple(
+                        (
+                            str(route.fact_id),
+                            int(route.source_block_serial),
+                            int(route.source_instruction_ea),
+                            int(route.state_constant),
+                            int(route.target_handler_serial),
+                        )
+                        for route in native_bound_transition_routes
+                        if int(route.source_block_serial)
+                        in {
+                            int(transition.write_block),
+                            *(
+                                {int(transition.via_block)}
+                                if transition.via_block is not None
+                                else set()
+                            ),
+                        }
+                    ),
+                )
+                for transition in nonreturn_transitions
+                if transition.semantic_route_fact is None
+            ),
+        )
     conditional_boundary_edges = _applied_conditional_boundary_edge_keys(
         flow_graph,
         imported_conditional_boundary_evidence,
@@ -10187,24 +10387,6 @@ def emit_minimal_unflatten(
                         initial_state,
                     )
                 return compile_with_dispatcher_coverage(())
-    accepted_native_bound_entry_routes = tuple(
-        route
-        for route in entry_native_bound_routes
-        if any(
-            isinstance(modification, RedirectGoto)
-            and int(modification.from_serial) == int(route.source_block_serial)
-            and int(modification.new_target) == int(route.target_handler_serial)
-            for modification in native_bound_entry_route_mods
-        )
-    )
-    accepted_native_bound_routes = tuple(
-        dict.fromkeys(
-            (
-                *accepted_native_bound_backedge_routes,
-                *accepted_native_bound_entry_routes,
-            )
-        )
-    )
     mods = build_state_write_redirects(
         flow_graph,
         dispatcher,
@@ -10865,34 +11047,57 @@ def emit_minimal_unflatten(
             )
             selected_route_proof_ids: list[str] = []
             route_owner_by_proof_id: dict[str, str] = {}
+            selected_transition_proofs: list[SemanticRouteProof] = []
 
             def select_route(owner: str, proof) -> None:
                 prior_owner = route_owner_by_proof_id.get(proof.proof_id)
                 if prior_owner is not None:
-                    raise ValueError(
-                        "canonical route proof has multiple proposal owners: "
-                        f"{prior_owner}, {owner}"
-                    )
+                    if prior_owner != owner:
+                        raise ValueError(
+                            "canonical route proof selected by multiple owners"
+                        )
+                    return
                 route_owner_by_proof_id[proof.proof_id] = owner
                 selected_route_proof_ids.append(proof.proof_id)
 
+            # Transition proofs are the sole owners of state-route authority.
+            # Entry consensus is a view over this exact index and must never
+            # create a second owner for the same physical route proof.
+            for transition in transitions:
+                if (
+                    transition.is_return
+                    or transition.next_state is None
+                    or transition.target_handler is None
+                ):
+                    continue
+                proof = adapt_state_transition_route(
+                    transition, source=flow_graph,
+                    source_catalog=route_catalog,
+                    block_refs_by_serial=block_refs_by_serial,
+                    canonical_evidence=canonical_route_evidence,
+                    state_identity=state_identity,
+                )
+                if proof.proof_id not in route_owner_by_proof_id:
+                    selected_transition_proofs.append(proof)
+                select_route("state_write_transition", proof)
+
+            selected_transition_index = TransitionRouteSelectionIndex.from_proofs(
+                tuple(selected_transition_proofs)
+            )
+
             for route in concrete_entry_route_forecasts:
-                select_route(
-                    "concrete_entry",
-                    adapt_concrete_entry_route(
-                        route, source=flow_graph, source_catalog=route_catalog,
-                        block_refs_by_serial=block_refs_by_serial,
-                        canonical_evidence=canonical_route_evidence,
-                    ),
+                resolve_concrete_entry_route(
+                    route,
+                    source=flow_graph,
+                    source_catalog=route_catalog,
+                    block_refs_by_serial=block_refs_by_serial,
+                    selected_transitions=selected_transition_index,
                 )
             for route in bootstrap_entry_routes:
-                select_route(
-                    "bootstrap_entry",
-                    adapt_bootstrap_entry_route_proof(
-                        route, source=flow_graph, source_catalog=route_catalog,
-                        block_refs_by_serial=block_refs_by_serial,
-                        canonical_evidence=canonical_route_evidence,
-                    ),
+                resolve_bootstrap_entry_route(
+                    route, source=flow_graph, source_catalog=route_catalog,
+                    block_refs_by_serial=block_refs_by_serial,
+                    selected_transitions=selected_transition_index,
                 )
             if conditional_entry_bridge is not None:
                 conditional_proofs = tuple(
@@ -10911,42 +11116,12 @@ def emit_minimal_unflatten(
                     raise ValueError("conditional entry bridge proof selection is ambiguous")
                 for proof in conditional_proofs:
                     select_route("conditional_entry", proof)
-            for route in accepted_native_bound_routes:
-                select_route(
-                    "native_bound_transition",
-                    adapt_native_bound_transition_route(
-                        route, source=flow_graph, source_catalog=route_catalog,
-                        block_refs_by_serial=block_refs_by_serial,
-                        canonical_evidence=canonical_route_evidence,
-                    ),
+        except (TypeError, ValueError) as exc:
+            if logger.info_on:
+                logger.info(
+                    "unflat typed route authority abstained: reason=%s",
+                    type(exc).__name__ + ":" + str(exc),
                 )
-            native_transition_keys = _native_bound_transition_keys(
-                tuple(transitions), tuple(accepted_native_bound_routes)
-            )
-            for transition in transitions:
-                if (
-                    transition.is_return
-                    or transition.next_state is None
-                    or transition.target_handler is None
-                ):
-                    continue
-                if (
-                    int(transition.write_block),
-                    int(transition.next_state),
-                    int(transition.target_handler),
-                ) in native_transition_keys:
-                    continue
-                select_route(
-                    "state_write_transition",
-                    adapt_state_transition_route(
-                        transition, source=flow_graph,
-                        source_catalog=route_catalog,
-                        block_refs_by_serial=block_refs_by_serial,
-                        canonical_evidence=canonical_route_evidence,
-                        state_identity=state_identity,
-                    ),
-                )
-        except (TypeError, ValueError):
             return compile_with_dispatcher_coverage(())
         try:
             manifest = canonical_redirect_manifest(plan)
@@ -10984,7 +11159,12 @@ def emit_minimal_unflatten(
                 corridor_coverage=coverage,
                 dispatcher_removal_forecast=dispatcher_removal_forecast,
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            if logger.info_on:
+                logger.info(
+                    "unflat typed proposal abstained: reason=%s",
+                    type(exc).__name__ + ":" + str(exc),
+                )
             return compile_with_dispatcher_coverage(())
     return plan
 

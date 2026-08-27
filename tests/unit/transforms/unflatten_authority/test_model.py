@@ -10,16 +10,74 @@ import pytest
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteDestination,
     SemanticRouteProof,
     SemanticRouteProofKind,
     SemanticRouteShape,
+    canonical_semantic_evidence_from_proofs,
 )
-from .helpers import import_authority_model
+from .helpers import import_authority_model, realize_projected_routes_for_test
 from .helpers import authority_id, block_ref, edge_role, state_identity
-from d810.transforms.cfg_transaction import NativeBlockRef, PlanBlockRef
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef, PatchStepKind
 from d810.transforms.unflatten_authority.ids import _subject_factory, _claim_factory, _evidence_factory, subject_id, authority_id as canonical_authority_id, canonical_bytes, canonical_decode
+
+model = import_authority_model()
+
+
+def test_13_1_16_all_slice_c_record_types_are_binder_owned() -> None:
+    """Every Slice-C record rejects public construction, including future bindings."""
+    names = (
+        "RawEffectGatePhaseFact", "ExactEffectBindingResult",
+        "LocalAliasScalarizationBindingResult", "ProjectedEffectSiteResult",
+        "ProjectedTerminalSiteResult", "ProjectedSemanticSitePhaseResult",
+        "ProjectedRouteSitePreservation", "ProjectedRouteRealizationRow",
+        "ProjectedRouteRealization", "SourceBoundRouteAuthority",
+    )
+    for name in names:
+        record = getattr(model, name)
+        with pytest.raises((TypeError, ValueError)):
+            record()
+
+
+
+def test_3b4a_serial_free_site_coordinates_are_binder_owned() -> None:
+    """RED: Slice 3B4 coordinates must exist but not be caller-constructible."""
+    owner = model.AnchoredBlockRef(block_ref("3b4-coordinate"), 0x401000)
+    with pytest.raises(TypeError, match="binder-owned"):
+        model.EffectSiteCoordinate(
+            owner, 0, 0x401000, model.EffectSiteKind.CALL, 1, 8,
+        )
+    with pytest.raises(TypeError, match="binder-owned"):
+        model.TerminalSiteCoordinate(owner, None, 0x401000, model.TerminalKind.STOP)
+
+
+def test_effect_site_coordinate_is_serial_free_and_exact() -> None:
+    owner = model.AnchoredBlockRef(block_ref("3b4a-exact-owner"), 0x401000)
+    assert tuple(field.name for field in model.EffectSiteCoordinate.__dataclass_fields__.values()) == (
+        "owner", "instruction_ordinal", "instruction_ea", "effect_kind", "opcode", "width",
+    )
+    assert "serial" not in model.EffectSiteCoordinate.__dataclass_fields__
+    assert tuple(model.ProjectedSiteLineageKind) == (
+        model.ProjectedSiteLineageKind.SAME_OWNER,
+        model.ProjectedSiteLineageKind.RELATION_CLONE,
+    )
+    with pytest.raises(TypeError, match="binder-owned"):
+        model.EffectSiteCoordinate(owner, 0, 0x401000, model.EffectSiteKind.CALL, 1, 8)
+
+
+def test_raw_effect_gate_fact_lineage_and_schema_registry_are_pinned() -> None:
+    from d810.transforms.unflatten_authority import ids
+    assert ids.RAW_EFFECT_GATE_PHASE_SCHEMA == "unflatten.raw-effect-gate-phase.v1"
+    assert ids.PATCH_STEP_FACT_SCHEMA == "unflatten.patch-step-fact.v1"
+    assert ids.PROJECTED_AUTHORITY_SCHEMA == "unflatten.projected-authority.v2"
+
+
+def test_3b4a_raw_gate_fact_is_serial_free_and_closed() -> None:
+    """RED: the raw gate phase fact is minted only by the inventory binder."""
+    assert hasattr(model, "RawEffectGatePhaseFact")
+    assert not any("serial" in field.name for field in model.RawEffectGatePhaseFact.__dataclass_fields__.values())
 
 
 def test_detached_dead_handler_claim_kind_is_closed_canonical_vocabulary() -> None:
@@ -204,23 +262,29 @@ def _canonical_evidence(model, *, generation=3, native_key=None):
     )
     proof = SemanticRouteProof(
         authority_id("proof"), authority_id("group"),
-        SemanticRouteProofKind.BOOTSTRAP, SemanticRouteShape.DIRECT,
+        SemanticRouteProofKind.STATE_CHOICE, SemanticRouteShape.DIRECT,
         identity, 0x1000, (destination,), NativeEaInterval(0x1000, 0x1001),
     )
-    return model.CanonicalSemanticEvidence(
-        native_key, generation, authority_id("group"), (proof,),
+    return canonical_semantic_evidence_from_proofs(
+        native_key=native_key,
+        generation=generation,
+        proofs=(proof,),
     ), identity
 
 
 def _valid_proposal(model):
     b0, b1, b2 = block_ref("b0"), block_ref("b1"), block_ref("b2")
     route_evidence, _ = _canonical_evidence(model)
+    # Canonical evidence reissues proof/group IDs from its full semantic
+    # payload.  All synthetic claim coordinates must therefore follow the
+    # proposal's canonical proof rather than the pre-canonical fixture seeds.
+    proof = route_evidence.route_proofs[0]
     route_locator = model.RouteSubjectLocator(
-        authority_id("proof"), authority_id("group"), b0, 0x1000,
+        proof.proof_id, proof.atomic_group_id, b0, 0x1000,
         (b2,), (0x1100,),
     )
     replacement_locator = model.RouteSubjectLocator(
-        authority_id("proof"), authority_id("group"), b0, 0x1000,
+        proof.proof_id, proof.atomic_group_id, b0, 0x1000,
         (b2,), (0x1100,),
     )
     retired_route = _subject(model, model.SemanticSubjectKind.ROUTE,
@@ -238,7 +302,7 @@ def _valid_proposal(model):
     claim = _claim_factory(model.EquivalentSemanticRouteClaim,
         model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
         retired_route, replacement_route, source, (destination,),
-        (authority_id("proof"),), authority_id("group"), 3,
+        (proof.proof_id,), proof.atomic_group_id, 3,
     )
     key = route_evidence.native_key
     catalog = model.SourceIdentityCatalog(
@@ -314,6 +378,8 @@ def test_subject_kind_role_locator_matrix_is_closed() -> None:
     b0 = block_ref("b0")
     b1 = block_ref("b1")
     cases = [
+        (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK,
+         model.BlockSubjectLocator(b0, 0x1000)),
         (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_ENTRY,
          model.BlockSubjectLocator(b0, 0x1000)),
         (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.DISPATCHER_ENTRY,
@@ -327,7 +393,7 @@ def test_subject_kind_role_locator_matrix_is_closed() -> None:
         (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.EFFECT_SITE,
          model.BlockSubjectLocator(b0, 0x1000)),
         (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.PLANNED_HELPER,
-         model.BlockSubjectLocator(b0, 0x1000)),
+         model.BlockSubjectLocator(PlanBlockRef(authority_id("plan"), "helper"), 0x1000)),
         (model.SemanticSubjectKind.EDGE, model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
          model.EdgeSubjectLocator(b0, 0x1000, b1, 0x1100, edge_role())),
         (model.SemanticSubjectKind.ROUTE, model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
@@ -371,6 +437,27 @@ def test_subject_kind_role_locator_matrix_is_closed() -> None:
         )
 
 
+def test_physical_catalog_and_planned_helper_reference_families_are_disjoint() -> None:
+    """Source authority cannot be smuggled through candidate helper refs."""
+
+    native = block_ref("b0")
+    planned = PlanBlockRef(authority_id("ref-family-plan"), "helper")
+    for role, ref, message in (
+        (model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, planned, "source catalog blocks"),
+        (model.SemanticSubjectRole.PLANNED_HELPER, native, "planned helpers"),
+    ):
+        locator = model.BlockSubjectLocator(ref, 0x1000)
+        with pytest.raises(ValueError, match=message):
+            model.SemanticSubjectRef(
+                kind=model.SemanticSubjectKind.BLOCK,
+                role=role,
+                subject_id=subject_id(model.SemanticSubjectKind.BLOCK, role, locator),
+                block_ref=ref,
+                anchor_ea=0x1000,
+                locator=locator,
+            )
+
+
 def test_model_dataclasses_are_frozen_and_slotted() -> None:
     model = import_authority_model()
     for name in model.__all__:
@@ -380,14 +467,55 @@ def test_model_dataclasses_are_frozen_and_slotted() -> None:
             assert getattr(value, "__dataclass_params__").frozen
 
 
+def test_source_bound_route_authority_is_source_only_and_minted_once() -> None:
+    model = import_authority_model()
+    assert hasattr(model, "SourceBoundRouteAuthority")
+    authority_type = model.SourceBoundRouteAuthority
+    with pytest.raises(TypeError):
+        authority_type()
+    for name in ("_mint", "_create", "_from_factory", "_sealed_route_instance"):
+        assert not hasattr(authority_type, name)
+    assert not hasattr(model, "source_bound_route_authority")
+
+
+def test_source_bound_route_authority_requires_complete_atomic_group_and_claim_coverage() -> None:
+    model = import_authority_model()
+    assert hasattr(model, "SourceBoundRouteAuthority")
+    assert not hasattr(model.SourceBoundRouteAuthority, "mint")
+    assert not hasattr(model, "source_bound_route_authority")
+
+
+def test_phase_realization_types_are_not_cross_phase_swappable_or_directly_constructible() -> None:
+    model = import_authority_model()
+    assert hasattr(model, "ProjectedRouteRealization")
+    with pytest.raises(TypeError):
+        model.ProjectedRouteRealization()
+    for name in (
+        "ObservedRouteRealization",
+        "ObservedRouteRealizationRow",
+        "PatchRealizationObservation",
+        "PatchRealizationOperation",
+    ):
+        assert not hasattr(model, name)
+
+
+def test_route_authority_ids_change_for_every_semantic_coordinate() -> None:
+    model = import_authority_model()
+    from d810.transforms.unflatten_authority.ids import route_realization_id
+    assert callable(route_realization_id)
+    first = route_realization_id(("route", "claim", 0, authority_id("target")))
+    second = route_realization_id(("route", "claim", 1, authority_id("target")))
+    assert first != second
+
+
 def test_derived_inputs_exposes_only_transaction_facts() -> None:
     model = import_authority_model()
     fields = set(inspect.signature(model.DerivedUnflattenPreparationInputs).parameters)
     assert fields == {
         "proposal", "claims", "preparation_receipt", "source_inventory",
-            "candidate_inventory", "source_route_assessment",
+            "candidate_inventory", "source_route_authority",
             "projected_topology_reference",
-            "candidate_route_assessment", "generic_gate_facts",
+            "projected_route_realization", "generic_gate_facts",
             "conditional_relations", "patch_step_facts", "preparation_metrics",
             "phase_build_metrics", "corridor_coverage_phase_result",
             "detached_dead_handler_component_source_results",
@@ -993,9 +1121,19 @@ def test_claim_fields_use_the_closed_15_1_rows() -> None:
             route, route, source, (destination,), (authority_id("route"),),
             authority_id("group"), 0,
         ),
-        _claim_factory(model.ExactInfeasibleEffectClaim,
-            model.UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT,
-                discarded, source, predicate, destination, discarded, 1, state_identity(), 4,
+            _claim_factory(model.ExactInfeasibleEffectClaim,
+                model.UnflattenClaimKind.EXACT_INFEASIBLE_EFFECT,
+                    discarded,
+                    _subject(model, model.SemanticSubjectKind.BLOCK,
+                             model.SemanticSubjectRole.EXACT_EFFECT_SOURCE,
+                             model.BlockSubjectLocator(b0, 0x1000)),
+                    _subject(model, model.SemanticSubjectKind.BLOCK,
+                             model.SemanticSubjectRole.EXACT_EFFECT_PREDICATE,
+                             model.BlockSubjectLocator(b0, 0x1000)),
+                    _subject(model, model.SemanticSubjectKind.BLOCK,
+                             model.SemanticSubjectRole.EXACT_EFFECT_SELECTED_TARGET,
+                             model.BlockSubjectLocator(b1, 0x1100)),
+                    discarded, 1, state_identity(), 4,
                 0x1004, 0x1008, 0x1008, model.SemanticEdgeRole.DIRECT,
             (authority_id("exact-proof"),),
             model.ProviderConsensusWitness(model.ProviderConsensusMode.NOT_APPLICABLE, ()), 0,
@@ -1039,7 +1177,10 @@ def test_exact_claim_rejects_provider_consensus_and_ambiguous_route_proofs() -> 
     from .test_bind import _exact_fixture
 
     model = import_authority_model()
-    claim = _exact_fixture()[1].claims[0]
+    claim = next(
+        claim for claim in _exact_fixture()[1].claims
+        if type(claim) is model.ExactInfeasibleEffectClaim
+    )
     with pytest.raises(ValueError, match="provider consensus"):
         _reissued_claim(
             claim,
@@ -1289,6 +1430,137 @@ def test_catalog_binds_exact_anchors_and_native_keys() -> None:
         )
 
 
+def test_retirement_member_accepts_physical_native_anchor_outside_origins() -> None:
+    model = import_authority_model()
+    key = _native_key(model, fingerprint="retirement-physical-anchor")
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1020),),
+        native_key=key,
+        exact_instruction_eas=(0x1004,),
+    )
+    ref = model.NativeBlockRef(identity)
+    member = model.RetirementPlanMember(ref, 0x1000, (0x1004,))
+    assert member.block_ref is ref
+    assert member.anchor_ea == 0x1000
+    assert member.native_instruction_eas == (0x1004,)
+    with pytest.raises(ValueError):
+        model.RetirementPlanMember(ref, 0x2000, (0x1004,))
+    with pytest.raises(ValueError):
+        model.RetirementPlanMember(block_ref("logical-physical"), 0x1000, (0x1004,))
+
+
+def test_unique_phase_binding_accepts_exact_physical_native_witness_anchor() -> None:
+    """A binding retains the witness-selected physical entry, not a nearby EA."""
+    native_key = _native_key(model, fingerprint="phase-physical-anchor")
+    ref = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1020),),
+        native_key=native_key,
+        exact_instruction_eas=(0x1004,),
+    ))
+    locator = model.BlockSubjectLocator(ref, 0x1000)
+    subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SOURCE_ENTRY,
+        block_ref=ref,
+        anchor_ea=0x1000,
+        locator=locator,
+    )
+
+    binding = model.PhaseSubjectBinding(
+        subject=subject,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        block_ref=ref,
+        graph_fingerprint=authority_id("phase-physical-anchor"),
+        generation=3,
+        status=model.SubjectBindingStatus.UNIQUE,
+        serial=0,
+        anchor_ea=0x1000,
+        native_instruction_eas=(0x1004,),
+        role=model.SemanticSubjectRole.SOURCE_ENTRY,
+    )
+
+    assert binding.anchor_ea == 0x1000
+    assert binding.native_instruction_eas == (0x1004,)
+
+
+@pytest.mark.parametrize("origins", [(), (0x1014,), (0x1004, 0x1014)])
+def test_native_identity_rejects_forged_source_and_retirement_origins(origins) -> None:
+    model = import_authority_model()
+    key = _native_key(model, fingerprint="exact-native-origins")
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1020),),
+        native_key=key,
+        exact_instruction_eas=(0x1004,),
+    )
+    ref = NativeBlockRef(identity)
+    with pytest.raises(ValueError, match="instruction|origin"):
+        model.SourceBlockIdentityWitness(ref, 0x1000, origins)
+    with pytest.raises(ValueError, match="instruction|origin"):
+        model.RetirementPlanMember(ref, 0x1000, origins)
+
+
+def test_empty_native_identity_allows_empty_physical_anchor_inventory() -> None:
+    model = import_authority_model()
+    key = _native_key(model, fingerprint="empty-native-origins")
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1020),),
+        native_key=key,
+        exact_instruction_eas=(),
+    )
+    ref = NativeBlockRef(identity)
+    witness = model.SourceBlockIdentityWitness(ref, 0x1000, ())
+    member = model.RetirementPlanMember(ref, 0x1000, ())
+    assert witness.native_instruction_eas == ()
+    assert member.native_instruction_eas == ()
+
+
+def test_source_catalog_shared_anchor_requires_distinct_native_refs() -> None:
+    model = import_authority_model()
+    key = _native_key(model, fingerprint="shared-anchor-identity")
+
+    def native_ref(origin: int) -> NativeBlockRef:
+        return NativeBlockRef(StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x1000, 0x1020),),
+            native_key=key,
+            exact_instruction_eas=(origin,),
+        ))
+
+    native_a = native_ref(0x1004)
+    native_b = native_ref(0x1014)
+    catalog = model.SourceIdentityCatalog(
+        key,
+        0,
+        (
+            model.SourceBlockIdentityWitness(native_a, 0x1000, (0x1004,)),
+            model.SourceBlockIdentityWitness(native_b, 0x1000, (0x1014,)),
+        ),
+    )
+    assert tuple(item.anchor_ea for item in catalog.blocks) == (0x1000, 0x1000)
+
+    logical = LogicalBlockRef("shared-anchor", "logical", 1)
+    with pytest.raises(ValueError, match="shared|anchor"):
+        model.SourceIdentityCatalog(
+            key,
+            0,
+            (
+                model.SourceBlockIdentityWitness(native_a, 0x1000, (0x1004,)),
+                model.SourceBlockIdentityWitness(logical, 0x1000, (0x1000,)),
+            ),
+        )
+
+    logical_b = LogicalBlockRef("shared-anchor", "logical-b", 1)
+    with pytest.raises(ValueError, match="shared|anchor|unique"):
+        model.SourceIdentityCatalog(
+            key,
+            0,
+            (
+                model.SourceBlockIdentityWitness(logical, 0x1000, (0x1000,)),
+                model.SourceBlockIdentityWitness(logical_b, 0x1000, (0x1000,)),
+            ),
+        )
+
+
 def test_alias_host_text_sha1_is_lowercase_16_hex() -> None:
     model = import_authority_model()
     b0 = block_ref("b0")
@@ -1411,3 +1683,550 @@ def test_plan_shape_uses_complete_dispatcher_inventory_and_retired_members() -> 
         model.ProposedUnflattenContract(
             **{**valid, "claims": (foreign_retirement,), "plan_inputs": partial_inputs}
         )
+
+
+def test_cloned_conditional_relation_requires_ordered_creation_specs() -> None:
+    model = import_authority_model()
+    feeder = block_ref("feeder")
+    proof_source = block_ref("proof")
+    taken = block_ref("taken")
+    fallthrough = block_ref("fallthrough")
+    plan_id = authority_id("clone-plan")
+    clone = PlanBlockRef(plan_id, "conditional_redirect:0")
+    helper = PlanBlockRef(plan_id, "conditional_redirect_fallthrough:1")
+    feeder_ref = model.AnchoredBlockRef(feeder, 0x1000)
+    proof_ref = model.AnchoredBlockRef(proof_source, 0x2000)
+    clone_ref = model.AnchoredBlockRef(clone, 0x5000)
+    helper_ref = model.AnchoredBlockRef(helper, 0x5001)
+    arms = (
+        model.RealizedConditionalArm(
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            model.AnchoredBlockRef(fallthrough, 0x4000),
+        ),
+        model.RealizedConditionalArm(
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            model.AnchoredBlockRef(taken, 0x3000),
+        ),
+    )
+    digests = ((clone, authority_id("clone-spec")), (helper, authority_id("helper-spec")))
+    relation_id = model.route_realization_id((
+        "cloned_conditional", feeder_ref, proof_ref, proof_ref,
+        clone_ref, helper_ref, arms, digests,
+    ))
+    relation = object.__new__(model.ClonedConditionalRouteRealization)
+    for name, value in {
+        "feeder": feeder_ref, "proof_source": proof_ref, "old_target": proof_ref,
+        "replacement_clone": clone_ref, "fallthrough_helper": helper_ref,
+        "arms": arms, "creation_spec_digests": digests, "relation_id": relation_id,
+    }.items():
+        object.__setattr__(relation, name, value)
+    relation.__post_init__()
+    assert relation.creation_spec_digests == digests
+    swapped = object.__new__(model.ClonedConditionalRouteRealization)
+    for name, value in {
+        "feeder": feeder_ref, "proof_source": proof_ref, "old_target": proof_ref,
+        "replacement_clone": clone_ref, "fallthrough_helper": helper_ref,
+        "arms": arms, "creation_spec_digests": digests[::-1],
+        "relation_id": model.route_realization_id((
+            "cloned_conditional", feeder_ref, proof_ref, proof_ref,
+            clone_ref, helper_ref, arms, digests[::-1],
+        )),
+    }.items():
+        object.__setattr__(swapped, name, value)
+    with pytest.raises(ValueError, match="plan order"):
+        swapped.__post_init__()
+def test_3b3_origin_and_prefix_are_frozen_sealed_and_id_bound() -> None:
+    from copy import copy, deepcopy
+    import pickle
+    from d810.transforms.unflatten_authority import bind
+    from tests.unit.transforms.unflatten_authority.test_bind import _three_b3_one_block_corridor_case
+    authority, plan, source, projected, facts, attempt, _ = _three_b3_one_block_corridor_case()
+    accepted = realize_projected_routes_for_test(
+        source_authority=authority, plan=plan, source_inventory=source,
+        projected_inventory=projected, patch_step_facts=facts, attempt_id=attempt,
+    )
+    relation = accepted.realization.rows[0].relation
+    assert type(relation) is model.ClonedRouteCorridorRealization
+    assert relation.source_corridor and relation.cloned_corridor
+    assert relation.proof_source == relation.source_corridor[0]
+    assert len(relation.semantic_prefixes) == len(relation.source_corridor)
+    assert tuple(prefix.creation_spec_row for prefix in relation.semantic_prefixes) == relation.creation_spec_digests
+    for prefix in relation.semantic_prefixes:
+        prefix.__post_init__()
+        assert prefix.source_start_ordinal == 0
+        assert prefix.source_trailing_goto_ordinal == prefix.source_end_ordinal_exclusive
+        assert prefix.projected_synthetic_goto_ordinal == prefix.source_end_ordinal_exclusive
+        assert prefix.creation_spec_row[0] == prefix.clone_owner.ref
+        assert prefix.prefix_id == model.cloned_semantic_prefix_id((
+            "cloned_semantic_prefix", prefix.ordinal, prefix.source_owner,
+            prefix.clone_owner, prefix.source_start_ordinal,
+            prefix.source_end_ordinal_exclusive, prefix.instruction_origins,
+            prefix.source_trailing_goto_ordinal,
+            prefix.projected_synthetic_goto_ordinal, prefix.projected_successor,
+            prefix.creation_spec_row,
+        ))
+        for origin in prefix.instruction_origins:
+            origin.__post_init__()
+            assert origin.source_owner == prefix.source_owner
+            assert origin.clone_owner == prefix.clone_owner
+            assert origin.source_ordinal == origin.projected_ordinal
+            assert origin.origin_id == model.cloned_semantic_instruction_origin_id((
+                "cloned_semantic_instruction_origin", origin.source_owner,
+                origin.clone_owner, origin.source_ordinal, origin.projected_ordinal,
+                origin.instruction_ea, origin.observation_digest,
+            ))
+    for value in tuple(origin for prefix in relation.semantic_prefixes for origin in prefix.instruction_origins) + tuple(relation.semantic_prefixes):
+        with pytest.raises(TypeError):
+            type(value)()
+        for attack in (lambda: copy(value), lambda: deepcopy(value), lambda: pickle.dumps(value)):
+            with pytest.raises((TypeError, ValueError)):
+                attack()
+        with pytest.raises(TypeError):
+            replace(value)
+        forged = object.__new__(type(value))
+        for field_name in value.__dataclass_fields__:
+            object.__setattr__(forged, field_name, getattr(value, field_name))
+        identity_name = "origin_id" if type(value) is model.ClonedSemanticInstructionOrigin else "prefix_id"
+        object.__setattr__(forged, identity_name, authority_id("forged-sealed-id"))
+        with pytest.raises(ValueError):
+            forged.__post_init__()
+        subclass = type("ForgedSealedRoute", (type(value),), {})
+        forged_subclass = object.__new__(subclass)
+        for field_name in value.__dataclass_fields__:
+            object.__setattr__(forged_subclass, field_name, getattr(value, field_name))
+        with pytest.raises(TypeError):
+            forged_subclass.__post_init__()
+
+
+@pytest.mark.parametrize(
+    ("fixture", "relation_type"),
+    (
+        ("_compiler_direct_branch_case", model.TwoArmDirectBranchRouteRealization),
+        ("_compiler_helper_branch_case", model.BranchFallthroughHelperRouteRealization),
+        ("_three_b3_one_block_corridor_case", model.ClonedRouteCorridorRealization),
+        ("_three_b3_two_block_corridor_case", model.ClonedRouteCorridorRealization),
+    ),
+)
+def test_3b3_relation_row_and_aggregate_dispatch_is_exhaustive(fixture, relation_type) -> None:
+    from d810.transforms.unflatten_authority import bind
+    from tests.unit.transforms.unflatten_authority import test_bind as bind_tests
+    authority, plan, source, projected, facts, attempt, *_ = getattr(bind_tests, fixture)()
+    accepted = realize_projected_routes_for_test(
+        source_authority=authority, plan=plan, source_inventory=source,
+        projected_inventory=projected, patch_step_facts=facts, attempt_id=attempt,
+    )
+    aggregate = accepted.realization
+    assert aggregate.rows and all(type(row.relation) is relation_type for row in aggregate.rows)
+    row = aggregate.rows[0]
+    assert row.route_subject_id == aggregate.rows[0].route_subject_id
+    if relation_type is model.TwoArmDirectBranchRouteRealization:
+        assert row.source_ref is row.relation.feeder.ref
+        assert row.old_target_ref is row.relation.source_rewritten_arm.ref
+        assert row.new_target_ref is row.relation.projected_replacement_arm.ref
+        assert row.realization_kind is model.RouteRealizationKind.CONDITIONAL_REDIRECT
+        assert row.conditional_roles == (
+            model.ConditionalRoleCoordinate(
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                row.relation.untouched_arm.anchor_ea,
+            ),
+            model.ConditionalRoleCoordinate(
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                row.relation.projected_replacement_arm.anchor_ea,
+            ),
+        )
+        assert row.helper_refs == ()
+        assert row.creation_spec_digests == ()
+    elif relation_type is model.BranchFallthroughHelperRouteRealization:
+        assert row.source_ref is row.relation.feeder.ref
+        assert row.old_target_ref is row.relation.source_fallthrough.ref
+        assert row.new_target_ref is row.relation.semantic_target.ref
+        assert row.realization_kind is model.RouteRealizationKind.CONDITIONAL_REDIRECT
+        assert row.conditional_roles == (
+            model.ConditionalRoleCoordinate(
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                row.relation.helper.anchor_ea,
+            ),
+            model.ConditionalRoleCoordinate(
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                row.relation.untouched_conditional_arm.anchor_ea,
+            ),
+        )
+        assert row.helper_refs == (row.relation.helper.ref,)
+        assert row.creation_spec_digests == row.relation.creation_spec_digests
+    else:
+        relation = row.relation
+        assert type(relation) is model.ClonedRouteCorridorRealization
+        assert row.source_ref is relation.predecessor.ref
+        assert row.old_target_ref is relation.proof_source.ref
+        assert row.new_target_ref is relation.semantic_target.ref
+        assert row.realization_kind is model.RouteRealizationKind.HELPER_CORRIDOR
+        assert row.conditional_roles == ()
+        assert row.helper_refs == tuple(ref.ref for ref in relation.cloned_corridor)
+        assert row.creation_spec_digests == relation.creation_spec_digests
+        assert tuple(prefix.source_owner for prefix in relation.semantic_prefixes) == relation.source_corridor
+        assert tuple(prefix.clone_owner for prefix in relation.semantic_prefixes) == relation.cloned_corridor
+        assert tuple(prefix.projected_successor for prefix in relation.semantic_prefixes) == (
+            (*relation.cloned_corridor[1:], relation.semantic_target)
+        )
+        assert tuple(
+            prefix.creation_spec_row for prefix in relation.semantic_prefixes
+        ) == relation.creation_spec_digests
+    # Spell out the same complete closed relation traversal as the aggregate
+    # validator: shallow dataclass scanning would miss corridor prefix owners,
+    # projected successors, and nested origin owners.
+    relation = row.relation
+    if relation_type is model.TwoArmDirectBranchRouteRealization:
+        expected_refs = (
+            relation.feeder, relation.source_rewritten_arm,
+            relation.projected_replacement_arm, relation.untouched_arm,
+        )
+    elif relation_type is model.BranchFallthroughHelperRouteRealization:
+        expected_refs = (
+            relation.feeder, relation.source_fallthrough,
+            relation.untouched_conditional_arm, relation.helper,
+            relation.semantic_target,
+        )
+    else:
+        expected_refs = (
+            relation.predecessor, relation.proof_source,
+            relation.descriptor_old_target, relation.terminal_continuation,
+            relation.semantic_target, *relation.source_corridor,
+            *relation.cloned_corridor,
+            *(
+                nested
+                for prefix in relation.semantic_prefixes
+                for nested in (
+                    prefix.source_owner, prefix.clone_owner,
+                    prefix.projected_successor,
+                    *(
+                        owner
+                        for origin in prefix.instruction_origins
+                        for owner in (origin.source_owner, origin.clone_owner)
+                    ),
+                )
+            ),
+        )
+    assert expected_refs
+    assert all(type(item) is model.AnchoredBlockRef for item in expected_refs)
+    assert tuple(row.helper_refs) == tuple(item.ref for item in (
+        relation.cloned_corridor if relation_type is model.ClonedRouteCorridorRealization else ()
+    )) if relation_type is model.ClonedRouteCorridorRealization else True
+    assert row.new_target_ref is not None
+    if relation_type is model.ClonedRouteCorridorRealization:
+        # Forge a complete nested relation with recomputed origin/prefix and
+        # relation IDs.  The shape is internally coherent, but it was not
+        # minted by the binder, so the aggregate validator must reject it.
+        from d810.transforms.unflatten_authority.ids import (
+            cloned_semantic_instruction_origin_id,
+            cloned_semantic_prefix_id,
+            route_realization_id,
+        )
+        original_prefix = relation.semantic_prefixes[0]
+        original_origin = original_prefix.instruction_origins[0]
+        forged_origin = object.__new__(type(original_origin))
+        for name in original_origin.__dataclass_fields__:
+            object.__setattr__(forged_origin, name, getattr(original_origin, name))
+        changed_digest = authority_id("forged-unregistered-origin")
+        object.__setattr__(forged_origin, "observation_digest", changed_digest)
+        object.__setattr__(forged_origin, "origin_id", cloned_semantic_instruction_origin_id((
+            "cloned_semantic_instruction_origin", forged_origin.source_owner,
+            forged_origin.clone_owner, forged_origin.source_ordinal,
+            forged_origin.projected_ordinal, forged_origin.instruction_ea,
+            changed_digest,
+        )))
+        forged_prefix = object.__new__(type(original_prefix))
+        for name in original_prefix.__dataclass_fields__:
+            object.__setattr__(forged_prefix, name, getattr(original_prefix, name))
+        object.__setattr__(forged_prefix, "instruction_origins", (forged_origin,))
+        object.__setattr__(forged_prefix, "prefix_id", cloned_semantic_prefix_id((
+            "cloned_semantic_prefix", forged_prefix.ordinal,
+            forged_prefix.source_owner, forged_prefix.clone_owner,
+            forged_prefix.source_start_ordinal,
+            forged_prefix.source_end_ordinal_exclusive,
+            forged_prefix.instruction_origins,
+            forged_prefix.source_trailing_goto_ordinal,
+            forged_prefix.projected_synthetic_goto_ordinal,
+            forged_prefix.projected_successor, forged_prefix.creation_spec_row,
+        )))
+        foreign_prefix = object.__new__(type(original_prefix))
+        for name in original_prefix.__dataclass_fields__:
+            object.__setattr__(foreign_prefix, name, getattr(original_prefix, name))
+        object.__setattr__(foreign_prefix, "projected_successor", relation.predecessor)
+        object.__setattr__(foreign_prefix, "prefix_id", cloned_semantic_prefix_id((
+            "cloned_semantic_prefix", foreign_prefix.ordinal,
+            foreign_prefix.source_owner, foreign_prefix.clone_owner,
+            foreign_prefix.source_start_ordinal,
+            foreign_prefix.source_end_ordinal_exclusive,
+            foreign_prefix.instruction_origins,
+            foreign_prefix.source_trailing_goto_ordinal,
+            foreign_prefix.projected_synthetic_goto_ordinal,
+            foreign_prefix.projected_successor, foreign_prefix.creation_spec_row,
+        )))
+        foreign_relation = object.__new__(type(relation))
+        for name in relation.__dataclass_fields__:
+            object.__setattr__(foreign_relation, name, getattr(relation, name))
+        object.__setattr__(foreign_relation, "semantic_prefixes", (foreign_prefix, *relation.semantic_prefixes[1:]))
+        object.__setattr__(foreign_relation, "relation_id", route_realization_id((
+            "cloned_route_corridor", foreign_relation.predecessor,
+            foreign_relation.proof_source, foreign_relation.descriptor_old_target,
+            foreign_relation.terminal_continuation, foreign_relation.source_corridor,
+            foreign_relation.cloned_corridor, foreign_relation.semantic_target,
+            foreign_relation.semantic_prefixes, foreign_relation.creation_spec_digests,
+        )))
+        with pytest.raises(ValueError, match="projected successor"):
+            foreign_relation.__post_init__()
+        forged_relation = object.__new__(type(relation))
+        for name in relation.__dataclass_fields__:
+            object.__setattr__(forged_relation, name, getattr(relation, name))
+        forged_prefixes = (forged_prefix, *relation.semantic_prefixes[1:])
+        object.__setattr__(forged_relation, "semantic_prefixes", forged_prefixes)
+        object.__setattr__(forged_relation, "relation_id", route_realization_id((
+            "cloned_route_corridor", forged_relation.predecessor,
+            forged_relation.proof_source, forged_relation.descriptor_old_target,
+            forged_relation.terminal_continuation, forged_relation.source_corridor,
+            forged_relation.cloned_corridor, forged_relation.semantic_target,
+            forged_prefixes, forged_relation.creation_spec_digests,
+        )))
+        forged_row = object.__new__(type(row))
+        for name in row.__dataclass_fields__:
+            object.__setattr__(forged_row, name, getattr(row, name))
+        object.__setattr__(forged_row, "relation", forged_relation)
+        from d810.transforms.unflatten_authority.ids import projected_route_realization_row_id
+        object.__setattr__(forged_row, "row_id", projected_route_realization_row_id((
+            forged_row.claim_id, forged_row.proof_id, forged_row.route_subject_id,
+            forged_relation, forged_row.plan_step_index, forged_row.plan_step_type,
+            forged_row.plan_step_digest, forged_row.source_fingerprint,
+            forged_row.projected_fingerprint, forged_row.source_generation,
+            forged_row.projected_generation,
+        )))
+        forged_aggregate = object.__new__(type(aggregate))
+        for name in aggregate.__dataclass_fields__:
+            object.__setattr__(forged_aggregate, name, getattr(aggregate, name))
+        object.__setattr__(forged_aggregate, "rows", (forged_row,))
+        from d810.transforms.unflatten_authority.ids import projected_route_realization_id
+        object.__setattr__(forged_aggregate, "realization_id", projected_route_realization_id((
+            forged_aggregate.source_authority.source_authority_id,
+            forged_aggregate.attempt_id, forged_aggregate.plan_id,
+            forged_aggregate.rows, forged_aggregate.projected_inventory_digest,
+            forged_aggregate.projected_fingerprint, forged_aggregate.projected_generation,
+        )))
+        with pytest.raises(ValueError):
+            bind.validate_projected_route_realization(forged_aggregate)
+    unknown = object.__new__(type("UnknownRouteRelation", (), {}))
+    object.__setattr__(row, "relation", unknown)
+    for name in (
+        "source_ref", "old_target_ref", "new_target_ref", "realization_kind",
+        "conditional_roles", "helper_refs", "creation_spec_digests",
+    ):
+        with pytest.raises(TypeError, match="unknown route relation"):
+            getattr(row, name)
+    subclass = type("SubclassRouteRelation", (relation_type,), {})
+    forged = object.__new__(subclass)
+    for name in relation.__dataclass_fields__:
+        object.__setattr__(forged, name, getattr(relation, name))
+    object.__setattr__(row, "relation", forged)
+    for name in (
+        "source_ref", "old_target_ref", "new_target_ref", "realization_kind",
+        "conditional_roles", "helper_refs", "creation_spec_digests",
+    ):
+        with pytest.raises(TypeError, match="unknown route relation"):
+            getattr(row, name)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "origin_source_owner", "origin_clone_owner", "origin_source_ordinal",
+        "origin_projected_ordinal", "origin_ea", "prefix_length", "prefix_order",
+        "source_goto_ordinal", "projected_goto_ordinal", "creation_row_order",
+    ),
+)
+def test_3b3_corridor_nested_integrity_attacks_fail_at_model_boundary(field: str) -> None:
+    """Post-mint nested mutations are model attacks, never binder baselines."""
+    from tests.unit.transforms.unflatten_authority.test_bind import _compiler_split_case
+    from d810.transforms.unflatten_authority import bind
+
+    authority, plan, source, projected, facts, attempt, _ = _compiler_split_case(
+        corridor_length=2, corridor=True, extra_prefix_origin=True,
+    )
+    accepted = realize_projected_routes_for_test(
+        source_authority=authority, plan=plan, source_inventory=source,
+        projected_inventory=projected, patch_step_facts=facts, attempt_id=attempt,
+    )
+    relation = accepted.realization.rows[0].relation
+    prefix = relation.semantic_prefixes[0]
+    origin = prefix.instruction_origins[0]
+
+    def clone(value):
+        forged = object.__new__(type(value))
+        for name in value.__dataclass_fields__:
+            object.__setattr__(forged, name, getattr(value, name))
+        return forged
+
+    if field.startswith("origin_"):
+        changes = {
+            "origin_source_owner": {"source_owner": relation.predecessor},
+            "origin_clone_owner": {"clone_owner": relation.predecessor},
+            "origin_source_ordinal": {"source_ordinal": origin.source_ordinal + 1},
+            "origin_projected_ordinal": {"projected_ordinal": origin.projected_ordinal + 1},
+            "origin_ea": {"instruction_ea": (origin.instruction_ea or 0) + 1},
+        }[field]
+        with pytest.raises(ValueError, match="origin_id"):
+            clone_origin = clone(origin)
+            for name, value in changes.items():
+                object.__setattr__(clone_origin, name, value)
+            clone_origin.__post_init__()
+    else:
+        forged_prefix = clone(prefix)
+        if field == "prefix_length":
+            object.__setattr__(forged_prefix, "source_end_ordinal_exclusive", prefix.source_end_ordinal_exclusive + 1)
+        elif field == "prefix_order":
+            object.__setattr__(forged_prefix, "ordinal", prefix.ordinal + 1)
+        elif field == "source_goto_ordinal":
+            object.__setattr__(forged_prefix, "source_trailing_goto_ordinal", prefix.source_trailing_goto_ordinal + 1)
+        elif field == "projected_goto_ordinal":
+            object.__setattr__(forged_prefix, "projected_synthetic_goto_ordinal", prefix.projected_synthetic_goto_ordinal + 1)
+        else:
+            object.__setattr__(forged_prefix, "creation_spec_row", relation.creation_spec_digests[-1])
+        with pytest.raises(ValueError):
+            forged_prefix.__post_init__()
+
+
+def test_3b3_row_creation_spec_digests_property_is_exact() -> None:
+    from d810.transforms.unflatten_authority import bind
+    from tests.unit.transforms.unflatten_authority import test_bind as bind_tests
+    from d810.transforms.unflatten_authority.proposal import canonical_patch_step_descriptor
+    for fixture in ("_compiler_direct_branch_case", "_compiler_helper_branch_case", "_three_b3_one_block_corridor_case", "_three_b3_two_block_corridor_case"):
+        authority, plan, source, projected, facts, attempt, *_ = getattr(bind_tests, fixture)()
+        accepted = realize_projected_routes_for_test(
+            source_authority=authority, plan=plan, source_inventory=source,
+            projected_inventory=projected, patch_step_facts=facts, attempt_id=attempt,
+        )
+        row = accepted.realization.rows[0]
+        assert row.creation_spec_digests == canonical_patch_step_descriptor(plan, 0).new_block_spec_digests
+        assert row.creation_spec_digests == tuple(row.relation.creation_spec_digests) if row.creation_spec_digests else True
+    assert "creation_spec_digests" not in model.ProjectedRouteRealizationRow.__annotations__
+
+
+def _rebased_corridor_relation(relation, **changes):
+    values = {
+        name: getattr(relation, name)
+        for name in relation.__dataclass_fields__
+    }
+    values.update(changes)
+    values["relation_id"] = model.route_realization_id((
+        "cloned_route_corridor", values["predecessor"], values["proof_source"],
+        values["descriptor_old_target"], values["terminal_continuation"],
+        values["source_corridor"], values["cloned_corridor"],
+        values["semantic_target"], values["semantic_prefixes"],
+        values["creation_spec_digests"],
+    ))
+    candidate = object.__new__(model.ClonedRouteCorridorRealization)
+    for name, value in values.items():
+        object.__setattr__(candidate, name, value)
+    return candidate
+
+
+def test_3b3_corridor_relation_seal_covers_cross_field_invariants() -> None:
+    from d810.transforms.unflatten_authority import bind
+    from tests.unit.transforms.unflatten_authority.test_bind import (
+        _three_b3_one_block_corridor_case, _three_b3_two_block_corridor_case,
+    )
+    authority, plan, source, projected, facts, attempt, _ = _three_b3_one_block_corridor_case()
+    accepted = realize_projected_routes_for_test(
+        source_authority=authority, plan=plan, source_inventory=source,
+        projected_inventory=projected, patch_step_facts=facts, attempt_id=attempt,
+    )
+    relation = accepted.realization.rows[0].relation
+    assert type(relation) is model.ClonedRouteCorridorRealization
+    prefix = relation.semantic_prefixes[0]
+    prefix_values = {
+        name: getattr(prefix, name) for name in prefix.__dataclass_fields__
+    }
+    prefix_values["creation_spec_row"] = (
+        prefix.creation_spec_row[0], authority_id("wrong-prefix-row"),
+    )
+    prefix_values["prefix_id"] = model.cloned_semantic_prefix_id((
+        "cloned_semantic_prefix", prefix_values["ordinal"],
+        prefix_values["source_owner"], prefix_values["clone_owner"],
+        prefix_values["source_start_ordinal"], prefix_values["source_end_ordinal_exclusive"],
+        prefix_values["instruction_origins"], prefix_values["source_trailing_goto_ordinal"],
+        prefix_values["projected_synthetic_goto_ordinal"], prefix_values["projected_successor"],
+        prefix_values["creation_spec_row"],
+    ))
+    changed_prefix = object.__new__(model.ClonedSemanticPrefix)
+    for name, value in prefix_values.items():
+        object.__setattr__(changed_prefix, name, value)
+    changed_prefix.__post_init__()
+    with pytest.raises(ValueError, match="creation row"):
+        _rebased_corridor_relation(
+            relation, semantic_prefixes=(changed_prefix,),
+        ).__post_init__()
+    with pytest.raises(ValueError, match="proof source"):
+        _rebased_corridor_relation(
+            relation, proof_source=relation.terminal_continuation,
+        ).__post_init__()
+    with pytest.raises(ValueError, match="projected successor"):
+        _rebased_corridor_relation(
+            relation,
+            semantic_prefixes=(
+                _prefix_with_successor(prefix, relation.predecessor),
+            ),
+        ).__post_init__()
+    authority2, plan2, source2, projected2, facts2, attempt2, _ = (
+        _three_b3_two_block_corridor_case()
+    )
+    accepted2 = realize_projected_routes_for_test(
+        source_authority=authority2, plan=plan2, source_inventory=source2,
+        projected_inventory=projected2, patch_step_facts=facts2, attempt_id=attempt2,
+    )
+    relation2 = accepted2.realization.rows[0].relation
+    with pytest.raises(ValueError, match="source members"):
+        _rebased_corridor_relation(
+            relation2,
+            source_corridor=(relation2.source_corridor[0], relation2.source_corridor[0]),
+        ).__post_init__()
+    with pytest.raises(ValueError, match="clone members"):
+        _rebased_corridor_relation(
+            relation2,
+            cloned_corridor=(relation2.cloned_corridor[0], relation2.cloned_corridor[0]),
+        ).__post_init__()
+
+
+def _prefix_with_successor(prefix, successor):
+    values = {name: getattr(prefix, name) for name in prefix.__dataclass_fields__}
+    values["projected_successor"] = successor
+    values["prefix_id"] = model.cloned_semantic_prefix_id((
+        "cloned_semantic_prefix", values["ordinal"], values["source_owner"],
+        values["clone_owner"], values["source_start_ordinal"],
+        values["source_end_ordinal_exclusive"], values["instruction_origins"],
+        values["source_trailing_goto_ordinal"], values["projected_synthetic_goto_ordinal"],
+        values["projected_successor"], values["creation_spec_row"],
+    ))
+    changed = object.__new__(model.ClonedSemanticPrefix)
+    for name, value in values.items():
+        object.__setattr__(changed, name, value)
+    changed.__post_init__()
+    return changed
+
+
+def test_3b3_row_properties_reject_unknown_relation_dispatch() -> None:
+    row = object.__new__(model.ProjectedRouteRealizationRow)
+    object.__setattr__(row, "relation", object())
+    for name in (
+        "source_ref", "old_target_ref", "new_target_ref", "realization_kind",
+        "conditional_roles", "helper_refs", "creation_spec_digests",
+    ):
+        with pytest.raises(TypeError, match="unknown route relation"):
+            getattr(row, name)
+    subclass = type("ForgedDirectRoute", (model.TwoArmDirectBranchRouteRealization,), {})
+    forged = object.__new__(subclass)
+    for name in model.TwoArmDirectBranchRouteRealization.__dataclass_fields__:
+        object.__setattr__(forged, name, None)
+    object.__setattr__(row, "relation", forged)
+    for name in (
+        "source_ref", "old_target_ref", "new_target_ref", "realization_kind",
+        "conditional_roles", "helper_refs", "creation_spec_digests",
+    ):
+        with pytest.raises(TypeError, match="unknown route relation"):
+            getattr(row, name)

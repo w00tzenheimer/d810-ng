@@ -80,3 +80,8 @@ def test_canonical_external_schema_drift_is_checked_for_early_gate_records() -> 
     finally:
         ids.fields = original_fields
         ids._REGISTRIES_READY = ready
+
+
+def test_3b4a_raw_gate_fact_does_not_change_legacy_effective_transport() -> None:
+    facts = _facts()
+    assert facts.effectful_effective == facts.to_bundle().facts.effectful_effective

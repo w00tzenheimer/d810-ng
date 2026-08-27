@@ -13,11 +13,12 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.semantic_route_evidence import (
-    bind_canonical_semantic_evidence,
     CanonicalSemanticEvidence,
     SemanticRouteDestination,
     SemanticRouteProof,
     SemanticRouteProofKind,
+    SemanticRouteFact,
+    SemanticRouteFactKind,
     SemanticRouteShape,
     SemanticStateWriteDeliveryKind,
 )
@@ -29,7 +30,7 @@ from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.semantic_edge import SemanticEdgeRole
-from d810.ir.storage_identity import StorageIdentity
+from d810.ir.storage_identity import StorageIdentity, storage_identity_from_mop_snapshot
 from d810.ir.block_identity import StableBlockIdentity
 from d810.transforms.cfg_transaction import CfgBlockRef, LogicalBlockRef, NativeBlockRef, PlanBlockRef
 from d810.transforms.use_def_redirect_filter import UseDefSeveranceAudit
@@ -82,6 +83,74 @@ class ConcreteEntryRouteForecast:
     normalized_state: int
     target_handler: int
     source_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionRouteSelectionKey:
+    """Stable route coordinates used by the selected-transition index."""
+
+    state_constant: int
+    target_identity: StableBlockIdentity
+    target_anchor_ea: int
+
+    def __post_init__(self) -> None:
+        if type(self.target_identity) is not StableBlockIdentity:
+            raise TypeError("transition route key requires stable target identity")
+        object.__setattr__(self, "state_constant", int(self.state_constant) & 0xFFFFFFFF)
+        object.__setattr__(self, "target_anchor_ea", int(self.target_anchor_ea))
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionRouteSelectionIndex:
+    """Immutable index of already-selected transition proof objects.
+
+    This is intentionally proof-object based: callers cannot supply a naked
+    proof-ID allowlist or use source catalogue coordinates as a substitute for
+    a selected transition authority.
+    """
+
+    entries: tuple[tuple[TransitionRouteSelectionKey, SemanticRouteProof], ...]
+
+    def __post_init__(self) -> None:
+        entries = tuple(self.entries)
+        if any(
+            type(key) is not TransitionRouteSelectionKey
+            or type(proof) is not SemanticRouteProof
+            for key, proof in entries
+        ):
+            raise TypeError("transition route index requires typed proof entries")
+        object.__setattr__(self, "entries", entries)
+
+    @classmethod
+    def from_proofs(
+        cls,
+        proofs: Iterable[SemanticRouteProof],
+    ) -> "TransitionRouteSelectionIndex":
+        by_key_and_proof: dict[tuple[TransitionRouteSelectionKey, str], SemanticRouteProof] = {}
+        for proof in proofs:
+            if type(proof) is not SemanticRouteProof:
+                raise TypeError("transition route index requires canonical route proofs")
+            for destination in proof.destinations:
+                key = TransitionRouteSelectionKey(
+                    int(destination.state_constant),
+                    destination.target_identity,
+                    int(destination.target_anchor_ea),
+                )
+                by_key_and_proof[(key, proof.proof_id)] = proof
+        return cls(
+            tuple((key, proof) for (key, _proof_id), proof in by_key_and_proof.items())
+        )
+
+    def candidates(
+        self,
+        key: TransitionRouteSelectionKey,
+    ) -> tuple[SemanticRouteProof, ...]:
+        matches = {
+            proof.proof_id: proof
+            for candidate_key, proof in self.entries
+            if candidate_key == key
+        }
+        return tuple(matches[proof_id] for proof_id in sorted(matches))
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,10 +288,30 @@ def _inventory_instruction_rows(
             if type(operand.size) is not int or isinstance(operand.size, bool) or operand.size < 0:
                 raise ValueError("operand size must be a nonnegative exact int")
             sizes.append(operand.size)
+        predicate_observation = None
+        if (
+            insn.kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+            and insn.branch_predicate is PredicateKind.EQ
+            and len(block.succs) == 2
+            and insn.d is not None
+            and insn.d.block_ref == block.succs[1]
+        ):
+            storage = storage_identity_from_mop_snapshot(insn.l)
+            if (
+                insn.l is None or insn.l.kind is not OperandKind.STACK
+                or insn.r is None or insn.r.kind is not OperandKind.NUMBER
+                or insn.r.value is None
+                or insn.d.kind is not OperandKind.BLOCK
+                or insn.d.block_ref is None or storage is None
+            ):
+                raise ValueError("malformed synthetic stack equality predicate")
+            predicate_observation = model.InventoryPredicateObservation(
+                PredicateKind.EQ, storage, insn.l.size, insn.r.value, insn.d.block_ref,
+            )
         rows.append(InventoryInstructionObservation(
             ordinal, instruction_ea, insn.opcode, max(sizes, default=0),
             insn.kind, insn.control_transfer_kind, insn.is_call, insn.call_kind,
-            insn.display_text,
+            insn.display_text, predicate_observation, insn.raw_opcode,
         ))
     return tuple(rows)
 
@@ -249,6 +338,41 @@ def observe_inventory_block(
     transfer_ea = None
     if rows and rows[-1].control_transfer_kind is not None:
         transfer_ea = rows[-1].instruction_ea
+    if rows and (block.tail_opcode is None or block.tail_kind is None):
+        raise ValueError(
+            "instruction-bearing backend blocks require independent tail metadata"
+        )
+    if rows and block.raw_tail_opcode != rows[-1].raw_opcode:
+        raise ValueError("block raw tail provenance differs from its observed tail")
+    if (
+        rows
+        and block.tail_opcode == -1
+        and block.kind is BlockKind.ONE_WAY
+        and block.tail_kind is InsnKind.GOTO
+    ):
+        # The only negative opcode admitted by the portable authority is the
+        # synthetic helper GOTO.  Its backend snapshot must still carry the
+        # complete closed transfer shape; do not let a normalized row hide a
+        # stale conditional/call/predicate body.
+        tail = block.insn_snapshots[-1]
+        if (
+            block.kind is not BlockKind.ONE_WAY
+            or block.tail_kind is not InsnKind.GOTO
+            or tail.kind is not InsnKind.GOTO
+            or tail.control_transfer_kind is not ControlTransferKind.GOTO
+            or not tail.is_unconditional_jump
+            or tail.is_conditional_jump
+            or tail.is_call
+            or tail.call_kind is not None
+            or tail.branch_predicate is not None
+            or tail.predicate_kind is not None
+            or tail.compare_width is not None
+            or tail.d is None
+            or tail.d.kind is not OperandKind.BLOCK
+            or tail.d.block_ref not in block.succs
+            or len(block.succs) != 1
+        ):
+            raise ValueError("synthetic helper GOTO body is not normalized")
     return model.InventoryBlockObservation(
         serial=block.serial,
         block_ref=owner_ref,
@@ -257,11 +381,17 @@ def observe_inventory_block(
             row.instruction_ea for row in rows if row.instruction_ea is not None
         })),
         predecessor_serials=tuple(sorted(block.preds)),
-        successor_serials=tuple(sorted(block.succs)),
+        successor_serials=tuple(block.succs),
         transfer_ea=transfer_ea,
         instruction_observations=rows,
         block_kind=block.kind,
         graph_start_ea=block.start_ea,
+        # Block-tail metadata is an independent backend observation.  Never
+        # reconstruct it from the normalized instruction row: stale block
+        # metadata must remain visible to the authority digest/validator.
+        tail_opcode=block.tail_opcode if rows else None,
+        raw_tail_opcode=block.raw_tail_opcode if rows else None,
+        tail_kind=block.tail_kind if rows else None,
     )
 
 
@@ -649,6 +779,27 @@ def _valid_ea(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 0 <= value < _BADADDR
 
 
+def is_unowned_structural_logical_stop(
+    block: object,
+    block_ref: object,
+) -> bool:
+    """Recognize the graph's instructionless synthetic STOP row.
+
+    This row is structural reachability bookkeeping, not a source identity:
+    it has no native instruction, no physical anchor, and no successor.  It
+    must never be converted into an empty logical witness.
+    """
+
+    return (
+        type(block_ref) is LogicalBlockRef
+        and getattr(block, "kind", None) is BlockKind.STOP
+        and not tuple(getattr(block, "insn_snapshots", ()))
+        and not tuple(getattr(block, "succs", ()))
+        and not _valid_ea(getattr(block, "native_start_ea", None))
+        and getattr(block, "start_ea", _BADADDR) == _BADADDR
+    )
+
+
 def _as_serial(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{label} must be a non-negative serial")
@@ -665,19 +816,56 @@ def _native_instruction_origins(block: object) -> tuple[int, ...]:
             raise ValueError("source instruction has no valid native origin")
         origins.append(int(ea))
     if not origins:
-        raise ValueError("source block has empty native origins")
-    if len(set(origins)) != len(origins):
-        raise ValueError("source block has duplicate native origins")
-    return tuple(sorted(origins))
+        return ()
+    # Multiple lowered microinstructions may legitimately retain the same
+    # native origin.  Identity coordinates describe native instructions, not
+    # the number of current-MBA projections, so canonicalize observations to
+    # one ordered origin per native EA.
+    return tuple(sorted(set(origins)))
 
 
-def _block_anchor(block: object, origins: tuple[int, ...]) -> int:
+def native_instruction_origins(block: object) -> tuple[int, ...]:
+    """Return the canonical native-origin identity observed for one block."""
+
+    return _native_instruction_origins(block)
+
+
+def _block_anchor(
+    block: object,
+    origins: tuple[int, ...],
+    *,
+    block_ref: AuthorityBlockRef | None = None,
+) -> int:
     anchor = getattr(block, "native_start_ea", None)
     if not _valid_ea(anchor):
         anchor = getattr(block, "start_ea", None)
-    if not _valid_ea(anchor) or int(anchor) not in origins:
-        raise ValueError("source block anchor is invalid or outside native origins")
-    return int(anchor)
+    if type(block_ref) is NativeBlockRef:
+        if _valid_ea(anchor):
+            if not block_ref.identity.native_ranges.contains(int(anchor)):
+                raise ValueError("source block anchor is outside native reference range")
+            return int(anchor)
+        if not origins:
+            intervals = block_ref.identity.native_ranges.intervals
+            if intervals:
+                return int(intervals[0].start_ea)
+            raise ValueError("empty native identity has no canonical range anchor")
+    if not _valid_ea(anchor):
+        if origins:
+            return int(min(origins))
+        raise ValueError(
+            "source block anchor is invalid or outside native origins"
+            f" serial={getattr(block, 'serial', None)}"
+            f" ref_type={type(block_ref).__name__}"
+            f" kind={getattr(block, 'kind', None)}"
+            f" succs={tuple(getattr(block, 'succs', ()))}"
+            f" start={getattr(block, 'start_ea', None)!r}"
+            f" native_start={getattr(block, 'native_start_ea', None)!r}"
+        )
+    if int(anchor) in origins:
+        return int(anchor)
+    if origins:
+        return int(min(origins))
+    raise ValueError("source block anchor is invalid or outside native origins")
 
 
 def _require_ref(ref: object, label: str = "block_ref") -> AuthorityBlockRef:
@@ -702,9 +890,17 @@ def _catalog_ref_by_serial(
     if any(type(ref) not in (NativeBlockRef, LogicalBlockRef) for ref in refs):
         raise TypeError("block_refs_by_serial contains an invalid block reference")
     by_ref = {witness.block_ref: witness for witness in witnesses}
-    if len(by_ref) != len(witnesses) or set(by_ref) != set(refs):
+    catalog_refs = {
+        ref for serial, ref in zip(sorted(expected), refs)
+        if not is_unowned_structural_logical_stop(source.blocks[serial], ref)
+    }
+    if len(by_ref) != len(witnesses) or set(by_ref) != catalog_refs:
         raise ValueError("source catalog does not exactly cover block references")
-    return {serial: by_ref[block_refs_by_serial[serial]] for serial in sorted(expected)}
+    return {
+        serial: by_ref[block_refs_by_serial[serial]]
+        for serial in sorted(expected)
+        if block_refs_by_serial[serial] in by_ref
+    }
 
 
 def build_source_identity_catalog(
@@ -745,18 +941,21 @@ def build_source_identity_catalog(
 
     witnesses: list[SourceBlockIdentityWitness] = []
     all_origins: set[int] = set()
-    anchors: set[int] = set()
+    anchor_keys: set[tuple[AuthorityBlockRef, int]] = set()
     for serial in sorted(serials):
         block = source.blocks[serial]
         if block.serial != serial:
             raise ValueError("source block serial does not match mapping key")
+        ref = refs[sorted(serials).index(serial)]
+        if is_unowned_structural_logical_stop(block, ref):
+            continue
         origins = _native_instruction_origins(block)
-        anchor = _block_anchor(block, origins)
-        if anchor in anchors:
-            raise ValueError("source block anchors must be unique")
+        anchor = _block_anchor(block, origins, block_ref=ref)
+        anchor_key = (ref, int(anchor))
+        if anchor_key in anchor_keys:
+            raise ValueError("source block reference and anchor must be unique")
         if all_origins.intersection(origins):
             raise ValueError("source native instruction origins must be unique")
-        ref = refs[sorted(serials).index(serial)]
         if type(ref) is NativeBlockRef:
             if ref.identity.native_key != native_key:
                 raise ValueError("native source reference key does not match catalog key")
@@ -771,7 +970,7 @@ def build_source_identity_catalog(
                 native_instruction_eas=origins,
             )
         )
-        anchors.add(anchor)
+        anchor_keys.add(anchor_key)
         all_origins.update(origins)
     return SourceIdentityCatalog(native_key=native_key, generation=source_generation, blocks=tuple(witnesses))
 
@@ -802,7 +1001,18 @@ def resolve_block_locator(
     """Resolve an exact serial/EA pair; never invent a logical reference."""
 
     witness = _witness_for_serial(source, source_catalog, block_refs_by_serial, serial)
-    if not _valid_ea(anchor_ea) or int(anchor_ea) not in witness.native_instruction_eas:
+    if not _valid_ea(anchor_ea):
+        raise ValueError("block anchor is absent from source native origins")
+    if witness.native_instruction_eas:
+        valid_anchor = int(anchor_ea) in witness.native_instruction_eas
+    else:
+        ref = witness.block_ref
+        valid_anchor = (
+            type(ref) is NativeBlockRef
+            and not ref.identity.exact_instruction_eas
+            and ref.identity.native_ranges.contains(int(anchor_ea))
+        )
+    if not valid_anchor:
         raise ValueError("block anchor is absent from source native origins")
     return BlockSubjectLocator(witness.block_ref, int(anchor_ea))
 
@@ -962,6 +1172,9 @@ def discover_reachable_effects_and_terminals(
     terminal_keys: set[tuple[AuthorityBlockRef, int, TerminalKind]] = set()
     for serial in reachable:
         block = source.blocks[serial]
+        ref = block_refs_by_serial[serial]
+        if is_unowned_structural_logical_stop(block, ref):
+            continue
         witness = _witness_for_serial(source, source_catalog, block_refs_by_serial, serial)
         pure_effects, pure_terminals = classify_block_effects_and_terminals(
             block, owner_ref=witness.block_ref, owner_anchor_ea=witness.anchor_ea,
@@ -1064,10 +1277,17 @@ def _exact_effect_claim(
         site for site in discarded_effects
         if site.effect_kind in {EffectSiteKind.STORE, EffectSiteKind.CALL}
     )
-    if len(discarded_sites) != 1 or discarded_sites[0].instruction_ea != exclusion.discarded_effect_ea:
+    matching_sites = tuple(
+        site for site in discarded_sites
+        if site.instruction_ea == exclusion.discarded_effect_ea
+    )
+    if (
+        len(matching_sites) != 1
+        or (len(discarded_sites) != 1 and not exclusion.site_specific)
+    ):
         raise ValueError("discarded effect EA does not resolve to one effect kind")
-    discarded_effect_ea = discarded_sites[0].instruction_ea
-    discarded_kind = discarded_sites[0].effect_kind
+    discarded_effect_ea = matching_sites[0].instruction_ea
+    discarded_kind = matching_sites[0].effect_kind
     discarded = resolve_effect_locator(
         source, source_catalog, block_refs_by_serial,
         exclusion.discarded_effect_serial, discarded_effect_ea,
@@ -1099,15 +1319,15 @@ def _exact_effect_claim(
     proof = correlation.proof
     destination = correlation.selected_destination
     source_subject = _subject(
-        SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_SOURCE,
         source_locator,
     )
     predicate_subject = _subject(
-        SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_PREDICATE,
         predicate_locator,
     )
     selected_subject = _subject(
-        SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_SELECTED_TARGET,
         selected_locator,
     )
     discarded_subject = _subject(
@@ -1142,15 +1362,21 @@ def _route_witness(
 ) -> SourceBlockIdentityWitness:
     """Resolve one proof endpoint against the closed source identity catalog."""
 
+    # Route endpoints use stable physical-entry coordinates.  The coordinate
+    # may precede the first instruction origin, so identity/range containment
+    # is the canonical check for both empty and instruction-backed blocks.
     matches = tuple(
         witness
         for witness in source_catalog.blocks
         if type(witness.block_ref) is NativeBlockRef
         and witness.block_ref.identity == identity
-        and int(anchor_ea) in witness.native_instruction_eas
+        and identity.native_ranges.contains(int(anchor_ea))
     )
     if len(matches) != 1:
-        raise ValueError("canonical route endpoint is missing or ambiguous")
+        raise ValueError(
+            "canonical route endpoint is missing or ambiguous"
+            f" identity={identity.diagnostic_label()} anchor=0x{int(anchor_ea):X}"
+        )
     return matches[0]
 
 
@@ -1181,7 +1407,10 @@ def _select_route_proof(
         raise TypeError("route adapter matcher must be callable")
     matches = tuple(proof for proof in evidence.route_proofs if matcher(proof))
     if len(matches) != 1:
-        raise ValueError(f"{family} route has zero or multiple canonical matches")
+        raise ValueError(
+            f"{family} route has zero or multiple canonical matches "
+            f"candidate_ids={tuple(proof.proof_id for proof in matches)}"
+        )
     return matches[0]
 
 
@@ -1197,80 +1426,120 @@ def _target_identity(
     return witness.block_ref.identity
 
 
-def _diagnostic_values(proof: SemanticRouteProof, key: str) -> tuple[str, ...]:
-    return tuple(value for name, value in proof.diagnostic_provenance if name == key)
-
-
-def adapt_concrete_entry_route(
+def concrete_entry_route_key(
     route: object,
     *,
     source: FlowGraph,
     source_catalog: SourceIdentityCatalog,
     block_refs_by_serial: Mapping[int, AuthorityBlockRef],
-    canonical_evidence: CanonicalSemanticEvidence,
-) -> SemanticRouteProof:
-    """Select one canonical proof from a concrete-entry forecast."""
+) -> tuple[int, StableBlockIdentity, int]:
+    """Return the stable state/target/anchor key for entry correlation."""
 
     if type(route) is not ConcreteEntryRouteForecast:
-        raise TypeError("concrete entry adapter requires ConcreteEntryRouteForecast")
-    target_identity = _target_identity(
+        raise TypeError("concrete entry key requires ConcreteEntryRouteForecast")
+    witness = _witness_for_serial(
         source, source_catalog, block_refs_by_serial, route.target_handler,
     )
-    state = int(route.normalized_state)
-    source_kinds = tuple(route.source_kinds)
-    return _select_route_proof(
-        canonical_evidence,
-        lambda proof: any(
-            (
-                int(destination.state_constant) == state
-                and destination.target_identity == target_identity
-                and proof.source_owner_identity is not None
-                and proof.source_owner_anchor_ea is not None
-                and (
-                    _diagnostic_values(proof, "source_kinds")
-                    == ("|".join(source_kinds),)
-                )
-            )
-            for destination in proof.destinations
-        ),
-        "concrete entry",
+    if type(witness.block_ref) is not NativeBlockRef:
+        raise ValueError("concrete entry target must be a native block identity")
+    return (
+        int(route.normalized_state) & 0xFFFFFFFF,
+        witness.block_ref.identity,
+        int(witness.anchor_ea),
     )
 
 
-def adapt_bootstrap_entry_route_proof(
+def resolve_concrete_entry_route(
     route: object,
     *,
     source: FlowGraph,
     source_catalog: SourceIdentityCatalog,
     block_refs_by_serial: Mapping[int, AuthorityBlockRef],
-    canonical_evidence: CanonicalSemanticEvidence,
+    selected_transitions: TransitionRouteSelectionIndex,
 ) -> SemanticRouteProof:
-    """Select one canonical proof from a bootstrap-entry forecast."""
+    """Resolve entry consensus against one typed selected-transition index."""
+
+    if type(selected_transitions) is not TransitionRouteSelectionIndex:
+        raise TypeError("concrete entry resolution requires selected transition index")
+    key_values = concrete_entry_route_key(
+        route,
+        source=source,
+        source_catalog=source_catalog,
+        block_refs_by_serial=block_refs_by_serial,
+    )
+    key = TransitionRouteSelectionKey(*key_values)
+    matches = selected_transitions.candidates(key)
+    if len(matches) != 1:
+        raise ValueError(
+            "concrete entry route has zero or multiple selected transition "
+            f"proofs key={key!r} "
+            f"candidate_ids={tuple(proof.proof_id for proof in matches)!r}"
+        )
+    return matches[0]
+
+
+def bootstrap_entry_route_key(
+    route: object,
+    *,
+    source: FlowGraph,
+    source_catalog: SourceIdentityCatalog,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+ ) -> tuple[int, StableBlockIdentity, int]:
+    """Return the stable key for a bootstrap entry view."""
 
     if type(route) is not BootstrapEntryRouteForecast:
-        raise TypeError("bootstrap entry adapter requires BootstrapEntryRouteForecast")
-    source_identity = _target_identity(
-        source, source_catalog, block_refs_by_serial, route.source_serial,
-    )
+        raise TypeError("bootstrap entry key requires BootstrapEntryRouteForecast")
     target_identity = _target_identity(
         source, source_catalog, block_refs_by_serial, route.handler_serial,
     )
-    return _select_route_proof(
-        canonical_evidence,
-        lambda proof: (
-            proof.proof_kind is SemanticRouteProofKind.BOOTSTRAP
-            and proof.shape is SemanticRouteShape.DIRECT
-            and proof.source_identity == source_identity
-            and proof.source_anchor_ea == route.source_anchor_ea
-            and any(
-                destination.state_constant == route.state
-                and destination.target_identity == target_identity
-                and destination.target_anchor_ea == route.handler_anchor_ea
-                for destination in proof.destinations
-            )
-        ),
-        "bootstrap entry",
+    return (
+        int(route.state) & 0xFFFFFFFF,
+        target_identity,
+        int(route.handler_anchor_ea),
     )
+
+
+def resolve_bootstrap_entry_route(
+    route: object,
+    *,
+    source: FlowGraph,
+    source_catalog: SourceIdentityCatalog,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+    selected_transitions: TransitionRouteSelectionIndex,
+) -> SemanticRouteProof:
+    """Resolve a bootstrap entry forecast as a view over selected transitions."""
+
+    if type(route) is not BootstrapEntryRouteForecast:
+        raise TypeError("bootstrap entry resolution requires BootstrapEntryRouteForecast")
+    if type(selected_transitions) is not TransitionRouteSelectionIndex:
+        raise TypeError("bootstrap entry resolution requires selected transition index")
+    key = TransitionRouteSelectionKey(
+        *bootstrap_entry_route_key(
+            route,
+            source=source,
+            source_catalog=source_catalog,
+            block_refs_by_serial=block_refs_by_serial,
+        )
+    )
+    source_identity = _target_identity(
+        source, source_catalog, block_refs_by_serial, route.source_serial,
+    )
+    matches = tuple(
+        proof
+        for proof in selected_transitions.candidates(key)
+        if proof.proof_kind is SemanticRouteProofKind.BOOTSTRAP
+        and proof.shape is SemanticRouteShape.DIRECT
+        and proof.bootstrap is not None
+        and proof.bootstrap.source.identity == source_identity
+        and proof.bootstrap.source.anchor_ea == int(route.source_anchor_ea)
+    )
+    if len(matches) != 1:
+        raise ValueError(
+            "bootstrap entry route has zero or multiple selected transition "
+            f"proofs key={key!r} "
+            f"candidate_ids={tuple(proof.proof_id for proof in matches)!r}"
+        )
+    return matches[0]
 
 
 def adapt_conditional_entry_route(
@@ -1343,23 +1612,38 @@ def adapt_native_bound_transition_route(
     target_identity = _target_identity(
         source, source_catalog, block_refs_by_serial, route.target_handler_serial,
     )
-    return _select_route_proof(
-        canonical_evidence,
-        lambda proof: (
-            proof.state_write is not None
-            and proof.state_write.identity == source_identity
-            and proof.state_write.state_constant == route.state_constant
-            and proof.state_write.width == 4
-            and proof.state_write.instruction_ea == route.source_instruction_ea
-            and _diagnostic_values(proof, "fact_id") == (route.fact_id,)
-            and any(
-                destination.state_constant == route.state_constant
-                and destination.target_identity == target_identity
-                for destination in proof.destinations
+    try:
+        return _select_route_proof(
+            canonical_evidence,
+            lambda proof: (
+                proof.state_write is not None
+                and proof.state_write.identity == source_identity
+                and proof.state_write.state_constant == route.state_constant
+                and proof.state_write.width == 4
+                and proof.state_write.instruction_ea == route.source_instruction_ea
+                and any(
+                    destination.state_constant == route.state_constant
+                    and destination.target_identity == target_identity
+                    for destination in proof.destinations
+                )
+            ),
+            "native-bound transition",
+        )
+    except ValueError as exc:
+        same_id = tuple(
+            (
+                proof.proof_id,
+                proof.proof_kind.value,
+                None if proof.state_write is None else proof.state_write.instruction_ea,
+                None if proof.state_write is None else proof.state_write.state_constant,
             )
-        ),
-        "native-bound transition",
-    )
+            for proof in canonical_evidence.route_proofs
+        )
+        raise ValueError(
+            f"{exc}; route fact_id={route.fact_id!r} source_serial={route.source_block_serial} "
+            f"source_ea=0x{route.source_instruction_ea:X} state=0x{route.state_constant:X} "
+            f"target_serial={route.target_handler_serial} same_id={same_id}"
+        ) from exc
 
 
 def adapt_state_transition_route(
@@ -1375,21 +1659,20 @@ def adapt_state_transition_route(
 
     from d810.analyses.control_flow.minimal_state_recovery import StateWriteTransition
     if type(route) is StateWriteTransition:
-        from d810.analyses.control_flow.minimal_state_recovery import TransitionProof
-
         if route.is_return or route.next_state is None or route.target_handler is None:
             raise ValueError("unresolved or return state transition cannot be a route")
-        if type(route.proof) is not TransitionProof or not route.proof.trusted:
-            raise ValueError("state transition route requires typed trusted provenance")
+        transform_fact = route.semantic_route_fact
+        if not isinstance(transform_fact, SemanticRouteFact):
+            raise ValueError("state transition route requires canonical typed fact")
         if not isinstance(state_identity, StorageIdentity):
             raise TypeError("state transition route requires the exact state identity")
         if not 0 <= int(route.next_state) <= 0xFFFFFFFF:
             raise ValueError("state transition route state must be exact U32")
-        writer_identity = _target_identity(
+        owner_identity = _target_identity(
             source, source_catalog, block_refs_by_serial, route.write_block,
         )
-        writer_witness = _witness_for_serial(
-            source, source_catalog, block_refs_by_serial, route.write_block,
+        source_identity = _target_identity(
+            source, source_catalog, block_refs_by_serial, transform_fact.source_serial,
         )
         target_identity = _target_identity(
             source, source_catalog, block_refs_by_serial, route.target_handler,
@@ -1398,90 +1681,233 @@ def adapt_state_transition_route(
             source, source_catalog, block_refs_by_serial, route.target_handler,
         )
 
-        via_identity = (
-            None
-            if route.via_block is None
-            else _target_identity(
-                source, source_catalog, block_refs_by_serial, route.via_block,
-            )
-        )
-        via_witness = (
-            None
-            if route.via_block is None
-            else _witness_for_serial(
-                source, source_catalog, block_refs_by_serial, route.via_block,
-            )
-        )
-        writer_block = source.get_block(int(route.write_block))
-        if writer_block is None:
-            raise ValueError("state transition writer is absent from source graph")
-        writer_successors = tuple(int(item) for item in writer_block.succs)
-        if route.via_block is not None and int(route.via_block) not in writer_successors:
-            raise ValueError("state transition via block is not a writer successor")
-        if route.branch_arm is not None:
-            if (
-                type(route.branch_arm) is not int
-                or route.branch_arm not in (0, 1)
-                or len(writer_successors) != 2
-                or route.via_block is None
-                or writer_successors[route.branch_arm] != int(route.via_block)
-            ):
-                raise ValueError("state transition branch arm is not exact source topology")
-        if route.preserve_via_block and route.via_block is None:
-            raise ValueError("state transition preservation requires an exact via block")
-        if route.preserve_via_block:
-            # ``SemanticRouteProof`` carries route topology, state-write, and
-            # carrier corridors, but no proof field asserting the backend-only
-            # feeder-clone policy.  Matching the otherwise identical route
-            # would launder that policy from ``StateWriteTransition``.
-            raise ValueError(
-                "state transition has no canonical preservation relation"
-            )
-
-        def matches_transition(proof: SemanticRouteProof) -> bool:
-            write = proof.state_write
-            if write is None:
+        def matches(proof: SemanticRouteProof) -> bool:
+            if not proof.destinations:
                 return False
-            via_matches = via_identity is None or (
-                via_witness is not None
-                and (
-                    (
-                        proof.source_identity == via_identity
-                        and proof.source_anchor_ea == via_witness.anchor_ea
+            expected_kind = {
+                SemanticRouteFactKind.NATIVE_BOUND: SemanticRouteProofKind.STATE_ASSIGNMENT,
+                SemanticRouteFactKind.STATE_TRANSFORM: SemanticRouteProofKind.STATE_TRANSFORM,
+                SemanticRouteFactKind.STATE_CARRIER: SemanticRouteProofKind.STATE_CARRIER,
+                SemanticRouteFactKind.STATE_PARTITION: SemanticRouteProofKind.STATE_PARTITION,
+                SemanticRouteFactKind.DECISION_DAG: SemanticRouteProofKind.STATE_DAG,
+                SemanticRouteFactKind.BOOTSTRAP: SemanticRouteProofKind.BOOTSTRAP,
+            }.get(transform_fact.kind)
+            if expected_kind is None or proof.proof_kind is not expected_kind:
+                return False
+            if transform_fact.kind is SemanticRouteFactKind.BOOTSTRAP:
+                witness = transform_fact.bootstrap_witness
+                bootstrap = proof.bootstrap
+                if witness is None or bootstrap is None:
+                    return False
+                try:
+                    source_witness = _witness_for_serial(
+                        source, source_catalog, block_refs_by_serial,
+                        witness.source_serial,
                     )
-                    or via_witness.anchor_ea in write.corridor_instruction_eas
+                    owner_witness = _witness_for_serial(
+                        source, source_catalog, block_refs_by_serial,
+                        witness.owner_serial,
+                    )
+                    dispatcher_witness = _witness_for_serial(
+                        source, source_catalog, block_refs_by_serial,
+                        witness.dispatcher_serial,
+                    )
+                    entry_witness = _witness_for_serial(
+                        source, source_catalog, block_refs_by_serial,
+                        witness.entry_serial,
+                    )
+                    corridor_witnesses = tuple(
+                        _witness_for_serial(
+                            source, source_catalog, block_refs_by_serial, serial,
+                        )
+                        for serial in witness.corridor_serials
+                    )
+                except (KeyError, TypeError, ValueError):
+                    return False
+                corridor = tuple(
+                    (item.block_ref.identity, int(anchor))
+                    for item, anchor in zip(corridor_witnesses, witness.corridor_anchors)
                 )
-            )
-            branch_matches = route.branch_arm is None or (
-                proof.shape is SemanticRouteShape.CONDITIONAL
-                and write.delivery_kind is SemanticStateWriteDeliveryKind.CONDITIONAL
-            )
-            declared_sources = tuple(route.proof.route_source_kinds)
-            canonical_sources = _diagnostic_values(proof, "source_kinds")
-            provenance_matches = (
-                not canonical_sources
-                or canonical_sources == ("|".join(declared_sources),)
-            )
-            return (
-                write.identity == writer_identity
-                and write.instruction_ea in writer_witness.native_instruction_eas
-                and write.state_variable == state_identity
-                and write.state_constant == route.next_state
-                and write.width == 4
-                and via_matches
-                and branch_matches
-                and provenance_matches
-                and any(
-                    destination.state_constant == route.next_state
-                    and destination.target_identity == target_identity
-                    and destination.target_anchor_ea == target_witness.anchor_ea
-                    for destination in proof.destinations
+                # Recovery's bootstrap owner is the physical corridor entry,
+                # not necessarily the catalog's normalized first-instruction
+                # anchor.  Bind that coordinate explicitly and require it to
+                # belong to the owner's stable identity.
+                if len(witness.corridor_anchors) < 2:
+                    return False
+                owner_anchor_ea = int(witness.corridor_anchors[-2])
+                if not owner_witness.block_ref.identity.native_ranges.contains(owner_anchor_ea):
+                    return False
+                if len(proof.destinations) != 1:
+                    return False
+                canonical_target_anchor = int(proof.destinations[0].target_anchor_ea)
+                if (
+                    transform_fact.owner_serial != route.write_block
+                    or transform_fact.target_serial != route.target_handler
+                    or transform_fact.source_instruction_ea != witness.source_instruction_ea
+                    or transform_fact.state_constant != int(route.next_state)
+                    or witness.state_identity != state_identity
+                    or witness.state_width != 4
+                    or (
+                        transform_fact.owner_anchor_ea is not None
+                        and transform_fact.owner_anchor_ea != owner_anchor_ea
+                    )
+                    or (
+                        transform_fact.target_anchor_ea is not None
+                        and transform_fact.target_anchor_ea != canonical_target_anchor
+                    )
+                    or proof.source_identity != owner_witness.block_ref.identity
+                    or proof.source_anchor_ea != owner_anchor_ea
+                    or proof.source_owner_identity is not None
+                    and proof.source_owner_identity != owner_witness.block_ref.identity
+                    or bootstrap.entry.identity != entry_witness.block_ref.identity
+                    or bootstrap.source.identity != source_witness.block_ref.identity
+                    or bootstrap.source.anchor_ea != witness.source_instruction_ea
+                    or bootstrap.owner.identity != owner_witness.block_ref.identity
+                    or bootstrap.owner.anchor_ea != owner_anchor_ea
+                    or bootstrap.dispatcher.identity != dispatcher_witness.block_ref.identity
+                    or tuple((point.identity, point.anchor_ea) for point in bootstrap.corridor) != corridor
+                    or bootstrap.state_write != proof.state_write
+                    or proof.state_write is None
+                    or proof.state_write.identity != source_witness.block_ref.identity
+                    or proof.state_write.instruction_ea != witness.source_instruction_ea
+                    or proof.state_write.state_variable != state_identity
+                    or proof.state_write.width != 4
+                    or proof.state_write.state_constant != int(route.next_state)
+                    or bootstrap.state_dag != proof.state_dag
+                    or proof.state_dag is None
+                    or proof.state_dag.source_identity != owner_witness.block_ref.identity
+                    or proof.state_dag.source_anchor_ea != owner_anchor_ea
+                    or proof.state_dag.witness.state_identity != state_identity
+                    or proof.state_dag.witness.state_constant != int(route.next_state)
+                    or proof.state_dag.target_identity != target_identity
+                    or proof.state_dag.target_anchor_ea != canonical_target_anchor
+                    or tuple(bootstrap.preserved_effect_sites)
+                    != tuple(witness.preserved_effect_sites)
+                    or proof.destinations[0].state_constant != int(route.next_state)
+                    or proof.destinations[0].target_identity != target_identity
+                    or proof.destinations[0].target_anchor_ea != canonical_target_anchor
+                ):
+                    return False
+                raw_dag = witness.decision_dag_witness
+                dag = proof.state_dag.witness
+                if (
+                    raw_dag.state_identity != dag.state_identity
+                    or raw_dag.state_constant != dag.state_constant
+                    or raw_dag.entry_anchor_ea != dag.entry.anchor_ea
+                ):
+                    return False
+                # Compare every raw DAG node through its stable serial identity;
+                # this prevents endpoint-only bootstrap selection.
+                if len(raw_dag.path_serials) != len(dag.path):
+                    return False
+                for serial, anchor, point in zip(
+                    raw_dag.path_serials, raw_dag.path_anchors, dag.path
+                ):
+                    current = _witness_for_serial(
+                        source, source_catalog, block_refs_by_serial, serial,
+                    )
+                    if (
+                        current.block_ref.identity != point.identity
+                        or int(anchor) != point.anchor_ea
+                    ):
+                        return False
+                if len(raw_dag.comparisons) != len(dag.comparisons):
+                    return False
+                for (serial, comparison), canonical in zip(
+                    raw_dag.comparisons, dag.comparisons
+                ):
+                    node = _witness_for_serial(
+                        source, source_catalog, block_refs_by_serial, serial,
+                    )
+                    if (
+                        node.block_ref.identity != canonical.node.identity
+                        or comparison.op != canonical.operation
+                        or comparison.const != canonical.constant
+                        or _target_identity(source, source_catalog, block_refs_by_serial, comparison.true_target)
+                        != canonical.true_target.identity
+                        or _target_identity(source, source_catalog, block_refs_by_serial, comparison.false_target)
+                        != canonical.false_target.identity
+                    ):
+                        return False
+                raw_aliases = tuple(
+                    (
+                        _target_identity(source, source_catalog, block_refs_by_serial, source_serial),
+                        _target_identity(source, source_catalog, block_refs_by_serial, target_serial),
+                    )
+                    for source_serial, target_serial in raw_dag.aliases
                 )
-            )
+                canonical_aliases = tuple(
+                    (source_point.identity, target_point.identity)
+                    for source_point, target_point in dag.aliases
+                )
+                return raw_aliases == canonical_aliases
+            if (
+                transform_fact.kind is SemanticRouteFactKind.DECISION_DAG
+                and transform_fact.decision_dag_witness is None
+            ):
+                return False
+            if (
+                proof.source_identity != source_identity
+                or proof.source_anchor_ea != transform_fact.source_instruction_ea
+                or proof.destinations[0].state_constant != int(route.next_state)
+                or proof.destinations[0].target_identity != target_identity
+            ):
+                return False
+            if proof.source_owner_identity is not None and proof.source_owner_identity != owner_identity:
+                return False
+            if proof.state_write is not None:
+                if (
+                    proof.state_write.identity != source_identity
+                    or proof.state_write.instruction_ea != transform_fact.source_instruction_ea
+                    or proof.state_write.state_constant != int(route.next_state)
+                ):
+                    return False
+            if proof.state_transform is not None:
+                return (
+                    transform_fact.kind is SemanticRouteFactKind.STATE_TRANSFORM
+                    and proof.proof_kind is SemanticRouteProofKind.STATE_TRANSFORM
+                    and proof.state_transform.source_identity == source_identity
+                    and proof.state_transform.owner_identity == owner_identity
+                    and proof.state_transform.state_identity == state_identity
+                    and proof.state_transform.state_constant == int(route.next_state)
+                )
+            if proof.state_carrier is not None:
+                return (
+                    transform_fact.kind is SemanticRouteFactKind.STATE_CARRIER
+                    and proof.proof_kind is SemanticRouteProofKind.STATE_CARRIER
+                    and proof.state_carrier.source_identity == source_identity
+                    and proof.state_carrier.owner_identity == owner_identity
+                    and proof.state_carrier.state_identity == state_identity
+                    and proof.state_carrier.state_constant == int(route.next_state)
+                )
+            if proof.state_partition is not None:
+                return (
+                    transform_fact.kind is SemanticRouteFactKind.STATE_PARTITION
+                    and proof.proof_kind is SemanticRouteProofKind.STATE_PARTITION
+                    and proof.state_partition.state_identity == state_identity
+                    and any(
+                    member.owner_identity == owner_identity
+                    and member.state_constant == int(route.next_state)
+                    for member in proof.state_partition.members
+                    )
+                )
+            if proof.state_dag is not None:
+                return (
+                    transform_fact.kind is SemanticRouteFactKind.DECISION_DAG
+                    and proof.proof_kind is SemanticRouteProofKind.STATE_DAG
+                    and proof.state_dag.witness.state_identity == state_identity
+                )
+            if transform_fact.kind is SemanticRouteFactKind.NATIVE_BOUND:
+                return (
+                    proof.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT
+                    and proof.state_write is not None
+                )
+            return False
 
         return _select_route_proof(
-            canonical_evidence, matches_transition, "state transition",
+            canonical_evidence, matches, "state transition",
         )
+
     raise TypeError("state transition adapter requires a typed route row")
 
 
@@ -1497,13 +1923,31 @@ def _equivalent_route_claim(
         raise ValueError("canonical route proof has a foreign native key")
     if not proof.atomic_group_id:
         raise ValueError("canonical route proof has an invalid atomic group")
-    source_witness = _route_witness(
-        source_catalog, proof.source_identity, proof.source_anchor_ea,
-    )
-    destination_witnesses = tuple(
-        _route_witness(source_catalog, destination.target_identity, destination.target_anchor_ea)
-        for destination in proof.destinations
-    )
+    try:
+        source_witness = _route_witness(
+            source_catalog, proof.source_identity, proof.source_anchor_ea,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"canonical route source endpoint proof_id={proof.proof_id}: {exc}"
+        ) from exc
+    destination_witnesses = []
+    for index, destination in enumerate(proof.destinations):
+        try:
+            destination_witnesses.append(
+                _route_witness(
+                    source_catalog,
+                    destination.target_identity,
+                    destination.target_anchor_ea,
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "canonical route destination endpoint "
+                f"proof_id={proof.proof_id} index={index} "
+                f"role={destination.role.value}: {exc}"
+            ) from exc
+    destination_witnesses = tuple(destination_witnesses)
     source_locator = BlockSubjectLocator(
         source_witness.block_ref, source_witness.anchor_ea,
     )
@@ -1584,12 +2028,6 @@ def build_equivalent_route_claims(
     selected = tuple(selected_proof_ids)
     if not selected:
         return ()
-    bound = bind_canonical_semantic_evidence(source, route_evidence)
-    if (
-        bound is None
-        or len(bound.routes) != len(route_evidence.route_proofs)
-    ):
-        raise ValueError("canonical route topology is missing or nonreciprocal")
     known = {proof.proof_id: proof for proof in route_evidence.route_proofs}
     if any(type(item) is not str or not item for item in selected):
         raise TypeError("selected_proof_ids must contain exact proof IDs")
@@ -1739,6 +2177,8 @@ def build_exact_effect_claim(
 
 __all__ = [
     "ConcreteEntryRouteForecast",
+    "TransitionRouteSelectionKey",
+    "TransitionRouteSelectionIndex",
     "BootstrapEntryRouteForecast",
     "ConditionalEntryBridgeForecast",
     "DiscoveredEffect",
@@ -1756,8 +2196,10 @@ __all__ = [
     "build_exact_effect_claim",
     "build_equivalent_route_claims",
     "resolve_equivalent_route_claim",
-    "adapt_concrete_entry_route",
-    "adapt_bootstrap_entry_route_proof",
+    "concrete_entry_route_key",
+    "resolve_concrete_entry_route",
+    "bootstrap_entry_route_key",
+    "resolve_bootstrap_entry_route",
     "adapt_conditional_entry_route",
     "adapt_native_bound_transition_route",
     "adapt_state_transition_route",

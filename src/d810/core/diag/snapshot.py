@@ -143,7 +143,10 @@ def _insn_ea_fingerprint(block: BlockSnapshot) -> str:
 
 def _opcode_fingerprint(block: BlockSnapshot) -> str:
     return json.dumps(
-        [int(insn.opcode) for insn in block.instructions],
+        [
+            (int(insn.opcode), insn.raw_opcode)
+            for insn in block.instructions
+        ],
         separators=(",", ":"),
     )
 
@@ -177,6 +180,11 @@ def _body_fingerprint(block: BlockSnapshot) -> str:
         {
             "ea": _insn_ea_fingerprint(block),
             "op": _opcode_fingerprint(block),
+            "tail": (
+                block.tail_opcode,
+                block.raw_tail_opcode,
+                block.tail_kind,
+            ),
             "operand": _operand_fingerprint(block),
         },
         sort_keys=True,
@@ -284,6 +292,9 @@ def snapshot_mba(
                     "succs": json.dumps(b.succs),
                     "preds": json.dumps(b.preds),
                     "insn_count": len(b.instructions),
+                    "tail_opcode": b.tail_opcode,
+                    "raw_tail_opcode": b.raw_tail_opcode,
+                    "tail_kind": b.tail_kind,
                     "meta": b.meta,
                 }
             )
@@ -316,6 +327,7 @@ def snapshot_mba(
                         "ea_hex": ea_hex,
                         "ea_i64": ea_i64,
                         "opcode": insn.opcode,
+                        "raw_opcode": insn.raw_opcode,
                         "opcode_name": insn.opcode_name,
                         "iprops": int(insn.iprops),
                         "is_assert": int(insn.is_assert),

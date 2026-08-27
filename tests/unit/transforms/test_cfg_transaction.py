@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 
 import pytest
 
@@ -19,7 +20,9 @@ from d810.transforms.cfg_transaction import (
     PlanBlockRef,
     PlanInsnRef,
     PreparedCfgTransaction,
+    SemanticAuthorityCommitment,
     TransactionAttemptId,
+    _cfg_content_id,
 )
 from d810.transforms.plan import PatchPlan
 
@@ -37,6 +40,24 @@ def _attempt(
         generation=generation,
         attempt_id=attempt_id,
     )
+
+
+def test_semantic_authority_commitment_uses_length_prefixed_portable_content() -> None:
+    """Field boundaries cannot collide in the portable precommit witness."""
+    fields = ("a", "bc", "d", "e", "f", "g", "h", "i")
+    expected_bytes = b"".join(
+        len(item.encode("utf-8")).to_bytes(8, "big") + item.encode("utf-8")
+        for item in ("cfg.semantic-authority-commitment.v1", *fields)
+    )
+    expected = "sha256:" + hashlib.sha256(expected_bytes).hexdigest()
+    assert _cfg_content_id("cfg.semantic-authority-commitment.v1", fields) == expected
+    assert _cfg_content_id("cfg.semantic-authority-commitment.v1", fields) != _cfg_content_id(
+        "cfg.semantic-authority-commitment.v1", ("ab", "c", "d", "e", "f", "g", "h", "i")
+    )
+    commitment = SemanticAuthorityCommitment(*fields, expected)
+    assert commitment.commitment_id == expected
+    with pytest.raises(ValueError, match="commitment ID drifted"):
+        SemanticAuthorityCommitment(*fields, "sha256:" + "0" * 64)
 
 
 def _projection(
@@ -69,6 +90,13 @@ def test_ordinary_patch_plan_keeps_typed_authority_channels_optional() -> None:
     assert plan.metadata == ()
     assert plan.unflatten_proposal is None
     assert not hasattr(plan, "legacy_unflatten_shadow")
+
+
+def test_portable_transaction_authority_has_no_operation_lineage_surface() -> None:
+    """Commit authority is closed over snapshots and receipts, not operations."""
+    forbidden = {"OperationLineage", "operation_lineage", "operation_lineages"}
+    for owner in (CfgProjection, PreparedCfgTransaction, BoundCfgTransaction, PatchPlanExecutionResult):
+        assert forbidden.isdisjoint(dir(owner))
 
 
 def test_ordinary_patch_plan_does_not_import_authority_model() -> None:

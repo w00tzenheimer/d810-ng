@@ -39,6 +39,14 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     resolve_materialized_indirect_transfer_targets,
 )
 from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
+from d810.analyses.control_flow.semantic_route_evidence import (
+    CanonicalSemanticEvidenceProductionAbstention,
+    CanonicalSemanticEvidenceProductionFactCoordinate,
+    CanonicalSemanticEvidenceProductionReason,
+    CanonicalSemanticEvidenceProductionResult,
+    CanonicalSemanticEvidenceProductionStage,
+    SemanticRouteFactKind,
+)
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
@@ -112,6 +120,8 @@ from d810.transforms.minimal_unflatten_emit import (
     build_source_keyed_handler_redirects,
     build_state_write_redirects,
     enrich_native_bound_transition_routes,
+    MissingSemanticRouteFactCoordinate,
+    _missing_semantic_route_fact_coordinates,
 )
 from d810.transforms.unflatten_authority.producer_api import (
     ConditionalEntryBridgeForecast,
@@ -718,31 +728,141 @@ def _native_bound_route(
     return NativeBoundTransitionRoute(**values)
 
 
-def test_native_bound_transition_keys_correlate_write_and_via_sources() -> None:
+def test_native_bound_routes_enrich_direct_and_via_with_typed_fact_ids() -> None:
     direct = StateWriteTransition(10, 0x10, 20, False, None)
     through_via = StateWriteTransition(11, 0x20, 30, False, None, via_block=12)
     unrelated = StateWriteTransition(13, 0x30, 40, False, None, via_block=14)
 
-    assert minimal_unflatten_emit_module._native_bound_transition_keys(
+    enriched = enrich_native_bound_transition_routes(
         (direct, through_via, unrelated),
         (
             _native_bound_route(source=10, state=0x10, target=20, fact_id="direct"),
             _native_bound_route(source=12, state=0x20, target=30, fact_id="via"),
         ),
-    ) == frozenset({(10, 0x10, 20), (11, 0x20, 30)})
+    )
+    assert [item.semantic_route_fact.fact_id for item in enriched[:2]] == [
+        "direct",
+        "via",
+    ]
+    assert enriched[2].semantic_route_fact is None
 
 
-def test_native_bound_transition_keys_reject_ambiguous_shared_via_owner() -> None:
+def test_native_bound_enrichment_joins_resolved_transition_by_exact_route() -> None:
+    transition = StateWriteTransition(10, 0x10, 20, False, None)
+
+    (enriched,) = enrich_native_bound_transition_routes(
+        (transition,),
+        (
+            _native_bound_route(
+                source=10, state=0x10, target=20, fact_id="matching"
+            ),
+            _native_bound_route(
+                source=10, state=0x99, target=30, fact_id="other-route"
+            ),
+        ),
+    )
+
+    assert enriched.semantic_route_fact is not None
+    assert enriched.semantic_route_fact.fact_id == "matching"
+    assert enriched.next_state == transition.next_state
+    assert enriched.target_handler == transition.target_handler
+
+
+def test_native_bound_enrichment_can_bind_after_route_reconciliation() -> None:
+    receipt = _native_bound_route(
+        source=10, state=0x30, target=40, fact_id="normalized"
+    )
+    provisional = StateWriteTransition(10, 0x10, 20, False, None)
+
+    (before_reconciliation,) = enrich_native_bound_transition_routes(
+        (provisional,), (receipt,)
+    )
+    assert before_reconciliation.semantic_route_fact is None
+
+    normalized = replace(
+        before_reconciliation,
+        next_state=0x30,
+        target_handler=40,
+    )
+    (after_reconciliation,) = enrich_native_bound_transition_routes(
+        (normalized,), (receipt,)
+    )
+
+    assert after_reconciliation.semantic_route_fact is not None
+    assert after_reconciliation.semantic_route_fact.fact_id == "normalized"
+
+
+def test_seeded_native_bound_transition_retains_typed_route_fact() -> None:
+    def block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...], ea: int) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=len(succs),
+            succs=succs,
+            preds=preds,
+            flags=0,
+            start_ea=ea,
+            insn_snapshots=(),
+        )
+
+    graph = FlowGraph(
+        {
+            4: block(4, (5,), (), 0x1100),
+            5: block(5, (), (4,), 0x1200),
+            3: block(3, (), (), 0x1300),
+        },
+        4,
+        0x1000,
+    )
+    route = _native_bound_route(source=4, state=0x10, target=3, fact_id="seed")
+    (transition,) = minimal_unflatten_emit_module._seed_native_bound_backedge_transitions(
+        graph,
+        (),
+        (route,),
+        dispatcher_entry_serial=2,
+        dispatcher_region_serials=frozenset({2, 5}),
+    )
+    assert transition.semantic_route_fact is not None
+    assert transition.semantic_route_fact.kind is SemanticRouteFactKind.NATIVE_BOUND
+    assert transition.semantic_route_fact.source_instruction_ea == route.source_instruction_ea
+    assert transition.semantic_route_fact.fact_id == "seed"
+
+
+def test_native_bound_fact_shared_by_two_owners_abstains_atomically() -> None:
     transitions = (
         StateWriteTransition(10, 0x10, 20, False, None, via_block=12),
         StateWriteTransition(11, 0x10, 20, False, None, via_block=12),
     )
 
-    with pytest.raises(ValueError, match="exactly one state-write transition"):
-        minimal_unflatten_emit_module._native_bound_transition_keys(
-            transitions,
-            (_native_bound_route(source=12, state=0x10, target=20),),
-        )
+    enriched = enrich_native_bound_transition_routes(
+        transitions,
+        (_native_bound_route(source=12, state=0x10, target=20, fact_id="shared"),),
+    )
+    assert all(item.semantic_route_fact is None for item in enriched)
+
+
+def test_ambiguous_native_fact_does_not_hide_unrelated_exact_fact() -> None:
+    transitions = (
+        StateWriteTransition(10, 0x10, 20, False, None, via_block=12),
+        StateWriteTransition(11, 0x10, 20, False, None, via_block=12),
+        StateWriteTransition(13, 0x30, 40, False, None),
+    )
+
+    enriched = enrich_native_bound_transition_routes(
+        transitions,
+        (
+            _native_bound_route(
+                source=12, state=0x10, target=20, fact_id="shared"
+            ),
+            _native_bound_route(
+                source=13, state=0x30, target=40, fact_id="independent"
+            ),
+        ),
+    )
+
+    assert enriched[0].semantic_route_fact is None
+    assert enriched[1].semantic_route_fact is None
+    assert enriched[2].semantic_route_fact is not None
+    assert enriched[2].semantic_route_fact.fact_id == "independent"
 
 
 def test_native_bound_route_enriches_unresolved_entry_transition() -> None:
@@ -807,6 +927,275 @@ def test_native_bound_route_corroborates_matching_resolved_transition() -> None:
     assert enriched.proof.kind == "native_bound_route"
     assert enriched.proof.reason == (
         "fact_id=transition:corroborated;native_ea=0x7FF855576BAA"
+    )
+
+
+def test_native_bound_normalization_preserves_richer_matching_fact() -> None:
+    route = _native_bound_route(source=10, state=0x10, target=20, fact_id="native")
+    transition = StateWriteTransition(10, 0x10, 20, False, None)
+    unrelated = _native_bound_route(
+        source=10, state=0x99, target=30, fact_id="other-phase"
+    )
+    (native,) = enrich_native_bound_transition_routes(
+        (transition,),
+        (
+            route,
+            unrelated,
+        ),
+    )
+    rich = replace(
+        native.semantic_route_fact,
+        kind=SemanticRouteFactKind.DECISION_DAG,
+        fact_id=None,
+    )
+    transition = replace(native, semantic_route_fact=rich)
+
+    (normalized,) = enrich_native_bound_transition_routes(
+        (transition,), (route, unrelated)
+    )
+
+    assert normalized.semantic_route_fact is rich
+    assert normalized.semantic_route_fact.kind is SemanticRouteFactKind.DECISION_DAG
+
+
+def test_native_bound_normalization_revokes_stale_existing_fact() -> None:
+    old_route = _native_bound_route(source=10, state=0x10, target=20, fact_id="old")
+    (with_old_fact,) = enrich_native_bound_transition_routes(
+        (StateWriteTransition(10, 0x10, 20, False, None),), (old_route,)
+    )
+    stale = replace(with_old_fact, target_handler=30)
+
+    (normalized,) = enrich_native_bound_transition_routes((stale,), (old_route,))
+
+    assert normalized.semantic_route_fact is None
+
+
+def test_native_bound_normalization_abstains_on_richer_fact_disagreement() -> None:
+    matching = _native_bound_route(source=10, state=0x10, target=20, fact_id="native")
+    (native,) = enrich_native_bound_transition_routes(
+        (StateWriteTransition(10, 0x10, 20, False, None),), (matching,)
+    )
+    rich = replace(
+        native.semantic_route_fact,
+        kind=SemanticRouteFactKind.DECISION_DAG,
+        fact_id=None,
+    )
+    transition = replace(native, semantic_route_fact=rich)
+    disagreement = _native_bound_route(source=10, state=0x10, target=30, fact_id="other")
+
+    (normalized,) = enrich_native_bound_transition_routes((transition,), (disagreement,))
+
+    assert normalized.semantic_route_fact is None
+
+
+def test_native_bound_normalization_rejects_same_id_with_unequal_content() -> None:
+    transition = StateWriteTransition(10, 0x10, 20, False, None)
+    first = _native_bound_route(source=10, state=0x10, target=20, fact_id="same")
+    routes = (
+        first,
+        replace(first, source_instruction_ea=0x7FF855576BAB),
+    )
+
+    (normalized,) = enrich_native_bound_transition_routes((transition,), routes)
+
+    assert normalized.semantic_route_fact is None
+
+
+def test_seed_native_bound_backedge_rejects_conflicting_receipts() -> None:
+    def block(
+        serial: int,
+        succs: tuple[int, ...],
+        preds: tuple[int, ...],
+        ea: int,
+    ) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=len(succs),
+            succs=succs,
+            preds=preds,
+            flags=0,
+            start_ea=ea,
+            insn_snapshots=(),
+        )
+
+    graph = FlowGraph(
+        {
+            4: block(4, (5,), (), 0x1100),
+            5: block(5, (), (4,), 0x1200),
+            3: block(3, (), (), 0x1300),
+        },
+        4,
+        0x1000,
+    )
+    routes = (
+        _native_bound_route(source=4, state=0x10, target=3, fact_id="first"),
+        _native_bound_route(source=4, state=0x10, target=3, fact_id="second"),
+    )
+
+    seeded = minimal_unflatten_emit_module._seed_native_bound_backedge_transitions(
+        graph,
+        (),
+        routes,
+        dispatcher_entry_serial=2,
+        dispatcher_region_serials=frozenset({2, 5}),
+    )
+
+    assert seeded == ()
+
+
+def test_seed_native_bound_backedge_conflict_aborts_mixed_sources() -> None:
+    def block(
+        serial: int,
+        succs: tuple[int, ...],
+        preds: tuple[int, ...],
+        ea: int,
+    ) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=len(succs),
+            succs=succs,
+            preds=preds,
+            flags=0,
+            start_ea=ea,
+            insn_snapshots=(),
+        )
+
+    graph = FlowGraph(
+        {
+            4: block(4, (5,), (), 0x1100),
+            6: block(6, (5,), (), 0x1140),
+            5: block(5, (), (4, 6), 0x1200),
+            3: block(3, (), (), 0x1300),
+            9: block(9, (), (), 0x1400),
+        },
+        4,
+        0x1000,
+    )
+    routes = (
+        _native_bound_route(source=4, state=0x10, target=3, fact_id="conflict"),
+        _native_bound_route(source=4, state=0x10, target=9, fact_id="conflict"),
+        _native_bound_route(source=6, state=0x20, target=3, fact_id="valid"),
+    )
+
+    seeded = minimal_unflatten_emit_module._seed_native_bound_backedge_transitions(
+        graph,
+        (),
+        routes,
+        dispatcher_entry_serial=2,
+        dispatcher_region_serials=frozenset({2, 5}),
+    )
+
+    assert seeded is None
+
+
+def test_emit_aborts_fragment_on_richer_route_disagreement(monkeypatch) -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 20), (0, 10, 20)),
+            10: _b(10, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+            30: _b(30, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _disp({0x10: 20}, exit_block=99)
+    native = _native_bound_route(source=10, state=0x10, target=20, fact_id="rich")
+    (native_transition,) = enrich_native_bound_transition_routes(
+        (StateWriteTransition(10, 0x10, 20, False, 0),), (native,)
+    )
+    rich = replace(
+        native_transition.semantic_route_fact,
+        kind=SemanticRouteFactKind.DECISION_DAG,
+        fact_id=None,
+    )
+    transition = replace(native_transition, semantic_route_fact=rich)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (transition,),
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        native_key=NATIVE_KEY,
+        native_bound_transition_routes=(
+            _native_bound_route(source=10, state=0x10, target=30, fact_id="other"),
+        ),
+    )
+
+    assert graph_modifications(plan) == []
+
+
+def test_emit_aborts_fragment_on_ambiguous_native_missing_fact(monkeypatch) -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 20), (0, 10, 20)),
+            10: _b(10, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (StateWriteTransition(10, None, None, False, None),),
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        native_key=NATIVE_KEY,
+        native_bound_transition_routes=(
+            _native_bound_route(source=10, state=0x10, target=20, fact_id="one"),
+            _native_bound_route(source=10, state=0x20, target=10, fact_id="two"),
+        ),
+    )
+
+    assert graph_modifications(plan) == []
+
+
+def test_missing_route_fact_coordinates_include_receipt_candidates() -> None:
+    transitions = (
+        StateWriteTransition(3, None, None, False, None, via_block=4),
+        StateWriteTransition(8, None, None, False, None),
+    )
+    routes = (
+        _native_bound_route(source=4, state=0x20, target=30, fact_id="z"),
+        _native_bound_route(source=4, state=0x10, target=20, fact_id="a"),
+        _native_bound_route(source=99, state=0x30, target=40, fact_id="unrelated"),
+    )
+
+    coordinates = _missing_semantic_route_fact_coordinates(transitions, routes)
+
+    assert coordinates == (
+        MissingSemanticRouteFactCoordinate(
+            owner_serial=3,
+            write_serial=3,
+            via_serial=4,
+            state=None,
+            target=None,
+            candidate_fact_ids=("a", "z"),
+        ),
+        MissingSemanticRouteFactCoordinate(
+            owner_serial=8,
+            write_serial=8,
+            via_serial=None,
+            state=None,
+            target=None,
+            candidate_fact_ids=(),
+        ),
     )
 
 
@@ -939,6 +1328,70 @@ def test_intermediate_effect_veto_stops_later_sibling_planning(monkeypatch):
     )
 
     assert graph_modifications(plan) == []
+
+
+def test_emitter_logs_typed_production_abstention_and_abstains_atomically(
+    monkeypatch, caplog
+) -> None:
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 20), (0, 10, 20)),
+            10: _b(10, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (StateWriteTransition(10, None, None, True, None),),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "build_canonical_semantic_evidence",
+        lambda *_args, **_kwargs: CanonicalSemanticEvidenceProductionResult(
+            abstention=CanonicalSemanticEvidenceProductionAbstention(
+                reason=CanonicalSemanticEvidenceProductionReason.PARTITION_GROUP_INCOMPLETE,
+                stage=CanonicalSemanticEvidenceProductionStage.GROUP,
+                coordinate=CanonicalSemanticEvidenceProductionFactCoordinate(
+                    SemanticRouteFactKind.NATIVE_BOUND,
+                    10,
+                    10,
+                    0x2000,
+                    20,
+                    0x20,
+                ),
+            )
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="d810.transforms.minimal_unflatten_emit"):
+        plan = emit_minimal_unflatten(
+            fg,
+            disp,
+            state_var_stkoff=_STATE,
+            dispatcher_entry_serial=2,
+            initial_state=0x10,
+            native_key=NATIVE_KEY,
+            native_bound_transition_routes=(
+                _native_bound_route(source=10, state=0x20, target=20, fact_id="typed"),
+            ),
+        )
+
+    assert graph_modifications(plan) == []
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "unflat canonical route evidence abstained" in record.getMessage()
+    )
+    assert "reason=partition_group_incomplete" in message
+    assert "stage=group" in message
+    assert "fact_kind=native_bound" in message
+    assert "owner_serial=10" in message
+    assert "source_instruction_ea=0x2000" in message
 
 
 def test_native_bound_entry_route_receipt_identifies_exact_redirect(monkeypatch):

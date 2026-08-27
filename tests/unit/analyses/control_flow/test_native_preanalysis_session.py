@@ -875,9 +875,12 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
     assert evidence == candidate
     assert evidence.native_key == NATIVE_KEY
     assert evidence.generation == state.evidence_generation == 1
-    assert evidence.atomic_group_id == "canonical-semantic:g1"
+    # The session-local generation label is only construction context.  The
+    # published atomic group is sealed from the canonical proof content.
+    assert evidence.atomic_group_id.startswith("sha256:")
     assert len(evidence.route_proofs) == 1
     proof = evidence.route_proofs[0]
+    assert proof.atomic_group_id == evidence.atomic_group_id
     assert proof.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT
     assert proof.shape is SemanticRouteShape.DIRECT
     assert proof.source_identity == delivery_identity

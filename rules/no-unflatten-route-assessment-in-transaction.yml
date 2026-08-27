@@ -1,0 +1,13 @@
+id: no-unflatten-route-assessment-in-transaction
+language: python
+severity: error
+files:
+  - "src/d810/transforms/unflatten_authority/bind.py"
+  - "src/d810/transforms/unflatten_authority/transaction_api.py"
+  - "src/d810/transforms/unflatten_authority/evaluate.py"
+  - "src/d810/hexrays/mutation/patch_transaction.py"
+rule:
+  any:
+    - pattern: assess_canonical_route($$$)
+    - pattern: $MOD.assess_canonical_route($$$)
+message: Transaction authority must consume sealed route authority, never reassess it.

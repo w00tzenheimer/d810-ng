@@ -8,6 +8,94 @@ from dataclasses import replace
 import pytest
 
 from d810.transforms.plan import PatchPlan
+from d810.transforms.unflatten_authority.ids import authority_id
+
+
+def test_canonical_patch_step_descriptor_api_is_the_single_identity_owner() -> None:
+    from d810.transforms.unflatten_authority import proposal
+
+    assert hasattr(proposal, "CanonicalPatchStepDescriptor")
+    assert callable(proposal.canonical_patch_step_descriptors)
+    assert callable(proposal.canonical_patch_step_descriptor)
+
+
+def test_canonical_patch_step_descriptor_owns_direct_step_identity() -> None:
+    from d810.transforms.cfg_transaction import PatchStepKind
+    from d810.transforms.plan import PatchRedirectGoto
+
+    source, refs, _key = _discovery_fixture(((0, (1,), 1, (_snapshot(0x1000, 1),)), (1, (), 1, (_snapshot(0x1010, 1),))))
+    plan = PatchPlan(
+        plan_id="sha256:" + "1" * 64,
+        snapshot_id="sha256:" + "2" * 64,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[1]),),
+        source_coordinates=((refs[0], 0), (refs[1], 1)),
+    )
+    from d810.transforms.unflatten_authority.proposal import canonical_patch_step_descriptor
+    descriptor = canonical_patch_step_descriptor(plan, 0)
+    assert descriptor.plan_id == plan.plan_id
+    assert descriptor.step_kind is PatchStepKind.REDIRECT_GOTO
+    assert descriptor.owner_refs == (refs[0],)
+    assert descriptor.step_digest.startswith("sha256:")
+
+
+def test_conditional_redirect_descriptor_owns_both_creation_specs() -> None:
+    """A cloned conditional step must bind clone and helper independently."""
+    from d810.transforms.cfg_transaction import LogicalBlockRef, PlanBlockRef
+    from d810.transforms.plan import (
+        PatchBlockSpec,
+        PatchConditionalRedirect,
+        PatchEdgeRef,
+    )
+    from d810.transforms.unflatten_authority.proposal import (
+        canonical_patch_step_descriptor,
+    )
+
+    plan_id = "sha256:" + "3" * 64
+    f = LogicalBlockRef("source", "f", 1)
+    r = LogicalBlockRef("source", "r", 1)
+    t = LogicalBlockRef("source", "t", 1)
+    l = LogicalBlockRef("source", "l", 1)
+    clone = PlanBlockRef(plan_id, "conditional_redirect:0")
+    helper = PlanBlockRef(plan_id, "conditional_redirect_fallthrough:1")
+    plan = PatchPlan(
+        plan_id=plan_id,
+        snapshot_id="sha256:" + "4" * 64,
+        steps=(PatchConditionalRedirect(
+            block_id=clone,
+            fallthrough_block_id=helper,
+            source_serial=f,
+            ref_block=r,
+            conditional_target=t,
+            fallthrough_target=l,
+        ),),
+        new_blocks=(
+            PatchBlockSpec(
+                clone, "conditional_redirect_clone", r,
+                PatchEdgeRef(f, r),
+                (PatchEdgeRef(clone, t), PatchEdgeRef(clone, helper)),
+            ),
+            PatchBlockSpec(
+                helper, "conditional_redirect_fallthrough", r,
+                PatchEdgeRef(clone, helper), (PatchEdgeRef(helper, l),),
+            ),
+        ),
+        source_coordinates=((f, 0), (r, 1), (t, 2), (l, 3)),
+    )
+
+    descriptor = canonical_patch_step_descriptor(plan, 0)
+    assert descriptor.owner_refs == (clone, helper)
+    assert descriptor.new_block_spec_digests == (
+        (clone, descriptor.new_block_spec_digests[0][1]),
+        (helper, descriptor.new_block_spec_digests[1][1]),
+    )
+    assert descriptor.step_digest.startswith("sha256:")
+    mutated = replace(
+        plan,
+        new_blocks=(replace(plan.new_blocks[0], kind="different_clone"), plan.new_blocks[1]),
+    )
+    mutated_descriptor = canonical_patch_step_descriptor(mutated, 0)
+    assert mutated_descriptor.new_block_spec_digests[0][1] != descriptor.new_block_spec_digests[0][1]
+    assert mutated_descriptor.step_digest != descriptor.step_digest
 
 
 def _discovery_fixture(block_specs):
@@ -24,6 +112,9 @@ def _discovery_fixture(block_specs):
         block = BlockSnapshot(
             serial=serial, block_type=0, succs=tuple(succs), preds=(), flags=0,
             start_ea=ea_values[0], insn_snapshots=tuple(instructions), kind=kind,
+            tail_opcode=instructions[-1].opcode if instructions else None,
+            raw_tail_opcode=instructions[-1].raw_opcode if instructions else None,
+            tail_kind=instructions[-1].kind if instructions else None,
         )
         blocks[serial] = block
         identity = StableBlockIdentity.from_intervals(
@@ -37,7 +128,160 @@ def _discovery_fixture(block_specs):
 
 def _snapshot(ea, kind):
     from d810.ir.flowgraph import InsnSnapshot
-    return InsnSnapshot(0, ea, (), kind=kind, native_ea=ea)
+    return InsnSnapshot(0, ea, (), kind=kind, native_ea=ea, raw_opcode=0)
+
+
+def _empty_native_fixture(*, duplicate_start: bool = False):
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
+    from d810.transforms.cfg_transaction import NativeBlockRef
+
+    key = NativePreanalysisKey("input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64)
+    blocks = {
+        0: BlockSnapshot(0, 0, (1,) if duplicate_start else (), (), 0, 0x1000, (), kind=BlockKind.ONE_WAY if duplicate_start else BlockKind.ZERO_WAY),
+    }
+    refs = {
+        0: NativeBlockRef(
+            StableBlockIdentity.from_intervals(
+                (NativeEaInterval(0x1000, 0x1010),),
+                native_key=key,
+                exact_instruction_eas=(),
+            )
+        )
+    }
+    if duplicate_start:
+        blocks[1] = BlockSnapshot(1, 0, (), (0,), 0, 0x1000, (), kind=BlockKind.ZERO_WAY)
+        refs[1] = NativeBlockRef(
+            StableBlockIdentity.from_intervals(
+                (NativeEaInterval(0x1000, 0x1020),),
+                native_key=key,
+                exact_instruction_eas=(),
+            )
+        )
+    return FlowGraph(blocks, 0, 0x1000), refs, key
+
+
+def test_source_catalog_accepts_unique_empty_native_entry() -> None:
+    from d810.transforms.unflatten_authority import producer_api
+
+    source, refs, key = _empty_native_fixture()
+    catalog = producer_api.build_source_identity_catalog(
+        source, refs, native_key=key, source_generation=0,
+    )
+    assert catalog.blocks[0].anchor_ea == 0x1000
+    assert catalog.blocks[0].native_instruction_eas == ()
+
+
+def test_source_catalog_deduplicates_repeated_native_origins_from_one_instruction() -> None:
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.unflatten_authority import producer_api
+
+    key = NativePreanalysisKey("input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64)
+    source = FlowGraph(
+        {
+            0: BlockSnapshot(
+                0,
+                0,
+                (),
+                (),
+                0,
+                0x1000,
+                (
+                    InsnSnapshot(0, 0x1000, (), kind=InsnKind.MOV, native_ea=0x1000),
+                    InsnSnapshot(0, 0x1001, (), kind=InsnKind.MOV, native_ea=0x1000),
+                ),
+                kind=BlockKind.ZERO_WAY,
+            )
+        },
+        0,
+        0x1000,
+    )
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1010),),
+        native_key=key,
+        exact_instruction_eas=(0x1000,),
+    )
+    catalog = producer_api.build_source_identity_catalog(
+        source,
+        {0: NativeBlockRef(identity)},
+        native_key=key,
+        source_generation=1,
+    )
+    assert catalog.blocks[0].native_instruction_eas == (0x1000,)
+
+
+def test_phase_binding_accepts_unique_empty_native_entry_without_instruction_ownership() -> None:
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.unflatten_authority import bind, model
+    from d810.transforms.unflatten_authority.ids import _subject_factory
+
+    source, refs, key = _empty_native_fixture()
+    catalog = model.SourceIdentityCatalog(
+        key,
+        0,
+        (
+            model.SourceBlockIdentityWitness(
+                refs[0], 0x1000, (),
+            ),
+        ),
+    )
+    assert type(refs[0]) is NativeBlockRef
+    subject = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SOURCE_ENTRY,
+        block_ref=refs[0],
+        anchor_ea=0x1000,
+        locator=model.BlockSubjectLocator(refs[0], 0x1000),
+    )
+    bindings = bind.bind_subjects(
+        (subject,),
+        catalog=catalog,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+        graph_fingerprint="sha256:" + "a" * 64,
+        generation=0,
+        serial_by_ref={refs[0]: 0},
+    )
+    assert bindings[0].status is model.SubjectBindingStatus.UNIQUE
+    assert bindings[0].native_instruction_eas == ()
+
+
+def test_source_catalog_rejects_empty_witness_for_instruction_identity() -> None:
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.unflatten_authority.model import SourceBlockIdentityWitness
+
+    key = NativePreanalysisKey("input", "x86", 64, 0, "f" * 64, "p" * 64, "s" * 64)
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1010),),
+        native_key=key,
+        exact_instruction_eas=(0x1000,),
+    )
+    with pytest.raises(ValueError, match="empty|instruction"):
+        SourceBlockIdentityWitness(NativeBlockRef(identity), 0x1000, ())
+
+
+def test_source_catalog_rejects_empty_logical_witness() -> None:
+    from d810.transforms.cfg_transaction import LogicalBlockRef
+    from d810.transforms.unflatten_authority.model import SourceBlockIdentityWitness
+
+    with pytest.raises(ValueError, match="empty|instruction"):
+        SourceBlockIdentityWitness(LogicalBlockRef("session", "proxy", 1), 0x1000, ())
+
+
+def test_source_catalog_allows_duplicate_empty_native_starts_for_distinct_refs() -> None:
+    from d810.transforms.unflatten_authority import producer_api
+
+    source, refs, key = _empty_native_fixture(duplicate_start=True)
+    catalog = producer_api.build_source_identity_catalog(
+        source, refs, native_key=key, source_generation=0,
+    )
+    assert tuple(item.anchor_ea for item in catalog.blocks) == (0x1000, 0x1000)
 
 
 def test_reachable_stop_terminal_is_based_on_block_tail() -> None:
@@ -123,6 +367,7 @@ def test_plan_input_catalog_lifts_only_explicit_authoritative_handlers() -> None
     from d810.transforms.unflatten_authority import producer_api
     from d810.analyses.control_flow.semantic_route_evidence import (
         CanonicalSemanticEvidence,
+        canonical_semantic_evidence_from_proofs,
     )
     from d810.core.native_preanalysis_key import NativePreanalysisKey
     from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
@@ -415,6 +660,38 @@ def test_proposal_validation_requires_the_exact_redirect_manifest() -> None:
         assert not isinstance(validate_proposal(candidate_plan, candidate), ProposalAccepted), label
 
 
+def test_use_def_allows_authoritative_redirect_owner_outside_dispatcher_members() -> None:
+    """Redirect ownership follows the exact use-def manifest, not retirement scope."""
+
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import (
+        ProposalAccepted, canonical_redirect_manifest, validate_proposal,
+    )
+
+    proposal, plan_id = _proposal_and_plan_ids()
+    refs = tuple(block.block_ref for block in proposal.source_identity_catalog.blocks)
+    assert refs[2] in tuple(
+        handler.block_ref for handler in proposal.plan_inputs.authoritative_handlers
+    )
+    assert refs[2] not in proposal.plan_inputs.dispatcher_member_refs
+    plan = PatchPlan(
+        plan_id=plan_id,
+        snapshot_id="snapshot-1",
+        source_generation=3,
+        steps=(PatchRedirectGoto(refs[2], refs[0], refs[1]),),
+    )
+    manifest = canonical_redirect_manifest(plan)
+    candidate = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    assert isinstance(validate_proposal(plan, candidate), ProposalAccepted)
+
+
 def test_redirect_manifest_rejects_subclasses_and_invalid_typed_targets() -> None:
     from d810.transforms.cfg_transaction import PlanBlockRef
     from d810.transforms.plan import PatchRedirectBranch, PatchRedirectGoto
@@ -473,6 +750,112 @@ def test_typed_plan_has_no_parallel_shadow_transport() -> None:
         replace(typed, metadata=(("dispatcher_corridor_coverage", {"legacy": True}),))
 
     assert not hasattr(typed, "legacy_unflatten_shadow")
+
+
+def test_typed_attachment_seals_full_source_coordinates_from_source_mapping() -> None:
+    """Typed authority retains the full source graph beyond executable rows."""
+
+    from .test_bind import _exact_fixture
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import (
+        attach_typed_proposal,
+        canonical_redirect_manifest,
+    )
+
+    source, proposal, exclusion, refs = _exact_fixture()
+    template = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id="snapshot-1",
+        source_generation=1,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+        source_coordinates=((refs[0], 0),),
+    )
+    manifest = canonical_redirect_manifest(template)
+    witness = replace(
+        proposal.use_def_witness,
+        redirect_owner_refs=manifest.owner_refs,
+        redirect_digest=manifest.digest,
+    )
+
+    attached = attach_typed_proposal(
+        template,
+        source=source,
+        block_refs_by_serial=refs,
+        canonical_route_evidence=proposal.route_evidence,
+        exact_state_effect_exclusions=(exclusion,),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=proposal.plan_inputs.state_identity,
+        use_def_witness=witness,
+    )
+
+    assert attached.source_coordinates == tuple(
+        (refs[serial], serial) for serial in sorted(source.blocks)
+    )
+
+
+def test_typed_attachment_snapshots_source_coordinates_before_mapping_mutation() -> None:
+    """Late mapping mutation cannot change the sealed source coordinate table."""
+
+    from collections.abc import Mapping
+
+    from .test_bind import _exact_fixture
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import (
+        attach_typed_proposal,
+        canonical_redirect_manifest,
+    )
+
+    class LaterMutatingMapping(Mapping):
+        def __init__(self, rows) -> None:
+            self._rows = dict(rows)
+            self._reads = 0
+
+        def __getitem__(self, serial):
+            self._reads += 1
+            if self._reads == 61:
+                self._rows[0], self._rows[1] = self._rows[1], self._rows[0]
+            return self._rows[serial]
+
+        def __iter__(self):
+            return iter(self._rows)
+
+        def __len__(self):
+            return len(self._rows)
+
+    source, proposal, exclusion, refs = _exact_fixture()
+    template = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id="snapshot-1",
+        source_generation=1,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+    )
+    manifest = canonical_redirect_manifest(template)
+    witness = replace(
+        proposal.use_def_witness,
+        redirect_owner_refs=manifest.owner_refs,
+        redirect_digest=manifest.digest,
+    )
+
+    mapping = LaterMutatingMapping(refs)
+    attached = attach_typed_proposal(
+        template,
+        source=source,
+        block_refs_by_serial=mapping,
+        canonical_route_evidence=proposal.route_evidence,
+        exact_state_effect_exclusions=(exclusion,),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=proposal.plan_inputs.state_identity,
+        use_def_witness=witness,
+    )
+
+    assert attached.source_coordinates == tuple(
+        (refs[serial], serial) for serial in sorted(source.blocks)
+    )
+    assert mapping._reads == len(refs)
 
 
 def test_first_typed_effect_plan_removes_reserved_legacy_metadata() -> None:
@@ -640,6 +1023,7 @@ def test_producer_exact_effect_claim_correlates_all_canonical_dimensions() -> No
     from d810.analyses.control_flow.effect_branch_exclusion import ExactStateBranchEffectExclusion
     from d810.analyses.control_flow.semantic_route_evidence import (
         CanonicalSemanticEvidence,
+        canonical_semantic_evidence_from_proofs,
         SemanticCarrierProof,
         SemanticCorridorPoint,
         SemanticPredicateKind,
@@ -677,6 +1061,18 @@ def test_producer_exact_effect_claim_correlates_all_canonical_dimensions() -> No
         )
         for serial, succs, preds, ea, insns in specs
     }
+    blocks = {
+        serial: replace(
+            block,
+            insn_snapshots=(rows := tuple(
+                replace(insn, raw_opcode=insn.opcode) for insn in block.insn_snapshots
+            )),
+            tail_opcode=rows[-1].opcode if rows else None,
+            raw_tail_opcode=rows[-1].raw_opcode if rows else None,
+            tail_kind=rows[-1].kind if rows else None,
+        )
+        for serial, block in blocks.items()
+    }
     source = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x5000)
     refs = {}
     for serial, _succs, _preds, ea, insns in specs:
@@ -709,7 +1105,9 @@ def test_producer_exact_effect_claim_correlates_all_canonical_dimensions() -> No
         state_write=state_write, predicate=predicate, carriers=(carrier,),
         diagnostic_provenance=(("provider_proof_kind", "state_choice"),),
     )
-    evidence = CanonicalSemanticEvidence(key, 1, authority_id("group"), (route,))
+    evidence = canonical_semantic_evidence_from_proofs(
+        native_key=key, generation=1, proofs=(route,),
+    )
     catalog_refs = {serial: ref for serial, ref in refs.items()}
     exclusion = ExactStateBranchEffectExclusion(
         7, 0, 0x1000, 0x1000, 1, 0x2000, 0x2001, 2, 0x3000, 3, 0x4000, state,
@@ -774,6 +1172,7 @@ def test_producer_exact_effect_claim_rejects_non_call_store_sites(kind_name) -> 
             exclusion.discarded_effect_serial: replace(
                 discarded,
                 insn_snapshots=(replace(discarded.insn_snapshots[0], kind=kind, is_call=False),),
+                tail_kind=kind,
             ),
         },
     )
@@ -849,7 +1248,10 @@ def test_typed_plan_requires_exact_plan_snapshot_and_generation_correlation() ->
             unflatten_proposal=proposal,
         )
 def test_mutated_proposal_is_revalidated_at_route_boundary() -> None:
-    from d810.transforms.unflatten_authority.model import UnflattenAuthorityReason
+    from d810.transforms.unflatten_authority.model import (
+        ProposalValidationStage,
+        UnflattenAuthorityReason,
+    )
     from d810.transforms.unflatten_authority.transaction_api import select_plan_route
 
     plan = PatchPlan(
@@ -862,12 +1264,14 @@ def test_mutated_proposal_is_revalidated_at_route_boundary() -> None:
     result = select_plan_route(plan)
     assert result.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
     assert result.detail_code == "proposal_invariants_invalid"
+    assert result.stage is ProposalValidationStage.ROUNDTRIP
 
     object.__setattr__(plan.unflatten_proposal, "schema_version", 1)
     object.__setattr__(plan.unflatten_proposal, "rule_set_version", 2)
     result = select_plan_route(plan)
     assert result.reason is UnflattenAuthorityReason.MALFORMED_PROPOSAL
     assert result.detail_code == "proposal_invariants_invalid"
+    assert result.stage is ProposalValidationStage.ROUNDTRIP
 
     object.__setattr__(plan.unflatten_proposal, "rule_set_version", 1)
     object.__setattr__(plan.unflatten_proposal, "plan_id", "sha256:" + "0" * 64)
@@ -1144,3 +1548,38 @@ def test_str_subclass_metadata_key_is_not_authority_routing_input() -> None:
             metadata=((_LateAlias("use_def_severance_audit"), True),),
             unflatten_proposal=proposal,
         )
+@pytest.mark.parametrize(
+    ("fixture", "expected_kind"),
+    (
+        ("_compiler_direct_branch_case", "REDIRECT_BRANCH"),
+        ("_compiler_helper_branch_case", "REDIRECT_BRANCH"),
+        ("_three_b3_split_trampoline_case", "SPLIT"),
+        ("_three_b3_one_block_corridor_case", "HELPER_CORRIDOR"),
+        ("_three_b3_two_block_corridor_case", "HELPER_CORRIDOR"),
+    ),
+)
+def test_3b3_descriptor_and_creation_rows_match_compiler_families(fixture, expected_kind) -> None:
+    from d810.transforms.unflatten_authority.proposal import (
+        _patch_block_spec_preimage, canonical_patch_step_descriptor,
+    )
+    from tests.unit.transforms.unflatten_authority import test_bind as bind_tests
+
+    _authority, plan, *_ = getattr(bind_tests, fixture)()
+    descriptor = canonical_patch_step_descriptor(plan, 0)
+    assert descriptor.step_kind.name == expected_kind
+    assert descriptor.plan_id == plan.plan_id
+    expected_owners = tuple(spec.block_id for spec in plan.new_blocks)
+    source_owner = getattr(plan.steps[0], "from_serial", None)
+    expected_owner_refs = ((source_owner, *expected_owners) if source_owner is not None else expected_owners)
+    if expected_owners:
+        assert descriptor.owner_refs == expected_owner_refs
+        assert descriptor.helper_refs == expected_owners
+    else:
+        assert descriptor.owner_refs == (plan.steps[0].from_serial,)
+        assert descriptor.helper_refs == ()
+    expected_rows = tuple(
+        (spec.block_id, authority_id(_patch_block_spec_preimage(index, spec)))
+        for index, spec in enumerate(plan.new_blocks)
+    )
+    assert descriptor.new_block_spec_digests == expected_rows
+    assert tuple(owner for owner, _digest in descriptor.new_block_spec_digests) == expected_owners

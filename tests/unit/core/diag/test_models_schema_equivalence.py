@@ -259,6 +259,9 @@ EXPECTED_TABLE_INFO = {
         ("succs", "TEXT", 1, 0),
         ("preds", "TEXT", 1, 0),
         ("insn_count", "INTEGER", 1, 0),
+        ("tail_opcode", "INTEGER", 0, 0),
+        ("raw_tail_opcode", "INTEGER", 0, 0),
+        ("tail_kind", "TEXT", 0, 0),
         ("meta", "TEXT", 0, 0),
     ],
     "block_observations": [
@@ -285,6 +288,7 @@ EXPECTED_TABLE_INFO = {
         ("ea_hex", "TEXT", 1, 0),
         ("ea_i64", "INTEGER", 1, 0),
         ("opcode", "INTEGER", 1, 0),
+        ("raw_opcode", "INTEGER", 0, 0),
         ("opcode_name", "TEXT", 1, 0),
         ("iprops", "INTEGER", 1, 0),
         ("is_assert", "INTEGER", 1, 0),

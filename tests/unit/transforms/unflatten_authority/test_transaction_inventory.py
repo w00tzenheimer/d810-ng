@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from d810.ir.flowgraph import BlockKind, BlockSnapshot
@@ -48,8 +50,6 @@ def test_reachable_closure_empty_graph_has_explicit_zero_entry_policy() -> None:
 
 
 def test_full_candidate_builder_preserves_generated_goto_without_native_ea() -> None:
-    from dataclasses import replace
-
     from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
     from d810.ir.semantics import ControlTransferKind
     from d810.transforms.plan import PatchPlan, PatchRedirectGoto
@@ -86,11 +86,13 @@ def test_full_candidate_builder_preserves_generated_goto_without_native_ea() -> 
     )
     generated = BlockSnapshot(
         4, 0, (), (), 0, 0xFFFFFFFFFFFFFFFF,
-        (InsnSnapshot(
-            0x42, 0xFFFFFFFFFFFFFFFF, (), kind=InsnKind.GOTO,
-            control_transfer_kind=ControlTransferKind.GOTO,
-        ),),
-        kind=BlockKind.UNKNOWN,
+            (InsnSnapshot(
+                0x42, 0xFFFFFFFFFFFFFFFF, (), kind=InsnKind.GOTO,
+                raw_opcode=0x42,
+                control_transfer_kind=ControlTransferKind.GOTO,
+            ),),
+            tail_opcode=0x42, raw_tail_opcode=0x42, tail_kind=InsnKind.GOTO,
+            kind=BlockKind.UNKNOWN,
     )
     candidate_blocks = dict(source.blocks)
     candidate_blocks[4] = generated
@@ -111,19 +113,137 @@ def test_full_candidate_builder_preserves_generated_goto_without_native_ea() -> 
     )
 
 
+def _redirected_call_candidate(*, redirect_target: int | None, generated_kind):
+    """Return an exact retained CALL owner with one backend-created tail."""
+    from d810.ir.flowgraph import BlockKind, FlowGraph, InsnSnapshot, MopSnapshot, OperandKind
+    from d810.ir.semantics import ControlTransferKind
+    from d810.transforms.plan import PatchPlan, PatchRedirectGoto
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+
+    source, proposal, _exclusion, refs = __import__(
+        "tests.unit.transforms.unflatten_authority.test_bind",
+        fromlist=["_exact_fixture"],
+    )._exact_fixture()
+    owner_serial = 3
+    plan = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id=authority_id("observed-redirect-native-origin"),
+        source_generation=1,
+        steps=(
+            (PatchRedirectGoto(refs[0], refs[1], refs[1]),)
+            if redirect_target is None
+            else (PatchRedirectGoto(refs[owner_serial], refs[4], refs[redirect_target]),)
+        ),
+        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+        unflatten_proposal=proposal,
+    )
+    manifest = canonical_redirect_manifest(plan)
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+    original = source.blocks[owner_serial]
+    generated = InsnSnapshot(
+        0x55,
+        source.func_ea,
+        (),
+        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        kind=generated_kind,
+        raw_opcode=0x55,
+        control_transfer_kind=(
+            ControlTransferKind.GOTO if generated_kind is model.InsnKind.GOTO else None
+        ),
+    )
+    candidate_owner = replace(
+        original,
+        succs=(4,),
+        insn_snapshots=(*original.insn_snapshots, generated),
+        tail_opcode=generated.opcode,
+        raw_tail_opcode=generated.raw_opcode,
+        tail_kind=generated.kind,
+        kind=BlockKind.ONE_WAY,
+    )
+    candidate_target = replace(source.blocks[4], preds=(owner_serial,))
+    candidate = FlowGraph(
+        {**source.blocks, owner_serial: candidate_owner, 4: candidate_target},
+        source.entry_serial,
+        source.func_ea,
+    )
+    return source, proposal, plan, candidate, owner_serial
+
+
+def test_observed_inventory_excludes_only_plan_authorized_synthetic_redirect_from_native_identity() -> None:
+    source, proposal, plan, candidate, owner_serial = _redirected_call_candidate(
+        redirect_target=4, generated_kind=model.InsnKind.GOTO,
+    )
+    source_inventory = transaction_api._build_semantic_graph_inventory(
+        source, proposal, plan, source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+
+    inventory = transaction_api._build_semantic_graph_inventory(
+        candidate, proposal, plan, source=False,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        source_subjects=source_inventory.subjects,
+    )
+
+    row = next(row for row in inventory.blocks if row.serial == owner_serial)
+    assert row.native_instruction_eas == (0x4000,)
+    assert tuple(item.instruction_ea for item in row.instruction_observations) == (
+        0x4000,
+        None,
+    )
+    assert row.transfer_ea is None
+    assert row.successor_serials == (4,)
+
+
+@pytest.mark.parametrize(
+    ("redirect_target", "generated_kind"),
+    (
+        (2, model.InsnKind.GOTO),
+        (None, model.InsnKind.GOTO),
+        (4, model.InsnKind.NOP),
+    ),
+)
+def test_observed_inventory_rejects_non_authorized_extra_native_origin(
+    redirect_target, generated_kind,
+) -> None:
+    source, proposal, plan, candidate, _owner_serial = _redirected_call_candidate(
+        redirect_target=redirect_target, generated_kind=generated_kind,
+    )
+    source_inventory = transaction_api._build_semantic_graph_inventory(
+        source, proposal, plan, source=True,
+        phase=model.UnflattenAuthorityPhase.PRODUCER_FORECAST,
+    )
+
+    with pytest.raises(ValueError, match="native identity instruction EAs"):
+        transaction_api._build_semantic_graph_inventory(
+            candidate, proposal, plan, source=False,
+            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+            source_subjects=source_inventory.subjects,
+        )
+
+
 def _topology_inventory(*, topology: tuple[model.InventoryTopologyIncidence, ...]) -> model.SemanticGraphInventory:
     ref1 = PlanBlockRef("topology", "one")
     ref2 = PlanBlockRef("topology", "two")
     block1 = model.InventoryBlockObservation(
         1, ref1, 0x1000, (0x1000, 0x1004), (), (2,), None,
         (
-            model.InventoryInstructionObservation(0, 0x1000, 1, 0, model.InsnKind.NOP, None, False, None),
-            model.InventoryInstructionObservation(1, 0x1004, 2, 0, model.InsnKind.NOP, None, False, None),
+            model.InventoryInstructionObservation(0, 0x1000, 1, 0, model.InsnKind.NOP, None, False, None, raw_opcode=1),
+            model.InventoryInstructionObservation(1, 0x1004, 2, 0, model.InsnKind.NOP, None, False, None, raw_opcode=2),
         ),
+        tail_opcode=2, raw_tail_opcode=2, tail_kind=model.InsnKind.NOP,
     )
     block2 = model.InventoryBlockObservation(
         2, ref2, 0x2000, (0x2000,), (1,), (), None,
-        (model.InventoryInstructionObservation(0, 0x2000, 3, 0, model.InsnKind.NOP, None, False, None),),
+        (model.InventoryInstructionObservation(0, 0x2000, 3, 0, model.InsnKind.NOP, None, False, None, raw_opcode=3),),
+        tail_opcode=3, raw_tail_opcode=3, tail_kind=model.InsnKind.NOP,
     )
     subjects = tuple(sorted((
         _subject_factory(

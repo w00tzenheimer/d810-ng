@@ -67,6 +67,7 @@ def _insn(
 ) -> InsnSnapshot:
     return InsnSnapshot(
         opcode=1,
+        raw_opcode=1,
         ea=0,
         operands=(),
         l=left,
@@ -92,6 +93,9 @@ def _block(
         flags=0,
         start_ea=0,
         insn_snapshots=() if tail is None else (tail,),
+        tail_opcode=None if tail is None else tail.opcode,
+        raw_tail_opcode=None if tail is None else tail.raw_opcode,
+        tail_kind=None if tail is None else tail.kind,
     )
 
 

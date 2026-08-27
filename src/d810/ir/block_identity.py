@@ -839,8 +839,9 @@ def instruction_fingerprint(
         if idx >= limit:
             parts.append("...")
             break
-        raw_opcode = getattr(insn, "raw_opcode", getattr(insn, "opcode", None))
-        parts.append(f"0x{int(insn.ea):x}:op{int(raw_opcode)}")
+        raw_opcode = getattr(insn, "raw_opcode", None)
+        opcode = raw_opcode if raw_opcode is not None else getattr(insn, "opcode", None)
+        parts.append(f"0x{int(insn.ea):x}:op{int(opcode)}")
     return "[" + ",".join(parts) + "]"
 
 
@@ -901,7 +902,11 @@ def block_body_observation_fingerprint(
     )
     op_fp = json.dumps(
         [
-            int(getattr(insn, "raw_opcode", getattr(insn, "opcode", 0)))
+            int(
+                raw_opcode
+                if (raw_opcode := getattr(insn, "raw_opcode", None)) is not None
+                else getattr(insn, "opcode", 0)
+            )
             for insn in block.insn_snapshots
         ],
         separators=(",", ":"),

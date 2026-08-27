@@ -15,6 +15,7 @@ from d810.analyses.control_flow.frontend_normalization import (
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    canonical_semantic_evidence_from_proofs,
     SemanticCarrierProof,
     SemanticCorridorPoint,
     SemanticPredicateKind,
@@ -26,6 +27,14 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticStateWriteProof,
     bind_canonical_semantic_evidence,
 )
+
+
+def _recanonicalize(evidence, proofs):
+    return canonical_semantic_evidence_from_proofs(
+        native_key=evidence.native_key,
+        generation=evidence.generation,
+        proofs=tuple(proofs),
+    )
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
     FrontendNormalizationPlanCapability,
@@ -166,11 +175,10 @@ def _graph_and_bound_evidence():
         },
     )
     source_identity = _identity(0x1100)
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         native_key=NATIVE_KEY,
         generation=7,
-        atomic_group_id="canonical-semantic:g7",
-        route_proofs=(
+        proofs=(
             SemanticRouteProof(
                 proof_id="state-assignment@0x1100",
                 atomic_group_id="canonical-semantic:g7",
@@ -421,10 +429,7 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
             ),
         ),
     )
-    candidate = replace(
-        candidate,
-        route_proofs=(direct_proof, state_choice),
-    )
+    candidate = _recanonicalize(candidate, (direct_proof, state_choice))
     frontend_evidence = FrontendNormalizationEvidence(
         native_key=NATIVE_KEY,
         generation=candidate.generation,
@@ -617,7 +622,7 @@ def test_candidate_normalization_rejects_missing_receipted_plan_intent() -> None
     assert rejection.anchor_ea == 0x1100
     assert rejection.payload == {
         "evidence_generation": 7,
-        "route_proof_id": "state-assignment@0x1100",
+        "route_proof_id": candidate.route_proofs[0].proof_id,
     }
 
 
@@ -639,13 +644,13 @@ def test_semantic_predecessor_uses_proved_state_write_block_entry() -> None:
             corridor_instruction_eas=(0x1100, delivery_ea),
         ),
     )
-    candidate = replace(candidate, route_proofs=(proof,))
+    candidate = _recanonicalize(candidate, (proof,))
     rejection = CanonicalSemanticFragmentRejected(
         "published imported boundary retains unresolved semantic topology",
         reason_code="published_imported_boundary_topology_unresolved",
         anchor_ea=0x1200,
         payload={
-            "incoming_operation_id": f"route:{proof.proof_id}",
+            "incoming_operation_id": f"route:{candidate.route_proofs[0].proof_id}",
             "incoming_source_anchor_ea": "0x1100",
         },
     )
@@ -775,7 +780,7 @@ def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_orac
             anchor_ea=0x1200,
             payload={
                 "boundary_block_id": "native[0x1200-0x1201]",
-                "incoming_operation_id": "route:state-assignment@0x1100",
+                    "incoming_operation_id": f"route:{candidate.route_proofs[0].proof_id}",
                 "incoming_source_anchor_ea": "0x1100",
                 "incoming_source_block_id": "native[0x1100-0x1101]",
             },
@@ -882,12 +887,12 @@ def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_orac
             operation.operation_id for operation in expected_plan.operations
         ),
         "plan_id": expected_plan.plan_id,
-        "route_proof_ids": ("state-assignment@0x1100",),
+            "route_proof_ids": (candidate.route_proofs[0].proof_id,),
         "composition_attempts": (
             {
                 "kind": "route",
                 "outcome": "rejected",
-                "route_proof_ids": ("state-assignment@0x1100",),
+                    "route_proof_ids": (candidate.route_proofs[0].proof_id,),
                 "route_source_anchor_eas": ("0x1100",),
                 "reason_code": "published_imported_boundary_topology_unresolved",
                 "rejection_anchor_ea": "0x1200",
@@ -896,7 +901,7 @@ def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_orac
                 ),
                 "rejection_payload": {
                     "boundary_block_id": "native[0x1200-0x1201]",
-                    "incoming_operation_id": "route:state-assignment@0x1100",
+                    "incoming_operation_id": f"route:{candidate.route_proofs[0].proof_id}",
                     "incoming_source_anchor_ea": "0x1100",
                     "incoming_source_block_id": "native[0x1100-0x1101]",
                 },
@@ -1036,7 +1041,7 @@ def test_configured_reference_root_selects_exact_direct_delivery_corridor() -> N
             corridor_instruction_eas=(0x1000, 0x1100),
         ),
     )
-    candidate = replace(bound.evidence, route_proofs=(direct_proof,))
+    candidate = _recanonicalize(bound.evidence, (direct_proof,))
     selection = ReferenceRouteOracleSelection(
         run=RouteOracleRun(
             run_id="test-distinct-owner-direct-route",
@@ -1086,7 +1091,7 @@ def test_configured_reference_root_rejects_direct_delivery_corridor_drift() -> N
             corridor_instruction_eas=(0x1000, 0x1100),
         ),
     )
-    candidate = replace(bound.evidence, route_proofs=(direct_proof,))
+    candidate = _recanonicalize(bound.evidence, (direct_proof,))
     selection = ReferenceRouteOracleSelection(
         run=RouteOracleRun(
             run_id="test-drifted-owner-direct-route",

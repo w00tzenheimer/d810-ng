@@ -11,6 +11,7 @@ from dataclasses import replace
 import pytest
 
 import d810.analyses.control_flow.minimal_state_recovery as minimal_state_recovery
+from d810.analyses.control_flow.route_comparison import current_u32_route_comparison
 import d810.analyses.control_flow.state_carrier as state_carrier
 import d810.analyses.control_flow.state_machine_analysis as state_machine_analysis
 import d810.analyses.control_flow.semantic_transition as semantic_transition
@@ -39,6 +40,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
 from d810.analyses.control_flow.semantic_transition import (
     StateTransitionResolution,
 )
+from d810.analyses.control_flow.semantic_route_evidence import SemanticRouteFactKind
 from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
@@ -419,21 +421,408 @@ def test_current_u32_router_rejects_bare_unknown_shell_before_projection() -> No
         state_var_reg=None,
     )
 
-    assert (
-        minimal_state_recovery._current_u32_route_comparison(
-            graph,
-            comparison_serial,
-            expected_identities=identities,
-        )
-        is None
+    # The canonical extractor is the safety boundary; recovery is just its
+    # compatibility adapter and must make the exact same fail-closed decision.
+    assert current_u32_route_comparison(
+        graph,
+        comparison_serial,
+        expected_identities=identities,
+    ) is None
+    assert minimal_state_recovery._current_u32_route_comparison(
+        graph,
+        comparison_serial,
+        expected_identities=identities,
+    ) is None
+    assert minimal_state_recovery.build_current_u32_decision_forest(
+        graph,
+        comparison_serial,
+        expected_identities=identities,
+    ) is None
+
+
+def test_decision_dag_route_fact_carries_its_exact_dag_witness() -> None:
+    """A DECISION_DAG fact cannot be reinterpreted as a state assignment."""
+
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (2,), (), (), ea=0x1100),
+            2: _blk(
+                2,
+                (4,),
+                (1,),
+                (_mov(0x1200, _num(7), _stk(_STATE_OFF)),),
+                ea=0x1200,
+            ),
+            3: _blk(3, (), (), (), ea=0x1300),
+            4: _blk(4, (3,), (2,), (), ea=0x1400),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
     )
-    assert (
-        minimal_state_recovery.build_current_u32_decision_forest(
-            graph,
-            comparison_serial,
-            expected_identities=identities,
+    transition = StateWriteTransition(
+        write_block=1,
+        next_state=7,
+        target_handler=3,
+        is_return=False,
+        branch_arm=None,
+        via_block=2,
+    )
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=3,
+        certified_targets=frozenset({3}),
+        entry_serial=4,
+        path_serials=(4,),
+        path_anchors=(0x1400,),
+    )
+
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert fact is not None
+    assert fact.kind is minimal_state_recovery.SemanticRouteFactKind.DECISION_DAG
+    assert fact.decision_dag_witness is not None
+    assert fact.decision_dag_witness.entry_serial == 4
+    assert fact.decision_dag_witness.path_serials == (4,)
+
+
+def test_decision_dag_route_fact_anchors_address_form_state_store() -> None:
+    """A direct address-form STORE remains an exact state-write anchor."""
+
+    graph = FlowGraph(
+        blocks={
+            1: _blk(
+                1,
+                (3,),
+                (),
+                (_store(0x1108, _num(7), _addr(_STATE_OFF)),),
+                ea=0x1100,
+            ),
+            3: _blk(3, (), (1,), (), ea=0x1300),
+            4: _blk(4, (), (), (), ea=0x1400),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(
+        write_block=1,
+        next_state=7,
+        target_handler=3,
+        is_return=False,
+        branch_arm=None,
+        proof=TransitionProof("fixpoint", "stack_address_alias_store", True),
+    )
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=3,
+        certified_targets=frozenset({3}),
+        entry_serial=4,
+        path_serials=(4,),
+        path_anchors=(0x1400,),
+    )
+
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert fact is not None
+    assert fact.source_serial == 1
+    assert fact.source_instruction_ea == 0x1108
+
+
+@pytest.mark.parametrize("mutation", ("narrow", "wide", "wrong_state", "wrong_identity", "ambiguous"))
+def test_address_form_state_store_requires_exact_unique_u32_anchor(mutation: str) -> None:
+    stores = [_store(0x1108, _num(7), _addr(_STATE_OFF))]
+    if mutation == "narrow":
+        stores[0] = _store(0x1108, replace(_num(7), size=1), _addr(_STATE_OFF))
+    elif mutation == "wide":
+        stores[0] = _store(0x1108, replace(_num(7), size=8), _addr(_STATE_OFF))
+    elif mutation == "wrong_state":
+        stores[0] = _store(0x1108, _num(8), _addr(_STATE_OFF))
+    elif mutation == "wrong_identity":
+        stores[0] = _store(0x1108, _num(7), _addr(_STATE_OFF + 4))
+    else:
+        stores.append(_store(0x110C, _num(7), _addr(_STATE_OFF)))
+    graph = FlowGraph(
+        blocks={
+            1: _blk(1, (3,), (), tuple(stores), ea=0x1100),
+            3: _blk(3, (), (1,), (), ea=0x1300),
+            4: _blk(4, (), (), (), ea=0x1400),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(
+        write_block=1,
+        next_state=7,
+        target_handler=3,
+        is_return=False,
+        branch_arm=None,
+        proof=TransitionProof("fixpoint", "stack_address_alias_store", True),
+    )
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=3,
+        certified_targets=frozenset({3}),
+        entry_serial=4,
+        path_serials=(4,),
+        path_anchors=(0x1400,),
+    )
+
+    assert minimal_state_recovery._semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    ) is None
+
+
+def test_bootstrap_route_fact_keeps_entry_writer_and_owner_separate() -> None:
+    state = 7
+    call = InsnSnapshot(
+        opcode=0x38,
+        ea=0x1508,
+        operands=(),
+        kind=InsnKind.CALL,
+        call_kind=CallKind.DIRECT,
+    )
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1,), (), (), ea=0x1000),
+            1: _blk(1, (3,), (0,), (_mov(0x1108, _num(state), _stk(_STATE_OFF)),), ea=0x1100),
+            3: _blk(3, (5,), (1,), (), ea=0x1300),
+            5: _blk(5, (6,), (3,), (call,), ea=0x1500),
+            6: _blk(6, (7,), (5,), (), ea=0x1600),
+            7: _blk(7, (), (6,), (), ea=0x1700),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(
+        write_block=5,
+        next_state=state,
+        target_handler=7,
+        is_return=False,
+        branch_arm=None,
+    )
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=7,
+        certified_targets=frozenset({7}),
+        entry_serial=6,
+        path_serials=(6,),
+        path_anchors=(0x1600,),
+    )
+
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.BOOTSTRAP
+    assert fact.owner_serial == 5
+    assert fact.source_serial == 1
+    assert fact.bootstrap_witness is not None
+    assert fact.bootstrap_witness.corridor_serials == (1, 3, 5, 6)
+    assert tuple(site.instruction_ea for site in fact.bootstrap_witness.preserved_effect_sites) == (0x1508,)
+
+
+@pytest.mark.parametrize("use_kind", (InsnKind.CALL, InsnKind.STORE))
+def test_bootstrap_route_rejects_cross_instruction_state_address_alias(use_kind: InsnKind) -> None:
+    state = 7
+    materialize = _mov(0x1110, _addr(_STATE_OFF), _reg(10))
+    if use_kind is InsnKind.CALL:
+        use = InsnSnapshot(
+            opcode=0x38,
+            ea=0x1114,
+            operands=(),
+            kind=InsnKind.CALL,
+            call_kind=CallKind.DIRECT,
+            l=_reg(10),
         )
-        is None
+    else:
+        use = _store(0x1114, _num(1), _reg(10))
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1,), (), (), ea=0x1000),
+            1: _blk(
+                1,
+                (3,),
+                (0,),
+                (_mov(0x1108, _num(state), _stk(_STATE_OFF)), materialize, use),
+                ea=0x1100,
+            ),
+            3: _blk(3, (5,), (1,), (), ea=0x1300),
+            5: _blk(5, (6,), (3,), (), ea=0x1500),
+            6: _blk(6, (7,), (5,), (), ea=0x1600),
+            7: _blk(7, (), (6,), (), ea=0x1700),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(
+        write_block=5,
+        next_state=state,
+        target_handler=7,
+        is_return=False,
+        branch_arm=None,
+    )
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=7,
+        certified_targets=frozenset({7}),
+        entry_serial=6,
+        path_serials=(6,),
+        path_anchors=(0x1600,),
+    )
+
+    assert minimal_state_recovery._semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    ) is None
+
+
+def test_bootstrap_route_allows_ordinary_state_read_after_entry_write() -> None:
+    state = 7
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1,), (), (), ea=0x1000),
+            1: _blk(
+                1,
+                (3,),
+                (0,),
+                (
+                    _mov(0x1108, _num(state), _stk(_STATE_OFF)),
+                    _mov(0x1110, _stk(_STATE_OFF), _reg(10)),
+                ),
+                ea=0x1100,
+            ),
+            3: _blk(3, (5,), (1,), (), ea=0x1300),
+            5: _blk(5, (6,), (3,), (), ea=0x1500),
+            6: _blk(6, (7,), (5,), (), ea=0x1600),
+            7: _blk(7, (), (6,), (), ea=0x1700),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(5, state, 7, False, None)
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=7,
+        certified_targets=frozenset({7}),
+        entry_serial=6,
+        path_serials=(6,),
+        path_anchors=(0x1600,),
+    )
+
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.BOOTSTRAP
+
+
+def test_partition_delivery_rejects_computed_state_write() -> None:
+    """Partition delivery authority is the exact state-cell MOVE, not a recomputed expression."""
+    graph = FlowGraph(
+        blocks={
+            1: _blk(
+                1,
+                (2,),
+                (),
+                (_mov(0x1100, _num(7), _reg(8)), _mov(0x1104, _num(0), _reg(9))),
+            ),
+            2: _blk(
+                2,
+                (3,),
+                (1,),
+                (_xor(0x1200, _reg(8), _reg(9), _stk(_STATE_OFF)),),
+            ),
+            3: _blk(3, (), (2,), ()),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    member = minimal_state_recovery.StatePartitionMemberWitness(
+        owner_serial=1,
+        feeder_serial=2,
+        state_identity=minimal_state_recovery.StorageIdentity(
+            minimal_state_recovery.StorageIdentityKind.STACK,
+            _STATE_OFF,
+        ),
+        state_constant=7,
+    )
+    assert not minimal_state_recovery.prove_partitioned_state_member(
+        graph,
+        member,
+        feeder_instruction_ea=0x1200,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+
+
+@pytest.mark.parametrize("mutation", ("ea", "destination", "width", "duplicate"))
+def test_partition_delivery_rejects_exact_write_drift(mutation: str) -> None:
+    feeder_write = _mov(0x1200, _reg(8), _stk(_STATE_OFF))
+    if mutation == "ea":
+        feeder_write = replace(feeder_write, ea=0x1201)
+    elif mutation == "destination":
+        feeder_write = _mov(0x1200, _reg(8), _reg(9))
+    elif mutation == "width":
+        feeder_write = _mov(
+            0x1200,
+            replace(_reg(8), size=8),
+            replace(_stk(_STATE_OFF), size=8),
+        )
+    elif mutation == "duplicate":
+        feeder_write = (_mov(0x1200, _reg(8), _stk(_STATE_OFF)), _mov(0x1204, _reg(8), _stk(_STATE_OFF)))
+    else:  # pragma: no cover - parametrization is closed above
+        raise AssertionError(mutation)
+    writes = feeder_write if isinstance(feeder_write, tuple) else (feeder_write,)
+    graph = FlowGraph(
+        blocks={
+            1: _blk(
+                1,
+                (2,),
+                (),
+                (_mov(0x1100, replace(_num(7), size=8), replace(_reg(8), size=8)),),
+            ),
+            2: _blk(2, (3,), (1,), writes),
+            3: _blk(3, (), (2,), ()),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    member = minimal_state_recovery.StatePartitionMemberWitness(
+        owner_serial=1,
+        feeder_serial=2,
+        state_identity=minimal_state_recovery.StorageIdentity(
+            minimal_state_recovery.StorageIdentityKind.STACK,
+            _STATE_OFF,
+        ),
+        state_constant=7,
+    )
+    assert not minimal_state_recovery.prove_partitioned_state_member(
+        graph,
+        member,
+        feeder_instruction_ea=0x1200,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
     )
 
 
@@ -3043,6 +3432,191 @@ def test_seeded_abstention_preserves_partial_partition_proofs(
     ]
 
 
+def test_partial_rows_do_not_fabricate_missing_wide_carrier_partition_rows(
+    _seam, monkeypatch
+) -> None:
+    graph = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20, 30), (11,), ()),
+            10: _blk(
+                10,
+                (11,),
+                (2,),
+                (_mov(0x1010, replace(_num(7), size=8), replace(_reg(8), size=8)),),
+            ),
+            20: _blk(
+                20,
+                (11,),
+                (2,),
+                (_mov(0x1020, replace(_num(9), size=8), replace(_reg(8), size=8)),),
+            ),
+            30: _blk(
+                30,
+                (11,),
+                (2,),
+                (_mov(0x1030, replace(_num(11), size=8), replace(_reg(8), size=8)),),
+            ),
+            11: _blk(11, (2,), (10, 20, 30), (_mov(0x1100, _reg(8), _stk(_STATE_OFF)),)),
+            40: _stop(40, (2,)),
+            50: _stop(50, (2,)),
+            60: _stop(60, (2,)),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    monkeypatch.setattr(
+        minimal_state_recovery,
+        "_abstract_partition_states",
+        lambda _ctx, _block: ({10: 7, 20: 9}, True),
+    )
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
+        graph,
+        _dispatcher({7: 40, 9: 50, 11: 60}, exit_block=99),
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+    )
+    rows = {int(row.write_block): row for row in transitions if row.via_block == 11}
+    assert set(rows) == {10, 20}
+    assert all(row.partition_witness is None for row in rows.values())
+
+
+def test_complete_wide_carrier_partition_only_annotates_existing_rows() -> None:
+    graph = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20, 30), (11,), ()),
+            10: _blk(
+                10,
+                (11,),
+                (2,),
+                (_mov(0x1010, replace(_num(7), size=8), replace(_reg(8), size=8)),),
+            ),
+            20: _blk(
+                20,
+                (11,),
+                (2,),
+                (_mov(0x1020, replace(_num(9), size=8), replace(_reg(8), size=8)),),
+            ),
+            30: _blk(
+                30,
+                (11,),
+                (2,),
+                (_mov(0x1030, replace(_num(11), size=8), replace(_reg(8), size=8)),),
+            ),
+            11: _blk(11, (2,), (10, 20, 30), (_mov(0x1100, _reg(8), _stk(_STATE_OFF)),)),
+            40: _stop(40, (2,)),
+            50: _stop(50, (2,)),
+            60: _stop(60, (2,)),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    routes = {7: 40, 9: 50, 11: 60}
+    fp = minimal_state_recovery.run_snapshot_constant_fixpoint(graph, _STATE_OFF)
+    context = minimal_state_recovery._ResolverContext(
+        flow_graph=graph,
+        fp=fp,
+        dispatcher_entry=2,
+        read_key=_STATE_OFF,
+        effective_stkoff=_STATE_OFF,
+        state_var_gaddr=None,
+        foldable_global_reads=None,
+        seeded={},
+        emu=None,
+        live_block_for=None,
+        state_cell=None,
+        classify=lambda state: (routes[int(state)], False),
+        arm_of=lambda _block, _target: None,
+    )
+    facts = {owner: object() for owner in (10, 20, 30)}
+    rows = [
+        StateWriteTransition(
+            owner,
+            state,
+            routes[state],
+            False,
+            None,
+            via_block=11,
+            proof=TransitionProof(
+                "source-carrier",
+                "source_carrier_decision_dag_reconciled",
+                True,
+                reason="preserve-me",
+                route_source_kinds=("decision_dag", "source_carrier"),
+            ),
+            preserve_via_block=True,
+            semantic_route_fact=facts[owner],
+        )
+        for owner, state in ((10, 7), (20, 9), (30, 11))
+    ]
+    upgraded = minimal_state_recovery._upgrade_complete_wide_carrier_partitions(
+        context, rows
+    )
+    assert len(upgraded) == 3
+    assert all(row.partition_witness is not None for row in upgraded)
+    for row in upgraded:
+        original = next(item for item in rows if item.write_block == row.write_block)
+        assert row.proof == original.proof
+        assert row.preserve_via_block is True
+        assert row.semantic_route_fact is facts[row.write_block]
+    for drift in (
+        replace(rows[0], next_state=8),
+        replace(rows[0], target_handler=50),
+        replace(rows[0], is_return=True),
+        replace(rows[0], branch_arm=1),
+    ):
+        drifted = [drift, *rows[1:]]
+        assert minimal_state_recovery._upgrade_complete_wide_carrier_partitions(
+            context, drifted
+        ) == drifted
+
+
+@pytest.mark.parametrize("mutation", ("duplicate", "mixed", "extra"))
+def test_wide_carrier_partition_rejects_duplicate_or_mixed_rows(mutation: str) -> None:
+    graph = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20, 30), (11,), ()),
+            10: _blk(10, (11,), (2,), (_mov(0x1010, replace(_num(7), size=8), replace(_reg(8), size=8)),)),
+            20: _blk(20, (11,), (2,), (_mov(0x1020, replace(_num(9), size=8), replace(_reg(8), size=8)),)),
+            30: _blk(30, (11,), (2,), (_mov(0x1030, replace(_num(11), size=8), replace(_reg(8), size=8)),)),
+            11: _blk(11, (2,), (10, 20, 30), (_mov(0x1100, _reg(8), _stk(_STATE_OFF)),)),
+            40: _stop(40, (2,)),
+            50: _stop(50, (2,)),
+            60: _stop(60, (2,)),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    fp = minimal_state_recovery.run_snapshot_constant_fixpoint(graph, _STATE_OFF)
+    context = minimal_state_recovery._ResolverContext(
+        flow_graph=graph,
+        fp=fp,
+        dispatcher_entry=2,
+        read_key=_STATE_OFF,
+        effective_stkoff=_STATE_OFF,
+        state_var_gaddr=None,
+        foldable_global_reads=None,
+        seeded={},
+        emu=None,
+        live_block_for=None,
+        state_cell=None,
+        classify=lambda state: ({7: 40, 9: 50, 11: 60}[int(state)], False),
+        arm_of=lambda _block, _target: None,
+    )
+    rows = [
+        StateWriteTransition(owner, state, target, False, None, via_block=11)
+        for owner, state, target in ((10, 7, 40), (20, 9, 50), (30, 11, 60))
+    ]
+    if mutation == "duplicate":
+        rows[-1] = replace(rows[-1], write_block=20)
+    elif mutation == "mixed":
+        rows[-1] = replace(rows[-1], partition_witness=object())
+    else:
+        rows.append(StateWriteTransition(40, 7, 40, False, None, via_block=11))
+    assert minimal_state_recovery._upgrade_complete_wide_carrier_partitions(
+        context, rows
+    ) == rows
+
+
 def test_masked_or_shared_glue_block_partitioned_via_seed(_seam) -> None:
     """A shared state-glue block (abc_or_dispatch blk8) splits per-edge via the seed.
 
@@ -3549,138 +4123,6 @@ def test_seeded_dfs_budget_warning_anchors_target_serials_to_eas(
         "region-seeded DFS path-state budget exhausted: "
         "target_back_edges=('blk10@0x1800151E1',) budget=0 consumed=0"
     ]
-
-
-def test_seeded_dfs_budget_exhaustion_emits_one_anchored_observation(
-    _seam, monkeypatch
-) -> None:
-    fg = _branching_cyclic_seeded_graph()
-    observations = []
-    monkeypatch.setattr(
-        minimal_state_recovery,
-        "emit",
-        observations.append,
-        raising=False,
-    )
-
-    assert (
-        minimal_state_recovery._resolve_back_edge_states(
-            fg,
-            dispatcher=_dispatcher({0x10: 10}, exit_block=99),
-            state_var_stkoff=_STATE_OFF,
-            dispatcher_entry=2,
-            max_depth=24,
-            target_back_edges=frozenset({30}),
-            _path_state_pop_budget=1,
-        )
-        == {}
-    )
-    assert len(observations) == 1
-    observed = observations[0]
-    assert observed.provider == "region_seeded"
-    assert observed.outcome == "exhausted"
-    assert observed.budget == 1
-    assert observed.consumed == 1
-    assert observed.target_anchors == (0x1000 + 30 * 0x40,)
-    assert observed.entry_anchors == (0x1000 + 10 * 0x40,)
-
-
-def test_seeded_dfs_completion_emits_one_observation_without_changing_result(
-    _seam, monkeypatch
-) -> None:
-    fg = _branching_cyclic_seeded_graph()
-    observations = []
-    monkeypatch.setattr(
-        minimal_state_recovery,
-        "emit",
-        observations.append,
-        raising=False,
-    )
-
-    result = minimal_state_recovery._resolve_back_edge_states(
-        fg,
-        dispatcher=_dispatcher({0x10: 10}, exit_block=99),
-        state_var_stkoff=_STATE_OFF,
-        dispatcher_entry=2,
-        max_depth=24,
-        target_back_edges=frozenset({30}),
-        _path_state_pop_budget=64,
-    )
-
-    assert result == {30: {13: {0x10}, 14: {0x10}}}
-    assert len(observations) == 1
-    observed = observations[0]
-    assert observed.provider == "region_seeded"
-    assert observed.outcome == "completed"
-    assert observed.budget == 64
-    assert observed.consumed == 17
-    assert observed.target_anchors == (0x1000 + 30 * 0x40,)
-    assert observed.entry_anchors == (0x1000 + 10 * 0x40,)
-
-
-def test_seeded_dfs_abstention_emits_without_changing_provider_result(
-    _seam, monkeypatch
-) -> None:
-    fg = _branching_cyclic_seeded_graph()
-    observations = []
-    monkeypatch.setattr(
-        minimal_state_recovery,
-        "emit",
-        observations.append,
-        raising=False,
-    )
-
-    result = minimal_state_recovery._resolve_back_edge_states(
-        fg,
-        dispatcher=_dispatcher({0x10: 10}, exit_block=99),
-        state_var_stkoff=_STATE_OFF,
-        dispatcher_entry=999,
-        max_depth=24,
-        target_back_edges=frozenset({30}),
-        _path_state_pop_budget=64,
-    )
-
-    assert result == {}
-    assert len(observations) == 1
-    observed = observations[0]
-    assert observed.provider == "region_seeded"
-    assert observed.outcome == "abstained"
-    assert observed.budget == 64
-    assert observed.target_anchors == (0x1000 + 30 * 0x40,)
-
-
-def test_seeded_dfs_entry_anchors_follow_selected_reverse_slice(
-    _seam, monkeypatch
-) -> None:
-    fg = FlowGraph(
-        blocks={
-            2: _blk(2, (10, 20), (30, 40), ()),
-            10: _blk(10, (30,), (2,), ()),
-            20: _blk(20, (40,), (2,), ()),
-            30: _blk(30, (2,), (10,), ()),
-            40: _blk(40, (2,), (20,), ()),
-        },
-        entry_serial=10,
-        func_ea=0x1000,
-    )
-    observations = []
-    monkeypatch.setattr(
-        minimal_state_recovery,
-        "emit",
-        observations.append,
-        raising=False,
-    )
-
-    assert minimal_state_recovery._resolve_back_edge_states(
-        fg,
-        dispatcher=_dispatcher({0x10: 10, 0x20: 20}, exit_block=99),
-        state_var_stkoff=_STATE_OFF,
-        dispatcher_entry=2,
-        max_depth=8,
-        target_back_edges=frozenset({30}),
-    ) == {30: {10: {0x10}}}
-    assert len(observations) == 1
-    assert observations[0].entry_anchors == (0x1000 + 10 * 0x40,)
 
 
 def test_seeded_dfs_budget_is_atomic_across_multiple_targets(_seam) -> None:

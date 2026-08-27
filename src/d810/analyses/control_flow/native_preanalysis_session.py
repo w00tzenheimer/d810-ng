@@ -41,6 +41,7 @@ from d810.analyses.control_flow.native_semantic_closure import (
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    canonical_semantic_evidence_from_proofs,
     SemanticCarrierProof,
     SemanticCorridorPoint,
     SemanticPredicateKind,
@@ -2238,11 +2239,10 @@ class NativePreanalysisSessionState:
                     return None
                 conditional_proofs.append(proof)
         proofs = (*direct_proofs, *conditional_proofs)
-        return CanonicalSemanticEvidence(
+        return canonical_semantic_evidence_from_proofs(
             native_key=key,
             generation=generation,
-            atomic_group_id=atomic_group_id,
-            route_proofs=proofs,
+            proofs=proofs,
         )
 
     def _replace_resolver_evidence(

@@ -370,8 +370,13 @@ def check_effectful_reachability_preserved(
     )
     allowed_lost = frozenset(int(serial) for serial in allowed_lost_block_serials)
     if post_cfg is None:
-        retained = frozenset(pre_effectful & post_reachable)
-        lost = frozenset((pre_effectful - post_reachable) - allowed_lost)
+        raw_lost = pre_effectful - post_reachable
+        # Keep raw physical loss visible in the raw result while making an
+        # allowed loss an effective retention in the normalized result.  This
+        # mirrors the ``post_cfg`` identity-aware branch below and preserves
+        # the required ``pre == retained | lost`` partition.
+        retained = frozenset((pre_effectful & post_reachable) | (raw_lost & allowed_lost))
+        lost = frozenset(raw_lost - allowed_lost)
     else:
         reachable_effects: Counter[tuple[object, ...]] = Counter(
             effect_identity
@@ -393,7 +398,12 @@ def check_effectful_reachability_preserved(
                 reachable_effects.subtract(required)
             else:
                 lost_serials.add(int(serial))
-        retained = frozenset(retained_serials)
+        # ``allowed_lost`` is an *effective* preservation adjustment.  Keep
+        # the result a lossless partition of the pre-effect set: a permitted
+        # loss is represented as effectively retained, even though its native
+        # block is not physically reachable in ``post_cfg``.  Consumers carry
+        # the raw result separately when they need the structural delta.
+        retained = frozenset(retained_serials | (lost_serials & allowed_lost))
         lost = frozenset(lost_serials - allowed_lost)
     if lost:
         return EffectfulReachabilityResult(

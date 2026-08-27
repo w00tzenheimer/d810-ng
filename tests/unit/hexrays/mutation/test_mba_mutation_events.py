@@ -23,7 +23,9 @@ from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
 from d810.transforms.cfg_transaction import (
     CfgTransactionPhase,
     PlanBlockRef,
+    SemanticAuthorityCommitment,
     TransactionAttemptId,
+    _cfg_content_id,
 )
 from tests.native_preanalysis import make_native_key
 
@@ -47,6 +49,29 @@ def _one_block_graph() -> FlowGraph:
         entry_serial=0,
         func_ea=0x401000,
     )
+
+
+def test_gateway_commit_embeds_exact_semantic_authority_commitment() -> None:
+    """The postcommit receipt preserves the precommit occurrence verbatim."""
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="commitment-gateway", generation=0, bindings=(), native_key=NATIVE_KEY,
+    )
+    gateway = MbaMutationGateway(
+        generation=0, native_key=NATIVE_KEY, identity_index=index,
+        session_id="commitment-gateway",
+    )
+    fields = ("source", "bound", "realization", "projected-case", "projected-ledger", "observed-case", "observed-ledger", "delta")
+    commitment = SemanticAuthorityCommitment(
+        *fields, _cfg_content_id("cfg.semantic-authority-commitment.v1", fields),
+    )
+    receipt = gateway.record(
+        StructuralMutationKind.EDGE_REDIRECT, description="commitment",
+        semantic_authority_commitment=commitment,
+    )
+    assert receipt.semantic_authority_commitment is commitment
+
+    ordinary = gateway.record(StructuralMutationKind.EDGE_REDIRECT, description="ordinary")
+    assert ordinary.semantic_authority_commitment is None
 
 
 def test_mutation_receipts_have_a_dedicated_module() -> None:

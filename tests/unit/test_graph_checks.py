@@ -412,6 +412,49 @@ class TestEffectfulReachabilityPreservation:
             {SnapshotBlockCoordinate(serial=1, anchor_ea=0x1001)}
         )
 
+    def test_allowed_native_effect_loss_remains_a_lossless_effective_partition(self):
+        """An effective allowance cannot leave the gate DTO internally inconsistent."""
+        call = InsnSnapshot(
+            opcode=0, ea=0x1001, operands=(), kind=InsnKind.CALL,
+        )
+        cfg = FlowGraph(
+            blocks={
+                0: _make_block(0, (1,), (), start_ea=0x1000),
+                1: _make_block(1, (), (0,), start_ea=0x1001, insns=(call,)),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+        post_cfg = FlowGraph(
+            blocks={
+                0: _make_block(0, (), (), start_ea=0x1000),
+                1: _make_block(1, (), (), start_ea=0x1001, insns=(call,)),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+
+        result = check_effectful_reachability_preserved(
+            cfg,
+            post_cfg=post_cfg,
+            allowed_lost_block_serials=frozenset({1}),
+        )
+
+        assert result.passed
+        assert result.pre_effectful_block_serials == frozenset({1})
+        assert result.post_reachable_effectful_block_serials == frozenset({1})
+        assert result.lost_block_serials == frozenset()
+
+        adjacency_result = check_effectful_reachability_preserved(
+            cfg,
+            post_adj={0: [], 1: []},
+            allowed_lost_block_serials=frozenset({1}),
+        )
+        assert adjacency_result.passed
+        assert adjacency_result.pre_effectful_block_serials == frozenset({1})
+        assert adjacency_result.post_reachable_effectful_block_serials == frozenset({1})
+        assert adjacency_result.lost_block_serials == frozenset()
+
     def test_allows_redirect_that_strands_effect_free_register_write(self):
         move = InsnSnapshot(
             opcode=0,

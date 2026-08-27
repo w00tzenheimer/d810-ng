@@ -26,10 +26,12 @@ from d810.transforms.unflatten_authority.evaluate import _accepted_detached_comp
 from d810.transforms.unflatten_authority.evaluate import _dimensions
 from d810.transforms.unflatten_authority.evaluate import _receipt_digest
 from d810.transforms.unflatten_authority.evaluate import build_semantic_case
+from d810.transforms.unflatten_authority.evaluate import build_semantic_loss_ledger
 from d810.transforms.unflatten_authority.evaluate import derive_corridor_coverage_evidence
 from d810.transforms.unflatten_authority.evaluate import evaluate_case
 from d810.transforms.unflatten_authority.evaluate import REQUIRED_DIMENSIONS
 from d810.transforms.patch_binding import BoundPatchPlan
+from d810.transforms.cfg_transaction import PlanBlockRef
 from d810.transforms.plan import PatchPlan
 from d810.transforms.unflatten_authority.ids import _case_factory, _claim_factory, _evidence_factory, _justification_factory, _subject_factory, authority_id as canonical_authority_id, bound_unflatten_binding_id, canonical_bytes, canonical_decode, content_id, receipt_id, semantic_graph_inventory_digest
 from .helpers import authority_id, block_ref, state_identity
@@ -76,180 +78,54 @@ def test_equivalent_route_claim_uses_closed_subject_roles_and_reciprocal_topolog
     ) is claim
 
 
-def test_equivalent_route_requires_one_accepted_source_and_projected_assessment_pair() -> None:
-    """A route claim is not authority until both phase assessments close it."""
+def test_equivalent_route_requires_bound_source_authority_and_realization() -> None:
+    """The real Direct preparation seals the source authority to its realization."""
 
-    from d810.transforms.unflatten_authority import producer_api
+    from .test_transaction_api import _c1_direct_preparation_case
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.unflatten_authority import transaction_api
 
-    source, proposal, _exclusion, refs = __import__(
-        "tests.unit.transforms.unflatten_authority.helpers", fromlist=["exact_fixture"],
-    ).exact_fixture()
-    proof = proposal.route_evidence.route_proofs[0]
-    claim = producer_api.build_equivalent_route_claims(
+    fixture, source, plan, projected, gates = _c1_direct_preparation_case()
+    result = transaction_api.prepare_unflatten_authority(
         source=source,
-        source_catalog=proposal.source_identity_catalog,
-        route_evidence=proposal.route_evidence,
-        selected_proof_ids=(proof.proof_id,),
-    )[0]
-    source_assessment = assess_canonical_route(
-        CanonicalRouteMaterialization.capture(
-            source, generation=1, phase=CanonicalRouteAssessmentPhase.SOURCE,
-        ), proposal.route_evidence,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gates,
     )
-    projected_assessment = assess_canonical_route(
-        CanonicalRouteMaterialization.capture(
-            source, generation=1, phase=CanonicalRouteAssessmentPhase.PROJECTED,
-        ), proposal.route_evidence,
-    )
-    inputs = SimpleNamespace(
-        proposal=proposal,
-        source_route_assessment=source_assessment,
-        candidate_route_assessment=projected_assessment,
-        source_inventory=SimpleNamespace(
-            graph_fingerprint=source_assessment.graph_fingerprint, generation=1,
-        ),
-        candidate_inventory=SimpleNamespace(
-            graph_fingerprint=projected_assessment.graph_fingerprint, generation=1,
-        ),
-    )
-    inputs.proposal = replace(
-        proposal,
-        claims=(claim,),
-        plan_inputs=replace(
-            proposal.plan_inputs,
-            shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
-        ),
-    )
-    from d810.transforms.unflatten_authority.evaluate import _validate_route_assessment_pair
-    _validate_route_assessment_pair(
-        inputs,
-        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        claim,
-    )
-
-    # Candidate observations may legitimately be a later graph generation;
-    # the assessment and candidate inventory, rather than the source claim,
-    # own that generation coordinate.
-    candidate_generation_four = assess_canonical_route(
-        CanonicalRouteMaterialization.capture(
-            source, generation=4, phase=CanonicalRouteAssessmentPhase.PROJECTED,
-        ), proposal.route_evidence,
-    )
-    inputs.candidate_route_assessment = candidate_generation_four
-    inputs.candidate_inventory.generation = 4
-    _validate_route_assessment_pair(
-        inputs,
-        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        claim,
-    )
-    inputs.candidate_route_assessment = projected_assessment
-    inputs.candidate_inventory.generation = 1
-
-    observed_assessment = assess_canonical_route(
-        CanonicalRouteMaterialization.capture(
-            source, generation=1, phase=CanonicalRouteAssessmentPhase.OBSERVED,
-        ), proposal.route_evidence,
-    )
-    inputs.candidate_route_assessment = observed_assessment
-    with pytest.raises(ValueError, match="wrong phase"):
-        _validate_route_assessment_pair(
-            inputs,
-            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-            claim,
-        )
-    inputs.candidate_route_assessment = projected_assessment
-    object.__setattr__(projected_assessment, "graph_fingerprint", authority_id("foreign-candidate"))
-    with pytest.raises((TypeError, ValueError)):
-        _validate_route_assessment_pair(
-            inputs,
-            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-            claim,
-        )
-    object.__setattr__(projected_assessment, "graph_fingerprint", source_assessment.graph_fingerprint)
-    object.__setattr__(projected_assessment, "generation", 99)
-    with pytest.raises(ValueError, match="seal|immutable"):
-        _validate_route_assessment_pair(
-            inputs,
-            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-            claim,
-        )
-    object.__setattr__(projected_assessment, "generation", 1)
-    object.__setattr__(projected_assessment, "bound_evidence", None)
-    with pytest.raises((TypeError, ValueError)):
-        _validate_route_assessment_pair(
-            inputs,
-            model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-            claim,
-        )
+    assert result.prepared is not None
+    inputs = result.prepared.source_inputs
+    assert inputs.source_route_authority is result.prepared.source_route_authority
+    assert inputs.projected_route_realization is result.prepared.projected_route_realization
+    assert inputs.projected_route_realization.source_authority is inputs.source_route_authority
 
 
 def test_equivalent_route_positive_marks_one_stable_subject_route_equivalence() -> None:
-    """One assessed route satisfies every exact cell on its stable subjects."""
+    """The real Direct preparation exposes one sealed route equivalence."""
 
-    from d810.analyses.control_flow.graph_checks import (
-        check_effectful_reachability_preserved,
-        check_entry_reachability_not_collapsed,
-        check_terminal_reachability_preserved,
-    )
     from d810.transforms.cfg_transaction import CfgProjection
-    from d810.transforms.plan import PatchPlan, PatchRedirectGoto
-    from d810.transforms.unflatten_authority import producer_api
     from d810.transforms.unflatten_authority import transaction_api
-    from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
-    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
-    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+    from .test_transaction_api import _c1_direct_preparation_case
 
-    source, proposal, _exclusion, refs = exact_fixture()
-    proof = proposal.route_evidence.route_proofs[0]
-    claim = producer_api.build_equivalent_route_claims(
+    fixture, source, plan, projected, gates = _c1_direct_preparation_case()
+    preparation = transaction_api.prepare_unflatten_authority(
         source=source,
-        source_catalog=proposal.source_identity_catalog,
-        route_evidence=proposal.route_evidence,
-        selected_proof_ids=(proof.proof_id,),
-    )[0]
-    proposal = replace(
-        proposal,
-        claims=(claim,),
-        plan_inputs=replace(
-            proposal.plan_inputs, shape=model.UnflattenPlanShape.PARTIAL_REWRITE,
-        ),
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gates,
     )
-    plan = PatchPlan(
-        plan_id=proposal.plan_id,
-        snapshot_id=authority_id("route-positive-snapshot"),
-        source_generation=proposal.source_identity_catalog.generation,
-        steps=(
-            PatchRedirectGoto(refs[0], refs[1], refs[2]),
-            PatchRedirectGoto(refs[1], refs[2], refs[0]),
-        ),
-        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
-    )
-    manifest = canonical_redirect_manifest(plan)
-    proposal = replace(
-        proposal,
-        use_def_witness=replace(
-            proposal.use_def_witness,
-            redirect_owner_refs=manifest.owner_refs,
-            redirect_digest=manifest.digest,
-        ),
-    )
-    plan = replace(plan, unflatten_proposal=proposal)
-    projection = CfgProjection(plan.plan_id, plan.snapshot_id, source)
-    generic = GenericCfgGateBundle(
-        check_entry_reachability_not_collapsed(source, post_cfg=source),
-        check_effectful_reachability_preserved(source, post_cfg=source),
-        check_effectful_reachability_preserved(source, post_cfg=source),
-        check_terminal_reachability_preserved(source, post_cfg=source),
-    )
-    inputs = transaction_api.derive_unflatten_preparation_inputs(
-        source, projection, plan, proposal, generic,
-    )
+    assert type(preparation) is model.UnflattenAuthorityPreparationAccepted
+    inputs = preparation.prepared.source_inputs
     case = build_semantic_case(
-        authority_id=authority_id("route-positive-case"),
+        authority_id=preparation.prepared.authority_id,
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         inputs=inputs,
     )
-    assert claim.retired_route_subject == claim.replacement_route_subject
+    claim = next(
+        item for item in inputs.claims
+        if type(item) is model.EquivalentSemanticRouteClaim
+    )
     assert len(claim.route_proof_ids) == 1
     route_subjects = {
         claim.retired_route_subject,
@@ -433,7 +309,11 @@ def _role_subject(role: model.SemanticSubjectRole, token: str) -> model.Semantic
         ref = block_ref(f"b{int(token.rsplit('-', 1)[-1]) % 3}")
     else:
         ref = block_ref("b0")
-    ref_anchor = {"b0": 0x1000, "b1": 0x1300, "b2": 0x1100}[ref.proxy_token]
+    if role is model.SemanticSubjectRole.PLANNED_HELPER:
+        ref = PlanBlockRef(authority_id("role-helper-plan"), token)
+        ref_anchor = 0x1000
+    else:
+        ref_anchor = {"b0": 0x1000, "b1": 0x1300, "b2": 0x1100}[ref.proxy_token]
     if role is model.SemanticSubjectRole.AUTHORITATIVE_HANDLER:
         kind, locator, owner, anchor = model.SemanticSubjectKind.HANDLER, model.HandlerSubjectLocator(ref, ref_anchor, (1,)), ref, ref_anchor
     elif role is model.SemanticSubjectRole.TERMINAL_SITE:
@@ -670,10 +550,47 @@ def _binding(subject: model.SemanticSubjectRef, phase: model.UnflattenAuthorityP
     )
 
 
+def _make_binding_serials_injective(
+    bindings: tuple[model.PhaseSubjectBinding, ...],
+) -> tuple[model.PhaseSubjectBinding, ...]:
+    """Keep fixture-local block serials injective without changing aliases."""
+
+    serial_by_ref: dict[object, int] = {}
+    ref_by_serial: dict[int, object] = {}
+    next_serial = max(
+        (
+            binding.serial
+            for binding in bindings
+            if binding.status is model.SubjectBindingStatus.UNIQUE
+            and binding.serial is not None
+        ),
+        default=-1,
+    ) + 1
+    normalized = []
+    for binding in bindings:
+        if (
+            binding.status is not model.SubjectBindingStatus.UNIQUE
+            or binding.block_ref is None
+            or binding.serial is None
+        ):
+            normalized.append(binding)
+            continue
+        serial = serial_by_ref.get(binding.block_ref)
+        if serial is None:
+            serial = binding.serial
+            if serial in ref_by_serial and ref_by_serial[serial] != binding.block_ref:
+                while next_serial in ref_by_serial:
+                    next_serial += 1
+                serial = next_serial
+                next_serial += 1
+            serial_by_ref[binding.block_ref] = serial
+            ref_by_serial[serial] = binding.block_ref
+        normalized.append(replace(binding, serial=serial))
+    return tuple(normalized)
+
+
 def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], candidate_subjects: tuple[model.SemanticSubjectRef, ...] | None = None, source_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None, candidate_bindings: tuple[model.PhaseSubjectBinding, ...] | None = None, patch_step_facts: tuple[model.PatchStepEvidencePayload, ...] = (), claims: tuple[model.UnflattenClaim, ...] | None = None, proposal: model.ProposedUnflattenContract | None = None, native_instruction_eas_by_block: dict[object, tuple[int, ...]] | None = None, phase: model.UnflattenAuthorityPhase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT) -> model.DerivedUnflattenPreparationInputs:
     proposal = model.ProposedUnflattenContract(**_valid_proposal(model)) if proposal is None else proposal
-    if tuple(proposal.use_def_witness.redirect_owner_refs) != tuple(proposal.plan_inputs.dispatcher_member_refs):
-        object.__setattr__(proposal.use_def_witness, "redirect_owner_refs", proposal.plan_inputs.dispatcher_member_refs)
     claims = proposal.claims if claims is None else claims
     def normalize_value_flow(subjects: tuple[model.SemanticSubjectRef, ...]) -> tuple[model.SemanticSubjectRef, ...]:
         return tuple(
@@ -757,6 +674,32 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
     source_subjects = tuple(by_id.values())
     candidate_subjects = source_subjects if candidate_subjects is None else candidate_subjects
     candidate_subjects = normalize_value_flow(candidate_subjects)
+    candidate_terminal_sites = {
+        (
+            subject.block_ref,
+            subject.anchor_ea,
+            subject.locator.instruction_ea,
+        )
+        for subject in candidate_subjects
+        if subject.role is model.SemanticSubjectRole.TERMINAL_SITE
+        and type(subject.locator) is model.TerminalSubjectLocator
+    }
+    candidate_subjects = tuple({
+        item.subject_id: item
+        for item in (
+            *candidate_subjects,
+            *(
+                effect
+                for effect in terminal_effect_subjects
+                if type(effect.locator) is model.EffectSubjectLocator
+                and (
+                    effect.block_ref,
+                    effect.anchor_ea,
+                    effect.locator.instruction_ea,
+                ) in candidate_terminal_sites
+            ),
+        )
+    }.values())
     gate_roles = {
         model.GenericCfgGateKind.ENTRY_REACHABILITY: model.SemanticSubjectRole.SOURCE_ENTRY,
         model.GenericCfgGateKind.EFFECTFUL_REACHABILITY: model.SemanticSubjectRole.EFFECT_SITE,
@@ -822,6 +765,8 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         _binding(item, model.UnflattenAuthorityPhase.PRODUCER_FORECAST, fingerprint=authority_id("source-fp"))
         for item in source_subjects
     )
+    source_bindings = _make_binding_serials_injective(tuple(source_bindings))
+    candidate_bindings = _make_binding_serials_injective(tuple(candidate_bindings))
     if native_instruction_eas_by_block:
         source_bindings = tuple(
             replace(binding, native_instruction_eas=native_instruction_eas_by_block[binding.block_ref])
@@ -915,7 +860,7 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         candidate_inventory_digest=_digest(candidate_subject_ids),
         source_binding_digest=_digest(tuple(sorted(source_bindings, key=lambda item: item.subject.subject_id))),
         candidate_binding_digest=_digest(tuple(sorted(candidate_bindings, key=lambda item: item.subject.subject_id))),
-        route_expansion_digest=_digest(tuple(item for item in source_subjects if item.role in {model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION})),
+        route_expansion_digest=_digest(tuple(item for item in source_subjects if item.kind is model.SemanticSubjectKind.ROUTE)),
         effect_catalog_digest=_digest(tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.EFFECT_SITE)),
         terminal_catalog_digest=_digest(tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.TERMINAL_SITE)),
         plan_input_digest=_digest(tuple(item.subject_id for item in source_subjects if item.role in {model.SemanticSubjectRole.SOURCE_ENTRY, model.SemanticSubjectRole.DISPATCHER_ENTRY, model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, model.SemanticSubjectRole.AUTHORITATIVE_HANDLER})),
@@ -1041,7 +986,7 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
                     ),
                     None,
                 ),
-                tuple(
+                (rows := tuple(
                     model.InventoryInstructionObservation(
                         ordinal,
                         ea,
@@ -1093,15 +1038,21 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
                             for locator in effects_by_owner.get(binding.block_ref, ())
                         ),
                         None,
+                        None,
+                        None,
+                        0,
                     )
                     for ordinal, ea in enumerate(binding.native_instruction_eas)
-                ),
+                )),
                 model.BlockKind.STOP
                 if any(
                     locator.terminal_kind is model.TerminalKind.STOP
                     for locator in terminals_by_owner.get(binding.block_ref, ())
                 ) else model.BlockKind.UNKNOWN,
                 binding.anchor_ea,
+                tail_opcode=rows[-1].opcode if rows else None,
+                raw_tail_opcode=rows[-1].raw_opcode if rows else None,
+                tail_kind=rows[-1].instruction_kind if rows else None,
             )
             for index, binding in enumerate(sorted(unique.values(), key=lambda item: item.serial))
         )
@@ -1282,7 +1233,7 @@ def _complete_inputs(*, source_subjects: tuple[model.SemanticSubjectRef, ...], c
         source_inventory=source_inventory,
         candidate_inventory=candidate_inventory,
         projected_topology_reference=projected_topology_reference,
-        source_route_assessment=None, candidate_route_assessment=None,
+        source_route_authority=None, projected_route_realization=None,
         generic_gate_facts=None, conditional_relations=relations,
         patch_step_facts=patch_payloads,
         preparation_metrics=metrics,
@@ -1329,83 +1280,29 @@ def test_case_builder_accepts_only_closed_derived_inputs() -> None:
 
 
 def test_prepared_authority_accepts_canonical_bound_route_endpoints() -> None:
-    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
-    inputs = _complete_inputs(
-        source_subjects=(_role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0"),),
-        proposal=proposal,
-    )
-    authority = authority_id("prepared-route-authority")
-    case = build_semantic_case(
-        authority_id=authority,
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=inputs,
-    )
-    proof = proposal.route_evidence.route_proofs[0]
-    source = BoundSemanticBlock(1, proof.source_identity, proof.source_anchor_ea)
-    destinations = tuple(
-        BoundSemanticRouteDestination(
-            destination,
-            BoundSemanticBlock(
-                index + 2,
-                destination.target_identity,
-                destination.target_anchor_ea,
-            ),
-        )
-        for index, destination in enumerate(proof.destinations)
-    )
-    bound_routes = BoundCanonicalSemanticEvidence(
-        proposal.route_evidence,
-        (BoundSemanticRoute(proof, source, destinations),),
-    )
+    """Prepared authority retains the real source and projected products."""
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.unflatten_authority import transaction_api
+    from .test_transaction_api import _c1_direct_preparation_case
 
-    plan = PatchPlan(
-        plan_id=proposal.plan_id,
-        snapshot_id=authority_id("prepared-snapshot"),
-        source_generation=inputs.source_inventory.generation,
-        source_coordinates=tuple(
-            (block.block_ref, serial)
-            for serial, block in enumerate(proposal.source_identity_catalog.blocks)
-        ),
-        unflatten_proposal=proposal,
+    fixture, source, plan, projected, gates = _c1_direct_preparation_case()
+    result = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gates,
     )
-
-    expected_coordinates = model._canonical_source_coordinates(plan.source_coordinates)
-    prepared = model.PreparedUnflattenAuthority(
-        authority_id=authority,
-        route=model.UnflattenPlanRoute.ORDINARY,
-        owning_plan=plan,
-        proposal=proposal,
-        claims=case.claims,
-        bound_routes=bound_routes,
-        snapshot_id=plan.snapshot_id,
-        source_maturity=None,
-        source_coordinate_digest=canonical_authority_id(expected_coordinates),
-        source_fingerprint=inputs.source_inventory.graph_fingerprint,
-        projected_fingerprint=inputs.candidate_inventory.graph_fingerprint,
-        source_generation=inputs.source_inventory.generation,
-        projected_generation=inputs.candidate_inventory.generation,
-        source_bindings=inputs.source_inventory.bindings,
-        projected_bindings=case.bindings,
-        projected_case=case,
-        source_inventory=inputs.source_inventory,
-        source_inputs=inputs,
-    )
-    assert prepared.bound_routes.routes[0].destinations[0].evidence.role is proof.destinations[0].role
+    assert type(result) is model.UnflattenAuthorityPreparationAccepted
+    prepared = result.prepared
+    assert prepared.projected_route_realization.source_authority is prepared.source_route_authority
+    assert prepared.source_inputs.source_route_authority is prepared.source_route_authority
+    assert prepared.source_inputs.projected_route_realization is prepared.projected_route_realization
     with pytest.raises(ValueError, match="source bindings"):
         replace(prepared, source_bindings=prepared.source_bindings[:-1])
-    swapped_destination = BoundSemanticRouteDestination(
-        proof.destinations[0],
-        BoundSemanticBlock(99, proof.source_identity, proof.source_anchor_ea),
-    )
-    swapped_routes = BoundCanonicalSemanticEvidence(
-        proposal.route_evidence,
-        (BoundSemanticRoute(proof, source, (swapped_destination,)),),
-    )
-    with pytest.raises(ValueError, match="destinations"):
-        replace(prepared, bound_routes=swapped_routes)
     attempt = model.TransactionAttemptId(
-        plan_id=proposal.plan_id, session_id="prepared-session",
-        generation=inputs.candidate_inventory.generation, attempt_id="prepared-attempt",
+        plan_id=plan.plan_id, session_id="prepared-session",
+        generation=prepared.projected_generation, attempt_id="prepared-attempt",
     )
     live_maturity = MaturityEnvelope(ir=None, provider="test", provider_id=0)
     patch_binding = BoundPatchPlan(
@@ -1461,6 +1358,71 @@ def test_fragment_wide_value_flow_identity_and_use_def_are_total() -> None:
     assert cells[model.SafetyDimension.USE_DEF_INTEGRITY].state is model.ObligationState.SATISFIED
 
 
+def test_value_flow_identity_accepts_bound_physical_owner_anchor_outside_instruction_origins() -> None:
+    """Value-flow consumes the binder's physical-anchor verdict without replaying it."""
+
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.unflatten_authority.evaluate import (
+        _identity_support, _make_justification, _validate_justification_graph,
+    )
+
+    phase = model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+    fingerprint = authority_id("value-flow-physical-owner")
+    ref = NativeBlockRef(StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1020),),
+        native_key=NativePreanalysisKey(
+            "value-flow-physical-owner", "x86", 64, 0,
+            "f" * 64, "p" * 64, "s" * 64,
+        ),
+        exact_instruction_eas=(0x1010,),
+    ))
+    owner = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.BLOCK,
+        role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+        block_ref=ref,
+        anchor_ea=0x1000,
+        locator=model.BlockSubjectLocator(ref, 0x1000),
+    )
+    value_flow = _subject_factory(
+        model.SemanticSubjectRef,
+        kind=model.SemanticSubjectKind.VALUE_FLOW,
+        role=model.SemanticSubjectRole.NON_STATE_VALUE_FLOW,
+        block_ref=None,
+        anchor_ea=None,
+        locator=model.ValueFlowSubjectLocator(
+            authority_id("value-flow-physical-fragment"), state_identity(), (ref,),
+        ),
+    )
+    binding = model.PhaseSubjectBinding(
+        subject=owner, phase=phase, block_ref=ref,
+        graph_fingerprint=fingerprint, generation=4,
+        status=model.SubjectBindingStatus.UNIQUE, serial=7,
+        anchor_ea=0x1000, native_instruction_eas=(0x1010,), role=owner.role,
+    )
+    evidence = _evidence_factory(
+        model.AuthorityEvidence, model.AuthorityEvidenceKind.PHASE_BINDING,
+        owner, phase, model.PhaseBindingEvidencePayload(binding),
+    )
+    key = model.ObligationKey(value_flow, model.SafetyDimension.IDENTITY_BINDING)
+    justification = _make_justification(
+        rule=model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING,
+        key=key, polarity=model.EvidencePolarity.SUPPORTS, phase=phase,
+        premise_ids=(evidence.evidence_id,),
+    )
+
+    assert _identity_support(
+        value_flow, (owner, value_flow), (binding,), phase, fingerprint, 4,
+    )
+    _validate_justification_graph(
+        (justification,), (key,), (evidence,), phase,
+        candidate_fingerprint=fingerprint, candidate_generation=4,
+        bindings=(binding,), subjects=(owner, value_flow),
+    )
+
+
 def test_use_def_audit_evidence_is_evaluator_owned() -> None:
     source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "audit-injection")
     inputs = _complete_inputs(source_subjects=(source_entry,))
@@ -1506,9 +1468,9 @@ def test_use_def_redirect_owners_are_exact_patch_fact_projection() -> None:
         )
 
     for index, facts in enumerate((
-        (),
-        redirect_facts[:-1],
-        tuple(replace(fact, owner_ref=entry.block_ref) for fact in redirect_facts),
+            (),
+            redirect_facts[:-1],
+            tuple(replace(fact, owner_ref=block_ref("b1")) for fact in redirect_facts),
         tuple(replace(fact, step_type="PatchInsertBlock") for fact in redirect_facts),
         redirect_facts + (replace(redirect_facts[0], owner_ref=block_ref("foreign-owner"), step_index=98),),
     )):
@@ -1537,6 +1499,19 @@ def test_use_def_redirect_owners_are_exact_patch_fact_projection() -> None:
         ),
     )
     assert repeated_case.case_id
+
+
+def test_value_flow_owner_resolution_rejects_same_role_ambiguity() -> None:
+    """A sealed owner cannot be discharged by an ambiguous role binding."""
+
+    from d810.transforms.unflatten_authority.evaluate import _value_flow_owner_subjects
+
+    owner = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
+    with pytest.raises(
+        ValueError,
+        match=r"value-flow owner subject is missing or ambiguous: .*count=2",
+    ):
+        _value_flow_owner_subjects((owner, owner), (owner.block_ref,))
 
 
 def test_value_flow_identity_is_conjunctive_over_every_owner_binding() -> None:
@@ -1782,10 +1757,18 @@ def test_contextual_justification_validation_rejects_forged_clean_audit() -> Non
 
 def test_value_flow_unique_binding_requires_exact_owner_premise_set() -> None:
     source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "owner-premise-set")
+    proposal = model.ProposedUnflattenContract(**_valid_proposal(model))
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=proposal.plan_inputs.dispatcher_member_refs,
+        ),
+    )
     case = build_semantic_case(
         authority_id=authority_id("owner-premise-set"),
         phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=_complete_inputs(source_subjects=(source_entry,)),
+        inputs=_complete_inputs(source_subjects=(source_entry,), proposal=proposal),
     )
     justification = next(
         item for item in case.justifications
@@ -1793,6 +1776,11 @@ def test_value_flow_unique_binding_requires_exact_owner_premise_set() -> None:
         and item.rule is model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING
     )
     assert len(justification.premise_ids) == 2
+    evidence_by_id = {item.evidence_id: item for item in case.evidence}
+    assert {
+        evidence_by_id[premise].payload.binding.subject.block_ref
+        for premise in justification.premise_ids
+    } == set(proposal.plan_inputs.dispatcher_member_refs)
     for premise_ids in (
         justification.premise_ids[:-1],
         (*justification.premise_ids, justification.premise_ids[0]),
@@ -1847,6 +1835,44 @@ def test_value_flow_unique_binding_requires_exact_owner_premise_set() -> None:
             candidate_generation=case.candidate_generation,
             bindings=tuple(item for item in case.bindings if item.subject.subject_id != omitted_owner.subject_id),
             subjects=tuple(item for item in case.subjects if item.subject_id != omitted_owner.subject_id),
+        )
+
+
+def test_ordinary_identity_binding_rejects_multiple_phase_premises() -> None:
+    """Only the aggregate value-flow subject may carry multiple owners."""
+
+    source_entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "ordinary-premise")
+    case = build_semantic_case(
+        authority_id=authority_id("ordinary-premise"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(source_subjects=(source_entry,)),
+    )
+    ordinary = next(
+        item for item in case.justifications
+        if item.conclusion.subject == source_entry
+        and item.rule is model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING
+    )
+    extra_premise = next(
+        item.evidence_id for item in case.evidence
+        if item.kind is model.AuthorityEvidenceKind.PHASE_BINDING
+        and item.subject != source_entry
+    )
+    values = {
+        name: getattr(ordinary, name)
+        for name in ordinary.__dataclass_fields__
+        if name != "justification_id"
+    }
+    values["premise_ids"] = tuple(sorted((*ordinary.premise_ids, extra_premise)))
+    forged = _justification_factory(model.AuthorityJustification, **values)
+    from d810.transforms.unflatten_authority.evaluate import _validate_justification_graph
+    with pytest.raises(ValueError, match="ordinary identity binding requires one premise"):
+        _validate_justification_graph(
+            tuple(forged if item is ordinary else item for item in case.justifications),
+            case.required_obligations, case.evidence, case.phase,
+            case.claims, case.conditional_relations,
+            candidate_fingerprint=case.candidate_fingerprint,
+            candidate_generation=case.candidate_generation,
+            bindings=case.bindings, subjects=case.subjects,
         )
 
 
@@ -2213,22 +2239,52 @@ def test_role_inventory_is_exact_and_has_no_unrelated_cells() -> None:
         )
         for index, role in enumerate(roles)
     )
-    case = build_semantic_case(
-        authority_id=authority_id("authority"),
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=_complete_inputs(source_subjects=subjects),
+    entry = next(
+        subject for subject in subjects
+        if subject.role is model.SemanticSubjectRole.SOURCE_ENTRY
     )
     for subject in subjects:
+        source_subjects = (
+            (entry,)
+            if subject.role is model.SemanticSubjectRole.PLANNED_HELPER
+            else (subject,)
+            if subject is entry
+            else (entry, subject)
+        )
+        candidate_subjects = (
+            (*source_subjects, subject)
+            if subject.role is model.SemanticSubjectRole.PLANNED_HELPER
+            else source_subjects
+        )
+        case = build_semantic_case(
+            authority_id=authority_id(f"role-authority:{subject.subject_id}"),
+            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+            inputs=_complete_inputs(
+                source_subjects=source_subjects,
+                candidate_subjects=candidate_subjects,
+            ),
+        )
         if subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW:
             subject = next(
                 item for item in case.subjects
                 if item.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
             )
         actual = {key.dimension for key in case.required_obligations if key.subject == subject}
-        expected = set(REQUIRED_DIMENSIONS[subject.role])
+        expected = set(REQUIRED_DIMENSIONS[(subject.kind, subject.role)])
+        expected.update(
+            relation.dimension for relation in case.conditional_relations
+            if relation.target_subject_id == subject.subject_id
+        )
         if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY:
             expected.add(model.SafetyDimension.ROUTE_EQUIVALENCE)
-        if subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION:
+        if (
+            subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
+            and any(
+                relation.source_subject_id == subject.subject_id
+                and relation.dimension is model.SafetyDimension.TERMINAL_REACHABILITY
+                for relation in case.conditional_relations
+            )
+        ):
             expected.add(model.SafetyDimension.TERMINAL_REACHABILITY)
         if subject.role is model.SemanticSubjectRole.EFFECT_SITE:
             expected.add(model.SafetyDimension.TOPOLOGY_INTEGRITY)
@@ -2327,58 +2383,20 @@ def test_inventory_topology_mismatches_refute_exact_case_cells() -> None:
 
 def test_projected_topology_reference_authorizes_intentional_redirect_for_incident_roles() -> None:
     """Projected topology is the reference for the projected authority phase."""
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.unflatten_authority import transaction_api
+    from .test_transaction_api import _c1_direct_preparation_case
 
-    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "topology-reference")
-    route_source = _role_subject(
-        model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "topology-reference-source",
+    fixture, source, plan, projected, gates = _c1_direct_preparation_case()
+    preparation = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gates,
     )
-    route_destination = _role_subject(
-        model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2",
-    )
-    inputs = _complete_inputs(
-        source_subjects=(entry, route_source, route_destination),
-    )
-    candidate = inputs.candidate_inventory
-    blocks = tuple(
-        replace(
-            block,
-            successor_serials=(2,) if block.serial == 0 else (),
-            predecessor_serials=(0,) if block.serial == 2 else (),
-        )
-        if block.serial in {0, 1, 2} else block
-        for block in candidate.blocks
-    )
-    topology = tuple(sorted(
-        (
-            model.InventoryTopologyIncidence(
-                model.TopologyIncidenceKind.SUCCESSOR, 0, 2, None,
-            ),
-            model.InventoryTopologyIncidence(
-                model.TopologyIncidenceKind.PREDECESSOR, 2, 0, None,
-            ),
-        ),
-        key=lambda row: (row.kind.value, row.owner_serial, row.peer_serial),
-    ))
-    object.__setattr__(candidate, "blocks", blocks)
-    object.__setattr__(candidate, "topology", topology)
-    object.__setattr__(candidate, "reachable_serials", (0, 2))
-    digest = semantic_graph_inventory_digest(
-        candidate.phase, candidate.graph_fingerprint, candidate.generation,
-        candidate.blocks, candidate.subjects, candidate.bindings,
-        candidate.effects, candidate.terminals, candidate.topology,
-        candidate.reachable_serials, candidate.entry_serial,
-        candidate.source_subject_ids, candidate.function_ea,
-    )
-    object.__setattr__(candidate, "inventory_digest", digest)
-    object.__setattr__(inputs.preparation_receipt, "candidate_inventory_digest", digest)
-    object.__setattr__(inputs.preparation_receipt, "projected_topology_reference_digest", digest)
-    object.__setattr__(inputs.preparation_receipt, "receipt_id", receipt_id(inputs.preparation_receipt))
-
-    case = build_semantic_case(
-        authority_id=authority_id("projected-topology-reference"),
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=inputs,
-    )
+    assert preparation.prepared is not None
+    case = preparation.prepared.projected_case
     incident_roles = {
         model.SemanticSubjectRole.SOURCE_ENTRY,
         model.SemanticSubjectRole.DISPATCHER_ENTRY,
@@ -2403,102 +2421,48 @@ def test_projected_topology_reference_authorizes_intentional_redirect_for_incide
 
 def test_observed_topology_is_rejected_against_prepared_projected_reference() -> None:
     """Observed source topology cannot replace the prepared projection."""
+    from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+    from d810.hexrays.mutation.patch_binding import bind_patch_plan
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.unflatten_authority import transaction_api
+    from .test_transaction_api import _c1_direct_preparation_case, _observed_gates
 
-    from copy import copy
-
-    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "observed-topology")
-    route_source = _role_subject(
-        model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, "observed-topology-source",
+    fixture, source, plan, projected, gates = _c1_direct_preparation_case()
+    preparation = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gates,
     )
-    route_destination = _role_subject(
-        model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2",
+    assert preparation.prepared is not None
+    refs = tuple(plan.source_coordinates)
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=fixture.attempt_id.generation,
+        maturity=None,
+        native_key=refs[0][0].identity.native_key,
+        snapshot_id=plan.snapshot_id,
+        session_id=fixture.attempt_id.session_id,
+        bindings=tuple((ref.identity, serial) for ref, serial in refs),
     )
-    baseline = _complete_inputs(
-        source_subjects=(entry, route_source, route_destination),
+    index.begin_transaction(fixture.attempt_id, quantity=len(source.blocks))
+    binding = transaction_api.bind_prepared_unflatten_authority(
+        prepared=preparation.prepared,
+        patch_binding=bind_patch_plan(plan, index, fixture.attempt_id).bound_plan,
     )
-    actual = copy(baseline.candidate_inventory)
-    reference = copy(baseline.candidate_inventory)
-    reference_blocks = tuple(
-        replace(
-            block,
-            successor_serials=(2,) if block.serial == 0 else (),
-            predecessor_serials=(0,) if block.serial == 2 else (),
-        )
-        if block.serial in {0, 1, 2} else block
-        for block in reference.blocks
+    assert binding.authority is not None
+    # Source topology is deliberately different from the prepared projection.
+    observed = transaction_api.revalidate_observed_unflatten_authority(
+        authority=binding.authority,
+        observed=source,
+        observed_generation=fixture.attempt_id.generation,
+        generic_gates=_observed_gates(source, source),
     )
-    reference_topology = (
-        model.InventoryTopologyIncidence(
-            model.TopologyIncidenceKind.PREDECESSOR, 2, 0, None,
-        ),
-        model.InventoryTopologyIncidence(
-            model.TopologyIncidenceKind.SUCCESSOR, 0, 2, None,
-        ),
-    )
-    object.__setattr__(reference, "blocks", reference_blocks)
-    object.__setattr__(reference, "topology", reference_topology)
-    object.__setattr__(reference, "reachable_serials", (0, 2))
-    reference_digest = semantic_graph_inventory_digest(
-        reference.phase, reference.graph_fingerprint, reference.generation,
-        reference.blocks, reference.subjects, reference.bindings,
-        reference.effects, reference.terminals, reference.topology,
-        reference.reachable_serials, reference.entry_serial,
-        reference.source_subject_ids, reference.function_ea,
-    )
-    object.__setattr__(reference, "inventory_digest", reference_digest)
-    observed_fingerprint = authority_id("observed-topology")
-    observed_generation = 5
-    observed_bindings = tuple(
-        replace(
-            binding, phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
-            graph_fingerprint=observed_fingerprint, generation=observed_generation,
-        )
-        for binding in actual.bindings
-    )
-    object.__setattr__(actual, "phase", model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY)
-    object.__setattr__(actual, "graph_fingerprint", observed_fingerprint)
-    object.__setattr__(actual, "generation", observed_generation)
-    object.__setattr__(actual, "bindings", observed_bindings)
-    actual_digest = semantic_graph_inventory_digest(
-        actual.phase, actual.graph_fingerprint, actual.generation,
-        actual.blocks, actual.subjects, actual.bindings,
-        actual.effects, actual.terminals, actual.topology,
-        actual.reachable_serials, actual.entry_serial,
-        actual.source_subject_ids, actual.function_ea,
-    )
-    object.__setattr__(actual, "inventory_digest", actual_digest)
-    receipt_values = {
-        name: getattr(baseline.preparation_receipt, name)
-        for name in baseline.preparation_receipt.__dataclass_fields__
-        if name not in {"receipt_id", "_minted"}
-    }
-    receipt_values.update({
-        "candidate_fingerprint": observed_fingerprint,
-        "candidate_generation": observed_generation,
-        "candidate_inventory_digest": actual_digest,
-        "candidate_binding_digest": _digest(tuple(sorted(observed_bindings, key=lambda item: item.subject.subject_id))),
-        "projected_topology_reference_digest": reference_digest,
-    })
-    receipt = model.PreparationAuthorityReceipt.mint(**receipt_values)
-    observed_inputs = replace(
-        baseline,
-        candidate_inventory=actual,
-        projected_topology_reference=reference,
-        preparation_receipt=receipt,
-        phase_build_metrics=replace(
-            baseline.phase_build_metrics,
-            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
-            source_inventory_builds=0,
-        ),
-    )
-    case = build_semantic_case(
-        authority_id=authority_id("observed-topology-reference"),
-        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
-        inputs=observed_inputs,
-    )
+    assert not observed.accepted
+    assert observed.safety_case is not None
     assert any(
         cell.state is model.ObligationState.VIOLATED
-        for cell in case.obligation_index.cells
+        for cell in observed.safety_case.obligation_index.cells
         if cell.key.dimension is model.SafetyDimension.TOPOLOGY_INTEGRITY
     )
 
@@ -2531,7 +2495,10 @@ def test_generic_entry_gate_cannot_support_structure_or_topology() -> None:
         authority_id=authority_id("authority-generic-scope"), phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
         inputs=_complete_inputs(source_subjects=(subject,)),
     )
-    for dimension in (model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.TOPOLOGY_INTEGRITY):
+    assert model.ObligationKey(
+        subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+    ) not in {cell.key for cell in case.obligation_index.cells}
+    for dimension in (model.SafetyDimension.TOPOLOGY_INTEGRITY,):
         cell = next(item for item in case.obligation_index.cells if item.key == model.ObligationKey(subject, dimension))
         for justification_id in cell.supporting_justification_ids:
             justification = next(item for item in case.justifications if item.justification_id == justification_id)
@@ -2552,18 +2519,39 @@ def test_missing_source_subject_retains_identity_and_structure_keys() -> None:
         inputs=_complete_inputs(source_subjects=(subject,), candidate_subjects=(), candidate_bindings=()),
     )
     keys = {key.dimension for key in case.required_obligations}
-    assert {model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.STRUCTURAL_ACCOUNTING} <= keys
+    assert model.SafetyDimension.IDENTITY_BINDING in keys
+    assert model.SafetyDimension.STRUCTURAL_ACCOUNTING not in keys
     identity = next(
         item for item in case.obligation_index.cells
         if item.key == model.ObligationKey(subject, model.SafetyDimension.IDENTITY_BINDING)
     )
     assert identity.state is model.ObligationState.SATISFIED
-    structural = next(
-        item for item in case.obligation_index.cells
-        if item.key == model.ObligationKey(subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
-    )
-    assert structural.state is model.ObligationState.VIOLATED
     assert evaluate_case(case).reason is model.UnflattenAuthorityReason.PROJECTED_BINDING_FAILED
+
+
+def test_unclaimed_missing_canonical_catalog_block_has_one_physical_loss_row() -> None:
+    """A physical source loss is one forbidden row, never one per role view."""
+
+    from d810.transforms.unflatten_authority.evaluate import build_semantic_loss_ledger
+
+    # The fixture's sole equivalent-route claim owns b0.  b2 is a real
+    # catalog identity outside that claim, so its absence must stay forbidden.
+    subject = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "2")
+    entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "missing")
+    case = build_semantic_case(
+        authority_id=authority_id("canonical-unclaimed-loss"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(
+            source_subjects=(entry, subject), candidate_subjects=(entry,), candidate_bindings=(),
+        ),
+    )
+    verdict = evaluate_case(case)
+    ledger = build_semantic_loss_ledger(case, verdict)
+    assert len(ledger.rows) == 1
+    row = ledger.rows[0]
+    assert row.source_subject is subject
+    assert row.kind is model.SemanticLossKind.UNCLASSIFIED
+    assert row.structural_obligation.state is model.ObligationState.VIOLATED
 
 
 def test_canonical_case_roundtrip_preserves_source_partition_for_missing_identity() -> None:
@@ -2910,7 +2898,7 @@ def test_claim_without_correlated_typed_evidence_cannot_authorize_route() -> Non
     assert route_cells and all(not cell.supporting_justification_ids for cell in route_cells)
 
 
-def test_non_block_identity_requires_the_exact_candidate_subject() -> None:
+def test_non_block_identity_is_resolved_from_inventory_not_candidate_subject_list() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "nonblock-entry")
     effect = _role_subject(model.SemanticSubjectRole.EFFECT_SITE, "nonblock-effect")
     baseline = _complete_inputs(
@@ -2924,15 +2912,21 @@ def test_non_block_identity_requires_the_exact_candidate_subject() -> None:
         ) if binding.subject == effect else binding
         for binding in baseline.candidate_inventory.bindings
     )
-    with pytest.raises(ValueError, match="preserved lineage"):
-        build_semantic_case(
-            authority_id=authority_id("nonblock-absence"),
-            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-            inputs=_complete_inputs(
-                source_subjects=(entry, effect), candidate_subjects=(entry,),
-                candidate_bindings=missing_effect,
-            ),
+    case = build_semantic_case(
+        authority_id=authority_id("nonblock-absence"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=_complete_inputs(
+            source_subjects=(entry, effect), candidate_subjects=(entry,),
+            candidate_bindings=missing_effect,
+        ),
+    )
+    identity = next(
+        cell for cell in case.obligation_index.cells
+        if cell.key == model.ObligationKey(
+            effect, model.SafetyDimension.IDENTITY_BINDING,
         )
+    )
+    assert identity.state is model.ObligationState.SATISFIED
 
 
 def test_planned_helper_without_receipt_relation_gets_no_route_authority() -> None:
@@ -2947,7 +2941,7 @@ def test_planned_helper_without_receipt_relation_gets_no_route_authority() -> No
         item.dimension for item in case.required_obligations if item.subject == helper
     }
     assert model.SafetyDimension.ROUTE_EQUIVALENCE not in helper_dimensions
-    assert helper_dimensions == set(REQUIRED_DIMENSIONS[helper.role])
+    assert helper_dimensions == set(REQUIRED_DIMENSIONS[(helper.kind, helper.role)])
 
 
 def test_stale_candidate_generation_precedes_obligation_reason() -> None:
@@ -3356,6 +3350,7 @@ def test_fold_lineage_partitions_disjoint_source_origins_and_supports_each_membe
     helper_instructions = tuple(
         model.InventoryInstructionObservation(
             ordinal, ea, 0, 0, model.InsnKind.NOP, None, False, None,
+            raw_opcode=0,
         )
         for ordinal, ea in enumerate(helper_binding.native_instruction_eas)
     )
@@ -3393,12 +3388,16 @@ def test_fold_lineage_partitions_disjoint_source_origins_and_supports_each_membe
     object.__setattr__(inputs.preparation_receipt, "candidate_inventory_digest", inputs.candidate_inventory.inventory_digest)
     object.__setattr__(inputs.preparation_receipt, "projected_topology_reference_digest", inputs.projected_topology_reference.inventory_digest)
     object.__setattr__(inputs.preparation_receipt, "receipt_id", receipt_id(inputs.preparation_receipt))
-    with pytest.raises(ValueError, match="binding|inventory"):
-        build_semantic_case(
-            authority_id=authority_id("valid-fold-group"),
-            phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-            inputs=inputs,
-        )
+    case = build_semantic_case(
+        authority_id=authority_id("unclaimed-fold-group"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    assert not any(
+        type(item.payload) is model.StructuralLineageEvidencePayload
+        and item.payload.disposition is model.StructuralDisposition.FOLDED
+        for item in case.evidence
+    )
 def test_effect_topology_is_conditional_on_exact_owner_survival() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "effect-entry")
     effect = _role_subject(model.SemanticSubjectRole.EFFECT_SITE, "1")
@@ -3421,6 +3420,7 @@ def test_effect_topology_is_conditional_on_exact_owner_survival() -> None:
 
 def test_local_alias_support_targets_exact_store_effect_relation() -> None:
     values = _valid_proposal(model)
+    proof = values["route_evidence"].route_proofs[0]
     b0, b2 = block_ref("b0"), block_ref("b2")
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0")
     owner = _subject_factory(
@@ -3436,7 +3436,7 @@ def test_local_alias_support_targets_exact_store_effect_relation() -> None:
     route = _subject_factory(
         model.SemanticSubjectRef, kind=model.SemanticSubjectKind.ROUTE,
         role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, block_ref=b0, anchor_ea=0x1000,
-        locator=model.RouteSubjectLocator(authority_id("proof"), authority_id("group"), b0, 0x1000, (b2,), (0x1100,)),
+            locator=model.RouteSubjectLocator(proof.proof_id, proof.atomic_group_id, b0, 0x1000, (b2,), (0x1100,)),
     )
     destination = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
     alias = _claim_factory(
@@ -3518,6 +3518,7 @@ def test_local_alias_support_targets_exact_store_effect_relation() -> None:
 
 def test_local_alias_requires_endpoint_bearing_reachability_path() -> None:
     values = _valid_proposal(model)
+    proof = values["route_evidence"].route_proofs[0]
     b0, b2 = block_ref("b0"), block_ref("b2")
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "0")
     owner = _subject_factory(
@@ -3533,7 +3534,7 @@ def test_local_alias_requires_endpoint_bearing_reachability_path() -> None:
     route = _subject_factory(
         model.SemanticSubjectRef, kind=model.SemanticSubjectKind.ROUTE,
         role=model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, block_ref=b0, anchor_ea=0x1000,
-        locator=model.RouteSubjectLocator(authority_id("proof"), authority_id("group"), b0, 0x1000, (b2,), (0x1100,)),
+            locator=model.RouteSubjectLocator(proof.proof_id, proof.atomic_group_id, b0, 0x1000, (b2,), (0x1100,)),
     )
     destination = _role_subject(model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, "2")
     alias = _claim_factory(
@@ -3630,6 +3631,8 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "retirement-entry")
     member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
     member1 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1")
+    catalog0 = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "0")
+    catalog1 = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "1")
     corridor_locator = model.CorridorSubjectLocator(
         authority_id("retired-corridor"), member0.block_ref, member0.anchor_ea,
         (member0.block_ref, member1.block_ref),
@@ -3679,7 +3682,8 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     )
     complete_inputs = _complete_inputs(
         source_subjects=(
-            entry, member0, member1, corridor, route, destination,
+            entry, catalog0, catalog1, member0, member1, corridor, route,
+            destination,
         ),
         claims=tuple(sorted((retirement, route_claim), key=lambda claim: claim.claim_id)),
         proposal=retirement_proposal,
@@ -3691,7 +3695,7 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     )
     assert next(
         cell for cell in complete.obligation_index.cells
-        if cell.key == model.ObligationKey(member0, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+        if cell.key == model.ObligationKey(catalog0, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
     ).state is model.ObligationState.SATISFIED
 
     phase_result = complete_inputs.retirement_phase_result
@@ -3768,7 +3772,7 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         replace(complete, retirement_phase_result=forged_result)
 
     unreachable_inputs = _complete_inputs(
-        source_subjects=(entry, member0, member1, corridor, route, destination),
+        source_subjects=(entry, catalog0, catalog1, member0, member1, corridor, route, destination),
         claims=tuple(sorted((retirement, route_claim), key=lambda claim: claim.claim_id)),
         proposal=retirement_proposal,
     )
@@ -3824,13 +3828,13 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     )
     assert any(
         type(item.payload) is model.StructuralLineageEvidencePayload
-        and item.payload.source_subject_id == member0.subject_id
+        and item.payload.source_subject_id == catalog0.subject_id
         and item.payload.disposition is model.StructuralDisposition.AUTHORIZED_RETIREMENT
         for item in unreachable.evidence
     )
 
     incomplete_inputs = _complete_inputs(
-        source_subjects=(entry, member0, member1, corridor, route, destination),
+        source_subjects=(entry, catalog0, catalog1, member0, member1, corridor, route, destination),
         claims=tuple(sorted((retirement, route_claim), key=lambda claim: claim.claim_id)),
         proposal=retirement_proposal,
     )
@@ -3905,17 +3909,11 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     member1_structural = next(
         cell for cell in incomplete.obligation_index.cells
         if cell.key == model.ObligationKey(
-            member1, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+            catalog1, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
         )
     )
-    assert member1_structural.state is model.ObligationState.VIOLATED
-    assert any(
-        next(
-            item for item in incomplete.justifications
-            if item.justification_id == justification_id
-        ).rule is model.UnflattenJustificationRule.SOURCE_LOSS_UNACCOUNTED
-        for justification_id in member1_structural.refuting_justification_ids
-    )
+    assert member1_structural.state is model.ObligationState.SATISFIED
+    assert not member1_structural.refuting_justification_ids
     corridor_coverage = next(
         cell for cell in incomplete.obligation_index.cells
         if cell.key == model.ObligationKey(corridor, model.SafetyDimension.CORRIDOR_COVERAGE)
@@ -3927,7 +3925,11 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     assert member1.subject_id not in invalid_view.retired_member_subject_ids
     assert member1.subject_id not in invalid_view.retained_member_subject_ids
     with pytest.raises(ValueError, match="satisfied structural cell"):
-        views.retirement_rows(incomplete, retirement.claim_id)
+        views.retirement_rows(
+            incomplete,
+            build_semantic_loss_ledger(incomplete, invalid_verdict),
+            retirement.claim_id,
+        )
 
     reduced_candidates = tuple(
         item for item in candidate_catalog.candidates
@@ -3981,7 +3983,7 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
         for binding in incomplete_inputs.candidate_inventory.bindings
     )
     unsupported_inputs = _complete_inputs(
-        source_subjects=(entry, member0, member1, corridor, route, destination),
+        source_subjects=(entry, catalog0, catalog1, member0, member1, corridor, route, destination),
         claims=unsupported_proposal.claims,
         proposal=unsupported_proposal,
         candidate_bindings=candidate_missing_bindings,
@@ -4008,10 +4010,11 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     unsupported_structural = next(
         cell for cell in unsupported.obligation_index.cells
         if cell.key == model.ObligationKey(
-            member1, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+            catalog1, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
         )
     )
-    assert unsupported_structural.state is model.ObligationState.VIOLATED
+    assert unsupported_structural.state is model.ObligationState.SATISFIED
+    assert not unsupported_structural.refuting_justification_ids
     unsupported_view = views.retired_infrastructure_view(
         unsupported, unsupported_retirement.claim_id,
     )
@@ -4019,7 +4022,11 @@ def test_retirement_claim_requires_one_authorized_lineage_per_member() -> None:
     assert member1.subject_id not in unsupported_view.retired_member_subject_ids
     assert member1.subject_id not in unsupported_view.retained_member_subject_ids
     with pytest.raises(ValueError, match="satisfied structural cell"):
-        views.retirement_rows(unsupported, unsupported_retirement.claim_id)
+        views.retirement_rows(
+            unsupported,
+            build_semantic_loss_ledger(unsupported, unsupported_verdict),
+            unsupported_retirement.claim_id,
+        )
 
 
 def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
@@ -4048,9 +4055,14 @@ def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "catalog-entry")
     member0 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "0")
     member1 = _role_subject(model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE, "1")
+    catalog0 = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "0")
+    catalog1 = _role_subject(model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK, "1")
     route_claim = base.claims[0]
     inputs = _complete_inputs(
-        source_subjects=(entry, member0, member1, route_claim.retired_route_subject, *route_claim.destination_subjects),
+        source_subjects=(
+            entry, catalog0, catalog1, member0, member1,
+            route_claim.retired_route_subject, *route_claim.destination_subjects,
+        ),
         claims=proposal.claims,
         proposal=proposal,
     )
@@ -4099,11 +4111,11 @@ def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
     )
     retired_cell = next(
         cell for cell in case.obligation_index.cells
-        if cell.key == model.ObligationKey(member0, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+        if cell.key == model.ObligationKey(catalog0, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
     )
     retained_cell = next(
         cell for cell in case.obligation_index.cells
-        if cell.key == model.ObligationKey(member1, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+        if cell.key == model.ObligationKey(catalog1, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
     )
     assert retired_cell.state is model.ObligationState.SATISFIED
     assert retained_cell.state is model.ObligationState.SATISFIED
@@ -4143,18 +4155,19 @@ def test_retirement_claim_accounts_only_exact_plan_catalog_members() -> None:
         and item.rule is model.UnflattenJustificationRule.SOURCE_PRESERVED
     )
     assert retained_support
+    verdict = evaluate_case(case)
+    ledger = build_semantic_loss_ledger(case, verdict)
     ledger_row = next(
-        row for row in views.semantic_loss_ledger(case).rows
-        if row.source_subject.subject_id == member0.subject_id
+        row for row in views.semantic_loss_projection(ledger).rows
+        if row.source_subject.subject_id == catalog0.subject_id
     )
-    assert ledger_row.kind is model.SemanticLossKind.UNCLASSIFIED
+    assert ledger_row.kind is model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE
     retirement_view = views.retired_infrastructure_view(case, claim.claim_id)
     assert retirement_view.claim_id == claim.claim_id
     assert retirement_view.retired_member_subject_ids == (member0.subject_id,)
     assert retirement_view.retained_member_subject_ids == (member1.subject_id,)
     assert retirement_view.structural_cell_keys == (retired_cell.key,)
-    with pytest.raises(ValueError):
-        views.retirement_rows(case, claim.claim_id)
+    assert views.retirement_rows(case, ledger, claim.claim_id) == retirement_view
 def test_resegmentation_patch_step_supports_only_its_helper_structural_key() -> None:
     entry = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "resegment-entry")
     helper = _role_subject(model.SemanticSubjectRole.PLANNED_HELPER, "0")
@@ -4198,12 +4211,12 @@ def test_effect_classifier_requires_exact_candidate_site_and_external_gate_facts
         subject.locator.instruction_ea, subject.locator.effect_kind, 0x90, 4,
     )
     present = _classify_effect_site(
-        effect, subject, source_binding, candidate_binding, effect, None, None, None,
+        effect, subject, source_binding, candidate_binding, effect, None, None, None, None,
     )
     assert present.preserved
     assert not present.authorized_loss
     missing = _classify_effect_site(
-        effect, subject, source_binding, candidate_binding, None, None, None, None,
+        effect, subject, source_binding, candidate_binding, None, None, None, None, None,
     )
     assert missing.refuted
     assert not missing.authorized_loss
@@ -4214,18 +4227,18 @@ def test_effect_classifier_requires_exact_candidate_site_and_external_gate_facts
             continue
         kind_drift = _classify_effect_site(
             effect, subject, source_binding, candidate_binding,
-            (replace(effect, effect_kind=candidate_kind),), None, None, None,
+            (replace(effect, effect_kind=candidate_kind),), None, None, None, None,
         )
         assert kind_drift.refuted
         assert not kind_drift.authorized_loss
     duplicate = _classify_effect_site(
         effect, subject, source_binding, candidate_binding,
-        (effect, effect), None, None, None,
+        (effect, effect), None, None, None, None,
     )
     assert duplicate.refuted
     wrong_owner_serial = _classify_effect_site(
         effect, subject, source_binding, candidate_binding,
-        (replace(effect, owner_serial=1),), None, None, None,
+        (replace(effect, owner_serial=1),), None, None, None, None,
     )
     assert wrong_owner_serial.refuted
 
@@ -4260,7 +4273,7 @@ def test_effect_classifier_coordinate_kind_drift_is_refuted(
         effect, subject,
         _binding(subject, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT),
         _binding(subject, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT),
-        (candidate,), None, None, None,
+        (candidate,), None, None, None, None,
     )
     assert result.refuted
     assert not result.preserved
@@ -4353,244 +4366,242 @@ def test_inventory_case_effect_kind_drift_has_no_foreign_topology(
     )
 
 
+def test_effect_classifier_consumes_real_sealed_projected_site_rows() -> None:
+    """Direct preparation supplies the classifier's closed authority inputs."""
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.unflatten_authority import transaction_api
+    from .test_transaction_api import _c1_direct_preparation_case
+
+    fixture, source, plan, projected, gate_bundle = _c1_direct_preparation_case()
+    prepared = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gate_bundle,
+    ).prepared
+    inputs = prepared.source_inputs
+    site_row = inputs.projected_route_realization.site_phase_result.effect_results[0]
+    subject = next(
+        item for item in inputs.source_inventory.subjects
+        if item.subject_id == site_row.source_subject_id
+    )
+    source_binding = next(
+        item for item in inputs.source_inventory.bindings
+        if item.subject is subject
+    )
+    candidate_binding = next(
+        item for item in inputs.candidate_inventory.bindings
+        if item.subject.subject_id == subject.subject_id
+    )
+    effect = next(
+        item for item in inputs.source_inventory.effects
+        if item.instruction_ea == subject.locator.instruction_ea
+        and item.effect_kind is subject.locator.effect_kind
+    )
+    candidate_effect = next(
+        item for item in inputs.candidate_inventory.effects
+        if item.instruction_ea == effect.instruction_ea
+        and item.effect_kind is effect.effect_kind
+    )
+    result = _classify_effect_site(
+        effect, subject, source_binding, candidate_binding, candidate_effect,
+        None, inputs.source_route_authority, inputs.projected_route_realization,
+        inputs.generic_gate_facts,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+    )
+    assert result.preserved
+    assert not result.authorized_loss
+
+
+def _sealed_exact_effect_classifier_inputs(effect_kind: str = "call"):
+    """Return one real binder-owned exact-loss row and its closed inputs."""
+    from . import test_bind
+    from d810.transforms.unflatten_authority import bind
+
+    values = test_bind._task_15_vertical_inputs(
+        lambda: test_bind._task_15_exact_direct_case(effect_kind),
+    )
+    realization_result = bind.realize_projected_routes(**values)
+    assert type(realization_result) is model.ProjectedRouteRealizationAccepted
+    realization = realization_result.realization
+    claim = next(
+        item for item in values["claims"]
+        if type(item) is model.ExactInfeasibleEffectClaim
+    )
+    subject = claim.discarded_effect_subject
+    source_binding = next(
+        item for item in values["source_inventory"].bindings
+        if item.subject.subject_id == subject.subject_id
+    )
+    candidate_binding = next(
+        item for item in values["projected_inventory"].bindings
+        if item.subject.subject_id == subject.subject_id
+    )
+    effect = next(
+        item for item in values["source_inventory"].effects
+        if item.instruction_ea == claim.discarded_effect_ea
+        and item.effect_kind is subject.locator.effect_kind
+    )
+    return values, realization, claim, subject, source_binding, candidate_binding, effect
+
+
 def test_effect_classifier_authorizes_only_exact_missing_site_with_sealed_inputs() -> None:
-    subject = _role_subject(model.SemanticSubjectRole.EFFECT_SITE, "classifier-positive")
-    source_binding = _binding(subject, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT)
-    missing_binding = _binding(
-        subject, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        status=model.SubjectBindingStatus.MISSING,
+    values, realization, claim, subject, source_binding, missing_binding, effect = (
+        _sealed_exact_effect_classifier_inputs()
     )
-    effect = model.InventoryEffectSite(
-        0, subject.block_ref, subject.anchor_ea or 0, 0,
-        subject.locator.instruction_ea, subject.locator.effect_kind, 0x90, 1,
-    )
-    claim = SimpleNamespace(
-        discarded_effect_subject=subject,
-        discarded_effect_ea=effect.instruction_ea,
-        width=effect.width,
-        route_proof_ids=("proof",),
-    )
-    facts = gates.GenericCfgGateFacts(
-        gates.GenericEntryGateFacts(True, 1, 1, 1.0, 0, 0.0, "ok"),
-        gates.GenericEffectfulGateFacts(True, frozenset({0}), frozenset({0}), frozenset(), "raw"),
-        gates.GenericEffectfulGateFacts(True, frozenset({0}), frozenset({0}), frozenset(), "effective"),
-        gates.GenericTerminalGateFacts(True, frozenset({0}), frozenset({0}), 1, 1, "ok"),
-    )
-    route = SimpleNamespace(accepted=True, proof_ids=("proof",))
+    assert missing_binding.status is model.SubjectBindingStatus.MISSING
     authorized = _classify_effect_site(
-        effect, subject, source_binding, missing_binding, None,
-        claim, route, facts,
+        effect, subject, source_binding, missing_binding, None, claim,
+        values["source_authority"], realization, None,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
     )
     assert authorized.authorized_loss
-    assert not authorized.refuted
-    present = _classify_effect_site(
-        effect, subject, source_binding, source_binding, effect,
-        claim, route, facts,
+    assert authorized.claim is claim
+    foreign_claim = next(
+        item for item in values["claims"]
+        if type(item) is model.EquivalentSemanticRouteClaim
     )
-    assert present.preserved
-    assert present.claim is None
-    wrong_width = _classify_effect_site(
-        effect, subject, source_binding, missing_binding, None,
-        SimpleNamespace(
-            discarded_effect_subject=subject,
-            discarded_effect_ea=effect.instruction_ea,
-            width=2,
-            route_proof_ids=("proof",),
-        ), route, facts,
+    rejected = _classify_effect_site(
+        effect, subject, source_binding, missing_binding, None, foreign_claim,
+        values["source_authority"], realization, None,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
     )
-    assert wrong_width.refuted
-    assert not wrong_width.authorized_loss
-    mismatched_site = _classify_effect_site(
-        effect, subject, source_binding, source_binding,
-        replace(effect, opcode=0x91), claim, route, facts,
-    )
-    assert mismatched_site.refuted
-    assert not mismatched_site.authorized_loss
-    effective_lost = replace(
-        facts,
-        effectful_raw=replace(
-            facts.effectful_raw,
-            passed=False,
-            post_reachable_effectful_block_serials=frozenset(),
-            lost_block_serials=frozenset({0}),
-        ),
-        effectful_effective=replace(
-            facts.effectful_effective,
-            passed=False,
-            post_reachable_effectful_block_serials=frozenset(),
-            lost_block_serials=frozenset({0}),
-        ),
-    )
-    loss_with_failed_raw_and_effective_gates = _classify_effect_site(
-        effect, subject, source_binding, missing_binding, None,
-        claim, route, effective_lost,
-    )
-    assert loss_with_failed_raw_and_effective_gates.authorized_loss
-    assert not loss_with_failed_raw_and_effective_gates.refuted
+    assert rejected.refuted
+    assert not rejected.authorized_loss
 
 
 def test_same_owner_missing_claim_does_not_authorize_unclaimed_sibling() -> None:
-    first = _role_subject(model.SemanticSubjectRole.EFFECT_SITE, "same-owner-first")
-    second = _subject_factory(
+    values, realization, claim, subject, source_binding, missing_binding, effect = (
+        _sealed_exact_effect_classifier_inputs()
+    )
+    sibling_locator = replace(
+        subject.locator,
+        instruction_ea=subject.locator.instruction_ea + 1,
+    )
+    sibling = _subject_factory(
         model.SemanticSubjectRef,
-        kind=model.SemanticSubjectKind.EFFECT,
-        role=model.SemanticSubjectRole.EFFECT_SITE,
-        block_ref=first.block_ref,
-        anchor_ea=first.anchor_ea,
-        locator=replace(
-            first.locator, instruction_ea=first.locator.instruction_ea + 4,
-        ),
+        kind=subject.kind,
+        role=subject.role,
+        block_ref=subject.block_ref,
+        anchor_ea=subject.anchor_ea,
+        locator=sibling_locator,
     )
-    source_binding = _binding(first, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT)
-    missing_binding = _binding(
-        first, model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        status=model.SubjectBindingStatus.MISSING,
+    sibling_effect = replace(effect, instruction_ea=effect.instruction_ea + 1)
+    sibling_binding = replace(missing_binding, subject=sibling)
+    rejected = _classify_effect_site(
+        sibling_effect, sibling, source_binding, sibling_binding, None, claim,
+        values["source_authority"], realization, None,
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
     )
-    first_effect = model.InventoryEffectSite(
-        0, first.block_ref, first.anchor_ea or 0, 0,
-        first.locator.instruction_ea, first.locator.effect_kind, 0x90, 1,
-    )
-    sibling_effect = replace(first_effect, instruction_ea=second.locator.instruction_ea)
-    claim = SimpleNamespace(
-        discarded_effect_subject=first,
-        discarded_effect_ea=first_effect.instruction_ea,
-        width=first_effect.width,
-        route_proof_ids=("proof",),
-    )
-    facts = gates.GenericCfgGateFacts(
-        gates.GenericEntryGateFacts(True, 1, 1, 1.0, 0, 0.0, "ok"),
-        gates.GenericEffectfulGateFacts(True, frozenset({0}), frozenset({0}), frozenset(), "raw"),
-        gates.GenericEffectfulGateFacts(True, frozenset({0}), frozenset({0}), frozenset(), "effective"),
-        gates.GenericTerminalGateFacts(True, frozenset({0}), frozenset({0}), 1, 1, "ok"),
-    )
-    route = SimpleNamespace(accepted=True, proof_ids=("proof",))
-    claimed = _classify_effect_site(
-        first_effect, first, source_binding, missing_binding, None,
-        claim, route, facts,
-    )
-    sibling = _classify_effect_site(
-        sibling_effect, second, source_binding, source_binding, sibling_effect,
-        None, route, facts,
-    )
-    assert claimed.authorized_loss
-    assert sibling.preserved
-    unclaimed_missing = _classify_effect_site(
-        sibling_effect, second, source_binding, missing_binding, None,
-        None, route, facts,
-    )
-    assert unclaimed_missing.refuted
-    assert not unclaimed_missing.authorized_loss
+    assert rejected.refuted
+    assert not rejected.authorized_loss
 
 
 def test_exact_infeasible_effect_authorizes_classified_discarded_loss() -> None:
-    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+    """Public preparation owns the Direct exact-effect realization."""
+
     from d810.analyses.control_flow.graph_checks import (
         check_effectful_reachability_preserved,
         check_entry_reachability_not_collapsed,
         check_terminal_reachability_preserved,
     )
     from d810.transforms.cfg_transaction import CfgProjection
-    from d810.transforms.plan import PatchPlan, PatchRedirectGoto
+    from d810.transforms.edit_simulator import project_post_state
     from d810.transforms.unflatten_authority import transaction_api
     from d810.transforms.unflatten_authority.gates import GenericCfgGateBundle
-    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
-    from d810.ir.flowgraph import InsnKind
-
-    source_graph, proposal, _exclusion, refs = exact_fixture()
-    plan = PatchPlan(
-        plan_id=proposal.plan_id,
-        snapshot_id=authority_id("exact-effect-snapshot"),
-        source_generation=1,
-        steps=(
-            PatchRedirectGoto(refs[0], refs[1], refs[2]),
-            PatchRedirectGoto(refs[1], refs[2], refs[0]),
-        ),
-        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
-        unflatten_proposal=proposal,
+    from d810.transforms.unflatten_authority.proposal import (
+        ProposalAccepted,
+        canonical_redirect_manifest,
+        validate_proposal,
     )
+    from . import test_bind
+
+    raw = test_bind._task_15_exact_direct_case(
+        "call", include_source_context=True,
+    )
+    plan, attempt_id, source_graph = raw[1], raw[5], raw[6]
+    # The compiler fixture is intentionally raw input: give the public
+    # transaction its normal immutable snapshot identifier before validation.
+    plan = replace(plan, snapshot_id=authority_id(f"c1-exact-direct:{plan.plan_id}"))
+
+    # The fixture's proposal predates the compiler's final redirect manifest.
+    # Reclose that witness exactly as the public proposal validator requires.
     manifest = canonical_redirect_manifest(plan)
     proposal = replace(
-        proposal,
+        plan.unflatten_proposal,
         use_def_witness=replace(
-            proposal.use_def_witness,
+            plan.unflatten_proposal.use_def_witness,
             redirect_owner_refs=manifest.owner_refs,
             redirect_digest=manifest.digest,
         ),
     )
     plan = replace(plan, unflatten_proposal=proposal)
-    effect_block = source_graph.blocks[3]
-    non_effect_instruction = replace(
-        effect_block.insn_snapshots[0], kind=InsnKind.NOP, is_call=False,
+    validation = validate_proposal(plan, proposal)
+    assert type(validation) is ProposalAccepted
+
+    projected_graph = project_post_state(source_graph, plan)
+    raw_effect_gate = check_effectful_reachability_preserved(
+        source_graph, post_cfg=projected_graph,
     )
-    projected_blocks = dict(source_graph.blocks)
-    projected_blocks[3] = replace(
-        effect_block, insn_snapshots=(non_effect_instruction,),
-    )
-    projected_graph = replace(source_graph, blocks=projected_blocks)
-    # The candidate adapter keeps the native EA row while removing the CALL
-    # observation.  Gate facts are the receipt-owned preflight facts; the
-    # semantic inventory still proves the missing effect site exactly.
     generic_gates = GenericCfgGateBundle(
         check_entry_reachability_not_collapsed(source_graph, post_cfg=projected_graph),
-        check_effectful_reachability_preserved(source_graph, post_cfg=source_graph),
-        check_effectful_reachability_preserved(source_graph, post_cfg=source_graph),
+        raw_effect_gate,
+        raw_effect_gate,
         check_terminal_reachability_preserved(source_graph, post_cfg=projected_graph),
     )
-    inputs = transaction_api.derive_unflatten_preparation_inputs(
-        source_graph,
-        CfgProjection(plan.plan_id, plan.snapshot_id, projected_graph),
-        plan,
-        proposal,
-        generic_gates,
+    result = transaction_api.prepare_unflatten_authority(
+        source=source_graph,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected_graph),
+        plan=plan,
+        attempt_id=attempt_id,
+        generic_gates=generic_gates,
     )
-    case = build_semantic_case(
-        authority_id=authority_id("exact-effect-loss"),
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=inputs,
-    )
-    claim = next(
-        claim for claim in case.claims
+    assert type(result) is model.UnflattenAuthorityPreparationAccepted
+    ledger = result.prepared.projected_loss_ledger
+    assert ledger is not None
+    # The discarded CALL instruction vanished while its native owner block
+    # survived. The single canonical owner row carries that semantic delta;
+    # it does not create a second instruction-level loss authority.
+    realization = result.prepared.projected_route_realization
+    exact_claim = next(
+        claim for claim in proposal.claims
         if type(claim) is model.ExactInfeasibleEffectClaim
     )
-    discarded = claim.discarded_effect_subject
-    loss_rows = views.semantic_loss_ledger(case).rows
-    discarded_rows = tuple(
-        row for row in loss_rows
-        if row.source_subject.subject_id == discarded.subject_id
+    assert len(ledger.rows) == 1
+    assert ledger.rows[0].kind is model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT
+    assert ledger.rows[0].source_subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+    assert ledger.rows[0].claim_ids == (exact_claim.claim_id,)
+    case = result.prepared.projected_case
+    effect_cell = next(
+        cell for cell in case.obligation_index.cells
+        if cell.key == model.ObligationKey(
+            exact_claim.discarded_effect_subject,
+            model.SafetyDimension.EFFECT_PRESERVATION,
+        )
     )
-    assert len(discarded_rows) == 1
-    assert discarded_rows[0].kind is model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT
-    assert discarded_rows[0].anchored_location == "blk3@0x4000"
-    assert discarded_rows[0].evidence_ids
-    assert discarded_rows[0].supporting_justification_ids
-    assert discarded_rows[0].claim_ids == (claim.claim_id,)
-    ledger = views.semantic_loss_ledger(case)
-    assert ledger.allowed == discarded_rows
-    assert len(ledger.unclassified) == 1
-    assert ledger.unclassified[0].source_subject.role is model.SemanticSubjectRole.TERMINAL_SITE
-    assert ledger.unclassified[0].claim_ids == ()
-    assert ledger.unclassified[0].anchored_location == "blk3@0x4000"
-    assert canonical_decode(canonical_bytes(case)) == case
-    assert canonical_decode(canonical_bytes(ledger)) == ledger
-    from d810.transforms.unflatten_authority.diagnostics import build_phase_payload
-    payload = build_phase_payload(evaluate_case(case))
-    payload_row = next(
-        row for row in payload["loss_ledger"]
-        if row["anchor"] == "blk3@0x4000"
-        and row["classification"] == model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT.value
+    assert effect_cell.state is model.ObligationState.SATISFIED
+    support = next(
+        item for item in case.justifications
+        if item.conclusion == effect_cell.key
+        and item.rule is model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN
     )
-    assert payload["source_fingerprint"] == case.source_fingerprint
-    assert payload_row["classification"] == model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT.value
-    assert payload_row["anchor"] == "blk3@0x4000"
-    assert payload_row["claim_ids"] == (claim.claim_id,)
-    assert payload_row["evidence_ids"] == discarded_rows[0].evidence_ids
-    effect_rows = tuple(
-        item for item in case.evidence
-        if item.kind is model.AuthorityEvidenceKind.EFFECT_SITE
-        and item.subject.subject_id == discarded.subject_id
-    )
-    assert len(effect_rows) == 1
-    assert evaluate_case(case).reason is not model.UnflattenAuthorityReason.ACCEPTED
+    assert support.claim_id == exact_claim.claim_id
+    assert len(support.premise_ids) == 1
+    effect = realization.site_phase_result.effect_results
+    assert len(effect) == 1
+    result = effect[0]
+    assert result.outcome is model.ProjectedEffectSiteOutcome.EXACT_INFEASIBLE
+    assert result.source_subject_id == exact_claim.discarded_effect_subject.subject_id
+    assert result.source_site.instruction_ea == exact_claim.discarded_effect_ea == 0x4000
+    assert result.supporting_claim_id == exact_claim.claim_id
+    assert result.supporting_binding_result_id in {
+        row.binding_result_id
+        for row in realization.site_phase_result.exact_effect_bindings
+    }
+    assert result.projected_subject_id is None
+    assert result.projected_site is None
+
 
 
 def test_terminal_cycle_claim_cannot_discharge_effect_or_handler_cells() -> None:
@@ -4652,8 +4663,13 @@ def test_terminal_cycle_claim_cannot_discharge_effect_or_handler_cells() -> None
     )
     by_key = {cell.key: cell for cell in case.obligation_index.cells}
 
+    canonical_cycle = next(
+        subject for subject in source.subjects
+        if subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+        and subject.block_ref == cycle.block_ref
+    )
     cycle_cell = by_key[
-        model.ObligationKey(cycle, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+        model.ObligationKey(canonical_cycle, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
     ]
     assert cycle_cell.state is model.ObligationState.SATISFIED
     assert any(
@@ -4661,8 +4677,13 @@ def test_terminal_cycle_claim_cannot_discharge_effect_or_handler_cells() -> None
         for item in case.justifications
         if item.conclusion == cycle_cell.key
     )
+    canonical_cleanup = next(
+        subject for subject in source.subjects
+        if subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+        and subject.block_ref == cleanup.block_ref
+    )
     cleanup_cell = by_key[
-        model.ObligationKey(cleanup, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+        model.ObligationKey(canonical_cleanup, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
     ]
     assert cleanup_cell.state is model.ObligationState.SATISFIED
     assert not any(
@@ -4712,6 +4733,12 @@ def test_terminal_cycle_claim_cannot_discharge_effect_or_handler_cells() -> None
         item.claim_id == claim.claim_id
         for item in case.justifications
         if item.conclusion == handler_cell.key
+    )
+    assert all(
+        cell.key.subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+        for cell in case.obligation_index.cells
+        if cell.key.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
+        and cell.key.subject in source.subjects
     )
 
     with pytest.raises(
@@ -4830,13 +4857,8 @@ def test_terminal_cycle_result_replays_exact_inventory_topology_and_path() -> No
         source_inventory=source,
         candidate_inventory=residual,
         generic_gate_facts=inputs.generic_gate_facts,
-        route_assessments=tuple(
-            item for item in (
-                inputs.source_route_assessment,
-                inputs.candidate_route_assessment,
-            )
-            if item is not None
-        ),
+        source_route_authority=inputs.source_route_authority,
+        projected_route_realization=inputs.projected_route_realization,
         conditional_relations=inputs.conditional_relations,
         patch_step_facts=inputs.patch_step_facts,
     )
@@ -4874,5 +4896,29 @@ def test_terminal_cycle_result_replays_exact_inventory_topology_and_path() -> No
     false_result = model.TerminalCyclePhaseResult(
         result_id=reminted_id, **fields,
     )
-    with pytest.raises(ValueError, match="terminal path"):
+    with pytest.raises(ValueError, match="not minted by the transaction binder|terminal path"):
         replace(inputs, terminal_cycle_phase_results=(false_result,))
+
+
+def test_terminal_cycle_admission_requires_exact_binder_phase_occurrence() -> None:
+    """Prepared inputs and semantic cases reject equal, reissued terminal authority."""
+
+    from .test_bind import _terminal_cycle_derived_inputs
+
+    _proposal, _claim, inputs, _source, _candidate, _residual = (
+        _terminal_cycle_derived_inputs()
+    )
+    minted = inputs.terminal_cycle_phase_results[0]
+    assert replace(inputs, terminal_cycle_phase_results=(minted,))
+    equal_but_distinct = replace(minted)
+    with pytest.raises(ValueError, match="not minted by the transaction binder"):
+        replace(inputs, terminal_cycle_phase_results=(equal_but_distinct,))
+
+    case = build_semantic_case(
+        authority_id=authority_id("terminal-cycle-exact-admission"),
+        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        inputs=inputs,
+    )
+    assert replace(case, terminal_cycle_phase_results=(minted,))
+    with pytest.raises(ValueError, match="not minted by the transaction binder"):
+        replace(case, terminal_cycle_phase_results=(equal_but_distinct,))

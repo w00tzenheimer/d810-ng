@@ -625,7 +625,7 @@ class TestSnapshotMba:
             "0x000000018001340f",
             "0x0000000180013421",
         ]
-        assert json.loads(row[5]) == [4, 6]
+        assert json.loads(row[5]) == [[4, None], [6, None]]
         operand_fp = json.loads(row[6])
         assert operand_fp[0]["d_o"] == 0x400
         assert operand_fp[0]["l_v"] == "0x0000000027eeea11"

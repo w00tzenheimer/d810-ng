@@ -975,6 +975,9 @@ class Block(BaseModel):
     succs = TextField()
     preds = TextField()
     insn_count = IntegerField()
+    tail_opcode = IntegerField(null=True)
+    raw_tail_opcode = IntegerField(null=True)
+    tail_kind = TextField(null=True)
     meta = TextField(null=True)
 
     class Meta:
@@ -1011,6 +1014,7 @@ class Instruction(BaseModel):
     ea_hex = TextField()
     ea_i64 = IntegerField()
     opcode = IntegerField()
+    raw_opcode = IntegerField(null=True)
     opcode_name = TextField()
     iprops = IntegerField(default=0)
     is_assert = IntegerField(

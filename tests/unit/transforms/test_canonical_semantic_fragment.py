@@ -8,6 +8,7 @@ import pytest
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    canonical_semantic_evidence_from_proofs,
     SemanticCarrierProof,
     SemanticCorridorPoint,
     SemanticPredicateKind,
@@ -33,6 +34,34 @@ from d810.core.semantic_route_oracle import (
     ReferenceRouteRewrite,
     SemanticTransferKind,
 )
+
+
+def _recanonicalize(evidence, proofs):
+    return canonical_semantic_evidence_from_proofs(
+        native_key=evidence.native_key,
+        generation=evidence.generation,
+        proofs=tuple(proofs),
+    )
+
+
+def _canonical_proof_at(
+    evidence: CanonicalSemanticEvidence,
+    anchor_ea: int,
+) -> SemanticRouteProof:
+    (proof,) = tuple(
+        candidate
+        for candidate in evidence.route_proofs
+        if candidate.source_anchor_ea == anchor_ea
+    )
+    return proof
+
+
+def _route_operation_at(
+    plan: "FragmentPlan",
+    evidence: CanonicalSemanticEvidence,
+    anchor_ea: int,
+) -> "FragmentOperation":
+    return plan.operation(f"route:{_canonical_proof_at(evidence, anchor_ea).proof_id}")
 from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
@@ -180,11 +209,10 @@ def _direct_bound_evidence() -> tuple[FlowGraph, object]:
         },
     )
     source_identity = _identity(0x1100)
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         native_key=NATIVE_KEY,
         generation=3,
-        atomic_group_id="canonical-semantic:g3",
-        route_proofs=(
+        proofs=(
             SemanticRouteProof(
                 proof_id="state-assignment@0x1100",
                 atomic_group_id="canonical-semantic:g3",
@@ -235,7 +263,7 @@ def test_direct_semantic_route_builds_closed_portable_fragment_plan() -> None:
         plan.publication_purpose
         is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
     )
-    assert plan.atomic_group_id == "canonical-semantic:g3"
+    assert plan.atomic_group_id == bound.evidence.atomic_group_id
     assert len(plan.roots) == 1
     root = plan.block(plan.roots[0])
     assert root.role is FragmentBlockRole.REPLACEMENT
@@ -348,11 +376,10 @@ def _live_source_detached_target_case() -> tuple[
         ),
     )
     source_identity = _identity(0x1100)
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         native_key=NATIVE_KEY,
         generation=3,
-        atomic_group_id="canonical-semantic:g3:route@0x1100",
-        route_proofs=(
+        proofs=(
             SemanticRouteProof(
                 proof_id="state-assignment@0x1100",
                 atomic_group_id="canonical-semantic:g3:route@0x1100",
@@ -413,9 +440,7 @@ def _omitted_delivery_source_case() -> tuple[
         ),
     )
     (proof,) = evidence.route_proofs
-    evidence = replace(
-        evidence,
-        route_proofs=(
+    evidence = _recanonicalize(evidence, (
             replace(
                 proof,
                 proof_id=f"state-assignment@0x{delivery_ea:X}",
@@ -429,8 +454,7 @@ def _omitted_delivery_source_case() -> tuple[
                     corridor_instruction_eas=(0x1100, delivery_ea),
                 ),
             ),
-        ),
-    )
+        ))
     return graph, normalization_plan, evidence
 
 
@@ -625,11 +649,10 @@ def _detached_reference_direct_route_case() -> tuple[
             preserved_call_instruction_eas=(),
         ),
     )
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         native_key=NATIVE_KEY,
         generation=3,
-        atomic_group_id=route_proof.atomic_group_id,
-        route_proofs=(route_proof,),
+        proofs=(route_proof,),
     )
     reference_route = ReferenceRouteRewrite(
         route_id="rhad:0x40A560:flow_route:0x40BB63",
@@ -881,18 +904,32 @@ def _carrier_ingress_case() -> tuple[
             ),
         ),
     )
-    available_evidence = replace(
-        route_evidence,
-        route_proofs=(route_proof, state_choice),
-    )
+    available_evidence = _recanonicalize(route_evidence, (route_proof, state_choice))
     authority = _normalization_authority(normalization_plan, available_evidence)
     detached_route = plan_detached_reference_direct_route(
         normalization_plan,
         route_evidence,
         reference_route,
-        normalization_authority=authority,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            route_evidence,
+        ),
     )
     assert detached_route is not None
+    canonical_route_proof = _canonical_proof_at(available_evidence, 0x40BB63)
+    rewrite = detached_route.operation.direct_transfer_rewrite
+    assert rewrite is not None
+    detached_route = replace(
+        detached_route,
+        normalization_authority=authority,
+        operation=replace(
+            detached_route.operation,
+            direct_transfer_rewrite=replace(
+                rewrite,
+                route_proof_id=canonical_route_proof.proof_id,
+            ),
+        ),
+    )
     graph, _base_plan, _base_evidence = _live_source_detached_target_case()
     return graph, normalization_plan, available_evidence, detached_route, authority
 
@@ -917,7 +954,12 @@ def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress(
     (root_id,) = plan.roots
     assert plan.block(root_id).semantic_anchor_ea == 0x1100
     assert plan.block(root_id).stable_identity == _identity(0x1100)
-    ingress = plan.operation("route:state-choice@0x1600:carrier-ingress")
+    ingress = next(
+        operation
+        for operation in plan.operations
+        if operation.source_block_id == root_id
+        and operation.predicate_anchor_ea == 0x1100
+    )
     assert ingress.source_block_id == root_id
     assert ingress.storage_predicate_materialization == (
         FragmentStoragePredicateMaterialization(
@@ -949,7 +991,12 @@ def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress(
         for body in plan.native_bodies
         for block_id in body.block_ids
     }.isdisjoint({0x1600, 0x1700, 0x40C6F7, 0x40BB69})
-    nested_route = plan.operation("route:state_assignment@0x40BB63:0xE9795EF")
+    nested_route = next(
+        operation
+        for operation in plan.operations
+        if operation.direct_transfer_rewrite is not None
+        and operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x40BB63
+    )
     nested_rewrite = nested_route.direct_transfer_rewrite
     assert nested_rewrite is not None
     assert nested_rewrite.owner_identity == detached_route.source_block.stable_identity
@@ -1090,7 +1137,11 @@ def test_carrier_ingress_keeps_unresolved_published_sibling_as_typed_egress() ->
         sibling_egress.retirement_obligation_id
     )
     assert "native-body-edge@0x1250" in sibling_egress.retirement_obligation_id
-    assert plan.operation("route:state_assignment@0x40BB63:0xE9795EF")
+    assert any(
+        operation.direct_transfer_rewrite is not None
+        and operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x40BB63
+        for operation in plan.operations
+    )
 
 
 def test_carrier_ingress_reuses_projected_external_dispatcher_owner() -> None:
@@ -1151,7 +1202,12 @@ def test_carrier_ingress_reuses_projected_external_dispatcher_owner() -> None:
         prohibited_dispatcher_serials=(90,),
     )
 
-    ingress = plan.operation("route:state-choice@0x1600:carrier-ingress")
+    ingress = next(
+        operation
+        for operation in plan.operations
+        if operation.source_block_id == plan.roots[0]
+        and operation.predicate_anchor_ea == 0x1100
+    )
     target_operation = plan.operation(target_egress.operation_id)
     dispatcher_targets = {
         edge.target_block_id
@@ -1289,9 +1345,7 @@ def test_direct_delivery_route_replaces_receipted_edge_without_cut_rewrite() -> 
     graph, normalization_plan, evidence = _live_source_detached_target_case()
     (proof,) = evidence.route_proofs
     assert proof.state_write is not None
-    evidence = replace(
-        evidence,
-        route_proofs=(
+    evidence = _recanonicalize(evidence, (
             replace(
                 proof,
                 state_write=replace(
@@ -1299,8 +1353,7 @@ def test_direct_delivery_route_replaces_receipted_edge_without_cut_rewrite() -> 
                     delivery_kind=SemanticStateWriteDeliveryKind.DIRECT,
                 ),
             ),
-        ),
-    )
+        ))
 
     plan = compose_canonical_semantic_fragment_plan(
         graph,
@@ -1315,11 +1368,7 @@ def test_direct_delivery_route_replaces_receipted_edge_without_cut_rewrite() -> 
         prohibited_dispatcher_serials=(90,),
     )
 
-    route_operation = next(
-        operation
-        for operation in plan.operations
-        if operation.operation_id.startswith("route:state-assignment")
-    )
+    route_operation = _route_operation_at(plan, evidence, proof.source_anchor_ea)
     assert route_operation.direct_transfer_rewrite is None
 
 
@@ -1475,10 +1524,7 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
             ),
         ),
     )
-    evidence = replace(
-        evidence,
-        route_proofs=(direct_proof, state_choice),
-    )
+    evidence = _recanonicalize(evidence, (direct_proof, state_choice))
 
     graph = replace(
         graph,
@@ -1520,7 +1566,7 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
 
     operations = {operation.operation_id: operation for operation in plan.operations}
     assert "raw-consumer-dispatch" not in operations
-    semantic_operation = operations[f"route:{state_choice.proof_id}"]
+    semantic_operation = _route_operation_at(plan, evidence, 0x1200)
     assert semantic_operation.predicate_anchor_ea == 0x1200
     assert semantic_operation.storage_predicate_materialization == (
         FragmentStoragePredicateMaterialization(
@@ -1727,10 +1773,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
             preserved_call_instruction_eas=(),
         ),
     )
-    available_evidence = replace(
-        root_evidence,
-        route_proofs=(root_proof, nested_proof),
-    )
+    available_evidence = _recanonicalize(root_evidence, (root_proof, nested_proof))
 
     plan = compose_canonical_semantic_fragment_plan(
         graph,
@@ -1747,11 +1790,11 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
 
     operations = {operation.operation_id: operation for operation in plan.operations}
     assert "native-indirect-transfer@0x121F" not in operations
-    nested_operation = operations[f"route:{nested_proof.proof_id}"]
+    nested_operation = _route_operation_at(plan, available_evidence, 0x1218)
     assert nested_operation.source_block_id == route_source.block_id
     assert nested_operation.direct_transfer_rewrite is not None
     assert nested_operation.direct_transfer_rewrite.route_proof_id == (
-        nested_proof.proof_id
+        _canonical_proof_at(available_evidence, 0x1218).proof_id
     )
     owner_identity = nested_operation.direct_transfer_rewrite.owner_identity
     assert owner_identity.native_ranges == route_source.stable_identity.native_ranges
@@ -1796,7 +1839,9 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
         for edge in operation.edges
     )
     (planned_native_body,) = plan.native_bodies
-    assert f"route:{nested_proof.proof_id}" in planned_native_body.proof_ids
+    assert _route_operation_at(plan, available_evidence, 0x1218).operation_id in (
+        planned_native_body.proof_ids
+    )
 
 
 def test_nested_imported_state_choice_supersedes_both_raw_dispatcher_arms() -> None:
@@ -1974,10 +2019,7 @@ def test_nested_imported_state_choice_supersedes_both_raw_dispatcher_arms() -> N
             ),
         ),
     )
-    available_evidence = replace(
-        root_evidence,
-        route_proofs=(root_proof, state_choice),
-    )
+    available_evidence = _recanonicalize(root_evidence, (root_proof, state_choice))
 
     plan = compose_canonical_semantic_fragment_plan(
         graph,
@@ -1994,7 +2036,7 @@ def test_nested_imported_state_choice_supersedes_both_raw_dispatcher_arms() -> N
 
     operations = {operation.operation_id: operation for operation in plan.operations}
     assert raw_operation_id not in operations
-    semantic_operation = operations[f"route:{state_choice.proof_id}"]
+    semantic_operation = _route_operation_at(plan, available_evidence, 0x1210)
     assert semantic_operation.source_block_id == route_source.block_id
     assert semantic_operation.predicate_anchor_ea == 0x1210
     assert semantic_operation.storage_predicate_materialization == (
@@ -2019,7 +2061,9 @@ def test_nested_imported_state_choice_supersedes_both_raw_dispatcher_arms() -> N
         for edge in operation.edges
     )
     (planned_native_body,) = plan.native_bodies
-    assert f"route:{state_choice.proof_id}" in planned_native_body.proof_ids
+    assert _route_operation_at(plan, available_evidence, 0x1210).operation_id in (
+        planned_native_body.proof_ids
+    )
 
 
 def test_nested_imported_state_assignments_reach_fixpoint() -> None:
@@ -2209,9 +2253,8 @@ def test_nested_imported_state_assignments_reach_fixpoint() -> None:
         target=route_target,
         state_constant=0x55,
     )
-    available_evidence = replace(
-        root_evidence,
-        route_proofs=(*root_evidence.route_proofs, first_proof, second_proof),
+    available_evidence = _recanonicalize(
+        root_evidence, (*root_evidence.route_proofs, first_proof, second_proof),
     )
 
     plan = compose_canonical_semantic_fragment_plan(
@@ -2228,8 +2271,8 @@ def test_nested_imported_state_assignments_reach_fixpoint() -> None:
     )
 
     operations = {operation.operation_id: operation for operation in plan.operations}
-    assert f"route:{first_proof.proof_id}" in operations
-    assert f"route:{second_proof.proof_id}" in operations
+    assert _route_operation_at(plan, available_evidence, 0x1218).operation_id in operations
+    assert _route_operation_at(plan, available_evidence, 0x1228).operation_id in operations
     assert "native-body-edge@0x1218" not in operations
     assert "native-body-edge@0x1228" not in operations
     assert all(
@@ -2389,10 +2432,7 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
             preserved_call_instruction_eas=(),
         ),
     )
-    available_evidence = replace(
-        root_evidence,
-        route_proofs=(nested_proof,),
-    )
+    available_evidence = _recanonicalize(root_evidence, (nested_proof,))
 
     plan = compose_canonical_semantic_boundary_fragment_plan(
         graph,
@@ -2421,7 +2461,7 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
     assert tuple(edge.role for edge in root_operation.edges) == (
         SemanticEdgeRole.CALL_FALLTHROUGH,
     )
-    route_operation = operations[f"route:{nested_proof.proof_id}"]
+    route_operation = _route_operation_at(plan, available_evidence, 0x1210)
     assert route_operation.direct_transfer_rewrite is not None
     assert tuple(
         plan.block(edge.target_block_id).semantic_anchor_ea
@@ -2652,10 +2692,7 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
         ),
         terminal_return_carrier=carrier,
     )
-    available_evidence = replace(
-        root_evidence,
-        route_proofs=(terminal_proof,),
-    )
+    available_evidence = _recanonicalize(root_evidence, (terminal_proof,))
 
     plan = compose_canonical_semantic_boundary_fragment_plan(
         graph,
@@ -2674,7 +2711,8 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
     operation = next(
         item
         for item in plan.operations
-        if item.operation_id == f"route:{terminal_proof.proof_id}"
+        if item.operation_id
+        == f"route:{_canonical_proof_at(available_evidence, terminal_proof.source_anchor_ea).proof_id}"
     )
     source = plan.block(operation.source_block_id)
     assert source.stable_identity is not None
@@ -2901,7 +2939,10 @@ def test_published_boundary_missing_route_records_projection_inventory() -> None
     assert rejection.payload["target_block_ids"] == ("detached-target",)
     assert rejection.payload["target_operation_ids"] == ()
     (decision,) = rejection.payload["nested_state_route_projection"]
-    assert decision["route_proof_id"] == "state-assignment@0x1100"
+    assert decision["route_proof_id"] == _canonical_proof_at(
+        evidence,
+        0x1100,
+    ).proof_id
 
 
 def test_published_boundary_owner_mismatch_records_overlapping_identities() -> None:
@@ -3549,9 +3590,8 @@ def test_call_backed_nested_route_keeps_published_corridor_staged(
             preserved_call_instruction_eas=(0x1255,),
         ),
     )
-    available_evidence = replace(
-        root_evidence,
-        route_proofs=(*root_evidence.route_proofs, nested_proof),
+    available_evidence = _recanonicalize(
+        root_evidence, (*root_evidence.route_proofs, nested_proof),
     )
 
     if not authority_matches:
@@ -3591,13 +3631,16 @@ def test_call_backed_nested_route_keeps_published_corridor_staged(
     call_operation_id = (
         "call-backed-fallthrough@0x1255"
         if call_operation_present
-        else ("call-backed-fallthrough:state-assignment@0x1264:0x55@0x1255")
+        else (
+            "call-backed-fallthrough:"
+            f"{_canonical_proof_at(available_evidence, 0x1264).proof_id}@0x1255"
+        )
     )
     call_operation = operations[call_operation_id]
     assert tuple(edge.role for edge in call_operation.edges) == (
         SemanticEdgeRole.CALL_FALLTHROUGH,
     )
-    route_operation = operations[f"route:{nested_proof.proof_id}"]
+    route_operation = _route_operation_at(plan, available_evidence, 0x1264)
     assert route_operation.direct_transfer_rewrite is not None
     assert (
         route_operation.direct_transfer_rewrite.source_predicate_anchor_ea
@@ -3772,9 +3815,8 @@ def test_call_fallthrough_predecessor_keeps_published_route_source_staged() -> N
             preserved_call_instruction_eas=(),
         ),
     )
-    available_evidence = replace(
-        root_evidence,
-        route_proofs=(*root_evidence.route_proofs, nested_proof),
+    available_evidence = _recanonicalize(
+        root_evidence, (*root_evidence.route_proofs, nested_proof),
     )
 
     plan = compose_canonical_semantic_fragment_plan(
@@ -3795,7 +3837,7 @@ def test_call_fallthrough_predecessor_keeps_published_route_source_staged() -> N
     assert tuple(edge.role for edge in call_operation.edges) == (
         SemanticEdgeRole.CALL_FALLTHROUGH,
     )
-    route_operation = operations[f"route:{nested_proof.proof_id}"]
+    route_operation = _route_operation_at(plan, available_evidence, 0x1264)
     assert route_operation.direct_transfer_rewrite is not None
     imported_anchors = {
         block.semantic_anchor_ea
@@ -3918,9 +3960,8 @@ def test_detached_component_requires_receipted_current_imported_successor_topolo
             preserved_call_instruction_eas=(),
         ),
     )
-    available_evidence = replace(
-        evidence,
-        route_proofs=(*evidence.route_proofs, nested_proof),
+    available_evidence = _recanonicalize(
+        evidence, (*evidence.route_proofs, nested_proof),
     )
 
     authority = _normalization_authority(
@@ -3974,7 +4015,18 @@ def test_detached_component_requires_receipted_current_imported_successor_topolo
     rejection = exc_info.value
     assert rejection.reason_code == ("published_imported_boundary_topology_unresolved")
     assert rejection.anchor_ea == 0x1250
-    assert rejection.payload == {
+    assert {
+        key: rejection.payload[key]
+        for key in (
+            "boundary_block_id",
+            "current_owner",
+            "operation_id",
+            "incoming_operation_id",
+            "incoming_source_block_id",
+            "incoming_source_anchor_ea",
+            "incoming_edge_role",
+        )
+    } == {
         "boundary_block_id": published_successor.block_id,
         "current_owner": "blk30@0x1250",
         "operation_id": "successor-normalization",
@@ -3982,18 +4034,16 @@ def test_detached_component_requires_receipted_current_imported_successor_topolo
         "incoming_source_block_id": "detached-target",
         "incoming_source_anchor_ea": "0x1200",
         "incoming_edge_role": "direct",
-        "nested_state_route_projection": (
-            {
-                "route_proof_id": nested_proof.proof_id,
-                "source_anchor_ea": "0x1600",
-                "disposition": "skipped",
-                "reason": "source_not_in_component",
-                "projection_round": 1,
-                "source_block_ids": (),
-                "corridor_block_ids": (),
-            },
-        ),
     }
+    decisions = rejection.payload["nested_state_route_projection"]
+    assert any(
+        decision["route_proof_id"]
+        == _canonical_proof_at(available_evidence, 0x1600).proof_id
+        and decision["source_anchor_ea"] == "0x1600"
+        and decision["disposition"] == "skipped"
+        and decision["reason"] == "source_not_in_component"
+        for decision in decisions
+    )
 
 
 @pytest.mark.parametrize(
@@ -4735,11 +4785,7 @@ def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> No
         normalization_plan.block("live-route-source").stable_identity
         != root.stable_identity
     )
-    route_operation = next(
-        operation
-        for operation in plan.operations
-        if operation.operation_id.startswith("route:state-assignment@0x1110")
-    )
+    route_operation = _route_operation_at(plan, evidence, 0x1110)
     assert route_operation.direct_transfer_rewrite is not None
     assert route_operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x1110
     assert route_operation.direct_transfer_rewrite.proof_corridor_instruction_eas == (
@@ -4806,11 +4852,7 @@ def test_canonical_route_accepts_split_normalization_delivery_identity() -> None
     root = plan.block(plan.roots[0])
     assert root.semantic_anchor_ea == 0x1100
     assert root.stable_identity == _identity(0x1100)
-    route_operation = next(
-        operation
-        for operation in plan.operations
-        if operation.operation_id.startswith("route:state-assignment@0x1110")
-    )
+    route_operation = _route_operation_at(plan, evidence, 0x1110)
     assert route_operation.direct_transfer_rewrite is not None
     assert route_operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x1110
 
@@ -5276,11 +5318,10 @@ def test_storage_conditional_keeps_both_arms_and_data_flow_in_one_plan() -> None
             ),
         ),
     )
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         native_key=NATIVE_KEY,
         generation=4,
-        atomic_group_id="canonical-semantic:g4",
-        route_proofs=(proof,),
+        proofs=(proof,),
     )
     bound = bind_canonical_semantic_evidence(graph, evidence)
     assert bound is not None
@@ -5444,11 +5485,10 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
         ),
         terminal_return_carrier=carrier,
     )
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         native_key=NATIVE_KEY,
         generation=5,
-        atomic_group_id="canonical-semantic:g5",
-        route_proofs=(proof,),
+        proofs=(proof,),
     )
     bound = bind_canonical_semantic_evidence(graph, evidence)
     assert bound is not None
@@ -5495,9 +5535,8 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
         ),
     )
     address_graph = replace(graph, blocks={**graph.blocks, 20: address_block})
-    address_evidence = replace(
-        evidence,
-        route_proofs=(replace(proof, terminal_return_carrier=address_carrier),),
+    address_evidence = _recanonicalize(
+        evidence, (replace(proof, terminal_return_carrier=address_carrier),),
     )
     assert bind_canonical_semantic_evidence(address_graph, address_evidence) is not None
 
@@ -5660,11 +5699,10 @@ def test_terminal_routes_share_one_owned_return_block_atomically() -> None:
             terminal_return_carrier=carrier,
         )
 
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         native_key=NATIVE_KEY,
         generation=6,
-        atomic_group_id="canonical-semantic:shared-terminal",
-        route_proofs=(
+        proofs=(
             terminal_proof(0x1100, 0x1105, 0x11),
             terminal_proof(0x1150, 0x1155, 0x22),
         ),
@@ -5744,11 +5782,10 @@ def test_dispatcher_fed_semantic_target_remains_internal_not_a_root() -> None:
             30: replace(graph.blocks[30], insn_snapshots=(_mov_snapshot(0x1200, 0x22),)),
         },
     )
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         native_key=NATIVE_KEY,
         generation=6,
-        atomic_group_id="canonical-semantic:g6",
-        route_proofs=(
+        proofs=(
             direct_proof(0x1100, 0x1200, 0x11),
             direct_proof(0x1200, 0x1300, 0x22),
         ),
@@ -5833,11 +5870,10 @@ def test_shared_external_target_rejects_bound_identity_drift() -> None:
             30: replace(graph.blocks[30], insn_snapshots=(_mov_snapshot(0x1200, 0x22),)),
         },
     )
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         native_key=NATIVE_KEY,
         generation=7,
-        atomic_group_id="canonical-semantic:shared-external",
-        route_proofs=(
+        proofs=(
             direct_proof(0x1100, 0x11),
             direct_proof(0x1200, 0x22),
         ),

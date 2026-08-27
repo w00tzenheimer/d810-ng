@@ -53,6 +53,11 @@ class InsnKind(Enum):
     AND = "and"
     MUL = "mul"
     STORE = "store"
+    # Closed structural classes for retained Hex-Rays value/set operations whose
+    # exact semantics live in ``InsnSnapshot.value_op_kind`` or
+    # ``InsnSnapshot.predicate_kind``.
+    VALUE = "value"
+    SET = "set"
     GOTO = "goto"
     COND_JUMP = "cond_jump"
     EQUALITY_JUMP = "equality_jump"
@@ -215,10 +220,10 @@ class InsnSnapshot:
                     "InsnSnapshot: native_ea must be a valid native address"
                 )
             object.__setattr__(self, "native_ea", native_ea)
-        if self.raw_opcode is None and self.opcode >= 0:
-            object.__setattr__(self, "raw_opcode", int(self.opcode))
         if self.opcode < 0 and self.raw_opcode is not None:
-            object.__setattr__(self, "opcode", int(self.raw_opcode))
+            raise ValueError(
+                "InsnSnapshot: synthetic negative opcode cannot carry raw provenance"
+            )
         object.__setattr__(
             self, "opcode_attrs", MappingProxyType(dict(self.opcode_attrs))
         )
@@ -372,11 +377,11 @@ class BlockSnapshot:
                 object.__setattr__(self, "kind", BlockKind.ONE_WAY)
             elif len(self.succs) == 0:
                 object.__setattr__(self, "kind", BlockKind.ZERO_WAY)
-        if self.tail_opcode is None and self.insn_snapshots:
-            object.__setattr__(self, "tail_opcode", int(self.insn_snapshots[-1].opcode))
-        if self.raw_tail_opcode is None and self.tail_opcode is not None:
-            object.__setattr__(self, "raw_tail_opcode", int(self.tail_opcode))
-        if self.tail_kind is None and self.insn_snapshots:
+        if (
+            self.tail_kind is None
+            and self.insn_snapshots
+            and self.insn_snapshots[-1].kind is not InsnKind.UNKNOWN
+        ):
             object.__setattr__(self, "tail_kind", self.insn_snapshots[-1].kind)
 
     @property

@@ -12,8 +12,10 @@ from __future__ import annotations
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
 
-# Recovery-search outcomes are part of the current disposable schema contract.
-DIAGNOSTIC_SCHEMA_VERSION = 11
+# Independent instruction/block tail provenance is persisted in the diagnostic
+# capture tables. Existing databases are disposable and must be recreated;
+# there is deliberately no v11 -> v12 backfill.
+DIAGNOSTIC_SCHEMA_VERSION = 12
 
 # Recovered-CFG tables were historically named ``dag_*``.  The modeled
 # schema now owns ``state_cfg_*`` tables; this mapping is retained for the

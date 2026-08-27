@@ -16,16 +16,13 @@ import re
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     BoundCanonicalSemanticEvidence,
-    CanonicalRouteAssessment,
-    CanonicalRouteAssessmentPhase,
-    validate_canonical_route_assessment,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import NativeEaInterval, NativeEaIntervalSet, StableBlockIdentity
 from d810.core.typing import Literal, Protocol, TypeAlias, runtime_checkable
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.flowgraph import BlockKind, InsnKind
-from d810.ir.semantics import CallKind, ControlTransferKind
+from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.maturity import MaturityEnvelope
 from d810.ir.storage_identity import StorageIdentity
 from d810.transforms.patch_binding import BoundPatchPlan, validate_bound_patch_plan
@@ -34,6 +31,7 @@ from d810.transforms.cfg_transaction import (
     LogicalBlockRef,
     NativeBlockRef,
     PlanBlockRef,
+    PatchStepKind,
     TransactionAttemptId,
 )
 from .ids import (
@@ -49,6 +47,25 @@ from .ids import (
     justification_id,
     receipt_id,
     semantic_graph_inventory_digest,
+    route_realization_id,
+    source_route_authority_id,
+    projected_route_realization_row_id,
+    projected_route_realization_id,
+    raw_effect_gate_phase_fact_id,
+    exact_effect_binding_result_id,
+    local_alias_binding_result_id,
+    projected_effect_site_result_id,
+    projected_terminal_site_result_id,
+    projected_semantic_site_phase_result_id,
+    projected_route_site_preservation_id,
+    patch_step_fact_id as _canonical_patch_step_fact_id,
+    derived_effect_gate_fact_id,
+    cloned_semantic_observation_digest,
+    cloned_semantic_instruction_origin_id,
+    cloned_semantic_prefix_id,
+    CLONED_SEMANTIC_OBSERVATION_SCHEMA,
+    CLONED_SEMANTIC_ORIGIN_SCHEMA,
+    CLONED_SEMANTIC_PREFIX_SCHEMA,
 )
 from .legacy_keys import LEGACY_UNFLATTEN_KEYS
 from .gates import GenericCfgGateFacts
@@ -221,6 +238,11 @@ def _authority_ref(value: object, label: str = "block_ref") -> NativeBlockRef | 
     return value
 
 
+def _reject_site_record_copy(self, *args: object, **kwargs: object) -> None:
+    del self, args, kwargs
+    raise TypeError("semantic site records are binder-owned")
+
+
 class UnflattenAuthorityPhase(str, Enum):
     PRODUCER_FORECAST = "producer_forecast"
     PROJECTED_PREFLIGHT = "projected_preflight"
@@ -239,11 +261,19 @@ class SemanticSubjectKind(str, Enum):
 
 
 class SemanticSubjectRole(str, Enum):
+    # The sole physical source-block subject.  Structural loss is classified
+    # here, once per catalog identity; the remaining block roles are semantic
+    # views and must not create competing loss ledgers.
+    SOURCE_CATALOG_BLOCK = "source_catalog_block"
     SOURCE_ENTRY = "source_entry"
     DISPATCHER_ENTRY = "dispatcher_entry"
     DISPATCHER_INFRASTRUCTURE = "dispatcher_infrastructure"
     SEMANTIC_ROUTE_SOURCE = "semantic_route_source"
     SEMANTIC_ROUTE_DESTINATION = "semantic_route_destination"
+    EXACT_EFFECT_SOURCE = "exact_effect_source"
+    EXACT_EFFECT_PREDICATE = "exact_effect_predicate"
+    EXACT_EFFECT_SELECTED_TARGET = "exact_effect_selected_target"
+    EXACT_EFFECT_DISCARDED_OWNER = "exact_effect_discarded_owner"
     EFFECT_SITE = "effect_site"
     AUTHORITATIVE_HANDLER = "authoritative_handler"
     TERMINAL_SITE = "terminal_site"
@@ -343,6 +373,13 @@ class TerminalKind(str, Enum):
     STOP = "stop"
 
 
+class ProjectedSiteLineageKind(str, Enum):
+    """The only owner lineages permitted by the projected site closure."""
+
+    SAME_OWNER = "same_owner"
+    RELATION_CLONE = "relation_clone"
+
+
 class TopologyIncidenceKind(str, Enum):
     PREDECESSOR = "predecessor"
     SUCCESSOR = "successor"
@@ -415,6 +452,16 @@ class UnflattenAuthorityReason(str, Enum):
     OBLIGATION_INCONSISTENT = "obligation_inconsistent"
     OBSERVED_DELTA_UNAUTHORIZED = "observed_delta_unauthorized"
     GENERIC_CFG_GATE_FAILED = "generic_cfg_gate_failed"
+
+
+class ProposalValidationStage(str, Enum):
+    """Closed proposal-invariant boundary for typed rejection diagnostics."""
+
+    ROUNDTRIP = "roundtrip"
+    PROPOSAL_POST_INIT = "proposal_post_init"
+    USE_DEF = "use_def"
+    RETIREMENT_CATALOG = "retirement_catalog"
+    EXACT_EFFECT_CORRELATION = "exact_effect_correlation"
 
 
 class UnflattenPlanRoute(str, Enum):
@@ -1146,7 +1193,7 @@ def _terminal_cycle_exists(
     return any(visit(ref) for ref in residue)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class TerminalCyclePhaseResult:
     """One transaction-owned terminal-cycle binding result for a phase."""
 
@@ -1329,8 +1376,10 @@ def _validate_terminal_cycle_phase_results(
     claim_by_id = {claim.claim_id: claim for claim in terminal_claims}
     if len(claim_by_id) != len(terminal_claims):
         raise ValueError("terminal-cycle claims must have unique IDs")
+    from .bind import validate_terminal_cycle_phase_result
     for result in values:
         result.__post_init__()
+        validate_terminal_cycle_phase_result(result)
         claim = claim_by_id.get(result.claim_id)
         if claim is None:
             raise ValueError("terminal-cycle phase result claim is foreign")
@@ -1440,12 +1489,17 @@ SemanticSubjectLocator: TypeAlias = (
 
 
 _SUBJECT_MATRIX = {
+    (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SOURCE_CATALOG_BLOCK): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SOURCE_ENTRY): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_ENTRY): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION): BlockSubjectLocator,
+    (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_SOURCE): BlockSubjectLocator,
+    (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_PREDICATE): BlockSubjectLocator,
+    (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_SELECTED_TARGET): BlockSubjectLocator,
+    (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_DISCARDED_OWNER): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.EFFECT_SITE): BlockSubjectLocator,
     (SemanticSubjectKind.BLOCK, SemanticSubjectRole.PLANNED_HELPER): BlockSubjectLocator,
     (SemanticSubjectKind.EDGE, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE): EdgeSubjectLocator,
@@ -1494,6 +1548,12 @@ class SemanticSubjectRef:
             raise ValueError("unsupported subject kind/role/locator")
         if type(self.block_ref) not in _CFG_REF_TYPES and self.block_ref is not None:
             raise TypeError("block_ref must be a CfgBlockRef or None")
+        if self.role is SemanticSubjectRole.SOURCE_CATALOG_BLOCK and type(self.block_ref) not in {
+            NativeBlockRef, LogicalBlockRef,
+        }:
+            raise ValueError("source catalog blocks require a source-authority block reference")
+        if self.role is SemanticSubjectRole.PLANNED_HELPER and type(self.block_ref) is not PlanBlockRef:
+            raise ValueError("planned helpers require a PlanBlockRef")
         if self.anchor_ea is not None:
             _ea(self.anchor_ea, "anchor_ea")
         owner, owner_ea = _subject_owner(self.locator)
@@ -1542,12 +1602,16 @@ class PhaseSubjectBinding:
         if self.status is SubjectBindingStatus.UNIQUE:
             if self.subject.block_ref is None or self.block_ref != self.subject.block_ref:
                 raise ValueError("unique binding requires block_ref")
-            if self.serial is None or self.anchor_ea is None or not eas:
+            if self.serial is None or self.anchor_ea is None:
                 raise ValueError("unique binding requires serial, anchor, and native EAs")
             if self.anchor_ea != self.subject.anchor_ea:
                 raise ValueError("unique binding anchor must equal subject anchor")
-            if self.anchor_ea not in eas:
-                raise ValueError("unique binding anchor must belong to native EAs")
+            if not _anchor_matches_native_scope(
+                self.block_ref, self.anchor_ea, eas,
+            ):
+                raise ValueError(
+                    "unique binding anchor must belong to native scope"
+                )
         elif (
             self.block_ref is not None
             or self.serial is not None
@@ -1580,6 +1644,21 @@ def _inventory_ea(value: object, label: str) -> int:
     if not 0 <= value < _BADADDR:
         raise ValueError(f"{label} must be a native EA")
     return value
+
+
+def _is_unowned_structural_stop_row(row: object) -> bool:
+    """Whether an inventory row is the instructionless synthetic STOP."""
+
+    return (
+        getattr(row, "block_ref", object()) is None
+        and getattr(row, "block_kind", None) is BlockKind.STOP
+        and getattr(row, "anchor_ea", object()) is None
+        and not getattr(row, "native_instruction_eas", ())
+        and not getattr(row, "instruction_observations", ())
+        and not getattr(row, "successor_serials", ())
+        and getattr(row, "transfer_ea", object()) is None
+        and getattr(row, "graph_start_ea", _BADADDR) == _BADADDR
+    )
 
 
 def _validate_native_identity_primitives(identity: object, label: str) -> None:
@@ -1683,6 +1762,30 @@ def _validate_inventory_refs(value: object, *, producer: bool, label: str) -> No
 
 
 @dataclass(frozen=True, slots=True)
+class InventoryPredicateObservation:
+    """Closed predicate facts retained for one projected conditional tail."""
+
+    predicate_kind: PredicateKind
+    storage_identity: StorageIdentity
+    width: int
+    compare_constant: int
+    explicit_target_serial: int
+
+    def __post_init__(self) -> None:
+        if type(self.predicate_kind) is not PredicateKind:
+            raise TypeError("predicate_kind must be PredicateKind")
+        if type(self.storage_identity) is not StorageIdentity:
+            raise TypeError("storage_identity must be StorageIdentity")
+        if type(self.width) is not int or isinstance(self.width, bool) or self.width <= 0:
+            raise ValueError("predicate width must be a positive exact int")
+        if type(self.compare_constant) is not int or isinstance(self.compare_constant, bool):
+            raise TypeError("compare_constant must be an exact int")
+        if not 0 <= self.compare_constant < (1 << (self.width * 8)):
+            raise ValueError("compare_constant does not fit predicate width")
+        _inventory_nonnegative(self.explicit_target_serial, "explicit_target_serial")
+
+
+@dataclass(frozen=True, slots=True)
 class InventoryInstructionObservation:
     ordinal: int
     instruction_ea: int | None
@@ -1693,6 +1796,8 @@ class InventoryInstructionObservation:
     is_call: bool
     call_kind: CallKind | None
     display_text: str | None = None
+    predicate_observation: InventoryPredicateObservation | None = None
+    raw_opcode: int | None = None
 
     def __post_init__(self) -> None:
         _inventory_nonnegative(self.ordinal, "ordinal")
@@ -1700,6 +1805,23 @@ class InventoryInstructionObservation:
             _inventory_ea(self.instruction_ea, "instruction_ea")
         if type(self.opcode) is not int:
             raise TypeError("opcode must be an exact int")
+        if self.opcode < 0:
+            if self.opcode != -1:
+                raise ValueError("synthetic opcode must be the normalized GOTO sentinel")
+            if self.raw_opcode is not None:
+                raise ValueError("normalized synthetic GOTO cannot carry raw opcode")
+            if (
+                self.instruction_kind is not InsnKind.GOTO
+                or self.control_transfer_kind is not ControlTransferKind.GOTO
+                or self.is_call
+                or self.call_kind is not None
+                or self.predicate_observation is not None
+            ):
+                raise ValueError("raw opcode absence is reserved for normalized synthetic GOTO")
+        elif self.raw_opcode is None:
+            raise ValueError("backend instruction requires exact raw opcode")
+        elif type(self.raw_opcode) is not int:
+            raise TypeError("raw_opcode must be an exact int")
         _inventory_nonnegative(self.width, "width")
         if type(self.instruction_kind) is not InsnKind:
             raise TypeError("instruction_kind must be InsnKind")
@@ -1711,6 +1833,10 @@ class InventoryInstructionObservation:
             raise TypeError("call_kind must be CallKind or None")
         if self.display_text is not None and type(self.display_text) is not str:
             raise TypeError("display_text must be an exact string or None")
+        if self.predicate_observation is not None:
+            if type(self.predicate_observation) is not InventoryPredicateObservation:
+                raise TypeError("predicate_observation must be InventoryPredicateObservation or None")
+            self.predicate_observation.__post_init__()
 
 
 def required_inventory_control_transfer(
@@ -1835,8 +1961,8 @@ def resolve_inventory_block_sites(
         _validate_inventory_refs(owner_ref, producer=False, label="owner_ref")
     if type(block_kind) is not BlockKind or type(successor_serials) is not tuple:
         raise TypeError("block resolver context is malformed")
-    if len(set(successor_serials)) != len(successor_serials) or successor_serials != tuple(sorted(successor_serials)):
-        raise ValueError("successor serials must be sorted and unique")
+    if len(set(successor_serials)) != len(successor_serials):
+        raise ValueError("successor serials must be unique")
     for successor in successor_serials:
         _inventory_nonnegative(successor, "successor serial")
     if type(instruction_observations) is not tuple:
@@ -1880,7 +2006,15 @@ def resolve_inventory_block_sites(
             terminal_keys.add(key)
             terminals.append(terminal)
     tail_terminal = bool(terminals and terminals[-1].instruction_ordinal == len(instruction_observations) - 1)
-    if block_kind is BlockKind.STOP and not tail_terminal:
+    if (
+        block_kind is BlockKind.STOP
+        and not tail_terminal
+        and not (
+            owner_ref is None
+            and owner_anchor_ea == 0
+            and not instruction_observations
+        )
+    ):
         terminal = InventoryTerminalSite(
             serial, owner_ref, owner_anchor_ea, None, owner_anchor_ea, TerminalKind.STOP,
         )
@@ -1903,6 +2037,9 @@ class InventoryBlockObservation:
     instruction_observations: tuple[InventoryInstructionObservation, ...] = ()
     block_kind: BlockKind = BlockKind.UNKNOWN
     graph_start_ea: int = _BADADDR
+    tail_opcode: int | None = None
+    raw_tail_opcode: int | None = None
+    tail_kind: InsnKind | None = None
 
     def __post_init__(self) -> None:
         _inventory_nonnegative(self.serial, "serial")
@@ -1910,15 +2047,27 @@ class InventoryBlockObservation:
             _cfg_ref(self.block_ref)
         if type(self.block_kind) is not BlockKind:
             raise TypeError("block_kind must be BlockKind")
+        if self.tail_opcode is not None and type(self.tail_opcode) is not int:
+            raise TypeError("tail_opcode must be an exact int or None")
+        if self.raw_tail_opcode is not None and type(self.raw_tail_opcode) is not int:
+            raise TypeError("raw_tail_opcode must be an exact int or None")
+        if self.tail_kind is not None and type(self.tail_kind) is not InsnKind:
+            raise TypeError("tail_kind must be InsnKind or None")
         if type(self.graph_start_ea) is not int:
             raise TypeError("graph_start_ea must be an exact int")
         if not 0 <= self.graph_start_ea <= _BADADDR:
             raise ValueError("graph_start_ea must be a graph coordinate or BADADDR")
-        if self.block_kind is BlockKind.STOP and self.anchor_ea is None:
+        if self.block_kind is BlockKind.STOP and self.anchor_ea is None and not (
+            self.block_ref is None
+            and not self.native_instruction_eas
+            and not self.instruction_observations
+            and not self.successor_serials
+            and self.graph_start_ea == _BADADDR
+        ):
             raise ValueError("STOP observations require a resolved anchor EA")
         if self.anchor_ea is not None:
             _inventory_ea(self.anchor_ea, "anchor_ea")
-        for name in ("native_instruction_eas", "predecessor_serials", "successor_serials"):
+        for name in ("native_instruction_eas", "predecessor_serials"):
             values = getattr(self, name)
             if type(values) is not tuple:
                 raise TypeError(f"{name} must be an exact tuple")
@@ -1932,12 +2081,55 @@ class InventoryBlockObservation:
                 else:
                     _inventory_nonnegative(value, f"{name} item")
             object.__setattr__(self, name, values)
+        successors = self.successor_serials
+        if type(successors) is not tuple:
+            raise TypeError("successor_serials must be an exact tuple")
+        if len(set(successors)) != len(successors):
+            raise ValueError("successor_serials must be unique")
+        for value in successors:
+            _inventory_nonnegative(value, "successor_serials item")
+        object.__setattr__(self, "successor_serials", successors)
         if self.transfer_ea is not None:
             _inventory_ea(self.transfer_ea, "transfer_ea")
         if type(self.instruction_observations) is not tuple:
             raise TypeError("instruction_observations must be an exact tuple")
         if any(type(item) is not InventoryInstructionObservation for item in self.instruction_observations):
             raise TypeError("instruction_observations must contain exact rows")
+        if self.instruction_observations:
+            tail = self.instruction_observations[-1]
+            if self.tail_opcode is None or self.tail_kind is None:
+                raise ValueError("instruction-bearing blocks require complete tail metadata")
+            if tail.opcode >= 0 and self.raw_tail_opcode is None:
+                raise ValueError("backend tail requires exact raw opcode")
+            if tail.opcode < 0 and self.raw_tail_opcode is not None:
+                raise ValueError("normalized synthetic GOTO tail cannot carry raw opcode")
+            if self.tail_opcode != tail.opcode:
+                raise ValueError("tail_opcode must match the observed tail")
+            if self.raw_tail_opcode != tail.raw_opcode:
+                raise ValueError("raw_tail_opcode must match the observed tail")
+            if self.tail_kind is not tail.instruction_kind:
+                raise ValueError("tail_kind must match the observed tail")
+            if tail.opcode == -1:
+                # ``-1/raw=None`` is not a general missing-backend marker. It
+                # is the one normalized synthetic helper vocabulary entry.
+                # Close that shape here, before any inventory digest or ID can
+                # be minted, rather than relying on producer/binder checks.
+                if (
+                    not self.instruction_observations
+                    or self.block_kind is not BlockKind.ONE_WAY
+                    or len(self.successor_serials) != 1
+                    or tail.width != 0
+                    or tail.display_text != ""
+                    or self.transfer_ea != tail.instruction_ea
+                    or tail.instruction_kind is not InsnKind.GOTO
+                    or tail.control_transfer_kind is not ControlTransferKind.GOTO
+                    or tail.is_call
+                    or tail.call_kind is not None
+                    or tail.predicate_observation is not None
+                ):
+                    raise ValueError("synthetic GOTO inventory shape is not normalized")
+        elif any(value is not None for value in (self.tail_opcode, self.raw_tail_opcode, self.tail_kind)):
+            raise ValueError("instructionless blocks cannot carry tail metadata")
         if tuple(item.ordinal for item in self.instruction_observations) != tuple(range(len(self.instruction_observations))):
             raise ValueError("instruction observations must be contiguous ordinal order")
         observed_eas = {item.instruction_ea for item in self.instruction_observations if item.instruction_ea is not None}
@@ -1945,6 +2137,30 @@ class InventoryBlockObservation:
             raise ValueError("native instruction origins require ordered instruction observations")
         if self.instruction_observations and observed_eas != set(self.native_instruction_eas):
             raise ValueError("native_instruction_eas must equal resolved instruction observation EAs")
+        predicate_rows = [
+            (index, item) for index, item in enumerate(self.instruction_observations)
+            if item.predicate_observation is not None
+        ]
+        if predicate_rows:
+            if len(predicate_rows) != 1 or predicate_rows[0][0] != len(self.instruction_observations) - 1:
+                raise ValueError("predicate observation must belong to the exact tail")
+            if self.block_kind is not BlockKind.TWO_WAY or len(self.successor_serials) != 2:
+                raise ValueError("predicate observation requires exactly two conditional successors")
+            index, tail = predicate_rows[0]
+            del index
+            if (
+                tail.instruction_kind
+                not in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+                or tail.control_transfer_kind is not ControlTransferKind.CONDITIONAL_BRANCH
+            ):
+                raise ValueError("predicate observation requires a conditional transfer tail")
+            predicate = tail.predicate_observation
+            if predicate is None or predicate.predicate_kind is not PredicateKind.EQ:
+                raise ValueError("predicate observation requires EQ predicate")
+            if predicate.explicit_target_serial != self.successor_serials[1]:
+                raise ValueError("predicate explicit target must equal ordered taken successor")
+            if self.successor_serials[0] == self.successor_serials[1]:
+                raise ValueError("conditional successors must have distinct arms")
         if self.transfer_ea is not None:
             transfer_rows = [
                 item for item in self.instruction_observations
@@ -2401,6 +2617,7 @@ class PatchStepEvidencePayload:
     host_ea: int | None
     host_opcode: int | None
     value_size: int | None
+    creation_spec_digest: str | None = None
 
     def __post_init__(self) -> None:
         _id(self.plan_id, "plan_id")
@@ -2416,6 +2633,8 @@ class PatchStepEvidencePayload:
             value = getattr(self, name)
             if value is not None:
                 _nonnegative(value, name)
+        if self.creation_spec_digest is not None:
+            _id(self.creation_spec_digest, "creation_spec_digest")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2796,9 +3015,9 @@ class ExactInfeasibleEffectClaim:
             _claim_subject(getattr(self, name), SemanticSubjectKind.EFFECT, SemanticSubjectRole.EFFECT_SITE, EffectSubjectLocator, name)
         if self.effect_subject != self.discarded_effect_subject:
             raise ValueError("exact effect subject must equal discarded effect subject")
-        for name in ("source_subject", "predicate_subject"):
-            _claim_subject(getattr(self, name), SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, BlockSubjectLocator, name)
-        _claim_subject(self.selected_target_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION, BlockSubjectLocator, "selected_target_subject")
+        _claim_subject(self.source_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_SOURCE, BlockSubjectLocator, "source_subject")
+        _claim_subject(self.predicate_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_PREDICATE, BlockSubjectLocator, "predicate_subject")
+        _claim_subject(self.selected_target_subject, SemanticSubjectKind.BLOCK, SemanticSubjectRole.EXACT_EFFECT_SELECTED_TARGET, BlockSubjectLocator, "selected_target_subject")
         _nonnegative(self.normalized_state, "normalized_state")
         if type(self.state_identity) is not StorageIdentity:
             raise TypeError("state_identity must be a StorageIdentity")
@@ -2932,6 +3151,64 @@ class UseDefFragmentWitness:
             raise ValueError("executed atomic use-def witness count must equal violation IDs")
 
 
+def _anchor_matches_native_scope(
+    block_ref: NativeBlockRef | LogicalBlockRef,
+    anchor_ea: int,
+    instruction_eas: tuple[int, ...],
+) -> bool:
+    """Accept instruction origins or a physical anchor in an exact native ref."""
+
+    return int(anchor_ea) in instruction_eas or (
+        type(block_ref) is NativeBlockRef
+        and block_ref.identity.native_ranges.contains(int(anchor_ea))
+    )
+
+
+def _observed_native_origin_subset_preserves_anchor(
+    block_ref: CfgBlockRef | None,
+    anchor_ea: int | None,
+    observed_instruction_eas: tuple[int, ...],
+    expected_instruction_eas: tuple[int, ...],
+) -> bool:
+    """Allow observed origin loss only when it retains the canonical anchor.
+
+    A native physical block entry can be the canonical anchor without being an
+    instruction origin. In that one case a strict observed subset need not
+    contain the anchor. If the canonical anchor is an exact instruction, it
+    must remain present in the observed origin subset.
+    """
+
+    if (
+        not observed_instruction_eas
+        or not set(observed_instruction_eas) < set(expected_instruction_eas)
+        or anchor_ea is None
+    ):
+        return False
+    if anchor_ea in expected_instruction_eas:
+        return anchor_ea in observed_instruction_eas
+    return (
+        type(block_ref) is NativeBlockRef
+        and block_ref.identity.native_ranges.contains(anchor_ea)
+    )
+
+
+def _validate_native_instruction_inventory(
+    block_ref: NativeBlockRef | LogicalBlockRef,
+    instruction_eas: tuple[int, ...],
+) -> None:
+    """Cross-bind a row's instruction origins to its stable block identity."""
+
+    if type(block_ref) is NativeBlockRef:
+        expected = tuple(sorted(block_ref.identity.exact_instruction_eas))
+        if instruction_eas != expected:
+            raise ValueError(
+                "native instruction origins must exactly match native identity"
+            )
+        return
+    if not instruction_eas:
+        raise ValueError("logical block requires instruction origins")
+
+
 @dataclass(frozen=True, slots=True)
 class SourceBlockIdentityWitness:
     block_ref: NativeBlockRef | LogicalBlockRef
@@ -2942,12 +3219,13 @@ class SourceBlockIdentityWitness:
         _authority_ref(self.block_ref)
         object.__setattr__(self, "anchor_ea", _ea(self.anchor_ea, "anchor_ea"))
         eas = _tuple(self.native_instruction_eas, "native_instruction_eas", sort=True)
-        if not eas:
-            raise ValueError("native_instruction_eas must not be empty")
         for ea in eas:
             _ea(ea, "native_instruction_eas item")
-        if self.anchor_ea not in eas:
-            raise ValueError("anchor_ea must belong to native_instruction_eas")
+        _validate_native_instruction_inventory(self.block_ref, eas)
+        if not _anchor_matches_native_scope(self.block_ref, self.anchor_ea, eas):
+            raise ValueError(
+                "anchor_ea must belong to native_instruction_eas or native identity range"
+            )
         object.__setattr__(self, "native_instruction_eas", eas)
 
 
@@ -2971,16 +3249,33 @@ class SourceIdentityCatalog:
             ):
                 raise ValueError("native source witness key must match catalog key")
         refs = tuple(block.block_ref for block in blocks)
-        anchors = tuple(block.anchor_ea for block in blocks)
+        ref_anchor_pairs = tuple((block.block_ref, block.anchor_ea) for block in blocks)
         instruction_eas = tuple(
             ea for block in blocks for ea in block.native_instruction_eas
         )
         if (
             len(set(refs)) != len(refs)
-            or len(set(anchors)) != len(anchors)
+            or len(set(ref_anchor_pairs)) != len(ref_anchor_pairs)
             or len(set(instruction_eas)) != len(instruction_eas)
         ):
             raise ValueError("source catalog block witnesses must be unique")
+        by_anchor: dict[int, tuple[SourceBlockIdentityWitness, ...]] = {}
+        for block in blocks:
+            by_anchor[block.anchor_ea] = (*by_anchor.get(block.anchor_ea, ()), block)
+        for rows in by_anchor.values():
+            if len(rows) <= 1:
+                continue
+            if any(type(row.block_ref) is not NativeBlockRef for row in rows):
+                raise ValueError(
+                    "shared source anchor requires distinct NativeBlockRef rows"
+                )
+            if len({row.block_ref for row in rows}) != len(rows):
+                raise ValueError("shared source anchor requires distinct native refs")
+            if any(
+                not row.block_ref.identity.native_ranges.contains(row.anchor_ea)
+                for row in rows
+            ):
+                raise ValueError("shared native anchor is outside native identity range")
         object.__setattr__(self, "blocks", blocks)
 
 
@@ -2996,10 +3291,14 @@ class RetirementPlanMember:
         _authority_ref(self.block_ref, "block_ref")
         _ea(self.anchor_ea, "anchor_ea")
         eas = _tuple(self.native_instruction_eas, "native_instruction_eas", sort=True)
-        if not eas or self.anchor_ea not in eas:
-            raise ValueError("retirement plan member must contain its anchor")
         for ea in eas:
             _ea(ea, "native_instruction_eas item")
+        _validate_native_instruction_inventory(self.block_ref, eas)
+        if not _anchor_matches_native_scope(self.block_ref, self.anchor_ea, eas):
+            raise ValueError(
+                "retirement plan member anchor must belong to instruction origins "
+                "or native identity range"
+            )
         object.__setattr__(self, "native_instruction_eas", eas)
 
 
@@ -3673,9 +3972,76 @@ _LOSS_RULE_CLAIMS = {
 }
 
 
+def _semantic_loss_source_subject_ids(case: SemanticSafetyCase) -> tuple[str, ...]:
+    """Return the complete canonical block-owner domain for a loss ledger.
+
+    A physical source block owns both its structural disappearance and every
+    semantic effect transition at that block.  A scalarized STORE therefore
+    remains a loss-ledger row even though the surrounding source block has a
+    unique candidate binding.  This is deliberately a projection of the
+    sealed case evidence, not another evaluator or claim validator.
+    """
+    subjects = {item.subject_id: item for item in case.subjects}
+    bindings = {item.subject.subject_id: item for item in case.bindings}
+    structural_subject_ids = {
+        item.key.subject.subject_id
+        for item in case.obligation_index.cells
+        if item.key.dimension is SafetyDimension.STRUCTURAL_ACCOUNTING
+    }
+    retired_refs = set(
+        case.retirement_phase_result.retired_refs
+        if case.retirement_phase_result is not None
+        else ()
+    )
+    semantic_delta_refs = {
+        evidence.subject.block_ref
+        for evidence in case.evidence
+        if (
+            evidence.subject.role is SemanticSubjectRole.EFFECT_SITE
+            and evidence.subject.block_ref is not None
+            and type(evidence.payload) is EffectSiteEvidencePayload
+            and evidence.payload.effect_subject_id == evidence.subject.subject_id
+            and not evidence.payload.preserved
+        )
+    }
+    return tuple(sorted(
+        subject_id
+        for subject_id in case.source_subject_ids
+        if (
+            (subject := subjects.get(subject_id)) is not None
+            and subject.role is SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+            and (binding := bindings.get(subject_id)) is not None
+            and subject_id in structural_subject_ids
+            and (
+                binding.status is SubjectBindingStatus.MISSING
+                or subject.block_ref in retired_refs
+                or subject.block_ref in semantic_delta_refs
+            )
+        )
+    ))
+
+
+def _semantic_loss_effect_subject_ids(
+    case: SemanticSafetyCase,
+    source_subject: SemanticSubjectRef,
+) -> tuple[str, ...]:
+    """Return non-preserved effect-site subjects owned by one source block."""
+    return tuple(sorted({
+        evidence.subject.subject_id
+        for evidence in case.evidence
+        if (
+            evidence.subject.role is SemanticSubjectRole.EFFECT_SITE
+            and evidence.subject.block_ref == source_subject.block_ref
+            and type(evidence.payload) is EffectSiteEvidencePayload
+            and evidence.payload.effect_subject_id == evidence.subject.subject_id
+            and not evidence.payload.preserved
+        )
+    }))
+
+
 @dataclass(frozen=True, slots=True)
 class SemanticLossRow:
-    """One evaluator-owned projection of a source subject that is missing."""
+    """One canonical source-block classification of structural or effect loss."""
 
     case: SemanticSafetyCase
     source_subject: SemanticSubjectRef
@@ -3698,6 +4064,8 @@ class SemanticLossRow:
         source_subject_ids = set(self.case.source_subject_ids)
         if self.source_subject.subject_id not in source_subject_ids:
             raise ValueError("loss row subject must belong to the case source partition")
+        if self.source_subject.role is not SemanticSubjectRole.SOURCE_CATALOG_BLOCK:
+            raise ValueError("loss rows must be owned by canonical source blocks")
         case_subjects = {subject.subject_id: subject for subject in self.case.subjects}
         if case_subjects.get(self.source_subject.subject_id) != self.source_subject:
             raise ValueError("loss row source subject must be the exact case subject")
@@ -3729,8 +4097,18 @@ class SemanticLossRow:
                 for item in retired_phase.members
             )
         )
-        if self.candidate_binding.status is not SubjectBindingStatus.MISSING and not phase_retired:
-            raise ValueError("semantic loss rows require a missing candidate or sealed retired phase row")
+        semantic_effect_subject_ids = _semantic_loss_effect_subject_ids(
+            self.case, self.source_subject,
+        )
+        if (
+            self.candidate_binding.status is not SubjectBindingStatus.MISSING
+            and not phase_retired
+            and not semantic_effect_subject_ids
+        ):
+            raise ValueError(
+                "semantic loss rows require a missing candidate, sealed retired phase row, "
+                "or owned semantic effect delta"
+            )
         if self.candidate_binding.subject != self.source_subject:
             raise ValueError("candidate binding must identify source_subject")
         if type(self.structural_obligation) is not ObligationEvidenceCell:
@@ -3752,21 +4130,35 @@ class SemanticLossRow:
         if any(type(cell) is not ObligationEvidenceCell for cell in semantic):
             raise TypeError("relevant_semantic_obligations must contain obligation cells")
         if any(
-            cell.key.subject != self.source_subject
-            or cell.key.dimension is SafetyDimension.STRUCTURAL_ACCOUNTING
+            cell.key.dimension is SafetyDimension.STRUCTURAL_ACCOUNTING
             or cell.phase is not self.candidate_binding.phase
+            or (
+                cell.key.subject != self.source_subject
+                and cell.key.subject.subject_id not in semantic_effect_subject_ids
+            )
             for cell in semantic
         ):
-            raise ValueError("semantic obligation cells must be same-subject non-structural cells")
-        if semantic != tuple(sorted(semantic, key=lambda cell: cell.key.dimension.value)):
+            raise ValueError("semantic obligation cells must belong to the canonical owner")
+        if semantic != tuple(sorted(
+            semantic,
+            key=lambda cell: (cell.key.subject.subject_id, cell.key.dimension.value),
+        )):
             raise ValueError("relevant semantic obligations must be in canonical order")
-        if len({cell.key.dimension for cell in semantic}) != len(semantic):
+        if len({cell.key for cell in semantic}) != len(semantic):
             raise ValueError("relevant semantic obligations must be unique")
-        expected_semantic = tuple(
-            cell for cell in self.case.obligation_index.cells
-            if cell.key.subject == self.source_subject
-            and cell.key.dimension is not SafetyDimension.STRUCTURAL_ACCOUNTING
-        )
+        expected_semantic = tuple(sorted(
+            (
+                cell for cell in self.case.obligation_index.cells
+                if (
+                    cell.key.dimension is not SafetyDimension.STRUCTURAL_ACCOUNTING
+                    and (
+                        cell.key.subject == self.source_subject
+                        or cell.key.subject.subject_id in semantic_effect_subject_ids
+                    )
+                )
+            ),
+            key=lambda cell: (cell.key.subject.subject_id, cell.key.dimension.value),
+        ))
         if semantic != expected_semantic:
             raise ValueError("semantic obligations must be the exact case cells")
         expected_supporting = tuple(sorted({item for cell in (self.structural_obligation, *semantic) for item in cell.supporting_justification_ids}))
@@ -3869,6 +4261,18 @@ class SemanticLossRow:
 
     def _derived_kind(self) -> SemanticLossKind:
         cells = (self.structural_obligation, *self.relevant_semantic_obligations)
+        # A sealed missing effect with no supporting claim is deliberately a
+        # complete, forbidden classification.  Generic effect-gate evidence
+        # also refutes that loss, which can make the effect cell
+        # INCONSISTENT; it must not obscure the more useful UNCLASSIFIED
+        # verdict or turn it into an apparent competing authority.
+        if any(
+            type(item.payload) is EffectSiteEvidencePayload
+            and not item.payload.preserved
+            and item.payload.effect_subject_id == self.source_subject.subject_id
+            for item in self.evidence
+        ) and not self.claims:
+            return SemanticLossKind.UNCLASSIFIED
         if any(cell.state is ObligationState.INCONSISTENT for cell in cells):
             return SemanticLossKind.CONFLICTING
         if any(cell.state is not ObligationState.SATISFIED for cell in cells):
@@ -3923,6 +4327,7 @@ class SemanticLossLedger:
     source_fingerprint: str
     candidate_fingerprint: str
     rows: tuple[SemanticLossRow, ...]
+    ledger_id: str
 
     def __post_init__(self) -> None:
         if type(self.case) is not SemanticSafetyCase:
@@ -3933,11 +4338,12 @@ class SemanticLossLedger:
         _enum(self.phase, UnflattenAuthorityPhase, "phase")
         _id(self.source_fingerprint, "source_fingerprint")
         _id(self.candidate_fingerprint, "candidate_fingerprint")
+        _id(self.ledger_id, "ledger_id")
         if type(self.rows) is not tuple:
             raise TypeError("rows must be an exact tuple")
         if any(type(row) is not SemanticLossRow for row in self.rows):
             raise TypeError("rows must contain SemanticLossRow values")
-        if any(row.case != self.case for row in self.rows):
+        if any(row.case is not self.case for row in self.rows):
             raise ValueError("ledger rows must belong to the exact case")
         if (
             self.authority_id != self.case.authority_id
@@ -3953,6 +4359,32 @@ class SemanticLossLedger:
             raise ValueError("rows must contain unique source subjects")
         if any(row.candidate_binding.phase is not self.phase for row in self.rows):
             raise ValueError("row binding phase must match ledger phase")
+        # A ledger is a transaction-owned *complete classification*, not a
+        # caller-selectable collection of allowed rows.  Its ID seals row
+        # content, but that alone would allow an omitted subset to be reminted
+        # with a different valid content ID.  Derive the complete loss domain
+        # from the exact immutable case and require the ledger to cover it.
+        # This mirrors the evaluator's row-domain predicate without importing
+        # the evaluator (the model remains the dependency root).
+        expected_subject_ids = _semantic_loss_source_subject_ids(self.case)
+        actual_subject_ids = tuple(row.source_subject.subject_id for row in self.rows)
+        if actual_subject_ids != expected_subject_ids:
+            raise ValueError("ledger rows must completely classify the exact case loss domain")
+        expected_ledger_id = authority_id((
+            "unflatten.semantic-loss-ledger.v1", self.case_id,
+            tuple(
+                (
+                    row.source_subject.subject_id,
+                    row.kind.value,
+                    tuple(item.justification_id for item in row.justifications),
+                    tuple(item.evidence_id for item in row.evidence),
+                    tuple(item.claim_id for item in row.claims),
+                )
+                for row in self.rows
+            ),
+        ))
+        if self.ledger_id != expected_ledger_id:
+            raise ValueError("ledger ID does not seal canonical rows")
 
     @property
     def allowed(self) -> tuple[SemanticLossRow, ...]:
@@ -3991,13 +4423,19 @@ class ObservedSemanticLossDelta:
     source_fingerprint: str
     projected_case_id: str
     observed_case_id: str
+    projected_ledger_id: str
+    observed_ledger_id: str
     rows: tuple[SemanticLossRow, ...]
+    delta_id: str
 
     def __post_init__(self) -> None:
         _id(self.authority_id, "authority_id")
         _id(self.source_fingerprint, "source_fingerprint")
         _id(self.projected_case_id, "projected_case_id")
         _id(self.observed_case_id, "observed_case_id")
+        _id(self.projected_ledger_id, "projected_ledger_id")
+        _id(self.observed_ledger_id, "observed_ledger_id")
+        _id(self.delta_id, "delta_id")
         if type(self.rows) is not tuple:
             raise TypeError("rows must be an exact tuple")
         if any(type(row) is not SemanticLossRow for row in self.rows):
@@ -4006,6 +4444,23 @@ class ObservedSemanticLossDelta:
             raise ValueError("rows must be in source subject order")
         if len({row.source_subject.subject_id for row in self.rows}) != len(self.rows):
             raise ValueError("rows must contain unique source subjects")
+        expected_delta_id = authority_id((
+            "unflatten.observed-loss-delta.v1",
+            self.projected_ledger_id,
+            self.observed_ledger_id,
+            tuple(
+                (
+                    row.source_subject.subject_id,
+                    row.kind.value,
+                    tuple(item.justification_id for item in row.justifications),
+                    tuple(item.evidence_id for item in row.evidence),
+                    tuple(item.claim_id for item in row.claims),
+                )
+                for row in self.rows
+            ),
+        ))
+        if self.delta_id != expected_delta_id:
+            raise ValueError("delta ID does not seal canonical rows")
 
     @property
     def observed_only_rows(self) -> tuple[SemanticLossRow, ...]:
@@ -4243,18 +4698,54 @@ class SemanticGraphInventory:
             if item.block_ref is not None
         }
         if self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST and any(
-            item.block_ref is None or item.anchor_ea is None for item in self.blocks
+            (item.block_ref is None or item.anchor_ea is None)
+            and not _is_unowned_structural_stop_row(item)
+            for item in self.blocks
         ):
             raise ValueError("producer observations require mapped block identities and anchors")
-        if self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST and any(
-            item.anchor_ea not in item.native_instruction_eas for item in self.blocks
-        ):
-            raise ValueError("producer anchors must belong to native instruction origins")
+        if self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST:
+            for item in self.blocks:
+                if _is_unowned_structural_stop_row(item):
+                    continue
+                if (
+                    item.anchor_ea is None
+                    or not _anchor_matches_native_scope(
+                        item.block_ref, item.anchor_ea,
+                        item.native_instruction_eas,
+                    )
+                ):
+                    raise ValueError(
+                        "producer anchors must belong to native scope"
+                    )
         for block in self.blocks:
             if type(block.block_ref) is NativeBlockRef:
                 identity = block.block_ref.identity
-                if identity.exact_instruction_eas != frozenset(block.native_instruction_eas):
-                    raise ValueError("native identity instruction EAs do not match block row")
+                observed_anchor_preserving_subset = (
+                    self.phase is UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+                    and _observed_native_origin_subset_preserves_anchor(
+                        block.block_ref,
+                        block.anchor_ea,
+                        block.native_instruction_eas,
+                        tuple(sorted(identity.exact_instruction_eas)),
+                    )
+                )
+                if (
+                    identity.exact_instruction_eas
+                    != frozenset(block.native_instruction_eas)
+                    and not observed_anchor_preserving_subset
+                ):
+                    expected_instruction_eas = set(identity.exact_instruction_eas)
+                    observed_instruction_eas = set(block.native_instruction_eas)
+                    anchor = (
+                        "unknown" if block.anchor_ea is None
+                        else f"0x{block.anchor_ea:x}"
+                    )
+                    raise ValueError(
+                        "native identity instruction EAs do not match block row: "
+                        f"blk{block.serial}@{anchor} "
+                        f"unexpected={tuple(sorted(observed_instruction_eas - expected_instruction_eas))} "
+                        f"missing={tuple(sorted(expected_instruction_eas - observed_instruction_eas))}"
+                    )
                 if block.anchor_ea is None or not identity.native_ranges.contains(block.anchor_ea):
                     raise ValueError("native identity ranges do not contain block anchor")
         subject_ids = {item.subject_id for item in self.subjects}
@@ -4745,7 +5236,8 @@ class PreparationAuthorityReceipt:
     projected_topology_reference_digest: str
     metrics: PreparationBuildMetrics
     generic_gate_facts_digest: str | None = None
-    route_assessment_digest: str | None = None
+    source_route_authority_id: str | None = None
+    projected_route_realization_id: str | None = None
     corridor_coverage_forecast: CorridorCoverageForecast | None = None
     retirement_candidate_catalog: RetirementCandidateCatalog | None = None
     # The receipt remains constructor-closed.  The transaction package uses
@@ -4771,7 +5263,7 @@ class PreparationAuthorityReceipt:
             "conditional_relation_digest",
         ):
             _id(getattr(self, name), name)
-        for name in ("generic_gate_facts_digest", "route_assessment_digest"):
+        for name in ("generic_gate_facts_digest", "source_route_authority_id", "projected_route_realization_id"):
             value = getattr(self, name)
             if value is not None:
                 _id(value, name)
@@ -4823,11 +5315,11 @@ class PreparationAuthorityReceipt:
                 "plan_input_digest", "dispatcher_member_digest",
                 "planned_helper_digest", "patch_step_digest",
                 "conditional_relation_digest", "projected_topology_reference_digest", "metrics",
-                "generic_gate_facts_digest", "route_assessment_digest",
+                "generic_gate_facts_digest", "source_route_authority_id", "projected_route_realization_id",
                 "corridor_coverage_forecast", "retirement_candidate_catalog",
             )
         }
-        for name in ("generic_gate_facts_digest", "route_assessment_digest"):
+        for name in ("generic_gate_facts_digest", "source_route_authority_id", "projected_route_realization_id"):
             if name in values:
                 if values[name] is not None:
                     _id(values[name], name)
@@ -4930,8 +5422,8 @@ class DerivedUnflattenPreparationInputs:
     source_inventory: SemanticGraphInventory
     candidate_inventory: SemanticGraphInventory
     projected_topology_reference: SemanticGraphInventory
-    source_route_assessment: CanonicalRouteAssessment | None
-    candidate_route_assessment: CanonicalRouteAssessment | None
+    source_route_authority: SourceBoundRouteAuthority | None
+    projected_route_realization: ProjectedRouteRealization | None
     generic_gate_facts: GenericCfgGateFacts | None
     conditional_relations: tuple[ConditionalSubjectRelation, ...]
     patch_step_facts: tuple[PatchStepEvidencePayload, ...]
@@ -4990,12 +5482,17 @@ class DerivedUnflattenPreparationInputs:
             raise ValueError(
                 "candidate source subject partition must equal source inventory partition"
             )
-        for name in ("source_route_assessment", "candidate_route_assessment"):
-            assessment = getattr(self, name)
-            if assessment is not None:
-                if type(assessment) is not CanonicalRouteAssessment:
-                    raise TypeError(f"{name} must be CanonicalRouteAssessment or None")
-                validate_canonical_route_assessment(assessment)
+        synthetic_route_pair = (
+            self.source_route_authority is None
+            and self.projected_route_realization is None
+        )
+        if not synthetic_route_pair:
+            if type(self.source_route_authority) is not SourceBoundRouteAuthority:
+                raise TypeError("source_route_authority must be SourceBoundRouteAuthority")
+            if type(self.projected_route_realization) is not ProjectedRouteRealization:
+                raise TypeError("projected_route_realization must be ProjectedRouteRealization")
+            if self.projected_route_realization.source_authority is not self.source_route_authority:
+                raise ValueError("projected realization must retain exact source authority")
         if self.generic_gate_facts is not None:
             if type(self.generic_gate_facts) is not GenericCfgGateFacts:
                 raise TypeError("generic_gate_facts must be GenericCfgGateFacts or None")
@@ -5157,25 +5654,26 @@ class DerivedUnflattenPreparationInputs:
         candidate_fingerprint = self.candidate_inventory.graph_fingerprint
         source_generation = self.source_inventory.generation
         candidate_generation = self.candidate_inventory.generation
-        if self.source_route_assessment is not None:
+        if not synthetic_route_pair:
             if (
-                self.source_route_assessment.phase is not CanonicalRouteAssessmentPhase.SOURCE
-                or self.source_route_assessment.graph_fingerprint != source_fingerprint
-                or self.source_route_assessment.generation != source_generation
-                or self.source_route_assessment.evidence is not self.proposal.route_evidence
+                self.source_route_authority.proposal is not self.proposal
+                or self.source_route_authority.source_fingerprint != source_fingerprint
+                or self.source_route_authority.source_generation != source_generation
+                or self.projected_route_realization.projected_fingerprint
+                != self.projected_topology_reference.graph_fingerprint
+                or self.projected_route_realization.projected_generation
+                != self.projected_topology_reference.generation
             ):
-                raise ValueError("source route assessment does not match source authority")
-        if self.candidate_route_assessment is not None:
-            if (
-                self.candidate_route_assessment.phase is not {
-                    UnflattenAuthorityPhase.PROJECTED_PREFLIGHT: CanonicalRouteAssessmentPhase.PROJECTED,
-                    UnflattenAuthorityPhase.OBSERVED_POST_APPLY: CanonicalRouteAssessmentPhase.OBSERVED,
-                }.get(self.phase_build_metrics.phase)
-                or self.candidate_route_assessment.graph_fingerprint != candidate_fingerprint
-                or self.candidate_route_assessment.generation != candidate_generation
-                or self.candidate_route_assessment.evidence is not self.proposal.route_evidence
-            ):
-                raise ValueError("candidate route assessment does not match candidate authority")
+                raise ValueError("route authority does not match preparation inventories")
+            if self.preparation_receipt.source_route_authority_id != self.source_route_authority.source_authority_id:
+                raise ValueError("receipt source authority ID does not match preparation")
+            if self.preparation_receipt.projected_route_realization_id != self.projected_route_realization.realization_id:
+                raise ValueError("receipt projected realization ID does not match preparation")
+        elif (
+            self.preparation_receipt.source_route_authority_id is not None
+            or self.preparation_receipt.projected_route_realization_id is not None
+        ):
+            raise ValueError("synthetic inputs cannot carry route authority IDs")
         if self.preparation_receipt.source_inventory_digest != self.source_inventory.inventory_digest:
             raise ValueError("receipt source inventory digest does not match inventory")
         if self.preparation_receipt.candidate_inventory_digest != self.candidate_inventory.inventory_digest:
@@ -5507,6 +6005,8 @@ class UnflattenAuthorityVerdict:
     candidate_fingerprint: str
     safety_case: SemanticSafetyCase | None
     failed_obligations: tuple[FailedObligation, ...]
+    observed_acceptance: "ObservedUnflattenAuthorityAccepted | None" = None
+    loss_ledger: SemanticLossLedger | None = None
 
     def __post_init__(self) -> None:
         if type(self.accepted) is not bool:
@@ -5576,6 +6076,34 @@ class UnflattenAuthorityVerdict:
             raise ValueError("rejected verdict cannot use accepted reason")
         if not self.accepted and self.safety_case is None and failed:
             raise ValueError("a pre-case rejection cannot carry failed obligations")
+        if self.observed_acceptance is not None:
+            if type(self.observed_acceptance) is not ObservedUnflattenAuthorityAccepted:
+                raise TypeError("observed_acceptance must be ObservedUnflattenAuthorityAccepted or None")
+            self.observed_acceptance.__post_init__()
+            if (
+                not self.accepted
+                or self.phase is not UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+                or self.safety_case is not self.observed_acceptance.observed_case
+                or self.binding_id != self.observed_acceptance.bound_authority.binding_id
+            ):
+                raise ValueError("observed acceptance does not match exact observed verdict")
+        if self.loss_ledger is not None:
+            if type(self.loss_ledger) is not SemanticLossLedger:
+                raise TypeError("loss_ledger must be SemanticLossLedger or None")
+            SemanticLossLedger.__post_init__(self.loss_ledger)
+            if (
+                self.safety_case is None
+                or self.loss_ledger.case is not self.safety_case
+                or self.loss_ledger.phase is not self.phase
+                or self.loss_ledger.authority_id != self.authority_id
+                or self.loss_ledger.case_id != self.case_id
+            ):
+                raise ValueError("loss ledger does not match exact verdict occurrence")
+        if (
+            self.observed_acceptance is not None
+            and self.loss_ledger is not self.observed_acceptance.observed_ledger
+        ):
+            raise ValueError("observed verdict must retain its exact observed ledger")
 
 
 @dataclass(frozen=True, slots=True)
@@ -5603,7 +6131,8 @@ class PreparedUnflattenAuthority:
     owning_plan: PatchPlanAuthority
     proposal: ProposedUnflattenContract
     claims: tuple[UnflattenClaim, ...]
-    bound_routes: BoundCanonicalSemanticEvidence
+    source_route_authority: SourceBoundRouteAuthority
+    projected_route_realization: ProjectedRouteRealization
     snapshot_id: str
     source_maturity: MaturityEnvelope | None
     source_coordinate_digest: str
@@ -5615,10 +6144,12 @@ class PreparedUnflattenAuthority:
     projected_bindings: tuple[PhaseSubjectBinding, ...]
     projected_case: SemanticSafetyCase
     source_inventory: SemanticGraphInventory
+    # This is the transaction-owned projected semantic-loss authority.  It is
+    # deliberately an occurrence, not a serial-set projection: every
+    # projected gate consumes this exact ledger with ``projected_case``.
+    projected_loss_ledger: SemanticLossLedger
     source_inputs: DerivedUnflattenPreparationInputs | None = None
     preparation_attempt_id: TransactionAttemptId | None = None
-    source_route_assessment: CanonicalRouteAssessment | None = None
-    projected_route_assessment: CanonicalRouteAssessment | None = None
 
     @property
     def attempt_id(self) -> TransactionAttemptId | None:
@@ -5633,17 +6164,17 @@ class PreparedUnflattenAuthority:
             raise TypeError("owning_plan must satisfy PatchPlanAuthority")
         if type(self.proposal) is not ProposedUnflattenContract:
             raise TypeError("proposal must be ProposedUnflattenContract")
-        if type(self.bound_routes) is not BoundCanonicalSemanticEvidence:
-            raise TypeError("bound_routes must be BoundCanonicalSemanticEvidence")
-        for name in ("source_route_assessment", "projected_route_assessment"):
-            assessment = getattr(self, name)
-            if assessment is not None:
-                if type(assessment) is not CanonicalRouteAssessment:
-                    raise TypeError(f"{name} must be CanonicalRouteAssessment or None")
-                validate_canonical_route_assessment(assessment)
-                if not assessment.accepted:
-                    raise ValueError(f"{name} must be an accepted assessment")
-        _id(self.snapshot_id, "snapshot_id")
+        if type(self.source_route_authority) is not SourceBoundRouteAuthority:
+            raise TypeError("source_route_authority must be SourceBoundRouteAuthority")
+        if type(self.projected_route_realization) is not ProjectedRouteRealization:
+            raise TypeError("projected_route_realization must be ProjectedRouteRealization")
+        if self.projected_route_realization.source_authority is not self.source_route_authority:
+            raise ValueError("prepared realization must retain exact source authority")
+        # A snapshot ID is an external transaction coordinate (for example,
+        # ``<mba-session>:m<maturity>:g<generation>``), not a content-addressed
+        # semantic authority ID.  Preserve it exactly and validate only the
+        # non-empty string contract shared by PatchPlan/CfgProjection.
+        _text(self.snapshot_id, "snapshot_id")
         if self.source_maturity is not None and type(self.source_maturity) is not MaturityEnvelope:
             raise TypeError("source_maturity must be MaturityEnvelope or None")
         _id(self.source_coordinate_digest, "source_coordinate_digest")
@@ -5656,6 +6187,11 @@ class PreparedUnflattenAuthority:
             object.__setattr__(self, name, values)
         if type(self.projected_case) is not SemanticSafetyCase:
             raise TypeError("projected_case must be SemanticSafetyCase")
+        if type(self.projected_loss_ledger) is not SemanticLossLedger:
+            raise TypeError("projected_loss_ledger must be SemanticLossLedger")
+        SemanticLossLedger.__post_init__(self.projected_loss_ledger)
+        if self.projected_loss_ledger.case is not self.projected_case:
+            raise ValueError("prepared projected loss ledger must own the exact projected case")
         if type(self.source_inventory) is not SemanticGraphInventory:
             raise TypeError("source_inventory must be SemanticGraphInventory")
         validate_semantic_graph_inventory(self.source_inventory)
@@ -5665,10 +6201,10 @@ class PreparedUnflattenAuthority:
             raise TypeError("source_inputs must be DerivedUnflattenPreparationInputs or None")
         if self.source_inputs is not None:
             DerivedUnflattenPreparationInputs.__post_init__(self.source_inputs)
-            if self.source_route_assessment is not self.source_inputs.source_route_assessment:
-                raise ValueError("prepared source route assessment must be the exact input object")
-            if self.projected_route_assessment is not self.source_inputs.candidate_route_assessment:
-                raise ValueError("prepared projected route assessment must be the exact input object")
+            if self.source_route_authority is not self.source_inputs.source_route_authority:
+                raise ValueError("prepared source route authority must be the exact input object")
+            if self.projected_route_realization is not self.source_inputs.projected_route_realization:
+                raise ValueError("prepared projected realization must be the exact input object")
         if self.source_inputs is not None and self.source_inventory is not self.source_inputs.source_inventory:
             raise ValueError("prepared source inventory must be the exact source input object")
         if self.source_inputs is not None:
@@ -5681,22 +6217,14 @@ class PreparedUnflattenAuthority:
                 or self.projected_bindings != self.source_inputs.candidate_inventory.bindings
             ):
                 raise ValueError("prepared source bindings/fingerprints do not match source inputs")
-        if self.source_route_assessment is not None:
-            if (
-                self.source_route_assessment.phase is not CanonicalRouteAssessmentPhase.SOURCE
-                or self.source_route_assessment.graph_fingerprint != self.source_fingerprint
-                or self.source_route_assessment.generation != self.source_generation
-                or self.source_route_assessment.evidence is not self.proposal.route_evidence
-            ):
-                raise ValueError("prepared source route assessment does not match authority")
-        if self.projected_route_assessment is not None:
-            if (
-                self.projected_route_assessment.phase is not CanonicalRouteAssessmentPhase.PROJECTED
-                or self.projected_route_assessment.graph_fingerprint != self.projected_fingerprint
-                or self.projected_route_assessment.generation != self.projected_generation
-                or self.projected_route_assessment.evidence is not self.proposal.route_evidence
-            ):
-                raise ValueError("prepared projected route assessment does not match authority")
+        if (
+            self.source_route_authority.proposal is not self.proposal
+            or self.source_route_authority.source_fingerprint != self.source_fingerprint
+            or self.source_route_authority.source_generation != self.source_generation
+            or self.projected_route_realization.projected_fingerprint != self.projected_fingerprint
+            or self.projected_route_realization.projected_generation != self.projected_generation
+        ):
+            raise ValueError("prepared route authority does not match coordinates")
         if self.preparation_attempt_id is not None and type(self.preparation_attempt_id) is not TransactionAttemptId:
             raise TypeError("preparation_attempt_id must be TransactionAttemptId or None")
         if self.owning_plan.plan_id != self.proposal.plan_id:
@@ -5722,18 +6250,49 @@ class PreparedUnflattenAuthority:
             raise ValueError("source generation does not match owning plan")
         if self.source_maturity != self.owning_plan.source_maturity:
             raise ValueError("source maturity does not match owning plan")
-        # PatchPlan.source_coordinates are always authoritative ref -> source
-        # serial rows. The catalog anchor is a separate native identity
-        # witness and must never be compared to the graph serial.
-        plan_coordinates = dict(self.owning_plan.source_coordinates)
+        # PatchPlan.source_coordinates cover the complete source graph, while
+        # the semantic catalog intentionally omits the instructionless
+        # synthetic STOP used only for structural bookkeeping.  Seal the full
+        # coordinate map, require exact catalog coverage, and admit only those
+        # extra rows that the source inventory itself classifies as that
+        # unowned STOP.
+        plan_coordinate_rows = _canonical_source_coordinates(
+            self.owning_plan.source_coordinates
+        )
+        plan_coordinates = dict(plan_coordinate_rows)
+        if len(plan_coordinates) != len(plan_coordinate_rows):
+            raise ValueError("owning plan contains duplicate source coordinate references")
+        catalog_refs = {
+            block.block_ref for block in self.proposal.source_identity_catalog.blocks
+        }
+        if not catalog_refs <= set(plan_coordinates):
+            raise ValueError("owning plan source coordinates omit proposal catalog rows")
         expected_coordinates = _canonical_source_coordinates(
             (block.block_ref, plan_coordinates[block.block_ref])
             for block in self.proposal.source_identity_catalog.blocks
         )
-        if _canonical_source_coordinates(self.owning_plan.source_coordinates) != expected_coordinates:
-            raise ValueError("owning plan source coordinates do not match the proposal catalog")
-        if self.source_coordinate_digest != authority_id(expected_coordinates):
-            raise ValueError("source coordinate digest does not match the proposal catalog")
+        inventory_blocks = {row.serial: row for row in self.source_inventory.blocks}
+        plan_serials = tuple(serial for _ref, serial in plan_coordinate_rows)
+        if (
+            len(set(plan_serials)) != len(plan_serials)
+            or set(plan_serials) != set(inventory_blocks)
+        ):
+            raise ValueError("owning plan source coordinates do not cover the source inventory")
+        extra_coordinates = tuple(
+            (ref, serial)
+            for ref, serial in plan_coordinate_rows
+            if ref not in catalog_refs
+        )
+        if any(
+            type(ref) is not LogicalBlockRef
+            or not _is_unowned_structural_stop_row(inventory_blocks[serial])
+            for ref, serial in extra_coordinates
+        ):
+            raise ValueError(
+                "owning plan contains a non-catalog semantic source coordinate"
+            )
+        if self.source_coordinate_digest != authority_id(plan_coordinate_rows):
+            raise ValueError("source coordinate digest does not match the owning plan")
         source_binding_coordinates = _canonical_source_coordinates(
             (binding.block_ref, binding.serial)
             for binding in self.source_bindings
@@ -5766,27 +6325,6 @@ class PreparedUnflattenAuthority:
                 raise ValueError("projected bindings must exactly match candidate inventory")
             if self.projected_bindings != self.projected_case.bindings:
                 raise ValueError("projected bindings must exactly match projected case")
-        if self.bound_routes.evidence != self.proposal.route_evidence:
-            raise ValueError("bound routes do not exactly cover proposal route evidence")
-        if tuple(sorted(route.evidence.proof_id for route in self.bound_routes.routes)) != tuple(sorted(proof.proof_id for proof in self.proposal.route_evidence.route_proofs)):
-            raise ValueError("bound routes do not cover every proposal route proof")
-        proofs = {proof.proof_id: proof for proof in self.proposal.route_evidence.route_proofs}
-        for route in self.bound_routes.routes:
-            proof = proofs.get(route.evidence.proof_id)
-            if proof is None or route.evidence != proof:
-                raise ValueError("bound route proof does not match portable evidence")
-            if route.source.anchor_ea != proof.source_anchor_ea or route.source.identity != proof.source_identity:
-                raise ValueError("bound route source does not match portable proof anchor")
-            expected_destinations = {
-                (destination.role, destination.target_anchor_ea, destination.target_identity)
-                for destination in proof.destinations
-            }
-            actual_destinations = {
-                (destination.evidence.role, destination.block.anchor_ea, destination.block.identity)
-                for destination in route.destinations
-            }
-            if actual_destinations != expected_destinations:
-                raise ValueError("bound route destinations do not match portable proof anchors")
         if any(
             binding.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST
             or binding.graph_fingerprint != self.source_fingerprint
@@ -5820,6 +6358,10 @@ class BoundUnflattenAuthority:
         _id(self.binding_id, "binding_id")
         if type(self.prepared) is not PreparedUnflattenAuthority:
             raise TypeError("prepared must be PreparedUnflattenAuthority")
+        # This carrier crosses the public commit boundary.  Revalidate the
+        # nested preparation here so low-level fingerprint/generation drift
+        # cannot survive inside an otherwise nominally valid bound authority.
+        PreparedUnflattenAuthority.__post_init__(self.prepared)
         if type(self.attempt_id) is not TransactionAttemptId:
             raise TypeError("attempt_id must be TransactionAttemptId")
         _text(self.session_id, "session_id")
@@ -5862,6 +6404,65 @@ class BoundUnflattenAuthority:
 
 
 @dataclass(frozen=True, slots=True)
+class ObservedUnflattenAuthorityAccepted:
+    """One accepted observed realization closed over its bound authority."""
+
+    bound_authority: BoundUnflattenAuthority
+    projected_ledger: SemanticLossLedger
+    observed_case: SemanticSafetyCase
+    observed_ledger: SemanticLossLedger
+    delta: ObservedSemanticLossDelta
+
+    def __post_init__(self) -> None:
+        if type(self.bound_authority) is not BoundUnflattenAuthority:
+            raise TypeError("bound_authority must be BoundUnflattenAuthority")
+        BoundUnflattenAuthority.__post_init__(self.bound_authority)
+        prepared = self.bound_authority.prepared
+        PreparedUnflattenAuthority.__post_init__(prepared)
+        if self.projected_ledger is not prepared.projected_loss_ledger:
+            raise ValueError("observed acceptance must retain exact projected ledger")
+        SemanticLossLedger.__post_init__(self.projected_ledger)
+        if type(self.observed_case) is not SemanticSafetyCase:
+            raise TypeError("observed_case must be SemanticSafetyCase")
+        SemanticSafetyCase.__post_init__(self.observed_case)
+        if type(self.observed_ledger) is not SemanticLossLedger:
+            raise TypeError("observed_ledger must be SemanticLossLedger")
+        SemanticLossLedger.__post_init__(self.observed_ledger)
+        if self.observed_ledger.case is not self.observed_case:
+            raise ValueError("observed ledger must retain exact observed case")
+        if type(self.delta) is not ObservedSemanticLossDelta:
+            raise TypeError("delta must be ObservedSemanticLossDelta")
+        ObservedSemanticLossDelta.__post_init__(self.delta)
+        if (
+            self.observed_case.authority_id != prepared.authority_id
+            or self.observed_case.source_fingerprint != prepared.source_fingerprint
+            or self.observed_case.phase is not UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+            or self.delta.projected_case_id != prepared.projected_case.case_id
+            or self.delta.observed_case_id != self.observed_case.case_id
+            or self.delta.projected_ledger_id != self.projected_ledger.ledger_id
+            or self.delta.observed_ledger_id != self.observed_ledger.ledger_id
+        ):
+            raise ValueError("observed acceptance authority coordinates drifted")
+        projected_subject_ids = {
+            row.source_subject.subject_id for row in self.projected_ledger.rows
+        }
+        expected_delta_rows = tuple(
+            row for row in self.observed_ledger.rows
+            if row.source_subject.subject_id not in projected_subject_ids
+        )
+        if (
+            len(self.delta.rows) != len(expected_delta_rows)
+            or any(actual is not expected for actual, expected in zip(
+                self.delta.rows, expected_delta_rows,
+            ))
+            or any(row.case is not self.observed_case for row in self.delta.rows)
+        ):
+            raise ValueError(
+                "observed delta must be the exact observed-only ledger rows"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class UnflattenAuthorityPreparationAccepted:
     prepared: PreparedUnflattenAuthority
     verdict: UnflattenAuthorityVerdict
@@ -5874,17 +6475,34 @@ class UnflattenAuthorityPreparationAccepted:
         if (
             self.verdict.authority_id != self.prepared.authority_id
             or self.verdict.case_id != self.prepared.projected_case.case_id
+            or self.verdict.loss_ledger is not self.prepared.projected_loss_ledger
         ):
             raise ValueError("preparation verdict does not match prepared authority")
 
 
 @dataclass(frozen=True, slots=True)
+class ProposalValidationFailure:
+    """Typed proposal boundary failure carried into preparation diagnostics."""
+
+    stage: ProposalValidationStage
+    detail_code: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.stage, ProposalValidationStage):
+            raise TypeError("proposal failure stage must be ProposalValidationStage")
+        _text(self.detail_code, "proposal failure detail_code")
+
+
+@dataclass(frozen=True, slots=True)
 class UnflattenAuthorityPreparationRejected:
     verdict: UnflattenAuthorityVerdict
+    proposal_failure: "ProposalValidationFailure | None" = None
 
     def __post_init__(self) -> None:
         if type(self.verdict) is not UnflattenAuthorityVerdict or self.verdict.accepted:
             raise ValueError("preparation rejected requires a rejected verdict")
+        if self.proposal_failure is not None and type(self.proposal_failure) is not ProposalValidationFailure:
+            raise TypeError("proposal_failure must be ProposalValidationFailure or None")
 
 
 UnflattenAuthorityPreparationResult: TypeAlias = (UnflattenAuthorityNotApplicable | UnflattenAuthorityPreparationAccepted | UnflattenAuthorityPreparationRejected)
@@ -5911,8 +6529,1403 @@ class UnflattenAuthorityBindingRejected:
 UnflattenAuthorityBindingResult: TypeAlias = UnflattenAuthorityBindingAccepted | UnflattenAuthorityBindingRejected
 
 
+class RouteRealizationKind(str, Enum):
+    DIRECT_REDIRECT = "direct_redirect"
+    CONDITIONAL_REDIRECT = "conditional_redirect"
+    HELPER_CORRIDOR = "helper_corridor"
+    PRESERVED = "preserved"
+    FOLDED = "folded"
+
+
+class RouteRealizationFailureStage(str, Enum):
+    SOURCE_AUTHORITY = "source_authority"
+    CLAIM_COVERAGE = "claim_coverage"
+    CLAIM_SELECTION = "claim_selection"
+    PLAN_STEP_CORRELATION = "plan_step_correlation"
+    OLD_EDGE_REMOVAL = "old_edge_removal"
+    NEW_EDGE_REALIZATION = "new_edge_realization"
+    CONDITIONAL_ROLES = "conditional_roles"
+    HELPER_LINEAGE = "helper_lineage"
+    EFFECT_TERMINAL_PRESERVATION = "effect_terminal_preservation"
+    OBSERVED_LINEAGE = "observed_lineage"
+    RETIREMENT_CORRELATION = "retirement_correlation"
+    ATTEMPT_BINDING = "attempt_binding"
+    UNSUPPORTED_REALIZATION_KIND = "unsupported_realization_kind"
+
+
+class RouteRealizationFailureScope(str, Enum):
+    PROPOSAL = "proposal"
+    EVIDENCE = "evidence"
+    CLAIM = "claim"
+    STEP = "step"
+
+
+@dataclass(frozen=True, slots=True)
+class AnchoredBlockRef:
+    ref: CfgBlockRef
+    anchor_ea: int
+
+    def __post_init__(self) -> None:
+        _cfg_ref(self.ref, "anchored block ref")
+        _ea(self.anchor_ea, "anchored block EA")
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class EffectSiteCoordinate:
+    """Serial-free identity for one observed effect instruction."""
+
+    owner: AnchoredBlockRef
+    instruction_ordinal: int
+    instruction_ea: int
+    effect_kind: EffectSiteKind
+    opcode: int
+    width: int
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("semantic site records are binder-owned")
+
+    def __post_init__(self) -> None:
+        if type(self.owner) is not AnchoredBlockRef:
+            raise TypeError("effect site owner must be AnchoredBlockRef")
+        self.owner.__post_init__()
+        _nonnegative(self.instruction_ordinal, "effect site instruction_ordinal")
+        _ea(self.instruction_ea, "effect site instruction_ea")
+        _enum(self.effect_kind, EffectSiteKind, "effect site effect_kind")
+        if type(self.opcode) is not int or isinstance(self.opcode, bool) or self.opcode < 0:
+            raise ValueError("effect site opcode must be a non-negative exact int")
+        _nonnegative(self.width, "effect site width")
+
+    __copy__ = _reject_site_record_copy
+    __deepcopy__ = _reject_site_record_copy
+    __reduce__ = _reject_site_record_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class TerminalSiteCoordinate:
+    """Serial-free identity for one observed terminal instruction."""
+
+    owner: AnchoredBlockRef
+    instruction_ordinal: int | None
+    instruction_ea: int
+    terminal_kind: TerminalKind
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("semantic site records are binder-owned")
+
+    def __post_init__(self) -> None:
+        if type(self.owner) is not AnchoredBlockRef:
+            raise TypeError("terminal site owner must be AnchoredBlockRef")
+        self.owner.__post_init__()
+        _ea(self.instruction_ea, "terminal site instruction_ea")
+        _enum(self.terminal_kind, TerminalKind, "terminal site terminal_kind")
+        if self.instruction_ordinal is None:
+            if self.terminal_kind is not TerminalKind.STOP:
+                raise ValueError("only synthesized STOP terminals may omit ordinal")
+        else:
+            _nonnegative(self.instruction_ordinal, "terminal site instruction_ordinal")
+            if self.terminal_kind is TerminalKind.STOP:
+                raise ValueError("STOP terminal coordinates require ordinal None")
+
+    __copy__ = _reject_site_record_copy
+    __deepcopy__ = _reject_site_record_copy
+    __reduce__ = _reject_site_record_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class RawEffectGatePhaseFact:
+    """Canonical SOURCE raw effect partition used before authority minting."""
+
+    phase: UnflattenAuthorityPhase
+    source_inventory_digest: str
+    projected_inventory_digest: str
+    source_fingerprint: str
+    projected_fingerprint: str
+    source_generation: int
+    projected_generation: int
+    pre_effectful_source_owners: tuple[AnchoredBlockRef, ...]
+    raw_retained_source_owners: tuple[AnchoredBlockRef, ...]
+    raw_lost_source_owners: tuple[AnchoredBlockRef, ...]
+    generic_raw_payload_digest: str
+    fact_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("raw effect gate phase facts are binder-owned")
+
+    def __post_init__(self) -> None:
+        if self.phase is not UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+            raise ValueError("raw effect gate fact must be projected-preflight")
+        for name in (
+            "source_inventory_digest", "projected_inventory_digest",
+            "source_fingerprint", "projected_fingerprint",
+            "generic_raw_payload_digest", "fact_id",
+        ):
+            _id(getattr(self, name), name)
+        _generation(self.source_generation, "source_generation")
+        _generation(self.projected_generation, "projected_generation")
+        if type(self.pre_effectful_source_owners) is not tuple:
+            raise TypeError("pre_effectful_source_owners must be an exact tuple")
+        if type(self.raw_retained_source_owners) is not tuple:
+            raise TypeError("raw_retained_source_owners must be an exact tuple")
+        if type(self.raw_lost_source_owners) is not tuple:
+            raise TypeError("raw_lost_source_owners must be an exact tuple")
+        for name in (
+            "pre_effectful_source_owners", "raw_retained_source_owners",
+            "raw_lost_source_owners",
+        ):
+            owners = getattr(self, name)
+            if any(type(item) is not AnchoredBlockRef for item in owners):
+                raise TypeError(f"{name} must contain AnchoredBlockRef values")
+            for item in owners:
+                item.__post_init__()
+            if owners != tuple(sorted(owners, key=canonical_bytes)):
+                raise ValueError(f"{name} must be in canonical owner order")
+            if len(set(owners)) != len(owners):
+                raise ValueError(f"{name} must not contain duplicate owners")
+        pre = set(self.pre_effectful_source_owners)
+        retained = set(self.raw_retained_source_owners)
+        lost = set(self.raw_lost_source_owners)
+        if retained & lost or retained | lost != pre:
+            raise ValueError("raw effect owners must form a complete disjoint partition")
+        if self.fact_id != raw_effect_gate_phase_fact_id(self):
+            raise ValueError("fact_id does not match canonical raw gate content")
+
+    __copy__ = _reject_site_record_copy
+    __deepcopy__ = _reject_site_record_copy
+    __reduce__ = _reject_site_record_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ScalarizedInstructionCoordinate:
+    owner: AnchoredBlockRef
+    instruction_ordinal: int
+    instruction_ea: int
+    instruction_kind: Literal[InsnKind.MOV]
+    opcode: int
+    raw_opcode: int
+    width: int
+    display_text_digest: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("semantic site records are binder-owned")
+
+    def __post_init__(self) -> None:
+        if type(self.owner) is not AnchoredBlockRef:
+            raise TypeError("scalarized site owner must be AnchoredBlockRef")
+        self.owner.__post_init__()
+        _nonnegative(self.instruction_ordinal, "scalarized instruction ordinal")
+        _ea(self.instruction_ea, "scalarized instruction EA")
+        if self.instruction_kind is not InsnKind.MOV:
+            raise ValueError("scalarized instruction must be MOV")
+        for name in ("opcode", "raw_opcode", "width"):
+            _nonnegative(getattr(self, name), f"scalarized {name}")
+        _id(self.display_text_digest, "display_text_digest")
+
+    __copy__ = _reject_site_record_copy
+    __deepcopy__ = _reject_site_record_copy
+    __reduce__ = _reject_site_record_copy
+
+
+class ProjectedEffectSiteOutcome(str, Enum):
+    PRESERVED = "preserved"
+    RELATION_CLONED = "relation_cloned"
+    EXACT_INFEASIBLE = "exact_infeasible"
+    LOCAL_ALIAS_SCALARIZED = "local_alias_scalarized"
+    # This is a sealed observation of a missing source effect, not an
+    # allowance.  It deliberately reaches canonical case evaluation so the
+    # transaction-owned ledger can classify and reject it atomically.
+    UNCLASSIFIED = "unclassified"
+
+
+class ProjectedTerminalSiteOutcome(str, Enum):
+    PRESERVED = "preserved"
+    RELATION_CLONED = "relation_cloned"
+
+
+def _site_id(value: object, label: str) -> str:
+    return _id(value, label)
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ExactEffectBindingResult:
+    authority_id: str
+    source_authority_id: str
+    attempt_id: TransactionAttemptId
+    phase: Literal[UnflattenAuthorityPhase.PROJECTED_PREFLIGHT]
+    claim: ExactInfeasibleEffectClaim
+    proof_id: str
+    supporting_route_relation_id: str
+    source_subject_ids: tuple[str, ...]
+    source_site: EffectSiteCoordinate
+    source_inventory_digest: str
+    projected_inventory_digest: str
+    source_fingerprint: str
+    projected_fingerprint: str
+    source_generation: int
+    projected_generation: int
+    raw_effect_gate_fact_id: str
+    binding_result_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("exact-effect binding results are binder-owned")
+
+    def __post_init__(self) -> None:
+        for name in ("authority_id", "source_authority_id", "proof_id", "supporting_route_relation_id", "source_inventory_digest", "projected_inventory_digest", "source_fingerprint", "projected_fingerprint", "raw_effect_gate_fact_id", "binding_result_id"):
+            _site_id(getattr(self, name), name)
+        if type(self.attempt_id) is not TransactionAttemptId:
+            raise TypeError("attempt_id must be TransactionAttemptId")
+        self.attempt_id.__post_init__()
+        if self.phase is not UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+            raise ValueError("exact-effect binding must be projected-preflight")
+        if type(self.claim) is not ExactInfeasibleEffectClaim:
+            raise TypeError("claim must be ExactInfeasibleEffectClaim")
+        self.claim.__post_init__()
+        if type(self.source_subject_ids) is not tuple or not self.source_subject_ids:
+            raise TypeError("source_subject_ids must be a non-empty tuple")
+        if any(not isinstance(item, str) for item in self.source_subject_ids) or self.source_subject_ids != tuple(sorted(set(self.source_subject_ids))):
+            raise ValueError("source_subject_ids must be sorted and unique")
+        if type(self.source_site) is not EffectSiteCoordinate:
+            raise TypeError("source_site must be EffectSiteCoordinate")
+        self.source_site.__post_init__()
+        for name in ("source_generation", "projected_generation"):
+            _generation(getattr(self, name), name)
+        if self.binding_result_id != exact_effect_binding_result_id(self):
+            raise ValueError("binding_result_id does not match exact-effect content")
+
+    __copy__ = _reject_site_record_copy
+    __deepcopy__ = _reject_site_record_copy
+    __reduce__ = _reject_site_record_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class LocalAliasScalarizationBindingResult:
+    authority_id: str
+    attempt_id: TransactionAttemptId
+    phase: Literal[UnflattenAuthorityPhase.PROJECTED_PREFLIGHT]
+    claim: LocalAliasEffectScalarizationClaim
+    source_subject_id: str
+    source_site: EffectSiteCoordinate
+    scalarized_site: ScalarizedInstructionCoordinate
+    patch_step_fact: PatchStepEvidencePayload
+    patch_step_fact_id: str
+    source_inventory_digest: str
+    projected_inventory_digest: str
+    source_fingerprint: str
+    projected_fingerprint: str
+    source_generation: int
+    projected_generation: int
+    binding_result_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("local-alias binding results are binder-owned")
+
+    def __post_init__(self) -> None:
+        for name in ("authority_id", "source_subject_id", "patch_step_fact_id", "source_inventory_digest", "projected_inventory_digest", "source_fingerprint", "projected_fingerprint", "binding_result_id"):
+            _site_id(getattr(self, name), name)
+        if type(self.attempt_id) is not TransactionAttemptId:
+            raise TypeError("attempt_id must be TransactionAttemptId")
+        self.attempt_id.__post_init__()
+        if self.phase is not UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+            raise ValueError("local-alias binding must be projected-preflight")
+        if type(self.claim) is not LocalAliasEffectScalarizationClaim:
+            raise TypeError("claim must be LocalAliasEffectScalarizationClaim")
+        self.claim.__post_init__()
+        _site_id(self.source_subject_id, "source_subject_id")
+        if type(self.source_site) is not EffectSiteCoordinate or type(self.scalarized_site) is not ScalarizedInstructionCoordinate:
+            raise TypeError("local-alias binding sites must be closed coordinates")
+        self.source_site.__post_init__(); self.scalarized_site.__post_init__()
+        if type(self.patch_step_fact) is not PatchStepEvidencePayload:
+            raise TypeError("patch_step_fact must be PatchStepEvidencePayload")
+        self.patch_step_fact.__post_init__()
+        if self.patch_step_fact_id != _canonical_patch_step_fact_id(self.patch_step_fact):
+            raise ValueError("patch_step_fact_id does not match payload")
+        for name in ("source_generation", "projected_generation"):
+            _generation(getattr(self, name), name)
+        if self.binding_result_id != local_alias_binding_result_id(self):
+            raise ValueError("binding_result_id does not match local-alias content")
+
+    __copy__ = _reject_site_record_copy
+    __deepcopy__ = _reject_site_record_copy
+    __reduce__ = _reject_site_record_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ProjectedEffectSiteResult:
+    authority_id: str; attempt_id: TransactionAttemptId; phase: Literal[UnflattenAuthorityPhase.PROJECTED_PREFLIGHT]
+    source_subject_id: str; source_site: EffectSiteCoordinate; outcome: ProjectedEffectSiteOutcome
+    projected_subject_id: str | None; projected_site: EffectSiteCoordinate | None
+    scalarized_site: ScalarizedInstructionCoordinate | None; lineage_kind: ProjectedSiteLineageKind | None
+    relation_id: str | None; supporting_claim_id: str | None; supporting_binding_result_id: str | None
+    latent_exact_binding_result_id: str | None; patch_step_index: int | None; patch_step_digest: str | None
+    raw_effect_gate_fact_id: str; result_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("projected effect site results are binder-owned")
+
+    def __post_init__(self) -> None:
+        for name in ("authority_id", "source_subject_id", "raw_effect_gate_fact_id", "result_id"):
+            _site_id(getattr(self, name), name)
+        if type(self.attempt_id) is not TransactionAttemptId: raise TypeError("attempt_id must be TransactionAttemptId")
+        self.attempt_id.__post_init__(); _enum(self.outcome, ProjectedEffectSiteOutcome, "outcome")
+        if type(self.source_site) is not EffectSiteCoordinate: raise TypeError("source_site must be EffectSiteCoordinate")
+        self.source_site.__post_init__()
+        for name in ("projected_subject_id", "relation_id", "supporting_claim_id", "supporting_binding_result_id", "latent_exact_binding_result_id", "patch_step_digest"):
+            value = getattr(self, name)
+            if value is not None: _site_id(value, name)
+        if self.patch_step_index is not None: _nonnegative(self.patch_step_index, "patch_step_index")
+        if self.projected_site is not None:
+            if type(self.projected_site) is not EffectSiteCoordinate: raise TypeError("projected_site must be EffectSiteCoordinate")
+            self.projected_site.__post_init__()
+        if self.scalarized_site is not None:
+            if type(self.scalarized_site) is not ScalarizedInstructionCoordinate: raise TypeError("scalarized_site must be ScalarizedInstructionCoordinate")
+            self.scalarized_site.__post_init__()
+        if self.lineage_kind is not None: _enum(self.lineage_kind, ProjectedSiteLineageKind, "lineage_kind")
+        if self.outcome in (ProjectedEffectSiteOutcome.PRESERVED, ProjectedEffectSiteOutcome.RELATION_CLONED):
+            if self.projected_site is None or self.lineage_kind is None or self.projected_subject_id is None: raise ValueError("preserved effect requires projected site and lineage")
+            if self.outcome is ProjectedEffectSiteOutcome.PRESERVED and self.lineage_kind is not ProjectedSiteLineageKind.SAME_OWNER: raise ValueError("preserved effect requires same-owner lineage")
+            if self.outcome is ProjectedEffectSiteOutcome.RELATION_CLONED and self.lineage_kind is not ProjectedSiteLineageKind.RELATION_CLONE: raise ValueError("cloned effect requires relation-clone lineage")
+            if self.outcome is ProjectedEffectSiteOutcome.PRESERVED and self.relation_id is not None: raise ValueError("preserved effect cannot carry relation lineage")
+            if self.outcome is ProjectedEffectSiteOutcome.RELATION_CLONED and self.relation_id is None: raise ValueError("cloned effect requires relation ID")
+            if self.outcome is ProjectedEffectSiteOutcome.RELATION_CLONED and self.source_subject_id == self.projected_subject_id: raise ValueError("cloned effect subjects must be distinct")
+            if self.scalarized_site is not None or self.supporting_claim_id is not None or self.supporting_binding_result_id is not None or self.patch_step_index is not None or self.patch_step_digest is not None: raise ValueError("preserved effect cannot carry active binding")
+        elif self.outcome is ProjectedEffectSiteOutcome.EXACT_INFEASIBLE:
+            if self.projected_subject_id is not None or self.projected_site is not None or self.scalarized_site is not None or self.supporting_claim_id is None or self.supporting_binding_result_id is None: raise ValueError("exact infeasible effect requires active binding and no projected site")
+            if self.lineage_kind is not None or self.relation_id is not None or self.latent_exact_binding_result_id is not None: raise ValueError("exact infeasible effect has no lineage or latent binding")
+            if self.patch_step_index is not None or self.patch_step_digest is not None: raise ValueError("exact infeasible effect has no patch step")
+        elif self.outcome is ProjectedEffectSiteOutcome.LOCAL_ALIAS_SCALARIZED:
+            if self.projected_subject_id is not None or self.projected_site is not None or self.scalarized_site is None or self.supporting_claim_id is None or self.supporting_binding_result_id is None or self.patch_step_index is None or self.patch_step_digest is None: raise ValueError("scalarized effect requires exact scalar binding")
+            if self.lineage_kind is not None or self.relation_id is not None or self.latent_exact_binding_result_id is not None: raise ValueError("scalarized effect has no lineage or latent exact binding")
+        else:
+            if (
+                self.projected_subject_id is not None
+                or self.projected_site is not None
+                or self.scalarized_site is not None
+                or self.lineage_kind is not None
+                or self.relation_id is not None
+                or self.supporting_claim_id is not None
+                or self.supporting_binding_result_id is not None
+                or self.latent_exact_binding_result_id is not None
+                or self.patch_step_index is not None
+                or self.patch_step_digest is not None
+            ):
+                raise ValueError("unclassified effect must retain only its exact missing source site")
+        if self.result_id != projected_effect_site_result_id(self): raise ValueError("result_id does not match effect site content")
+    __copy__ = _reject_site_record_copy; __deepcopy__ = _reject_site_record_copy; __reduce__ = _reject_site_record_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ProjectedTerminalSiteResult:
+    authority_id: str; attempt_id: TransactionAttemptId; phase: Literal[UnflattenAuthorityPhase.PROJECTED_PREFLIGHT]
+    source_subject_id: str; source_site: TerminalSiteCoordinate; outcome: ProjectedTerminalSiteOutcome
+    projected_subject_id: str; projected_site: TerminalSiteCoordinate; lineage_kind: ProjectedSiteLineageKind
+    relation_id: str | None; result_id: str
+    def __init__(self, *args: object, **kwargs: object) -> None: del args, kwargs; raise TypeError("projected terminal site results are binder-owned")
+    def __post_init__(self) -> None:
+        for name in ("authority_id", "source_subject_id", "projected_subject_id", "result_id"): _site_id(getattr(self, name), name)
+        if type(self.attempt_id) is not TransactionAttemptId: raise TypeError("attempt_id must be TransactionAttemptId")
+        self.attempt_id.__post_init__(); _enum(self.phase, UnflattenAuthorityPhase, "phase"); _enum(self.outcome, ProjectedTerminalSiteOutcome, "outcome"); _enum(self.lineage_kind, ProjectedSiteLineageKind, "lineage_kind")
+        if type(self.source_site) is not TerminalSiteCoordinate or type(self.projected_site) is not TerminalSiteCoordinate: raise TypeError("terminal sites must be TerminalSiteCoordinate")
+        self.source_site.__post_init__(); self.projected_site.__post_init__()
+        if self.outcome is ProjectedTerminalSiteOutcome.PRESERVED and self.lineage_kind is not ProjectedSiteLineageKind.SAME_OWNER: raise ValueError("preserved terminal requires same-owner lineage")
+        if self.outcome is ProjectedTerminalSiteOutcome.PRESERVED and self.relation_id is not None: raise ValueError("preserved terminal cannot carry relation lineage")
+        if self.outcome is ProjectedTerminalSiteOutcome.RELATION_CLONED and (self.lineage_kind is not ProjectedSiteLineageKind.RELATION_CLONE or self.relation_id is None): raise ValueError("cloned terminal requires relation lineage")
+        if self.result_id != projected_terminal_site_result_id(self): raise ValueError("result_id does not match terminal site content")
+    __copy__ = _reject_site_record_copy; __deepcopy__ = _reject_site_record_copy; __reduce__ = _reject_site_record_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ProjectedSemanticSitePhaseResult:
+    authority_id: str
+    source_authority_id: str
+    attempt_id: TransactionAttemptId
+    phase: Literal[UnflattenAuthorityPhase.PROJECTED_PREFLIGHT]
+    plan_id: str
+    source_inventory_digest: str
+    projected_inventory_digest: str
+    source_fingerprint: str
+    projected_fingerprint: str
+    source_generation: int
+    projected_generation: int
+    relation_ids: tuple[str, ...]
+    raw_effect_gate_fact: RawEffectGatePhaseFact
+    exact_effect_bindings: tuple[ExactEffectBindingResult, ...]
+    local_alias_bindings: tuple[LocalAliasScalarizationBindingResult, ...]
+    effect_results: tuple[ProjectedEffectSiteResult, ...]
+    terminal_results: tuple[ProjectedTerminalSiteResult, ...]
+    derived_effect_gate_fact_id: str
+    result_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None: del args, kwargs; raise TypeError("projected site phase results are binder-owned")
+    def __post_init__(self) -> None:
+        for name in ("authority_id", "source_authority_id", "plan_id", "source_inventory_digest", "projected_inventory_digest", "source_fingerprint", "projected_fingerprint", "derived_effect_gate_fact_id", "result_id"):
+            _site_id(getattr(self, name), name)
+        if type(self.attempt_id) is not TransactionAttemptId: raise TypeError("attempt_id must be TransactionAttemptId")
+        self.attempt_id.__post_init__()
+        if self.phase is not UnflattenAuthorityPhase.PROJECTED_PREFLIGHT: raise ValueError("site phase must be projected-preflight")
+        _generation(self.source_generation, "source_generation"); _generation(self.projected_generation, "projected_generation")
+        if type(self.relation_ids) is not tuple or self.relation_ids != tuple(sorted(set(self.relation_ids))): raise ValueError("relation_ids must be sorted and unique")
+        for item in self.relation_ids: _site_id(item, "relation_id")
+        if type(self.raw_effect_gate_fact) is not RawEffectGatePhaseFact: raise TypeError("raw_effect_gate_fact must be RawEffectGatePhaseFact")
+        self.raw_effect_gate_fact.__post_init__()
+        for name, typ in (("exact_effect_bindings", ExactEffectBindingResult), ("local_alias_bindings", LocalAliasScalarizationBindingResult), ("effect_results", ProjectedEffectSiteResult), ("terminal_results", ProjectedTerminalSiteResult)):
+            values = getattr(self, name)
+            if type(values) is not tuple or any(type(item) is not typ for item in values): raise TypeError(f"{name} must contain exact closed records")
+            ids = tuple(getattr(item, "binding_result_id", getattr(item, "result_id", "")) for item in values)
+            if ids != tuple(sorted(ids)) or len(set(ids)) != len(ids): raise ValueError(f"{name} must be sorted and unique")
+            for item in values: item.__post_init__()
+        if any(item.authority_id != self.authority_id or item.attempt_id is not self.attempt_id for item in (*self.exact_effect_bindings, *self.local_alias_bindings, *self.effect_results, *self.terminal_results)):
+            raise ValueError("site results must carry the exact aggregate authority and attempt")
+        for item in (*self.exact_effect_bindings, *self.local_alias_bindings):
+            if item.source_inventory_digest != self.source_inventory_digest or item.projected_inventory_digest != self.projected_inventory_digest or item.source_fingerprint != self.source_fingerprint or item.projected_fingerprint != self.projected_fingerprint or item.source_generation != self.source_generation or item.projected_generation != self.projected_generation:
+                raise ValueError("site result inventory envelope differs from aggregate")
+        if any(item.raw_effect_gate_fact_id != self.raw_effect_gate_fact.fact_id for item in self.effect_results):
+            raise ValueError("effect rows must cite the aggregate raw gate fact")
+        exact_ids = {item.binding_result_id for item in self.exact_effect_bindings}
+        exact_refs = {
+            item.supporting_binding_result_id or item.latent_exact_binding_result_id
+            for item in self.effect_results
+            if item.supporting_binding_result_id in exact_ids or item.latent_exact_binding_result_id in exact_ids
+        }
+        exact_ref_values = tuple(
+            item.supporting_binding_result_id or item.latent_exact_binding_result_id
+            for item in self.effect_results
+            if (item.supporting_binding_result_id or item.latent_exact_binding_result_id) in exact_ids
+        )
+        if exact_refs != exact_ids or len(exact_ref_values) != len(exact_ids) or len(set(exact_ref_values)) != len(exact_ref_values):
+            raise ValueError("every exact-effect binding must be referenced exactly once")
+        alias_ids = {item.binding_result_id for item in self.local_alias_bindings}
+        alias_refs = {item.supporting_binding_result_id for item in self.effect_results if item.supporting_binding_result_id in alias_ids}
+        if alias_refs != alias_ids or any(item.supporting_binding_result_id in alias_ids and item.outcome is not ProjectedEffectSiteOutcome.LOCAL_ALIAS_SCALARIZED for item in self.effect_results):
+            raise ValueError("every local-alias binding must be the active support of one scalarized row")
+        if len({item.source_subject_id for item in self.effect_results}) != len(self.effect_results):
+            raise ValueError("effect site results must cover unique source subjects")
+        if len({item.source_subject_id for item in self.terminal_results}) != len(self.terminal_results):
+            raise ValueError("terminal site results must cover unique source subjects")
+        expected_derived = derived_effect_gate_fact_id(self.raw_effect_gate_fact.fact_id, tuple(item.result_id for item in self.effect_results))
+        if self.derived_effect_gate_fact_id != expected_derived: raise ValueError("derived effect gate fact ID mismatch")
+        if self.result_id != projected_semantic_site_phase_result_id(self): raise ValueError("site phase result ID mismatch")
+    __copy__ = _reject_site_record_copy; __deepcopy__ = _reject_site_record_copy; __reduce__ = _reject_site_record_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ProjectedRouteSitePreservation:
+    authority_id: str
+    attempt_id: TransactionAttemptId
+    relation_id: str
+    site_phase_result_id: str
+    effect_result_ids: tuple[str, ...]
+    terminal_result_ids: tuple[str, ...]
+    preservation_id: str
+    def __init__(self, *args: object, **kwargs: object) -> None: del args, kwargs; raise TypeError("route site preservation records are binder-owned")
+    def __post_init__(self) -> None:
+        for name in ("authority_id", "relation_id", "site_phase_result_id", "preservation_id"): _site_id(getattr(self, name), name)
+        if type(self.attempt_id) is not TransactionAttemptId: raise TypeError("attempt_id must be TransactionAttemptId")
+        self.attempt_id.__post_init__()
+        for name in ("effect_result_ids", "terminal_result_ids"):
+            values = getattr(self, name)
+            if type(values) is not tuple or values != tuple(sorted(set(values))): raise ValueError(f"{name} must be sorted and unique")
+            for item in values: _site_id(item, f"{name} item")
+        if self.preservation_id != projected_route_site_preservation_id(self): raise ValueError("preservation ID mismatch")
+    __copy__ = _reject_site_record_copy; __deepcopy__ = _reject_site_record_copy; __reduce__ = _reject_site_record_copy
+
+
+def _route_refs(values: Iterable[object], label: str) -> tuple[CfgBlockRef, ...]:
+    refs = tuple(values)
+    if len(set(refs)) != len(refs):
+        raise ValueError(f"{label} must not contain duplicates")
+    for ref in refs:
+        _cfg_ref(ref, f"{label} item")
+    return tuple(sorted(refs, key=canonical_bytes))
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalRoleCoordinate:
+    role: SemanticEdgeRole
+    coordinate: int
+
+    def __post_init__(self) -> None:
+        _enum(self.role, SemanticEdgeRole, "conditional role")
+        _nonnegative(self.coordinate, "conditional role coordinate")
+
+
+@dataclass(frozen=True, slots=True)
+class RealizedConditionalArm:
+    role: SemanticEdgeRole
+    target: AnchoredBlockRef
+
+    def __post_init__(self) -> None:
+        _enum(self.role, SemanticEdgeRole, "conditional arm role")
+        if type(self.target) is not AnchoredBlockRef:
+            raise TypeError("conditional arm target must be AnchoredBlockRef")
+        self.target.__post_init__()
+
+
+def _reject_route_copy(self, *args: object) -> None:
+    del self, args
+    raise TypeError("route authority records are transaction-owned")
+
+
+def _validate_route_anchor(value: AnchoredBlockRef, label: str) -> None:
+    if type(value) is not AnchoredBlockRef:
+        raise TypeError(f"{label} must be AnchoredBlockRef")
+    value.__post_init__()
+    if type(value.ref) is NativeBlockRef and not value.ref.identity.native_ranges.contains(value.anchor_ea):
+        raise ValueError(f"{label} anchor is outside native identity range")
+
+
+def _validate_route_ref_coherence(values: tuple[AnchoredBlockRef, ...]) -> None:
+    for index, value in enumerate(values):
+        _validate_route_anchor(value, f"route coordinate {index}")
+    native_keys = {
+        value.ref.identity.native_key for value in values
+        if type(value.ref) is NativeBlockRef
+    }
+    if len(native_keys) > 1:
+        raise ValueError("route native references must share one native key")
+    sessions = {
+        value.ref.session_id for value in values
+        if type(value.ref) is LogicalBlockRef
+    }
+    if len(sessions) > 1:
+        raise ValueError("route logical references must share one session")
+    plans = {
+        value.ref.plan_id for value in values
+        if type(value.ref) is PlanBlockRef
+    }
+    if len(plans) > 1:
+        raise ValueError("route plan references must share one plan")
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class RouteRealizationFailure:
+    claim_id: str | None
+    proof_id: str | None
+    route_subject_id: str | None
+    scope: RouteRealizationFailureScope
+    proposal_id: str | None
+    evidence_id: str | None
+    stage: RouteRealizationFailureStage
+    step_index: int | None
+    step_digest: str | None
+    anchored_refs: tuple[AnchoredBlockRef, ...]
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("route realization failures are binder-owned")
+
+    def __post_init__(self) -> None:
+        for name in ("claim_id", "proof_id", "route_subject_id", "proposal_id", "evidence_id"):
+            value = getattr(self, name)
+            if value is not None:
+                _id(value, f"failure {name}")
+        _enum(self.scope, RouteRealizationFailureScope, "failure scope")
+        _enum(self.stage, RouteRealizationFailureStage, "failure stage")
+        if self.step_index is not None:
+            _nonnegative(self.step_index, "failure step_index")
+        if self.step_digest is not None:
+            _id(self.step_digest, "failure step_digest")
+        refs = tuple(self.anchored_refs)
+        if any(type(item) is not AnchoredBlockRef for item in refs): raise TypeError("failure anchored_refs must be AnchoredBlockRef values")
+        if len(set(refs)) != len(refs): raise ValueError("failure anchored_refs must not contain duplicates")
+        object.__setattr__(self, "anchored_refs", tuple(sorted(refs, key=canonical_bytes)))
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class SourceBoundRouteAuthority:
+    phase: UnflattenAuthorityPhase
+    proposal: ProposedUnflattenContract
+    proposal_id: str
+    plan_id: str
+    source_native_key: NativePreanalysisKey
+    source_fingerprint: str
+    source_inventory_digest: str
+    source_generation: int
+    evidence_id: str
+    bound_evidence: BoundCanonicalSemanticEvidence
+    covered_proof_ids: tuple[str, ...]
+    covered_claim_ids: tuple[str, ...]
+    source_authority_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("source route authority is transaction-owned")
+
+    def __post_init__(self) -> None:
+        if self.phase is not UnflattenAuthorityPhase.PRODUCER_FORECAST:
+            raise ValueError("source route authority is source-only")
+        if type(self.proposal) is not ProposedUnflattenContract:
+            raise TypeError("proposal must be ProposedUnflattenContract")
+        self.proposal.__post_init__()
+        if type(self.bound_evidence) is not BoundCanonicalSemanticEvidence:
+            raise TypeError("bound_evidence must be BoundCanonicalSemanticEvidence")
+        if self.bound_evidence.evidence != self.proposal.route_evidence:
+            raise ValueError("bound evidence does not match proposal evidence")
+        _id(self.proposal_id, "proposal_id")
+        if self.proposal_id != authority_id(self.proposal):
+            raise ValueError("proposal_id is not content-derived")
+        _id(self.plan_id, "plan_id")
+        if self.plan_id != self.proposal.plan_id:
+            raise ValueError("source authority plan differs from proposal")
+        if self.source_native_key != self.proposal.source_identity_catalog.native_key:
+            raise ValueError("source native key differs from proposal")
+        _id(self.source_fingerprint, "source_fingerprint")
+        _id(self.source_inventory_digest, "source_inventory_digest")
+        _generation(self.source_generation)
+        if self.source_generation != self.proposal.source_identity_catalog.generation:
+            raise ValueError("source generation differs from proposal")
+        _id(self.evidence_id, "evidence_id")
+        if self.evidence_id != self.proposal.route_evidence.atomic_group_id:
+            raise ValueError("source evidence differs from proposal")
+        proof_ids = tuple(sorted(proof.proof_id for proof in self.proposal.route_evidence.route_proofs))
+        if self.covered_proof_ids != proof_ids:
+            raise ValueError("source authority must cover the complete proof group")
+        claim_ids = tuple(sorted(claim.claim_id for claim in self.proposal.claims if type(claim) is EquivalentSemanticRouteClaim))
+        if self.covered_claim_ids != claim_ids:
+            raise ValueError("source authority must cover the complete route claim set")
+        if len(self.bound_evidence.routes) != len(proof_ids) or tuple(sorted(route.evidence.proof_id for route in self.bound_evidence.routes)) != proof_ids:
+            raise ValueError("bound evidence must contain every proof exactly once")
+        expected = source_route_authority_id((self.phase, self.proposal_id, self.plan_id,
+            self.source_native_key, self.source_fingerprint, self.source_inventory_digest,
+            self.source_generation, self.evidence_id, self.bound_evidence,
+            self.covered_proof_ids, self.covered_claim_ids))
+        if self.source_authority_id != expected:
+            raise ValueError("source_authority_id does not match canonical content")
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class DirectRouteRealization:
+    feeder: AnchoredBlockRef
+    old_target: AnchoredBlockRef
+    new_target: AnchoredBlockRef
+    relation_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("direct route realizations are binder-owned")
+
+    def __post_init__(self) -> None:
+        refs = (self.feeder, self.old_target, self.new_target)
+        _validate_route_ref_coherence(refs)
+        if self.old_target.ref == self.new_target.ref:
+            raise ValueError("direct route old and new targets must differ")
+        _id(self.relation_id, "relation_id")
+        expected = route_realization_id(("direct", self.feeder, self.old_target, self.new_target))
+        if self.relation_id != expected:
+            raise ValueError("relation_id does not match direct route content")
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class LoweredConditionalRouteRealization:
+    feeder: AnchoredBlockRef
+    proof_source: AnchoredBlockRef
+    old_target: AnchoredBlockRef
+    arms: tuple[RealizedConditionalArm, RealizedConditionalArm]
+    relation_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("lowered conditional realizations are binder-owned")
+
+    def __post_init__(self) -> None:
+        refs = (self.feeder, self.proof_source, self.old_target, *(arm.target for arm in self.arms))
+        _validate_route_ref_coherence(refs)
+        arms = tuple(self.arms)
+        if len(arms) != 2 or any(type(item) is not RealizedConditionalArm for item in arms):
+            raise ValueError("conditional realization requires exactly two typed arms")
+        if {item.role for item in arms} != {
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }:
+            raise ValueError("conditional realization requires taken and fallthrough arms")
+        if len({item.target.ref for item in arms}) != 2:
+            raise ValueError("conditional arms must have distinct targets")
+        object.__setattr__(self, "arms", tuple(sorted(arms, key=lambda item: item.role.value)))
+        _id(self.relation_id, "relation_id")
+        expected = route_realization_id(("lowered_conditional", self.feeder, self.proof_source, self.old_target, self.arms))
+        if self.relation_id != expected:
+            raise ValueError("relation_id does not match conditional route content")
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ClonedConditionalRouteRealization:
+    feeder: AnchoredBlockRef
+    proof_source: AnchoredBlockRef
+    old_target: AnchoredBlockRef
+    replacement_clone: AnchoredBlockRef
+    fallthrough_helper: AnchoredBlockRef
+    arms: tuple[RealizedConditionalArm, RealizedConditionalArm]
+    creation_spec_digests: tuple[tuple[PlanBlockRef, str], ...]
+    relation_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("cloned conditional realizations are binder-owned")
+
+    def __post_init__(self) -> None:
+        refs = (
+            self.feeder, self.proof_source, self.old_target,
+            self.replacement_clone, self.fallthrough_helper,
+            *(arm.target for arm in self.arms),
+        )
+        _validate_route_ref_coherence(refs)
+        if self.proof_source != self.old_target:
+            raise ValueError("cloned conditional proof source and old target differ")
+        if self.replacement_clone.ref == self.fallthrough_helper.ref:
+            raise ValueError("cloned conditional clone and helper must differ")
+        if type(self.replacement_clone.ref) is not PlanBlockRef or type(self.fallthrough_helper.ref) is not PlanBlockRef:
+            raise TypeError("cloned conditional replacement refs must be PlanBlockRef")
+        arms = tuple(self.arms)
+        if len(arms) != 2 or any(type(item) is not RealizedConditionalArm for item in arms):
+            raise ValueError("cloned conditional realization requires exactly two typed arms")
+        if {item.role for item in arms} != {
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }:
+            raise ValueError("cloned conditional realization requires taken and fallthrough arms")
+        if len({item.target.ref for item in arms}) != 2:
+            raise ValueError("cloned conditional arms must have distinct targets")
+        object.__setattr__(self, "arms", tuple(sorted(arms, key=lambda item: item.role.value)))
+        digests = tuple(self.creation_spec_digests)
+        if len(digests) != 2:
+            raise ValueError("cloned conditional realization requires two creation digests")
+        if any(type(item) is not tuple or len(item) != 2 for item in digests):
+            raise TypeError("creation_spec_digests must contain (PlanBlockRef, digest) pairs")
+        if any(type(ref) is not PlanBlockRef for ref, _digest in digests):
+            raise TypeError("creation_spec_digests refs must be PlanBlockRef")
+        if any(type(digest) is not str or not digest.startswith("sha256:") for _ref, digest in digests):
+            raise ValueError("creation_spec_digests must contain authority IDs")
+        if {ref for ref, _digest in digests} != {self.replacement_clone.ref, self.fallthrough_helper.ref}:
+            raise ValueError("creation digests must cover clone and helper exactly")
+        if len({ref for ref, _digest in digests}) != 2:
+            raise ValueError("creation digests must be distinct")
+        if tuple(ref for ref, _digest in digests) != (
+            self.replacement_clone.ref, self.fallthrough_helper.ref,
+        ):
+            raise ValueError("creation digests must follow clone/helper plan order")
+        object.__setattr__(self, "creation_spec_digests", digests)
+        _id(self.relation_id, "relation_id")
+        expected = route_realization_id((
+            "cloned_conditional", self.feeder, self.proof_source, self.old_target,
+            self.replacement_clone, self.fallthrough_helper, self.arms,
+            self.creation_spec_digests,
+        ))
+        if self.relation_id != expected:
+            raise ValueError("relation_id does not match cloned conditional content")
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+def _validate_creation_spec_rows(
+    rows: tuple[tuple[PlanBlockRef, str], ...], owners: tuple[PlanBlockRef, ...],
+) -> tuple[tuple[PlanBlockRef, str], ...]:
+    if type(rows) is not tuple:
+        raise TypeError("creation_spec_digests must be an exact tuple")
+    if len(rows) != len(owners):
+        raise ValueError("creation_spec_digests must cover every created owner")
+    for index, row in enumerate(rows):
+        if type(row) is not tuple or len(row) != 2:
+            raise TypeError("creation_spec_digests must contain pairs")
+        ref, digest = row
+        if type(ref) is not PlanBlockRef or ref != owners[index]:
+            raise ValueError("creation_spec_digests must follow owner order")
+        _id(digest, "creation spec digest")
+    return rows
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ClonedSemanticInstructionOrigin:
+    source_owner: AnchoredBlockRef
+    clone_owner: AnchoredBlockRef
+    source_ordinal: int
+    projected_ordinal: int
+    instruction_ea: int | None
+    observation_digest: str
+    origin_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("cloned semantic origins are binder-owned")
+
+    def __post_init__(self) -> None:
+        if type(self) is not ClonedSemanticInstructionOrigin:
+            raise TypeError("cloned semantic origins are exact closed records")
+        _validate_route_anchor(self.source_owner, "source_owner")
+        _validate_route_anchor(self.clone_owner, "clone_owner")
+        _nonnegative(self.source_ordinal, "source_ordinal")
+        _nonnegative(self.projected_ordinal, "projected_ordinal")
+        if self.instruction_ea is not None:
+            _ea(self.instruction_ea, "instruction_ea")
+        _id(self.observation_digest, "observation_digest")
+        _id(self.origin_id, "origin_id")
+        expected = cloned_semantic_instruction_origin_id((
+            "cloned_semantic_instruction_origin", self.source_owner,
+            self.clone_owner, self.source_ordinal, self.projected_ordinal,
+            self.instruction_ea, self.observation_digest,
+        ))
+        if self.origin_id != expected:
+            raise ValueError("origin_id does not match cloned semantic origin")
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ClonedSemanticPrefix:
+    ordinal: int
+    source_owner: AnchoredBlockRef
+    clone_owner: AnchoredBlockRef
+    source_start_ordinal: int
+    source_end_ordinal_exclusive: int
+    instruction_origins: tuple[ClonedSemanticInstructionOrigin, ...]
+    source_trailing_goto_ordinal: int
+    projected_synthetic_goto_ordinal: int
+    projected_successor: AnchoredBlockRef
+    creation_spec_row: tuple[PlanBlockRef, str]
+    prefix_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("cloned semantic prefixes are binder-owned")
+
+    def __post_init__(self) -> None:
+        if type(self) is not ClonedSemanticPrefix:
+            raise TypeError("cloned semantic prefixes are exact closed records")
+        _nonnegative(self.ordinal, "prefix ordinal")
+        _validate_route_anchor(self.source_owner, "prefix source_owner")
+        _validate_route_anchor(self.clone_owner, "prefix clone_owner")
+        if type(self.instruction_origins) is not tuple:
+            raise TypeError("instruction_origins must be an exact tuple")
+        if any(type(origin) is not ClonedSemanticInstructionOrigin for origin in self.instruction_origins):
+            raise TypeError("instruction_origins must contain exact origins")
+        _nonnegative(self.source_start_ordinal, "source_start_ordinal")
+        _nonnegative(self.source_end_ordinal_exclusive, "source_end_ordinal_exclusive")
+        _nonnegative(self.source_trailing_goto_ordinal, "source_trailing_goto_ordinal")
+        _nonnegative(self.projected_synthetic_goto_ordinal, "projected_synthetic_goto_ordinal")
+        if self.source_start_ordinal != 0:
+            raise ValueError("cloned semantic prefixes must start at ordinal zero")
+        length = self.source_end_ordinal_exclusive
+        if length != len(self.instruction_origins):
+            raise ValueError("prefix end ordinal must equal origin count")
+        if self.source_trailing_goto_ordinal != length or self.projected_synthetic_goto_ordinal != length:
+            raise ValueError("prefix trailing GOTO ordinals must equal prefix length")
+        _validate_route_anchor(self.projected_successor, "prefix projected_successor")
+        if type(self.creation_spec_row) is not tuple or len(self.creation_spec_row) != 2:
+            raise TypeError("creation_spec_row must be a (PlanBlockRef, digest) pair")
+        creation_ref, creation_digest = self.creation_spec_row
+        if type(creation_ref) is not PlanBlockRef or creation_ref != self.clone_owner.ref:
+            raise ValueError("prefix creation owner differs from clone owner")
+        _id(creation_digest, "prefix creation digest")
+        for ordinal, origin in enumerate(self.instruction_origins):
+            if (
+                origin.source_owner != self.source_owner
+                or origin.clone_owner != self.clone_owner
+                or origin.source_ordinal != ordinal
+                or origin.projected_ordinal != ordinal
+            ):
+                raise ValueError("prefix origins do not follow exact owner/ordinal order")
+        _id(self.prefix_id, "prefix_id")
+        expected = cloned_semantic_prefix_id((
+            "cloned_semantic_prefix", self.ordinal, self.source_owner,
+            self.clone_owner, self.source_start_ordinal,
+            self.source_end_ordinal_exclusive, self.instruction_origins,
+            self.source_trailing_goto_ordinal,
+            self.projected_synthetic_goto_ordinal, self.projected_successor,
+            self.creation_spec_row,
+        ))
+        if self.prefix_id != expected:
+            raise ValueError("prefix_id does not match cloned semantic prefix")
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class TwoArmDirectBranchRouteRealization:
+    feeder: AnchoredBlockRef
+    source_rewritten_arm: AnchoredBlockRef
+    projected_replacement_arm: AnchoredBlockRef
+    untouched_arm: AnchoredBlockRef
+    relation_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("two-arm branch realizations are binder-owned")
+
+    def __post_init__(self) -> None:
+        refs = (self.feeder, self.source_rewritten_arm, self.projected_replacement_arm, self.untouched_arm)
+        _validate_route_ref_coherence(refs)
+        if self.source_rewritten_arm.ref == self.projected_replacement_arm.ref:
+            raise ValueError("branch source and projected arms must differ")
+        _id(self.relation_id, "relation_id")
+        expected = route_realization_id((
+            "two_arm_direct_branch", self.feeder, self.source_rewritten_arm,
+            self.projected_replacement_arm, self.untouched_arm,
+        ))
+        if self.relation_id != expected:
+            raise ValueError("relation_id does not match two-arm branch")
+
+    __copy__ = _reject_route_copy; __deepcopy__ = _reject_route_copy; __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class BranchFallthroughHelperRouteRealization:
+    feeder: AnchoredBlockRef
+    source_fallthrough: AnchoredBlockRef
+    untouched_conditional_arm: AnchoredBlockRef
+    helper: AnchoredBlockRef
+    semantic_target: AnchoredBlockRef
+    creation_spec_digests: tuple[tuple[PlanBlockRef, str], ...]
+    relation_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("branch helper realizations are binder-owned")
+
+    def __post_init__(self) -> None:
+        refs = (self.feeder, self.source_fallthrough, self.untouched_conditional_arm, self.helper, self.semantic_target)
+        _validate_route_ref_coherence(refs)
+        if type(self.helper.ref) is not PlanBlockRef:
+            raise TypeError("branch helper must be a planned block")
+        _validate_creation_spec_rows(self.creation_spec_digests, (self.helper.ref,))
+        _id(self.relation_id, "relation_id")
+        expected = route_realization_id((
+            "branch_fallthrough_helper", self.feeder, self.source_fallthrough,
+            self.untouched_conditional_arm, self.helper, self.semantic_target,
+            self.creation_spec_digests,
+        ))
+        if self.relation_id != expected:
+            raise ValueError("relation_id does not match branch helper")
+
+    __copy__ = _reject_route_copy; __deepcopy__ = _reject_route_copy; __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ClonedRouteCorridorRealization:
+    predecessor: AnchoredBlockRef
+    proof_source: AnchoredBlockRef
+    descriptor_old_target: AnchoredBlockRef
+    terminal_continuation: AnchoredBlockRef
+    source_corridor: tuple[AnchoredBlockRef, ...]
+    cloned_corridor: tuple[AnchoredBlockRef, ...]
+    semantic_target: AnchoredBlockRef
+    semantic_prefixes: tuple[ClonedSemanticPrefix, ...]
+    creation_spec_digests: tuple[tuple[PlanBlockRef, str], ...]
+    relation_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("route corridor realizations are binder-owned")
+
+    def __post_init__(self) -> None:
+        refs = (self.predecessor, self.proof_source, self.descriptor_old_target, self.terminal_continuation, self.semantic_target, *self.source_corridor, *self.cloned_corridor)
+        _validate_route_ref_coherence(refs)
+        if type(self.source_corridor) is not tuple or type(self.cloned_corridor) is not tuple or type(self.semantic_prefixes) is not tuple:
+            raise TypeError("corridors and prefixes must be exact tuples")
+        if not self.source_corridor or len(self.source_corridor) != len(self.cloned_corridor) or len(self.semantic_prefixes) != len(self.source_corridor):
+            raise ValueError("corridor source/clone/prefix lengths must match and be positive")
+        if self.proof_source != self.source_corridor[0]:
+            raise ValueError("corridor proof source must be the first source member")
+        if len(set(self.source_corridor)) != len(self.source_corridor):
+            raise ValueError("corridor source members must be unique and ordered")
+        if len(set(self.cloned_corridor)) != len(self.cloned_corridor):
+            raise ValueError("corridor clone members must be unique and ordered")
+        if set(self.source_corridor) & set(self.cloned_corridor):
+            raise ValueError("corridor source and clone members must be disjoint")
+        expected_old_target = (
+            self.source_corridor[1]
+            if len(self.source_corridor) > 1 else self.terminal_continuation
+        )
+        if self.descriptor_old_target != expected_old_target:
+            raise ValueError("corridor descriptor old target is incoherent")
+        if self.predecessor == self.source_corridor[0]:
+            raise ValueError("corridor predecessor must precede the source corridor")
+        if self.semantic_target in set(self.source_corridor) | set(self.cloned_corridor):
+            raise ValueError("corridor semantic target must be outside source and clone members")
+        if any(type(item) is not ClonedSemanticPrefix for item in self.semantic_prefixes):
+            raise TypeError("semantic_prefixes must contain exact prefixes")
+        owners = tuple(item.clone_owner.ref for item in self.semantic_prefixes)
+        _validate_creation_spec_rows(self.creation_spec_digests, owners)
+        for index, prefix in enumerate(self.semantic_prefixes):
+            if prefix.ordinal != index or prefix.source_owner != self.source_corridor[index] or prefix.clone_owner != self.cloned_corridor[index]:
+                raise ValueError("corridor prefixes do not follow exact corridor order")
+            if prefix.creation_spec_row != self.creation_spec_digests[index]:
+                raise ValueError("corridor prefix creation row differs from relation rows")
+            expected_successor = (
+                self.cloned_corridor[index + 1]
+                if index + 1 < len(self.cloned_corridor) else self.semantic_target
+            )
+            if prefix.projected_successor != expected_successor:
+                raise ValueError("corridor prefix projected successor is incoherent")
+        _id(self.relation_id, "relation_id")
+        expected = route_realization_id((
+            "cloned_route_corridor", self.predecessor, self.proof_source,
+            self.descriptor_old_target, self.terminal_continuation,
+            self.source_corridor, self.cloned_corridor, self.semantic_target,
+            self.semantic_prefixes, self.creation_spec_digests,
+        ))
+        if self.relation_id != expected:
+            raise ValueError("relation_id does not match route corridor")
+
+    __copy__ = _reject_route_copy; __deepcopy__ = _reject_route_copy; __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ProjectedRouteRealizationRow:
+    claim_id: str
+    proof_id: str
+    route_subject_id: str
+    relation: DirectRouteRealization | LoweredConditionalRouteRealization | ClonedConditionalRouteRealization | TwoArmDirectBranchRouteRealization | BranchFallthroughHelperRouteRealization | ClonedRouteCorridorRealization
+    site_preservation: ProjectedRouteSitePreservation
+    plan_step_index: int
+    plan_step_type: PatchStepKind
+    plan_step_digest: str
+    source_fingerprint: str
+    projected_fingerprint: str
+    source_generation: int
+    projected_generation: int
+    row_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("projected route rows are transaction-owned")
+
+    def __post_init__(self) -> None:
+        _id(self.claim_id, "claim_id"); _id(self.proof_id, "proof_id"); _id(self.route_subject_id, "route_subject_id")
+        if type(self.relation) not in {DirectRouteRealization, LoweredConditionalRouteRealization, ClonedConditionalRouteRealization, TwoArmDirectBranchRouteRealization, BranchFallthroughHelperRouteRealization, ClonedRouteCorridorRealization}:
+            raise TypeError("relation must be a closed route realization")
+        self.relation.__post_init__()
+        if type(self.site_preservation) is not ProjectedRouteSitePreservation:
+            raise TypeError("site_preservation must be ProjectedRouteSitePreservation")
+        self.site_preservation.__post_init__()
+        _nonnegative(self.plan_step_index, "plan_step_index"); _enum(self.plan_step_type, PatchStepKind, "plan_step_type"); _id(self.plan_step_digest, "plan_step_digest")
+        _id(self.source_fingerprint, "source_fingerprint"); _id(self.projected_fingerprint, "projected_fingerprint")
+        _generation(self.source_generation); _generation(self.projected_generation)
+        expected = projected_route_realization_row_id((self.claim_id, self.proof_id, self.route_subject_id,
+            self.relation, self.plan_step_index, self.plan_step_type, self.plan_step_digest,
+            self.source_fingerprint, self.projected_fingerprint,
+            self.source_generation, self.projected_generation, self.site_preservation))
+        if self.row_id != expected: raise ValueError("row_id does not match canonical content")
+    __copy__ = _reject_route_copy; __deepcopy__ = _reject_route_copy; __reduce__ = _reject_route_copy
+
+    @property
+    def source_ref(self) -> CfgBlockRef:
+        if type(self.relation) in {DirectRouteRealization, LoweredConditionalRouteRealization, ClonedConditionalRouteRealization, TwoArmDirectBranchRouteRealization, BranchFallthroughHelperRouteRealization}:
+            return self.relation.feeder.ref
+        if type(self.relation) is ClonedRouteCorridorRealization:
+            return self.relation.predecessor.ref
+        raise TypeError("unknown route relation")
+
+    @property
+    def old_target_ref(self) -> CfgBlockRef:
+        if type(self.relation) is DirectRouteRealization:
+            return self.relation.old_target.ref
+        if type(self.relation) is LoweredConditionalRouteRealization:
+            return self.relation.old_target.ref
+        if type(self.relation) is ClonedConditionalRouteRealization:
+            return self.relation.old_target.ref
+        if type(self.relation) is TwoArmDirectBranchRouteRealization:
+            return self.relation.source_rewritten_arm.ref
+        if type(self.relation) is BranchFallthroughHelperRouteRealization:
+            return self.relation.source_fallthrough.ref
+        if type(self.relation) is ClonedRouteCorridorRealization:
+            return self.relation.proof_source.ref
+        raise TypeError("unknown route relation")
+
+    @property
+    def new_target_ref(self) -> CfgBlockRef | None:
+        if type(self.relation) is DirectRouteRealization:
+            return self.relation.new_target.ref
+        if type(self.relation) is TwoArmDirectBranchRouteRealization:
+            return self.relation.projected_replacement_arm.ref
+        if type(self.relation) in {BranchFallthroughHelperRouteRealization, ClonedRouteCorridorRealization}:
+            return self.relation.semantic_target.ref
+        if type(self.relation) in {LoweredConditionalRouteRealization, ClonedConditionalRouteRealization}:
+            return None
+        raise TypeError("unknown route relation")
+
+    @property
+    def realization_kind(self) -> RouteRealizationKind:
+        if type(self.relation) is DirectRouteRealization:
+            return RouteRealizationKind.DIRECT_REDIRECT
+        if type(self.relation) in {
+            LoweredConditionalRouteRealization, ClonedConditionalRouteRealization,
+            TwoArmDirectBranchRouteRealization, BranchFallthroughHelperRouteRealization,
+        }:
+            return RouteRealizationKind.CONDITIONAL_REDIRECT
+        if type(self.relation) is ClonedRouteCorridorRealization:
+            return RouteRealizationKind.HELPER_CORRIDOR
+        raise TypeError("unknown route relation")
+
+    @property
+    def conditional_roles(self) -> tuple[ConditionalRoleCoordinate, ...]:
+        if type(self.relation) in {LoweredConditionalRouteRealization, ClonedConditionalRouteRealization}:
+            return tuple(ConditionalRoleCoordinate(arm.role, arm.target.anchor_ea) for arm in self.relation.arms)
+        if type(self.relation) is TwoArmDirectBranchRouteRealization:
+            return (ConditionalRoleCoordinate(SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, self.relation.untouched_arm.anchor_ea), ConditionalRoleCoordinate(SemanticEdgeRole.CONDITIONAL_TAKEN, self.relation.projected_replacement_arm.anchor_ea))
+        if type(self.relation) is BranchFallthroughHelperRouteRealization:
+            return (ConditionalRoleCoordinate(SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, self.relation.helper.anchor_ea), ConditionalRoleCoordinate(SemanticEdgeRole.CONDITIONAL_TAKEN, self.relation.untouched_conditional_arm.anchor_ea))
+        if type(self.relation) in {DirectRouteRealization, ClonedRouteCorridorRealization}:
+            return ()
+        raise TypeError("unknown route relation")
+
+    @property
+    def helper_refs(self) -> tuple[CfgBlockRef, ...]:
+        if type(self.relation) is ClonedConditionalRouteRealization:
+            return (self.relation.replacement_clone.ref, self.relation.fallthrough_helper.ref)
+        if type(self.relation) is BranchFallthroughHelperRouteRealization:
+            return (self.relation.helper.ref,)
+        if type(self.relation) is ClonedRouteCorridorRealization:
+            return tuple(item.ref for item in self.relation.cloned_corridor)
+        if type(self.relation) in {
+            DirectRouteRealization, LoweredConditionalRouteRealization,
+            TwoArmDirectBranchRouteRealization,
+        }:
+            return ()
+        raise TypeError("unknown route relation")
+
+    @property
+    def creation_spec_digests(self) -> tuple[tuple[PlanBlockRef, str], ...]:
+        if type(self.relation) is ClonedConditionalRouteRealization:
+            return self.relation.creation_spec_digests
+        if type(self.relation) in {BranchFallthroughHelperRouteRealization, ClonedRouteCorridorRealization}:
+            return self.relation.creation_spec_digests
+        if type(self.relation) in {
+            DirectRouteRealization, LoweredConditionalRouteRealization,
+            TwoArmDirectBranchRouteRealization,
+        }:
+            return ()
+        raise TypeError("unknown route relation")
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ProjectedRouteRealization:
+    source_authority: SourceBoundRouteAuthority
+    attempt_id: TransactionAttemptId
+    plan_id: str
+    rows: tuple[ProjectedRouteRealizationRow, ...]
+    site_phase_result: ProjectedSemanticSitePhaseResult
+    projected_inventory_digest: str
+    projected_fingerprint: str
+    projected_generation: int
+    realization_id: str
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("projected route realization is transaction-owned")
+
+    def __post_init__(self) -> None:
+        if type(self.source_authority) is not SourceBoundRouteAuthority:
+            raise TypeError("source_authority must be SourceBoundRouteAuthority")
+        if type(self.attempt_id) is not TransactionAttemptId:
+            raise TypeError("attempt_id must be TransactionAttemptId")
+        if self.attempt_id.plan_id != self.source_authority.plan_id or self.plan_id != self.source_authority.plan_id:
+            raise ValueError("projected realization plan differs from source authority")
+        if self.projected_generation != self.attempt_id.generation:
+            raise ValueError("projected realization generation differs from attempt")
+        if type(self.site_phase_result) is not ProjectedSemanticSitePhaseResult:
+            raise TypeError("site_phase_result must be ProjectedSemanticSitePhaseResult")
+        self.site_phase_result.__post_init__()
+        rows = tuple(self.rows)
+        if any(type(row) is not ProjectedRouteRealizationRow for row in rows):
+            raise TypeError("rows must contain ProjectedRouteRealizationRow values")
+        for row in rows:
+            row.__post_init__()
+            if row.site_preservation.site_phase_result_id != self.site_phase_result.result_id:
+                raise ValueError("route row preservation references a foreign site phase result")
+        if len({row.row_id for row in rows}) != len(rows) or rows != tuple(sorted(rows, key=lambda row: row.row_id)):
+            raise ValueError("projected realization rows must be sorted and unique")
+        if any(row.plan_step_index < 0 for row in rows):
+            raise ValueError("projected realization row step index must be non-negative")
+        claims = {
+            claim.claim_id: claim
+            for claim in self.source_authority.proposal.claims
+            if type(claim) is EquivalentSemanticRouteClaim
+        }
+        expected_pairs = {
+            (claim_id, claim.route_proof_ids[0], claim.retired_route_subject.subject_id)
+            for claim_id, claim in claims.items()
+        }
+        if len(rows) != len(expected_pairs):
+            raise ValueError("projected realization row count must equal route claim count")
+        actual_pairs = {(row.claim_id, row.proof_id, row.route_subject_id) for row in rows}
+        if len(actual_pairs) != len(rows):
+            raise ValueError("projected realization rows must have unique claim coordinates")
+        if actual_pairs != expected_pairs:
+            raise ValueError("projected realization must cover every route claim exactly once")
+        for row in rows:
+            if row.source_fingerprint != self.source_authority.source_fingerprint or row.source_generation != self.source_authority.source_generation:
+                raise ValueError("projected row source coordinates differ from source authority")
+            if row.projected_fingerprint != self.projected_fingerprint or row.projected_generation != self.projected_generation:
+                raise ValueError("projected row coordinates differ from realization")
+            if type(row.relation) is DirectRouteRealization:
+                relation_refs = (
+                    row.relation.feeder, row.relation.old_target, row.relation.new_target,
+                )
+            elif type(row.relation) is LoweredConditionalRouteRealization:
+                relation_refs = (
+                    row.relation.feeder, row.relation.proof_source, row.relation.old_target,
+                    *(arm.target for arm in row.relation.arms),
+                )
+            elif type(row.relation) is ClonedConditionalRouteRealization:
+                relation_refs = (
+                    row.relation.feeder, row.relation.proof_source, row.relation.old_target,
+                    row.relation.replacement_clone, row.relation.fallthrough_helper,
+                    *(arm.target for arm in row.relation.arms),
+                )
+            elif type(row.relation) is TwoArmDirectBranchRouteRealization:
+                relation_refs = (row.relation.feeder, row.relation.source_rewritten_arm, row.relation.projected_replacement_arm, row.relation.untouched_arm)
+            elif type(row.relation) is BranchFallthroughHelperRouteRealization:
+                relation_refs = (row.relation.feeder, row.relation.source_fallthrough, row.relation.untouched_conditional_arm, row.relation.helper, row.relation.semantic_target)
+            elif type(row.relation) is ClonedRouteCorridorRealization:
+                relation_refs = (row.relation.predecessor, row.relation.proof_source, row.relation.descriptor_old_target, row.relation.terminal_continuation, row.relation.semantic_target, *row.relation.source_corridor, *row.relation.cloned_corridor, *(item.source_owner for item in row.relation.semantic_prefixes), *(item.clone_owner for item in row.relation.semantic_prefixes), *(item.projected_successor for item in row.relation.semantic_prefixes))
+            else:
+                raise TypeError("unknown projected route relation")
+            for anchored in relation_refs:
+                ref = anchored.ref
+                if type(ref) is NativeBlockRef and ref.identity.native_key != self.source_authority.source_native_key:
+                    raise ValueError("projected row native reference uses a foreign native key")
+                if type(ref) is LogicalBlockRef and ref.session_id != self.attempt_id.session_id:
+                    raise ValueError("projected row logical reference uses a foreign session")
+                if type(ref) is PlanBlockRef and ref.plan_id != self.plan_id:
+                    raise ValueError("projected row plan reference uses a foreign plan")
+        _id(self.projected_inventory_digest, "projected_inventory_digest"); _id(self.projected_fingerprint, "projected_fingerprint"); _generation(self.projected_generation)
+        expected = projected_route_realization_id((self.source_authority.source_authority_id,
+            self.attempt_id, self.plan_id, rows, self.projected_inventory_digest,
+            self.projected_fingerprint, self.projected_generation, self.site_phase_result))
+        if self.realization_id != expected: raise ValueError("realization_id does not match canonical content")
+    __copy__ = _reject_route_copy; __deepcopy__ = _reject_route_copy; __reduce__ = _reject_route_copy
+
+
+def _reject_binder_record_copy(self, *args, **kwargs):
+    raise TypeError("binder-owned records cannot be copied")
+
+
+def _reject_binder_record_pickle(self, *args, **kwargs):
+    raise TypeError("binder-owned records cannot be pickled")
+
+
+for _binder_record_type in (
+    RawEffectGatePhaseFact,
+    EffectSiteCoordinate,
+    TerminalSiteCoordinate,
+    ScalarizedInstructionCoordinate,
+    ExactEffectBindingResult,
+    LocalAliasScalarizationBindingResult,
+    ProjectedEffectSiteResult,
+    ProjectedTerminalSiteResult,
+    ProjectedSemanticSitePhaseResult,
+    ProjectedRouteSitePreservation,
+    ProjectedRouteRealizationRow,
+    ProjectedRouteRealization,
+):
+    _binder_record_type.__copy__ = _reject_binder_record_copy
+    _binder_record_type.__deepcopy__ = _reject_binder_record_copy
+    _binder_record_type.__reduce_ex__ = _reject_binder_record_pickle
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class SourceBoundRouteAuthorityAccepted:
+    authority: SourceBoundRouteAuthority
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("route authority results are binder-owned")
+
+    def __post_init__(self) -> None:
+        if type(self.authority) is not SourceBoundRouteAuthority: raise TypeError("authority must be SourceBoundRouteAuthority")
+        self.authority.__post_init__()
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class SourceBoundRouteAuthorityRejected:
+    failures: tuple[RouteRealizationFailure, ...]
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise TypeError("route authority results are binder-owned")
+
+    def __post_init__(self) -> None:
+        failures = self.failures
+        if type(failures) is not tuple or not failures or any(type(item) is not RouteRealizationFailure for item in failures): raise ValueError("rejected source authority requires typed failures")
+        for failure in failures:
+            failure.__post_init__()
+        if len(set(failures)) != len(failures) or failures != tuple(sorted(failures, key=lambda item: (item.claim_id or "", item.proof_id or "", item.stage.value))): raise ValueError("source failures must be sorted and unique")
+        object.__setattr__(self, "failures", failures)
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ProjectedRouteRealizationAccepted:
+    realization: ProjectedRouteRealization
+    def __init__(self, *args: object, **kwargs: object) -> None: del args, kwargs; raise TypeError("route realization results are binder-owned")
+
+    def __post_init__(self) -> None:
+        if type(self.realization) is not ProjectedRouteRealization: raise TypeError("realization must be ProjectedRouteRealization")
+        self.realization.__post_init__()
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
+class ProjectedRouteRealizationRejected:
+    failures: tuple[RouteRealizationFailure, ...]
+    def __init__(self, *args: object, **kwargs: object) -> None: del args, kwargs; raise TypeError("route realization results are binder-owned")
+
+    def __post_init__(self) -> None:
+        failures = self.failures
+        if type(failures) is not tuple or not failures or any(type(item) is not RouteRealizationFailure for item in failures): raise ValueError("rejected projected realization requires typed failures")
+        for failure in failures:
+            failure.__post_init__()
+        if len(set(failures)) != len(failures) or failures != tuple(sorted(failures, key=lambda item: (item.claim_id or "", item.proof_id or "", item.stage.value))): raise ValueError("projected failures must be sorted and unique")
+        object.__setattr__(self, "failures", failures)
+
+    __copy__ = _reject_route_copy
+    __deepcopy__ = _reject_route_copy
+    __reduce__ = _reject_route_copy
+
+
+SourceBoundRouteAuthorityResult: TypeAlias = SourceBoundRouteAuthorityAccepted | SourceBoundRouteAuthorityRejected
+# Public kernel spelling used by the transaction boundary.  Keep the model
+# name explicit as well: both aliases denote the same closed sum.
+SourceRouteAuthorityResult: TypeAlias = SourceBoundRouteAuthorityResult
+ProjectedRouteRealizationResult: TypeAlias = ProjectedRouteRealizationAccepted | ProjectedRouteRealizationRejected
 __all__ = [
     name for name, value in tuple(globals().items())
     if (isinstance(value, type) and (getattr(value, "__module__", None) == __name__))
-    or name in {"SemanticSubjectLocator", "AuthorityEvidencePayload", "ProducerUnflattenClaim", "TransactionDerivedUnflattenClaim", "UnflattenClaim"}
+    or name in {"SemanticSubjectLocator", "AuthorityEvidencePayload", "ProducerUnflattenClaim", "TransactionDerivedUnflattenClaim", "UnflattenClaim", "CLONED_SEMANTIC_OBSERVATION_SCHEMA", "CLONED_SEMANTIC_ORIGIN_SCHEMA", "CLONED_SEMANTIC_PREFIX_SCHEMA", "cloned_semantic_observation_digest", "cloned_semantic_instruction_origin_id", "cloned_semantic_prefix_id"}
 ]

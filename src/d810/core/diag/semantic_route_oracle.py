@@ -37,6 +37,16 @@ def _unsigned_from_dual(hex_value: str | None, i64_value: int | None) -> int | N
     return None if i64_value is None else int(i64_value) & 0xFFFFFFFFFFFFFFFF
 
 
+def _provenance_meta(value: object) -> dict[str, object]:
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def record_route_oracle_run(
     conn: sqlite3.Connection,
     run: RouteOracleRun,
@@ -209,6 +219,7 @@ def load_snapshot_blocks(
     instruction_rows = conn.execute(
         """
         SELECT block_serial, insn_index, ea_hex, ea_i64, opcode, opcode_name,
+               raw_opcode,
                iprops, is_assert, dest_type, dest_stkoff, dest_size,
                src_l_type, src_l_stkoff, src_l_value_hex, src_l_value_i64,
                src_r_type, src_r_stkoff, src_r_value_hex, src_r_value_i64,
@@ -228,19 +239,25 @@ def load_snapshot_blocks(
                 ea=int(_unsigned_from_dual(row[2], row[3]) or 0),
                 opcode=int(row[4]),
                 opcode_name=str(row[5]),
-                iprops=int(row[6]),
-                is_assert=bool(row[7]),
-                dest_type=row[8],
-                dest_stkoff=row[9],
-                dest_size=row[10],
-                src_l_type=row[11],
-                src_l_stkoff=row[12],
-                src_l_value=_unsigned_from_dual(row[13], row[14]),
-                src_r_type=row[15],
-                src_r_stkoff=row[16],
-                src_r_value=_unsigned_from_dual(row[17], row[18]),
-                dstr=str(row[19] or ""),
-                meta=row[20],
+                raw_opcode=int(row[6]) if row[6] is not None else None,
+                iprops=int(row[7]),
+                is_assert=bool(row[8]),
+                dest_type=row[9],
+                dest_stkoff=row[10],
+                dest_size=row[11],
+                src_l_type=row[12],
+                src_l_stkoff=row[13],
+                src_l_value=_unsigned_from_dual(row[14], row[15]),
+                src_r_type=row[16],
+                src_r_stkoff=row[17],
+                src_r_value=_unsigned_from_dual(row[18], row[19]),
+                dstr=str(row[20] or ""),
+                meta=row[21],
+                provenance_version=(
+                    int(_provenance_meta(row[21])["provenance_version"])
+                    if "provenance_version" in _provenance_meta(row[21])
+                    else None
+                ),
             )
         )
 
@@ -248,7 +265,8 @@ def load_snapshot_blocks(
     for row in conn.execute(
         """
         SELECT serial, block_type, type_name, start_ea_hex, start_ea_i64,
-               end_ea_hex, end_ea_i64, nsucc, npred, succs, preds, meta
+               end_ea_hex, end_ea_i64, nsucc, npred, succs, preds,
+               tail_opcode, raw_tail_opcode, tail_kind, meta
         FROM blocks
         WHERE snapshot_id=?
         ORDER BY serial
@@ -256,6 +274,7 @@ def load_snapshot_blocks(
         (int(snapshot_id),),
     ):
         serial = int(row[0])
+        block_meta = _provenance_meta(row[14])
         blocks.append(
             BlockSnapshot(
                 serial=serial,
@@ -268,7 +287,15 @@ def load_snapshot_blocks(
                 succs=[int(value) for value in json.loads(row[9])],
                 preds=[int(value) for value in json.loads(row[10])],
                 instructions=instructions_by_block.get(serial, []),
-                meta=row[11],
+                tail_opcode=int(row[11]) if row[11] is not None else None,
+                raw_tail_opcode=int(row[12]) if row[12] is not None else None,
+                tail_kind=str(row[13]) if row[13] is not None else None,
+                meta=row[14],
+                provenance_version=(
+                    int(block_meta["provenance_version"])
+                    if "provenance_version" in block_meta
+                    else None
+                ),
             )
         )
     return tuple(blocks)

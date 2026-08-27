@@ -14,7 +14,6 @@ from .views import (
     ObservedLossReclassification,
     ViewMetrics,
     observed_loss_delta,
-    semantic_loss_ledger,
 )
 
 
@@ -168,7 +167,9 @@ def _justification_payload(
     }
 
 
-def _loss_row_payload(row: model.SemanticLossRow) -> dict[str, object]:
+def _loss_row_payload(
+    row: model.SemanticLossRow | "SemanticLossProjectionRow",
+) -> dict[str, object]:
     return {
         "subject": _binding_label(row.candidate_binding),
         "classification": row.kind.value,
@@ -210,25 +211,59 @@ def _loss_reclassification_payload(
 def _phase_view_projection(
     verdict: model.UnflattenAuthorityVerdict,
     projected_case: model.SemanticSafetyCase | None,
+    prepared_authority: model.PreparedUnflattenAuthority | None,
 ) -> tuple[
     object,
-    model.ObservedSemanticLossDelta | None,
+    model.ObservedSemanticLossDelta | tuple["SemanticLossProjectionRow", ...] | None,
     dict[str, str] | None,
     tuple[ObservedLossReclassification, ...],
 ]:
     case = verdict.safety_case
-    ledger = None if case is None else semantic_loss_ledger(case)
+    acceptance = verdict.observed_acceptance
+    if prepared_authority is not None:
+        if type(prepared_authority) is not model.PreparedUnflattenAuthority:
+            raise TypeError("prepared_authority must be PreparedUnflattenAuthority or None")
+        prepared_authority.__post_init__()
+    ledger = verdict.loss_ledger
+    if acceptance is not None:
+        if ledger is not acceptance.observed_ledger:
+            raise ValueError("observed diagnostics lost the canonical ledger occurrence")
+    elif verdict.accepted:
+        if verdict.phase is not model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+            raise ValueError("accepted observed diagnostics require a closed observed acceptance")
+        if prepared_authority is None:
+            raise ValueError("accepted projected diagnostics require the prepared authority occurrence")
+        if (
+            prepared_authority.projected_case is not case
+            or prepared_authority.authority_id != verdict.authority_id
+        ):
+            raise ValueError("prepared authority is foreign to projected diagnostic verdict")
+        if ledger is not prepared_authority.projected_loss_ledger:
+            raise ValueError("projected diagnostics lost the canonical ledger occurrence")
     observed_delta = None
     observed_delta_rejection = None
     observed_reclassifications: tuple[ObservedLossReclassification, ...] = ()
-    if projected_case is not None and case is not None:
-        projection = observed_loss_delta(projected_case, case)
-        observed_delta = projection.observed_only
+    if acceptance is not None:
+        if projected_case is not None and projected_case is not acceptance.bound_authority.prepared.projected_case:
+            raise ValueError("diagnostic projected case is foreign to accepted observed authority")
+        observed_delta = acceptance.delta
+    elif (
+        projected_case is not None
+        and case is not None
+        and ledger is not None
+        and prepared_authority is not None
+    ):
+        if projected_case is not prepared_authority.projected_case:
+            raise ValueError("diagnostic projected case is foreign to prepared authority")
+        projection = observed_loss_delta(
+            prepared_authority.projected_loss_ledger, ledger,
+        )
+        observed_delta = projection.rows
         observed_reclassifications = projection.reclassifications
     elif projected_case is not None:
         observed_delta_rejection = {
-            "code": "observed_case_missing",
-            "reason": "observed_case_missing",
+            "code": "canonical_observed_ledger_missing",
+            "reason": "canonical_observed_ledger_missing",
         }
     return ledger, observed_delta, observed_delta_rejection, observed_reclassifications
 
@@ -238,10 +273,11 @@ def build_phase_payload(
     views: ViewMetrics | None = None,
     timings: PhaseTimings | None = None,
     projected_case: model.SemanticSafetyCase | None = None,
+    prepared_authority: model.PreparedUnflattenAuthority | None = None,
     correlation: TransactionAttemptId | None = None,
     _view_projection: tuple[
         object,
-        model.ObservedSemanticLossDelta | None,
+        model.ObservedSemanticLossDelta | tuple["SemanticLossProjectionRow", ...] | None,
         dict[str, str] | None,
         tuple[ObservedLossReclassification, ...],
     ] | None = None,
@@ -258,7 +294,9 @@ def build_phase_payload(
     if correlation is not None and type(correlation) is not TransactionAttemptId:
         raise TypeError("correlation must be TransactionAttemptId or None")
     if _view_projection is None:
-        _view_projection = _phase_view_projection(verdict, projected_case)
+        _view_projection = _phase_view_projection(
+            verdict, projected_case, prepared_authority,
+        )
     ledger, observed_delta, observed_delta_rejection, observed_reclassifications = _view_projection
     bindings_by_subject = {} if case is None else {
         binding.subject.subject_id: binding for binding in case.bindings
@@ -315,7 +353,14 @@ def build_phase_payload(
     observed_loss_rows = (
         ()
         if observed_delta is None
-        else tuple(_loss_row_payload(row) for row in observed_delta.rows)
+        else tuple(
+            _loss_row_payload(row)
+            for row in (
+                observed_delta
+                if type(observed_delta) is tuple
+                else observed_delta.rows
+            )
+        )
     )
     loss_summary = {
         "structurally_lost": tuple(row.anchored_location for row in (() if ledger is None else ledger.rows)),
@@ -423,12 +468,15 @@ def phase_observation(
     timings: PhaseTimings | None = None,
     views: ViewMetrics | None = None,
     projected_case: model.SemanticSafetyCase | None = None,
+    prepared_authority: model.PreparedUnflattenAuthority | None = None,
     correlation: TransactionAttemptId | None = None,
 ) -> FactObservation:
     """Build exactly one anchored observation for one authority phase."""
 
     view_started_ns = perf_counter_ns()
-    view_projection = _phase_view_projection(verdict, projected_case)
+    view_projection = _phase_view_projection(
+        verdict, projected_case, prepared_authority,
+    )
     views_ms = (perf_counter_ns() - view_started_ns) / 1_000_000.0
     if timings is not None and timings.views_ms is None:
         components = tuple(
@@ -445,7 +493,7 @@ def phase_observation(
             total_authority_ms=sum(components),
         )
     payload = build_phase_payload(
-        verdict, views, timings, projected_case,
+        verdict, views, timings, projected_case, prepared_authority,
         correlation,
         _view_projection=view_projection,
     )

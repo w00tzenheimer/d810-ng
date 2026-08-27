@@ -30,6 +30,7 @@ __all__ = [
     "InstructionControl",
     "InstructionEffect",
     "InstructionEffectKind",
+    "InstructionEffectSite",
     "InstructionMemoryAccess",
     "InstructionMemoryAccessKind",
     "InstructionSwitchCase",
@@ -78,6 +79,23 @@ class InstructionEffectKind(str, Enum):
 
     STORE = "store"
     CALL = "call"
+
+
+@dataclass(frozen=True, slots=True)
+class InstructionEffectSite:
+    """One effect occurrence and its stable host instruction coordinate."""
+
+    instruction_ea: int
+    kind: InstructionEffectKind
+    host_instruction_ea: int
+
+    def __post_init__(self) -> None:
+        if type(self.instruction_ea) is not int or self.instruction_ea < 0:
+            raise ValueError("effect-site instruction EA must be a non-negative int")
+        if not isinstance(self.kind, InstructionEffectKind):
+            raise TypeError("effect-site requires a typed effect kind")
+        if type(self.host_instruction_ea) is not int or self.host_instruction_ea < 0:
+            raise ValueError("effect-site host EA must be a non-negative int")
 
 
 class InstructionMemoryAccessKind(str, Enum):

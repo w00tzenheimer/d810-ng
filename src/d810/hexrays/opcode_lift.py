@@ -11,95 +11,20 @@ from d810.ir.semantics import (
     LiftedOpcode,
     PredicateKind,
 )
+from d810.hexrays.instruction_vocabulary import (
+    branch_opcode_name_for_predicate,
+    branch_predicate_for_opcode_name,
+    call_kind_for_opcode_name,
+    control_transfer_kind_for_opcode_name,
+    live_known_opcode_names,
+    predicate_for_opcode_name,
+    set_predicate_for_opcode_name,
+    value_op_kind_for_opcode_name,
+)
 
 HEX_RAYS_BACKEND_ID = "hexrays"
 
-_VALUE_OPS: tuple[tuple[str, ValueOpKind], ...] = (
-    ("m_ldc", ValueOpKind.CONST),
-    ("m_mov", ValueOpKind.MOVE),
-    ("m_ldx", ValueOpKind.LOAD),
-    ("m_stx", ValueOpKind.STORE),
-    ("m_add", ValueOpKind.ADD),
-    ("m_sub", ValueOpKind.SUB),
-    ("m_mul", ValueOpKind.MUL),
-    ("m_udiv", ValueOpKind.UDIV),
-    ("m_sdiv", ValueOpKind.SDIV),
-    ("m_umod", ValueOpKind.UMOD),
-    ("m_smod", ValueOpKind.SMOD),
-    ("m_or", ValueOpKind.OR),
-    ("m_and", ValueOpKind.AND),
-    ("m_xor", ValueOpKind.XOR),
-    ("m_bnot", ValueOpKind.NOT),
-    ("m_lnot", ValueOpKind.LNOT),
-    ("m_neg", ValueOpKind.NEG),
-    ("m_shl", ValueOpKind.SHL),
-    ("m_shr", ValueOpKind.SHR),
-    ("m_sar", ValueOpKind.SAR),
-    ("m_xdu", ValueOpKind.ZEXT),
-    ("m_xds", ValueOpKind.SEXT),
-    ("m_low", ValueOpKind.LOW),
-    ("m_high", ValueOpKind.HIGH),
-    ("m_cfadd", ValueOpKind.CARRY_ADD),
-    ("m_ofadd", ValueOpKind.OVERFLOW_ADD),
-    ("m_cfshl", ValueOpKind.CARRY_SHL),
-    ("m_cfshr", ValueOpKind.CARRY_SHR),
-    ("m_sets", ValueOpKind.SIGN_BIT),
-    ("m_seto", ValueOpKind.OVERFLOW_FLAG),
-    ("m_setp", ValueOpKind.PARITY),
-)
-
-_BRANCH_PREDICATES: tuple[tuple[str, PredicateKind], ...] = (
-    ("m_jz", PredicateKind.EQ),
-    ("m_jnz", PredicateKind.NE),
-    ("m_jae", PredicateKind.UGE),
-    ("m_ja", PredicateKind.UGT),
-    ("m_jbe", PredicateKind.ULE),
-    ("m_jb", PredicateKind.ULT),
-    ("m_jge", PredicateKind.SGE),
-    ("m_jg", PredicateKind.SGT),
-    ("m_jle", PredicateKind.SLE),
-    ("m_jl", PredicateKind.SLT),
-    ("m_jcnd", PredicateKind.TRUTHY),
-)
-
-_SET_PREDICATES: tuple[tuple[str, PredicateKind], ...] = (
-    ("m_setz", PredicateKind.EQ),
-    ("m_setnz", PredicateKind.NE),
-    ("m_setae", PredicateKind.UGE),
-    ("m_seta", PredicateKind.UGT),
-    ("m_setbe", PredicateKind.ULE),
-    ("m_setb", PredicateKind.ULT),
-    ("m_setge", PredicateKind.SGE),
-    ("m_setg", PredicateKind.SGT),
-    ("m_setle", PredicateKind.SLE),
-    ("m_setl", PredicateKind.SLT),
-)
-
-_CONTROL_TRANSFERS: tuple[tuple[str, ControlTransferKind], ...] = (
-    ("m_goto", ControlTransferKind.GOTO),
-    ("m_jtbl", ControlTransferKind.TABLE_BRANCH),
-    ("m_ijmp", ControlTransferKind.INDIRECT_BRANCH),
-    ("m_ret", ControlTransferKind.RETURN),
-)
-
-_CALLS: tuple[tuple[str, CallKind], ...] = (
-    ("m_call", CallKind.DIRECT),
-    ("m_icall", CallKind.INDIRECT),
-)
-
-_KNOWN_OPCODE_NAMES: tuple[str, ...] = tuple(
-    dict.fromkeys(
-        name
-        for name, _kind in (
-            _VALUE_OPS
-            + _BRANCH_PREDICATES
-            + _SET_PREDICATES
-            + _CONTROL_TRANSFERS
-            + _CALLS
-            + (("m_nop", ValueOpKind.VENDOR),)
-        )
-    )
-)
+_KNOWN_OPCODE_NAMES = live_known_opcode_names()
 
 
 def opcode_value(name: str) -> int | None:
@@ -141,52 +66,47 @@ def raw_opcode_attrs(opcode: int) -> dict[str, object]:
     return attrs
 
 
-def _lookup(opcode: int, rows):
-    for name, kind in rows:
-        if is_hexrays_opcode(opcode, name):
-            return kind
-    return None
+def _name_semantics(opcode: int) -> str | None:
+    return opcode_name(int(opcode))
 
 
 def value_op_from_opcode(opcode: int) -> ValueOpKind | None:
-    return _lookup(int(opcode), _VALUE_OPS)
+    name = _name_semantics(opcode)
+    return value_op_kind_for_opcode_name(name) if name is not None else None
 
 
 def branch_predicate_from_opcode(opcode: int) -> PredicateKind | None:
-    return _lookup(int(opcode), _BRANCH_PREDICATES)
+    name = _name_semantics(opcode)
+    return branch_predicate_for_opcode_name(name) if name is not None else None
 
 
 def branch_opcode_for_predicate(predicate: PredicateKind) -> int | None:
     """Return the Hex-Rays branch opcode for one portable predicate."""
     if not isinstance(predicate, PredicateKind):
         raise TypeError("branch opcode lookup requires a PredicateKind")
-    for name, candidate in _BRANCH_PREDICATES:
-        if candidate is not predicate:
-            continue
-        value = opcode_value(name)
-        return None if value is None else int(value)
-    return None
+    name = branch_opcode_name_for_predicate(predicate)
+    value = opcode_value(name) if name is not None else None
+    return None if value is None else int(value)
 
 
 def set_predicate_from_opcode(opcode: int) -> PredicateKind | None:
-    return _lookup(int(opcode), _SET_PREDICATES)
+    name = _name_semantics(opcode)
+    return set_predicate_for_opcode_name(name) if name is not None else None
 
 
 def predicate_from_opcode(opcode: int) -> PredicateKind | None:
-    return branch_predicate_from_opcode(opcode) or set_predicate_from_opcode(opcode)
+    name = _name_semantics(opcode)
+    return predicate_for_opcode_name(name) if name is not None else None
 
 
 def control_transfer_from_opcode(opcode: int) -> ControlTransferKind | None:
-    control = _lookup(int(opcode), _CONTROL_TRANSFERS)
-    if control is not None:
-        return control
-    if branch_predicate_from_opcode(opcode) is not None:
-        return ControlTransferKind.CONDITIONAL_BRANCH
-    return None
+    name = _name_semantics(opcode)
+    return control_transfer_kind_for_opcode_name(name) if name is not None else None
 
 
 def call_kind_from_opcode(opcode: int) -> CallKind | None:
-    return _lookup(int(opcode), _CALLS)
+    name = _name_semantics(opcode)
+    return call_kind_for_opcode_name(name) if name is not None else None
 
 
 def lift_opcode(opcode: int) -> LiftedOpcode:

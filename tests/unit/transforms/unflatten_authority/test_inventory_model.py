@@ -62,7 +62,7 @@ def _obs(
 ) -> model.InventoryInstructionObservation:
     return model.InventoryInstructionObservation(
         ordinal, instruction_ea, opcode, width, kind,
-        control_transfer_kind, is_call, call_kind,
+        control_transfer_kind, is_call, call_kind, raw_opcode=opcode,
     )
 
 
@@ -75,11 +75,20 @@ def test_inventory_records_are_closed_and_round_trip_canonically() -> None:
             _obs(0, 0x1000, 0x42, 4, InsnKind.STORE),
             _obs(1, 0x1004, 0x43, 0, InsnKind.GOTO, ControlTransferKind.GOTO),
         ),
+        model.BlockKind.ONE_WAY,
+        0x1000,
+        0x43,
+        0x43,
+        InsnKind.GOTO,
     )
     block2 = model.InventoryBlockObservation(
         2, ref2, 0x2000, (0x2000,), (1,), (), None,
         (_obs(0, 0x2000, 0, 0),),
         model.BlockKind.STOP,
+        0x2000,
+        0,
+        0,
+        InsnKind.NOP,
     )
     effect = model.InventoryEffectSite(
         1, ref, 0x1000, 0, 0x1000, model.EffectSiteKind.STORE, 0x42, 4,
@@ -160,6 +169,137 @@ def test_inventory_records_are_closed_and_round_trip_canonically() -> None:
         model.validate_semantic_graph_inventory(inventory)
 
 
+@pytest.mark.parametrize("field", ("tail_opcode", "raw_tail_opcode", "tail_kind"))
+def test_instruction_bearing_inventory_rejects_missing_tail_evidence(field: str) -> None:
+    tail = _obs(0, 0x1000, 0x42, 0, InsnKind.NOP)
+    values: dict[str, object] = dict(
+        serial=1,
+        block_ref=None,
+        anchor_ea=0x1000,
+        native_instruction_eas=(0x1000,),
+        predecessor_serials=(),
+        successor_serials=(),
+        transfer_ea=None,
+        instruction_observations=(tail,),
+        block_kind=model.BlockKind.ZERO_WAY,
+        graph_start_ea=0x1000,
+        tail_opcode=0x42,
+        raw_tail_opcode=0x42,
+        tail_kind=InsnKind.NOP,
+    )
+    values[field] = None
+    with pytest.raises(ValueError, match="tail metadata|raw opcode"):
+        model.InventoryBlockObservation(**values)
+
+
+def test_positive_backend_instruction_requires_raw_provenance() -> None:
+    with pytest.raises(ValueError, match="raw opcode"):
+        model.InventoryInstructionObservation(
+            0, 0x1000, 0x42, 0, InsnKind.NOP, None, False, None,
+        )
+
+
+def test_exact_synthetic_helper_allows_raw_absence_only_for_normalized_goto() -> None:
+    row = model.InventoryInstructionObservation(
+        0, 0x1000, -1, 0, InsnKind.GOTO, ControlTransferKind.GOTO,
+        False, None, display_text="", raw_opcode=None,
+    )
+    block = model.InventoryBlockObservation(
+        1, None, 0x1000, (0x1000,), (), (2,), 0x1000,
+        (row,), model.BlockKind.ONE_WAY, 0x1000, -1, None, InsnKind.GOTO,
+    )
+    assert block.raw_tail_opcode is None
+
+
+@pytest.mark.parametrize(
+    "mutation", ("width", "display_text", "block_kind", "successors", "transfer_ea")
+)
+def test_synthetic_inventory_goto_shape_is_closed_at_model_boundary(mutation: str) -> None:
+    row = model.InventoryInstructionObservation(
+        0, 0x1000, -1, 0, InsnKind.GOTO, ControlTransferKind.GOTO,
+        False, None, raw_opcode=None,
+    )
+    if mutation == "width":
+        row = replace(row, width=8)
+    elif mutation == "display_text":
+        row = replace(row, display_text="goto")
+    block_kwargs = dict(
+        serial=1,
+        block_ref=None,
+        anchor_ea=0x1000,
+        native_instruction_eas=(0x1000,),
+        predecessor_serials=(),
+        successor_serials=(2,),
+        transfer_ea=0x1000,
+        instruction_observations=(row,),
+        block_kind=model.BlockKind.ONE_WAY,
+        graph_start_ea=0x1000,
+        tail_opcode=-1,
+        raw_tail_opcode=None,
+        tail_kind=InsnKind.GOTO,
+    )
+    if mutation == "block_kind":
+        block_kwargs["block_kind"] = model.BlockKind.TWO_WAY
+        block_kwargs["successor_serials"] = (2, 3)
+    elif mutation == "successors":
+        block_kwargs["successor_serials"] = ()
+    elif mutation == "transfer_ea":
+        block_kwargs["transfer_ea"] = None
+    with pytest.raises(ValueError, match="synthetic|normalized|successor"):
+        model.InventoryBlockObservation(**block_kwargs)
+
+
+def test_synthetic_inventory_goto_preserves_a_backend_prefix_before_id_generation() -> None:
+    prefix = model.InventoryInstructionObservation(
+        0, 0x0FFC, 0x42, 0, InsnKind.NOP, None, False, None, raw_opcode=0x42,
+    )
+    tail = model.InventoryInstructionObservation(
+        1, 0x1000, -1, 0, InsnKind.GOTO, ControlTransferKind.GOTO,
+        False, None, display_text="", raw_opcode=None,
+    )
+    block = model.InventoryBlockObservation(
+        serial=1,
+        block_ref=None,
+        anchor_ea=0x1000,
+        native_instruction_eas=(0x0FFC, 0x1000),
+        predecessor_serials=(),
+        successor_serials=(2,),
+        transfer_ea=0x1000,
+        instruction_observations=(prefix, tail),
+        block_kind=model.BlockKind.ONE_WAY,
+        graph_start_ea=0x1000,
+        tail_opcode=-1,
+        raw_tail_opcode=None,
+        tail_kind=InsnKind.GOTO,
+    )
+    assert block.instruction_observations == (prefix, tail)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"opcode": -1, "raw_opcode": 7},
+        {"opcode": -1, "raw_opcode": None, "instruction_kind": InsnKind.NOP},
+        {"opcode": 0x42, "raw_opcode": None},
+    ),
+)
+def test_inventory_instruction_rejects_non_normalized_or_missing_raw_shape(kwargs: dict[str, object]) -> None:
+    values: dict[str, object] = dict(
+        ordinal=0,
+        instruction_ea=0x1000,
+        opcode=0x42,
+        width=0,
+        instruction_kind=InsnKind.NOP,
+        control_transfer_kind=None,
+        is_call=False,
+        call_kind=None,
+        raw_opcode=0x42,
+    )
+    values.update(kwargs)
+    with pytest.raises((TypeError, ValueError)):
+        model.InventoryInstructionObservation(**values)
+
+
 def test_inventory_rejects_wrong_rows_and_noncanonical_collections() -> None:
     class IntSubclass(int):
         pass
@@ -180,6 +320,7 @@ def test_inventory_rejects_wrong_rows_and_noncanonical_collections() -> None:
     block = model.InventoryBlockObservation(
         1, None, 1, (1,), (2,), (), None,
         (_obs(0, 1, 0, 0),),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP,
     )
     with pytest.raises(ValueError, match="sorted"):
         _inventory(blocks=(replace(block, native_instruction_eas=(2, 1)),))
@@ -192,10 +333,12 @@ def test_inventory_rejects_duplicate_non_none_block_refs() -> None:
     first = model.InventoryBlockObservation(
         1, ref, 1, (1,), (), (2,), 1,
         (_obs(0, 1, 0, 0, InsnKind.GOTO, ControlTransferKind.GOTO),),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.GOTO,
     )
     second = model.InventoryBlockObservation(
         2, ref, 2, (2,), (1,), (), None,
         (_obs(0, 2, 0, 0),),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP,
     )
     topology = (
         model.InventoryTopologyIncidence(
@@ -255,6 +398,7 @@ def test_producer_site_subjects_equal_reachable_raw_site_locators() -> None:
     block = model.InventoryBlockObservation(
         1, ref, 0x1000, (0x1000,), (), (), None,
         (_obs(0, 0x1000, 0x90, 4, InsnKind.STORE),),
+        tail_opcode=0x90, raw_tail_opcode=0x90, tail_kind=InsnKind.STORE,
     )
     effect = model.InventoryEffectSite(
         1, ref, 0x1000, 0, 0x1000, model.EffectSiteKind.STORE, 0x90, 4,
@@ -326,6 +470,7 @@ def test_inventory_digest_covers_every_preceding_field() -> None:
         1, ref, 1, (1,), (), (), None,
             (_obs(0, 1, 1, 0, InsnKind.STORE),),
         model.BlockKind.STOP,
+        tail_opcode=1, raw_tail_opcode=1, tail_kind=InsnKind.STORE,
     )
     subject = _subject_factory(
         model.SemanticSubjectRef,
@@ -379,6 +524,7 @@ def test_inventory_digest_covers_every_preceding_field() -> None:
         ("blocks", (model.InventoryBlockObservation(
             1, ref, 1, (2,), (), (), None,
             (_obs(0, 2, 0, 0),),
+            tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP,
         ),)),
         ("effects", (model.InventoryEffectSite(1, ref, 1, 0, 2, model.EffectSiteKind.STORE, 1, 0),)),
         ("terminals", (model.InventoryTerminalSite(1, ref, 1, None, 2, model.TerminalKind.STOP),)),
@@ -409,6 +555,7 @@ def test_unique_binding_must_match_its_inventory_block_row() -> None:
     block = model.InventoryBlockObservation(
         1, ref, 1, (1,), (), (), None,
         (_obs(0, 1, 0, 0),),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP,
     )
     subject = _subject_factory(
         model.SemanticSubjectRef,
@@ -432,6 +579,7 @@ def test_binding_subjects_roundtrip_as_equal_distinct_records() -> None:
     block = model.InventoryBlockObservation(
         1, ref, 1, (1,), (), (), None,
         (_obs(0, 1, 0, 0),),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP,
     )
     subject = _subject_factory(
         model.SemanticSubjectRef,
@@ -507,6 +655,7 @@ def test_inventory_instruction_rows_separate_order_from_unique_native_identity()
     )
     block = model.InventoryBlockObservation(
         1, None, 0x1000, (0x1000,), (), (), None, instructions,
+        tail_opcode=2, raw_tail_opcode=2, tail_kind=InsnKind.STORE,
     )
     effect = model.InventoryEffectSite(1, None, 0x1000, 1, 0x1000, model.EffectSiteKind.STORE, 2, 4)
     inventory = _inventory(blocks=(block,), effects=(effect,))
@@ -515,12 +664,12 @@ def test_inventory_instruction_rows_separate_order_from_unique_native_identity()
 
 def test_inventory_requires_effect_and_terminal_rows_for_instruction_observations() -> None:
     store = _obs(0, 0x1000, 2, 4, InsnKind.STORE)
-    block = model.InventoryBlockObservation(1, None, 0x1000, (0x1000,), (), (), None, (store,))
+    block = model.InventoryBlockObservation(1, None, 0x1000, (0x1000,), (), (), None, (store,), tail_opcode=2, raw_tail_opcode=2, tail_kind=InsnKind.STORE)
     with pytest.raises(ValueError):
         _inventory(blocks=(block,))
 
     returned = _obs(0, 0x1000, 2, 4, InsnKind.RET, ControlTransferKind.RETURN)
-    block = model.InventoryBlockObservation(1, None, 0x1000, (0x1000,), (), (), 0x1000, (returned,))
+    block = model.InventoryBlockObservation(1, None, 0x1000, (0x1000,), (), (), 0x1000, (returned,), tail_opcode=2, raw_tail_opcode=2, tail_kind=InsnKind.RET)
     effect = model.InventoryEffectSite(1, None, 0x1000, 0, 0x1000, model.EffectSiteKind.RETURN, 2, 4)
     with pytest.raises(ValueError):
         _inventory(blocks=(block,), effects=(effect,))
@@ -541,6 +690,7 @@ def test_inventory_stop_and_transfer_are_bound_to_block_facts() -> None:
     with pytest.raises(ValueError):
         model.InventoryBlockObservation(
             3, None, 0x3000, (0x3000,), (), (), 0x3000, (store,), model.BlockKind.UNKNOWN,
+            tail_opcode=1, raw_tail_opcode=1, tail_kind=InsnKind.STORE,
         )
 
 
@@ -549,7 +699,7 @@ def test_inventory_replays_classifier_stop_tail_and_noreturn_context() -> None:
         _obs(0, 0x1000, 1, 0, InsnKind.TRAP),
         _obs(1, 0x1004, 2, 0),
     )
-    block = model.InventoryBlockObservation(1, None, 0x1000, (0x1000, 0x1004), (), (), None, rows, model.BlockKind.STOP)
+    block = model.InventoryBlockObservation(1, None, 0x1000, (0x1000, 0x1004), (), (), None, rows, model.BlockKind.STOP, tail_opcode=2, raw_tail_opcode=2, tail_kind=InsnKind.NOP)
     effect = model.InventoryEffectSite(1, None, 0x1000, 0, 0x1000, model.EffectSiteKind.TRAP, 1, 0)
     terminals = (
         model.InventoryTerminalSite(1, None, 0x1000, 0, 0x1000, model.TerminalKind.TRAP),
@@ -558,7 +708,7 @@ def test_inventory_replays_classifier_stop_tail_and_noreturn_context() -> None:
     assert _inventory(blocks=(block,), effects=(effect,), terminals=terminals).terminals == terminals
 
     call = _obs(0, 0x2000, 3, 0, InsnKind.CALL)
-    call_block = model.InventoryBlockObservation(2, None, 0x2000, (0x2000,), (), (), None, (call,))
+    call_block = model.InventoryBlockObservation(2, None, 0x2000, (0x2000,), (), (), None, (call,), tail_opcode=3, raw_tail_opcode=3, tail_kind=InsnKind.CALL)
     call_effect = model.InventoryEffectSite(2, None, 0x2000, 0, 0x2000, model.EffectSiteKind.CALL, 3, 0)
     with pytest.raises(ValueError):
         _inventory(blocks=(call_block,), effects=(call_effect,))
@@ -569,6 +719,7 @@ def test_inventory_replays_classifier_stop_tail_and_noreturn_context() -> None:
     )
     non_tail_block = model.InventoryBlockObservation(
         3, None, 0x3000, (0x3000, 0x3004), (), (), None, non_tail,
+        tail_opcode=4, raw_tail_opcode=4, tail_kind=InsnKind.NOP,
     )
     non_tail_effect = model.InventoryEffectSite(3, None, 0x3000, 0, 0x3000, model.EffectSiteKind.CALL, 3, 0)
     non_tail_terminal = model.InventoryTerminalSite(3, None, 0x3000, 0, 0x3000, model.TerminalKind.NORETURN_CALL)
@@ -581,7 +732,7 @@ def test_inventory_requires_instruction_rows_for_native_origins_and_mapped_ancho
         model.InventoryBlockObservation(1, None, 1, (1,), (), (), None)
     ref = LogicalBlockRef("session", "proxy", 1)
     instruction = _obs(0, 1, 0, 0)
-    block = model.InventoryBlockObservation(1, ref, 2, (1,), (), (), None, (instruction,))
+    block = model.InventoryBlockObservation(1, ref, 2, (1,), (), (), None, (instruction,), tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP)
     phase = model.UnflattenAuthorityPhase.PRODUCER_FORECAST
     fingerprint = authority_id("graph")
     digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, (), 0)
@@ -596,7 +747,7 @@ def test_inventory_revalidates_nested_native_identity_graph() -> None:
     identity = StableBlockIdentity.from_instruction_eas((1,), native_key=key)
     ref = NativeBlockRef(identity)
     instruction = _obs(0, 1, 0, 0)
-    block = model.InventoryBlockObservation(1, ref, 1, (1,), (), (), None, (instruction,))
+    block = model.InventoryBlockObservation(1, ref, 1, (1,), (), (), None, (instruction,), tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP)
     phase = model.UnflattenAuthorityPhase.PRODUCER_FORECAST
     fingerprint = authority_id("graph")
     digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, (), 0)
@@ -611,7 +762,7 @@ def test_inventory_rejects_native_identity_bool_before_normalization() -> None:
     key = NativePreanalysisKey("input", "x86", 64, 0, "function", "profile", "sdk")
     identity = StableBlockIdentity.from_instruction_eas((1,), native_key=key)
     ref = NativeBlockRef(identity)
-    block = model.InventoryBlockObservation(1, ref, 1, (1,), (), (), None, (_obs(0, 1, 0, 0),))
+    block = model.InventoryBlockObservation(1, ref, 1, (1,), (), (), None, (_obs(0, 1, 0, 0),), tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP)
     phase = model.UnflattenAuthorityPhase.PRODUCER_FORECAST
     fingerprint = authority_id("graph")
     digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, (), 0)
@@ -637,7 +788,7 @@ def test_inventory_rejects_native_interval_outside_domain_in_every_phase(
     key = NativePreanalysisKey("input", "x86", 64, 0, "function", "profile", "sdk")
     identity = StableBlockIdentity.from_instruction_eas((1,), native_key=key)
     ref = NativeBlockRef(identity)
-    block = model.InventoryBlockObservation(1, ref, 1, (1,), (), (), None, (_obs(0, 1, 0, 0),))
+    block = model.InventoryBlockObservation(1, ref, 1, (1,), (), (), None, (_obs(0, 1, 0, 0),), tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP)
     object.__setattr__(identity.native_ranges.intervals[0], "end_ea", 0xFFFFFFFFFFFFFFFF + 1)
     with pytest.raises((TypeError, ValueError)):
         model.resolve_inventory_block_sites(
@@ -701,6 +852,7 @@ def test_inventory_native_identity_is_correlated_in_every_phase() -> None:
     block = model.InventoryBlockObservation(
         1, ref, 0x1000, (0x1000,), (), (), None,
         (_obs(0, 0x1000, 0, 0),),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP,
     )
     with pytest.raises(ValueError):
         _inventory(blocks=(block,))
@@ -711,6 +863,7 @@ def test_inventory_tail_control_transfer_requires_transfer_ea() -> None:
     with pytest.raises(ValueError):
         model.InventoryBlockObservation(
             1, None, 0x1000, (0x1000,), (), (2,), None, (row,),
+            tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.GOTO,
         )
 
 
@@ -722,6 +875,7 @@ def test_inventory_rejects_non_tail_control_transfer() -> None:
     with pytest.raises(ValueError):
         model.InventoryBlockObservation(
             1, None, 0x1000, (0x1000, 0x1004), (), (2,), None, rows,
+            tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP,
         )
 
 
@@ -729,7 +883,7 @@ def test_inventory_rejects_foreign_valid_native_identity() -> None:
     key = NativePreanalysisKey("input", "x86", 64, 0, "function", "profile", "sdk")
     ref = NativeBlockRef(StableBlockIdentity.from_instruction_eas((0x2000,), native_key=key))
     instruction = _obs(0, 0x1000, 0, 0)
-    block = model.InventoryBlockObservation(1, ref, 0x1000, (0x1000,), (), (), None, (instruction,))
+    block = model.InventoryBlockObservation(1, ref, 0x1000, (0x1000,), (), (), None, (instruction,), tail_opcode=0, raw_tail_opcode=0, tail_kind=InsnKind.NOP)
     phase = model.UnflattenAuthorityPhase.PRODUCER_FORECAST
     fingerprint = authority_id("graph")
     digest = semantic_graph_inventory_digest(phase, fingerprint, 3, (block,), (), (), (), (), (), (1,), 1, (), 0)
@@ -743,6 +897,7 @@ def test_inventory_rejects_site_ordinal_against_unique_native_eas() -> None:
     block = model.InventoryBlockObservation(
         1, None, 0x1000, (0x1000,), (), (), None,
         (_obs(0, 0x1000, 1, 0, InsnKind.STORE),),
+        tail_opcode=1, raw_tail_opcode=1, tail_kind=InsnKind.STORE,
     )
     forged = model.InventoryEffectSite(1, None, 0x1000, 1, 0x1000, model.EffectSiteKind.STORE, 1, 0)
     with pytest.raises(ValueError):

@@ -132,11 +132,11 @@ def _value_op(
 ) -> InsnSnapshot:
     attrs = {"raw_opcode_name": raw_opcode_name} if raw_opcode_name is not None else {}
     return InsnSnapshot(
-        opcode=-1,
+        opcode=0x80,
         raw_opcode=0x80,
         ea=0x1014,
         operands=(),
-        kind=InsnKind.UNKNOWN,
+        kind=InsnKind.VALUE,
         value_op_kind=operation,
         opcode_attrs=attrs,
         l=lhs,
@@ -154,11 +154,11 @@ def _unary_value_op(
 ) -> InsnSnapshot:
     attrs = {"raw_opcode_name": raw_opcode_name} if raw_opcode_name is not None else {}
     return InsnSnapshot(
-        opcode=-1,
+        opcode=0x81,
         raw_opcode=0x81,
         ea=0x1018,
         operands=(),
-        kind=InsnKind.UNKNOWN,
+        kind=InsnKind.VALUE,
         value_op_kind=operation,
         opcode_attrs=attrs,
         l=src,
@@ -1347,11 +1347,11 @@ def test_m1d_binary_op_mismatched_widths_fail_closed():
 
 def test_m1k_sign_bit_bad_arity_fails_closed():
     insn = InsnSnapshot(
-        opcode=-1,
+        opcode=0x82,
         raw_opcode=0x82,
         ea=0x101C,
         operands=(),
-        kind=InsnKind.UNKNOWN,
+        kind=InsnKind.VALUE,
         value_op_kind=ValueOpKind.SIGN_BIT,
         l=_reg(0),
         r=_reg(1),
@@ -1473,11 +1473,11 @@ def test_unsupported_value_cases_have_structured_kinds(
 ):
     if expected_reason == "XOR requires two inputs":
         insn = InsnSnapshot(
-            opcode=-1,
+            opcode=0x80,
             raw_opcode=0x80,
             ea=0x1014,
             operands=(),
-            kind=InsnKind.UNKNOWN,
+            kind=InsnKind.VALUE,
             value_op_kind=ValueOpKind.XOR,
             l=_reg(0),
             d=_reg(1),

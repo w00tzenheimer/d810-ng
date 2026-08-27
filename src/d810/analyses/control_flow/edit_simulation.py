@@ -251,6 +251,12 @@ def simulate_edits(
 
         elif edit.kind == "create_conditional_redirect":
             # Model as creating a virtual conditional clone that source points to.
+            if len(succs) != 1 or succs[0] != edit.old_target:
+                raise ValueError(
+                    "create_conditional_redirect requires source adjacency to "
+                    f"old target: source={edit.source} succs={succs} "
+                    f"old_target={edit.old_target}"
+                )
             clone_serial = edit.created_serial
             if clone_serial is None:
                 clone_serial = max(result.keys(), default=-1) + 1
@@ -272,16 +278,7 @@ def simulate_edits(
             clone_origins[clone_serial] = edit
             clone_origins[fallthrough_serial] = edit
 
-            new_succs = list(succs)
-            if len(new_succs) == 1:
-                new_succs[0] = clone_serial
-            else:
-                try:
-                    idx = new_succs.index(edit.old_target)
-                    new_succs[idx] = clone_serial
-                except ValueError:
-                    new_succs.append(clone_serial)
-            result[edit.source] = new_succs
+            result[edit.source] = [clone_serial]
 
         elif edit.kind == "duplicate_block":
             clone_serial = edit.created_serial

@@ -56,6 +56,7 @@ from d810.ir.flowgraph import (
     OperandKind,
     PredicateKind,
 )
+from d810.ir.semantics import ControlTransferKind
 from d810.ir.maturity import MaturityEnvelope
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.manager.fragment_publication_lifecycle import (
@@ -96,6 +97,7 @@ from d810.transforms.graph_modification import (
     LowerConditionalStateTransition,
     RedirectGoto,
     SyntheticRegisterNonzeroCondition,
+    SyntheticStackValueEqualsCondition,
 )
 from d810.transforms.plan import (
     PatchBypassDispatcherTrampoline,
@@ -637,10 +639,16 @@ def _typed_bootstrap_authority_plan(
     """Build a typed proposal around the plan's direct semantic route."""
     from d810.analyses.control_flow.semantic_route_evidence import (
         CanonicalSemanticEvidence,
+        canonical_semantic_evidence_from_proofs,
+        SemanticBootstrapProof,
+        SemanticCorridorPoint,
+        SemanticDagComparison,
+        SemanticDecisionDagWitness,
         SemanticRouteDestination,
         SemanticRouteProof,
         SemanticRouteProofKind,
         SemanticRouteShape,
+        SemanticStateDagProof,
         SemanticStateWriteDeliveryKind,
         SemanticStateWriteProof,
     )
@@ -666,11 +674,51 @@ def _typed_bootstrap_authority_plan(
     projected_source = projected.graph.blocks.get(source_serial)
     if projected_source is None or tuple(projected_source.succs) != (target_serial,):
         raise ValueError("typed bootstrap route must match projected topology")
+
+    def exact_route_path() -> tuple[int, ...]:
+        pending = [(source_serial,)]
+        while pending:
+            path = pending.pop(0)
+            current = path[-1]
+            if current == target_serial:
+                return path
+            pending.extend(
+                (*path, successor)
+                for successor in cfg.blocks[current].succs
+                if successor not in path
+            )
+        raise ValueError("typed authority route target is unreachable in source")
+
+    route_path = exact_route_path()
+    is_direct_edge = route_path == (source_serial, target_serial)
+    dispatcher_serial = None if is_direct_edge else source_block.succs[0]
+    dispatcher_block = (
+        None if dispatcher_serial is None else cfg.blocks[dispatcher_serial]
+    )
+    is_two_arm_dispatcher = bool(
+        dispatcher_block is not None
+        and len(dispatcher_block.succs) == 2
+        and target_serial in dispatcher_block.succs
+    )
+    is_indirect_switch_route = bool(
+        not is_direct_edge
+        and not is_two_arm_dispatcher
+        and len(route_path) >= 3
+        and len(cfg.blocks[route_path[-2]].succs) > 2
+        and target_serial in cfg.blocks[route_path[-2]].succs
+    )
+    if not (is_direct_edge or is_two_arm_dispatcher or is_indirect_switch_route):
+        raise ValueError("typed route requires a direct, two-arm, or exact switch corridor")
+    corridor_eas = tuple(cfg.blocks[serial].start_ea for serial in route_path[:-1])
+    if corridor_eas != tuple(sorted(set(corridor_eas))):
+        raise ValueError("typed indirect route corridor anchors must be ordered and unique")
+
     source_blocks = {}
     for serial, block in cfg.blocks.items():
         if serial == source_serial:
             instruction = InsnSnapshot(
                 opcode=0,
+                raw_opcode=0,
                 ea=block.start_ea,
                 native_ea=block.start_ea,
                 operands=(),
@@ -679,18 +727,47 @@ def _typed_bootstrap_authority_plan(
                 kind=InsnKind.MOV,
                 value_op_kind=ValueOpKind.MOVE,
             )
+        elif is_two_arm_dispatcher and serial == dispatcher_serial:
+            instruction = InsnSnapshot(
+                opcode=0,
+                raw_opcode=0,
+                ea=block.start_ea,
+                native_ea=block.start_ea,
+                operands=(),
+                l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=4, stack_refs=(4,)),
+                r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
+                d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target_serial),
+                kind=InsnKind.COND_JUMP,
+                control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+                predicate_kind=PredicateKind.EQ,
+                branch_predicate=PredicateKind.EQ,
+                compare_width=4,
+                is_conditional_jump=True,
+            )
         else:
             instruction = InsnSnapshot(
                 opcode=0,
+                raw_opcode=0,
                 ea=block.start_ea,
                 native_ea=block.start_ea,
                 operands=(),
                 kind=InsnKind.NOP,
             )
-        source_blocks[serial] = replace(block, insn_snapshots=(instruction,))
+        source_blocks[serial] = replace(
+            block,
+            insn_snapshots=(instruction,),
+            tail_opcode=instruction.opcode,
+            raw_tail_opcode=instruction.raw_opcode,
+            tail_kind=instruction.kind,
+        )
     object.__setattr__(cfg, "blocks", source_blocks)
 
-    refs = {serial: _native_ref(serial) for serial in sorted(cfg.blocks)}
+    refs = {
+        serial: NativeBlockRef(StableBlockIdentity.from_instruction_eas(
+            (block.start_ea,), native_key=NATIVE_KEY,
+        ))
+        for serial, block in sorted(cfg.blocks.items())
+    }
     source_ref = refs[source_serial]
     target_ref = refs[target_serial]
     source_ea = source_block.start_ea
@@ -701,15 +778,77 @@ def _typed_bootstrap_authority_plan(
         state,
         4,
         1,
-        (source_ea,),
+        corridor_eas,
         None,
         (),
-        SemanticStateWriteDeliveryKind.DIRECT,
+        (
+            SemanticStateWriteDeliveryKind.DIRECT
+            if is_direct_edge
+            else SemanticStateWriteDeliveryKind.INDIRECT
+        ),
     )
+    route_kwargs = {}
+    proof_kind = SemanticRouteProofKind.STATE_ASSIGNMENT
+    if is_two_arm_dispatcher:
+        assert dispatcher_serial is not None and dispatcher_block is not None
+        alternate_serial = next(
+            serial for serial in dispatcher_block.succs if serial != target_serial
+        )
+        entry_ref = refs[cfg.entry_serial]
+        dispatcher_ref = refs[dispatcher_serial]
+        target_point = SemanticCorridorPoint(target_ref.identity, target_ea)
+        alternate_block = cfg.blocks[alternate_serial]
+        alternate_point = SemanticCorridorPoint(
+            refs[alternate_serial].identity,
+            alternate_block.start_ea,
+        )
+        source_point = SemanticCorridorPoint(source_ref.identity, source_ea)
+        dispatcher_point = SemanticCorridorPoint(
+            dispatcher_ref.identity,
+            dispatcher_block.start_ea,
+        )
+        dag_witness = SemanticDecisionDagWitness(
+            state,
+            1,
+            dispatcher_point,
+            (dispatcher_point,),
+            (
+                SemanticDagComparison(
+                    dispatcher_point,
+                    "jz",
+                    1,
+                    target_point,
+                    alternate_point,
+                ),
+            ),
+            (),
+        )
+        state_dag = SemanticStateDagProof(
+            dag_witness,
+            source_ref.identity,
+            source_ea,
+            target_ref.identity,
+            target_ea,
+            dispatcher_ref.identity,
+            dispatcher_block.start_ea,
+            dag_witness.path,
+        )
+        bootstrap = SemanticBootstrapProof(
+            SemanticCorridorPoint(entry_ref.identity, cfg.blocks[cfg.entry_serial].start_ea),
+            source_point,
+            source_point,
+            dispatcher_point,
+            (source_point, dispatcher_point),
+            state_write,
+            state_dag,
+            (),
+        )
+        proof_kind = SemanticRouteProofKind.BOOTSTRAP
+        route_kwargs = {"state_dag": state_dag, "bootstrap": bootstrap}
     route = SemanticRouteProof(
         authority_id(("typed-bootstrap-route", template.plan_id, source_serial, target_serial)),
         authority_id(("typed-bootstrap-group", template.plan_id)),
-        SemanticRouteProofKind.BOOTSTRAP,
+        proof_kind,
         SemanticRouteShape.DIRECT,
         source_ref.identity,
         source_ea,
@@ -719,11 +858,11 @@ def _typed_bootstrap_authority_plan(
         ),),
         NativeEaInterval(source_ea, source_ea + 1),
         state_write=state_write,
+        **route_kwargs,
     )
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         NATIVE_KEY,
         1,
-        route.atomic_group_id,
         (route,),
     )
     template = replace(
@@ -750,7 +889,7 @@ def _typed_bootstrap_authority_plan(
         source=cfg,
         block_refs_by_serial=refs,
         canonical_route_evidence=evidence,
-        selected_route_proof_ids=(route.proof_id,),
+        selected_route_proof_ids=(evidence.route_proofs[0].proof_id,),
         exact_state_effect_exclusions=(),
         dispatcher_entry_serial=dispatcher_entry_serial,
         dispatcher_member_serials=dispatcher_member_serials,
@@ -1010,6 +1149,29 @@ def test_project_patch_plan_lowers_conditional_state_to_canonical_two_way() -> N
         [(0, 1), (1, 2), (2, 5)],
         stop_serials=(3, 4, 5),
     )
+    original_tail = InsnSnapshot(
+        opcode=42,
+        raw_opcode=42,
+        ea=0x1001,
+        native_ea=0x1001,
+        operands=(),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
+    )
+    object.__setattr__(
+        cfg,
+        "blocks",
+        {
+            **cfg.blocks,
+            1: replace(
+                cfg.blocks[1],
+                insn_snapshots=(original_tail,),
+                tail_opcode=original_tail.opcode,
+                raw_tail_opcode=original_tail.raw_opcode,
+                tail_kind=original_tail.kind,
+            ),
+        },
+    )
     refs = {serial: _native_ref(serial) for serial in cfg.blocks}
     plan = PatchPlan(
         source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
@@ -1033,6 +1195,16 @@ def test_project_patch_plan_lowers_conditional_state_to_canonical_two_way() -> N
     assert projected.blocks[1].succs == (3, 4)
     assert projected.blocks[1].kind is BlockKind.TWO_WAY
     assert projected.blocks[1].tail_kind is InsnKind.COND_JUMP
+    lowered = projected.blocks[1].tail
+    assert lowered is not None
+    assert lowered.l is not None and lowered.l.kind is OperandKind.REGISTER
+    assert lowered.l.reg == 9 and lowered.l.size == 4
+    assert lowered.r is not None and lowered.r.kind is OperandKind.NUMBER
+    assert lowered.r.value == 0 and lowered.r.size == 4
+    assert lowered.predicate_kind is PredicateKind.NE
+    assert lowered.branch_predicate is PredicateKind.NE
+    assert lowered.compare_width == 4
+    assert lowered.opcode == 42 and lowered.raw_opcode == 42
     assert projected.blocks[3].preds == (1,)
     assert projected.blocks[4].preds == (1,)
 
@@ -1709,142 +1881,163 @@ def _typed_local_alias_fixture(
 ) -> tuple[FlowGraph, PatchPlan]:
     """Build a real producer proposal with one reachable STORE owner."""
 
-    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+    from tests.unit.transforms.unflatten_authority import test_bind
 
-    source, proposal, _exclusion, refs = exact_fixture()
+    if not two_hosts:
+        from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+
+        direct = test_bind._task_15_direct_vertical_case(
+            local_alias=True, include_graph=True, derive_transaction=True,
+        )
+        plan = replace(
+            direct.plan,
+            snapshot_id=authority_id("typed-direct-local-alias-snapshot"),
+        )
+        manifest = canonical_redirect_manifest(plan)
+        proposal = replace(
+            plan.unflatten_proposal,
+            use_def_witness=replace(
+                plan.unflatten_proposal.use_def_witness,
+                redirect_owner_refs=manifest.owner_refs,
+                redirect_digest=manifest.digest,
+            ),
+        )
+        return direct.source_graph, replace(plan, unflatten_proposal=proposal)
+
+    # Extend the same Direct-GOTO fixture family used by the one-host vertical.
+    # The second STORE stays in the retained handler beside the ordinary CALL;
+    # it is not a reintroduced conditional-route fixture.
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        canonical_semantic_evidence_from_proofs,
+    )
+    from d810.transforms.graph_modification import (
+        RedirectGoto,
+        ScalarizeLocalAliasAccess,
+    )
+    from d810.transforms.unflatten_authority import producer_api
+    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+    from tests.typed_patch_authority import compile_patch_plan
+
+    direct = test_bind._task_15_direct_vertical_case(
+        local_alias=True, include_graph=True, derive_transaction=True,
+    )
+    original = direct.source_graph
+    original_handler = original.blocks[3]
+    first_store, retained_call = original_handler.insn_snapshots
+    sibling = InsnSnapshot(
+        opcode=23 if sibling_kind is InsnKind.STORE else 29,
+        raw_opcode=23 if sibling_kind is InsnKind.STORE else 29,
+        ea=0x4002,
+        native_ea=0x4002,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=12),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=12, stack_refs=(12,)),
+        display_text=("%var_11 = %var_21" if sibling_kind is InsnKind.STORE else "sibling()"),
+        kind=sibling_kind,
+        value_op_kind=(ValueOpKind.STORE if sibling_kind is InsnKind.STORE else None),
+        is_call=sibling_kind is InsnKind.CALL,
+    )
     source = replace(
-        source,
+        original,
         blocks={
-            **source.blocks,
-            2: replace(
-                source.blocks[2],
-                insn_snapshots=(InsnSnapshot(
-                    opcode=0,
-                    ea=0x3000,
-                    native_ea=0x3000,
-                    operands=(),
-                    l=MopSnapshot(kind=OperandKind.LVAR, size=4),
-                    display_text="store %var_alias",
-                    kind=InsnKind.STORE,
-                ),),
+            **original.blocks,
+            3: replace(
+                original_handler,
+                insn_snapshots=(first_store, sibling, retained_call),
+                tail_opcode=retained_call.opcode,
+                raw_tail_opcode=retained_call.raw_opcode,
+                tail_kind=InsnKind.CALL,
             ),
         },
     )
-    if two_hosts:
-        from dataclasses import replace as dataclass_replace
-        from d810.transforms.unflatten_authority import producer_api
-
-        source = replace(
-            source,
-            blocks={
-                **source.blocks,
-                2: replace(
-                    source.blocks[2],
-                    insn_snapshots=(
-                        source.blocks[2].insn_snapshots[0],
-                        InsnSnapshot(
-                            opcode=0,
-                            ea=0x3001,
-                            native_ea=0x3001,
-                            operands=(),
-                            l=MopSnapshot(kind=OperandKind.LVAR, size=4),
-                            display_text=(
-                                "store %var_alias2"
-                                if sibling_kind is InsnKind.STORE
-                                else "call %var_sibling"
-                            ),
-                            kind=sibling_kind,
-                            is_call=sibling_kind is InsnKind.CALL,
-                        ),
-                    ),
-                ),
-            },
-        )
-        old_identity = refs[2].identity
-        refs = {
-            **refs,
-            2: NativeBlockRef(StableBlockIdentity.from_instruction_eas(
-                (0x3000, 0x3001), native_key=old_identity.native_key,
-            )),
-        }
-        route_proofs = tuple(
-            dataclass_replace(
-                proof,
-                destinations=tuple(
-                    dataclass_replace(destination, target_identity=refs[2].identity)
-                    if destination.target_identity == old_identity else destination
-                    for destination in proof.destinations
-                ),
-            )
-            for proof in proposal.route_evidence.route_proofs
-        )
-        route_evidence = dataclass_replace(
-            proposal.route_evidence, route_proofs=route_proofs,
-        )
-        proposal = producer_api.build_proposal(
-            plan_id=proposal.plan_id,
-            source=source,
-            block_refs_by_serial=refs,
-            source_generation=proposal.source_identity_catalog.generation,
-            canonical_route_evidence=route_evidence,
-                exact_state_effect_exclusions=(_exclusion,),
-            dispatcher_entry_serial=1,
-            dispatcher_member_serials=(0, 1),
-            authoritative_handler_serials=(2,),
-            state_identity=proposal.plan_inputs.state_identity,
-            use_def_witness=proposal.use_def_witness,
-        )
-    plan = PatchPlan(
-        plan_id=proposal.plan_id,
-        snapshot_id=authority_id("typed-local-alias-snapshot"),
-        source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
-        source_generation=proposal.source_identity_catalog.generation,
-        steps=(
-            PatchRedirectGoto(refs[0], refs[1], refs[1]),
-            PatchRedirectBranch(refs[1], refs[2], refs[2]),
-            PatchRemoveEdge(refs[2], refs[3]),
-            PatchRemoveEdge(refs[2], refs[4]),
-            PatchScalarizeLocalAliasAccess(
-                block_serial=refs[2],
-                host_ea=0x3000,
-                host_opcode=0,
-                alias_token="%var_alias",
-                base_token="%var_398",
-                value_size=4,
+    native_key = direct.plan.unflatten_proposal.source_identity_catalog.native_key
+    refs = {
+        serial: NativeBlockRef(StableBlockIdentity.from_instruction_eas(
+            tuple(instruction.ea for instruction in block.insn_snapshots),
+            native_key=native_key,
+        ))
+        for serial, block in source.blocks.items()
+    }
+    old_handler_identity = (
+        direct.plan.unflatten_proposal.plan_inputs.authoritative_handlers[0]
+        .block_ref.identity
+    )
+    route_proofs = tuple(
+        replace(
+            proof,
+            destinations=tuple(
+                replace(destination, target_identity=refs[3].identity)
+                if destination.target_identity == old_handler_identity else destination
+                for destination in proof.destinations
             ),
-            *(() if not two_hosts or sibling_kind is not InsnKind.STORE else (
-                PatchScalarizeLocalAliasAccess(
-                    block_serial=refs[2],
-                    host_ea=0x3001,
-                    host_opcode=0,
-                    alias_token="%var_alias2",
-                    base_token="%var_399",
-                    value_size=4,
-                ),
-            )),
+        )
+        for proof in direct.plan.unflatten_proposal.route_evidence.route_proofs
+    )
+    route_evidence = canonical_semantic_evidence_from_proofs(
+        native_key=native_key,
+        generation=direct.plan.unflatten_proposal.route_evidence.generation,
+        proofs=route_proofs,
+    )
+    original_proposal = direct.plan.unflatten_proposal
+    proposal = producer_api.build_proposal(
+        plan_id=original_proposal.plan_id,
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=original_proposal.source_identity_catalog.generation,
+        canonical_route_evidence=route_evidence,
+        selected_route_proof_ids=tuple(
+            proof.proof_id for proof in route_evidence.route_proofs
         ),
-        source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(3,),
+        state_identity=original_proposal.plan_inputs.state_identity,
+        use_def_witness=original_proposal.use_def_witness,
+    )
+    modifications = [RedirectGoto(0, 1, 3), ScalarizeLocalAliasAccess(
+        block_serial=3, host_ea=0x4000, host_opcode=23,
+        alias_token="%var_10", base_token="%var_20", value_size=4,
+    )]
+    if sibling_kind is InsnKind.STORE:
+        modifications.append(ScalarizeLocalAliasAccess(
+            block_serial=3, host_ea=0x4002, host_opcode=23,
+            alias_token="%var_11", base_token="%var_21", value_size=4,
+        ))
+    compiled = compile_patch_plan(
+        modifications, source, plan_id=proposal.plan_id,
+        source_generation=proposal.source_identity_catalog.generation,
+        block_refs_by_serial=refs,
+    )
+    plan = PatchPlan(
+        plan_id=compiled.plan_id,
+        snapshot_id=authority_id("typed-direct-local-alias-two-hosts"),
+        source_maturity=compiled.source_maturity,
+        source_generation=compiled.source_generation,
+        steps=compiled.steps,
+        new_blocks=compiled.new_blocks,
+        relocation_map=compiled.relocation_map,
+        execution_policy=compiled.execution_policy,
+        metadata=compiled.metadata,
+        semantic_contract=compiled.semantic_contract,
+        source_coordinates=tuple((refs[serial], serial) for serial in sorted(refs)),
         unflatten_proposal=proposal,
     )
-    from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
+    manifest = canonical_redirect_manifest(plan)
     proposal = replace(
         proposal,
-        plan_inputs=replace(
-            proposal.plan_inputs,
-            dispatcher_member_refs=(refs[0], refs[1]),
-        ),
+        plan_inputs=replace(proposal.plan_inputs, dispatcher_member_refs=(refs[0], refs[1])),
         use_def_witness=replace(
             proposal.use_def_witness,
-            redirect_owner_refs=canonical_redirect_manifest(plan).owner_refs,
-            redirect_digest=canonical_redirect_manifest(plan).digest,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
         ),
     )
-    plan = replace(plan, unflatten_proposal=proposal)
-    return source, plan
+    return source, replace(plan, unflatten_proposal=proposal)
 
 
 def _typed_lowering_fixture() -> tuple[FlowGraph, PatchPlan]:
-    """Build typed lower authority with a no-op redirect on a one-way source."""
+    """Build typed authority for one canonical conditional-state lowering."""
 
     from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
     from d810.transforms.unflatten_authority.proposal import canonical_redirect_manifest
@@ -1857,9 +2050,12 @@ def _typed_lowering_fixture() -> tuple[FlowGraph, PatchPlan]:
         block_refs_by_serial=refs,
         source_generation=original_proposal.source_identity_catalog.generation,
         canonical_route_evidence=original_proposal.route_evidence,
+        selected_route_proof_ids=tuple(
+            proof.proof_id for proof in original_proposal.route_evidence.route_proofs
+        ),
         exact_state_effect_exclusions=(exclusion,),
-        dispatcher_entry_serial=0,
-        dispatcher_member_serials=(0,),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
         authoritative_handler_serials=(2,),
         state_identity=original_proposal.plan_inputs.state_identity,
         use_def_witness=original_proposal.use_def_witness,
@@ -1870,14 +2066,13 @@ def _typed_lowering_fixture() -> tuple[FlowGraph, PatchPlan]:
         source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
         source_generation=proposal.source_identity_catalog.generation,
         steps=(
-            PatchRedirectGoto(refs[0], refs[1], refs[1]),
             PatchLowerConditionalStateTransition(
-                source_serial=refs[1],
-                old_dispatcher_serial=refs[2],
-                rewrite_from_ea=0x2001,
-                condition_operand="typed-live-predicate",
-                false_target_serial=refs[2],
-                true_target_serial=refs[3],
+                source_serial=refs[0],
+                old_dispatcher_serial=refs[1],
+                rewrite_from_ea=0x1001,
+                condition_operand=SyntheticStackValueEqualsCondition(4, 4, 7),
+                false_target_serial=refs[3],
+                true_target_serial=refs[2],
             ),
         ),
         source_coordinates=tuple((ref, serial) for serial, ref in refs.items()),
@@ -1920,6 +2115,7 @@ def _observed_scalarized_cfg(
             l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
             d=MopSnapshot(kind=OperandKind.LVAR, size=4),
             kind=InsnKind.MOV,
+            raw_opcode=4,
             display_text="mov #1.4, %var_398.4",
         )
     )
@@ -1936,41 +2132,53 @@ def _observed_scalarized_cfg(
 
 
 def _observed_typed_local_alias_cfg(
-    source: FlowGraph, *, two_hosts: bool = False, drop_second: bool = False,
+    source: FlowGraph, plan: PatchPlan, *, two_hosts: bool = False, drop_second: bool = False,
 ) -> FlowGraph:
-    block = source.blocks[2]
-    observations = (
+    from d810.transforms.edit_simulator import project_patch_plan
+    source = project_patch_plan(source, plan, snapshot_id=plan.snapshot_id).graph
+    block_serial = 3 if 3 in source.blocks and source.blocks[3].start_ea == 0x4000 else 2
+    block = source.blocks[block_serial]
+    observations = [
         InsnSnapshot(
             opcode=4,
-            ea=0x3000,
-            native_ea=0x3000,
+            ea=block.insn_snapshots[0].ea,
+            native_ea=block.insn_snapshots[0].native_ea,
             operands=(),
             l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=1),
             d=MopSnapshot(kind=OperandKind.LVAR, size=4),
             kind=InsnKind.MOV,
-            display_text="mov #1.4, %var_398.4",
+            display_text="mov #1.4, %var_20.4" if block_serial == 3 else "mov #1.4, %var_398.4",
+            raw_opcode=4,
         ),
-    )
+    ]
     if two_hosts and not drop_second:
-        observations += (
+        second = block.insn_snapshots[1]
+        observations.append(
             InsnSnapshot(
                 opcode=4,
-                ea=0x3001,
-                native_ea=0x3001,
+                ea=second.ea,
+                native_ea=second.native_ea,
                 operands=(),
                 l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=2),
                 d=MopSnapshot(kind=OperandKind.LVAR, size=4),
                 kind=InsnKind.MOV,
-                display_text="mov #2.4, %var_399.4",
-            ),
+                display_text="mov #2.4, %var_21.4",
+                raw_opcode=4,
+            )
         )
+    if block_serial == 3:
+        observations.append(block.insn_snapshots[-1])
+    observations = tuple(observations)
     return replace(
         source,
         blocks={
             **source.blocks,
-            2: replace(
+            block_serial: replace(
                 block,
                 insn_snapshots=observations,
+                tail_opcode=(observations[-1].opcode if observations else block.tail_opcode),
+                tail_kind=(observations[-1].kind if observations else block.tail_kind),
+                raw_tail_opcode=(observations[-1].raw_opcode if observations else block.raw_tail_opcode),
             ),
         },
     )
@@ -2010,12 +2218,12 @@ def _assert_typed_effect_cell(
 
 
 def _mutate_typed_alias_host(source: FlowGraph, **changes: object) -> FlowGraph:
-    block = source.blocks[2]
+    block = source.blocks[3]
     observation = replace(block.insn_snapshots[0], **changes)
     return replace(
         source,
-        blocks={2: replace(block, insn_snapshots=(observation,)), **{
-            serial: item for serial, item in source.blocks.items() if serial != 2
+        blocks={3: replace(block, insn_snapshots=(observation, *block.insn_snapshots[1:])), **{
+            serial: item for serial, item in source.blocks.items() if serial != 3
         }},
     )
 
@@ -2043,12 +2251,535 @@ def _typed_alias_backend(
     )
 
 
+def _direct_authority_participant():
+    """One real Direct proposal through the public transaction lifecycle."""
+
+    from tests.unit.transforms.unflatten_authority.test_transaction_api import (
+        _c1_direct_preparation_case,
+    )
+
+    fixture, source, plan, projected, _gates = _c1_direct_preparation_case()
+    gateway = _ordinary_gateway(
+        source,
+        plan,
+        native_key=next(
+            ref.identity.native_key for ref, _serial in plan.source_coordinates
+            if isinstance(ref, NativeBlockRef)
+        ),
+    )
+
+    class _DirectTranslator(_FakeTranslator):
+        def lift(self, _live_source: object) -> FlowGraph:
+            self.lift_count += 1
+            return projected if self.lower_calls else source
+
+    participant = HexRaysPatchTransactionParticipant(
+        gateway=gateway.new_transaction(),
+        translator=_DirectTranslator(source),
+        mba=SimpleNamespace(qty=source.num_blocks),
+        plan=plan,
+    )
+    return fixture, source, participant
+
+
+def _exact_direct_authority_participant():
+    """One proposal-valid Direct exact CALL loss through the public boundary."""
+    from tests.unit.transforms.unflatten_authority.test_transaction_api import (
+        _c2_exact_direct_preparation_case,
+    )
+
+    source, plan, _projected, _attempt_id, _gates = _c2_exact_direct_preparation_case()
+    native_key = next(
+        ref.identity.native_key
+        for ref, _serial in plan.source_coordinates
+        if isinstance(ref, NativeBlockRef)
+    )
+    gateway = _ordinary_gateway(source, plan, native_key=native_key).new_transaction()
+    participant = HexRaysPatchTransactionParticipant(
+        gateway=gateway,
+        translator=_FakeTranslator(source),
+        mba=SimpleNamespace(qty=source.num_blocks),
+        plan=plan,
+    )
+    return source, participant
+
+
+def _one_claim_two_loss_participant():
+    """Build a valid Direct proposal that claims CALL but loses CALL and STORE."""
+    from d810.analyses.control_flow.effect_branch_exclusion import (
+        build_exact_state_branch_effect_exclusion,
+    )
+    from d810.transforms.graph_modification import RedirectGoto
+    from d810.transforms.unflatten_authority import producer_api
+    from d810.transforms.unflatten_authority.proposal import (
+        ProposalAccepted,
+        canonical_redirect_manifest,
+        validate_proposal,
+    )
+    from tests.typed_patch_authority import compile_patch_plan
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+
+    source, evidence, witness, refs = exact_fixture(
+        discarded_effect_kind="call_store", producer_inputs_only=True,
+    )
+    state = evidence.route_proofs[0].state_write.state_variable
+    claim = build_exact_state_branch_effect_exclusion(
+        source, source,
+        normalized_state=7,
+        source_serial=0,
+        predicate_serial=1,
+        selected_target_serial=2,
+        discarded_effect_serial=3,
+        state_identity=state,
+        discarded_effect_ea=0x4000,
+    )
+    assert claim is not None
+    proposal = producer_api.build_proposal(
+        plan_id=authority_id("c2-one-claim-two-loss"),
+        source=source,
+        block_refs_by_serial=refs,
+        source_generation=1,
+        canonical_route_evidence=evidence,
+        selected_route_proof_ids=(evidence.route_proofs[0].proof_id,),
+        exact_state_effect_exclusions=(claim,),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=state,
+        use_def_witness=witness,
+    )
+    compiled = compile_patch_plan(
+        [RedirectGoto(0, 1, 2)],
+        source,
+        plan_id=proposal.plan_id,
+        source_generation=1,
+        block_refs_by_serial=refs,
+    )
+    plan = PatchPlan(
+        plan_id=compiled.plan_id,
+        snapshot_id=authority_id(("c2-one-claim-two-loss", compiled.plan_id)),
+        source_maturity=compiled.source_maturity,
+        source_generation=compiled.source_generation,
+        steps=compiled.steps,
+        new_blocks=compiled.new_blocks,
+        relocation_map=compiled.relocation_map,
+        execution_policy=compiled.execution_policy,
+        metadata=compiled.metadata,
+        semantic_contract=compiled.semantic_contract,
+        source_coordinates=tuple((refs[serial], serial) for serial in sorted(refs)),
+        unflatten_proposal=proposal,
+    )
+    manifest = canonical_redirect_manifest(plan)
+    proposal = replace(
+        proposal,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+    )
+    plan = replace(plan, unflatten_proposal=proposal)
+    assert type(validate_proposal(plan, proposal)) is ProposalAccepted
+    gateway = _ordinary_gateway(source, plan, native_key=refs[0].identity.native_key).new_transaction()
+    participant = HexRaysPatchTransactionParticipant(
+        gateway=gateway,
+        translator=_FakeTranslator(source),
+        mba=SimpleNamespace(qty=source.num_blocks),
+        plan=plan,
+    )
+    return source, participant
+
+
+def test_direct_transaction_participant_owns_one_prepared_authority() -> None:
+    """C1 RED: public project -> preflight -> bind carries one Direct authority."""
+
+    _fixture, source, participant = _direct_authority_participant()
+    projected = participant.project(participant.plan, source)
+    prepared = participant.preflight(projected)
+    bound = participant.bind(prepared, participant.gateway.identity_index)
+
+    assert prepared.unflatten_authority is not None
+    assert bound.unflatten_authority is not None
+    assert bound.unflatten_authority.prepared is prepared.unflatten_authority
+    assert (
+        prepared.unflatten_authority.source_inputs.source_route_authority
+        is prepared.unflatten_authority.source_route_authority
+    )
+    assert (
+        prepared.unflatten_authority.source_inputs.projected_route_realization
+        is prepared.unflatten_authority.projected_route_realization
+    )
+
+
+def test_direct_participant_commits_its_exact_precommit_authority() -> None:
+    """The public lifecycle closes Direct authority into the receipt once."""
+    _fixture, source, participant = _direct_authority_participant()
+    native_key = next(
+        ref.identity.native_key for ref, _serial in participant.plan.source_coordinates
+        if isinstance(ref, NativeBlockRef)
+    )
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(source, participant.plan, native_key=native_key),
+        translator=participant.translator,
+    )
+    assert backend.apply(participant.plan, SimpleNamespace(qty=source.num_blocks)) is not source
+    execution = backend.last_patch_execution
+    assert execution is not None
+
+    commitment = execution.receipt.semantic_authority_commitment
+    assert commitment is not None
+    assert commitment.source_authority_id == execution.observed_unflatten_verdict.observed_acceptance.bound_authority.prepared.source_route_authority.source_authority_id
+    assert commitment.bound_authority_id == execution.observed_unflatten_verdict.binding_id
+    assert commitment.projected_case_id == execution.projected_unflatten_verdict.case_id
+    assert commitment.observed_case_id == execution.observed_unflatten_verdict.case_id
+
+
+def test_direct_transaction_has_one_semantic_authority_path(monkeypatch) -> None:
+    """The public Direct lifecycle cannot fall back to legacy authority seams."""
+    from d810.hexrays.mutation import patch_transaction
+    from d810.transforms.unflatten_authority import transaction_api
+
+    assert not hasattr(transaction_api, "assess_canonical_route")
+    assert not hasattr(transaction_api, "derive_unflatten_preparation_inputs")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("individual unflatten validator was called")
+
+    # These names were the former direct transaction gates.  Install sentinels
+    # even though the transaction no longer imports them: a future raw call
+    # fails while the real Direct lifecycle still reaches commit.
+    for name in (
+        "validate_dispatcher_removal_preflight_proof",
+        "validate_dispatcher_corridor_coverage_metadata",
+        "validate_exact_state_branch_effect_exclusion",
+    ):
+        monkeypatch.setattr(patch_transaction, name, forbidden, raising=False)
+
+    _fixture, source, participant = _direct_authority_participant()
+    native_key = next(
+        ref.identity.native_key for ref, _serial in participant.plan.source_coordinates
+        if isinstance(ref, NativeBlockRef)
+    )
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(source, participant.plan, native_key=native_key),
+        translator=participant.translator,
+    )
+    assert backend.apply(participant.plan, SimpleNamespace(qty=source.num_blocks)) is not source
+    assert backend.last_patch_execution is not None
+
+
+def test_direct_commit_rejects_equal_cloned_observed_verdict_without_gateway_commit(
+    monkeypatch,
+) -> None:
+    """Commit consumes the exact observed occurrence, never an equal clone."""
+    from d810.hexrays.mutation.patch_transaction import (
+        _PatchTransactionLifecycle,
+        PatchTransactionPostObservationRejected,
+    )
+
+    _fixture, source, participant = _direct_authority_participant()
+    projected = participant.project(participant.plan, source)
+    prepared = participant.preflight(projected)
+    bound = participant.bind(prepared, participant.gateway.identity_index)
+    lifecycle = _PatchTransactionLifecycle(
+        participant, bound, participant.gateway, participant.plan, prepared,
+    )
+    observed = lifecycle.observe(
+        participant.plan, lifecycle.realize(
+            participant.plan, lifecycle.begin(participant.plan),
+        ),
+    )
+    validated = lifecycle.validate(participant.plan, observed)
+    verdict = participant._observed_unflatten_verdict
+    participant._observed_unflatten_verdict = replace(verdict)
+    commits = []
+    gateway_type = type(participant.gateway)
+    real_commit = gateway_type.commit
+    monkeypatch.setattr(
+        gateway_type, "commit",
+        lambda gateway, **kwargs: commits.append(kwargs) or real_commit(gateway, **kwargs),
+    )
+
+    with pytest.raises(PatchTransactionPostObservationRejected, match="occurrence drifted"):
+        lifecycle.commit(participant.plan, validated)
+    assert commits == []
+
+
+def _ready_direct_commit_lifecycle():
+    """Run the public lifecycle through real observed validation once."""
+    from d810.hexrays.mutation.patch_transaction import _PatchTransactionLifecycle
+
+    _fixture, source, participant = _direct_authority_participant()
+    projected = participant.project(participant.plan, source)
+    prepared = participant.preflight(projected)
+    bound = participant.bind(prepared, participant.gateway.identity_index)
+    lifecycle = _PatchTransactionLifecycle(
+        participant, bound, participant.gateway, participant.plan, prepared,
+    )
+    observed = lifecycle.observe(
+        participant.plan, lifecycle.realize(
+            participant.plan, lifecycle.begin(participant.plan),
+        ),
+    )
+    return participant, lifecycle, lifecycle.validate(participant.plan, observed)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "missing-acceptance",
+        "foreign-bound-authority",
+        "equal-verdict-clone",
+        "binding-id-drift",
+        "projected-fingerprint-drift",
+        "generation-drift",
+        "delta-id-drift",
+        "equal-observed-ledger-clone",
+        "equal-delta-clone",
+    ),
+)
+def test_direct_commit_rejects_precommit_authority_tampering_before_gateway_commit(
+    monkeypatch, tamper,
+) -> None:
+    """A real observed pass cannot be replaced or mutated before receipt closure."""
+    from d810.hexrays.mutation.patch_transaction import PatchTransactionPostObservationRejected
+
+    participant, lifecycle, validated = _ready_direct_commit_lifecycle()
+    verdict = participant._observed_unflatten_verdict
+    acceptance = verdict.observed_acceptance
+    authority = acceptance.bound_authority
+    if tamper == "missing-acceptance":
+        altered = replace(verdict, observed_acceptance=None)
+        participant._observed_unflatten_verdict = altered
+        participant._observed_unflatten_verdict_occurrence = altered
+    elif tamper == "foreign-bound-authority":
+        foreign = object.__new__(type(authority))
+        object.__setattr__(acceptance, "bound_authority", foreign)
+    elif tamper == "equal-verdict-clone":
+        participant._observed_unflatten_verdict = replace(verdict)
+    elif tamper == "binding-id-drift":
+        object.__setattr__(authority, "binding_id", authority_id(("tampered", tamper)))
+    elif tamper == "projected-fingerprint-drift":
+        object.__setattr__(
+            authority.prepared,
+            "projected_fingerprint",
+            authority_id(("tampered", tamper)),
+        )
+    elif tamper == "generation-drift":
+        object.__setattr__(authority, "generation", authority.generation + 1)
+    elif tamper == "delta-id-drift":
+        object.__setattr__(
+            acceptance.delta, "delta_id", authority_id(("tampered", tamper)),
+        )
+    elif tamper == "equal-observed-ledger-clone":
+        object.__setattr__(
+            acceptance, "observed_ledger", replace(acceptance.observed_ledger),
+        )
+    elif tamper == "equal-delta-clone":
+        object.__setattr__(acceptance, "delta", replace(acceptance.delta))
+    else:  # pragma: no cover - parametrization is closed above.
+        raise AssertionError(tamper)
+
+    commits = []
+    gateway_type = type(participant.gateway)
+    monkeypatch.setattr(
+        gateway_type,
+        "commit",
+        lambda gateway, **kwargs: commits.append((gateway, kwargs)),
+    )
+    with pytest.raises(PatchTransactionPostObservationRejected):
+        lifecycle.commit(participant.plan, validated)
+    assert commits == []
+
+
+def test_direct_public_observed_gates_share_one_exact_ledger_occurrence(
+    monkeypatch,
+) -> None:
+    """The participant lifecycle passes one observed ledger to every gate."""
+    from d810.transforms.unflatten_authority import gates
+
+    _fixture, source, participant = _direct_authority_participant()
+    native_key = next(
+        ref.identity.native_key for ref, _serial in participant.plan.source_coordinates
+        if isinstance(ref, NativeBlockRef)
+    )
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(source, participant.plan, native_key=native_key),
+        translator=participant.translator,
+    )
+    seen = []
+    for name in (
+        "validate_projected_effect_loss_ledger",
+        "validate_projected_dispatcher_removal_ledger",
+        "validate_projected_corridor_coverage_ledger",
+        "validate_projected_terminal_loss_ledger",
+    ):
+        original = getattr(gates, name)
+        monkeypatch.setattr(
+            gates, name,
+            lambda ledger, case, _original=original: (
+                seen.append((ledger, case)) or _original(ledger, case)
+            ),
+        )
+
+    assert backend.apply(participant.plan, SimpleNamespace(qty=source.num_blocks)) is not source
+    execution = backend.last_patch_execution
+    assert execution is not None
+
+    acceptance = execution.observed_unflatten_verdict.observed_acceptance
+    observed_seen = [
+        (ledger, case) for ledger, case in seen
+        if case is acceptance.observed_case
+    ]
+    assert len(observed_seen) == 4
+    assert all(ledger is acceptance.observed_ledger for ledger, _case in observed_seen)
+
+
+def test_exact_direct_participant_mints_one_ledger_consumed_by_all_projected_gates(
+    monkeypatch,
+) -> None:
+    """The real participant transfers one exact effect-loss ledger to every gate."""
+    from d810.transforms.unflatten_authority import transaction_api
+
+    source, participant = _exact_direct_authority_participant()
+    minted, consumed = [], []
+    factory = transaction_api.build_projected_semantic_loss_ledger
+    monkeypatch.setattr(
+        transaction_api,
+        "build_projected_semantic_loss_ledger",
+        lambda case, verdict: minted.append((case, verdict)) or factory(case, verdict),
+    )
+    for name in (
+        "validate_projected_effect_loss_ledger",
+        "validate_projected_dispatcher_removal_ledger",
+        "validate_projected_corridor_coverage_ledger",
+        "validate_projected_terminal_loss_ledger",
+    ):
+        consumer = getattr(transaction_api.gates, name)
+        monkeypatch.setattr(
+            transaction_api.gates,
+            name,
+            lambda ledger, case, _consumer=consumer: (
+                consumed.append((ledger, case)) or _consumer(ledger, case)
+            ),
+        )
+
+    projected = participant.project(participant.plan, source)
+    prepared = participant.preflight(projected)
+    bound = participant.bind(prepared, participant.gateway.identity_index)
+
+    authority = prepared.unflatten_authority
+    assert authority is not None
+    assert bound.unflatten_authority is not None
+    assert bound.unflatten_authority.prepared is authority
+    assert len(minted) == 1
+    assert minted[0][0] is authority.projected_case
+    assert len(consumed) == 4
+    assert all(ledger is authority.projected_loss_ledger for ledger, _case in consumed)
+    assert all(case is authority.projected_case for _ledger, case in consumed)
+    assert any(
+        row.kind is authority_model.SemanticLossKind.EXACT_INFEASIBLE_EFFECT
+        for row in authority.projected_loss_ledger.rows
+    )
+
+
+def test_ordinary_participant_does_not_create_unflatten_loss_authority(monkeypatch) -> None:
+    """Ordinary patch transactions retain their generic-gate-only lifecycle."""
+    from d810.transforms.unflatten_authority import transaction_api
+
+    source = _make_cfg([(0, 1)], stop_serials=(1,))
+    plan = _ordinary_plan(
+        PatchConvertToGoto,
+        serials=(0, 1),
+        block_serial=0,
+        goto_target=1,
+    )
+    gateway = _ordinary_gateway(source, plan).new_transaction()
+    participant = HexRaysPatchTransactionParticipant(
+        gateway=gateway,
+        translator=_FakeTranslator(source),
+        mba=SimpleNamespace(qty=source.num_blocks),
+        plan=plan,
+    )
+    forbidden = []
+    monkeypatch.setattr(
+        transaction_api.authority_bind,
+        "bind_source_route_authority",
+        lambda **_kwargs: forbidden.append("source") or (_ for _ in ()).throw(AssertionError()),
+    )
+    monkeypatch.setattr(
+        transaction_api,
+        "build_projected_semantic_loss_ledger",
+        lambda *_args: forbidden.append("ledger") or (_ for _ in ()).throw(AssertionError()),
+    )
+
+    projected = participant.project(plan, source)
+    prepared = participant.preflight(projected)
+    bound = participant.bind(prepared, gateway.identity_index)
+
+    assert prepared.unflatten_authority is None
+    assert bound.unflatten_authority is None
+    assert forbidden == []
+
+
+def test_public_participant_rejects_one_claim_with_second_unclassified_effect_loss(
+    monkeypatch,
+) -> None:
+    """A single exact receipt cannot authorize its same-block STORE sibling."""
+    from d810.transforms.unflatten_authority import transaction_api
+
+    source, participant = _one_claim_two_loss_participant()
+    minted = []
+    factory = transaction_api.build_projected_semantic_loss_ledger
+    monkeypatch.setattr(
+        transaction_api,
+        "build_projected_semantic_loss_ledger",
+        lambda case, verdict: minted.append(factory(case, verdict)) or minted[-1],
+    )
+    projected = participant.project(participant.plan, source)
+
+    with pytest.raises(PatchTransactionPreflightRejected) as caught:
+        participant.preflight(projected)
+
+    verdict = caught.value.unflatten_verdict
+    assert verdict is not None
+    assert not verdict.accepted
+    assert participant._prepared is None
+    assert participant._bound is None
+    assert verdict.safety_case is not None
+    assert len(minted) == 1
+    ledger_rows = minted[0].rows
+    # Loss authority is one row per canonical physical owner.  The valid CALL
+    # receipt cannot make its same-block STORE sibling acceptable: both effect
+    # cells are aggregated into one forbidden owner classification.
+    assert len(ledger_rows) == 1
+    assert ledger_rows[0].kind is authority_model.SemanticLossKind.CONFLICTING
+    assert len(ledger_rows[0].claim_ids) == 1
+
+
 def test_backend_typed_authority_emits_two_canonical_phase_payloads(monkeypatch) -> None:
     """Typed authority records projected and observed canonical verdicts."""
 
-    pre_cfg, plan = _typed_local_alias_fixture()
-    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg)
-    backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
+    from tests.unit.transforms.unflatten_authority.test_transaction_api import (
+        _c1_direct_preparation_case,
+    )
+
+    _fixture, pre_cfg, plan, observed_cfg, _gates = _c1_direct_preparation_case()
+
+    class _DirectTranslator(_FakeTranslator):
+        def lift(self, _live_source: object) -> FlowGraph:
+            self.lift_count += 1
+            return observed_cfg if self.lower_calls else pre_cfg
+
+    native_key = next(
+        ref.identity.native_key
+        for ref, _serial in plan.source_coordinates
+        if isinstance(ref, NativeBlockRef)
+    )
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(pre_cfg, plan, native_key=native_key),
+        translator=_DirectTranslator(pre_cfg),
+    )
     import d810.hexrays.observability as authority_observability
     phase_observations = []
     monkeypatch.setattr(
@@ -2194,7 +2925,7 @@ def test_typed_canonical_acceptance_does_not_reapply_failed_generic_gate(monkeyp
     """The accepted typed verdict is final at the transaction boundary."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
-    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg)
+    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
     from d810.analyses.control_flow.graph_checks import EntryReachabilityResult
     from d810.hexrays.mutation import patch_transaction
@@ -2503,7 +3234,7 @@ def test_backend_accepts_exact_reachable_local_alias_store_scalarization(monkeyp
     """A typed scalarization may replace only its exact local-alias STORE."""
 
     pre_cfg, plan = _typed_local_alias_fixture()
-    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg)
+    observed_cfg = _observed_typed_local_alias_cfg(pre_cfg, plan)
 
     backend = _typed_alias_backend(pre_cfg, plan, observed_cfg)
     import d810.hexrays.observability as authority_observability
@@ -2526,17 +3257,18 @@ def test_backend_accepts_exact_reachable_local_alias_store_scalarization(monkeyp
     assert execution.observed_unflatten_verdict is not None
     assert execution.projected_unflatten_verdict.safety_case is not None
     assert execution.observed_unflatten_verdict.safety_case is not None
+    acceptance = execution.observed_unflatten_verdict.observed_acceptance
+    assert acceptance is not None
     projected_ledger = authority_views.semantic_loss_ledger(
-        execution.projected_unflatten_verdict.safety_case,
+        acceptance.bound_authority.prepared,
     )
-    observed_ledger = authority_views.semantic_loss_ledger(
-        execution.observed_unflatten_verdict.safety_case,
-    )
-    assert projected_ledger.rows == ()
+    observed_ledger = acceptance.observed_ledger
+    assert len(projected_ledger.rows) == 1
+    assert projected_ledger.rows[0].kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
     assert len(observed_ledger.rows) == 1
     loss_row = observed_ledger.rows[0]
     assert loss_row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
-    assert loss_row.anchored_location == "blk2@0x3000"
+    assert loss_row.anchored_location == "blk3@0x4000"
     assert any(
         type(claim) is authority_model.LocalAliasEffectScalarizationClaim
         for claim in execution.projected_unflatten_verdict.safety_case.claims
@@ -2548,10 +3280,7 @@ def test_backend_accepts_exact_reachable_local_alias_store_scalarization(monkeyp
     assert "parity" not in projected_payload
     assert "parity" not in observed_payload
     assert projected_payload["observed_only_loss"] == ()
-    assert len(observed_payload["observed_only_loss"]) == 1
-    observed_only = observed_payload["observed_only_loss"][0]
-    assert observed_only["anchor"] == "blk2@0x3000"
-    assert observed_only["classification"] == "local_alias_scalarization"
+    assert observed_payload["observed_only_loss"] == ()
     for payload in (projected_payload, observed_payload):
         timings = payload["timings"]
         assert all(
@@ -2571,7 +3300,7 @@ def test_backend_accepts_exact_reachable_local_alias_store_scalarization(monkeyp
 
 def test_backend_accepts_two_typed_local_alias_hosts_in_one_owner() -> None:
     pre_cfg, plan = _typed_local_alias_fixture(two_hosts=True)
-    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    observed = _observed_typed_local_alias_cfg(pre_cfg, plan, two_hosts=True)
     backend = _typed_alias_backend(pre_cfg, plan, observed)
 
     result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
@@ -2580,27 +3309,28 @@ def test_backend_accepts_two_typed_local_alias_hosts_in_one_owner() -> None:
     assert execution is not None
     verdict = execution.observed_unflatten_verdict
     assert verdict is not None and verdict.safety_case is not None
-    ledger = authority_views.semantic_loss_ledger(verdict.safety_case)
-    assert tuple(row.anchored_location for row in ledger.rows) == (
-        "blk2@0x3000", "blk2@0x3000",
-    )
-    assert len({row.claim_ids for row in ledger.rows}) == 2
+    acceptance = verdict.observed_acceptance
+    assert acceptance is not None
+    ledger = acceptance.observed_ledger
+    assert tuple(row.anchored_location for row in ledger.rows) == ("blk3@0x4000",)
+    assert len(ledger.rows[0].claim_ids) == 2
     pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
     plan = replace(full_plan, steps=full_plan.steps[:-1])
-    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    observed = _observed_typed_local_alias_cfg(pre_cfg, plan, two_hosts=True)
     observed = replace(
         observed,
         blocks={
             **observed.blocks,
-            2: replace(
-                observed.blocks[2],
+            3: replace(
+                observed.blocks[3],
                 insn_snapshots=(
-                    observed.blocks[2].insn_snapshots[0],
+                    observed.blocks[3].insn_snapshots[0],
                     replace(
-                        observed.blocks[2].insn_snapshots[1],
+                        observed.blocks[3].insn_snapshots[1],
                         kind=InsnKind.NOP,
                         display_text="nop",
                     ),
+                    observed.blocks[3].insn_snapshots[2],
                 ),
             ),
         },
@@ -2613,39 +3343,46 @@ def test_backend_accepts_two_typed_local_alias_hosts_in_one_owner() -> None:
     case = verdict.safety_case
     _assert_typed_effect_cell(
         case,
-        ea=0x3000,
+        ea=0x4000,
         state=authority_model.ObligationState.SATISFIED,
         rule=authority_model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN,
     )
     _assert_typed_effect_cell(
         case,
-        ea=0x3001,
+        ea=0x4002,
         state=authority_model.ObligationState.VIOLATED,
         rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
     )
-    ledger = authority_views.semantic_loss_ledger(case)
-    sibling_subject = _typed_effect_subject(case, 0x3001)
-    sibling_row = next(row for row in ledger.rows if row.source_subject == sibling_subject)
+    ledger = verdict.loss_ledger
+    assert ledger is not None
+    sibling_subject = _typed_effect_subject(case, 0x4002)
+    sibling_row = next(
+        row for row in ledger.rows
+        if row.source_subject.block_ref == sibling_subject.block_ref
+    )
     assert sibling_row.kind is authority_model.SemanticLossKind.UNCLASSIFIED
-    assert sibling_row.claim_ids == ()
+    assert sibling_row not in ledger.allowed
 
 
 def test_backend_rejects_unclaimed_typed_local_alias_sibling_call() -> None:
     pre_cfg, plan = _typed_local_alias_fixture(
         two_hosts=True, sibling_kind=InsnKind.CALL,
     )
-    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    observed = _observed_typed_local_alias_cfg(pre_cfg, plan, two_hosts=True)
     sibling_nop = replace(
-        observed.blocks[2].insn_snapshots[1],
+        observed.blocks[3].insn_snapshots[1],
         kind=InsnKind.NOP,
         display_text="nop",
     )
     observed = replace(
         observed,
-        blocks={2: replace(
-            observed.blocks[2],
-            insn_snapshots=(observed.blocks[2].insn_snapshots[0], sibling_nop),
-        ), **{serial: block for serial, block in observed.blocks.items() if serial != 2}},
+        blocks={3: replace(
+            observed.blocks[3],
+            insn_snapshots=(
+                observed.blocks[3].insn_snapshots[0], sibling_nop,
+                observed.blocks[3].insn_snapshots[2],
+            ),
+        ), **{serial: block for serial, block in observed.blocks.items() if serial != 3}},
     )
     backend = _typed_alias_backend(pre_cfg, plan, observed)
     with pytest.raises(CfgGenerationPoisoned) as caught:
@@ -2655,45 +3392,48 @@ def test_backend_rejects_unclaimed_typed_local_alias_sibling_call() -> None:
     case = verdict.safety_case
     _assert_typed_effect_cell(
         case,
-        ea=0x3000,
+        ea=0x4000,
         state=authority_model.ObligationState.SATISFIED,
         rule=authority_model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN,
     )
     _assert_typed_effect_cell(
         case,
-        ea=0x3001,
+        ea=0x4002,
         state=authority_model.ObligationState.VIOLATED,
         rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
     )
-    sibling_subject = _typed_effect_subject(case, 0x3001)
+    sibling_subject = _typed_effect_subject(case, 0x4002)
+    ledger = verdict.loss_ledger
+    assert ledger is not None
     sibling_row = next(
-        row for row in authority_views.semantic_loss_ledger(case).rows
-        if row.source_subject == sibling_subject
+        row for row in ledger.rows
+        if row.source_subject.block_ref == sibling_subject.block_ref
     )
     assert sibling_row.kind is authority_model.SemanticLossKind.UNCLASSIFIED
-    assert sibling_row.claim_ids == ()
+    assert sibling_row not in ledger.allowed
 
 
 def test_backend_rejects_duplicate_typed_local_alias_host_coordinate() -> None:
     pre_cfg, plan = _typed_local_alias_fixture(two_hosts=True)
-    duplicate = replace(plan.steps[-1], host_ea=0x3000)
+    duplicate = replace(plan.steps[-1], host_ea=0x4000)
     plan = replace(plan, steps=(*plan.steps[:-1], duplicate))
-    backend = _typed_alias_backend(
-        pre_cfg, plan, _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True),
-    )
+    backend = _typed_alias_backend(pre_cfg, plan, pre_cfg)
     assert backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks)) is pre_cfg
     assert backend.last_patch_execution is None
 
 
 def test_backend_rejects_ambiguous_typed_local_alias_observation() -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
-    observed = _observed_typed_local_alias_cfg(pre_cfg)
-    host = observed.blocks[2].insn_snapshots[0]
+    observed = _observed_typed_local_alias_cfg(pre_cfg, plan)
+    host = observed.blocks[3].insn_snapshots[0]
     observed = replace(
         observed,
         blocks={
             **observed.blocks,
-            2: replace(observed.blocks[2], insn_snapshots=(host, replace(host))),
+            3: replace(
+                observed.blocks[3],
+                insn_snapshots=(host, replace(host), *observed.blocks[3].insn_snapshots[1:]),
+            ),
         },
     )
     backend = _typed_alias_backend(pre_cfg, plan, observed)
@@ -2704,7 +3444,7 @@ def test_backend_rejects_ambiguous_typed_local_alias_observation() -> None:
 def test_backend_accepts_typed_local_alias_without_optional_value_size() -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
     plan = replace(plan, steps=(*plan.steps[:-1], replace(plan.steps[-1], value_size=None)))
-    observed = _observed_typed_local_alias_cfg(pre_cfg)
+    observed = _observed_typed_local_alias_cfg(pre_cfg, plan)
     backend = _typed_alias_backend(pre_cfg, plan, observed)
     result = backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
     assert result is observed
@@ -2712,7 +3452,9 @@ def test_backend_accepts_typed_local_alias_without_optional_value_size() -> None
     assert execution is not None
     verdict = execution.observed_unflatten_verdict
     assert verdict is not None and verdict.safety_case is not None
-    ledger = authority_views.semantic_loss_ledger(verdict.safety_case)
+    acceptance = verdict.observed_acceptance
+    assert acceptance is not None
+    ledger = acceptance.observed_ledger
     assert len(ledger.rows) == 1
     assert ledger.rows[0].kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
 
@@ -2724,7 +3466,7 @@ def test_backend_rejects_typed_local_alias_source_token_substring() -> None:
         steps=(*plan.steps[:-1], replace(plan.steps[-1], alias_token="%var_alia")),
     )
     backend = _typed_alias_backend(
-        pre_cfg, plan, _observed_typed_local_alias_cfg(pre_cfg),
+        pre_cfg, plan, _observed_typed_local_alias_cfg(pre_cfg, plan),
     )
     assert backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks)) is pre_cfg
     assert backend.last_patch_execution is None
@@ -2733,31 +3475,31 @@ def test_backend_rejects_typed_local_alias_source_token_substring() -> None:
 def test_backend_rejects_unchanged_typed_local_alias_store() -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
     observed = _mutate_typed_alias_host(
-        pre_cfg,
+        _observed_typed_local_alias_cfg(pre_cfg, plan),
         kind=InsnKind.STORE,
-        opcode=0,
-        display_text="store %var_alias",
+        opcode=23,
+        display_text="%var_10 = %var_20",
     )
     backend = _typed_alias_backend(pre_cfg, plan, observed)
     with pytest.raises(CfgGenerationPoisoned) as caught:
         backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
     verdict = caught.value.unflatten_verdict
     assert verdict is not None and verdict.safety_case is not None
-    ledger = authority_views.semantic_loss_ledger(verdict.safety_case)
-    assert ledger.rows == ()
+    ledger = verdict.loss_ledger
+    assert ledger is not None
+    assert len(ledger.rows) == 1
+    assert ledger.rows[0].kind is authority_model.SemanticLossKind.CONFLICTING
+    assert ledger.rows[0].claims == ()
     case = verdict.safety_case
     _assert_typed_effect_cell(
         case,
-        ea=0x3000,
+        ea=0x4000,
         state=authority_model.ObligationState.INCONSISTENT,
         rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
     )
-    effect_subject = _typed_effect_subject(case, 0x3000)
-    owner_key = authority_model.ObligationKey(
-        effect_subject,
-        authority_model.SafetyDimension.STRUCTURAL_ACCOUNTING,
-    )
-    owner_cell = next(cell for cell in case.obligation_index.cells if cell.key == owner_key)
+    owner_cell = ledger.rows[0].structural_obligation
+    owner_key = owner_cell.key
+    assert owner_key.subject.role is authority_model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
     assert owner_cell.state is authority_model.ObligationState.SATISFIED
     assert all(
         failed.key != owner_key for failed in verdict.failed_obligations
@@ -2769,30 +3511,30 @@ def test_backend_rejects_unchanged_typed_local_alias_store() -> None:
     (
         (InsnKind.NOP, "nop"),
         (InsnKind.MOV, "mov #1.4, %var_other.4"),
-        (InsnKind.MOV, "mov #1.4, %var_399.4"),
-        (InsnKind.MOV, "mov unrelated_%var_398_suffix"),
-        (InsnKind.MOV, "mov %var_398.4, %var_other.4"),
-        (InsnKind.MOV, "mov #1.4, %var_398.8"),
-        (InsnKind.MOV, "mov #1.4, %var_398.04"),
-        (InsnKind.MOV, "mov #1.4, %var_398." + "9" * 5000),
+        (InsnKind.MOV, "mov #1.4, %var_21.4"),
+        (InsnKind.MOV, "mov unrelated_%var_20_suffix"),
+        (InsnKind.MOV, "mov %var_20.4, %var_other.4"),
+        (InsnKind.MOV, "mov #1.4, %var_20.8"),
+        (InsnKind.MOV, "mov #1.4, %var_20.04"),
+        (InsnKind.MOV, "mov #1.4, %var_20." + "9" * 5000),
     ),
 )
 def test_backend_rejects_typed_local_alias_wrong_scalarized_observation(
     instruction_kind: InsnKind, display_text: str,
 ) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
-    observed = _observed_typed_local_alias_cfg(pre_cfg)
+    observed = _observed_typed_local_alias_cfg(pre_cfg, plan)
     observed = replace(
         observed,
         blocks={
             **observed.blocks,
-            2: replace(
-                observed.blocks[2],
+            3: replace(
+                observed.blocks[3],
                 insn_snapshots=(replace(
-                    observed.blocks[2].insn_snapshots[0],
+                    observed.blocks[3].insn_snapshots[0],
                     kind=instruction_kind,
                     display_text=display_text,
-                ),),
+                ), *observed.blocks[3].insn_snapshots[1:]),
             ),
         },
     )
@@ -2803,16 +3545,18 @@ def test_backend_rejects_typed_local_alias_wrong_scalarized_observation(
     assert verdict is not None and verdict.safety_case is not None
     _assert_typed_effect_cell(
         verdict.safety_case,
-        ea=0x3000,
+        ea=0x4000,
         state=(
             authority_model.ObligationState.VIOLATED,
             authority_model.ObligationState.INCONSISTENT,
         ),
         rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
     )
+    ledger = verdict.loss_ledger
+    assert ledger is not None
     assert not any(
         row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
-        for row in authority_views.semantic_loss_ledger(verdict.safety_case).rows
+        for row in ledger.rows
     )
 
 
@@ -2820,14 +3564,14 @@ def test_backend_rejects_typed_local_alias_wrong_scalarized_observation(
     "changes",
     (
         {"opcode": 999},
-        {"d": MopSnapshot(kind=OperandKind.LVAR, size=8), "l": MopSnapshot(kind=OperandKind.NUMBER, size=8, value=1), "display_text": "mov #1.8, %var_398.8"},
+        {"d": MopSnapshot(kind=OperandKind.LVAR, size=8), "l": MopSnapshot(kind=OperandKind.NUMBER, size=8, value=1), "display_text": "mov #1.8, %var_20.8"},
     ),
 )
 def test_backend_rejects_typed_local_alias_noncanonical_mov_observation(
     changes: dict[str, object],
 ) -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
-    observed = _mutate_typed_alias_host(_observed_typed_local_alias_cfg(pre_cfg), **changes)
+    observed = _mutate_typed_alias_host(_observed_typed_local_alias_cfg(pre_cfg, plan), **changes)
     backend = _typed_alias_backend(pre_cfg, plan, observed)
     with pytest.raises(CfgGenerationPoisoned) as caught:
         backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
@@ -2835,25 +3579,27 @@ def test_backend_rejects_typed_local_alias_noncanonical_mov_observation(
     assert verdict.safety_case is not None
     _assert_typed_effect_cell(
         verdict.safety_case,
-        ea=0x3000,
+        ea=0x4000,
         state=(
             authority_model.ObligationState.VIOLATED,
             authority_model.ObligationState.INCONSISTENT,
         ),
         rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
     )
+    ledger = verdict.loss_ledger
+    assert ledger is not None
     assert not any(
         row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
-        for row in authority_views.semantic_loss_ledger(verdict.safety_case).rows
+        for row in ledger.rows
     )
 
 
 def test_backend_rejects_typed_local_alias_wrong_host_ea_precase() -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
     observed = _mutate_typed_alias_host(
-        _observed_typed_local_alias_cfg(pre_cfg),
-        ea=0x3004,
-        native_ea=0x3004,
+        _observed_typed_local_alias_cfg(pre_cfg, plan),
+        ea=0x4004,
+        native_ea=0x4004,
     )
     backend = _typed_alias_backend(pre_cfg, plan, observed)
     with pytest.raises(CfgGenerationPoisoned) as caught:
@@ -2869,27 +3615,27 @@ def test_backend_rejects_typed_local_alias_stale_host_text_claim() -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
     alias_step = replace(plan.steps[-1], host_text_sha1="0" * 16)
     plan = replace(plan, steps=(*plan.steps[:-1], alias_step))
-    backend = _typed_alias_backend(pre_cfg, plan, _observed_typed_local_alias_cfg(pre_cfg))
+    backend = _typed_alias_backend(pre_cfg, plan, _observed_typed_local_alias_cfg(pre_cfg, plan))
     assert backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks)) is pre_cfg
     assert backend.last_patch_execution is None
 
 
 def test_backend_rejects_typed_local_alias_host_call_transition() -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
-    observed = _observed_typed_local_alias_cfg(pre_cfg)
+    observed = _observed_typed_local_alias_cfg(pre_cfg, plan)
     observed = replace(
         observed,
         blocks={
             **observed.blocks,
-            2: replace(
-                observed.blocks[2],
+            3: replace(
+                observed.blocks[3],
                 insn_snapshots=(replace(
-                    observed.blocks[2].insn_snapshots[0],
+                    observed.blocks[3].insn_snapshots[0],
                     opcode=57,
                     kind=InsnKind.CALL,
                     is_call=True,
                     display_text="call %var_other",
-                ),),
+                ), *observed.blocks[3].insn_snapshots[1:]),
             ),
         },
     )
@@ -2906,28 +3652,31 @@ def test_backend_rejects_typed_local_alias_host_call_transition() -> None:
     assert verdict.failed_obligations
     _assert_typed_effect_cell(
         verdict.safety_case,
-        ea=0x3000,
+        ea=0x4000,
         state=(
             authority_model.ObligationState.VIOLATED,
             authority_model.ObligationState.INCONSISTENT,
         ),
         rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
     )
+    ledger = verdict.loss_ledger
+    assert ledger is not None
     assert not any(
         row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
-        for row in authority_views.semantic_loss_ledger(verdict.safety_case).rows
+        for row in ledger.rows
     )
 
 
 def test_backend_rejects_typed_local_alias_unreachable_owner() -> None:
     pre_cfg, plan = _typed_local_alias_fixture()
-    observed = _observed_typed_local_alias_cfg(pre_cfg)
+    observed = _observed_typed_local_alias_cfg(pre_cfg, plan)
     observed = replace(
         observed,
         blocks={
             **observed.blocks,
-            1: replace(observed.blocks[1], succs=(3,), kind=BlockKind.ONE_WAY),
-            2: replace(observed.blocks[2], preds=()),
+            0: replace(observed.blocks[0], succs=(2,), kind=BlockKind.ONE_WAY),
+            1: replace(observed.blocks[1], preds=(), succs=(3,), kind=BlockKind.ONE_WAY),
+            2: replace(observed.blocks[2], preds=(0,)),
             3: replace(observed.blocks[3], preds=(1,)),
         },
     )
@@ -2944,16 +3693,18 @@ def test_backend_rejects_typed_local_alias_unreachable_owner() -> None:
     assert verdict.failed_obligations
     _assert_typed_effect_cell(
         verdict.safety_case,
-        ea=0x3000,
+        ea=0x4000,
         state=(
             authority_model.ObligationState.VIOLATED,
             authority_model.ObligationState.INCONSISTENT,
         ),
         rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
     )
+    ledger = verdict.loss_ledger
+    assert ledger is not None
     assert not any(
         row.kind is authority_model.SemanticLossKind.LOCAL_ALIAS_SCALARIZATION
-        for row in authority_views.semantic_loss_ledger(verdict.safety_case).rows
+        for row in ledger.rows
     )
 
 
@@ -3170,6 +3921,7 @@ def test_backend_commits_the_complete_ordinary_patch_transaction_timeline() -> N
     assert execution.applied_count == 1
     assert execution.receipt.operation_count == 1
     assert execution.receipt.planned_operation_count == 1
+    assert execution.receipt.semantic_authority_commitment is None
     assert [event.phase for event in phases] == [
         CfgTransactionPhase.PLANNED,
         CfgTransactionPhase.PROJECTED,
@@ -3766,20 +4518,21 @@ def test_small_noncyclic_retirement_uses_transaction_owned_contract():
 def test_backend_reports_unclaimed_typed_local_alias_sibling_store_loss() -> None:
     pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
     plan = replace(full_plan, steps=full_plan.steps[:-1])
-    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    observed = _observed_typed_local_alias_cfg(pre_cfg, plan, two_hosts=True)
     observed = replace(
         observed,
         blocks={
             **observed.blocks,
-            2: replace(
-                observed.blocks[2],
+            3: replace(
+                observed.blocks[3],
                 insn_snapshots=(
-                    observed.blocks[2].insn_snapshots[0],
+                    observed.blocks[3].insn_snapshots[0],
                     replace(
-                        observed.blocks[2].insn_snapshots[1],
+                        observed.blocks[3].insn_snapshots[1],
                         kind=InsnKind.NOP,
                         display_text="nop",
                     ),
+                    observed.blocks[3].insn_snapshots[2],
                 ),
             ),
         },
@@ -3792,40 +4545,45 @@ def test_backend_reports_unclaimed_typed_local_alias_sibling_store_loss() -> Non
     case = verdict.safety_case
     _assert_typed_effect_cell(
         case,
-        ea=0x3000,
+        ea=0x4000,
         state=authority_model.ObligationState.SATISFIED,
         rule=authority_model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN,
     )
     _assert_typed_effect_cell(
         case,
-        ea=0x3001,
+        ea=0x4002,
         state=authority_model.ObligationState.VIOLATED,
         rule=authority_model.UnflattenJustificationRule.EFFECT_LOST_UNACCOUNTED,
     )
-    ledger = authority_views.semantic_loss_ledger(case)
-    sibling_subject = _typed_effect_subject(case, 0x3001)
-    sibling_row = next(row for row in ledger.rows if row.source_subject == sibling_subject)
+    ledger = verdict.loss_ledger
+    assert ledger is not None
+    sibling_subject = _typed_effect_subject(case, 0x4002)
+    sibling_row = next(
+        row for row in ledger.rows
+        if row.source_subject.block_ref == sibling_subject.block_ref
+    )
     assert sibling_row.kind is authority_model.SemanticLossKind.UNCLASSIFIED
-    assert sibling_row.claim_ids == ()
+    assert sibling_row not in ledger.allowed
 
 
 
 def test_backend_preserves_unclaimed_typed_local_alias_sibling_store() -> None:
     pre_cfg, full_plan = _typed_local_alias_fixture(two_hosts=True)
     plan = replace(full_plan, steps=full_plan.steps[:-1])
-    observed = _observed_typed_local_alias_cfg(pre_cfg, two_hosts=True)
+    observed = _observed_typed_local_alias_cfg(pre_cfg, plan, two_hosts=True)
     observed = replace(
         observed,
         blocks={
             **observed.blocks,
-            2: replace(
-                observed.blocks[2],
+            3: replace(
+                observed.blocks[3],
                 insn_snapshots=(
-                    observed.blocks[2].insn_snapshots[0],
+                    observed.blocks[3].insn_snapshots[0],
                     replace(
-                        pre_cfg.blocks[2].insn_snapshots[1],
-                        display_text="store %var_alias2",
+                        pre_cfg.blocks[3].insn_snapshots[1],
+                        display_text="%var_11 = %var_21",
                     ),
+                    observed.blocks[3].insn_snapshots[2],
                 ),
             ),
         },
@@ -3837,7 +4595,9 @@ def test_backend_preserves_unclaimed_typed_local_alias_sibling_store() -> None:
     assert execution is not None
     verdict = execution.observed_unflatten_verdict
     assert verdict is not None and verdict.safety_case is not None
-    ledger = authority_views.semantic_loss_ledger(verdict.safety_case)
+    acceptance = verdict.observed_acceptance
+    assert acceptance is not None
+    ledger = acceptance.observed_ledger
     assert len(ledger.rows) == 1
     alias_claim = next(
         claim for claim in verdict.safety_case.claims
@@ -3948,10 +4708,10 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
         cfg,
         template=template,
         dispatcher_entry_serial=2,
-        dispatcher_member_serials=(2, 3, 4, 5, 6, 7, 8),
-        authoritative_handler_serials=(4,),
+        dispatcher_member_serials=(0, 2, 3, 4, 5, 6, 7, 8),
+        authoritative_handler_serials=(3,),
         coverage=coverage,
-        route_edge=(3, 4),
+        route_edge=(0, 3),
         removal_forecast=removal_forecast,
     )
     translator = _FakeTranslator(cfg)
@@ -3971,7 +4731,7 @@ def test_small_switch_retirement_rejects_detached_cyclic_residue() -> None:
 
 
 def test_small_switch_retirement_accepts_exact_terminal_cycle_break() -> None:
-    """A typed merge redirect may break the otherwise detached switch SCC."""
+    """The exact cycle-break claim binds even when another gate rejects."""
     cfg = _make_cfg(
         [
             (0, 2),
@@ -3985,7 +4745,25 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break() -> None:
         ],
         stop_serials=(9,),
     )
-    refs = {serial: _native_ref(serial) for serial in cfg.blocks}
+    # Keep the exact indirect write -> merge -> switch corridor in native-EA
+    # order, as required by SemanticStateWriteProof's stable delivery witness.
+    cfg = replace(
+        cfg,
+        blocks={
+            **cfg.blocks,
+            2: replace(
+                cfg.blocks[2],
+                start_ea=0x1012,
+                native_start_ea=0x1012,
+            ),
+        },
+    )
+    refs = {
+        serial: NativeBlockRef(StableBlockIdentity.from_instruction_eas(
+            (block.start_ea,), native_key=NATIVE_KEY,
+        ))
+        for serial, block in cfg.blocks.items()
+    }
     modifications = (
         RedirectGoto(from_serial=0, old_target=2, new_target=3),
         RedirectGoto(from_serial=3, old_target=8, new_target=4),
@@ -4046,7 +4824,7 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break() -> None:
         cfg,
         template=template,
         dispatcher_entry_serial=2,
-        dispatcher_member_serials=(2, 7, 8),
+        dispatcher_member_serials=(0, 2, 3, 4, 5, 7, 8),
         authoritative_handler_serials=(6,),
         coverage=coverage,
         route_edge=(5, 6),
@@ -4073,6 +4851,20 @@ def test_small_switch_retirement_accepts_exact_terminal_cycle_break() -> None:
     assert result is cfg
     assert translator.lower_calls == []
     assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
+    verdict = backend.last_patch_failure.unflatten_verdict
+    assert verdict is not None and verdict.safety_case is not None
+    terminal_claim = next(
+        claim for claim in verdict.safety_case.claims
+        if type(claim) is authority_model.TerminalCycleBreakClaim
+    )
+    assert any(
+        result.claim_id == terminal_claim.claim_id
+        for result in verdict.safety_case.terminal_cycle_phase_results
+    )
+    assert all(
+        failed.key.dimension is not authority_model.SafetyDimension.TERMINAL_REACHABILITY
+        for failed in verdict.failed_obligations
+    )
 
 
 def test_below_threshold_dispatcher_retirement_still_requires_narrow_proof():

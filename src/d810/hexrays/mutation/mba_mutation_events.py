@@ -60,6 +60,7 @@ from d810.transforms.cfg_transaction import (
     CfgTransactionFailure,
     CfgTransactionPhase,
     PlanBlockRef,
+    SemanticAuthorityCommitment,
     TransactionAttemptId,
 )
 
@@ -242,8 +243,11 @@ class MbaMutationReceipt:
     current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None
     detached_route_oracle: DetachedRouteOracleResult | None = None
     committed_operation_inventory: tuple[MbaMutationPlanItem, ...] = ()
+    semantic_authority_commitment: SemanticAuthorityCommitment | None = None
 
     def __post_init__(self) -> None:
+        if self.semantic_authority_commitment is not None and type(self.semantic_authority_commitment) is not SemanticAuthorityCommitment:
+            raise TypeError("semantic_authority_commitment must be SemanticAuthorityCommitment or None")
         pre_generation = int(self.pre_generation)
         post_generation = int(self.post_generation)
         evidence_generation = int(self.evidence_generation)
@@ -2888,7 +2892,11 @@ class MbaMutationGateway:
         )
         self._operation_count += count
 
-    def commit(self) -> MbaMutationReceipt:
+    def commit(
+        self,
+        *,
+        semantic_authority_commitment: SemanticAuthorityCommitment | None = None,
+    ) -> MbaMutationReceipt:
         self._require_active()
         fragment_plan = self._active_fragment_plan
         requires_reference_route_oracle = bool(
@@ -2972,6 +2980,7 @@ class MbaMutationGateway:
             current_mba_identity_binding=self._active_current_mba_identity_binding,
             detached_route_oracle=self._active_detached_route_oracle,
             committed_operation_inventory=self._active_plan_items,
+            semantic_authority_commitment=semantic_authority_commitment,
         )
         self.generation = post_generation
         self._receipts.append(receipt)
@@ -3078,6 +3087,7 @@ class MbaMutationGateway:
         *,
         affected_identities: Iterable[StableBlockIdentity] = (),
         description: str = "",
+        semantic_authority_commitment: SemanticAuthorityCommitment | None = None,
     ) -> MbaMutationReceipt:
         """Record one already-applied structural mutation as a one-op batch."""
         self.begin_batch(
@@ -3087,7 +3097,7 @@ class MbaMutationGateway:
         )
         self._affected_identities.update(affected_identities)
         self._operation_count = 1
-        return self.commit()
+        return self.commit(semantic_authority_commitment=semantic_authority_commitment)
 
 
 __all__ = [

@@ -51,45 +51,88 @@ def test_one_anchored_fact_observation_per_authoritative_phase() -> None:
     assert build_phase_payload(verdict)["schema"] == "unflatten_authority_phase.v1"
 
 
-def test_payload_projects_only_the_semantic_loss_ledger() -> None:
-    subject = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "diagnostic-ledger")
-    case = build_semantic_case(
-        authority_id=authority_id("diagnostic-ledger"),
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=_complete_inputs(source_subjects=(subject,), candidate_subjects=()),
+def test_direct_diagnostics_project_receipted_ledgers_without_rebuilding_them(
+    monkeypatch,
+) -> None:
+    """Accepted records render the transaction occurrences, not view products."""
+    from .test_views import _bound_direct_authority_cases
+    import d810.transforms.unflatten_authority.diagnostics as diagnostics
+
+    prepared, accepted = _bound_direct_authority_cases(exact_effect_loss=True)
+    observed_case = accepted.observed_case
+    verdict = model.UnflattenAuthorityVerdict(
+        accepted=True,
+        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        reason=model.UnflattenAuthorityReason.ACCEPTED,
+        authority_id=observed_case.authority_id,
+        binding_id=accepted.bound_authority.binding_id,
+        case_id=observed_case.case_id,
+        candidate_fingerprint=observed_case.candidate_fingerprint,
+        safety_case=observed_case,
+        failed_obligations=(),
+        observed_acceptance=accepted,
+        loss_ledger=accepted.observed_ledger,
     )
-    verdict = evaluate_case(case)
+    monkeypatch.setattr(
+        diagnostics, "observed_loss_delta",
+        lambda _projected, _observed: pytest.fail("accepted diagnostics rebuilt a delta"),
+    )
+
     payload = build_phase_payload(verdict)
-    ledger = views.semantic_loss_ledger(case)
-    assert payload["source_fingerprint"] == case.source_fingerprint
-    assert len(payload["loss_ledger"]) == len(ledger.rows)
-    assert len(payload["failed_obligations"]) == len(verdict.failed_obligations)
-    assert all("classification" in row for row in payload["loss_ledger"])
-    assert all(
-        {"supports", "refutes"} <= set(row)
-        for row in payload["obligation_states"]
+
+    assert payload["authority_id"] == prepared.authority_id == observed_case.authority_id
+    assert tuple(row["anchor"] for row in payload["loss_ledger"]) == tuple(
+        row.anchored_location for row in accepted.observed_ledger.rows
     )
-    assert len(payload["explanations"]) == len(case.justifications)
-    assert all(row.anchored_location.startswith("blk") for row in ledger.rows)
-    assert all(row.source_binding.status is model.SubjectBindingStatus.UNIQUE for row in ledger.rows)
-    assert all(row.candidate_binding.status is model.SubjectBindingStatus.MISSING for row in ledger.rows)
-    assert all(
-        re.fullmatch(r"blk[0-9]+@0x[0-9a-f]+", row["anchor"])
-        for row in payload["loss_ledger"]
+    assert tuple(row["anchor"] for row in payload["observed_only_loss"]) == tuple(
+        row.anchored_location for row in accepted.delta.rows
     )
-    assert "kind" not in model.SemanticLossRow.__dataclass_fields__
-    assert canonical_decode(canonical_bytes(ledger.rows[0])) == ledger.rows[0]
-    with pytest.raises(ValueError):
-        replace(ledger.rows[0], evidence=())
+    assert payload["loss_summary"]["observed_only"] == tuple(
+        row.anchored_location for row in accepted.delta.rows
+    )
+
+
+def test_direct_projected_diagnostics_require_the_prepared_ledger_occurrence() -> None:
+    """Projected acceptance is rendered from preparation, never from its case."""
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.unflatten_authority import transaction_api
+    from .test_transaction_api import _c1_direct_preparation_case
+
+    fixture, source, plan, projected, gates = _c1_direct_preparation_case()
+    result = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gates,
+    )
+    assert result.prepared is not None
+    payload = build_phase_payload(
+        result.verdict,
+        prepared_authority=result.prepared,
+    )
+
+    assert payload["authority_id"] == result.prepared.authority_id
+    assert tuple(row["anchor"] for row in payload["loss_ledger"]) == tuple(
+        row.anchored_location for row in result.prepared.projected_loss_ledger.rows
+    )
 
 
 def test_observed_precase_with_projected_case_is_total_and_typed() -> None:
-    subject = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "diagnostic-precase")
-    projected_case = build_semantic_case(
-        authority_id=authority_id("diagnostic-precase"),
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=_complete_inputs(source_subjects=(subject,), candidate_subjects=()),
+    from d810.transforms.cfg_transaction import CfgProjection
+    from d810.transforms.unflatten_authority import transaction_api
+    from .test_transaction_api import _c1_direct_preparation_case
+
+    fixture, source, plan, projected, gates = _c1_direct_preparation_case()
+    preparation = transaction_api.prepare_unflatten_authority(
+        source=source,
+        projection=CfgProjection(plan.plan_id, plan.snapshot_id, projected),
+        plan=plan,
+        attempt_id=fixture.attempt_id,
+        generic_gates=gates,
     )
+    assert preparation.prepared is not None
+    projected_case = preparation.prepared.projected_case
     verdict = model.UnflattenAuthorityVerdict(
         accepted=False,
         phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
@@ -102,62 +145,34 @@ def test_observed_precase_with_projected_case_is_total_and_typed() -> None:
     assert payload["source_fingerprint"] == projected_case.source_fingerprint
     assert payload["loss_ledger"] == ()
     assert payload["observed_only_loss"] == ()
-    assert payload["observed_only_loss_rejection"]["reason"] == "observed_case_missing"
+    assert payload["observed_only_loss_rejection"]["reason"] == "canonical_observed_ledger_missing"
 
 
-def test_observed_kind_reclassification_is_one_canonical_diagnostic_record(
+def test_accepted_observed_diagnostics_do_not_reclassify_a_receipted_ledger(
     monkeypatch,
 ) -> None:
-    subject = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "diagnostic-kind-drift")
-    projected_case = build_semantic_case(
-        authority_id=authority_id("diagnostic-kind-drift"),
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=_complete_inputs(source_subjects=(subject,), candidate_subjects=()),
-    )
-    observed_case = build_semantic_case(
-        authority_id=authority_id("diagnostic-kind-drift"),
-        phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
-        inputs=_complete_inputs(
-            source_subjects=(subject,), candidate_subjects=(),
-            phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
-        ),
-    )
-    original_kind = model.SemanticLossRow.kind
-    monkeypatch.setattr(
-        model.SemanticLossRow,
-        "kind",
-        property(
-            lambda row: (
-                model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE
-                if row.source_subject.subject_id == subject.subject_id
-                and row.case.phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
-                else model.SemanticLossKind.UNCLASSIFIED
-                if row.source_subject.subject_id == subject.subject_id
-                else original_kind.fget(row)
-            )
-        ),
-    )
+    from .test_views import _bound_direct_authority_cases
+
+    prepared, accepted = _bound_direct_authority_cases(exact_effect_loss=True)
+    observed_case = accepted.observed_case
     verdict = model.UnflattenAuthorityVerdict(
-        accepted=False,
+        accepted=True,
         phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
-        reason=model.UnflattenAuthorityReason.LIVE_BINDING_FAILED,
+        reason=model.UnflattenAuthorityReason.ACCEPTED,
         authority_id=observed_case.authority_id,
-        binding_id=authority_id("diagnostic-binding"),
+        binding_id=accepted.bound_authority.binding_id,
         case_id=observed_case.case_id,
         candidate_fingerprint=observed_case.candidate_fingerprint,
         safety_case=observed_case,
-        failed_obligations=tuple(
-            model.FailedObligation(cell.key, cell.state)
-            for cell in observed_case.obligation_index.cells
-            if cell.state is not model.ObligationState.SATISFIED
-        ),
+        failed_obligations=(),
+        observed_acceptance=accepted,
+        loss_ledger=accepted.observed_ledger,
     )
 
     observation = phase_observation(
         verdict,
         maturity="MMAT_GLBOPT1",
         source_ea=0x401000,
-        projected_case=projected_case,
         correlation=TransactionAttemptId(
             authority_id("diagnostic-plan"),
             authority_id("diagnostic-session"),
@@ -167,12 +182,7 @@ def test_observed_kind_reclassification_is_one_canonical_diagnostic_record(
     )
 
     records = observation.payload["observed_loss_reclassification"]
-    assert len(records) == 1
-    assert records[0]["projected_kind"] == "retired_dispatcher_infrastructure"
-    assert records[0]["observed_kind"] == "unclassified"
-    assert records[0]["anchor"] == "blk0@0x1000"
-    assert records[0]["projected_evidence_ids"]
-    assert records[0]["observed_evidence_ids"]
+    assert records == ()
     assert observation.payload["authority_id"] == observed_case.authority_id
     assert observation.payload["plan_id"] == authority_id("diagnostic-plan")
     assert observation.payload["session_id"] == authority_id("diagnostic-session")
@@ -267,13 +277,13 @@ def test_observed_precase_fact_id_excludes_attempt_bound_binding_id() -> None:
 
 
 def test_canonical_phase_counters_are_derived_from_case_metrics() -> None:
-    subject = _role_subject(model.SemanticSubjectRole.SOURCE_ENTRY, "diagnostic-counters")
-    case = build_semantic_case(
-        authority_id=authority_id("diagnostic-counters"),
-        phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
-        inputs=_complete_inputs(source_subjects=(subject,), candidate_subjects=()),
-    )
-    assert CanonicalPhaseCounters.from_case(case).tuple == (1, 1, 1, 0)
+    from .test_views import _bound_direct_authority_cases
+
+    prepared, _accepted = _bound_direct_authority_cases()
+    counters = CanonicalPhaseCounters.from_case(prepared.projected_case)
+    assert counters.source_inventory_builds == 1
+    assert counters.candidate_inventory_builds == 1
+    assert counters.view_graph_traversals == 0
 
 
 def test_complete_phase_timings_require_the_canonical_component_sum() -> None:
@@ -295,61 +305,41 @@ def test_complete_phase_timings_require_the_canonical_component_sum() -> None:
 
 
 def test_one_anchored_fact_observation_per_case_phase_has_exact_ids_and_labels() -> None:
-    from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
-    from d810.hexrays.mutation.patch_binding import bind_patch_plan
-    from d810.transforms.unflatten_authority import transaction_api
-    from .test_transaction_api import _full_corridor_fixture
+    from .test_views import _bound_direct_authority_cases
 
-    source, plan, projected_graph, generic_gates = _full_corridor_fixture()
-    attempt = TransactionAttemptId(
-        plan.plan_id, authority_id("diagnostic-session"), 1,
-        authority_id("diagnostic-attempt"),
+    prepared, accepted = _bound_direct_authority_cases(exact_effect_loss=True)
+    attempt = accepted.bound_authority.attempt_id
+    projected = model.UnflattenAuthorityVerdict(
+        accepted=True, phase=model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        reason=model.UnflattenAuthorityReason.ACCEPTED,
+        authority_id=prepared.authority_id, binding_id=None,
+        case_id=prepared.projected_case.case_id,
+        candidate_fingerprint=prepared.projected_case.candidate_fingerprint,
+        safety_case=prepared.projected_case, failed_obligations=(),
+        loss_ledger=prepared.projected_loss_ledger,
     )
-    prepared = transaction_api.prepare_unflatten_authority(
-        source=source,
-        projection=transaction_api.CfgProjection(
-            plan.plan_id, plan.snapshot_id, projected_graph,
-        ),
-        plan=plan,
-        attempt_id=attempt,
-        generic_gates=generic_gates,
+    observed = model.UnflattenAuthorityVerdict(
+        accepted=True, phase=model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+        reason=model.UnflattenAuthorityReason.ACCEPTED,
+        authority_id=accepted.observed_case.authority_id,
+        binding_id=accepted.bound_authority.binding_id,
+        case_id=accepted.observed_case.case_id,
+        candidate_fingerprint=accepted.observed_case.candidate_fingerprint,
+        safety_case=accepted.observed_case, failed_obligations=(),
+        observed_acceptance=accepted,
+        loss_ledger=accepted.observed_ledger,
     )
-    projected = prepared.verdict
-    assert prepared.prepared is not None
-    assert projected.safety_case is not None
-    refs = {
-        block.block_ref: block
-        for block in plan.unflatten_proposal.source_identity_catalog.blocks
-    }
-    index = MbaBlockIdentityIndex.from_bindings(
-        generation=attempt.generation,
-        maturity=None,
-        native_key=next(iter(refs)).identity.native_key,
-        snapshot_id=plan.snapshot_id,
-        session_id=attempt.session_id,
-        bindings=tuple((ref.identity, serial) for ref, serial in plan.source_coordinates),
-    )
-    index.begin_transaction(attempt, quantity=len(source.blocks))
-    bound = transaction_api.bind_prepared_unflatten_authority(
-        prepared=prepared.prepared,
-        patch_binding=bind_patch_plan(plan, index, attempt).bound_plan,
-    )
-    assert bound.authority is not None
-    observed = transaction_api.revalidate_observed_unflatten_authority(
-        authority=bound.authority,
-        observed=projected_graph,
-        observed_generation=attempt.generation,
-        generic_gates=generic_gates,
-    )
-    assert observed.accepted
-    authority = projected.authority_id
-    rows = tuple(
+    rows = (
         phase_observation(
-            verdict, maturity="MMAT_GLBOPT1", source_ea=0x401000,
+            projected, maturity="MMAT_GLBOPT1", source_ea=0x401000,
+            correlation=attempt, prepared_authority=prepared,
+        ),
+        phase_observation(
+            observed, maturity="MMAT_GLBOPT1", source_ea=0x401000,
             correlation=attempt,
-        )
-        for verdict in (projected, observed)
+        ),
     )
+    authority = prepared.authority_id
     assert len(rows) == 2
     assert {row.phase for row in rows} == {"projected_preflight", "observed_post_apply"}
     assert {row.payload["authority_id"] for row in rows} == {authority}

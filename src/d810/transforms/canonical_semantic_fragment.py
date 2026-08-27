@@ -10,6 +10,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     BoundCanonicalSemanticEvidence,
     BoundSemanticBlock,
     CanonicalSemanticEvidence,
+    canonical_semantic_evidence_from_proofs,
     SemanticCorridorPoint,
     SemanticPredicateKind,
     SemanticRouteProof,
@@ -4763,17 +4764,16 @@ def compose_canonical_carrier_ingress_fragment_plan(
         source_owner_identity=rewrite.owner_identity,
         source_owner_anchor_ea=int(rewrite.owner_anchor_ea),
     )
-    root_evidence = CanonicalSemanticEvidence(
+    root_evidence = canonical_semantic_evidence_from_proofs(
         native_key=available_evidence.native_key,
         generation=available_evidence.generation,
-        atomic_group_id=scoped_atomic_group_id,
-        route_proofs=(root_proof,),
+        proofs=(root_proof,),
     )
-    scoped_available_evidence = CanonicalSemanticEvidence(
+    (canonical_root_proof,) = root_evidence.route_proofs
+    scoped_available_evidence = canonical_semantic_evidence_from_proofs(
         native_key=available_evidence.native_key,
         generation=available_evidence.generation,
-        atomic_group_id=scoped_atomic_group_id,
-        route_proofs=(root_proof, scoped_nested_proof),
+        proofs=(root_proof, scoped_nested_proof),
     )
     plan = compose_canonical_semantic_fragment_plan(
         graph,
@@ -4793,7 +4793,7 @@ def compose_canonical_carrier_ingress_fragment_plan(
             reason_code="carrier_ingress_root_identity_drift",
             anchor_ea=int(carrier_definition.anchor_ea),
         )
-    root_operation = plan.operation(f"route:{root_proof_id}")
+    root_operation = plan.operation(f"route:{canonical_root_proof.proof_id}")
     (selected_edge,) = root_operation.edges
 
     dispatcher_block_id = f"native[{stable_block_identity_token(dispatcher_identity)}]"
@@ -4836,7 +4836,7 @@ def compose_canonical_carrier_ingress_fragment_plan(
         )
     )
     ingress_operation = FragmentOperation(
-        operation_id=f"route:{root_proof_id}",
+        operation_id=f"route:{canonical_root_proof.proof_id}",
         source_block_id=root_id,
         predicate_anchor_ea=int(carrier_definition.anchor_ea),
         storage_predicate_materialization=FragmentStoragePredicateMaterialization(

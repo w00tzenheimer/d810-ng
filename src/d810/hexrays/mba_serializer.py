@@ -26,8 +26,20 @@ try:
 except ImportError:
     _ihr = None
 
-from d810.core.observability_models import BlockSnapshot, InstructionSnapshot
+from d810.core.observability_models import (
+    DIAG_PROVENANCE_VERSION,
+    BlockSnapshot,
+    InstructionSnapshot,
+)
 from d810.core.typing import TYPE_CHECKING
+from d810.hexrays.instruction_vocabulary import (
+    call_kind_for_opcode_name,
+    operand_kind_for_name,
+    operand_type_names,
+    tail_kind_for_opcode_name,
+    validate_live_operand_shape,
+)
+from d810.ir.flowgraph import OperandKind
 
 if TYPE_CHECKING:
     import ida_hexrays
@@ -35,6 +47,38 @@ if TYPE_CHECKING:
 # ---------- opcode / mop helpers ----------
 
 _OPCODE_NAME_CACHE: dict[int, str] = {}
+
+
+def _live_operand_kind(mop: object) -> OperandKind:
+    """Classify a live mop using the SDK-backed name table at this seam."""
+
+    if getattr(mop, "t", None) == getattr(_ihr, "mop_z", object()):
+        return operand_kind_for_name("mop_z") or OperandKind.UNKNOWN
+    return operand_kind_for_name(_mop_type_name(mop) or "") or OperandKind.UNKNOWN
+
+
+def _tail_kind_for_opcode(opcode: int) -> str:
+    """Return the closed portable tail kind recorded beside raw opcode."""
+    name = _opcode_name(opcode)
+    return tail_kind_for_opcode_name(name) or "unknown"
+
+
+def _with_provenance_meta(
+    meta: str | None,
+    **fields: object,
+) -> str:
+    """Merge independent provenance into the persisted JSON metadata."""
+
+    payload: dict[str, object] = {}
+    if meta:
+        try:
+            decoded = json.loads(meta)
+        except (TypeError, ValueError):
+            decoded = None
+        if isinstance(decoded, dict):
+            payload.update(decoded)
+    payload.update(fields)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 def _sdk_opcode_name(opcode: int) -> str | None:
@@ -76,25 +120,16 @@ def _opcode_name(opcode: int) -> str:
 
 def _mop_type_name(mop: "ida_hexrays.mop_t") -> str | None:
     """Return the mop type as a human-readable string, or None if zero/empty."""
-    _MOP_NAMES = {
-        _ihr.mop_z: None,
-        _ihr.mop_r: "mop_r",
-        _ihr.mop_n: "mop_n",
-        _ihr.mop_d: "mop_d",
-        _ihr.mop_S: "mop_S",
-        _ihr.mop_v: "mop_v",
-        _ihr.mop_b: "mop_b",
-        _ihr.mop_f: "mop_f",
-        _ihr.mop_l: "mop_l",
-        _ihr.mop_a: "mop_a",
-        _ihr.mop_h: "mop_h",
-        _ihr.mop_str: "mop_str",
-        _ihr.mop_c: "mop_c",
-        _ihr.mop_fn: "mop_fn",
-        _ihr.mop_p: "mop_p",
-        _ihr.mop_sc: "mop_sc",
-    }
-    return _MOP_NAMES.get(mop.t)
+    for name in operand_type_names():
+        if name == "mop_z":
+            continue
+        value = getattr(_ihr, name, None)
+        try:
+            if value is not None and int(value) == int(mop.t):
+                return name
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _safe_dstr(obj: object) -> str:
@@ -226,10 +261,7 @@ def _instruction_snapshot_meta(
     if meta is None:
         return None
 
-    if _ihr is not None and getattr(insn, "opcode", None) in {
-        getattr(_ihr, "m_call", object()),
-        getattr(_ihr, "m_icall", object()),
-    }:
+    if call_kind_for_opcode_name(_opcode_name(int(getattr(insn, "opcode", -1)))) is not None:
         meta["call_setup_registers"] = [
             dict(record)
             for _, record in sorted(
@@ -331,6 +363,15 @@ def mba_to_block_snapshots(
                 insn_index=insn_idx,
                 block_register_defs=block_register_defs,
             )
+            validate_live_operand_shape(
+                _opcode_name(int(insn.opcode)), l=insn.l, r=insn.r, d=insn.d,
+                kind_classifier=_live_operand_kind,
+            )
+            meta = _with_provenance_meta(
+                meta,
+                raw_opcode=int(insn.opcode),
+                provenance_version=DIAG_PROVENANCE_VERSION,
+            )
             iprops = int(insn.iprops)
             insns.append(
                 InstructionSnapshot(
@@ -351,6 +392,8 @@ def mba_to_block_snapshots(
                     src_r_value=src_r_value,
                     dstr=dstr,
                     meta=meta,
+                    raw_opcode=int(insn.opcode),
+                    provenance_version=DIAG_PROVENANCE_VERSION,
                 )
             )
             _record_register_definition(
@@ -371,6 +414,28 @@ def mba_to_block_snapshots(
             _ihr.BLT_XTRN: "BLT_XTRN",
         }
         type_name = _BLT_NAMES.get(blk.type, f"BLT_{blk.type}")
+        live_tail = getattr(blk, "tail", None)
+        if live_tail is None and insns:
+            # The backend should expose ``blk.tail``.  A block without it is
+            # not authoritative for replay; retain absence for the typed
+            # lifter instead of rebuilding a tail from the instruction list.
+            tail_opcode = raw_tail_opcode = None
+            tail_kind = None
+        else:
+            tail_opcode = int(getattr(live_tail, "opcode")) if live_tail is not None else None
+            raw_tail_opcode = tail_opcode
+            tail_kind = (
+                _tail_kind_for_opcode(tail_opcode)
+                if tail_opcode is not None
+                else None
+            )
+        block_meta = _with_provenance_meta(
+            None,
+            provenance_version=DIAG_PROVENANCE_VERSION,
+            tail_opcode=tail_opcode,
+            raw_tail_opcode=raw_tail_opcode,
+            tail_kind=tail_kind,
+        )
 
         blocks.append(
             BlockSnapshot(
@@ -384,6 +449,11 @@ def mba_to_block_snapshots(
                 succs=succs,
                 preds=preds,
                 instructions=insns,
+                meta=block_meta,
+                tail_opcode=tail_opcode,
+                raw_tail_opcode=raw_tail_opcode,
+                tail_kind=tail_kind,
+                provenance_version=DIAG_PROVENANCE_VERSION,
             )
         )
 

@@ -104,8 +104,8 @@ class TestBlockSnapshot:
         assert blk.insn_snapshots == ()
         assert blk.tail_opcode is None
 
-    def test_tail_opcode_defaults_from_last_instruction(self) -> None:
-        """BlockSnapshot derives tail_opcode when instruction snapshots exist."""
+    def test_tail_opcode_remains_absent_without_explicit_backend_evidence(self) -> None:
+        """BlockSnapshot never reconstructs independent tail evidence."""
         blk = BlockSnapshot(
             serial=0,
             block_type=3,
@@ -119,7 +119,9 @@ class TestBlockSnapshot:
             ),
         )
 
-        assert blk.tail_opcode == 0x77
+        assert blk.tail_opcode is None
+        assert blk.raw_tail_opcode is None
+        assert blk.tail_kind is None
 
     def test_properties(self) -> None:
         """Test nsucc and npred computed properties."""

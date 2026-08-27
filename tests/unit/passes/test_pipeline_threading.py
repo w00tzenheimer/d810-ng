@@ -16,6 +16,7 @@ from d810.analyses.value_flow.observation import FactObservation
 from d810.analyses.value_flow import observation as observation_module
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    canonical_semantic_evidence_from_proofs,
     SemanticRouteDestination,
     SemanticRouteProof,
     SemanticRouteProofKind,
@@ -1616,11 +1617,10 @@ def test_recover_state_transitions_binds_portable_semantic_route_group() -> None
         )
 
     source_identity = identity(0x1001)
-    evidence = CanonicalSemanticEvidence(
+    evidence = canonical_semantic_evidence_from_proofs(
         native_key=native_key,
         generation=2,
-        atomic_group_id="canonical-semantic:g2",
-        route_proofs=(
+        proofs=(
             SemanticRouteProof(
                 proof_id="state-assignment@0x1001",
                 atomic_group_id="canonical-semantic:g2",
@@ -1675,7 +1675,7 @@ def test_recover_state_transitions_binds_portable_semantic_route_group() -> None
 
     assert result.analysis_outputs["canonical_semantic_evidence"] == evidence
     bound = result.analysis_outputs["bound_canonical_semantic_evidence"]
-    assert bound.atomic_group_id == "canonical-semantic:g2"
+    assert bound.atomic_group_id == evidence.atomic_group_id
     assert bound.routes[0].source.serial == 1
     assert bound.routes[0].source.anchor_ea == 0x1001
     assert bound.routes[0].destinations[0].block.serial == 2

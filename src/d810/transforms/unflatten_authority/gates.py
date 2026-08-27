@@ -296,8 +296,55 @@ def validate_generic_cfg_gate_bundle(bundle: GenericCfgGateBundle) -> GenericCfg
     return bundle
 
 
+def _validate_projected_ledger(
+    ledger: object,
+    case: object,
+    *,
+    gate: str,
+) -> None:
+    """Require a projected gate to consume its exact canonical loss ledger."""
+    # Import lazily: generic CFG transport intentionally has no static
+    # dependency on the semantic model for ordinary transactions.
+    from . import model
+
+    if type(case) is not model.SemanticSafetyCase:
+        raise TypeError(f"{gate} requires SemanticSafetyCase")
+    if type(ledger) is not model.SemanticLossLedger:
+        raise TypeError(f"{gate} requires SemanticLossLedger")
+    if ledger.case is not case:
+        raise ValueError(f"{gate} ledger must retain the exact safety case")
+    if case.phase not in (
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    ):
+        raise ValueError(f"{gate} requires projected or observed safety case")
+    model.SemanticLossLedger.__post_init__(ledger)
+    if ledger.unclassified or ledger.conflicting:
+        raise ValueError(f"{gate} rejects unclassified semantic loss")
+
+
+def validate_projected_effect_loss_ledger(ledger: object, case: object) -> None:
+    _validate_projected_ledger(ledger, case, gate="projected effect gate")
+
+
+def validate_projected_dispatcher_removal_ledger(ledger: object, case: object) -> None:
+    _validate_projected_ledger(ledger, case, gate="projected dispatcher removal gate")
+
+
+def validate_projected_corridor_coverage_ledger(ledger: object, case: object) -> None:
+    _validate_projected_ledger(ledger, case, gate="projected corridor coverage gate")
+
+
+def validate_projected_terminal_loss_ledger(ledger: object, case: object) -> None:
+    _validate_projected_ledger(ledger, case, gate="projected terminal gate")
+
+
 __all__ = [
     "GenericCfgGateBundle", "GenericCfgGateFacts", "GenericEntryGateFacts",
     "GenericEffectfulGateFacts", "GenericTerminalGateFacts",
     "generic_cfg_gate_facts_from_bundle", "validate_generic_cfg_gate_bundle",
+    "validate_projected_effect_loss_ledger",
+    "validate_projected_dispatcher_removal_ledger",
+    "validate_projected_corridor_coverage_ledger",
+    "validate_projected_terminal_loss_ledger",
 ]

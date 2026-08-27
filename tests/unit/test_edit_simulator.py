@@ -1,5 +1,6 @@
 """Unit tests for edit simulator (no IDA dependency)."""
 
+from dataclasses import fields as dataclass_fields, replace
 import pytest
 
 from d810.transforms.contract import CfgContract
@@ -20,7 +21,12 @@ from d810.ir.flowgraph import (
     FlowGraph,
     InsnKind,
     InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+    PredicateKind,
 )
+from d810.ir.semantics import ControlTransferKind
+from d810.ir.expressions import ValueOpKind
 from d810.transforms.graph_modification import (
     ConvertToGoto,
     CreateConditionalRedirect,
@@ -34,10 +40,13 @@ from d810.transforms.graph_modification import (
     PrivateTerminalSuffixGroup,
     RedirectGoto,
     RemoveEdge,
+    ScalarizeLocalAliasAccess,
 )
 from d810.transforms.cfg_transaction import PlanBlockRef
 from d810.transforms.graph_modification import PreserveLivePredicateCondition
 from d810.transforms.plan import PatchPlan
+from d810.transforms.plan import PatchLowerConditionalStateTransition
+from d810.transforms.graph_modification import SyntheticStackValueEqualsCondition
 from tests.typed_patch_authority import compile_patch_plan
 
 
@@ -49,6 +58,104 @@ def _projected_plan_serial(
     assert isinstance(ref, PlanBlockRef)
     assert ref.plan_id == plan.plan_id
     return max(cfg.blocks) + tuple(spec.block_id for spec in plan.new_blocks).index(ref)
+
+
+def _expected_synthetic_goto(*, ea: int, target: int) -> InsnSnapshot:
+    """Build the complete portable record required for a synthetic GOTO."""
+    return InsnSnapshot(
+        opcode=-1,
+        ea=ea,
+        operands=(),
+        operand_slots=(),
+        display_text="",
+        l=None,
+        r=None,
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
+        kind=InsnKind.GOTO,
+        raw_opcode=None,
+        value_op_kind=None,
+        control_transfer_kind=ControlTransferKind.GOTO,
+        call_kind=None,
+        predicate_kind=None,
+        opcode_attrs={},
+        branch_predicate=None,
+        compare_width=None,
+        is_conditional_jump=False,
+        is_unconditional_jump=True,
+        is_call=False,
+        native_ea=None,
+    )
+
+
+def _assert_reciprocal_topology(graph: FlowGraph) -> None:
+    for block in graph.blocks.values():
+        for successor in block.succs:
+            assert block.serial in graph.blocks[successor].preds
+        for predecessor in block.preds:
+            assert block.serial in graph.blocks[predecessor].succs
+
+
+def test_project_post_state_forecasts_exact_local_alias_scalarization() -> None:
+    source = FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0, block_type=0, succs=(), preds=(), flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(InsnSnapshot(
+                    opcode=23, raw_opcode=23, ea=0x1000, native_ea=0x1000,
+                    operands=(), kind=InsnKind.STORE,
+                    display_text="%alias = %base",
+                    value_op_kind=ValueOpKind.STORE,
+                    l=MopSnapshot(kind=OperandKind.LVAR, size=4),
+                ),),
+                tail_opcode=23, tail_kind=InsnKind.STORE, raw_tail_opcode=23,
+                kind=BlockKind.ZERO_WAY,
+            ),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    plan = compile_patch_plan((ScalarizeLocalAliasAccess(
+        block_serial=0, host_ea=0x1000, host_opcode=23,
+        alias_token="%alias", base_token="%base", value_size=4,
+    ),), source)
+
+    projected = project_post_state(source, plan)
+
+    host = projected.blocks[0].insn_snapshots[0]
+    assert host.kind is InsnKind.MOV
+    assert host.value_op_kind is ValueOpKind.MOVE
+    assert host.display_text == "%alias = %base"
+    assert host.ea == host.native_ea == 0x1000
+    assert host.opcode == host.raw_opcode == 23
+    assert projected.blocks[0].tail_kind is InsnKind.MOV
+
+
+def test_project_post_state_rejects_stale_local_alias_scalarization_host() -> None:
+    source = FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0, block_type=0, succs=(), preds=(), flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(InsnSnapshot(
+                    opcode=23, raw_opcode=23, ea=0x1000, native_ea=0x1000,
+                    operands=(), kind=InsnKind.STORE,
+                    display_text="%alias = %base",
+                    value_op_kind=ValueOpKind.STORE,
+                    l=MopSnapshot(kind=OperandKind.LVAR, size=4),
+                ),),
+                tail_opcode=23, tail_kind=InsnKind.STORE, raw_tail_opcode=23,
+                kind=BlockKind.ZERO_WAY,
+            ),
+        },
+        entry_serial=0, func_ea=0x1000,
+    )
+    plan = compile_patch_plan((ScalarizeLocalAliasAccess(
+        block_serial=0, host_ea=0x1001, host_opcode=23,
+        alias_token="%alias", base_token="%base", value_size=4,
+    ),), source)
+
+    with pytest.raises(ValueError, match="one exact source STORE"):
+        project_post_state(source, plan)
 
 
 def _block(
@@ -99,6 +206,143 @@ def _conditional_cfg() -> FlowGraph:
     )
 
 
+def _live_predicate_cfg() -> FlowGraph:
+    predicate_ea = 0x1005
+    return FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0,
+                block_type=2,
+                succs=(4, 1),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=7,
+                        ea=predicate_ea,
+                        operands=(),
+                        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=1),
+                        kind=InsnKind.COND_JUMP,
+                        is_conditional_jump=True,
+                    ),
+                ),
+                kind=BlockKind.TWO_WAY,
+                tail_kind=InsnKind.COND_JUMP,
+            ),
+            1: _block(1, (), (0,)),
+            2: _block(2, (), ()),
+            3: _block(3, (), ()),
+            4: _block(4, (), (0,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+
+@pytest.mark.parametrize(
+    ("true_is_taken", "expected_succs", "expected_taken"),
+    (
+        (True, (2, 3), 3),
+        (False, (3, 2), 2),
+    ),
+)
+def test_preserved_live_predicate_projection_uses_marker_polarity(
+    true_is_taken: bool,
+    expected_succs: tuple[int, int],
+    expected_taken: int,
+) -> None:
+    cfg = _live_predicate_cfg()
+    plan = _conditional_lowering_plan(
+        cfg,
+        LowerConditionalStateTransition(
+            source_serial=0,
+            old_dispatcher_serial=1,
+            rewrite_from_ea=0x1005,
+            condition_operand=PreserveLivePredicateCondition(
+                predicate_ea=0x1005,
+                true_is_taken=true_is_taken,
+            ),
+            false_target_serial=2,
+            true_target_serial=3,
+        ),
+    )
+
+    projected = project_post_state(cfg, plan)
+
+    assert projected.blocks[0].succs == expected_succs
+    assert projected.blocks[0].tail is not None
+    assert projected.blocks[0].tail.d is not None
+    assert projected.blocks[0].tail.d.block_ref == expected_taken
+
+
+def test_preserved_live_predicate_projection_rejects_mismatched_predicate_ea() -> None:
+    cfg = _live_predicate_cfg()
+    plan = _conditional_lowering_plan(
+        cfg,
+        LowerConditionalStateTransition(
+            source_serial=0,
+            old_dispatcher_serial=1,
+            rewrite_from_ea=0x1005,
+            condition_operand=PreserveLivePredicateCondition(
+                predicate_ea=0x1006,
+                true_is_taken=True,
+            ),
+            false_target_serial=2,
+            true_target_serial=3,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="predicate EA must match rewrite EA"):
+        project_post_state(cfg, plan)
+
+
+def test_preserved_live_predicate_projection_rejects_nonconditional_tail() -> None:
+    cfg = _live_predicate_cfg()
+    source = cfg.blocks[0]
+    nonconditional_tail = replace(
+        source.tail,
+        kind=InsnKind.GOTO,
+        is_conditional_jump=False,
+        is_unconditional_jump=True,
+    )
+    assert nonconditional_tail is not None
+    cfg = FlowGraph(
+        {
+            **cfg.blocks,
+            0: replace(
+                source,
+                insn_snapshots=(nonconditional_tail,),
+                tail_kind=InsnKind.GOTO,
+            ),
+        },
+        entry_serial=cfg.entry_serial,
+        func_ea=cfg.func_ea,
+    )
+    plan = _conditional_lowering_plan(cfg, _conditional_lowering_step())
+
+    with pytest.raises(ValueError, match="two-way conditional tail"):
+        project_post_state(cfg, plan)
+
+
+def test_preserved_live_predicate_projection_rejects_non_two_way_source() -> None:
+    cfg = _live_predicate_cfg()
+    source = cfg.blocks[0]
+    cfg = FlowGraph(
+        {
+            **cfg.blocks,
+            0: replace(source, block_type=1, succs=(1,), kind=BlockKind.ONE_WAY),
+            4: replace(cfg.blocks[4], preds=()),
+        },
+        entry_serial=cfg.entry_serial,
+        func_ea=cfg.func_ea,
+    )
+    plan = _conditional_lowering_plan(cfg, _conditional_lowering_step())
+
+    with pytest.raises(ValueError, match="exactly two source successors"):
+        project_post_state(cfg, plan)
+
+
 def test_patch_plan_lowering_is_a_typed_simulated_edit() -> None:
     cfg = _conditional_cfg()
     plan = _conditional_lowering_plan(cfg, _conditional_lowering_step())
@@ -112,10 +356,109 @@ def test_patch_plan_lowering_is_a_typed_simulated_edit() -> None:
     simulated = simulate_edits(cfg.as_adjacency_dict(), edits)
     assert simulated.adj[0] == [2, 3]
 
+    with pytest.raises(ValueError, match="unsupported lower-conditional"):
+        project_post_state(cfg, plan)
+
+
+def test_conditional_redirect_projection_keeps_clone_conditional_and_helper_goto() -> None:
+    """The helper is a one-way synthetic GOTO, never a copied conditional body."""
+    cfg = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 0, (1,), (), 0, 0x1000, (), kind=BlockKind.ONE_WAY),
+            1: BlockSnapshot(
+                1, 1, (3, 2), (0,), 0, 0x2000,
+                (InsnSnapshot(0, 0x2000, (), kind=InsnKind.NOP), InsnSnapshot(
+                    0, 0x2001, (), kind=InsnKind.COND_JUMP,
+                    l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=4, stack_refs=(4,)),
+                    r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+                    d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=2),
+                    branch_predicate=PredicateKind.EQ,
+                    predicate_kind=PredicateKind.EQ,
+                    compare_width=4,
+                    is_conditional_jump=True,
+                )),
+                    kind=BlockKind.TWO_WAY, tail_kind=InsnKind.COND_JUMP,
+                    tail_opcode=0, raw_tail_opcode=None,
+                ),
+            2: BlockSnapshot(2, 0, (), (1,), 0, 0x3000, (), kind=BlockKind.ZERO_WAY),
+            3: BlockSnapshot(3, 0, (), (1,), 0, 0x4000, (), kind=BlockKind.ZERO_WAY),
+            5: BlockSnapshot(5, 0, (), (), 0, 0x5000, (), kind=BlockKind.ZERO_WAY),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    plan = compile_patch_plan([
+        CreateConditionalRedirect(
+            source_block=0, ref_block=1, conditional_target=5,
+            fallthrough_target=3,
+        ),
+    ], cfg)
+
     projected = project_post_state(cfg, plan)
-    assert projected.blocks[0].succs == (2, 3)
-    assert projected.blocks[0].kind is BlockKind.TWO_WAY
-    assert projected.blocks[0].tail_kind is InsnKind.COND_JUMP
+    assert cfg.get_block(1).tail is not None
+    assert cfg.get_block(1).tail.d is not None
+    assert cfg.get_block(1).tail.d.block_ref == 2
+    clone_serial = _projected_plan_serial(cfg, plan, plan.new_blocks[0].block_id)
+    helper_serial = _projected_plan_serial(cfg, plan, plan.new_blocks[1].block_id)
+    assert projected.get_block(0).succs == (clone_serial,)
+    assert projected.get_block(clone_serial).succs == (helper_serial, 7)
+    assert projected.get_block(helper_serial).succs == (3,)
+    assert projected.get_block(clone_serial).tail_kind is InsnKind.COND_JUMP
+    assert projected.get_block(clone_serial).tail is not None
+    assert projected.get_block(clone_serial).tail.d is not None
+    assert projected.get_block(clone_serial).tail.d.block_ref == 7
+    assert projected.get_block(helper_serial).tail_kind is InsnKind.GOTO
+    assert all(
+        instruction.kind is not InsnKind.COND_JUMP
+        for instruction in projected.get_block(helper_serial).insn_snapshots
+    )
+
+
+def test_conditional_redirect_projection_requires_exact_source_old_edge() -> None:
+    cfg = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 0, (2,), (), 0, 0x1000, (), kind=BlockKind.ONE_WAY),
+            1: BlockSnapshot(1, 1, (2, 3), (), 0, 0x2000, (), kind=BlockKind.TWO_WAY),
+            2: BlockSnapshot(2, 0, (), (0, 1), 0, 0x3000, (), kind=BlockKind.ZERO_WAY),
+            3: BlockSnapshot(3, 0, (), (1,), 0, 0x4000, (), kind=BlockKind.ZERO_WAY),
+            9: BlockSnapshot(9, 0, (), (), 0, 0x9000, (), kind=BlockKind.ZERO_WAY),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    plan = compile_patch_plan([
+        CreateConditionalRedirect(
+            source_block=0, ref_block=1, conditional_target=2,
+            fallthrough_target=3,
+        ),
+    ], cfg)
+    with pytest.raises(ValueError, match="source.*old target|source adjacency"):
+        project_post_state(cfg, plan)
+
+
+def test_conditional_redirect_projection_rejects_nonconditional_template() -> None:
+    cfg = FlowGraph(
+        blocks={
+            0: BlockSnapshot(0, 0, (1,), (), 0, 0x1000, (), kind=BlockKind.ONE_WAY),
+            1: BlockSnapshot(
+                1, 1, (2,), (0,), 0, 0x2000,
+                (InsnSnapshot(0, 0x2000, (), kind=InsnKind.GOTO),),
+                kind=BlockKind.ONE_WAY,
+            ),
+            2: BlockSnapshot(2, 0, (), (1,), 0, 0x3000, (), kind=BlockKind.ZERO_WAY),
+            3: BlockSnapshot(3, 0, (), (), 0, 0x4000, (), kind=BlockKind.ZERO_WAY),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    plan = compile_patch_plan([
+        CreateConditionalRedirect(
+            source_block=0, ref_block=1, conditional_target=2,
+            fallthrough_target=3,
+        ),
+    ], cfg)
+    with pytest.raises(ValueError, match="coherent conditional template|two-way template"):
+        project_post_state(cfg, plan)
 
 
 def test_patch_plan_lowering_rejects_live_order_conflict() -> None:
@@ -134,6 +477,13 @@ def test_patch_plan_lowering_rejects_live_order_conflict() -> None:
     with pytest.raises(ValueError, match="does not retain dispatcher"):
         simulate_edits(cfg.as_adjacency_dict(), edits)
     with pytest.raises(ValueError, match="does not retain dispatcher"):
+        project_post_state(cfg, plan)
+
+
+def test_project_post_state_rejects_preserve_live_lowering_at_closed_boundary() -> None:
+    cfg = _conditional_cfg()
+    plan = _conditional_lowering_plan(cfg, _conditional_lowering_step())
+    with pytest.raises(ValueError, match="unsupported lower-conditional condition"):
         project_post_state(cfg, plan)
 
 
@@ -463,6 +813,73 @@ class TestSimulateEdits:
 
 
 class TestProjectPostState:
+    def test_exact_stack_lowering_replaces_feeder_goto_with_coherent_conditional(self) -> None:
+        from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+
+        cfg, _proposal, _exclusion, _refs = exact_fixture()
+        source_before = cfg
+        plan = compile_patch_plan(
+            [
+                LowerConditionalStateTransition(
+                    source_serial=0,
+                    old_dispatcher_serial=1,
+                    rewrite_from_ea=0x1001,
+                    condition_operand=SyntheticStackValueEqualsCondition(
+                        stack_stkoff=4, stack_size=4, value=7,
+                    ),
+                    false_target_serial=3,
+                    true_target_serial=2,
+                ),
+            ],
+            cfg,
+        )
+
+        projected = project_post_state(cfg, plan)
+        assert cfg == source_before
+        feeder = projected.blocks[0]
+        assert feeder.succs == (3, 2)
+        assert feeder.kind is BlockKind.TWO_WAY
+        assert feeder.tail_kind is InsnKind.COND_JUMP
+        assert feeder.tail is not None
+        assert feeder.tail.ea == 0x1001
+        assert feeder.tail.kind is InsnKind.COND_JUMP
+        # Conditional instructions retain backend opcode/raw-opcode metadata.
+        # The -1/None pair is reserved by InventoryInstructionObservation for
+        # normalized synthetic GOTOs, not conditional jumps.
+        assert feeder.tail_opcode == feeder.tail.opcode == 0
+        assert feeder.raw_tail_opcode == 0
+        assert feeder.tail.raw_opcode == 0
+        feeder.__post_init__()
+        assert feeder.raw_tail_opcode == 0
+        assert feeder.tail.control_transfer_kind is not None
+        assert feeder.tail.d is not None
+        assert feeder.tail.d.block_ref == 2
+        assert feeder.tail.l is not None and feeder.tail.l.stkoff == 4
+        assert feeder.tail.r is not None and feeder.tail.r.value == 7
+
+    def test_exact_stack_lowering_rejects_missing_rewrite_boundary(self) -> None:
+        from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+
+        cfg, _proposal, _exclusion, _refs = exact_fixture()
+        plan = compile_patch_plan(
+            [
+                LowerConditionalStateTransition(
+                    source_serial=0,
+                    old_dispatcher_serial=1,
+                    rewrite_from_ea=0xDEAD,
+                    condition_operand=SyntheticStackValueEqualsCondition(
+                        stack_stkoff=4, stack_size=4, value=7,
+                    ),
+                    false_target_serial=3,
+                    true_target_serial=2,
+                ),
+            ],
+            cfg,
+        )
+
+        with pytest.raises(ValueError, match="rewrite"):
+            project_post_state(cfg, plan)
+
     def test_project_post_state_preserves_unchanged_stop_terminal_shape(self):
         cfg = FlowGraph(
             blocks={
@@ -1120,3 +1537,195 @@ class TestProjectCumulativeState:
         result = project_cumulative_state(cfg, plan)
         assert result.metadata.get("custom_key") == "value"
         assert result.metadata.get("projected_from_patch_plan") is True
+def test_3b3_direct_and_helper_branch_projection_slots() -> None:
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+    from d810.transforms.graph_modification import RedirectBranch
+    cfg, *_ = exact_fixture()
+    plan = compile_patch_plan([RedirectBranch(1, 2, 4)], cfg)
+    projected = project_post_state(cfg, plan)
+    assert cfg.blocks[1].succs == (3, 2)
+    assert projected.blocks[1].succs == (3, 4)
+    assert projected.blocks[1].tail is not None
+    assert projected.blocks[1].tail.d is not None
+    assert projected.blocks[1].tail.d.block_ref == 4
+    source_tail = cfg.blocks[1].tail
+    projected_tail = projected.blocks[1].tail
+    assert source_tail is not None and projected_tail is not None
+    # The branch feeder is source-bound except for its projected destination;
+    # spell out every semantic slot so a stale transfer/predicate cannot hide
+    # behind dataclass equality.
+    assert projected_tail.kind is source_tail.kind is InsnKind.COND_JUMP
+    assert projected_tail.ea == source_tail.ea
+    assert projected_tail.opcode == source_tail.opcode
+    assert projected_tail.raw_opcode == source_tail.raw_opcode
+    assert projected_tail.operands == source_tail.operands
+    assert projected_tail.control_transfer_kind == source_tail.control_transfer_kind
+    assert projected_tail.call_kind == source_tail.call_kind
+    assert projected_tail.is_call == source_tail.is_call
+    assert projected_tail.branch_predicate == source_tail.branch_predicate
+    assert projected_tail.predicate_kind == source_tail.predicate_kind
+    assert projected_tail.compare_width == source_tail.compare_width
+    assert projected_tail.is_conditional_jump is source_tail.is_conditional_jump is True
+    assert projected_tail.is_unconditional_jump is source_tail.is_unconditional_jump is False
+    for field in dataclass_fields(InsnSnapshot):
+        if field.name != "d":
+            assert getattr(projected_tail, field.name) == getattr(source_tail, field.name)
+    assert projected.blocks[2].preds == ()
+    assert projected.blocks[4].preds == (1,)
+    _assert_reciprocal_topology(projected)
+
+    # Reversing the SOURCE arm order makes the same real compiler emit the
+    # helper-bearing branch family.
+    feeder = cfg.blocks[1]
+    tail = feeder.insn_snapshots[-1]
+    helper_cfg = FlowGraph(
+        {
+            **cfg.blocks,
+            1: replace(
+                feeder, succs=(2, 3),
+                insn_snapshots=(
+                    *feeder.insn_snapshots[:-1],
+                    replace(tail, d=replace(tail.d, block_ref=3)),
+                ),
+            ),
+        }, cfg.entry_serial, cfg.func_ea,
+    )
+    helper_plan = compile_patch_plan([RedirectBranch(1, 2, 4)], helper_cfg)
+    helper_projected = project_post_state(helper_cfg, helper_plan)
+    helper_ref = helper_plan.steps[0].fallthrough_helper_block_id
+    assert helper_ref is not None
+    helper_serial = _projected_plan_serial(helper_cfg, helper_plan, helper_ref)
+    assert helper_projected.blocks[1].succs == (helper_serial, 3)
+    helper_block = helper_projected.blocks[helper_serial]
+    semantic_target = max(helper_projected.blocks)
+    assert helper_block.succs == (semantic_target,)
+    assert len(helper_block.insn_snapshots) == 1
+    helper_tail = helper_block.insn_snapshots[0]
+    assert helper_tail.kind is InsnKind.GOTO
+    assert helper_tail.opcode == -1
+    assert helper_tail.raw_opcode is None
+    assert helper_tail.operands == ()
+    assert helper_tail.display_text == ""
+    assert helper_tail.control_transfer_kind is ControlTransferKind.GOTO
+    assert helper_tail.call_kind is None
+    assert helper_tail.is_call is False
+    assert helper_tail.branch_predicate is None
+    assert helper_tail.predicate_kind is None
+    assert helper_tail.is_conditional_jump is False
+    assert helper_tail.is_unconditional_jump is True
+    assert helper_tail.d is not None and helper_tail.d.block_ref == semantic_target
+    helper_source_tail = helper_cfg.blocks[1].tail
+    projected_feeder_tail = helper_projected.blocks[1].tail
+    assert helper_source_tail is not None and projected_feeder_tail is not None
+    assert helper_tail == _expected_synthetic_goto(
+        ea=helper_cfg.blocks[1].start_ea, target=semantic_target,
+    )
+    for field in dataclass_fields(InsnSnapshot):
+        if field.name != "d":
+            assert getattr(projected_feeder_tail, field.name) == getattr(helper_source_tail, field.name)
+    assert projected_feeder_tail.d is not None
+    assert projected_feeder_tail.d.block_ref == helper_projected.blocks[1].succs[1]
+    _assert_reciprocal_topology(helper_projected)
+
+
+def test_3b3_trampoline_projection_normalizes_empty_body() -> None:
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+    cfg, *_ = exact_fixture()
+    plan = compile_patch_plan([EdgeRedirectViaPredSplit(1, 2, 4, 0)], cfg)
+    projected = project_post_state(cfg, plan)
+    trampoline = _projected_plan_serial(cfg, plan, plan.steps[0].block_id)
+    assert projected.blocks[0].succs == (4,)
+    assert projected.blocks[1].succs == (3, 2)
+    assert projected.blocks[trampoline].succs == (max(cfg.blocks) + 1,)
+    assert projected.blocks[trampoline].tail_kind is InsnKind.GOTO
+    assert len(projected.blocks[trampoline].insn_snapshots) == 1
+    assert projected.blocks[trampoline].tail is not None
+    assert projected.blocks[trampoline].tail.d is not None
+    trampoline_tail = projected.blocks[trampoline].tail
+    assert trampoline_tail.kind is InsnKind.GOTO
+    assert trampoline_tail.opcode == -1
+    assert trampoline_tail.raw_opcode is None
+    assert trampoline_tail.control_transfer_kind is ControlTransferKind.GOTO
+    assert trampoline_tail.call_kind is None
+    assert trampoline_tail.is_call is False
+    assert trampoline_tail.branch_predicate is None
+    assert trampoline_tail.predicate_kind is None
+    assert trampoline_tail.is_conditional_jump is False
+    assert trampoline_tail.is_unconditional_jump is True
+    # The semantic target is relocated after insertion; the projected GOTO
+    # must name that relocated target rather than the source serial.
+    assert projected.blocks[trampoline].tail.d.block_ref == max(cfg.blocks) + 1
+    assert trampoline_tail == _expected_synthetic_goto(
+        ea=cfg.blocks[1].start_ea, target=max(cfg.blocks) + 1,
+    )
+    _assert_reciprocal_topology(projected)
+
+
+def test_3b3_corridor_projection_clones_exact_prefixes() -> None:
+    from tests.unit.transforms.unflatten_authority.helpers import exact_fixture
+    cfg, *_ = exact_fixture()
+    blocks = dict(cfg.blocks)
+    def body(serial: int, target: int) -> tuple[InsnSnapshot, ...]:
+        return (
+            InsnSnapshot(
+                0, serial * 0x1000, (), kind=InsnKind.MOV,
+                l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=serial),
+                d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=4),
+            ),
+            InsnSnapshot(
+                1, serial * 0x1000 + 1, (), kind=InsnKind.GOTO,
+                d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
+                control_transfer_kind=None, is_unconditional_jump=True,
+            ),
+        )
+    blocks[1] = replace(
+        blocks[1], succs=(2,), preds=(0,), kind=BlockKind.ONE_WAY,
+        tail_kind=InsnKind.GOTO, insn_snapshots=body(2, 2),
+    )
+    blocks[2] = replace(
+        blocks[2], succs=(3,), preds=(1,), kind=BlockKind.ONE_WAY,
+        tail_kind=InsnKind.GOTO, insn_snapshots=body(3, 3),
+    )
+    blocks[3] = replace(
+        blocks[3], succs=(4,), preds=(2,), kind=BlockKind.ONE_WAY,
+        tail_kind=InsnKind.GOTO,
+        insn_snapshots=(InsnSnapshot(0, 0x4000, (), kind=InsnKind.GOTO,
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+            control_transfer_kind=None, is_unconditional_jump=True),),
+    )
+    blocks[4] = replace(blocks[4], preds=(3,))
+    cfg = FlowGraph(blocks, cfg.entry_serial, cfg.func_ea)
+    for clone_until in (2, 3):
+        plan = compile_patch_plan([EdgeRedirectViaPredSplit(
+            2, 3, 4, 1, clone_until=clone_until,
+        )], cfg)
+        projected = project_post_state(cfg, plan)
+        repeated = project_post_state(cfg, plan)
+        assert projected == repeated
+        clones = tuple(_projected_plan_serial(cfg, plan, spec.block_id) for spec in plan.new_blocks)
+        assert len(clones) == clone_until - 1
+        assert projected.blocks[1].succs == (clones[0],)
+        for index, clone in enumerate(clones):
+            source_serial = index + 2
+            source_body = cfg.blocks[source_serial].insn_snapshots
+            clone_body = projected.blocks[clone].insn_snapshots
+            assert clone_body[:-1] == source_body[:-1]
+            assert clone_body[-1].kind is InsnKind.GOTO
+            assert clone_body[-1].d is not None
+            assert clone_body[-1].d.kind is OperandKind.BLOCK
+            assert clone_body[-1].d.block_ref == (
+                clones[index + 1] if index + 1 < len(clones) else max(cfg.blocks) + len(clones)
+            )
+            assert clone_body[-1] == _expected_synthetic_goto(
+                ea=source_body[-1].ea,
+                target=clone_body[-1].d.block_ref,
+            )
+            assert clone_body[-1].d.block_ref != source_body[-1].d.block_ref
+            assert projected.blocks[clone].tail_opcode == -1
+            assert projected.blocks[clone].raw_tail_opcode is None
+            assert projected.blocks[clone].tail_kind is InsnKind.GOTO
+            assert projected.blocks[clone].succs == (clone_body[-1].d.block_ref,)
+            assert projected.blocks[clone].preds == (
+                (1,) if index == 0 else (clones[index - 1],)
+            )
+        _assert_reciprocal_topology(projected)

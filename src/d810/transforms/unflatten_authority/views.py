@@ -9,8 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import model
-
-
 VIEW_GRAPH_TRAVERSALS = 0
 
 
@@ -50,15 +48,65 @@ class ObservedLossReclassification:
 
 
 @dataclass(frozen=True, slots=True)
-class ObservedLossDeltaProjection:
-    """Observed-only rows plus separate post-apply kind reclassifications."""
+class SemanticLossProjectionRow:
+    """Non-authoritative rendering row copied from one canonical ledger row."""
 
-    observed_only: model.ObservedSemanticLossDelta
+    source_subject: model.SemanticSubjectRef
+    source_binding: model.PhaseSubjectBinding
+    candidate_binding: model.PhaseSubjectBinding
+    structural_obligation: model.ObligationEvidenceCell
+    relevant_semantic_obligations: tuple[model.ObligationEvidenceCell, ...]
+    justifications: tuple[model.AuthorityJustification, ...]
+    evidence: tuple[model.AuthorityEvidence, ...]
+    claims: tuple[model.UnflattenClaim, ...]
+    kind: model.SemanticLossKind
+
+    @property
+    def anchored_location(self) -> str:
+        binding = self.source_binding
+        if binding.serial is None or binding.anchor_ea is None:
+            return f"subject:{self.source_subject.subject_id}"
+        return f"blk{binding.serial}@0x{binding.anchor_ea:x}"
+
+    @property
+    def evidence_ids(self) -> tuple[str, ...]:
+        return tuple(item.evidence_id for item in self.evidence)
+
+    @property
+    def supporting_justification_ids(self) -> tuple[str, ...]:
+        return tuple(
+            item.justification_id for item in self.justifications
+            if item.polarity is model.EvidencePolarity.SUPPORTS
+        )
+
+    @property
+    def refuting_justification_ids(self) -> tuple[str, ...]:
+        return tuple(
+            item.justification_id for item in self.justifications
+            if item.polarity is model.EvidencePolarity.REFUTES
+        )
+
+    @property
+    def claim_ids(self) -> tuple[str, ...]:
+        return tuple(item.claim_id for item in self.claims)
+
+    @property
+    def rules(self) -> tuple[model.UnflattenJustificationRule, ...]:
+        return tuple(sorted({item.rule for item in self.justifications}, key=lambda item: item.value))
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedLossDeltaProjection:
+    """Non-authoritative observed-only rows plus kind-reclassification DTOs."""
+
+    rows: tuple[SemanticLossProjectionRow, ...]
     reclassifications: tuple[ObservedLossReclassification, ...] = ()
 
     def __post_init__(self) -> None:
-        if type(self.observed_only) is not model.ObservedSemanticLossDelta:
-            raise TypeError("observed_only must be ObservedSemanticLossDelta")
+        if type(self.rows) is not tuple:
+            raise TypeError("rows must be an exact tuple")
+        if any(type(item) is not SemanticLossProjectionRow for item in self.rows):
+            raise TypeError("rows must contain projection rows")
         if type(self.reclassifications) is not tuple:
             raise TypeError("reclassifications must be an exact tuple")
         if any(type(item) is not ObservedLossReclassification for item in self.reclassifications):
@@ -66,6 +114,27 @@ class ObservedLossDeltaProjection:
         subject_ids = tuple(item.subject.subject_id for item in self.reclassifications)
         if subject_ids != tuple(sorted(set(subject_ids))):
             raise ValueError("reclassifications must be canonical and unique")
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticLossProjection:
+    """Non-authoritative diagnostic rows for one case."""
+
+    rows: tuple[SemanticLossProjectionRow, ...]
+
+    @property
+    def allowed(self):
+        return tuple(row for row in self.rows if row.kind not in {
+            model.SemanticLossKind.UNCLASSIFIED, model.SemanticLossKind.CONFLICTING,
+        })
+
+    @property
+    def unclassified(self):
+        return tuple(row for row in self.rows if row.kind is model.SemanticLossKind.UNCLASSIFIED)
+
+    @property
+    def conflicting(self):
+        return tuple(row for row in self.rows if row.kind is model.SemanticLossKind.CONFLICTING)
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +366,14 @@ def retired_infrastructure_view(
     }
     if set(subject.block_ref for subject in member_ids.values()) != plan_refs:
         raise ValueError("retirement view is missing an exact dispatcher member")
+    canonical_by_ref = {
+        subject.block_ref: subject
+        for subject in case.subjects
+        if subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+        and subject.block_ref in plan_refs
+    }
+    if set(canonical_by_ref) != plan_refs:
+        raise ValueError("retirement view is missing an exact source catalog row")
     retired = tuple(sorted(
         subject_id for subject_id, subject in member_ids.items()
         if phase_by_ref[subject.block_ref].classification
@@ -321,7 +398,10 @@ def retired_infrastructure_view(
         (
             cell.key for cell in case.obligation_index.cells
             if cell.key.dimension is model.SafetyDimension.STRUCTURAL_ACCOUNTING
-            and cell.key.subject.subject_id in set(retired)
+            and cell.key.subject in {
+                canonical_by_ref[member_ids[subject_id].block_ref]
+                for subject_id in retired
+            }
         ),
         key=lambda key: key.subject.subject_id,
     ))
@@ -350,9 +430,18 @@ def terminal_cycle_rows(
     if len(claims) != 1:
         raise ValueError("terminal-cycle rows require one unambiguous claim")
     claim = claims[0]
+    cycle_matches = tuple(
+        subject for subject in case.subjects
+        if subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+        and subject.block_ref == claim.cycle_subject.block_ref
+        and subject.anchor_ea == claim.cycle_subject.anchor_ea
+    )
+    if len(cycle_matches) != 1:
+        raise ValueError("terminal-cycle claim lacks one canonical cycle block")
+    canonical_cycle = cycle_matches[0]
     keys = {
         "cycle": model.ObligationKey(
-            claim.cycle_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+            canonical_cycle, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
         ),
         "terminal": model.ObligationKey(
             claim.terminal_subject, model.SafetyDimension.TERMINAL_REACHABILITY,
@@ -389,7 +478,9 @@ def terminal_cycle_rows(
 
 
 def retirement_rows(
-    case: model.SemanticSafetyCase, claim_id: str | None = None,
+    case: model.SemanticSafetyCase,
+    ledger: model.SemanticLossLedger,
+    claim_id: str | None = None,
 ) -> RetiredInfrastructureView:
     """Project only exact case-owned retirement rows and satisfied cells."""
 
@@ -401,10 +492,14 @@ def retirement_rows(
         if len(retirement_ids) != 1:
             raise ValueError("retirement rows require one unambiguous retirement claim")
         claim_id = retirement_ids[0]
+    if type(ledger) is not model.SemanticLossLedger:
+        raise TypeError("retirement rows require SemanticLossLedger")
+    model.SemanticLossLedger.__post_init__(ledger)
+    if ledger.case is not case:
+        raise ValueError("retirement ledger is foreign to the exact case")
     view = retired_infrastructure_view(case, claim_id)
     if view.unaccounted_member_subject_ids or view.drifted_member_subject_ids:
         raise ValueError("retirement rows require a satisfied structural cell")
-    ledger = semantic_loss_ledger(case)
     cells = {
         cell.key: cell for cell in case.obligation_index.cells
     }
@@ -412,11 +507,26 @@ def retirement_rows(
         subject = next((item for item in case.subjects if item.subject_id == subject_id), None)
         if subject is None:
             raise ValueError("retirement row subject is absent from case")
-        cell = cells.get(model.ObligationKey(subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING))
+        canonical_matches = tuple(
+            item for item in case.subjects
+            if item.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+            and item.block_ref == subject.block_ref
+            and item.anchor_ea == subject.anchor_ea
+        )
+        if len(canonical_matches) != 1:
+            raise ValueError("retirement row lacks one canonical source block")
+        canonical_subject = canonical_matches[0]
+        key = model.ObligationKey(
+            canonical_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+        )
+        cell = cells.get(key)
         if cell is None or cell.state is not model.ObligationState.SATISFIED:
             raise ValueError("retirement row lacks a satisfied structural cell")
         if subject_id in view.retired_member_subject_ids:
-            rows = tuple(row for row in ledger.rows if row.source_subject.subject_id == subject_id)
+            rows = tuple(
+                row for row in ledger.rows
+                if row.source_subject == canonical_subject
+            )
             if len(rows) != 1 or rows[0].kind is not model.SemanticLossKind.RETIRED_DISPATCHER_INFRASTRUCTURE:
                 raise ValueError("retired row lacks exact retirement ledger authority")
             if {justification.claim_id for justification in rows[0].justifications
@@ -424,7 +534,7 @@ def retirement_rows(
                 raise ValueError("retired row lacks exact retirement claim justification")
             if not any(
                 justification.rule is model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
-                and justification.conclusion == model.ObligationKey(subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+                and justification.conclusion == key
                 and justification.claim_id == claim_id
                 for justification in rows[0].justifications
             ):
@@ -433,11 +543,18 @@ def retirement_rows(
 
 
 def detached_component_rows(
-    case: model.SemanticSafetyCase, claim_id: str,
+    case: model.SemanticSafetyCase,
+    ledger: model.SemanticLossLedger,
+    claim_id: str,
 ) -> DetachedComponentView:
     """Project one detached claim from ledger classifications, never raw membership."""
 
     _check_case(case)
+    if type(ledger) is not model.SemanticLossLedger:
+        raise TypeError("detached component rows require SemanticLossLedger")
+    model.SemanticLossLedger.__post_init__(ledger)
+    if ledger.case is not case:
+        raise ValueError("detached component ledger is foreign to the exact case")
     claim = next(
         (
             item for item in case.claims
@@ -450,7 +567,7 @@ def detached_component_rows(
         raise ValueError("detached component claim is missing or ambiguous")
     dead_ids = tuple(sorted(subject.subject_id for subject in claim.dead_handler_subjects))
     rows = tuple(
-        row for row in semantic_loss_ledger(case).rows
+        row for row in ledger.rows
         if row.source_subject.subject_id in set(dead_ids)
     )
     if tuple(row.source_subject.subject_id for row in rows) != dead_ids:
@@ -464,106 +581,69 @@ def detached_component_rows(
     return DetachedComponentView(claim_id, dead_ids, rows)
 
 
-def semantic_loss_ledger(case: model.SemanticSafetyCase) -> model.SemanticLossLedger:
-    """Project the evaluator-owned case into its one canonical loss ledger."""
-
-    _check_case(case)
-    subjects = {subject.subject_id: subject for subject in case.subjects}
-    bindings = {binding.subject.subject_id: binding for binding in case.bindings}
-    source_bindings = {binding.subject.subject_id: binding for binding in case.source_bindings}
-    cells = {cell.key: cell for cell in case.obligation_index.cells}
-    justifications = {item.justification_id: item for item in case.justifications}
-    evidence = {item.evidence_id: item for item in case.evidence}
-    claims = {item.claim_id: item for item in case.claims}
-    retirement_result = case.retirement_phase_result
-    retired_refs = set(retirement_result.retired_refs) if retirement_result is not None else set()
-    rows: list[model.SemanticLossRow] = []
-    for subject_id in case.source_subject_ids:
-        subject = subjects.get(subject_id)
-        binding = bindings.get(subject_id)
-        if subject is None or binding is None:
-            raise ValueError("source subject partition is not covered by the case")
-        source_binding = source_bindings.get(subject_id)
-        if source_binding is None:
-            raise ValueError("source subject partition is not covered by source bindings")
-        if binding.status is not model.SubjectBindingStatus.MISSING and subject.block_ref not in retired_refs:
-            continue
-        if case.phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST:
-            continue
-        structural_key = model.ObligationKey(subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING)
-        structural = cells.get(structural_key)
-        if structural is None:
-            # Aggregate source subjects such as NON_STATE_VALUE_FLOW have no
-            # structural-accounting cell and therefore cannot be semantic-loss
-            # ledger subjects.
-            continue
-        semantic = tuple(
-            cell for cell in case.obligation_index.cells
-            if cell.key.subject.subject_id == subject_id
-            and cell.key.dimension is not model.SafetyDimension.STRUCTURAL_ACCOUNTING
-        )
-        relevant = (structural, *semantic)
-        relevant_justifications = tuple(
-            justifications[justification_id]
-            for cell in relevant
-            for justification_id in (
-                *cell.supporting_justification_ids,
-                *cell.refuting_justification_ids,
-            )
-        )
-        relevant_evidence = tuple(
-            evidence[premise]
-            for item in relevant_justifications
-            for premise in item.premise_ids
-        )
-        relevant_claims = tuple(
-            claims[item.claim_id]
-            for item in relevant_justifications
-            if item.claim_id is not None
-        )
-        rows.append(model.SemanticLossRow(
-            case=case,
-            source_subject=subject,
-            source_binding=source_binding,
-            candidate_binding=binding,
-            structural_obligation=structural,
-            relevant_semantic_obligations=semantic,
-            justifications=tuple(sorted(set(relevant_justifications), key=lambda item: item.justification_id)),
-            evidence=tuple(sorted(set(relevant_evidence), key=lambda item: item.evidence_id)),
-            claims=tuple(sorted(set(relevant_claims), key=lambda item: item.claim_id)),
-        ))
-    ledger = model.SemanticLossLedger(
-        case=case,
-        authority_id=case.authority_id,
-        case_id=case.case_id,
-        phase=case.phase,
-        source_fingerprint=case.source_fingerprint,
-        candidate_fingerprint=case.candidate_fingerprint,
-        rows=tuple(sorted(rows, key=lambda row: row.source_subject.subject_id)),
-    )
+def semantic_loss_ledger(
+    authority: model.PreparedUnflattenAuthority,
+) -> model.SemanticLossLedger:
+    """Return the exact transaction-owned ledger retained by preparation."""
+    if type(authority) is not model.PreparedUnflattenAuthority:
+        raise TypeError("semantic loss ledger requires PreparedUnflattenAuthority")
+    ledger = authority.projected_loss_ledger
+    if type(ledger) is not model.SemanticLossLedger:
+        raise ValueError("prepared authority lacks projected semantic-loss ledger")
+    if ledger.case is not authority.projected_case:
+        raise ValueError("prepared authority ledger is foreign to projected case")
     return ledger
 
 
+def semantic_loss_projection(
+    ledger: model.SemanticLossLedger,
+) -> SemanticLossProjection:
+    """Copy canonical transaction rows into presentation-only DTOs."""
+    if type(ledger) is not model.SemanticLossLedger:
+        raise TypeError("semantic loss projection requires SemanticLossLedger")
+    model.SemanticLossLedger.__post_init__(ledger)
+    return SemanticLossProjection(tuple(
+        SemanticLossProjectionRow(
+            row.source_subject,
+            row.source_binding,
+            row.candidate_binding,
+            row.structural_obligation,
+            row.relevant_semantic_obligations,
+            row.justifications,
+            row.evidence,
+            row.claims,
+            row.kind,
+        )
+        for row in ledger.rows
+    ))
+
+
 def observed_only_loss(
-    projected_case: model.SemanticSafetyCase,
-    observed_case: model.SemanticSafetyCase,
-) -> model.ObservedSemanticLossDelta:
+    projected_ledger: model.SemanticLossLedger,
+    observed_ledger: model.SemanticLossLedger,
+) -> tuple[SemanticLossProjectionRow, ...]:
     """Project only genuinely new loss subjects relative to preflight."""
 
-    projection = observed_loss_delta(projected_case, observed_case)
+    projection = observed_loss_delta(projected_ledger, observed_ledger)
     if projection.reclassifications:
         raise ValueError("observed semantic loss classification drift")
-    return projection.observed_only
+    return projection.rows
 
 
 def observed_loss_delta(
-    projected_case: model.SemanticSafetyCase,
-    observed_case: model.SemanticSafetyCase,
+    projected_ledger: model.SemanticLossLedger,
+    observed_ledger: model.SemanticLossLedger,
 ) -> ObservedLossDeltaProjection:
-    """Project observed-only loss and kind reclassification separately."""
+    """Project observed-only loss and drift from canonical ledgers."""
 
-    _check_case(projected_case)
-    _check_case(observed_case)
+    if type(projected_ledger) is not model.SemanticLossLedger:
+        raise TypeError("projected ledger must be SemanticLossLedger")
+    if type(observed_ledger) is not model.SemanticLossLedger:
+        raise TypeError("observed ledger must be SemanticLossLedger")
+    model.SemanticLossLedger.__post_init__(projected_ledger)
+    model.SemanticLossLedger.__post_init__(observed_ledger)
+    projected_case = projected_ledger.case
+    observed_case = observed_ledger.case
     if projected_case.phase is not model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
         raise ValueError("projected case must be PROJECTED_PREFLIGHT")
     if observed_case.phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
@@ -588,8 +668,8 @@ def observed_loss_delta(
         raise ValueError("projected and observed cases have different source bindings")
     if projected_case.source_inventory != observed_case.source_inventory:
         raise ValueError("projected and observed cases have different source inventories")
-    projected = semantic_loss_ledger(projected_case)
-    observed = semantic_loss_ledger(observed_case)
+    projected = semantic_loss_projection(projected_ledger)
+    observed = semantic_loss_projection(observed_ledger)
     projected_by_subject = {row.source_subject.subject_id: row for row in projected.rows}
     observed_by_subject = {row.source_subject.subject_id: row for row in observed.rows}
     common = set(projected_by_subject) & set(observed_by_subject)
@@ -612,16 +692,7 @@ def observed_loss_delta(
         (row for subject_id, row in observed_by_subject.items() if subject_id not in projected_by_subject),
         key=lambda row: row.source_subject.subject_id,
     ))
-    return ObservedLossDeltaProjection(
-        observed_only=model.ObservedSemanticLossDelta(
-            authority_id=observed.authority_id,
-            source_fingerprint=observed.source_fingerprint,
-            projected_case_id=projected.case_id,
-            observed_case_id=observed.case_id,
-            rows=rows,
-        ),
-        reclassifications=reclassifications,
-    )
+    return ObservedLossDeltaProjection(rows=rows, reclassifications=reclassifications)
 
 
 def obligation_states(case: model.SemanticSafetyCase) -> tuple[tuple[model.ObligationKey, model.ObligationState], ...]:

@@ -32,7 +32,7 @@ def compatibility_projection(verdict, kind):
 
 def phase_observation(
     verdict, *, maturity, source_ea, timings=None, views=None,
-    projected_case=None, correlation=None,
+    projected_case=None, prepared_authority=None, correlation=None,
 ):
     return _transaction_api.phase_observation(
         verdict,
@@ -41,6 +41,7 @@ def phase_observation(
         timings=timings,
         views=views,
         projected_case=projected_case,
+        prepared_authority=prepared_authority,
         correlation=correlation,
     )
 
@@ -74,6 +75,12 @@ def revalidate_observed_unflatten_authority_timed(
     )
 
 
+def validate_observed_commit_authority(authority, verdict, accepted):
+    """Revalidate the exact observed closure immediately before commit."""
+    return _transaction_api.validate_observed_commit_authority(
+        authority, verdict, accepted,
+    )
+
 __all__ = (
     "GenericCfgGateBundle",
     "PhaseTimings",
@@ -90,4 +97,5 @@ __all__ = (
     "prepare_unflatten_authority_timed",
     "revalidate_bound_patch_plan_against_prepared",
     "revalidate_observed_unflatten_authority_timed",
+    "validate_observed_commit_authority",
 )

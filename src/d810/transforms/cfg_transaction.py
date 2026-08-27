@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
 from uuid import uuid4
 
 from d810.core.typing import Protocol, TypeAlias
@@ -29,6 +30,45 @@ def _require_nonnegative_int(value: object, label: str) -> int:
     if value < 0:
         raise ValueError(f"{label} must not be negative")
     return value
+
+
+def _cfg_content_id(domain: str, fields: tuple[str, ...]) -> str:
+    """Hash portable CFG authority content without semantic-layer imports."""
+    values = (domain, *fields)
+    if any(type(value) is not str or not value for value in values):
+        raise TypeError("CFG content ID requires non-empty exact strings")
+    encoded = b"".join(
+        len(value.encode("utf-8")).to_bytes(8, "big") + value.encode("utf-8")
+        for value in values
+    )
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticAuthorityCommitment:
+    """Portable precommit closure for an accepted semantic authority pass."""
+
+    source_authority_id: str
+    bound_authority_id: str
+    projected_realization_id: str
+    projected_case_id: str
+    projected_ledger_id: str
+    observed_case_id: str
+    observed_ledger_id: str
+    observed_delta_id: str
+    commitment_id: str
+
+    def __post_init__(self) -> None:
+        fields = (
+            self.source_authority_id, self.bound_authority_id,
+            self.projected_realization_id, self.projected_case_id,
+            self.projected_ledger_id, self.observed_case_id,
+            self.observed_ledger_id, self.observed_delta_id,
+        )
+        if self.commitment_id != _cfg_content_id(
+            "cfg.semantic-authority-commitment.v1", fields,
+        ):
+            raise ValueError("semantic authority commitment ID drifted")
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +149,16 @@ class TransactionAttemptId:
             generation=generation,
             attempt_id=uuid4().hex,
         )
+
+
+class PatchStepKind(str, Enum):
+    REDIRECT_GOTO = "redirect_goto"
+    REDIRECT_BRANCH = "redirect_branch"
+    LOWER_CONDITIONAL = "lower_conditional"
+    BYPASS_TRAMPOLINE = "bypass_trampoline"
+    CONDITIONAL_REDIRECT = "conditional_redirect"
+    SPLIT = "split"
+    HELPER_CORRIDOR = "helper_corridor"
 
 
 CfgBlockRef: TypeAlias = NativeBlockRef | LogicalBlockRef | PlanBlockRef
@@ -326,9 +376,12 @@ __all__ = [
     "CfgTransactionPhase",
     "LogicalBlockRef",
     "NativeBlockRef",
+    "PatchStepKind",
     "PatchPlanExecutionResult",
     "PlanBlockRef",
     "PlanInsnRef",
     "PreparedCfgTransaction",
+    "SemanticAuthorityCommitment",
     "TransactionAttemptId",
+    "_cfg_content_id",
 ]

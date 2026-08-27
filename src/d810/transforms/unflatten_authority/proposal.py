@@ -7,13 +7,27 @@ only by the persistence codec and are never producer transport here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from d810.core.typing import Literal, TypeAlias
-from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef
+from d810.transforms.cfg_transaction import (
+    LogicalBlockRef, NativeBlockRef, PlanBlockRef, PatchStepKind,
+)
+from d810.ir.graph_fingerprint import _instruction_projection
 from d810.transforms.plan import (
     PatchPlan,
-    PatchRedirectBranch,
+    PatchBlockSpec,
     PatchRedirectGoto,
+    PatchRedirectBranch,
+    PatchLowerConditionalStateTransition,
+    PatchBypassDispatcherTrampoline,
+    PatchConditionalRedirect,
+    PatchEdgeSplitTrampoline,
+    PatchEdgeSplitCorridor,
+    PatchInsertBlock,
+    PatchDuplicateBlock,
+    PatchDuplicateReplayAndRedirect,
+    PatchCloneConditionalAsGoto,
+    PatchCloneConditionalAsGotoFromBranchArm,
     normalized_metadata_items,
 )
 from d810.transforms.dispatcher_corridor_coverage import (
@@ -51,6 +65,7 @@ from .model import (
     UnflattenPlanShape,
     UnflattenAuthorityNotApplicable,
     UnflattenAuthorityReason,
+    ProposalValidationStage,
     UnflattenPlanRoute,
 )
 from .producer_api import build_unflatten_plan_input_catalog
@@ -73,6 +88,176 @@ class RedirectStepManifest:
     steps: tuple[dict[str, object], ...]
     owner_refs: tuple[NativeBlockRef | LogicalBlockRef, ...]
     digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalPatchStepDescriptor:
+    """One canonical, typed identity for a planned patch step."""
+
+    plan_id: str
+    step_index: int
+    step_type: str
+    step_kind: PatchStepKind | None
+    owner_refs: tuple[NativeBlockRef | LogicalBlockRef | PlanBlockRef, ...]
+    route_refs: tuple[NativeBlockRef | LogicalBlockRef | PlanBlockRef, ...]
+    helper_refs: tuple[PlanBlockRef, ...]
+    host_ea: int | None
+    host_opcode: int | None
+    step_digest: str
+    new_block_spec_digests: tuple[tuple[PlanBlockRef, str], ...]
+
+    @property
+    def new_block_spec_digest(self) -> str | None:
+        """Compatibility view for the historical one-creation descriptor."""
+        return self.new_block_spec_digests[0][1] if len(self.new_block_spec_digests) == 1 else None
+
+
+def _patch_step_preimage(step_index: int, step: object) -> tuple[object, ...]:
+    diagnostic_fields = (
+        {"proof_id"}
+        if type(step) is PatchLowerConditionalStateTransition
+        else set()
+    )
+    values = tuple(
+        (
+            item.name,
+            tuple(_instruction_projection(instruction) for instruction in getattr(step, item.name))
+            if item.name == "instructions" and type(step) is PatchConditionalRedirect
+            else getattr(step, item.name),
+        )
+        for item in fields(step)
+        if not item.name.startswith("_") and item.name not in diagnostic_fields
+    )
+    return (type(step).__name__, step_index, values)
+
+
+def _patch_block_spec_preimage(spec_index: int, spec: PatchBlockSpec) -> tuple[object, ...]:
+    values = tuple(
+        (item.name, getattr(spec, item.name))
+        for item in fields(spec) if not item.name.startswith("_")
+    )
+    return ("PatchBlockSpec", spec_index, values)
+
+
+def _nominal_patch_lineage_parts(step: object):
+    """Return owner/ref/host coordinates for the closed planner vocabulary."""
+    step_type = type(step)
+    if step_type is PatchRedirectBranch:
+        helper = step.fallthrough_helper_block_id
+        return ((step.from_serial, helper) if helper is not None else (step.from_serial,), (step.from_serial, step.old_target, step.new_target), None, None)
+    if step_type is PatchRedirectGoto:
+        return ((step.from_serial,), (step.from_serial, step.old_target, step.new_target), None, None)
+    if step_type is PatchLowerConditionalStateTransition:
+        return ((step.source_serial,), (step.source_serial, step.old_dispatcher_serial, step.false_target_serial, step.true_target_serial), step.rewrite_from_ea, None)
+    if step_type is PatchBypassDispatcherTrampoline:
+        return ((step.source_serial,), (step.source_serial, step.trampoline_serial, step.target_serial), None, None)
+    if step_type is PatchEdgeSplitTrampoline:
+        return ((step.block_id,), (step.source_serial, step.via_pred, step.old_target, step.apply_old_target, step.new_target, step.template_block), None, None)
+    if step_type is PatchEdgeSplitCorridor:
+        return (tuple(step.clone_block_ids), (step.source_serial, step.via_pred, step.old_target, step.new_target, step.clone_until, *step.corridor_serials, step.source_new_target), None, None)
+    if step_type is PatchConditionalRedirect:
+        return ((step.block_id, step.fallthrough_block_id), (step.source_serial, step.ref_block, step.conditional_target, step.fallthrough_target, step.old_target_serial), None, None)
+    if step_type is PatchInsertBlock:
+        return ((step.block_id,), (step.pred_serial, step.succ_serial, step.old_target_serial), None, None)
+    if step_type is PatchDuplicateBlock:
+        return (
+            tuple(ref for ref in (step.block_id, step.fallthrough_block_id) if ref is not None),
+            (step.source_serial, step.pred_serial, *step.source_successors,
+             step.target_serial, step.conditional_target, step.fallthrough_target),
+            None, None,
+        )
+    if step_type is PatchDuplicateReplayAndRedirect:
+        owners = tuple(
+            ref for entry in step.per_pred_replays
+            for ref in (entry.replay_block_id, entry.clone_block_id)
+            if ref is not None
+        )
+        refs = (
+            step.source_serial, step.dispatcher_entry,
+            *(ref for entry in step.per_pred_replays for ref in (
+                entry.pred_serial, entry.target_serial,
+            )),
+        )
+        return owners, refs, None, None
+    if step_type is PatchCloneConditionalAsGoto:
+        return (
+            (step.block_id,),
+            (step.source_serial, step.pred_serial, step.goto_target,
+             *step.source_successors, step.conditional_target,
+             step.fallthrough_target),
+            None, None,
+        )
+    if step_type is PatchCloneConditionalAsGotoFromBranchArm:
+        return (
+            (step.block_id,),
+            (step.source_serial, step.pred_serial, step.goto_target,
+             *step.source_successors, *step.pred_successors,
+             step.pred_branch_target_serial,
+             step.pred_fallthrough_target_serial,
+             step.conditional_target, step.fallthrough_target),
+            None, None,
+        )
+    return None
+
+
+def _patch_step_kind(step: object) -> PatchStepKind | None:
+    return {
+        PatchRedirectGoto: PatchStepKind.REDIRECT_GOTO,
+        PatchRedirectBranch: PatchStepKind.REDIRECT_BRANCH,
+        PatchLowerConditionalStateTransition: PatchStepKind.LOWER_CONDITIONAL,
+        PatchBypassDispatcherTrampoline: PatchStepKind.BYPASS_TRAMPOLINE,
+        PatchConditionalRedirect: PatchStepKind.CONDITIONAL_REDIRECT,
+        PatchEdgeSplitTrampoline: PatchStepKind.SPLIT,
+        PatchEdgeSplitCorridor: PatchStepKind.HELPER_CORRIDOR,
+    }.get(type(step))
+
+
+def canonical_patch_step_descriptors(plan: PatchPlan) -> tuple[CanonicalPatchStepDescriptor, ...]:
+    if type(plan) is not PatchPlan:
+        raise TypeError("patch-step descriptors require a closed PatchPlan")
+    helper_specs = {spec.block_id: (index, spec) for index, spec in enumerate(plan.new_blocks)}
+    result = []
+    for index, step in enumerate(plan.steps):
+        parts = _nominal_patch_lineage_parts(step)
+        if parts is None:
+            continue
+        owners, refs, host_ea, host_opcode = parts
+        helper_refs = tuple(ref for ref in owners if type(ref) is PlanBlockRef)
+        helper = helper_specs.get(helper_refs[0]) if len(helper_refs) == 1 else None
+        creation_specs = tuple(
+            (spec_index, spec)
+            for spec_index, spec in enumerate(plan.new_blocks)
+            if spec.block_id in owners and isinstance(spec.block_id, PlanBlockRef)
+        )
+        if len(owners) > 1:
+            preimage = (
+                *_patch_step_preimage(index, step),
+                ("owners", tuple(owners)),
+                *( _patch_block_spec_preimage(spec_index, spec) for spec_index, spec in creation_specs),
+            )
+        else:
+            preimage = _patch_step_preimage(index, step) + (("owner", owners[0]),)
+            if helper is not None:
+                preimage += (_patch_block_spec_preimage(*helper),)
+        spec_digests = tuple(
+            (spec.block_id, authority_id(_patch_block_spec_preimage(spec_index, spec)))
+            for spec_index, spec in creation_specs
+        )
+        result.append(CanonicalPatchStepDescriptor(
+            plan.plan_id, index, type(step).__name__, _patch_step_kind(step),
+            tuple(owners), tuple(ref for ref in refs if ref is not None), helper_refs,
+            host_ea, host_opcode, authority_id(preimage), spec_digests,
+        ))
+    return tuple(result)
+
+
+def canonical_patch_step_descriptor(plan: PatchPlan, step_index: int) -> CanonicalPatchStepDescriptor:
+    if type(step_index) is not int or isinstance(step_index, bool) or step_index < 0:
+        raise TypeError("step index must be a non-negative integer")
+    for descriptor in canonical_patch_step_descriptors(plan):
+        if descriptor.step_index == step_index:
+            return descriptor
+    raise ValueError("plan step is outside the canonical descriptor vocabulary")
 
 
 def corridor_coverage_forecast_from_analysis(
@@ -334,6 +519,12 @@ def _validate_redirect_ref(
 
 
 def _validate_redirect_step(plan: PatchPlan, step: object) -> None:
+    if type(step) is PatchLowerConditionalStateTransition:
+        _validate_redirect_ref(plan, step.source_serial, "lower source owner", source_owner=True)
+        _validate_redirect_ref(plan, step.old_dispatcher_serial, "lower old dispatcher")
+        _validate_redirect_ref(plan, step.false_target_serial, "lower false target")
+        _validate_redirect_ref(plan, step.true_target_serial, "lower true target")
+        return
     if type(step) not in (PatchRedirectGoto, PatchRedirectBranch):
         if isinstance(step, PatchRedirectGoto):
             raise TypeError("redirect step subclasses are unsupported")
@@ -350,11 +541,11 @@ def _validate_redirect_step(plan: PatchPlan, step: object) -> None:
 
 
 def canonical_redirect_manifest(plan: PatchPlan) -> RedirectStepManifest:
-    """Return the one canonical redirect manifest used by proposal validation.
+    """Return the canonical route-mutation manifest used by proposal validation.
 
-    The manifest includes every redirect step in plan order and all of its
-    typed fields.  Source owners are the typed ``from_serial`` references,
-    never backend serials or plan-local helper references.
+    The manifest includes redirect and lower-conditional route steps in plan
+    order. Source owners are exact source references, never backend serials or
+    plan-local helper references.
     """
 
     if type(plan) is not PatchPlan:
@@ -363,7 +554,11 @@ def canonical_redirect_manifest(plan: PatchPlan) -> RedirectStepManifest:
     owners: list[NativeBlockRef | LogicalBlockRef] = []
     for index, step in enumerate(plan.steps):
         _validate_redirect_step(plan, step)
-        if type(step) not in (PatchRedirectGoto, PatchRedirectBranch):
+        if type(step) not in (
+            PatchRedirectGoto,
+            PatchRedirectBranch,
+            PatchLowerConditionalStateTransition,
+        ):
             continue
         if type(step) is PatchRedirectBranch:
             row = {
@@ -382,10 +577,25 @@ def canonical_redirect_manifest(plan: PatchPlan) -> RedirectStepManifest:
                 "old_target": step.old_target,
                 "new_target": step.new_target,
             }
+        elif type(step) is PatchLowerConditionalStateTransition:
+            descriptor = canonical_patch_step_descriptor(plan, index)
+            row = {
+                "index": index,
+                "step_type": "PatchLowerConditionalStateTransition",
+                "source_ref": step.source_serial,
+                "old_dispatcher_ref": step.old_dispatcher_serial,
+                "false_target_ref": step.false_target_serial,
+                "true_target_ref": step.true_target_serial,
+                "step_digest": descriptor.step_digest,
+            }
         else:
             continue
         rows.append(row)
-        owners.append(step.from_serial)
+        owners.append(
+            step.source_serial
+            if type(step) is PatchLowerConditionalStateTransition
+            else step.from_serial
+        )
     if not rows:
         raise ValueError("typed proposal requires a non-empty redirect manifest")
     owner_refs = tuple(sorted(set(owners), key=_redirect_owner_sort_key))
@@ -448,6 +658,7 @@ class ProposalRejected:
     reason: UnflattenAuthorityReason
     detail_code: str
     key: str | None = None
+    stage: ProposalValidationStage | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.reason, UnflattenAuthorityReason):
@@ -461,6 +672,8 @@ class ProposalRejected:
             raise ValueError("detail_code must not be blank")
         if self.key is not None and self.key not in LEGACY_UNFLATTEN_KEYS:
             raise ValueError("key must be a reserved unflatten metadata key")
+        if self.stage is not None and not isinstance(self.stage, ProposalValidationStage):
+            raise TypeError("stage must be ProposalValidationStage or None")
 
 
 ProposalValidationResult: TypeAlias = ProposalAccepted | ProposalRejected
@@ -483,12 +696,40 @@ def validate_proposal(
             "proposal_plan_id_mismatch",
         )
     try:
-        validate_canonical_roundtrip(proposal, ProposedUnflattenContract)
-        ProposedUnflattenContract.__post_init__(proposal)
-        _validate_use_def_locator(plan, proposal)
+        try:
+            validate_canonical_roundtrip(proposal, ProposedUnflattenContract)
+        except Exception:
+            return ProposalRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                "proposal_invariants_invalid",
+                stage=ProposalValidationStage.ROUNDTRIP,
+            )
+        try:
+            ProposedUnflattenContract.__post_init__(proposal)
+        except Exception:
+            return ProposalRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                "proposal_invariants_invalid",
+                stage=ProposalValidationStage.PROPOSAL_POST_INIT,
+            )
+        try:
+            _validate_use_def_locator(plan, proposal)
+        except Exception:
+            return ProposalRejected(
+                UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                "proposal_invariants_invalid",
+                stage=ProposalValidationStage.USE_DEF,
+            )
         for claim in proposal.claims:
             if type(claim) is RetiredDispatcherInfrastructureClaim:
-                retirement_member_catalog(proposal, claim)
+                try:
+                    retirement_member_catalog(proposal, claim)
+                except Exception:
+                    return ProposalRejected(
+                        UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                        "proposal_invariants_invalid",
+                        stage=ProposalValidationStage.RETIREMENT_CATALOG,
+                    )
         source_blocks = proposal.source_identity_catalog.blocks
         if source_blocks and all(
             type(block.block_ref) is NativeBlockRef for block in source_blocks
@@ -500,16 +741,25 @@ def validate_proposal(
             for claim in proposal.claims:
                 if type(claim) is not producer_api.ExactInfeasibleEffectClaim:
                     continue
-                if producer_api.validate_exact_effect_claim_semantics(
-                    proposal=proposal,
-                    claim=claim,
-                    source_serial_by_ref=source_serial_by_ref,
-                ) is None:
-                    raise ValueError("exact effect claim semantic correlation is invalid")
+                try:
+                    valid = producer_api.validate_exact_effect_claim_semantics(
+                        proposal=proposal,
+                        claim=claim,
+                        source_serial_by_ref=source_serial_by_ref,
+                    )
+                except Exception:
+                    valid = None
+                if valid is None:
+                    return ProposalRejected(
+                        UnflattenAuthorityReason.MALFORMED_PROPOSAL,
+                        "proposal_invariants_invalid",
+                        stage=ProposalValidationStage.EXACT_EFFECT_CORRELATION,
+                    )
     except Exception:
         return ProposalRejected(
             UnflattenAuthorityReason.MALFORMED_PROPOSAL,
             "proposal_invariants_invalid",
+            stage=ProposalValidationStage.PROPOSAL_POST_INIT,
         )
     return ProposalAccepted(proposal)
 
@@ -535,14 +785,112 @@ def _validate_use_def_locator(
     witness = proposal.use_def_witness
     if tuple(witness.redirect_owner_refs) != manifest.owner_refs:
         raise ValueError("use-def redirect owners do not match the redirect manifest")
-    allowed_redirect_owners = set(proposal.plan_inputs.dispatcher_member_refs)
-    if not set(witness.redirect_owner_refs) <= allowed_redirect_owners:
-        raise ValueError("use-def redirect owners must be dispatcher members")
     if witness.redirect_digest != manifest.digest:
         raise ValueError("use-def redirect digest does not match the redirect manifest")
     catalog_refs = {item.block_ref for item in catalog.blocks}
     if not set(manifest.owner_refs) <= catalog_refs:
         raise ValueError("use-def redirect owner is outside the source catalog")
+
+
+def _validated_terminal_route_claim(
+    proposal: ProposedUnflattenContract,
+    *,
+    proof_id: str | None = None,
+    source_ref: NativeBlockRef | LogicalBlockRef | None = None,
+    target_ref: NativeBlockRef | LogicalBlockRef | None = None,
+) -> tuple[EquivalentSemanticRouteClaim, object]:
+    """Select one closed route claim, then validate its canonical proof.
+
+    Route proof coordinates are physical evidence coordinates and may point at
+    a block entry that is not an exact instruction origin.  The route claim's
+    normalized subjects are therefore the authority for endpoint ownership;
+    the proof is checked against those subjects without reconstructing them
+    from a raw catalog anchor scan.
+    """
+
+    if type(proposal) is not ProposedUnflattenContract:
+        raise TypeError("terminal route selection requires a closed proposal")
+    if proof_id is not None:
+        selected = tuple(
+            claim
+            for claim in proposal.claims
+            if type(claim) is EquivalentSemanticRouteClaim
+            and proof_id in claim.route_proof_ids
+        )
+    else:
+        if source_ref is None or target_ref is None:
+            raise ValueError("terminal route selection requires proof or endpoint coordinates")
+        selected = tuple(
+            claim
+            for claim in proposal.claims
+            if type(claim) is EquivalentSemanticRouteClaim
+            and claim.source_subject.block_ref == source_ref
+            and sum(
+                subject.block_ref == target_ref
+                for subject in claim.destination_subjects
+            ) == 1
+        )
+    if len(selected) != 1:
+        raise ValueError("terminal route claim is absent or ambiguous")
+    claim = selected[0]
+    validate_canonical_roundtrip(claim, EquivalentSemanticRouteClaim)
+    selected_proof_id = claim.route_proof_ids[0]
+    proofs = tuple(
+        proof
+        for proof in proposal.route_evidence.route_proofs
+        if proof.proof_id == selected_proof_id
+    )
+    if len(proofs) != 1:
+        raise ValueError("terminal route proof is absent or ambiguous")
+    proof = proofs[0]
+    if proof.atomic_group_id != claim.atomic_group_id:
+        raise ValueError("terminal route proof atomic group differs from route claim")
+    destinations = tuple(proof.destinations)
+    terminal_destinations = tuple(
+        destination for destination in destinations if destination.terminal
+    )
+    if len(terminal_destinations) != 1:
+        raise ValueError("terminal route proof must contain exactly one terminal destination")
+
+    catalog = {
+        item.block_ref: item for item in proposal.source_identity_catalog.blocks
+    }
+
+    def identity_for(subject: SemanticSubjectRef, label: str) -> StableBlockIdentity:
+        witness = catalog.get(subject.block_ref)
+        if witness is None or witness.anchor_ea != subject.anchor_ea:
+            raise ValueError(f"terminal route {label} subject is foreign to source catalog")
+        if type(subject.block_ref) is NativeBlockRef:
+            return subject.block_ref.identity
+        if not witness.native_instruction_eas:
+            raise ValueError(f"terminal route {label} subject has no native identity")
+        return StableBlockIdentity.from_instruction_eas(
+            witness.native_instruction_eas,
+            native_key=proposal.source_identity_catalog.native_key,
+        )
+
+    source_subject = claim.source_subject
+    source_identity = identity_for(source_subject, "source")
+    destination = terminal_destinations[0]
+    destination_subjects = tuple(
+        subject
+        for subject in claim.destination_subjects
+        if identity_for(subject, "destination") == destination.target_identity
+    )
+    if len(destination_subjects) != 1:
+        raise ValueError("terminal route destination subject is absent or ambiguous")
+    destination_subject = destination_subjects[0]
+    if target_ref is not None and destination_subject.block_ref != target_ref:
+        raise ValueError("terminal route destination differs from selected endpoint")
+    destination_identity = destination.target_identity
+    if (
+        proof.source_identity != source_identity
+        or not source_identity.native_ranges.contains(proof.source_anchor_ea)
+        or destination.target_identity != destination_identity
+        or not destination_identity.native_ranges.contains(destination.target_anchor_ea)
+    ):
+        raise ValueError("terminal route proof endpoints differ from selected route claim")
+    return claim, proof
 
 
 def claims_from_dispatcher_removal_forecast(
@@ -615,45 +963,9 @@ def claims_from_dispatcher_removal_forecast(
         for retired in coverage.retirement_candidates:
             resolve(retired.anchor, "retired infrastructure")
 
-        def stable_identity(ref, label: str):
-            witness = catalog.get(ref)
-            if witness is None:
-                raise ValueError(f"terminal {label} is foreign to source catalog")
-            if type(ref) is NativeBlockRef:
-                return ref.identity
-            return StableBlockIdentity.from_instruction_eas(
-                witness.native_instruction_eas,
-                native_key=proposal.source_identity_catalog.native_key,
-            )
-
-        source_identity = stable_identity(source_ref, "source")
-        target_identity = stable_identity(target_ref, "target")
-        matching_proofs = []
-        for route_proof in proposal.route_evidence.route_proofs:
-            terminal_destinations = tuple(
-                destination
-                for destination in route_proof.destinations
-                if destination.terminal
-            )
-            if (
-                route_proof.source_identity == source_identity
-                and route_proof.source_anchor_ea == source_ea
-                and len(terminal_destinations) == 1
-                and terminal_destinations[0].target_identity == target_identity
-                and terminal_destinations[0].target_anchor_ea == target_ea
-            ):
-                matching_proofs.append(route_proof)
-        if len(matching_proofs) != 1:
-            raise ValueError("terminal switch route proof is absent or ambiguous")
-        route_proof = matching_proofs[0]
-        selected_route_claims = tuple(
-            claim
-            for claim in proposal.claims
-            if type(claim) is EquivalentSemanticRouteClaim
-            and route_proof.proof_id in claim.route_proof_ids
+        _route_claim, route_proof = _validated_terminal_route_claim(
+            proposal, source_ref=source_ref, target_ref=target_ref,
         )
-        if len(selected_route_claims) != 1:
-            raise ValueError("terminal switch route proof is not selected")
 
         cycle = _subject_factory(
             SemanticSubjectRef,
@@ -888,6 +1200,7 @@ class RejectedPlanRoute:
     reason: UnflattenAuthorityReason
     detail_code: str
     key: str | None = None
+    stage: ProposalValidationStage | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.reason, UnflattenAuthorityReason):
@@ -901,6 +1214,8 @@ class RejectedPlanRoute:
             raise ValueError("detail_code must not be blank")
         if self.key is not None and self.key not in LEGACY_UNFLATTEN_KEYS:
             raise ValueError("key must be a reserved unflatten metadata key")
+        if self.stage is not None and not isinstance(self.stage, ProposalValidationStage):
+            raise TypeError("stage must be ProposalValidationStage or None")
 
 
 PlanRouteResult: TypeAlias = (
@@ -930,10 +1245,11 @@ def attach_typed_proposal(
         raise TypeError("typed proposal attachment requires a PatchPlan")
     if plan.unflatten_proposal is not None:
         raise ValueError("typed proposal attachment may run only once")
+    source_refs_by_serial = dict(block_refs_by_serial)
     proposal = producer_api.build_proposal(
         plan_id=plan.plan_id,
         source=source,
-        block_refs_by_serial=block_refs_by_serial,
+        block_refs_by_serial=source_refs_by_serial,
         source_generation=plan.source_generation,
         canonical_route_evidence=canonical_route_evidence,
         selected_route_proof_ids=selected_route_proof_ids,
@@ -944,6 +1260,19 @@ def attach_typed_proposal(
         state_identity=state_identity,
         use_def_witness=use_def_witness,
     )
+    producer_api._catalog_ref_by_serial(
+        source, proposal.source_identity_catalog, source_refs_by_serial,
+    )
+    source_coordinates = tuple(
+        (source_refs_by_serial[serial], serial)
+        for serial in sorted(source.blocks)
+    )
+    sealed_coordinates = dict(source_coordinates)
+    if any(
+        sealed_coordinates.get(ref) != serial
+        for ref, serial in plan.source_coordinates
+    ):
+        raise ValueError("plan source coordinates differ from source mapping")
     metadata_items = tuple(normalized_metadata_items(plan.metadata))
     if any(key in LEGACY_UNFLATTEN_KEYS for key, _value in metadata_items):
         raise ValueError("typed producer plans cannot carry reserved legacy metadata")
@@ -953,19 +1282,19 @@ def attach_typed_proposal(
             corridor_coverage_forecast=corridor_coverage_forecast_from_analysis(
                 corridor_coverage,
                 proposal=proposal,
-                block_refs_by_serial=block_refs_by_serial,
+                block_refs_by_serial=source_refs_by_serial,
             ),
         )
     if dispatcher_removal_forecast is not None:
         candidate_catalog = retirement_candidate_catalog_from_forecast(
             dispatcher_removal_forecast,
             proposal=proposal,
-            block_refs_by_serial=block_refs_by_serial,
+            block_refs_by_serial=source_refs_by_serial,
         )
         claims = claims_from_dispatcher_removal_forecast(
             dispatcher_removal_forecast,
             proposal=proposal,
-            block_refs_by_serial=block_refs_by_serial,
+            block_refs_by_serial=source_refs_by_serial,
         )
         if claims:
             candidate_refs = {
@@ -995,7 +1324,12 @@ def attach_typed_proposal(
         or any(type(claim) is RetiredDispatcherInfrastructureClaim for claim in proposal.claims)
     ) and proposal.corridor_coverage_forecast is None:
         raise ValueError("corridor rewrite or retirement proposal requires coverage metadata")
-    return replace(plan, metadata=metadata_items, unflatten_proposal=proposal)
+    return replace(
+        plan,
+        metadata=metadata_items,
+        source_coordinates=source_coordinates,
+        unflatten_proposal=proposal,
+    )
 
 
 __all__ = [
@@ -1006,6 +1340,7 @@ __all__ = [
     "PlanRouteResult",
     "ProposalAccepted",
     "ProposalRejected",
+    "ProposalValidationStage",
     "ProposalValidationResult",
     "RejectedPlanRoute",
     "TypedProposalRoute",

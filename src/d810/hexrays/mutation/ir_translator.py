@@ -71,6 +71,15 @@ from d810.transforms.plan import (
 from d810.hexrays.ir.block_helpers import get_pred_serials, get_succ_serials
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays import opcode_lift
+from d810.hexrays.instruction_vocabulary import (
+    insn_kind_for_opcode_name,
+    live_known_opcode_names,
+    normalize_conditional_operands,
+    operand_kind_for_name,
+    operand_type_names,
+    operand_shape_for_opcode_name,
+    validate_operand_shape,
+)
 from d810.hexrays.mutation.insn_snapshot_materializer import (
     insn_snapshots_from_captured_body,
     validate_captured_block_body,
@@ -136,10 +145,8 @@ def _compare_width_from_operands(*operands: object) -> int | None:
 def classify_backend_opcode(
     opcode: int,
     backend: object,
-    *,
-    predicate_classifier: Callable[[int], object | None] | None = None,
 ) -> InsnKind:
-    """Classify supported backend constants without inventing trap opcodes."""
+    """Classify backend constants through the shared opcode vocabulary."""
 
     opcode = int(opcode)
 
@@ -150,64 +157,27 @@ def classify_backend_opcode(
         except (TypeError, ValueError):
             return False
 
-    for name, kind in (
-        ("m_nop", InsnKind.NOP),
-        ("m_mov", InsnKind.MOV),
-        ("m_ldx", InsnKind.LOAD),
-        ("m_xdu", InsnKind.XDU),
-        ("m_xds", InsnKind.XDS),
-        ("m_add", InsnKind.ADD),
-        ("m_sub", InsnKind.SUB),
-        ("m_and", InsnKind.AND),
-        ("m_stx", InsnKind.STORE),
-        ("m_goto", InsnKind.GOTO),
-    ):
+    for name in live_known_opcode_names():
         if matches(name):
-            return kind
-    if matches("m_call") or matches("m_icall"):
-        return InsnKind.CALL
-    if matches("m_ret"):
-        return InsnKind.RET
-    if matches("m_jtbl"):
-        return InsnKind.TABLE_JUMP
-    if matches("m_ijmp"):
-        return InsnKind.INDIRECT_JUMP
-    if matches("m_jnz") or matches("m_jz"):
-        return InsnKind.EQUALITY_JUMP
-    if predicate_classifier is not None and predicate_classifier(opcode) is not None:
-        return InsnKind.COND_JUMP
+            return insn_kind_for_opcode_name(name) or InsnKind.UNKNOWN
     return InsnKind.UNKNOWN
 
 
 def _insn_kind_from_hexrays(opcode: int) -> InsnKind:
-    return classify_backend_opcode(
-        opcode,
-        ida_hexrays,
-        predicate_classifier=_branch_predicate_only_from_hexrays,
-    )
+    name = opcode_lift.opcode_name(int(opcode))
+    return insn_kind_for_opcode_name(name) or InsnKind.UNKNOWN
 
 
 def _operand_kind_from_hexrays(operand_type: int) -> OperandKind:
     operand_type = int(operand_type)
-    mapping = {
-        int(ida_hexrays.mop_z): OperandKind.EMPTY,
-        int(ida_hexrays.mop_r): OperandKind.REGISTER,
-        int(ida_hexrays.mop_n): OperandKind.NUMBER,
-        int(ida_hexrays.mop_str): OperandKind.STRING,
-        int(ida_hexrays.mop_d): OperandKind.SUBINSN,
-        int(ida_hexrays.mop_S): OperandKind.STACK,
-        int(ida_hexrays.mop_v): OperandKind.GLOBAL,
-        int(ida_hexrays.mop_b): OperandKind.BLOCK,
-        int(ida_hexrays.mop_f): OperandKind.ARG_LIST,
-        int(ida_hexrays.mop_l): OperandKind.LVAR,
-        int(ida_hexrays.mop_a): OperandKind.ADDRESS,
-        int(ida_hexrays.mop_h): OperandKind.HELPER,
-        int(ida_hexrays.mop_c): OperandKind.CASE_LIST,
-        int(ida_hexrays.mop_fn): OperandKind.FP_CONST,
-        int(ida_hexrays.mop_p): OperandKind.PAIR,
-        int(ida_hexrays.mop_sc): OperandKind.SCATTERED,
-    }
-    return mapping.get(operand_type, OperandKind.UNKNOWN)
+    for name in operand_type_names():
+        value = getattr(ida_hexrays, name, None)
+        try:
+            if value is not None and int(value) == operand_type:
+                return operand_kind_for_name(name) or OperandKind.UNKNOWN
+        except (TypeError, ValueError):
+            continue
+    return OperandKind.UNKNOWN
 
 
 def is_control_flow_opcode(opcode: int) -> bool:
@@ -218,12 +188,10 @@ def is_control_flow_opcode(opcode: int) -> bool:
     (``m_call`` / ``m_icall``).  Use this to ask "is this instruction control
     flow?" without enumerating ``InsnKind`` cases at every call site.
     """
-    if _branch_predicate_only_from_hexrays(opcode) is not None:
-        return True
-    for name in ("m_goto", "m_ijmp", "m_jtbl", "m_call", "m_icall"):
-        if is_hexrays_opcode(opcode, name):
-            return True
-    return False
+    return (
+        opcode_lift.control_transfer_from_opcode(opcode) is not None
+        or opcode_lift.call_kind_from_opcode(opcode) is not None
+    )
 
 
 def classify_live_insn_kind(insn: object) -> InsnKind | None:
@@ -488,8 +456,10 @@ def capture_mop_snapshot(
     """
     if mop is None or mop.t == ida_hexrays.mop_z:
         return None
-    t = mop.t
-    size = mop.size
+    t = int(mop.t)
+    size = int(mop.size)
+    if size == int(ida_hexrays.NOSIZE):
+        size = 0
     kind = _operand_kind_from_hexrays(t)
     if t == ida_hexrays.mop_n:
         nnn = mop.nnn
@@ -677,11 +647,24 @@ def capture_insn_snapshot(
     )
     operands = tuple(operand for _, operand in operand_slots)
     branch_predicate = _branch_predicate_only_from_hexrays(opcode)
-    insn_kind = _insn_kind_from_hexrays(opcode)
+    opcode_name = opcode_lift.opcode_name(opcode) or f"op_{opcode}"
+    insn_kind = insn_kind_for_opcode_name(opcode_name) or InsnKind.UNKNOWN
     lifted_opcode = opcode_lift.lift_opcode(opcode)
+    value_op_kind = opcode_lift.value_op_from_opcode(opcode)
+    if value_op_kind is None and opcode_lift.opcode_name(opcode) is None:
+        value_op_kind = ValueOpKind.VENDOR
     left = capture_mop_snapshot(insn.l, lvar_stkoff_map)
     right = capture_mop_snapshot(insn.r, lvar_stkoff_map)
     dest = capture_mop_snapshot(insn.d, lvar_stkoff_map)
+    if operand_shape_for_opcode_name(opcode_name) is not None:
+        validate_operand_shape(opcode_name, l=left, r=right, d=dest)
+    compare_width = _compare_width_from_operands(left, right)
+    if branch_predicate is not None:
+        normalized = normalize_conditional_operands(
+            opcode_name, l=left, r=right, d=dest,
+        )
+        if normalized is not None:
+            left, right, compare_width = normalized
 
     return InsnSnapshot(
         opcode=opcode,
@@ -695,13 +678,13 @@ def capture_insn_snapshot(
         d=dest,
         kind=insn_kind,
         raw_opcode=int(opcode),
-        value_op_kind=opcode_lift.value_op_from_opcode(opcode),
+        value_op_kind=value_op_kind,
         control_transfer_kind=opcode_lift.control_transfer_from_opcode(opcode),
         call_kind=opcode_lift.call_kind_from_opcode(opcode),
         predicate_kind=opcode_lift.predicate_from_opcode(opcode),
         opcode_attrs=lifted_opcode.attrs,
         branch_predicate=branch_predicate,
-        compare_width=_compare_width_from_operands(left, right),
+        compare_width=compare_width,
         is_conditional_jump=branch_predicate is not None,
         is_unconditional_jump=insn_kind is InsnKind.GOTO,
         is_call=insn_kind is InsnKind.CALL,
@@ -735,6 +718,24 @@ def lift_block(
         insn = insn.next
 
     mapped_start_ea = int(map_fict_ea(int(start_ea)))
+    # Block-tail provenance is an independent live backend observation.  Do
+    # not rebuild it from the last walked instruction: the backend block can
+    # carry tail metadata that differs from (or is absent from) that row.
+    live_tail = getattr(blk, "tail", None)
+    if live_tail is None:
+        tail_opcode = raw_tail_opcode = tail_kind = None
+    else:
+        tail_opcode = int(getattr(live_tail, "opcode"))
+        raw_tail_value = getattr(live_tail, "raw_opcode", tail_opcode)
+        raw_tail_opcode = (
+            None if raw_tail_value is None else int(raw_tail_value)
+        )
+        live_tail_kind = getattr(live_tail, "kind", None)
+        tail_kind = (
+            live_tail_kind
+            if isinstance(live_tail_kind, InsnKind)
+            else _insn_kind_from_hexrays(tail_opcode)
+        )
     return BlockSnapshot(
         serial=serial,
         block_type=block_type,
@@ -746,6 +747,9 @@ def lift_block(
             mapped_start_ea if 0 <= mapped_start_ea < 0xFFFFFFFFFFFFFFFF else None
         ),
         insn_snapshots=tuple(insn_snapshots),
+        tail_opcode=tail_opcode,
+        raw_tail_opcode=raw_tail_opcode,
+        tail_kind=tail_kind,
         kind=_block_kind_from_hexrays(block_type),
         raw_block_type=int(block_type),
     )

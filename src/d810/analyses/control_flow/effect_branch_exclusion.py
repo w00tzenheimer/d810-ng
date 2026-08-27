@@ -62,6 +62,7 @@ class ExactStateBranchEffectExclusion:
     discarded_effect_serial: int
     discarded_effect_ea: int
     state_identity: StorageIdentity
+    site_specific: bool = False
 
     def __post_init__(self) -> None:
         scalars = (
@@ -99,6 +100,8 @@ class ExactStateBranchEffectExclusion:
             raise ValueError("exact exclusion EAs must be native addresses")
         if type(self.state_identity) is not StorageIdentity:
             raise TypeError("state_identity must be StorageIdentity")
+        if type(self.site_specific) is not bool:
+            raise TypeError("site_specific must be an exact bool")
         if type(self.state_identity.kind) is not StorageIdentityKind:
             raise TypeError("state_identity kind must be StorageIdentityKind")
         if type(self.state_identity.offset) is not int:
@@ -128,6 +131,7 @@ class ExactStateBranchEffectExclusion:
                 "ea": self.discarded_effect_ea,
             },
             "state_identity": self.state_identity.to_record(),
+            "site_specific": self.site_specific,
         }
 
 
@@ -196,6 +200,8 @@ def _proof_scalars_valid(proof: ExactStateBranchEffectExclusion) -> bool:
     if type(proof) is not ExactStateBranchEffectExclusion:
         return False
     if type(proof.state_identity) is not StorageIdentity:
+        return False
+    if type(proof.site_specific) is not bool:
         return False
     if (
         type(proof.state_identity.kind) is not StorageIdentityKind
@@ -386,8 +392,10 @@ def _has_effect(block: BlockSnapshot) -> bool:
     )
 
 
-def _has_effect_at(block: BlockSnapshot, effect_ea: int) -> bool:
-    """Require exactly one CALL/STORE site in the block at the claimed EA."""
+def _has_effect_at(
+    block: BlockSnapshot, effect_ea: int, *, site_specific: bool,
+) -> bool:
+    """Require one exact CALL/STORE occurrence at the claimed site."""
     if not _instruction_shape_exact(block) or type(effect_ea) is not int:
         return False
     matches = []
@@ -397,7 +405,7 @@ def _has_effect_at(block: BlockSnapshot, effect_ea: int) -> bool:
             native_ea = instruction.ea
         if instruction.kind in (InsnKind.CALL, InsnKind.STORE) or instruction.is_call:
             matches.append(native_ea)
-    return len(matches) == 1 and matches[0] == effect_ea
+    return matches.count(effect_ea) == 1 and (site_specific or len(matches) == 1)
 
 
 def build_exact_state_branch_effect_exclusion(
@@ -410,8 +418,9 @@ def build_exact_state_branch_effect_exclusion(
     selected_target_serial: int,
     discarded_effect_serial: int,
     state_identity: StorageIdentity,
+    discarded_effect_ea: int | None = None,
 ) -> ExactStateBranchEffectExclusion | None:
-    """Build and immediately replay one exact effect-branch exclusion."""
+    """Build and replay one site-specific exact effect-branch exclusion."""
 
     scalars = (
         normalized_state, source_serial, predicate_serial,
@@ -425,6 +434,13 @@ def build_exact_state_branch_effect_exclusion(
         or type(state_identity.kind) is not StorageIdentityKind
         or type(state_identity.offset) is not int
         or state_identity.offset < 0
+        or (
+            discarded_effect_ea is not None
+            and (
+                type(discarded_effect_ea) is not int
+                or not 0 < discarded_effect_ea < _BADADDR_64
+            )
+        )
     ):
         return None
     if (
@@ -461,8 +477,14 @@ def build_exact_state_branch_effect_exclusion(
             if type(native_ea) is not int:
                 return None
             effect_eas.append(native_ea)
-    if len(effect_eas) != 1:
+    if discarded_effect_ea is None:
+        if len(effect_eas) != 1:
+            return None
+        selected_effect_ea = effect_eas[0]
+    elif effect_eas.count(discarded_effect_ea) != 1:
         return None
+    else:
+        selected_effect_ea = discarded_effect_ea
     proof = ExactStateBranchEffectExclusion(
         normalized_state=normalized_state & 0xFFFFFFFF,
         source_serial=source_serial,
@@ -474,8 +496,9 @@ def build_exact_state_branch_effect_exclusion(
         selected_target_serial=selected_target_serial,
         selected_target_ea=_stable_ea(selected) or 0,
         discarded_effect_serial=discarded_effect_serial,
-        discarded_effect_ea=effect_eas[0],
+        discarded_effect_ea=selected_effect_ea,
         state_identity=state_identity,
+        site_specific=discarded_effect_ea is not None,
     )
     if state_write[0] != proof.normalized_state:
         return None
@@ -516,7 +539,10 @@ def validate_exact_state_branch_effect_exclusion(
         or tuple(source.succs) != (proof.predicate_serial,)
         or proof.source_serial not in tuple(predicate.preds)
         or tuple(discarded.preds) != (proof.predicate_serial,)
-        or not _has_effect_at(discarded, proof.discarded_effect_ea)
+        or not _has_effect_at(
+            discarded, proof.discarded_effect_ea,
+            site_specific=proof.site_specific,
+        )
     ):
         return False
     state_write = _exact_source_state_write(
@@ -572,7 +598,10 @@ def validate_exact_state_branch_effect_exclusion(
         or _stable_ea(projected_selected) != proof.selected_target_ea
         or tuple(projected_source.succs) != (proof.predicate_serial,)
         or tuple(projected_discarded.preds) != (proof.predicate_serial,)
-        or not _has_effect_at(projected_discarded, proof.discarded_effect_ea)
+        or not _has_effect_at(
+            projected_discarded, proof.discarded_effect_ea,
+            site_specific=proof.site_specific,
+        )
     ):
         return False
     reachable = reachable_from_adjacency(

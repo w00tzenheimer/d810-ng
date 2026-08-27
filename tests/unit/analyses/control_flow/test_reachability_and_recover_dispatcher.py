@@ -176,6 +176,7 @@ def _table_jump_block(
     """A jtbl block dispatching on a masked state var (abc_or_dispatch shape)."""
     tail = InsnSnapshot(
         opcode=1,
+        raw_opcode=1,
         ea=0x1000 + serial,
         operands=(),
         l=MopSnapshot(kind=OperandKind.SUBINSN, stack_refs=(state_stkoff,)),
@@ -190,6 +191,9 @@ def _table_jump_block(
         flags=0,
         start_ea=0x1000 + serial,
         insn_snapshots=(tail,),
+        tail_opcode=tail.opcode,
+        raw_tail_opcode=tail.raw_opcode,
+        tail_kind=InsnKind.TABLE_JUMP,
     )
 
 

@@ -60,6 +60,7 @@ from .model import (
     SemanticSubjectRole,
     UnflattenClaimKind,
     UnflattenAuthorityReason,
+    UnflattenPlanShape,
     UnflattenPlanRoute,
     UnflattenPlanInputCatalog,
     UseDefFragmentWitness,
@@ -307,10 +308,17 @@ def exact_state_branch_effect_exclusion_from_metadata(
 
     if type(payload) is not dict:
         return None
-    if set(payload) != {
+    legacy_keys = {
         "normalized_state", "source", "predicate", "selected_target",
         "discarded_effect", "state_identity",
-    }:
+    }
+    current_keys = {*legacy_keys, "site_specific"}
+    payload_keys = set(payload)
+    if payload_keys == legacy_keys:
+        site_specific = False
+    elif payload_keys == current_keys and type(payload["site_specific"]) is bool:
+        site_specific = payload["site_specific"]
+    else:
         return None
 
     def exact_int(value: object) -> int:
@@ -360,6 +368,7 @@ def exact_state_branch_effect_exclusion_from_metadata(
             selected_target_serial=selected[0], selected_target_ea=selected[1],
             discarded_effect_serial=discarded[0], discarded_effect_ea=discarded[1],
             state_identity=identity,
+            site_specific=site_specific,
         )
     except (TypeError, ValueError, OverflowError):
         return None
@@ -703,7 +712,12 @@ def retirement_claim_from_legacy_proof(
     by_serial = dict(block_refs_by_serial)
     if len(by_serial) != len(block_refs_by_serial):
         raise ValueError("legacy retirement serial map contains duplicate serials")
-    by_anchor = {item.anchor_ea: item.block_ref for item in proposal.source_identity_catalog.blocks}
+    by_anchor: dict[int, NativeBlockRef | LogicalBlockRef] = {}
+    for item in proposal.source_identity_catalog.blocks:
+        prior = by_anchor.get(item.anchor_ea)
+        if prior is not None and prior != item.block_ref:
+            raise ValueError("legacy retirement anchor-only lookup is ambiguous")
+        by_anchor[item.anchor_ea] = item.block_ref
 
     family_fields = (
         "retired_infrastructure", "retired_state_plumbing", "retired_corridor",
@@ -1770,7 +1784,11 @@ def decode_legacy_unflatten_contract(
                 raise ValueError("exact-effect legacy payload has mixed state identities")
             if context.use_def_witness.state_identity != state_identity:
                 raise ValueError("exact-effect legacy use-def state identity mismatch")
-            from .producer_api import build_proposal
+            from .producer_api import (
+                _exact_effect_claim,
+                build_proposal,
+                build_source_identity_catalog,
+            )
             refs_by_serial = dict(context.block_refs_by_serial)
             serial_by_ref = {ref: serial for serial, ref in refs_by_serial.items()}
             plan_inputs = context.plan_inputs
@@ -1781,6 +1799,31 @@ def decode_legacy_unflatten_contract(
             authoritative_handler_serials = tuple(
                 sorted(serial_by_ref[handler.block_ref] for handler in plan_inputs.authoritative_handlers)
             )
+            selected_route_proof_ids: tuple[str, ...] = ()
+            if plan_inputs.shape is UnflattenPlanShape.PARTIAL_REWRITE:
+                source_catalog = build_source_identity_catalog(
+                    context.source,
+                    refs_by_serial,
+                    native_key=context.canonical_route_evidence.native_key,
+                    source_generation=context.source_generation,
+                    canonical_route_evidence=context.canonical_route_evidence,
+                )
+                exact_claims = tuple(
+                    _exact_effect_claim(
+                        exclusion=exclusion,
+                        source=context.source,
+                        source_catalog=source_catalog,
+                        block_refs_by_serial=refs_by_serial,
+                        canonical_route_evidence=context.canonical_route_evidence,
+                        state_identity=state_identity,
+                    )
+                    for exclusion in typed_exclusions
+                )
+                selected_route_proof_ids = tuple(sorted({
+                    proof_id
+                    for claim in exact_claims
+                    for proof_id in claim.route_proof_ids
+                }))
 
             proposal = build_proposal(
                 plan_id=context.plan_id,
@@ -1788,6 +1831,7 @@ def decode_legacy_unflatten_contract(
                 block_refs_by_serial=refs_by_serial,
                 source_generation=context.source_generation,
                 canonical_route_evidence=context.canonical_route_evidence,
+                selected_route_proof_ids=selected_route_proof_ids,
                 exact_state_effect_exclusions=typed_exclusions,
                 dispatcher_entry_serial=dispatcher_entry_serial,
                 dispatcher_member_serials=dispatcher_member_serials,

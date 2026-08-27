@@ -19,7 +19,17 @@ from d810.analyses.control_flow.edit_simulation import (
     SimulationResult,
     simulate_edits,
 )
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+)
+from d810.ir.expressions import ValueOpKind
+from d810.ir.semantics import ControlTransferKind, PredicateKind
 from d810.transforms.cfg_transaction import (
     CfgBlockRef,
     CfgProjection,
@@ -41,6 +51,7 @@ from d810.transforms.graph_modification import (
     RedirectGoto,
     RemoveEdge,
 )
+
 from d810.transforms.plan import (
     PatchCloneConditionalAsGoto,
     PatchCloneConditionalAsGotoFromBranchArm,
@@ -59,10 +70,18 @@ from d810.transforms.plan import (
     PatchRedirectGoto,
     PatchRemoveEdge,
     PatchReorderBlocks,
+    PatchScalarizeLocalAliasAccess,
+)
+from d810.transforms.graph_modification import (
+    PreserveLivePredicateCondition,
+    SyntheticRegisterNonzeroCondition,
+    SyntheticStackValueEqualsCondition,
 )
 from d810.core.logging import getLogger
 
 logger = getLogger(__name__)
+
+_PORTABLE_SYNTHETIC_OPCODE = -1
 
 
 def _focus_refs_for_patch_plan(
@@ -305,6 +324,162 @@ def _build_pred_map(adj: dict[int, list[int]]) -> dict[int, tuple[int, ...]]:
     return {serial: tuple(pred_list) for serial, pred_list in preds.items()}
 
 
+def _project_lower_conditional_instructions(
+    block: BlockSnapshot,
+    patch_plan: PatchPlan,
+) -> tuple[InsnSnapshot, ...]:
+    """Replace a synthetic stack lower's rewritten suffix coherently.
+
+    The portable projection represents the planned conditional directly.  It
+    deliberately does not model the backend's later fallthrough helper; that
+    belongs to the observed phase.
+    """
+
+    source_coordinates = dict(patch_plan.source_coordinates)
+
+    def serial_for_ref(value: object) -> int | None:
+        if type(value) is int:
+            return value
+        if type(value) not in (NativeBlockRef, LogicalBlockRef, PlanBlockRef):
+            return None
+        return source_coordinates.get(value)
+
+    for step in patch_plan.steps:
+        if type(step) is not PatchLowerConditionalStateTransition:
+            continue
+        if serial_for_ref(step.source_serial) != block.serial:
+            continue
+        condition = step.condition_operand
+        if type(condition) is PreserveLivePredicateCondition:
+            if condition.predicate_ea != step.rewrite_from_ea:
+                raise ValueError(
+                    "unsupported lower-conditional condition: "
+                    "predicate EA must match rewrite EA"
+                )
+            rewrite_indices = [
+                index
+                for index, instruction in enumerate(block.insn_snapshots)
+                if instruction.ea == step.rewrite_from_ea
+            ]
+            if len(rewrite_indices) != 1:
+                raise ValueError(
+                    "unsupported lower-conditional condition: "
+                    "preserved predicate rewrite EA is absent or ambiguous"
+                )
+            rewrite_index = rewrite_indices[0]
+            old_tail = block.insn_snapshots[rewrite_index]
+            if rewrite_index != len(block.insn_snapshots) - 1:
+                raise ValueError(
+                    "unsupported lower-conditional condition: "
+                    "preserved predicate must be the block tail"
+                )
+            if old_tail.kind is not InsnKind.COND_JUMP:
+                raise ValueError(
+                    "unsupported lower-conditional condition: "
+                    "preserved predicate requires a two-way conditional tail"
+                )
+            if block.kind is not BlockKind.TWO_WAY or len(block.succs) != 2:
+                raise ValueError(
+                    "unsupported lower-conditional condition: "
+                    "preserved predicate requires exactly two source successors"
+                )
+            if type(condition.true_is_taken) is not bool:
+                raise ValueError(
+                    "unsupported lower-conditional condition: "
+                    "true_is_taken marker is untyped"
+                )
+            taken_target = (
+                step.true_target_serial
+                if condition.true_is_taken
+                else step.false_target_serial
+            )
+            taken_serial = serial_for_ref(taken_target)
+            if taken_serial is None:
+                raise ValueError("lower-conditional taken target is unresolved")
+            if old_tail.d is None or old_tail.d.kind is not OperandKind.BLOCK:
+                raise ValueError(
+                    "unsupported lower-conditional condition: "
+                    "preserved predicate lacks block target"
+                )
+            if old_tail.d.block_ref not in block.succs:
+                raise ValueError(
+                    "unsupported lower-conditional condition: "
+                    "preserved predicate target is not a source successor"
+                )
+            replacement = replace(
+                old_tail,
+                d=replace(old_tail.d, block_ref=taken_serial),
+            )
+            return (*block.insn_snapshots[:rewrite_index], replacement)
+        if type(condition) is SyntheticStackValueEqualsCondition:
+            if condition.stack_size <= 0:
+                raise ValueError("lower-conditional stack width must be positive")
+            if condition.value < 0 or condition.value >= (1 << (condition.stack_size * 8)):
+                raise ValueError("lower-conditional constant does not fit width")
+            left = MopSnapshot(
+                kind=OperandKind.STACK,
+                size=condition.stack_size,
+                stkoff=condition.stack_stkoff,
+                stack_refs=(condition.stack_stkoff,),
+            )
+            right = MopSnapshot(
+                kind=OperandKind.NUMBER,
+                size=condition.stack_size,
+                value=condition.value,
+            )
+            predicate = PredicateKind.EQ
+            compare_width = condition.stack_size
+        elif type(condition) is SyntheticRegisterNonzeroCondition:
+            if condition.predicate_reg < 0:
+                raise ValueError("lower-conditional register must be non-negative")
+            if condition.predicate_size <= 0:
+                raise ValueError("lower-conditional register width must be positive")
+            left = MopSnapshot(
+                kind=OperandKind.REGISTER,
+                size=condition.predicate_size,
+                reg=condition.predicate_reg,
+            )
+            right = MopSnapshot(
+                kind=OperandKind.NUMBER,
+                size=condition.predicate_size,
+                value=0,
+            )
+            predicate = PredicateKind.NE
+            compare_width = condition.predicate_size
+        else:
+            raise ValueError("unsupported lower-conditional condition")
+        rewrite_indices = [
+            index for index, instruction in enumerate(block.insn_snapshots)
+            if instruction.ea == step.rewrite_from_ea
+        ]
+        if len(rewrite_indices) != 1:
+            raise ValueError("lower-conditional rewrite EA is absent or ambiguous")
+        rewrite_index = rewrite_indices[0]
+        old_tail = block.insn_snapshots[rewrite_index]
+        true_serial = serial_for_ref(step.true_target_serial)
+        if true_serial is None:
+            raise ValueError("lower-conditional true target is unresolved")
+        replacement = InsnSnapshot(
+            opcode=old_tail.opcode,
+            ea=step.rewrite_from_ea,
+            operands=(),
+            l=left,
+            r=right,
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=true_serial),
+            kind=InsnKind.COND_JUMP,
+            raw_opcode=old_tail.raw_opcode if old_tail.raw_opcode is not None else 0,
+            predicate_kind=predicate,
+            branch_predicate=predicate,
+            compare_width=compare_width,
+            control_transfer_kind=ControlTransferKind.CONDITIONAL_BRANCH,
+            is_conditional_jump=True,
+            is_unconditional_jump=False,
+            is_call=False,
+        )
+        return (*block.insn_snapshots[:rewrite_index], replacement)
+    return tuple(block.insn_snapshots)
+
+
 def _convert_to_goto_serials(patch_plan: PatchPlan) -> frozenset[int]:
     """Return the set of block serials targeted by PatchConvertToGoto steps."""
     serials: set[int] = set()
@@ -331,6 +506,30 @@ def _project_existing_blocks(
             else block.serial
         )
         succs = tuple(adj.get(projected_serial, ()))
+        instructions = _project_lower_conditional_instructions(block, patch_plan)
+        # A helper-free conditional redirect changes only the approved target
+        # slot.  The adjacency simulator already rewrites F's successor from
+        # K to N; carry that same relocation into the portable conditional
+        # instruction while retaining every predicate/control semantic field.
+        source_coordinates = dict(patch_plan.source_coordinates)
+        for step in patch_plan.steps:
+            if (
+                type(step) is PatchRedirectBranch
+                and source_coordinates.get(step.from_serial, step.from_serial) == block.serial
+                and instructions
+                and instructions[-1].d is not None
+                and instructions[-1].d.kind is OperandKind.BLOCK
+            ):
+                if step.fallthrough_helper_block_id is not None:
+                    target_serial = succs[1] if len(succs) == 2 else None
+                else:
+                    target_serial = source_coordinates.get(step.new_target, step.new_target)
+                if type(target_serial) is int and not isinstance(target_serial, bool):
+                    instructions = (*instructions[:-1], replace(
+                        instructions[-1],
+                        d=replace(instructions[-1].d, block_ref=target_serial),
+                    ))
+                break
         tail_kind = _tail_opcode_for_existing_block(block, patch_plan, succs)
         block_kind = _block_kind_for_projected_shape(
             template_block=block,
@@ -344,21 +543,97 @@ def _project_existing_blocks(
             succs=succs,
             tail_kind=tail_kind,
         )
-        projected[projected_serial] = BlockSnapshot(
+        snapshot = BlockSnapshot(
             serial=projected_serial,
             block_type=block.block_type,
             succs=succs,
             preds=(),
             flags=int(block.flags),
             start_ea=int(block.start_ea),
-            insn_snapshots=tuple(block.insn_snapshots),
-            tail_opcode=block.tail_opcode,
+            insn_snapshots=instructions,
+            tail_opcode=(instructions[-1].opcode if instructions else block.tail_opcode),
             kind=block_kind,
             tail_kind=tail_kind,
             raw_block_type=block.raw_block_type,
-            raw_tail_opcode=block.raw_tail_opcode,
+            raw_tail_opcode=(instructions[-1].raw_opcode if instructions else block.raw_tail_opcode),
         )
+        projected[projected_serial] = snapshot
     return projected
+
+
+def _project_local_alias_scalarizations(
+    projected_blocks: dict[int, BlockSnapshot],
+    pre_cfg: FlowGraph,
+    patch_plan: PatchPlan,
+) -> None:
+    """Forecast each exact typed local-alias STORE -> MOV rewrite.
+
+    This is plan-semantic projection, not a record of backend operations.  A
+    scalarization claim is meaningful at projected preflight only when the
+    exact host has the same symbolic MOV shape that lowering is authorized to
+    produce.  Refuse to fabricate that shape from an ambiguous or stale host.
+    """
+
+    source_coordinates = dict(patch_plan.source_coordinates)
+    _plan_serials, stop_before, stop_after = _simulation_serials(patch_plan)
+    for step in patch_plan.steps:
+        if type(step) is not PatchScalarizeLocalAliasAccess:
+            continue
+        source_serial = source_coordinates.get(step.block_serial)
+        if type(source_serial) is not int or isinstance(source_serial, bool):
+            raise ValueError("local-alias scalarization owner lacks source coordinates")
+        source_block = pre_cfg.blocks.get(source_serial)
+        if source_block is None:
+            raise ValueError("local-alias scalarization owner is absent from source graph")
+        host_matches = tuple(
+            index for index, instruction in enumerate(source_block.insn_snapshots)
+            if (instruction.native_ea if instruction.native_ea is not None else instruction.ea)
+            == step.host_ea
+            and instruction.opcode == step.host_opcode
+            and instruction.kind is InsnKind.STORE
+        )
+        if len(host_matches) != 1:
+            raise ValueError("local-alias scalarization host must be one exact source STORE")
+        source_index = host_matches[0]
+        projected_serial = (
+            stop_after
+            if stop_before is not None and source_serial == stop_before
+            else source_serial
+        )
+        projected_block = projected_blocks.get(projected_serial)
+        if projected_block is None:
+            raise ValueError("local-alias scalarization owner is absent from projected graph")
+        if source_index >= len(projected_block.insn_snapshots):
+            raise ValueError("local-alias scalarization projected host ordinal is absent")
+        projected_host = projected_block.insn_snapshots[source_index]
+        projected_host_ea = (
+            projected_host.native_ea
+            if projected_host.native_ea is not None else projected_host.ea
+        )
+        if (
+            projected_host_ea != step.host_ea
+            or projected_host.opcode != step.host_opcode
+            or projected_host.kind is not InsnKind.STORE
+        ):
+            raise ValueError("local-alias scalarization projected host differs from source STORE")
+        instructions = list(projected_block.insn_snapshots)
+        instructions[source_index] = replace(
+            projected_host,
+            kind=InsnKind.MOV,
+            value_op_kind=ValueOpKind.MOVE,
+            display_text=f"{step.alias_token} = {step.base_token}",
+        )
+        tail_is_host = source_index == len(instructions) - 1
+        projected_blocks[projected_serial] = replace(
+            projected_block,
+            insn_snapshots=tuple(instructions),
+            tail_opcode=(instructions[-1].opcode if tail_is_host else projected_block.tail_opcode),
+            tail_kind=(InsnKind.MOV if tail_is_host else projected_block.tail_kind),
+            raw_tail_opcode=(
+                instructions[-1].raw_opcode
+                if tail_is_host else projected_block.raw_tail_opcode
+            ),
+        )
 
 
 def _project_created_blocks(
@@ -389,6 +664,112 @@ def _project_created_blocks(
             else None
         )
         instructions = tuple(spec.instructions or ())
+        conditional_step = next(
+            (
+                step for step in patch_plan.steps
+                if type(step) is PatchConditionalRedirect
+                and step.block_id == spec.block_id
+            ),
+            None,
+        )
+        if spec.kind == "conditional_redirect_clone":
+            if template_block is None or len(template_block.succs) != 2:
+                raise ValueError("conditional redirect clone requires a two-way template")
+            template_tail = template_block.insn_snapshots[-1] if template_block.insn_snapshots else None
+            if (
+                template_tail is None
+                or template_tail.kind is not InsnKind.COND_JUMP
+                or template_tail.control_transfer_kind is not ControlTransferKind.CONDITIONAL_BRANCH
+                or not template_tail.is_conditional_jump
+                or template_tail.d is None
+                or template_tail.d.kind is not OperandKind.BLOCK
+                or template_tail.d.block_ref != template_block.succs[1]
+                or template_tail.branch_predicate is not PredicateKind.EQ
+                or template_tail.predicate_kind is not PredicateKind.EQ
+                or template_block.tail_kind is not InsnKind.COND_JUMP
+                or template_block.tail_opcode != template_tail.opcode
+                or template_block.raw_tail_opcode != template_tail.raw_opcode
+            ):
+                raise ValueError("conditional redirect clone requires a coherent conditional template")
+            retargeted_tail = replace(
+                template_tail,
+                d=replace(template_tail.d, block_ref=succs[1]),
+            )
+            if conditional_step is not None and conditional_step.instructions:
+                # Preserve the unsupported prelude in the portable projection;
+                # the authority binder reports UNSUPPORTED_REALIZATION_KIND.
+                instructions = (
+                    tuple(conditional_step.instructions)
+                    + tuple(template_block.insn_snapshots[:-1])
+                    + (retargeted_tail,)
+                )
+            else:
+                instructions = (*template_block.insn_snapshots[:-1], retargeted_tail)
+        if spec.kind == "conditional_redirect_fallthrough":
+            # Creation lineage points at the conditional template, but the
+            # helper is a fresh, predicate-free one-way GOTO.  Never copy the
+            # template body into this synthetic block.
+            if len(succs) != 1:
+                raise ValueError(
+                    "conditional redirect fallthrough requires exactly one successor"
+                )
+            instructions = (
+                InsnSnapshot(
+                    opcode=_PORTABLE_SYNTHETIC_OPCODE,
+                    ea=int(getattr(template_block, "start_ea", pre_cfg.func_ea)),
+                    operands=(),
+                    d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=succs[0]),
+                    kind=InsnKind.GOTO,
+                    control_transfer_kind=ControlTransferKind.GOTO,
+                    is_unconditional_jump=True,
+                    is_conditional_jump=False,
+                    is_call=False,
+                ),
+            )
+        if spec.kind in {
+            "clone_conditional_as_goto",
+            "redirect_branch_fallthrough",
+            "edge_split_trampoline",
+        }:
+            if len(succs) != 1:
+                raise ValueError(f"{spec.kind} requires exactly one successor")
+            instructions = (
+                InsnSnapshot(
+                    opcode=_PORTABLE_SYNTHETIC_OPCODE,
+                    ea=int(getattr(template_block, "start_ea", pre_cfg.func_ea)),
+                    operands=(),
+                    d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=succs[0]),
+                    kind=InsnKind.GOTO,
+                    control_transfer_kind=ControlTransferKind.GOTO,
+                    is_unconditional_jump=True,
+                    is_conditional_jump=False,
+                    is_call=False,
+                ),
+            )
+        if spec.kind == "edge_split_corridor_clone":
+            if len(succs) != 1:
+                raise ValueError("edge split corridor clone requires exactly one successor")
+            template_instructions = tuple(getattr(template_block, "insn_snapshots", ()))
+            synthetic_ea = (
+                int(template_instructions[-1].ea)
+                if template_instructions
+                else int(getattr(template_block, "start_ea", pre_cfg.func_ea))
+            )
+            if template_instructions:
+                template_instructions = template_instructions[:-1]
+            instructions = template_instructions + (
+                InsnSnapshot(
+                    opcode=_PORTABLE_SYNTHETIC_OPCODE,
+                    ea=synthetic_ea,
+                    operands=(),
+                    d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=succs[0]),
+                    kind=InsnKind.GOTO,
+                    control_transfer_kind=ControlTransferKind.GOTO,
+                    is_unconditional_jump=True,
+                    is_conditional_jump=False,
+                    is_call=False,
+                ),
+            )
         tail_kind = _tail_kind_for_projected_block(
             kind=spec.kind,
             template_block=template_block,
@@ -410,11 +791,11 @@ def _project_created_blocks(
             start_ea=int(getattr(template_block, "start_ea", pre_cfg.func_ea)),
             insn_snapshots=instructions
             or tuple(getattr(template_block, "insn_snapshots", ())),
-            tail_opcode=getattr(template_block, "tail_opcode", None),
+            tail_opcode=(instructions[-1].opcode if instructions else getattr(template_block, "tail_opcode", None)),
             kind=block_kind,
             tail_kind=tail_kind,
             raw_block_type=getattr(template_block, "raw_block_type", None),
-            raw_tail_opcode=getattr(template_block, "raw_tail_opcode", None),
+            raw_tail_opcode=(instructions[-1].raw_opcode if instructions else getattr(template_block, "raw_tail_opcode", None)),
         )
     return projected
 
@@ -456,6 +837,7 @@ def project_post_state(pre_cfg: FlowGraph, patch_plan: PatchPlan) -> FlowGraph:
             )
     projected_blocks = _project_existing_blocks(pre_cfg, patch_plan, simulated.adj)
     projected_blocks.update(_project_created_blocks(pre_cfg, patch_plan, simulated.adj))
+    _project_local_alias_scalarizations(projected_blocks, pre_cfg, patch_plan)
     pred_map = _build_pred_map(simulated.adj)
     finalized_blocks = {
         serial: BlockSnapshot(
@@ -1025,14 +1407,22 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                 ref_block=ref,
                 conditional_target=conditional,
                 fallthrough_target=fallthrough,
+                old_target_serial=old_target,
             ):
+                effective_old_target = ref if old_target is None else old_target
+                conditional_target_serial = serial(conditional)
+                fallthrough_target_serial = serial(fallthrough)
+                if stop_serial_before == conditional_target_serial and stop_serial_after is not None:
+                    conditional_target_serial = stop_serial_after
+                if stop_serial_before == fallthrough_target_serial and stop_serial_after is not None:
+                    fallthrough_target_serial = stop_serial_after
                 simulated.append(
                     SimulatedEdit(
                         kind="create_conditional_redirect",
                         source=src,
-                        old_target=-1,
-                        new_target=conditional,
-                        fallthrough_target=fallthrough,
+                        old_target=serial(effective_old_target),
+                        new_target=conditional_target_serial,
+                        fallthrough_target=fallthrough_target_serial,
                         created_serial=assigned,
                         secondary_created_serial=fallthrough_serial,
                         stop_serial_before=stop_serial_before,

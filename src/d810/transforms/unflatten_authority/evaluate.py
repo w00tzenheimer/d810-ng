@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
+from d810.core.typing import Iterable
 
-from d810.analyses.control_flow import semantic_route_evidence as route_model
 from d810.ir.block_identity import StableBlockIdentity
 from d810.transforms.cfg_transaction import NativeBlockRef, PlanBlockRef
 
@@ -119,7 +119,8 @@ def _classify_effect_site(
     candidate_binding: model.PhaseSubjectBinding | None,
     candidate_effect: model.InventoryEffectSite | tuple[model.InventoryEffectSite, ...] | None,
     claim: model.ExactInfeasibleEffectClaim | None,
-    route_assessment: route_model.CanonicalRouteAssessment | None,
+    source_authority: model.SourceBoundRouteAuthority,
+    projected_realization: model.ProjectedRouteRealization,
     generic_gate_facts: gates.GenericCfgGateFacts | None,
     *,
     phase: model.UnflattenAuthorityPhase | None = None,
@@ -148,6 +149,54 @@ def _classify_effect_site(
         and candidate_row.opcode == effect.opcode
         and candidate_row.width == effect.width
     )
+    if (
+        phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
+        and type(projected_realization) is model.ProjectedRouteRealization
+    ):
+        # The projected realizer already made the semantic disposition.  This
+        # layer may verify that the candidate still matches its sealed
+        # coordinate, but must not recreate an independent authorization from
+        # raw loss sets, claims, or route coverage.
+        sealed_rows = tuple(
+            row for row in projected_realization.site_phase_result.effect_results
+            if row.source_subject_id == subject.subject_id
+        )
+        if len(sealed_rows) != 1:
+            return _EffectClassification(False, False, True, None)
+        sealed = sealed_rows[0]
+        if sealed.outcome in {
+            model.ProjectedEffectSiteOutcome.PRESERVED,
+            model.ProjectedEffectSiteOutcome.RELATION_CLONED,
+        }:
+            return _EffectClassification(
+                candidate_site_matches
+                and sealed.projected_site is not None
+                and sealed.projected_site.instruction_ea == effect.instruction_ea
+                and sealed.projected_site.effect_kind is effect.effect_kind,
+                False,
+                not candidate_site_matches,
+                None,
+            )
+        if sealed.outcome is model.ProjectedEffectSiteOutcome.EXACT_INFEASIBLE:
+            authorized = bool(
+                not candidate_rows
+                and candidate_binding is not None
+                and candidate_binding.status is model.SubjectBindingStatus.MISSING
+                and claim is not None
+                and sealed.supporting_claim_id == claim.claim_id
+                and sealed.projected_site is None
+            )
+            return _EffectClassification(False, authorized, not authorized, claim if authorized else None)
+        if sealed.outcome is model.ProjectedEffectSiteOutcome.LOCAL_ALIAS_SCALARIZED:
+            authorized = bool(
+                not candidate_rows
+                and local_alias_claim is not None
+                and sealed.supporting_claim_id == local_alias_claim.claim_id
+                and sealed.scalarized_site is not None
+            )
+            return _EffectClassification(False, authorized, not authorized,
+                                         local_alias_claim if authorized else None, authorized)
+        return _EffectClassification(False, False, True, None)
     preserved = (
         source_binding.status is model.SubjectBindingStatus.UNIQUE
         and candidate_binding is not None
@@ -184,15 +233,37 @@ def _classify_effect_site(
         and claim.discarded_effect_subject.locator.owner_anchor_ea == effect.owner_anchor_ea
         and claim.discarded_effect_subject.locator.effect_kind is effect.effect_kind
     )
+    if claim is None and local_alias_claim is None:
+        return _EffectClassification(False, False, True, None)
+    if (
+        type(source_authority) is not model.SourceBoundRouteAuthority
+        or type(projected_realization) is not model.ProjectedRouteRealization
+    ):
+        return _EffectClassification(False, False, True, None)
+    site_phase = projected_realization.site_phase_result
+    latent_exact_binding = next((
+        binding for binding in site_phase.exact_effect_bindings
+        if binding.claim is claim
+        and binding.source_site.instruction_ea == effect.instruction_ea
+        and binding.source_site.effect_kind is effect.effect_kind
+        and binding.source_site.owner.ref == effect.owner_ref
+        and binding.source_site.owner.anchor_ea == effect.owner_anchor_ea
+    ), None)
     route_ok = bool(
         claim is not None
-        and route_assessment is not None
-        and route_assessment.accepted
         and len(claim.route_proof_ids) == 1
-        and claim.route_proof_ids[0] in route_assessment.proof_ids
+        and claim.route_proof_ids[0] in source_authority.covered_proof_ids
         and (
-            not hasattr(claim, "atomic_group_id")
-            or claim.atomic_group_id == route_assessment.evidence.atomic_group_id
+            any(
+                row.source_subject_id == subject.subject_id
+                and row.outcome is model.ProjectedEffectSiteOutcome.EXACT_INFEASIBLE
+                and row.supporting_claim_id == claim.claim_id
+                for row in site_phase.effect_results
+            )
+            or (
+                phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+                and latent_exact_binding is not None
+            )
         )
     )
     raw_facts = None if generic_gate_facts is None else generic_gate_facts.effectful_raw
@@ -244,51 +315,75 @@ def _classify_effect_site(
     return _EffectClassification(False, authorized, not authorized, claim if authorized else None)
 
 
-REQUIRED_DIMENSIONS: dict[model.SemanticSubjectRole, tuple[model.SafetyDimension, ...]] = {
-    model.SemanticSubjectRole.SOURCE_ENTRY: (
-        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
-        model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.ENTRY_REACHABILITY,
-    ),
-    model.SemanticSubjectRole.DISPATCHER_ENTRY: (
-        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
+REQUIRED_DIMENSIONS: dict[tuple[model.SemanticSubjectKind, model.SemanticSubjectRole], tuple[model.SafetyDimension, ...]] = {
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK): (
+        model.SafetyDimension.IDENTITY_BINDING,
         model.SafetyDimension.STRUCTURAL_ACCOUNTING,
     ),
-    model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE: (
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SOURCE_ENTRY): (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
-        model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+        model.SafetyDimension.ENTRY_REACHABILITY,
     ),
-    model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE: (
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.DISPATCHER_ENTRY): (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
-        model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.ROUTE_EQUIVALENCE,
     ),
-    model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION: (
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE): (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
-        model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.ROUTE_EQUIVALENCE,
     ),
-    model.SemanticSubjectRole.EFFECT_SITE: (
-        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE): (
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
+        model.SafetyDimension.ROUTE_EQUIVALENCE,
+    ),
+    (model.SemanticSubjectKind.EDGE, model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE): (
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.ROUTE_EQUIVALENCE,
+    ),
+    (model.SemanticSubjectKind.ROUTE, model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE): (
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.ROUTE_EQUIVALENCE,
+    ),
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION): (
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
+        model.SafetyDimension.ROUTE_EQUIVALENCE,
+    ),
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.EXACT_EFFECT_SOURCE): (
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
+    ),
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.EXACT_EFFECT_PREDICATE): (
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
+    ),
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.EXACT_EFFECT_SELECTED_TARGET): (
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
+    ),
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.EXACT_EFFECT_DISCARDED_OWNER): (
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
+    ),
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.EFFECT_SITE): (
+        model.SafetyDimension.IDENTITY_BINDING,
         model.SafetyDimension.EFFECT_PRESERVATION,
     ),
-    model.SemanticSubjectRole.AUTHORITATIVE_HANDLER: (
-        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
-        model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.HANDLER_REACHABILITY,
+    (model.SemanticSubjectKind.EFFECT, model.SemanticSubjectRole.EFFECT_SITE): (
+        model.SafetyDimension.IDENTITY_BINDING,
+        model.SafetyDimension.EFFECT_PRESERVATION,
     ),
-    model.SemanticSubjectRole.TERMINAL_SITE: (
-        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.STRUCTURAL_ACCOUNTING,
+    (model.SemanticSubjectKind.HANDLER, model.SemanticSubjectRole.AUTHORITATIVE_HANDLER): (
+        model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
+        model.SafetyDimension.HANDLER_REACHABILITY,
+    ),
+    (model.SemanticSubjectKind.TERMINAL, model.SemanticSubjectRole.TERMINAL_SITE): (
+        model.SafetyDimension.IDENTITY_BINDING,
         model.SafetyDimension.TERMINAL_REACHABILITY,
     ),
-    model.SemanticSubjectRole.NON_STATE_VALUE_FLOW: (
+    (model.SemanticSubjectKind.VALUE_FLOW, model.SemanticSubjectRole.NON_STATE_VALUE_FLOW): (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.USE_DEF_INTEGRITY,
     ),
-    model.SemanticSubjectRole.DISPATCHER_CORRIDOR: (
+    (model.SemanticSubjectKind.CORRIDOR, model.SemanticSubjectRole.DISPATCHER_CORRIDOR): (
         model.SafetyDimension.IDENTITY_BINDING,
         model.SafetyDimension.CORRIDOR_COVERAGE,
     ),
-    model.SemanticSubjectRole.PLANNED_HELPER: (
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.PLANNED_HELPER): (
         model.SafetyDimension.IDENTITY_BINDING, model.SafetyDimension.TOPOLOGY_INTEGRITY,
         model.SafetyDimension.STRUCTURAL_ACCOUNTING,
     ),
-    model.SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT: (
+    (model.SemanticSubjectKind.BLOCK, model.SemanticSubjectRole.DETACHED_DEAD_HANDLER_COMPONENT): (
         model.SafetyDimension.IDENTITY_BINDING,
         model.SafetyDimension.STRUCTURAL_ACCOUNTING,
     ),
@@ -328,7 +423,10 @@ _JUSTIFICATION_RULE_SPECS: dict[model.UnflattenJustificationRule, _Justification
     model.UnflattenJustificationRule.SOURCE_LOSS_UNACCOUNTED: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.REFUTES, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,)),
     model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE,), max_premises=None),
     model.UnflattenJustificationRule.EQUIVALENT_ROUTE_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.ROUTE_EQUIVALENCE, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.SEMANTIC_ROUTE,)),
-    model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE, model.AuthorityEvidenceKind.SEMANTIC_ROUTE), min_premises=2, max_premises=2),
+    # The exact-effect claim's route_proof_ids are a correlation checked while
+    # classifying its effect site; they do not own a second route subject.
+    # Route subjects are emitted only by EquivalentSemanticRouteClaim.
+    model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE,), min_premises=1, max_premises=1),
     model.UnflattenJustificationRule.LOCAL_ALIAS_SCALARIZATION_PROVEN: _rule(model.SafetyDimension.EFFECT_PRESERVATION, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.EFFECT_SITE, model.AuthorityEvidenceKind.PATCH_STEP, model.AuthorityEvidenceKind.PHASE_BINDING, model.AuthorityEvidenceKind.REACHABILITY), min_premises=4, max_premises=4),
     model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, model.SafetyDimension.TERMINAL_REACHABILITY, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.TERMINAL_CYCLE,)),
     model.UnflattenJustificationRule.DETACHED_COMPONENT_PROVEN: _rule(model.SafetyDimension.STRUCTURAL_ACCOUNTING, polarity=model.EvidencePolarity.SUPPORTS, evidence=(model.AuthorityEvidenceKind.DETACHED_COMPONENT,)),
@@ -419,71 +517,59 @@ def _validate_terminal_cycle_claim_scope(
     authority_bind.terminal_cycle_binding_subjects(proposal, claim)
 
 
-def _validate_route_assessment_pair(
+def _validate_route_authority_realization(
     inputs: model.DerivedUnflattenPreparationInputs,
     phase: model.UnflattenAuthorityPhase,
     claim: model.EquivalentSemanticRouteClaim,
-) -> None:
-    """Require one selected route in both sealed source/candidate assessments."""
+) -> model.ProjectedRouteRealizationRow:
+    """Return the one sealed realization row after coordinate validation.
 
-    source = inputs.source_route_assessment
-    candidate = inputs.candidate_route_assessment
-    if source is None or candidate is None:
-        raise ValueError("equivalent route requires source and candidate assessments")
-    route_model.validate_canonical_route_assessment(source)
-    route_model.validate_canonical_route_assessment(candidate)
-    if not source.accepted or not candidate.accepted:
-        raise ValueError("equivalent route requires accepted source and candidate assessments")
-    if source.phase is not route_model.CanonicalRouteAssessmentPhase.SOURCE:
-        raise ValueError("equivalent route source assessment has the wrong phase")
-    expected_phase = {
-        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT: route_model.CanonicalRouteAssessmentPhase.PROJECTED,
-        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY: route_model.CanonicalRouteAssessmentPhase.OBSERVED,
-    }.get(phase)
-    if candidate.phase is not expected_phase:
-        raise ValueError("equivalent route candidate assessment has the wrong phase")
-    if source.evidence is not inputs.proposal.route_evidence or candidate.evidence is not inputs.proposal.route_evidence:
-        raise ValueError("equivalent route assessment evidence is foreign")
-    if source.evidence != candidate.evidence or source.evidence_id != candidate.evidence_id:
-        raise ValueError("equivalent route assessment evidence content differs")
+    This is an identity/coordinate check, not a route assessment.  In the
+    projected phase the binder-owned row is the authority for equivalence.
+    """
+    source = inputs.source_route_authority
+    realization = inputs.projected_route_realization
+    authority_bind.validate_source_route_authority(source)
+    authority_bind.validate_projected_route_realization(realization)
+    if realization.source_authority is not source:
+        raise ValueError("projected realization does not retain exact source authority")
+    projected_inventory_matches = (
+        realization.projected_inventory_digest == inputs.candidate_inventory.inventory_digest
+    )
+    realization_fingerprint = inputs.candidate_inventory.graph_fingerprint
+    realization_generation = inputs.candidate_inventory.generation
+    if phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY:
+        reference = inputs.projected_topology_reference
+        # The sealed realization belongs to preflight.  Observation is
+        # correlated separately, so never require its changed inventory to be
+        # the preflight graph again.
+        projected_inventory_matches = (
+            realization.projected_inventory_digest == reference.inventory_digest
+        )
+        realization_fingerprint = reference.graph_fingerprint
+        realization_generation = reference.generation
     if (
-        source.evidence.atomic_group_id != claim.atomic_group_id
-        or candidate.evidence.atomic_group_id != claim.atomic_group_id
-        or source.generation != claim.source_generation
+        source.proposal is not inputs.proposal
+        or source.plan_id != inputs.proposal.plan_id
+        or source.source_fingerprint != inputs.source_inventory.graph_fingerprint
+        or source.source_generation != inputs.source_inventory.generation
+        or not projected_inventory_matches
+        or realization.projected_fingerprint != realization_fingerprint
+        or realization.projected_generation != realization_generation
     ):
-        raise ValueError("equivalent route assessment claim coordinates differ")
-    if (
-        source.graph_fingerprint != inputs.source_inventory.graph_fingerprint
-        or candidate.graph_fingerprint != inputs.candidate_inventory.graph_fingerprint
-        or source.generation != inputs.source_inventory.generation
-        or candidate.generation != inputs.candidate_inventory.generation
-    ):
-        raise ValueError("equivalent route assessment inventory coordinates differ")
+        raise ValueError("route authority realization coordinates differ from inputs")
     if len(claim.route_proof_ids) != 1:
         raise ValueError("equivalent route claim must select exactly one proof")
     proof_id = claim.route_proof_ids[0]
-    if proof_id not in source.proof_ids or proof_id not in candidate.proof_ids:
-        raise ValueError("equivalent route proof is outside an assessment")
-    if source.bound_evidence is None or candidate.bound_evidence is None:
-        raise ValueError("equivalent route assessment lacks bound route content")
-    proposal_proofs = tuple(
-        proof for proof in inputs.proposal.route_evidence.route_proofs
-        if proof.proof_id == proof_id
-    )
-    if len(proposal_proofs) != 1:
-        raise ValueError("equivalent route proof is not unique in proposal evidence")
-    source_routes = tuple(
-        route for route in source.bound_evidence.routes
-        if route.evidence.proof_id == proof_id
-    )
-    candidate_routes = tuple(
-        route for route in candidate.bound_evidence.routes
-        if route.evidence.proof_id == proof_id
-    )
-    if len(source_routes) != 1 or source_routes[0].evidence != proposal_proofs[0]:
-        raise ValueError("source assessment does not contain one selected route")
-    if len(candidate_routes) != 1 or candidate_routes[0].evidence != proposal_proofs[0]:
-        raise ValueError("candidate assessment does not contain one selected route")
+    if proof_id not in source.covered_proof_ids:
+        raise ValueError("equivalent route proof is outside source authority")
+    rows = tuple(row for row in realization.rows if (
+        row.claim_id == claim.claim_id and row.proof_id == proof_id
+        and row.route_subject_id == claim.retired_route_subject.subject_id
+    ))
+    if len(rows) != 1:
+        raise ValueError("equivalent route requires one exact realization row")
+    return rows[0]
 
 
 def _make_justification(
@@ -546,21 +632,8 @@ def _dimensions(
 ) -> tuple[model.ObligationKey, ...]:
     result: set[model.ObligationKey] = set()
     relation_dimensions = {(item.target_subject_id, item.dimension) for item in conditional_relations}
-    # The transaction-owned phase result is the sole source of the retirement
-    # partition.  In particular, do not reconstruct it from candidate
-    # reachability or producer eligibility flags here.
-    terminal_cycle_structural_ids = {
-        claim.cycle_subject.subject_id
-        for claim in claims
-        if type(claim) is model.TerminalCycleBreakClaim
-    }
     for subject in subjects:
-        dimensions = list(REQUIRED_DIMENSIONS[subject.role])
-        if (
-            subject.subject_id in terminal_cycle_structural_ids
-            and model.SafetyDimension.STRUCTURAL_ACCOUNTING not in dimensions
-        ):
-            dimensions.append(model.SafetyDimension.STRUCTURAL_ACCOUNTING)
+        dimensions = list(REQUIRED_DIMENSIONS[(subject.kind, subject.role)])
         if (
             subject.role is model.SemanticSubjectRole.EFFECT_SITE
             and subject.kind is model.SemanticSubjectKind.BLOCK
@@ -676,11 +749,11 @@ def _validate_justification_graph(
                     raise ValueError("identity justification requires phase-binding payloads")
                 target = item.conclusion.subject
                 if target.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW:
-                    owner_refs = set(target.locator.redirect_owner_refs)
                     allowed = {
-                        subject.subject_id for subject in subjects
-                        if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
-                        and subject.block_ref in owner_refs
+                        subject.subject_id
+                        for subject in _value_flow_owner_subjects(
+                            subjects, target.locator.redirect_owner_refs,
+                        )
                     }
                 else:
                     allowed = {target.subject_id}
@@ -704,16 +777,16 @@ def _validate_justification_graph(
                         or (
                             binding.block_ref == binding.subject.block_ref
                             and binding.anchor_ea == binding.subject.anchor_ea
-                            and binding.subject.anchor_ea in binding.native_instruction_eas
                         )
                     )
                 )
                 if item.rule is model.UnflattenJustificationRule.UNIQUE_PHASE_BINDING:
                     if target.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW:
                         required_owner_ids = {
-                            subject.subject_id for subject in subjects
-                            if subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
-                            and subject.block_ref in target.locator.redirect_owner_refs
+                            subject.subject_id
+                            for subject in _value_flow_owner_subjects(
+                                subjects, target.locator.redirect_owner_refs,
+                            )
                         }
                         if (
                             len(required_owner_ids) != len(target.locator.redirect_owner_refs)
@@ -731,6 +804,22 @@ def _validate_justification_graph(
                         len(target.locator.redirect_owner_refs)
                         if target.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
                         else 1
+                    )
+                    # A route/effect/corridor subject can retain its own
+                    # binding while an owner premise is absent or nonunique.
+                    # In that case NONUNIQUE_PHASE_BINDING is a valid
+                    # refutation, not malformed evidence.
+                    and _identity_support(
+                        target,
+                        subjects,
+                        bindings,
+                        phase,
+                        candidate_fingerprint,
+                        candidate_generation,
+                        allow_source_indexed_missing=(
+                            phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+                            and target.subject_id in set(source_subject_ids)
+                        ),
                     )
                 ):
                     raise ValueError("nonunique identity refutation lacks a mismatch condition")
@@ -775,11 +864,10 @@ def _validate_justification_graph(
             model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN,
         } and model.AuthorityEvidenceKind.STRUCTURAL_LINEAGE not in premise_kinds:
             raise ValueError("retirement justification requires structural lineage evidence")
-        if item.rule is model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN and tuple(sorted(premise_kinds, key=lambda kind: kind.value)) != (
+        if item.rule is model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN and premise_kinds != (
             model.AuthorityEvidenceKind.EFFECT_SITE,
-            model.AuthorityEvidenceKind.SEMANTIC_ROUTE,
         ):
-            raise ValueError("exact-effect justification requires one effect and one route premise")
+            raise ValueError("exact-effect justification requires one effect premise")
         if (
             item.rule
             is model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN
@@ -810,8 +898,10 @@ def _validate_justification_graph(
                         payload.binding.subject.subject_id == target
                         or (
                             item.conclusion.subject.role is model.SemanticSubjectRole.NON_STATE_VALUE_FLOW
-                            and payload.binding.subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
-                            and payload.binding.subject.block_ref in item.conclusion.subject.locator.redirect_owner_refs
+                            and payload.binding.subject in _value_flow_owner_subjects(
+                                subjects,
+                                item.conclusion.subject.locator.redirect_owner_refs,
+                            )
                         )
                     )
                 ) or (
@@ -898,6 +988,25 @@ def _validate_justification_graph(
                     if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
                     and subject.block_ref in claim_member_refs
                 )
+            # Structural authority is indexed by the canonical physical
+            # source subject, not by any one semantic claim view.  Expand
+            # scope only by the exact claim-owned BlockRef.
+            structural_refs = set()
+            if type(claim) is model.RetiredDispatcherInfrastructureClaim:
+                structural_refs.update(member.block_ref for member in claim.member_subjects)
+            elif type(claim) is model.EquivalentSemanticRouteClaim:
+                structural_refs.add(claim.source_subject.block_ref)
+            elif type(claim) is model.ExactInfeasibleEffectClaim:
+                structural_refs.add(claim.discarded_effect_subject.block_ref)
+            elif type(claim) is model.TerminalCycleBreakClaim:
+                structural_refs.add(claim.cycle_subject.block_ref)
+            if structural_refs:
+                claim_targets.update(
+                    subject.subject_id
+                    for subject in subjects
+                    if subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+                    and subject.block_ref in structural_refs
+                )
             if type(claim) is model.LocalAliasEffectScalarizationClaim:
                 claim_targets.update(
                     relation.target_subject_id
@@ -905,12 +1014,6 @@ def _validate_justification_graph(
                     if relation.source_subject_id == claim.owner_subject.subject_id
                     and relation.dimension is model.SafetyDimension.EFFECT_PRESERVATION
                 )
-            elif type(claim) is model.ExactInfeasibleEffectClaim:
-                for premise in item.premise_ids:
-                    payload = by_evidence_id[premise].payload
-                    if type(payload) is model.SemanticRouteEvidencePayload:
-                        claim_targets.add(payload.route_subject_id)
-                        claim_targets.update(payload.destination_subject_ids)
             if item.conclusion.subject.subject_id not in claim_targets:
                 raise ValueError("claim justification concludes outside claim scope")
             for premise in item.premise_ids:
@@ -932,10 +1035,6 @@ def _validate_justification_graph(
                     correlated = (
                         type(payload) is model.EffectSiteEvidencePayload
                         and payload.effect_subject_id == claim.discarded_effect_subject.subject_id
-                    ) or (
-                        type(payload) is model.SemanticRouteEvidencePayload
-                        and payload.source_subject_id == claim.predicate_subject.subject_id
-                        and payload.proof_ids == tuple(sorted(claim.route_proof_ids))
                     )
                 elif type(claim) is model.LocalAliasEffectScalarizationClaim:
                     correlated = (
@@ -987,6 +1086,56 @@ def _validate_justification_graph(
         visited.add(node)
     for node in graph:
         visit(node)
+
+
+def _value_flow_owner_subjects(
+    subjects: Iterable[model.SemanticSubjectRef],
+    refs: tuple[object, ...],
+) -> tuple[model.SemanticSubjectRef, ...]:
+    """Resolve each sealed redirect owner to its canonical source subject.
+
+    Redirect ownership is route-mutation authority, whereas dispatcher
+    infrastructure is retirement authority.  The former may be represented by
+    an authoritative handler (or a route endpoint) that is not itself retired.
+    Prefer an infrastructure subject when a source block has both roles, then
+    retain the exact non-dispatcher semantic owner otherwise.
+    """
+
+    precedence = (
+        (model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
+         model.SemanticSubjectKind.BLOCK),
+        (model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
+         model.SemanticSubjectKind.HANDLER),
+        (model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
+         model.SemanticSubjectKind.BLOCK),
+        (model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+         model.SemanticSubjectKind.BLOCK),
+        (model.SemanticSubjectRole.SOURCE_ENTRY,
+         model.SemanticSubjectKind.BLOCK),
+        (model.SemanticSubjectRole.DISPATCHER_ENTRY,
+         model.SemanticSubjectKind.BLOCK),
+    )
+    resolved: list[model.SemanticSubjectRef] = []
+    for ref in refs:
+        selected = ()
+        for role, kind in precedence:
+            selected = tuple(
+                subject for subject in subjects
+                if subject.role is role
+                and subject.kind is kind
+                and subject.block_ref == ref
+            )
+            if selected:
+                break
+        if len(selected) != 1:
+            raise ValueError(
+                "value-flow owner subject is missing or ambiguous: "
+                f"ref={ref!r} "
+                f"role={selected[0].role.value if selected else None} "
+                f"count={len(selected)}"
+            )
+        resolved.append(selected[0])
+    return tuple(resolved)
 
 
 def _identity_support(
@@ -1042,20 +1191,12 @@ def _identity_support(
         refs = tuple(locator.redirect_owner_refs)
         if not refs or len(set(refs)) != len(refs):
             return False
-        owner_subjects = tuple(
-            candidate for candidate in inventory
-            if candidate.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
-            and candidate.block_ref in refs
-        )
-        if (
-            len(owner_subjects) != len(refs)
-            or {candidate.block_ref for candidate in owner_subjects} != set(refs)
-        ):
+        owner_subjects = _value_flow_owner_subjects(inventory, refs)
+        if len(owner_subjects) != len(refs):
             return False
         owner_bindings = tuple(
             binding for binding in bindings
-            if binding.subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
-            and binding.subject.block_ref in refs
+            if binding.subject in owner_subjects
         )
         if {
             binding.subject.block_ref for binding in owner_bindings
@@ -1068,7 +1209,6 @@ def _identity_support(
             and binding.generation == generation
             and binding.block_ref == binding.subject.block_ref
             and binding.anchor_ea == binding.subject.anchor_ea
-            and binding.subject.anchor_ea in binding.native_instruction_eas
             for binding in owner_bindings
         )
     if type(locator) is model.RouteSubjectLocator:
@@ -1079,7 +1219,16 @@ def _identity_support(
     if type(locator) is model.EdgeSubjectLocator:
         return exact_subject_binding and owner(locator.source_ref, locator.source_anchor_ea) and owner(locator.target_ref, locator.target_anchor_ea)
     if type(locator) is model.EffectSubjectLocator:
-        return exact_subject_binding and owner(locator.owner_ref, locator.owner_anchor_ea)
+        # Effect-site bindings already seal the owner anchor and instruction
+        # coordinate.  An unrelated preserved effect need not manufacture a
+        # separate BLOCK obligation merely to establish that same identity.
+        return exact_subject_binding and any(
+            binding.subject == subject
+            and binding.block_ref == locator.owner_ref
+            and binding.anchor_ea == locator.owner_anchor_ea
+            and locator.instruction_ea in binding.native_instruction_eas
+            for binding in valid
+        )
     if type(locator) is model.TerminalSubjectLocator:
         # SemanticGraphInventory already resolves terminal-site bindings
         # against the exact block/instruction rows. Requiring a second BLOCK
@@ -1130,7 +1279,7 @@ def _validate_receipt(
     )
     route_subjects = tuple(
         item for item in source_subjects
-        if item.role in (model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE, model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION)
+        if item.kind is model.SemanticSubjectKind.ROUTE
     )
     effect_subjects = tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.EFFECT_SITE)
     terminal_subjects = tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.TERMINAL_SITE)
@@ -1168,19 +1317,15 @@ def _validate_receipt(
             _receipt_digest(inputs.generic_gate_facts)
             if inputs.generic_gate_facts is not None else None
         ),
-        "route_assessment_digest": (
-            _receipt_digest(tuple(
-                (
-                    item.phase.value, item.graph_fingerprint, item.generation,
-                    item.evidence_id, item.proof_ids,
-                    item.rejection_reason.value if item.rejection_reason else None,
-                    item.bound_content_digest,
-                )
-                for item in (inputs.source_route_assessment, inputs.candidate_route_assessment)
-                if item is not None
-            ))
-            if inputs.source_route_assessment is not None or inputs.candidate_route_assessment is not None
-            else None
+        "source_route_authority_id": (
+            None
+            if inputs.source_route_authority is None
+            else inputs.source_route_authority.source_authority_id
+        ),
+        "projected_route_realization_id": (
+            None
+            if inputs.projected_route_realization is None
+            else inputs.projected_route_realization.realization_id
         ),
     }
     for name, value in expected.items():
@@ -1231,26 +1376,22 @@ def _validate_receipt(
         for subject in source_subjects
         if type(subject.locator) is model.RouteSubjectLocator
     }
+    # Route subjects are claim-owned inventory facts.  Do not reconstruct
+    # route expansions from the complete canonical evidence catalogue: that
+    # would promote unselected proofs to inventory obligations and would also
+    # impose instruction-origin lookup on physical-entry anchors.
     expected_expansions = {
         (
-            proof.proof_id,
-            next(
-                block.block_ref for block in proposal.source_identity_catalog.blocks
-                if block.anchor_ea == proof.source_anchor_ea or proof.source_anchor_ea in block.native_instruction_eas
-            ),
-            proof.source_anchor_ea,
-            tuple(
-                (
-                    next(
-                        block.block_ref for block in proposal.source_identity_catalog.blocks
-                        if block.anchor_ea == destination.target_anchor_ea or destination.target_anchor_ea in block.native_instruction_eas
-                    ),
-                    destination.target_anchor_ea,
-                )
-                for destination in proof.destinations
-            ),
+            claim.replacement_route_subject.locator.proof_id,
+            claim.replacement_route_subject.locator.source_ref,
+            claim.replacement_route_subject.locator.source_anchor_ea,
+            tuple(zip(
+                claim.replacement_route_subject.locator.destination_refs,
+                claim.replacement_route_subject.locator.destination_anchor_eas,
+            )),
         )
-        for proof in proposal.route_evidence.route_proofs
+        for claim in proposal.claims
+        if type(claim) is model.EquivalentSemanticRouteClaim
     }
     if expected_expansions != route_expansions:
         raise ValueError("source inventory does not cover canonical route expansion")
@@ -1318,16 +1459,14 @@ def derive_corridor_coverage_evidence(
                 raise ValueError("semantic exclusion correlation digest/path drifted")
             if claim.route_proof_ids != (correlation.proof_id,):
                 raise ValueError("semantic exclusion correlation proof scope drifted")
-            _validate_route_assessment_pair(inputs, phase, claim)
-            source_assessment = inputs.source_route_assessment
-            candidate_assessment = inputs.candidate_route_assessment
-            if source_assessment is None or candidate_assessment is None:
-                raise ValueError("semantic exclusion correlation lacks route assessments")
+            _validate_route_authority_realization(inputs, phase, claim)
+            source_authority = inputs.source_route_authority
+            realization = inputs.projected_route_realization
             if (
-                correlation.source_fingerprint != source_assessment.graph_fingerprint
-                or correlation.candidate_fingerprint != candidate_assessment.graph_fingerprint
-                or correlation.source_generation != source_assessment.generation
-                or correlation.candidate_generation != candidate_assessment.generation
+                correlation.source_fingerprint != source_authority.source_fingerprint
+                or correlation.candidate_fingerprint != realization.projected_fingerprint
+                or correlation.source_generation != source_authority.source_generation
+                or correlation.candidate_generation != realization.projected_generation
             ):
                 raise ValueError("semantic exclusion correlation inventory coordinates drifted")
             path = next((item for item in forecast.paths if item.path_id == correlation.path_id), None)
@@ -1414,20 +1553,9 @@ def _select_route_source_subject(
 ) -> model.SemanticSubjectRef | None:
     """Resolve route payload ownership from the exact claim, never first-match."""
 
-    if type(route_claim) is model.EquivalentSemanticRouteClaim:
-        selected = route_claim.source_subject
-    elif type(route_claim) is model.ExactInfeasibleEffectClaim:
-        selected = route_claim.predicate_subject
-    else:
-        candidates = tuple(
-            item for item in source_subjects
-            if item.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
-            and item.block_ref == locator.source_ref
-            and item.anchor_ea == locator.source_anchor_ea
-        )
-        if len(candidates) > 1:
-            raise ValueError("route source is ambiguous among co-located subjects")
-        return candidates[0] if candidates else None
+    if type(route_claim) is not model.EquivalentSemanticRouteClaim:
+        raise ValueError("route subject is not owned by an equivalent route claim")
+    selected = route_claim.source_subject
     if (
         selected.role is not model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE
         or selected.block_ref != locator.source_ref
@@ -1462,6 +1590,43 @@ def _evaluator_fact_evidence(
     ) -> tuple[model.StructuralDisposition, tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
         """Classify block origins from the already-bound candidate inventory."""
 
+        def observed_exact_subset_covered() -> bool:
+            if (
+                phase is not model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+                or candidate_binding is None
+                or candidate_binding.status is not model.SubjectBindingStatus.UNIQUE
+            ):
+                return False
+            source_origins = set(source_binding.native_instruction_eas)
+            candidate_origins = set(candidate_binding.native_instruction_eas)
+            if not candidate_origins < source_origins or candidate_binding.anchor_ea not in candidate_origins:
+                return False
+            missing = source_origins - candidate_origins
+            bindings = inputs.projected_route_realization.site_phase_result.exact_effect_bindings
+            for ea in missing:
+                effect_subjects = tuple(
+                    item for item in source_subjects
+                    if item.role is model.SemanticSubjectRole.EFFECT_SITE
+                    and type(item.locator) is model.EffectSubjectLocator
+                    and item.locator.owner_ref == subject.block_ref
+                    and item.locator.owner_anchor_ea == subject.anchor_ea
+                    and item.locator.instruction_ea == ea
+                )
+                if len(effect_subjects) != 1:
+                    return False
+                classification = classifications.get(effect_subjects[0].subject_id)
+                if classification is None or not classification.authorized_loss:
+                    return False
+                if not any(
+                    binding.claim is classification.claim
+                    and binding.source_site.instruction_ea == ea
+                    and binding.source_site.owner.ref == subject.block_ref
+                    and binding.source_site.owner.anchor_ea == subject.anchor_ea
+                    for binding in bindings
+                ):
+                    return False
+            return True
+
         if source_binding.status is not model.SubjectBindingStatus.UNIQUE:
             return model.StructuralDisposition.UNACCOUNTED_LOSS, (), (), (subject.subject_id,)
         source_origins = set(source_binding.native_instruction_eas)
@@ -1473,6 +1638,22 @@ def _evaluator_fact_evidence(
                 origins = tuple(sorted(source_origins & set(candidate_binding.native_instruction_eas)))
                 return model.StructuralDisposition.PRESERVED, (subject.subject_id,), origins, (subject.subject_id,)
             return model.StructuralDisposition.UNACCOUNTED_LOSS, (), (), (subject.subject_id,)
+        # A surviving canonical physical owner with the same exact origin set
+        # is preserved.  Helper clones may carry their own lineage, but must
+        # not turn this source identity into a synthetic split/loss merely
+        # because they exist elsewhere in the candidate inventory.
+        if (
+            subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+            and candidate_binding is not None
+            and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+            and set(candidate_binding.native_instruction_eas) == source_origins
+        ):
+            return (
+                model.StructuralDisposition.PRESERVED,
+                (subject.subject_id,),
+                tuple(sorted(source_origins)),
+                (subject.subject_id,),
+            )
         if not any(
             type(binding.subject.block_ref) is PlanBlockRef
             for binding in candidate_bindings.values()
@@ -1492,7 +1673,10 @@ def _evaluator_fact_evidence(
             if (
                 candidate_binding is None
                 or candidate_binding.status is not model.SubjectBindingStatus.UNIQUE
-                or set(candidate_binding.native_instruction_eas) != source_origins
+                or (
+                    set(candidate_binding.native_instruction_eas) != source_origins
+                    and not observed_exact_subset_covered()
+                )
                 or intersecting_ids != {subject.subject_id}
             ):
                 return model.StructuralDisposition.UNACCOUNTED_LOSS, (), (), (subject.subject_id,)
@@ -1534,7 +1718,10 @@ def _evaluator_fact_evidence(
             if (
                 candidate_binding is not None
                 and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
-                and set(candidate_binding.native_instruction_eas) == source_origins
+                and (
+                    set(candidate_binding.native_instruction_eas) == source_origins
+                    or observed_exact_subset_covered()
+                )
                 and intersecting_candidate_ids == {subject.subject_id}
             ):
                 return model.StructuralDisposition.PRESERVED, (subject.subject_id,), tuple(sorted(source_origins)), (subject.subject_id,)
@@ -1703,6 +1890,10 @@ def _evaluator_fact_evidence(
         model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE,
         model.SemanticSubjectRole.SEMANTIC_ROUTE_SOURCE,
         model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION,
+        model.SemanticSubjectRole.EXACT_EFFECT_SOURCE,
+        model.SemanticSubjectRole.EXACT_EFFECT_PREDICATE,
+        model.SemanticSubjectRole.EXACT_EFFECT_SELECTED_TARGET,
+        model.SemanticSubjectRole.EXACT_EFFECT_DISCARDED_OWNER,
         model.SemanticSubjectRole.AUTHORITATIVE_HANDLER,
         model.SemanticSubjectRole.PLANNED_HELPER,
     }
@@ -1743,7 +1934,9 @@ def _evaluator_fact_evidence(
                         model.SemanticEdgeRole.DIRECT, target_subject.subject_id,
                         source_subject.subject_id, anchor,
                     ))
-        return tuple(sorted(result, key=lambda item: (item.source_subject_id, item.target_subject_id, item.native_edge_anchor_ea)))
+        # A self edge with one subject yields an identical forward/reciprocal
+        # relation.  Topology is set-valued authority, so retain it once.
+        return tuple(sorted(set(result), key=lambda item: (item.source_subject_id, item.target_subject_id, item.native_edge_anchor_ea)))
 
     projected_topology_reference = topology_relations(
         inputs.projected_topology_reference,
@@ -1766,10 +1959,11 @@ def _evaluator_fact_evidence(
             for relation in relations
         )
 
-    # Reachability is reconstructed from the closed candidate block rows.  A
-    # two-node ``(root, target)`` witness is not evidence: every returned path
-    # must follow the candidate successor relation and name each intermediate
-    # inventoried block.
+    # Inventory construction closed reachability before the source binder and
+    # projected realizer ran.  The evaluator is deliberately not a second CFG
+    # interpreter: it validates the bound subject coordinate against that
+    # sealed inventory and records the corresponding closed fact.  Replaying a
+    # BFS here used a subtly different evidence model from the realizer.
     source_entry = next((
         item for item in source_subjects
         if item.role is model.SemanticSubjectRole.SOURCE_ENTRY
@@ -1777,39 +1971,16 @@ def _evaluator_fact_evidence(
     candidate_binding_by_id = {
         item.subject.subject_id: item for item in candidate.bindings
     }
-    candidate_subjects_by_serial: dict[int, tuple[model.SemanticSubjectRef, ...]] = {}
-    for subject in candidate.subjects:
-        binding = candidate_binding_by_id.get(subject.subject_id)
-        if binding is None or binding.status is not model.SubjectBindingStatus.UNIQUE:
-            continue
-        if type(binding.serial) is not int:
-            continue
-        candidate_subjects_by_serial[binding.serial] = (
-            *candidate_subjects_by_serial.get(binding.serial, ()), subject,
-        )
-    candidate_blocks_by_serial = {item.serial: item for item in candidate.blocks}
-    candidate_entry_binding = (
-        None if source_entry is None
-        else candidate_binding_by_id.get(source_entry.subject_id)
+    realization = inputs.projected_route_realization
+    sealed_unclassified_effect_ids = (
+        {
+            row.source_subject_id
+            for row in realization.site_phase_result.effect_results
+            if row.outcome is model.ProjectedEffectSiteOutcome.UNCLASSIFIED
+        }
+        if type(realization) is model.ProjectedRouteRealization
+        else set()
     )
-    root_serial = (
-        None if candidate_entry_binding is None
-        or candidate_entry_binding.status is not model.SubjectBindingStatus.UNIQUE
-        else candidate_entry_binding.serial
-    )
-    paths: dict[int, tuple[int, ...]] = {}
-    if type(root_serial) is int and root_serial in candidate_blocks_by_serial:
-        queue = [root_serial]
-        paths[root_serial] = (root_serial,)
-        while queue:
-            serial = queue.pop(0)
-            block = candidate_blocks_by_serial[serial]
-            for successor in block.successor_serials:
-                if successor in paths or successor not in candidate_blocks_by_serial:
-                    continue
-                paths[successor] = (*paths[serial], successor)
-                queue.append(successor)
-    assessment = inputs.source_route_assessment if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST else inputs.candidate_route_assessment
     for subject in source_subjects:
         if subject.role is model.SemanticSubjectRole.EFFECT_SITE and type(subject.locator) is model.EffectSubjectLocator:
             locator = subject.locator
@@ -1824,6 +1995,11 @@ def _evaluator_fact_evidence(
                     if item.owner_ref == effect.owner_ref
                     and item.owner_anchor_ea == effect.owner_anchor_ea
                     and item.instruction_ea == effect.instruction_ea
+                    # Inventory preserves source coordinates for diagnostics,
+                    # including now-unreachable blocks.  A projected effect
+                    # site is present only when its owner is reachable; the
+                    # sealed realizer has already classified the other case.
+                    and item.owner_serial in candidate.reachable_serials
                 )
                 alias_context = alias_context_by_effect.get(
                     subject.subject_id, (None, None, None, False),
@@ -1835,7 +2011,8 @@ def _evaluator_fact_evidence(
                     candidate_bindings.get(subject.subject_id),
                     candidate_effect,
                     validated_exact_claims.get(subject.subject_id),
-                    assessment,
+                    inputs.source_route_authority,
+                    inputs.projected_route_realization,
                     inputs.generic_gate_facts,
                     local_alias_claim=alias_context[0],
                     local_alias_owner_binding=alias_context[1],
@@ -1865,29 +2042,16 @@ def _evaluator_fact_evidence(
             or binding.status is not model.SubjectBindingStatus.UNIQUE
             else binding.serial
         )
-        serial_path = paths.get(candidate_serial) if type(candidate_serial) is int else None
-        if serial_path is None:
-            path_subject_ids: tuple[str, ...] = ()
-            reachable = False
-        else:
-            path_subject_ids_list: list[str] = [source_entry.subject_id]
-            for serial in serial_path[1:-1]:
-                intermediate = candidate_subjects_by_serial.get(serial, ())
-                if not intermediate:
-                    path_subject_ids_list = []
-                    break
-                path_subject_ids_list.append(intermediate[0].subject_id)
-            if path_subject_ids_list and serial_path[-1] == root_serial:
-                path_subject_ids = (
-                    tuple(path_subject_ids_list)
-                    if subject.subject_id == source_entry.subject_id
-                    else (*path_subject_ids_list, subject.subject_id)
-                )
-            elif path_subject_ids_list:
-                path_subject_ids = (*path_subject_ids_list, subject.subject_id)
-            else:
-                path_subject_ids = ()
-            reachable = bool(path_subject_ids)
+        reachable = bool(
+            type(candidate_serial) is int
+            and candidate_serial in candidate.reachable_serials
+        )
+        path_subject_ids = (
+            (source_entry.subject_id,)
+            if reachable and subject.subject_id == source_entry.subject_id
+            else (source_entry.subject_id, subject.subject_id)
+            if reachable else ()
+        )
         evidence.append(_evidence_factory(
             model.AuthorityEvidence,
             model.AuthorityEvidenceKind.REACHABILITY,
@@ -1899,20 +2063,49 @@ def _evaluator_fact_evidence(
             ),
         ))
 
+    # Semantic-role topology remains a view-level invariant.  The structural
+    # loop below deliberately visits only canonical physical subjects, so
+    # emit these view facts here rather than accidentally making topology a
+    # side effect of loss classification.
+    for subject in source_subjects:
+        if subject.role not in topology_roles:
+            continue
+        expected = tuple(
+            item for item in projected_topology_reference
+            if subject.subject_id in (item.source_subject_id, item.target_subject_id)
+        )
+        observed = tuple(
+            item for item in candidate_topology
+            if subject.subject_id in (item.source_subject_id, item.target_subject_id)
+        )
+        topology = model.TopologyEvidencePayload(
+            subject.subject_id,
+            tuple(sorted({item.source_subject_id for item in expected if item.target_subject_id == subject.subject_id})),
+            tuple(sorted({item.target_subject_id for item in expected if item.source_subject_id == subject.subject_id})),
+            has_reciprocal_edges(expected), _authority_id_digest(expected), _authority_id_digest(observed), expected, observed,
+        )
+        evidence.append(_evidence_factory(
+            model.AuthorityEvidence, model.AuthorityEvidenceKind.TOPOLOGY,
+            subject, phase, topology,
+        ))
+
     for subject in source_subjects:
         if subject.block_ref is None:
+            continue
+        if subject.role is not model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK:
             continue
         source_binding = source_bindings.get(subject.subject_id)
         candidate_binding = candidate_bindings.get(subject.subject_id)
         if source_binding is None:
             continue
-        effect_classification = classifications.get(subject.subject_id)
+        effect_classification = None
         if (
             phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT
             and
             effect_classification is not None
             and effect_classification.refuted
             and not effect_classification.authorized_loss
+            and subject.subject_id not in sealed_unclassified_effect_ids
             and subject.kind is not model.SemanticSubjectKind.BLOCK
             and (
                 candidate_binding is not None
@@ -1964,18 +2157,18 @@ def _evaluator_fact_evidence(
             disposition = model.StructuralDisposition.PRESERVED if preserved else model.StructuralDisposition.UNACCOUNTED_LOSS
         claim = next((claim for claim in inputs.claims
                       if type(claim) is model.RetiredDispatcherInfrastructureClaim
-                      and (
-                          subject.subject_id in {item.subject_id for item in claim.member_subjects}
-                          or (
-                              subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
-                              and subject.block_ref in {
-                                  item.block_ref for item in claim.member_subjects
-                              }
-                          )
-                      )), None)
+                      and subject.block_ref in {
+                          item.block_ref for item in claim.member_subjects
+                      }), None)
+        route_claim = next((claim for claim in inputs.claims
+                            if type(claim) is model.EquivalentSemanticRouteClaim
+                            and claim.source_subject.block_ref == subject.block_ref), None)
+        exact_claim = next((claim for claim in inputs.claims
+                            if type(claim) is model.ExactInfeasibleEffectClaim
+                            and claim.discarded_effect_subject.block_ref == subject.block_ref), None)
         terminal_claim = next((claim for claim in inputs.claims
                                if type(claim) is model.TerminalCycleBreakClaim
-                               and subject.subject_id == claim.cycle_subject.subject_id), None)
+                               and subject.block_ref == claim.cycle_subject.block_ref), None)
         retirement_authorized = (
             claim is not None
             and phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
@@ -2035,6 +2228,8 @@ def _evaluator_fact_evidence(
                 subject.subject_id, lineage_candidate_ids, disposition,
                 exact_origins,
                 (claim.claim_id if claim is not None else
+                 route_claim.claim_id if route_claim is not None else
+                 exact_claim.claim_id if exact_claim is not None else
                  terminal_claim.claim_id if terminal_claim is not None else None),
                 source_group,
             )
@@ -2116,7 +2311,7 @@ def _evaluator_fact_evidence(
         )
         payload = model.EffectSiteEvidencePayload(
             subject.subject_id, effect.effect_kind, effect.instruction_ea, effect.opcode,
-            effect.width,
+            effect.width or None,
             exact_metadata_claim.state_identity if exact_metadata_claim is not None else None,
             exact_metadata_claim.normalized_state if exact_metadata_claim is not None else None,
             exact_metadata_claim.consensus.mode if exact_metadata_claim is not None else model.ProviderConsensusMode.NOT_APPLICABLE,
@@ -2138,32 +2333,46 @@ def _evaluator_fact_evidence(
         route_claim = next(
             (
                 claim for claim in inputs.claims
-                if (
-                    type(claim) is model.EquivalentSemanticRouteClaim
-                    and claim.retired_route_subject.subject_id == subject.subject_id
-                ) or (
-                    type(claim) is model.ExactInfeasibleEffectClaim
-                    and locator.proof_id in claim.route_proof_ids
-                )
+                if type(claim) is model.EquivalentSemanticRouteClaim
+                and claim.retired_route_subject.subject_id == subject.subject_id
             ),
             None,
         )
         route_pair_valid = False
+        # The semantic-route payload always names the claim's declared source
+        # coordinate.  Whether that coordinate is authorized is represented by
+        # ``matched`` below; falling back to the ROUTE subject when a synthetic
+        # preparation lacks a bound route authority manufactures an invalid
+        # source coordinate and makes the case unbuildable before the route
+        # evidence validator can report the failed match.
+        selected_source_subject = (
+            route_claim.source_subject
+            if type(route_claim) is model.EquivalentSemanticRouteClaim
+            else None
+        )
         if type(route_claim) is model.EquivalentSemanticRouteClaim:
             try:
-                _validate_route_assessment_pair(inputs, phase, route_claim)
-                route_pair_valid = True
+                # PROJECTED_PREFLIGHT consumes the sealed row.  Do not
+                # select/replay a route from topology, bindings, or claims.
+                # The only local work is checking that this source subject is
+                # the row's closed claim coordinate.
+                row = _validate_route_authority_realization(
+                    inputs, phase, route_claim,
+                )
+                if phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+                    route_pair_valid = (
+                        row.route_subject_id == subject.subject_id
+                        and row.proof_id == locator.proof_id
+                        and row.claim_id == route_claim.claim_id
+                    )
+                    selected_source_subject = route_claim.source_subject
+                else:
+                    route_pair_valid = True
+                    selected_source_subject = _select_route_source_subject(
+                        route_claim, locator, source_subjects,
+                    )
             except (TypeError, ValueError):
                 route_pair_valid = False
-        elif type(route_claim) is model.ExactInfeasibleEffectClaim:
-            route_pair_valid = bool(
-                assessment is not None
-                and assessment.accepted
-                and locator.proof_id in assessment.proof_ids
-            )
-        selected_source_subject = _select_route_source_subject(
-            route_claim, locator, source_subjects,
-        )
         route_payload = model.SemanticRouteEvidencePayload(
             subject.subject_id, (locator.proof_id,), locator.atomic_group_id,
             selected_source_subject.subject_id
@@ -2171,9 +2380,7 @@ def _evaluator_fact_evidence(
             destinations,
             bool(
                 route_pair_valid
-                and assessment is not None
-                and assessment.accepted
-                and locator.proof_id in assessment.proof_ids
+                and locator.proof_id in inputs.source_route_authority.covered_proof_ids
             ),
         )
         evidence.append(_evidence_factory(model.AuthorityEvidence, model.AuthorityEvidenceKind.SEMANTIC_ROUTE, subject, phase, route_payload))
@@ -2207,7 +2414,18 @@ def _evaluator_fact_evidence(
         entry_ids = () if entry is None else (entry.subject_id,)
         generic_gates.append(model.GenericCfgGateResult(model.GenericCfgGateKind.ENTRY_REACHABILITY, facts.entry.passed, entry_ids if facts.entry.passed else (), () if facts.entry.passed else entry_ids, facts.entry.reason or "entry_reachability"))
         effect_ids = tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.EFFECT_SITE and type(item.locator) is model.EffectSubjectLocator and item.locator.effect_kind in {model.EffectSiteKind.CALL, model.EffectSiteKind.STORE})
-        generic_gates.append(model.GenericCfgGateResult(model.GenericCfgGateKind.EFFECTFUL_REACHABILITY, facts.effectful_effective.passed, effect_ids if facts.effectful_effective.passed else (), () if facts.effectful_effective.passed else effect_ids, facts.effectful_effective.reason or "effectful_reachability"))
+        # For an applicable projected authority, generic raw/effective graph
+        # facts are diagnostic inputs.  The sealed site realization and its
+        # resulting canonical classifications decide whether each effect loss
+        # is permitted; an allowance serial set must never be threaded back
+        # into this gate.
+        effect_passed = facts.effectful_effective.passed
+        if phase is model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+            # The individual effect obligations below carry the sealed
+            # classification.  This aggregate raw CFG row must not refute all
+            # effects merely because one of them is an exact permitted loss.
+            effect_passed = True
+        generic_gates.append(model.GenericCfgGateResult(model.GenericCfgGateKind.EFFECTFUL_REACHABILITY, effect_passed, effect_ids if effect_passed else (), () if effect_passed else effect_ids, facts.effectful_effective.reason or "effectful_reachability"))
         terminal_ids = tuple(item.subject_id for item in source_subjects if item.role is model.SemanticSubjectRole.TERMINAL_SITE and type(item.locator) is model.TerminalSubjectLocator and item.locator.terminal_kind in {model.TerminalKind.RETURN, model.TerminalKind.STOP})
         generic_gates.append(model.GenericCfgGateResult(model.GenericCfgGateKind.TERMINAL_REACHABILITY, facts.terminal.passed, terminal_ids if facts.terminal.passed else (), () if facts.terminal.passed else terminal_ids, facts.terminal.reason or "terminal_reachability"))
     # A missing generic-gate bundle is an absence of evidence.  It must not
@@ -2499,21 +2717,25 @@ def build_semantic_case(
     expected_value_flow = model.ValueFlowSubjectLocator(
         use_def.fragment_id, use_def.state_identity, use_def.redirect_owner_refs,
     )
-    redirect_facts = tuple(
+    route_mutation_facts = tuple(
         fact for fact in inputs.patch_step_facts
-        if fact.step_type in {"PatchRedirectGoto", "PatchRedirectBranch"}
+        if fact.step_type in {
+            "PatchRedirectGoto",
+            "PatchRedirectBranch",
+            "PatchLowerConditionalStateTransition",
+        }
         and type(fact.owner_ref) is not PlanBlockRef
     )
     redirect_owner_refs = tuple(
-        sorted({fact.owner_ref for fact in redirect_facts}, key=_redirect_owner_sort_key)
+        sorted(
+            {fact.owner_ref for fact in route_mutation_facts},
+            key=_redirect_owner_sort_key,
+        )
     )
-    if use_def.redirect_owner_refs and not redirect_facts:
-        raise ValueError("use-def owners require exact redirect patch facts")
+    if use_def.redirect_owner_refs and not route_mutation_facts:
+        raise ValueError("use-def owners require exact route-mutation patch facts")
     if tuple(use_def.redirect_owner_refs) != redirect_owner_refs:
-        raise ValueError("use-def owners must match exact redirect patch facts")
-    allowed_redirect_owners = set(proposal.plan_inputs.dispatcher_member_refs)
-    if not set(redirect_owner_refs) <= allowed_redirect_owners:
-        raise ValueError("use-def redirect owners must be dispatcher members")
+        raise ValueError("use-def owners must match exact route-mutation patch facts")
     if (
         not expected_value_flow.redirect_owner_refs
         or len(set(expected_value_flow.redirect_owner_refs))
@@ -2590,6 +2812,11 @@ def build_semantic_case(
         subject_id for subject_id, classification in classifications.items()
         if classification.authorized_loss
     }
+    canonical_source_by_ref = {
+        subject.block_ref: subject
+        for subject in source_subjects
+        if subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+    }
     authorized_generic_gate_keys = {
         (claim.terminal_subject.subject_id, model.SafetyDimension.TERMINAL_REACHABILITY)
         for claim in inputs.claims
@@ -2617,9 +2844,9 @@ def build_semantic_case(
     if len(set(lineage_covered_sources)) != len(lineage_covered_sources):
         raise ValueError("each source subject requires exactly one lineage classification")
     for source in source_subjects:
-        if source.subject_id in supplied_lineage_sources:
+        if source.role is not model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK:
             continue
-        if source.subject_id in authorized_loss_subject_ids:
+        if source.subject_id in supplied_lineage_sources:
             continue
         missing_lineage = model.StructuralLineageEvidencePayload(
             source.subject_id, (), model.StructuralDisposition.UNACCOUNTED_LOSS, (), None,
@@ -2697,18 +2924,13 @@ def build_semantic_case(
             # never be authorized by its synthetic MISSING binding row.
             premises = tuple(
                 binding_evidence[owner.subject_id]
-                for owner in (
-                    binding.subject
-                    for binding in sorted(
-                        candidate_bindings_tuple
-                        if phase is not model.UnflattenAuthorityPhase.PRODUCER_FORECAST
-                        else tuple(source_inventory.bindings),
-                        key=lambda item: item.subject.subject_id,
-                    )
-                    if binding.subject.block_ref in key.subject.locator.redirect_owner_refs
-                    and binding.subject.role is model.SemanticSubjectRole.DISPATCHER_INFRASTRUCTURE
-                    and binding.subject.subject_id in binding_evidence
+                for owner in _value_flow_owner_subjects(
+                    source_subjects
+                    if phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST
+                    else candidate_subjects,
+                    key.subject.locator.redirect_owner_refs,
                 )
+                if owner.subject_id in binding_evidence
             )
         else:
             premises = (binding_evidence[subject_id_],) if subject_id_ in binding_evidence else ()
@@ -2941,17 +3163,7 @@ def build_semantic_case(
                 ),
                 None,
             )
-            exact_effect_claim = next(
-                (
-                    claim for claim in inputs.claims
-                    if type(claim) is model.ExactInfeasibleEffectClaim
-                    and payload.proof_ids == tuple(sorted(claim.route_proof_ids))
-                    and payload.source_subject_id == claim.predicate_subject.subject_id
-                    and claim.selected_target_subject.subject_id in payload.destination_subject_ids
-                ),
-                None,
-            )
-            if route_claim is None and exact_effect_claim is None:
+            if route_claim is None:
                 raise ValueError("route evidence target is outside the claimed route scope")
             if route_claim is not None and (
                 payload.proof_ids != route_claim.route_proof_ids
@@ -2962,25 +3174,6 @@ def build_semantic_case(
                 )
             ):
                 raise ValueError("route evidence target is outside the claimed route scope")
-            if exact_effect_claim is not None:
-                route_subject = known_subjects.get(payload.route_subject_id)
-                if route_subject is None or type(route_subject.locator) is not model.RouteSubjectLocator:
-                    raise ValueError("route evidence target is not a derived route subject")
-                canonical_destinations = tuple(
-                    next(
-                        subject.subject_id
-                        for subject in subjects
-                        if subject.role is model.SemanticSubjectRole.SEMANTIC_ROUTE_DESTINATION
-                        and subject.block_ref == ref
-                        and subject.anchor_ea == anchor
-                    )
-                    for ref, anchor in zip(
-                        route_subject.locator.destination_refs,
-                        route_subject.locator.destination_anchor_eas,
-                    )
-                )
-                if payload.destination_subject_ids != canonical_destinations:
-                    raise ValueError("exact-effect route evidence must cover the canonical destinations exactly")
             if any(target not in known_subject_ids for target in payload.destination_subject_ids):
                 raise ValueError("route evidence references a foreign destination")
             route_subject = known_subjects.get(payload.route_subject_id)
@@ -3152,7 +3345,31 @@ def build_semantic_case(
                     for binding in candidate_bindings_for_lineage
                     if binding is not None
                 )
-                if any(not eas for eas in candidate_eas) or not source_eas:
+                range_backed_preserved = False
+                if payload.disposition is model.StructuralDisposition.PRESERVED:
+                    source_binding = source_group_bindings[0]
+                    candidate_binding = candidate_bindings_for_lineage[0]
+                    range_backed_preserved = bool(
+                        source_binding is not None
+                        and candidate_binding is not None
+                        and source_binding.status is model.SubjectBindingStatus.UNIQUE
+                        and candidate_binding.status is model.SubjectBindingStatus.UNIQUE
+                        # Source/candidate inventories are independently
+                        # materialized immutable occurrences.  Their object
+                        # identity is deliberately not cross-phase authority;
+                        # the sealed nominal subject value is.
+                        and source_binding.subject == candidate_binding.subject
+                        and source_binding.subject.subject_id
+                        == candidate_binding.subject.subject_id
+                        and source_binding.block_ref == candidate_binding.block_ref
+                        and source_binding.anchor_ea == candidate_binding.anchor_ea
+                        and not source_eas
+                        and not candidate_eas[0]
+                    )
+                if (
+                    (any(not eas for eas in candidate_eas) or not source_eas)
+                    and not range_backed_preserved
+                ):
                     raise ValueError("lineage bindings lack native instruction witnesses")
                 if payload.disposition is model.StructuralDisposition.SPLIT and any(
                     left & right for index, left in enumerate(candidate_eas)
@@ -3162,7 +3379,17 @@ def build_semantic_case(
                 if payload.disposition is model.StructuralDisposition.PRESERVED:
                     if len(payload.source_subject_ids) != 1:
                         raise ValueError("preserved lineage requires one source")
-                    if candidate_eas[0] != source_eas:
+                    observed_anchor_preserving_loss = (
+                        phase is model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY
+                        and candidate_eas[0] < source_eas
+                        and candidate_bindings_for_lineage[0] is not None
+                        and candidate_bindings_for_lineage[0].anchor_ea
+                        in candidate_eas[0]
+                    )
+                    if (
+                        candidate_eas[0] != source_eas
+                        and not observed_anchor_preserving_loss
+                    ):
                         raise ValueError("preserved lineage requires equal source and candidate origins")
                     expected_origins = tuple(sorted(source_eas))
                 elif payload.disposition is model.StructuralDisposition.SPLIT:
@@ -3183,8 +3410,16 @@ def build_semantic_case(
                     if candidate_eas[0] != source_eas:
                         raise ValueError("folded lineage must union source origins exactly")
                     expected_origins = tuple(sorted(source_eas))
-                if payload.reciprocal_native_origin_eas != expected_origins:
-                    raise ValueError("lineage reciprocal origins do not match binding witnesses")
+                    if (
+                        payload.reciprocal_native_origin_eas != expected_origins
+                        and not (
+                            payload.disposition
+                            is model.StructuralDisposition.PRESERVED
+                            and observed_anchor_preserving_loss
+                            and not payload.reciprocal_native_origin_eas
+                        )
+                    ):
+                        raise ValueError("lineage reciprocal origins do not match binding witnesses")
             if payload.disposition is model.StructuralDisposition.AUTHORIZED_RETIREMENT:
                 retirement_claim = next(
                     (
@@ -3195,6 +3430,14 @@ def build_semantic_case(
                             payload.source_subject_id in {
                                 member.subject_id for member in claim.member_subjects
                             }
+                            or any(
+                                subject.subject_id == payload.source_subject_id
+                                and subject.role is model.SemanticSubjectRole.SOURCE_CATALOG_BLOCK
+                                and subject.block_ref in {
+                                    member.block_ref for member in claim.member_subjects
+                                }
+                                for subject in subjects
+                            )
                             or any(
                                 subject.subject_id == payload.source_subject_id
                                 and subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
@@ -3229,23 +3472,35 @@ def build_semantic_case(
             if payload.disposition is model.StructuralDisposition.AUTHORIZED_RETIREMENT:
                 targets = ()
                 continue
-            terminal_cycle_claim = next(
+            source_subject = next(
+                (subject for subject in subjects if subject.subject_id == payload.source_subject_id),
+                None,
+            )
+            normalized_loss_claim = next(
                 (
                     claim
                     for claim in inputs.claims
-                    if type(claim) is model.TerminalCycleBreakClaim
-                    and payload.claim_id == claim.claim_id
-                    and payload.source_subject_id
-                    == claim.cycle_subject.subject_id
+                    if payload.claim_id == claim.claim_id
+                    and source_subject is not None
+                    and (
+                        type(claim) is model.EquivalentSemanticRouteClaim
+                        and claim.source_subject.block_ref == source_subject.block_ref
+                        or type(claim) is model.ExactInfeasibleEffectClaim
+                        and claim.discarded_effect_subject.block_ref == source_subject.block_ref
+                        or type(claim) is model.TerminalCycleBreakClaim
+                        and claim.cycle_subject.block_ref == source_subject.block_ref
+                    )
                     and payload.disposition
                     is model.StructuralDisposition.UNACCOUNTED_LOSS
                     and not payload.candidate_subject_ids
                 ),
                 None,
             )
-            if terminal_cycle_claim is not None:
-                # Keep the raw missing-lineage observation, but let the exact
-                # terminal-cycle rule below provide the sole classification.
+            if normalized_loss_claim is not None:
+                # The raw missing observation is retained as evidence, but a
+                # bound typed allowance supplies the one structural verdict.
+                # Do not put both SOURCE_LOSS_UNACCOUNTED and claim support
+                # on the canonical physical cell.
                 targets = ()
                 continue
             if (
@@ -3425,12 +3680,10 @@ def build_semantic_case(
                 is model.RetirementPhaseClassification.RETIRED
             )
             retired_member_refs = {member.block_ref for member in retired_member_subjects}
-            retired_entry_subjects = tuple(
-                subject for subject in source_subjects
-                if subject.role is model.SemanticSubjectRole.DISPATCHER_ENTRY
-                and subject.block_ref in retired_member_refs
+            retired_claim_subjects = tuple(
+                canonical_source_by_ref[ref]
+                for ref in sorted(retired_member_refs, key=repr)
             )
-            retired_claim_subjects = (*retired_member_subjects, *retired_entry_subjects)
             matching_lineage = tuple(
                 item for item in evidence
                 if type(item.payload) is model.StructuralLineageEvidencePayload
@@ -3460,27 +3713,27 @@ def build_semantic_case(
                 )
             rule = model.UnflattenJustificationRule.RETIRED_INFRASTRUCTURE_PROVEN
         elif type(claim) is model.EquivalentSemanticRouteClaim:
-            try:
-                _validate_route_assessment_pair(inputs, phase, claim)
-            except (TypeError, ValueError):
-                matching_route = ()
-            else:
-                matching_route = tuple(
-                    item for item in evidence
-                    if type(item.payload) is model.SemanticRouteEvidencePayload
-                    and item.payload.route_subject_id == claim.retired_route_subject.subject_id
-                    and item.payload.source_subject_id == claim.source_subject.subject_id
-                    and item.payload.destination_subject_ids == _route_destination_ids(claim.retired_route_subject, source_subjects)
-                    and item.payload.atomic_group_id == claim.atomic_group_id
-                    and item.payload.matched
-                )
+            # The projected route payload was emitted directly from the
+            # sealed realization row above.  Revalidating it here would make
+            # this justification path a second route authority.
+            matching_route = tuple(
+                item for item in evidence
+                if type(item.payload) is model.SemanticRouteEvidencePayload
+                and item.payload.route_subject_id == claim.retired_route_subject.subject_id
+                and item.payload.source_subject_id == claim.source_subject.subject_id
+                and item.payload.destination_subject_ids == _route_destination_ids(claim.retired_route_subject, source_subjects)
+                and item.payload.atomic_group_id == claim.atomic_group_id
+                and item.payload.matched
+            )
             if matching_route:
                 claim_evidence = tuple(item.evidence_id for item in matching_route)
+                canonical_source = canonical_source_by_ref.get(
+                    claim.source_subject.block_ref,
+                )
                 targets = (
-                    (
-                        claim.retired_route_subject,
-                        model.SafetyDimension.STRUCTURAL_ACCOUNTING,
-                    ),
+                    ((canonical_source, model.SafetyDimension.STRUCTURAL_ACCOUNTING),)
+                    if canonical_source is not None else ()
+                ) + (
                     (
                         claim.retired_route_subject,
                         model.SafetyDimension.ROUTE_EQUIVALENCE,
@@ -3504,45 +3757,17 @@ def build_semantic_case(
                 and classifications.get(item.payload.effect_subject_id) is not None
                 and classifications[item.payload.effect_subject_id].authorized_loss
             )
-            matching_route = tuple(
-                item for item in evidence
-                if type(item.payload) is model.SemanticRouteEvidencePayload
-                and item.payload.proof_ids == tuple(sorted(claim.route_proof_ids))
-                and item.payload.atomic_group_id == proposal.route_evidence.atomic_group_id
-                and item.payload.source_subject_id == claim.predicate_subject.subject_id
-                and claim.selected_target_subject.subject_id in item.payload.destination_subject_ids
-                and item.payload.matched
-            )
-            if matching_route:
-                claim_evidence = tuple(item.evidence_id for item in (*matching_effect, *matching_route))
+            if matching_effect:
+                claim_evidence = tuple(item.evidence_id for item in matching_effect)
+                canonical_owner = canonical_source_by_ref.get(
+                    claim.discarded_effect_subject.block_ref,
+                )
                 targets = (
                     (claim.discarded_effect_subject, model.SafetyDimension.EFFECT_PRESERVATION),
-                    (claim.discarded_effect_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING),
-                ) if matching_effect else ()
-                route_subject = next(
-                    subject for subject in subjects
-                    if subject.kind is model.SemanticSubjectKind.ROUTE
-                    and subject.subject_id == matching_route[0].payload.route_subject_id
+                ) + (
+                    ((canonical_owner, model.SafetyDimension.STRUCTURAL_ACCOUNTING),)
+                    if canonical_owner is not None else ()
                 )
-                route_targets = (
-                    route_subject,
-                    claim.source_subject,
-                    claim.predicate_subject,
-                    claim.selected_target_subject,
-                    *tuple(
-                        subject for subject in subjects
-                        if subject.subject_id in matching_route[0].payload.destination_subject_ids
-                    ),
-                )
-                for route_target in dict.fromkeys(route_targets):
-                    route_key = model.ObligationKey(route_target, model.SafetyDimension.ROUTE_EQUIVALENCE)
-                    if route_key in required:
-                        _add_justification(
-                            justifications, route_key,
-                            model.UnflattenJustificationRule.EQUIVALENT_ROUTE_PROVEN,
-                            model.EvidencePolarity.SUPPORTS, phase,
-                            (matching_route[0].evidence_id,), claim.claim_id,
-                        )
             rule = model.UnflattenJustificationRule.EXACT_INFEASIBLE_EFFECT_PROVEN
         elif type(claim) is model.LocalAliasEffectScalarizationClaim:
             alias_relations = tuple(
@@ -3630,8 +3855,11 @@ def build_semantic_case(
             )
             if len(matching_phase_result) == 1:
                 claim_evidence = (matching_phase_result[0].evidence_id,)
+                canonical_cycle = canonical_source_by_ref.get(claim.cycle_subject.block_ref)
                 targets = (
-                    (claim.cycle_subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING),
+                    ((canonical_cycle, model.SafetyDimension.STRUCTURAL_ACCOUNTING),)
+                    if canonical_cycle is not None else ()
+                ) + (
                     (claim.terminal_subject, model.SafetyDimension.TERMINAL_REACHABILITY),
                 )
             rule = model.UnflattenJustificationRule.TERMINAL_CYCLE_BREAK_PROVEN
@@ -3760,7 +3988,108 @@ def evaluate_case(case: model.SemanticSafetyCase) -> model.UnflattenAuthorityVer
     )
 
 
+def _semantic_loss_rows(case: model.SemanticSafetyCase) -> tuple[model.SemanticLossRow, ...]:
+    """Evaluator-private row derivation used by authority and diagnostics."""
+    if type(case) is not model.SemanticSafetyCase:
+        raise TypeError("semantic loss ledger requires SemanticSafetyCase")
+    model.SemanticSafetyCase.__post_init__(case)
+    subjects = {subject.subject_id: subject for subject in case.subjects}
+    bindings = {binding.subject.subject_id: binding for binding in case.bindings}
+    source_bindings = {binding.subject.subject_id: binding for binding in case.source_bindings}
+    cells = {cell.key: cell for cell in case.obligation_index.cells}
+    justifications = {item.justification_id: item for item in case.justifications}
+    evidence = {item.evidence_id: item for item in case.evidence}
+    claims = {item.claim_id: item for item in case.claims}
+    rows: list[model.SemanticLossRow] = []
+    for subject_id in model._semantic_loss_source_subject_ids(case):
+        subject, binding, source_binding = (
+            subjects.get(subject_id), bindings.get(subject_id), source_bindings.get(subject_id),
+        )
+        if subject is None or binding is None or source_binding is None:
+            raise ValueError("source subject partition is not covered by the case")
+        if case.phase is model.UnflattenAuthorityPhase.PRODUCER_FORECAST:
+            continue
+        structural = cells.get(model.ObligationKey(subject, model.SafetyDimension.STRUCTURAL_ACCOUNTING))
+        if structural is None:
+            continue
+        owned_effect_subject_ids = set(
+            model._semantic_loss_effect_subject_ids(case, subject),
+        )
+        semantic = tuple(sorted(
+            (
+                cell for cell in case.obligation_index.cells
+                if (
+                    cell.key.dimension is not model.SafetyDimension.STRUCTURAL_ACCOUNTING
+                    and (
+                        cell.key.subject.subject_id == subject_id
+                        or cell.key.subject.subject_id in owned_effect_subject_ids
+                    )
+                )
+            ),
+            key=lambda cell: (cell.key.subject.subject_id, cell.key.dimension.value),
+        ))
+        relevant_justifications = tuple(
+            justifications[item]
+            for cell in (structural, *semantic)
+            for item in (*cell.supporting_justification_ids, *cell.refuting_justification_ids)
+        )
+        rows.append(model.SemanticLossRow(
+            case=case, source_subject=subject, source_binding=source_binding,
+            candidate_binding=binding, structural_obligation=structural,
+            relevant_semantic_obligations=semantic,
+            justifications=tuple(sorted(set(relevant_justifications), key=lambda item: item.justification_id)),
+            evidence=tuple(sorted({evidence[premise] for item in relevant_justifications for premise in item.premise_ids}, key=lambda item: item.evidence_id)),
+            claims=tuple(sorted({claims[item.claim_id] for item in relevant_justifications if item.claim_id is not None}, key=lambda item: item.claim_id)),
+        ))
+    return tuple(sorted(rows, key=lambda row: row.source_subject.subject_id))
+
+
+def build_semantic_loss_ledger(
+    case: model.SemanticSafetyCase,
+    verdict: model.UnflattenAuthorityVerdict,
+) -> model.SemanticLossLedger:
+    """Mint the sole loss authority for one evaluated canonical case."""
+    if type(case) is not model.SemanticSafetyCase:
+        raise TypeError("semantic ledger requires SemanticSafetyCase")
+    if case.phase not in (
+        model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT,
+        model.UnflattenAuthorityPhase.OBSERVED_POST_APPLY,
+    ):
+        raise ValueError("semantic ledger requires projected or observed case")
+    if type(verdict) is not model.UnflattenAuthorityVerdict:
+        raise TypeError("semantic ledger requires canonical verdict")
+    if verdict.safety_case is not case:
+        raise ValueError("semantic ledger verdict must retain exact safety case")
+    rows = _semantic_loss_rows(case)
+    return model.SemanticLossLedger(
+        case=case, authority_id=case.authority_id, case_id=case.case_id,
+        phase=case.phase, source_fingerprint=case.source_fingerprint,
+        candidate_fingerprint=case.candidate_fingerprint,
+        rows=rows,
+        ledger_id=_authority_id_digest((
+            "unflatten.semantic-loss-ledger.v1", case.case_id,
+            tuple((
+                row.source_subject.subject_id, row.kind.value,
+                tuple(item.justification_id for item in row.justifications),
+                tuple(item.evidence_id for item in row.evidence),
+                tuple(item.claim_id for item in row.claims),
+            ) for row in rows),
+        )),
+    )
+
+
+def build_projected_semantic_loss_ledger(
+    case: model.SemanticSafetyCase,
+    verdict: model.UnflattenAuthorityVerdict,
+) -> model.SemanticLossLedger:
+    """Compatibility name for the projected-only ledger factory."""
+    if case.phase is not model.UnflattenAuthorityPhase.PROJECTED_PREFLIGHT:
+        raise ValueError("projected ledger requires PROJECTED_PREFLIGHT case")
+    return build_semantic_loss_ledger(case, verdict)
+
+
 __all__ = [
     "REQUIRED_DIMENSIONS", "derive_corridor_coverage_evidence",
-    "build_semantic_case", "evaluate_case", "_build_obligation_index",
+    "build_semantic_case", "build_semantic_loss_ledger", "build_projected_semantic_loss_ledger",
+    "evaluate_case", "_build_obligation_index",
 ]

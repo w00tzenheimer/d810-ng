@@ -53,7 +53,7 @@ def test_create_tables_idempotent():
 def test_instruction_schema_exposes_indexed_assertion_state() -> None:
     conn = create_diag_database(":memory:").connection()
     columns = [row[1] for row in conn.execute("PRAGMA table_info(instructions)")]
-    assert columns[7:9] == ["iprops", "is_assert"]
+    assert columns[8:10] == ["iprops", "is_assert"]
 
     indexed_columns = {
         tuple(
@@ -142,9 +142,9 @@ def test_json_extract_on_meta_columns():
         "(1, 'test', '0x0000000000001000', 0x1000, 'GLBOPT1', 'unknown', 3, 0.0)"
     )
     conn.execute(
-        "INSERT INTO blocks VALUES "
-        "(1, 206, 2, 'BLT_2WAY', NULL, NULL, NULL, NULL, 2, 2, "
-        "'[207,208]', '[62,204]', 1, ?)",
+            "INSERT INTO blocks VALUES "
+            "(1, 206, 2, 'BLT_2WAY', NULL, NULL, NULL, NULL, 2, 2, "
+            "'[207,208]', '[62,204]', 1, NULL, NULL, NULL, ?)",
         ('{"valranges": {"0x3C": "==432DC789"}, "flags": ["MBL_GOTO"]}',),
     )
     # Query with json_extract

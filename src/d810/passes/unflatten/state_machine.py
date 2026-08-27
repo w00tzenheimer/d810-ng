@@ -69,6 +69,7 @@ from d810.analyses.control_flow.semantic_transition import (
 )
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    canonical_semantic_evidence_from_proofs,
     SemanticRouteShape,
     bind_canonical_semantic_evidence,
     semantic_route_proof_reaches_consumer,
@@ -1332,14 +1333,10 @@ def _connected_route_candidate(
             changed = True
     if len(selected) == len(evidence.route_proofs):
         return evidence
-    atomic_group_id = f"{evidence.atomic_group_id}:work-item:{root.proof_id}"
-    return CanonicalSemanticEvidence(
+    return canonical_semantic_evidence_from_proofs(
         native_key=evidence.native_key,
         generation=evidence.generation,
-        atomic_group_id=atomic_group_id,
-        route_proofs=tuple(
-            replace(proof, atomic_group_id=atomic_group_id) for proof in selected
-        ),
+        proofs=tuple(selected),
     )
 
 

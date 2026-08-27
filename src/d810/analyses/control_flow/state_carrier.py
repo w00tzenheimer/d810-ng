@@ -48,6 +48,7 @@ __all__ = [
     "observes_u32_state_transform_feeder_candidate",
     "prove_exact_u32_carrier_state_write",
     "prove_exact_state_transform_feeder",
+    "prove_exact_u32_state_delivery",
     "prove_exact_u32_state_transform_feeder",
 ]
 
@@ -118,21 +119,50 @@ def _pure_goto_to(instruction: Instruction, target: int) -> bool:
     )
 
 
+def _is_low_u32_register_alias(wide: Varnode, narrow: Varnode) -> bool:
+    return bool(
+        wide.space is Space.REGISTER
+        and narrow.space is Space.REGISTER
+        and int(wide.offset) == int(narrow.offset)
+        and int(wide.size) == 8
+        and int(narrow.size) == 4
+    )
+
+
 def _is_exact_const_carrier_definition(
     instruction: Instruction,
     carrier: Varnode,
+    *,
+    allow_low_u32_projection: bool = False,
 ) -> bool:
+    result = instruction.result
+    source = instruction.inputs[0] if instruction.inputs else None
+    narrow = (
+        result == carrier
+        and int(carrier.size) == 4
+        and source is not None
+        and int(source.size) == 4
+    )
+    projected = (
+        allow_low_u32_projection
+        and result is not None
+        and source is not None
+        and _is_low_u32_register_alias(result, carrier)
+        and source.space is Space.CONST
+        and int(source.size) == 8
+        and int(result.size) == 8
+    )
     return bool(
         instruction.operation is ValueOpKind.MOVE
         and not instruction.effects
         and instruction.memory is None
         and instruction.control is None
-        and instruction.result == carrier
-        and int(carrier.size) == 4
+        and (narrow or projected)
+        and result is not None
         and carrier.space in {Space.REGISTER, Space.STACK, Space.LVAR, Space.TEMP}
         and len(instruction.inputs) == 1
-        and instruction.inputs[0].space is Space.CONST
-        and int(instruction.inputs[0].size) == 4
+        and source is not None
+        and source.space is Space.CONST
     )
 
 
@@ -951,8 +981,9 @@ def prove_exact_u32_carrier_state_write(
     state_var_stkoff: int | None,
     state_var_reg: int | None,
     required_comparison_serials: frozenset[int],
+    allow_low_u32_projection: bool = False,
 ) -> ExactCarrierStateWrite | None:
-    """Prove one exact ``CONST32 -> carrier -> state32`` graph corridor.
+    """Prove one exact constant-carrier -> state32 graph corridor.
 
     Both CFG edges are exact sole-successor edges.  The source's final carrier
     definition must be an exact constant overwrite, and its suffix may contain
@@ -1063,7 +1094,11 @@ def prove_exact_u32_carrier_state_write(
     candidate_indexes = tuple(
         index
         for index, instruction in enumerate(source_instructions)
-        if _is_exact_const_carrier_definition(instruction, carrier)
+        if _is_exact_const_carrier_definition(
+            instruction,
+            carrier,
+            allow_low_u32_projection=allow_low_u32_projection,
+        )
     )
     if not candidate_indexes:
         return None
@@ -1086,7 +1121,11 @@ def prove_exact_u32_carrier_state_write(
         return None
 
     candidate = source_instructions[candidate_index]
-    if not _is_exact_const_carrier_definition(candidate, carrier):
+    if not _is_exact_const_carrier_definition(
+        candidate,
+        carrier,
+        allow_low_u32_projection=allow_low_u32_projection,
+    ):
         return None
     return ExactCarrierStateWrite(
         state=int(candidate.inputs[0].offset) & 0xFFFFFFFF,
@@ -1098,3 +1137,56 @@ def prove_exact_u32_carrier_state_write(
         requires_feeder_clone=bool(semantic_suffix) or clone_until_serial is not None,
         clone_until_serial=clone_until_serial,
     )
+
+
+def prove_exact_u32_state_delivery(
+    flow_graph: FlowGraph,
+    owner_serial: int,
+    feeder_serial: int,
+    *,
+    feeder_instruction_ea: int,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    expected_state: int,
+) -> bool:
+    """Prove one exact 32-bit state-cell delivery from an owner carrier.
+
+    This is intentionally narrower than route authority.  It admits the
+    partition feeder's exact ``carrier32 -> state32`` MOVE and the portable
+    low-u32 projection of a source-owned ``CONST64 -> register64`` definition.
+    It does not admit computed feeder expressions, duplicate state writes, or
+    a carrier-only target route.
+    """
+
+    feeder = flow_graph.get_block(int(feeder_serial))
+    if feeder is None or len(tuple(int(target) for target in feeder.succs)) != 1:
+        return False
+    expected_identities = expected_u32_state_identities(
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+    )
+    state_writes = tuple(
+        (
+            int(instruction.attrs.get("ea", -1)),
+            instruction,
+        )
+        for instruction in InstructionProjection.from_block(feeder)
+        if instruction.result is not None
+        and storage_identity_from_varnode(instruction.result) in expected_identities
+    )
+    if (
+        len(state_writes) != 1
+        or state_writes[0][0] != int(feeder_instruction_ea)
+        or int(state_writes[0][1].result.size) != 4
+    ):
+        return False
+    receipt = prove_exact_u32_carrier_state_write(
+        flow_graph,
+        int(owner_serial),
+        int(feeder_serial),
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        required_comparison_serials=frozenset({int(feeder.succs[0])}),
+        allow_low_u32_projection=True,
+    )
+    return receipt is not None and int(receipt.state) == (int(expected_state) & 0xFFFFFFFF)
