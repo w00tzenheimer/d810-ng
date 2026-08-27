@@ -99,6 +99,28 @@ def test_deterministic_ac_order_after_local_normalization():
     assert any(step.kind is CanonicalizationKind.AC_REORDER for step in first.steps)
 
 
+def test_repeated_ac_subterms_remain_atomizable_after_canonicalization():
+    width = 32
+    x = leaf("x", width)
+    masked = node("and", width, leaf("mask", width), const(0xFFFFFBFB, width))
+    source = node(
+        "add",
+        width,
+        node("and", width, x, masked),
+        node("and", width, masked, node("bnot", width, x)),
+    )
+
+    canonical = canonicalize_mba_term(source).canonical_term
+
+    def occurrences(term, target):
+        return (1 if term == target else 0) + sum(
+            occurrences(child, target) for child in term.children
+        )
+
+    canonical_mask = canonicalize_mba_term(masked).canonical_term
+    assert occurrences(canonical, canonical_mask) == 2
+
+
 def test_signed_addition_is_association_invariant_and_trace_stable():
     width = 32
     x = leaf("x", width)

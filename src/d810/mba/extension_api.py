@@ -10,7 +10,7 @@ immutable for the lifetime of one callback candidate.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -460,6 +460,39 @@ def atomize_native_candidate(
     return AtomizedNativeMbaCandidate(candidate=candidate, view=view)
 
 
+def reconstruct_native_provider_result(
+    host: NativeMbaHostServices,
+    candidate: NativeMbaCandidate,
+    provider: Callable[[TypedBvTerm], TypedBvTerm],
+    *,
+    certificate: str | None = None,
+    known_constants: object | None = None,
+    proof_timeout_ms: int | None = None,
+) -> NativeMbaReconstruction | None:
+    """Return a provider replacement only after native proof succeeds.
+
+    The provider sees only the atomized portable term.  Restoration and native
+    reconstruction remain host-owned, and the caller receives no replacement
+    to apply or swap until the final native equivalence proof accepts it.
+    """
+
+    atomized = atomize_native_candidate(candidate)
+    replacement = provider(atomized.term)
+    restored = atomized.restore_replacement(replacement)
+    reconstruction = host.rebuild(candidate, restored)
+    if reconstruction is None:
+        return None
+    if not host.prove(
+        candidate,
+        reconstruction,
+        certificate=certificate,
+        known_constants=known_constants,
+        proof_timeout_ms=proof_timeout_ms,
+    ):
+        return None
+    return reconstruction
+
+
 @dataclass(frozen=True, slots=True)
 class NativeMbaReconstruction:
     """Native replacement AST and instruction produced by the host facade."""
@@ -600,6 +633,7 @@ __all__ = [
     "typed_term_from_dict",
     "typed_term_to_dict",
     "atomize_native_candidate",
+    "reconstruct_native_provider_result",
     "atomize_repeated_subterms",
     "typed_term_identity_is_current",
     "MbaResidualCorpus",

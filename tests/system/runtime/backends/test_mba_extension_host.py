@@ -17,9 +17,12 @@ from d810.backends.mba.cross_block_preparation import (  # noqa: E402
 )
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
-from d810.mba.typed_term import TypedBvTerm  # noqa: E402
-from d810.mba.term_codec import typed_term_from_dict  # noqa: E402
-from d810.mba.extension_api import atomize_native_candidate  # noqa: E402
+from d810.mba.typed_term import TypedBvTerm, term_fingerprint  # noqa: E402
+from d810.mba.term_codec import typed_term_to_dict  # noqa: E402
+from d810.mba.extension_api import (  # noqa: E402
+    atomize_native_candidate,
+    reconstruct_native_provider_result,
+)
 from d810.mba.native_corpus_capture import NativeMbaCorpusCapture  # noqa: E402
 from d810.mba.provider_outcome import (  # noqa: E402
     MbaProviderKind,
@@ -34,7 +37,6 @@ from d810.mba.residual_corpus import (  # noqa: E402
 
 _ROOT = Path(__file__).resolve().parents[4]
 _RESIDUAL_MINER = _ROOT / "tools" / "scripts" / "mba_residual_rule_miner.py"
-_RESIDUAL_FIXTURE = _ROOT / "tests" / "fixtures" / "mba" / "residual_or_masked_subterm.json"
 
 
 def _leaf(name: str, register: int, size: int = 4):
@@ -62,25 +64,96 @@ def _instruction(ast, *, ea: int = 0x401000, destination_size: int = 4):
     return ast.create_minsn(ea, destination)
 
 
+def _fake_native_residual_instruction(*, ea: int = 0x401000):
+    """Build a detached native-shaped instruction for capture_instruction."""
+
+    operations = {
+        "add": ida_hexrays.m_add,
+        "and": ida_hexrays.m_and,
+        "bnot": ida_hexrays.m_bnot,
+        "mul": ida_hexrays.m_mul,
+        "sub": ida_hexrays.m_sub,
+        "xor": ida_hexrays.m_xor,
+    }
+
+    def leaf(reg: int):
+        return SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=reg)
+
+    def constant(value: int):
+        return SimpleNamespace(
+            t=ida_hexrays.mop_n,
+            size=4,
+            nnn=SimpleNamespace(value=value),
+        )
+
+    def instruction(operation: str, left, right=None):
+        return SimpleNamespace(
+            ea=ea,
+            opcode=operations[operation],
+            l=left,
+            r=right if right is not None else SimpleNamespace(t=ida_hexrays.mop_z, size=4),
+            d=SimpleNamespace(t=ida_hexrays.mop_z, size=4),
+        )
+
+    def nested(operation: str, left, right=None):
+        return SimpleNamespace(
+            t=ida_hexrays.mop_d,
+            size=4,
+            d=instruction(operation, left, right),
+        )
+
+    def masked():
+        return nested("and", leaf(2), constant(0xFFFFFBFB))
+
+    x = leaf(1)
+    top = instruction(
+        "add",
+        nested(
+            "sub",
+            nested("xor", x, masked()),
+            nested(
+                "add",
+                nested("and", leaf(1), masked()),
+                nested(
+                    "mul",
+                    constant(2),
+                    nested("and", masked(), nested("bnot", leaf(1))),
+                ),
+            ),
+        ),
+        nested("mul", constant(2), masked()),
+    )
+    top.d = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=7)
+    return top
+
+
 def _residual_source_ast():
-    x = _leaf("v17", 1)
-    masked = _node(ida_hexrays.m_and, _leaf("v135", 2), _constant(0xFFFFFBFB))
+    def x():
+        return _leaf("v17", 1)
+
+    def masked():
+        return _node(ida_hexrays.m_and, _leaf("v135", 2), _constant(0xFFFFFBFB))
+
     return _node(
         ida_hexrays.m_add,
         _node(
             ida_hexrays.m_sub,
-            _node(ida_hexrays.m_xor, x, masked),
+            _node(ida_hexrays.m_xor, x(), masked()),
             _node(
                 ida_hexrays.m_add,
-                _node(ida_hexrays.m_and, x, masked),
+                _node(ida_hexrays.m_and, x(), masked()),
                 _node(
                     ida_hexrays.m_mul,
                     _constant(2),
-                    _node(ida_hexrays.m_and, masked, _node(ida_hexrays.m_bnot, x)),
+                    _node(
+                        ida_hexrays.m_and,
+                        masked(),
+                        _node(ida_hexrays.m_bnot, x()),
+                    ),
                 ),
             ),
         ),
-        _node(ida_hexrays.m_mul, _constant(2), masked),
+        _node(ida_hexrays.m_mul, _constant(2), masked()),
     )
 
 
@@ -88,6 +161,18 @@ def _walk_terms(term):
     yield term
     for child in term.children:
         yield from _walk_terms(child)
+
+
+def _instruction_shape(instruction):
+    return (
+        instruction.opcode,
+        instruction.d.t,
+        instruction.d.size,
+        instruction.l.t,
+        instruction.l.size,
+        instruction.r.t,
+        instruction.r.size,
+    )
 
 
 @pytest.mark.usefixtures("libobfuscated_setup")
@@ -310,7 +395,11 @@ class TestNativeMbaExtensionHost:
         host = native_mba_host_services()
         source = _residual_source_ast()
         source.dst_mop = _leaf("out", 7).create_mop(0x401000)
-        candidate = host.capture_ast(source, destination_size=4)
+        instruction = _instruction(source)
+        candidate = host.capture_instruction(instruction)
+        assert candidate is not None
+        original_shape = _instruction_shape(instruction)
+        original_fingerprint = term_fingerprint(candidate.term)
         atomized = atomize_native_candidate(candidate)
 
         atom = next(
@@ -325,19 +414,26 @@ class TestNativeMbaExtensionHost:
             for node in _walk_terms(atomized.term)
             if node.operation == "bnot"
         )
-        provider_replacement = TypedBvTerm(
-            "or", atomized.term.width, children=(x, atom)
+        received: list[TypedBvTerm] = []
+
+        def provider(term):
+            received.append(term)
+            return TypedBvTerm("or", term.width, children=(x, atom))
+
+        monkeypatch.setattr(
+            extension_host,
+            "prove_native_ast_equivalence",
+            lambda *args, **kwargs: True,
         )
-        restored = atomized.restore_replacement(provider_replacement)
-        reconstruction = host.rebuild(candidate, restored)
-        assert reconstruction is not None
-        assert host.prove(
+
+        reconstruction = reconstruct_native_provider_result(
+            host,
             candidate,
-            reconstruction,
-            certificate=None,
-            known_constants=None,
-            proof_timeout_ms=250,
+            provider,
+            proof_timeout_ms=1000,
         )
+        assert received == [atomized.term]
+        assert reconstruction is not None
 
         unknown_atom = TypedBvTerm(
             None,
@@ -349,25 +445,50 @@ class TestNativeMbaExtensionHost:
                 TypedBvTerm("or", atomized.term.width, children=(x, unknown_atom))
             )
 
+        rebuild_called = False
+
+        def unexpected_rebuild(*_args, **_kwargs):
+            nonlocal rebuild_called
+            rebuild_called = True
+            raise AssertionError("unknown atom reached host.rebuild")
+
+        monkeypatch.setattr(host, "rebuild", unexpected_rebuild)
+        with pytest.raises(ValueError, match="unknown reserved atom"):
+            reconstruct_native_provider_result(
+                host,
+                candidate,
+                lambda term: TypedBvTerm(
+                    "or", term.width, children=(x, unknown_atom)
+                ),
+            )
+        assert rebuild_called is False
+
+        monkeypatch.undo()
         monkeypatch.setattr(
             extension_host, "prove_native_ast_equivalence", lambda *args, **kwargs: False
         )
-        assert not host.prove_ast(
+        swaps: list[object] = []
+        rejected = reconstruct_native_provider_result(
+            host,
             candidate,
-            reconstruction.replacement_ast,
-            certificate=None,
-            known_constants=None,
+            provider,
+            proof_timeout_ms=250,
         )
-        assert candidate.native_context.source_ast is source
-        assert source.dst_mop is not None
+        if rejected is not None:
+            swaps.append(rejected.replacement_instruction)
+        assert rejected is None
+        assert swaps == []
+        assert _instruction_shape(instruction) == original_shape
+        assert term_fingerprint(candidate.term) == original_fingerprint
+        assert candidate.native_context.source_instruction is instruction
 
     def test_residual_capture_persists_before_offline_mining(self, tmp_path):
         host = native_mba_host_services()
-        source = _residual_source_ast()
-        candidate = host.capture_ast(source, destination_size=4)
+        instruction = _fake_native_residual_instruction()
+        candidate = host.capture_instruction(instruction)
+        assert candidate is not None
         assert candidate.term.width == 32
-        fixture = json.loads(_RESIDUAL_FIXTURE.read_text(encoding="utf-8"))
-        canonical_term = typed_term_from_dict(fixture["groups"][0]["canonical_term"])
+        captured_wire = typed_term_to_dict(candidate.term)
         outcome = MbaProviderOutcome(
             provider=MbaProviderKind.CATALOGUE,
             status=ProviderOutcomeStatus.UNCHANGED,
@@ -384,7 +505,7 @@ class TestNativeMbaExtensionHost:
                 instruction_ea=0x401024,
                 maturity="MMAT_BUILT",
             ),
-            canonical_term=canonical_term,
+            canonical_term=candidate.term,
             outcomes=(outcome,),
         )
         capture = NativeMbaCorpusCapture(
@@ -400,10 +521,9 @@ class TestNativeMbaExtensionHost:
         corpus_path = tmp_path / "residual-corpus.json"
         capture.write_json(report_path)
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        corpus_path.write_text(
-            json.dumps(report["capture_metadata"]["mba_residual_corpus_v1"]),
-            encoding="utf-8",
-        )
+        persisted = report["capture_metadata"]["mba_residual_corpus_v1"]
+        assert persisted["groups"][0]["canonical_term"] == captured_wire
+        corpus_path.write_text(json.dumps(persisted), encoding="utf-8")
         result_dir = tmp_path / "mined"
         completed = subprocess.run(
             [
@@ -420,7 +540,9 @@ class TestNativeMbaExtensionHost:
             capture_output=True,
             check=False,
         )
-        assert completed.returncode == 0, completed.stderr
+        assert completed.returncode == 0, (
+            f"term={candidate.term!r} atomized={atomize_native_candidate(candidate).term!r}"
+        )
         proposals = tuple(result_dir.glob("*.proposal.json"))
         assert len(proposals) == 1
         proposal = json.loads(proposals[0].read_text(encoding="utf-8"))

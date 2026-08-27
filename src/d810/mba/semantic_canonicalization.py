@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+from collections import Counter
 from dataclasses import dataclass
 
 from d810.mba.typed_term import (
@@ -93,6 +94,42 @@ class CanonicalMbaTermView:
             "canonical_cost": list(self.canonical_cost),
             "steps": [step.to_dict() for step in self.steps],
         }
+
+
+def _associative_identity(
+    term: TypedBvTerm,
+    memo: dict[int, tuple[object, ...]],
+) -> tuple[object, ...]:
+    """Return an AC-insensitive structural key without rebuilding a tree."""
+
+    cached = memo.get(id(term))
+    if cached is not None:
+        return cached
+    if term.operation is None:
+        key = _term_sort_key(term)
+    elif term.operation in AC_OPERATIONS:
+        operands: list[tuple[object, ...]] = []
+
+        def collect(child: TypedBvTerm) -> None:
+            if child.operation == term.operation and child.width == term.width:
+                for grandchild in child.children:
+                    collect(grandchild)
+            else:
+                operands.append(_associative_identity(child, memo))
+
+        for child in term.children:
+            collect(child)
+        key = ("node", term.operation, term.width, tuple(sorted(operands)))
+    else:
+        key = (
+            "node",
+            term.operation,
+            term.width,
+            term.shift_count,
+            tuple(_associative_identity(child, memo) for child in term.children),
+        )
+    memo[id(term)] = key
+    return key
 
 
 def _signed_value(value: int, width: int) -> int:
@@ -270,12 +307,36 @@ def _rewrite_once(
 
 
 def _canonicalize_ac_with_trace(
-    term: TypedBvTerm, steps: list[CanonicalizationStep]
+    term: TypedBvTerm,
+    steps: list[CanonicalizationStep],
+    repeated_operator_fingerprints: set[str] | None = None,
+    identity_memo: dict[int, tuple[object, ...]] | None = None,
 ) -> TypedBvTerm:
     if term.operation is None:
         return term
+    if identity_memo is None:
+        identity_memo = {}
+    if repeated_operator_fingerprints is None:
+        occurrences: Counter[str] = Counter()
+
+        def count_operator_subterms(node: TypedBvTerm) -> None:
+            if node.operation is not None:
+                occurrences[str(_associative_identity(node, identity_memo))] += 1
+            for child in node.children:
+                count_operator_subterms(child)
+
+        count_operator_subterms(term)
+        repeated_operator_fingerprints = {
+            fingerprint
+            for fingerprint, count in occurrences.items()
+            if count > 1
+        }
+
     normalized_children = tuple(
-        _canonicalize_ac_with_trace(child, steps) for child in term.children
+        _canonicalize_ac_with_trace(
+            child, steps, repeated_operator_fingerprints, identity_memo
+        )
+        for child in term.children
     )
     normalized = TypedBvTerm(
         operation=term.operation,
@@ -289,7 +350,19 @@ def _canonicalize_ac_with_trace(
     operands: list[TypedBvTerm] = []
 
     def collect(child: TypedBvTerm) -> None:
-        if child.operation == normalized.operation and child.width == normalized.width:
+        # Keep repeated operator subterms structurally visible for downstream
+        # atomization.  Flattening a repeated mask such as ``x & (y & K)``
+        # destroys the only portable evidence that the same subterm recurs in
+        # the residual, while unique associative nodes remain normalized.
+        repeated_subterm = (
+            child.operation is not None
+            and str(_associative_identity(child, identity_memo)) in repeated_operator_fingerprints
+        )
+        if (
+            child.operation == normalized.operation
+            and child.width == normalized.width
+            and not repeated_subterm
+        ):
             for grandchild in child.children:
                 collect(grandchild)
         else:
