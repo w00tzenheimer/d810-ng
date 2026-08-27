@@ -296,6 +296,33 @@ def test_current_function_execution_identity_uses_verified_resolution() -> None:
     assert identity.evidence_generation == 1
 
 
+def test_current_function_execution_identity_rejects_native_resolution_mismatch() -> (
+    None
+):
+    calls: list[tuple[str, object]] = []
+    native_key = make_native_key(input_identity="sha256:" + "a" * 64)
+    mismatched_resolution = InputIdentityResolution(
+        status=InputIdentityRecoveryStatus.LOADER_SHA_CAPTURED,
+        input_identity="sha256:" + "b" * 64,
+        provenance="verified_loader_sha256",
+        external_evidence_allowed=True,
+        database_uuid="12345678-1234-5678-1234-567812345678",
+    )
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=_PreanalysisRuntime(calls),
+        analysis_runtime=_AnalysisRuntime(calls),
+        execution_scope_service=_ExecutionScopeService(calls),
+        native_preanalysis_key_provider=lambda _function_ea: (
+            NativePreanalysisIdentityResolution(native_key, mismatched_resolution)
+        ),
+    )
+    with pytest.raises(ValueError, match="native key disagrees"):
+        coordinator.ensure_hexrays_session(
+            function_ea=0x401000,
+            database_identity="sample.i64",
+        )
+
+
 def test_current_function_execution_identity_fails_without_active_session() -> None:
     coordinator, _runtime = _coordinator([])
 

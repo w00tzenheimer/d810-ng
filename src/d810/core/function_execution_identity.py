@@ -35,6 +35,7 @@ _VERIFIED_SHA_PROVENANCE = frozenset(
     {"captured_from_ida", "recovered_from_d810_attestation", "verified_loader_sha256"}
 )
 _LOCAL_PROVENANCE = frozenset({"current_idb", "idb_local", "legacy_idb_local"})
+_BADADDR = (1 << 64) - 1
 
 
 def _non_negative_int(value: object, *, field: str) -> int:
@@ -43,6 +44,13 @@ def _non_negative_int(value: object, *, field: str) -> int:
     if value < 0:
         raise ValueError(f"{field} must be non-negative")
     return int(value)
+
+
+def _ea_anchor(value: object, *, field: str) -> int:
+    result = _non_negative_int(value, field=field)
+    if result == _BADADDR:
+        raise ValueError(f"{field} must not be BADADDR")
+    return result
 
 
 def _positive_int(value: object, *, field: str) -> int:
@@ -89,7 +97,7 @@ def _normalize_session_id(value: object) -> str:
     return _text(value, field="decompilation_session_id")
 
 
-def _normalize_maturity(value: object) -> object:
+def _normalize_maturity(value: object) -> str:
     if (
         type(value).__module__ == "d810.ir.maturity"
         and type(value).__name__ == "IRMaturity"
@@ -125,7 +133,7 @@ class FunctionExecutionIdentity:
     function_fingerprint: str
     decompilation_session_id: str | DecompilationSessionId
     top_level_epoch: int
-    maturity: object
+    maturity: str
     evidence_generation: int
 
     def __post_init__(self) -> None:
@@ -138,15 +146,13 @@ class FunctionExecutionIdentity:
         )
         provenance = self.input_identity_provenance
         if input_identity.startswith("sha256:"):
-            if provenance in _VERIFIED_SHA_PROVENANCE:
-                if not self.external_evidence_allowed:
-                    raise ValueError(
-                        "verified SHA provenance requires external evidence"
-                    )
-            elif self.external_evidence_allowed:
-                raise ValueError("verified SHA identity requires verified provenance")
-            if not self.external_evidence_allowed and provenance in _LOCAL_PROVENANCE:
-                raise ValueError("SHA identity cannot use local IDB provenance")
+            if (
+                provenance not in _VERIFIED_SHA_PROVENANCE
+                or not self.external_evidence_allowed
+            ):
+                raise ValueError(
+                    "verified SHA identity requires verified provenance and external evidence"
+                )
         elif provenance not in _LOCAL_PROVENANCE:
             raise ValueError("IDB-local identity requires local provenance")
         if not isinstance(self.external_evidence_allowed, bool):
@@ -173,7 +179,7 @@ class FunctionExecutionIdentity:
         object.__setattr__(
             self,
             "function_ea",
-            _non_negative_int(self.function_ea, field="function_ea"),
+            _ea_anchor(self.function_ea, field="function_ea"),
         )
         object.__setattr__(
             self,
@@ -323,7 +329,7 @@ class MbaObservationContext:
         object.__setattr__(
             self,
             "instruction_ea",
-            _non_negative_int(self.instruction_ea, field="instruction_ea"),
+            _ea_anchor(self.instruction_ea, field="instruction EA"),
         )
         if self.block_serial is not None:
             object.__setattr__(
@@ -335,10 +341,8 @@ class MbaObservationContext:
                 raise ValueError("block serial requires a block EA anchor")
         if self.block_ea is not None:
             object.__setattr__(
-                self, "block_ea", _non_negative_int(self.block_ea, field="block_ea")
+                self, "block_ea", _ea_anchor(self.block_ea, field="block EA")
             )
-            if self.block_ea == (1 << 64) - 1:
-                raise ValueError("block EA must not be BADADDR")
 
     @property
     def identity(self) -> FunctionExecutionIdentity:

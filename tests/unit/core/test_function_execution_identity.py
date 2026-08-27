@@ -147,6 +147,15 @@ def test_unverified_sha_cannot_claim_verified_provenance() -> None:
         )
 
 
+def test_unrecognized_sha_provenance_cannot_be_retained_locally() -> None:
+    with pytest.raises(ValueError, match="verified SHA"):
+        _identity(
+            input_identity=f"sha256:{SHA}",
+            input_identity_provenance="review_unverified",
+            external_evidence_allowed=False,
+        )
+
+
 def test_local_identity_database_uuid_must_agree() -> None:
     with pytest.raises(ValueError, match="database UUID"):
         _identity(
@@ -207,6 +216,25 @@ def test_mba_context_rejects_bad_address_block_anchor() -> None:
             plugin_identity=PLUGIN,
             instruction_ea=0x401005,
             block_serial=7,
+            block_ea=(1 << 64) - 1,
+        )
+
+
+def test_mba_context_rejects_bad_address_instruction_anchor() -> None:
+    with pytest.raises(ValueError, match="instruction EA"):
+        MbaObservationContext(
+            function_identity=_identity(),
+            plugin_identity=PLUGIN,
+            instruction_ea=(1 << 64) - 1,
+        )
+
+
+def test_mba_context_rejects_bad_address_block_anchor_without_serial() -> None:
+    with pytest.raises(ValueError, match="block EA"):
+        MbaObservationContext(
+            function_identity=_identity(),
+            plugin_identity=PLUGIN,
+            instruction_ea=0x401005,
             block_ea=(1 << 64) - 1,
         )
 
