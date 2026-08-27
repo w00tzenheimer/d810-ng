@@ -838,8 +838,6 @@ class BackendRegistry:
         force_cycle = False
         with self._lock:
             if self._discovered and not force:
-                while self._rediscovering:
-                    self._lifecycle.wait()
                 return
             if self._discovered and force:
                 while self._rediscovering or self._closing:

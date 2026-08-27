@@ -633,6 +633,51 @@ class TestActivation(unittest.TestCase):
         reg.close_activations()
         self.assertEqual(plugin.activation.close_calls, 1)
 
+    def test_forced_rediscovery_close_callback_can_wait_for_registry_read(self):
+        plugin = FakePlugin(FakeActivation())
+        reg = registry_for(plugin)
+        reg.activate("example")
+        close_errors = []
+        readers = []
+        original_close = plugin.activation.close
+
+        def close():
+            read_complete = threading.Event()
+
+            def read_registry():
+                try:
+                    reg.info("example")
+                except BaseException as exc:  # pragma: no cover - assertion aid
+                    close_errors.append(exc)
+                finally:
+                    read_complete.set()
+
+            reader = threading.Thread(target=read_registry)
+            readers.append(reader)
+            reader.start()
+            if not read_complete.wait(timeout=1):
+                close_errors.append(
+                    AssertionError(
+                        "registry read blocked during forced rediscovery close"
+                    )
+                )
+            original_close()
+
+        plugin.activation.close = close
+        force_thread = threading.Thread(target=lambda: reg.discover(force=True))
+        force_thread.start()
+        force_thread.join(timeout=2)
+        for reader in readers:
+            reader.join(timeout=1)
+
+        self.assertFalse(force_thread.is_alive())
+        self.assertTrue(readers)
+        self.assertFalse(any(reader.is_alive() for reader in readers))
+        self.assertEqual(close_errors, [])
+        self.assertEqual(plugin.activation.close_calls, 1)
+        reg.close_activations()
+        self.assertEqual(plugin.activation.close_calls, 1)
+
 
 class TestDiscovery(unittest.TestCase):
     def test_discovery_is_lazy_and_status_is_reportable(self):
