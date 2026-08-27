@@ -111,10 +111,20 @@ def test_add_sub_xor_or_and_use_existing_domain_transfers(opcode):
 def test_constant_shl_and_logical_shr_are_width_masked():
     from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
 
-    shl = _node(ida_hexrays.m_shl, _constant(0x81, 1), _constant(8, 1), size=1)
-    shr = _node(ida_hexrays.m_shr, _constant(0x81, 1), _constant(8, 1), size=1)
+    shl = _node(ida_hexrays.m_shl, _constant(0x81, 1), _constant(7, 1), size=1)
+    shr = _node(ida_hexrays.m_shr, _constant(0x81, 1), _constant(7, 1), size=1)
     assert decide_zero_status(shl) is AbstractZeroStatus.ALWAYS_NONZERO
     assert decide_zero_status(shr) is AbstractZeroStatus.ALWAYS_NONZERO
+
+
+@pytest.mark.parametrize("width", [8, 32, 64])
+def test_shift_count_at_operand_width_is_unknown(width):
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    size = width // 8
+    for opcode in (ida_hexrays.m_shl, ida_hexrays.m_shr):
+        root = _node(opcode, _constant(1 << (width - 1), size), _constant(width, size), size=size)
+        assert decide_zero_status(root) is AbstractZeroStatus.UNKNOWN
 
 
 def test_variable_shift_is_unknown():
@@ -143,3 +153,33 @@ def test_supported_extension_node_is_evaluated():
     source = _call(ConcolicValue.of(0x80, 8), 1)
     extension = _node(ida_hexrays.m_xdu, source, size=4)
     assert decide_zero_status(extension) is AbstractZeroStatus.ALWAYS_NONZERO
+
+
+def test_call_evidence_width_must_match_structural_width():
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    structurally_32 = _call(ConcolicValue.of(1 << 40, 64), size=4)
+    assert decide_zero_status(structurally_32) is AbstractZeroStatus.UNKNOWN
+
+
+def test_conversion_with_missing_result_width_is_unknown():
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    source = _call(ConcolicValue.of(0x80, 8), size=1)
+    malformed = AstNode(ida_hexrays.m_high, source)
+    assert decide_zero_status(malformed) is AbstractZeroStatus.UNKNOWN
+
+
+def test_m_high_requires_supported_two_to_one_width_ratio():
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    source = _call(ConcolicValue.of(0x8000, 64), size=8)
+    unsupported = _node(ida_hexrays.m_high, source, size=1)
+    assert decide_zero_status(unsupported) is AbstractZeroStatus.UNKNOWN
+
+
+def test_out_of_range_known_bit_is_unknown():
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    value = _call(_abstract(32, one=1 << 40), size=4)
+    assert decide_zero_status(value) is AbstractZeroStatus.UNKNOWN

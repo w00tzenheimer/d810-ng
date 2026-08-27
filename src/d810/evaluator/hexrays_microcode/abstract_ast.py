@@ -39,12 +39,24 @@ _INTERVALS = WrappedIntervalValueDomain()
 
 def _width_bits(value: typing.Any) -> int | None:
     """Read an AST width in bits without trusting arbitrary native objects."""
+    structural = _structural_width_bits(value)
+    if structural is not None:
+        return structural
+    # A normal AstNode may not have a destination mop in a directly-constructed
+    # test tree.  Infer only when both children agree; this is not an aliasing
+    # or partial-register inference.
+    if bool(getattr(value, "is_leaf", lambda: False)()):
+        return None
+    children = [getattr(value, "left", None), getattr(value, "right", None)]
+    child_widths = {_width_bits(child) for child in children if child is not None}
+    child_widths.discard(None)
+    if len(child_widths) == 1:
+        return next(iter(child_widths))
+    return None
 
-    evidence = getattr(value, "concolic_value", None)
-    if isinstance(evidence, ConcolicValue):
-        width = evidence.width
-        if type(width) is int and width in _SUPPORTED_WIDTHS:
-            return width
+
+def _structural_width_bits(value: typing.Any) -> int | None:
+    """Return only explicit structural byte-width metadata, never evidence."""
 
     # AstNode.dest_size and mop.size are byte counts in Hex-Rays.
     for candidate in (
@@ -58,15 +70,6 @@ def _width_bits(value: typing.Any) -> int | None:
             width = candidate * 8
             if width in _SUPPORTED_WIDTHS:
                 return width
-
-    # A normal AstNode may not have a destination mop in a directly-constructed
-    # test tree.  Infer only when both children agree; this is not an aliasing
-    # or partial-register inference.
-    children = [getattr(value, "left", None), getattr(value, "right", None)]
-    child_widths = {_width_bits(child) for child in children if child is not None}
-    child_widths.discard(None)
-    if len(child_widths) == 1:
-        return next(iter(child_widths))
     return None
 
 
@@ -88,23 +91,30 @@ def _call_evidence(value: typing.Any, width: int) -> AbstractEvidence | None:
     evidence = concolic.abstract
     if evidence.width != width or evidence.is_bottom():
         return None
+    mask = (1 << width) - 1
+    if (evidence.bits.zero | evidence.bits.one) & ~mask:
+        return None
+    if evidence.bits.zero & evidence.bits.one:
+        return None
     return evidence
 
 
 def _resize_evidence(
     opcode: int, source: AbstractEvidence, target_width: int
-) -> AbstractEvidence:
+) -> AbstractEvidence | None:
     """Transfer the supported extraction/extension nodes conservatively."""
 
     source_width = source.width
-    if source_width == target_width:
-        return source
     if target_width <= 0 or target_width not in _SUPPORTED_WIDTHS:
-        return AbstractEvidence.bottom(1)
+        return None
     if opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds) and target_width < source_width:
-        return AbstractEvidence.bottom(1)
+        return None
     if opcode in (ida_hexrays.m_low, ida_hexrays.m_high) and target_width > source_width:
-        return AbstractEvidence.bottom(1)
+        return None
+    if opcode in (ida_hexrays.m_low, ida_hexrays.m_high) and source_width != target_width * 2:
+        return None
+    if opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds) and target_width <= source_width:
+        return None
 
     concrete = source.to_const()
     if concrete is not None:
@@ -116,12 +126,15 @@ def _resize_evidence(
             value = concrete
         return AbstractEvidence.singleton(value, target_width)
 
+    source_mask = (1 << source_width) - 1
+    source_zero = source.bits.zero & source_mask
+    source_one = source.bits.one & source_mask
     target_mask = (1 << target_width) - 1
     if opcode == ida_hexrays.m_low:
         bits = type(source.bits)(
             target_width,
-            source.bits.zero & target_mask,
-            source.bits.one & target_mask,
+            source_zero & target_mask,
+            source_one & target_mask,
         )
         return AbstractEvidence(target_width, bits, _INTERVALS.top(target_width))._reduce()
 
@@ -129,8 +142,8 @@ def _resize_evidence(
         shift = target_width
         bits = type(source.bits)(
             target_width,
-            source.bits.zero >> shift,
-            source.bits.one >> shift,
+            (source_zero >> shift) & target_mask,
+            (source_one >> shift) & target_mask,
         )
         return AbstractEvidence(target_width, bits, _INTERVALS.top(target_width))._reduce()
 
@@ -138,15 +151,15 @@ def _resize_evidence(
         upper = ((1 << (target_width - source_width)) - 1) << source_width
         bits = type(source.bits)(
             target_width,
-            (source.bits.zero & ((1 << source_width) - 1)) | upper,
-            source.bits.one & ((1 << source_width) - 1),
+            source_zero | upper,
+            source_one,
         )
         return AbstractEvidence(target_width, bits, _INTERVALS.top(target_width))._reduce()
 
     if opcode == ida_hexrays.m_xds:
         sign = 1 << (source_width - 1)
-        known_zero = source.bits.zero
-        known_one = source.bits.one
+        known_zero = source_zero
+        known_one = source_one
         upper = ((1 << (target_width - source_width)) - 1) << source_width
         if source.bits.zero & sign:
             known_zero |= upper
@@ -160,7 +173,7 @@ def _resize_evidence(
             _INTERVALS.top(target_width),
         )._reduce()
 
-    return AbstractEvidence.bottom(1)
+    return None
 
 
 def _evaluate(node: typing.Any) -> AbstractEvidence | None:
@@ -190,6 +203,11 @@ def _evaluate(node: typing.Any) -> AbstractEvidence | None:
         return None
 
     if opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds, ida_hexrays.m_low, ida_hexrays.m_high):
+        # Conversion result width must be explicit; inferring it from the
+        # child would silently turn malformed m_high/m_low nodes into proofs.
+        width = _structural_width_bits(node)
+        if width is None:
+            return None
         source = _evaluate(left)
         source_width = _width_bits(left)
         if source is None or source_width is None or source.width != source_width:
@@ -230,6 +248,8 @@ def _evaluate(node: typing.Any) -> AbstractEvidence | None:
         # width before invoking the existing transfer functions.
         shift = right_evidence.to_const()
         assert shift is not None
+        if shift >= width:
+            return None
         right_evidence = AbstractEvidence.singleton(shift, width)
     elif right_evidence.width != width:
         return None
