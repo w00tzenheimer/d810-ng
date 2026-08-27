@@ -52,9 +52,24 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _read_corpus(path: Path) -> MbaResidualCorpus:
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON member: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> object:
+        raise ValueError(f"non-finite JSON constant: {value}")
+
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=reject_duplicates,
+            parse_constant=reject_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"cannot read residual corpus: {exc}") from exc
     if not isinstance(raw, dict):
         raise TypeError("residual corpus must contain a JSON object")
@@ -72,6 +87,33 @@ def _budget(args: argparse.Namespace) -> MbaSynthesisBudget:
     )
 
 
+def _budget_dict(budget: MbaSynthesisBudget) -> dict[str, int]:
+    return {
+        "max_atoms": budget.max_atoms,
+        "max_variables": budget.max_variables,
+        "max_candidate_operator_nodes": budget.max_candidate_operator_nodes,
+        "max_generated_terms": budget.max_generated_terms,
+        "max_candidate_attempts": budget.max_candidate_attempts,
+        "witness_count": budget.witness_count,
+    }
+
+
+def _discovery_dict(result: MbaSynthesisResult) -> dict[str, object]:
+    receipt = result.discovery_receipt
+    if receipt is None:
+        raise ValueError("successful synthesis has no discovery receipt")
+    return {
+        "budget": _budget_dict(receipt.budget),
+        "candidate_attempts": receipt.candidate_attempts,
+        "generated_terms": receipt.generated_terms,
+        "retained_terms": receipt.retained_terms,
+        "witness_identity": receipt.witness_identity,
+        "selected_candidate_fingerprint": receipt.selected_candidate_fingerprint,
+        "selected_candidate_rank": receipt.selected_candidate_rank,
+        "completion_reason": receipt.completion_reason,
+    }
+
+
 def _synthesis_dict(result: MbaSynthesisResult, budget: MbaSynthesisBudget) -> dict[str, object]:
     exhaustion = result.exhaustion
     return {
@@ -82,14 +124,7 @@ def _synthesis_dict(result: MbaSynthesisResult, budget: MbaSynthesisBudget) -> d
         else {
             "reason": exhaustion.reason,
             "generated_terms": exhaustion.generated_terms,
-            "budget": {
-                "max_atoms": budget.max_atoms,
-                "max_variables": budget.max_variables,
-                "max_candidate_operator_nodes": budget.max_candidate_operator_nodes,
-                "max_generated_terms": budget.max_generated_terms,
-                "max_candidate_attempts": budget.max_candidate_attempts,
-                "witness_count": budget.witness_count,
-            },
+            "budget": _budget_dict(budget),
         },
         "width_relative_all_ones": [
             {
@@ -101,17 +136,7 @@ def _synthesis_dict(result: MbaSynthesisResult, budget: MbaSynthesisBudget) -> d
             for item in result.width_relative_all_ones
         ],
         "fixed_operation_descriptors": [list(item) for item in result.fixed_operation_descriptors],
-        "attempt_provenance": {
-            "budget": {
-                "max_atoms": budget.max_atoms,
-                "max_variables": budget.max_variables,
-                "max_candidate_operator_nodes": budget.max_candidate_operator_nodes,
-                "max_generated_terms": budget.max_generated_terms,
-                "max_candidate_attempts": budget.max_candidate_attempts,
-                "witness_count": budget.witness_count,
-            },
-            "certification_widths": [8, 16, 32, 64],
-        },
+        "certification_widths": [8, 16, 32, 64],
     }
 
 
@@ -130,7 +155,7 @@ def _proposal_for(
         for outcome in observation.outcomes
     }
     provenance.update(f"source:{observation.source.identity}" for observation in group.observations)
-    family = "or"
+    family = result.replacement.operation or result.source.operation or "residual"
     class_name = "MbaResidualRule_" + hashlib.sha256(group.fingerprint.encode("ascii")).hexdigest()[:12]
     fixture = {
         "source_fingerprint": group.fingerprint,
@@ -171,12 +196,7 @@ def _proposal_for(
         "proof_widths": [receipt.width for receipt in result.proof_receipts],
     }
     manifest = proposal.to_dict()
-    # Wall-clock solver timings are intentionally excluded from proposal
-    # identity.  Keep the receipt fields present while making this persisted
-    # review artifact reproducible across clean runs.
-    manifest["proof_receipts"] = [
-        {**receipt, "elapsed_ms": 0.0} for receipt in manifest["proof_receipts"]
-    ]
+    manifest["attempt_provenance"] = _discovery_dict(result)
     manifest["synthesis"] = _synthesis_dict(result, budget)
     manifest["exhaustion"] = None
     return proposal, {"manifest": manifest, "fixture": artifact}
@@ -196,26 +216,83 @@ def _atomic_write(path: Path, content: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def _publish_replace(source: Path, destination: Path) -> None:
+    source.replace(destination)
+
+
+def _publish_transaction(
+    stage: Path,
+    output_dir: Path,
+    names: Sequence[str],
+    *,
+    force: bool,
+) -> None:
+    """Publish a complete staged set while retaining an exact rollback copy."""
+
+    output_was_present = output_dir.exists()
+    backup: Path | None = None
+    try:
+        if output_was_present:
+            backup = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{output_dir.name}.backup-", dir=output_dir.parent
+                )
+            )
+            backup.rmdir()
+            shutil.copytree(output_dir, backup)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            if not force and (output_dir / name).exists():
+                raise FileExistsError("output already exists; use --force")
+            _publish_replace(stage / name, output_dir / name)
+    except Exception:
+        if output_was_present and backup is not None:
+            shutil.rmtree(output_dir)
+            shutil.copytree(backup, output_dir)
+        elif output_dir.exists():
+            shutil.rmtree(output_dir)
+        raise
+    finally:
+        if backup is not None and backup.exists():
+            shutil.rmtree(backup)
+
+
 def _render_outputs(
     output_dir: Path,
     outputs: Sequence[tuple[MbaRuleProposal, dict[str, object]]],
     *,
     force: bool,
 ) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    names = []
+    names: list[str] = []
+    artifacts: list[tuple[str, str]] = []
     for proposal, payload in sorted(outputs, key=lambda item: item[0].fingerprint):
         stem = proposal.fingerprint
-        names.extend((f"{stem}.proposal.json", f"{stem}.rule.py", f"{stem}.fixture.json"))
-    if not force:
-        existing = [name for name in names if (output_dir / name).exists()]
-        if existing:
-            raise FileExistsError("output already exists; use --force")
-    for proposal, payload in sorted(outputs, key=lambda item: item[0].fingerprint):
-        stem = proposal.fingerprint
-        _atomic_write(output_dir / f"{stem}.proposal.json", json.dumps(payload["manifest"], ensure_ascii=True, indent=2, sort_keys=True) + "\n")
-        _atomic_write(output_dir / f"{stem}.rule.py", render_rule_source(proposal))
-        _atomic_write(output_dir / f"{stem}.fixture.json", json.dumps(payload["fixture"], ensure_ascii=True, indent=2, sort_keys=True) + "\n")
+        proposal_name = f"{stem}.proposal.json"
+        rule_name = f"{stem}.rule.py"
+        fixture_name = f"{stem}.fixture.json"
+        names.extend((proposal_name, rule_name, fixture_name))
+        artifacts.append(
+            (
+                proposal_name,
+                json.dumps(payload["manifest"], ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+            )
+        )
+        artifacts.append((rule_name, render_rule_source(proposal)))
+        artifacts.append(
+            (
+                fixture_name,
+                json.dumps(payload["fixture"], ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+            )
+        )
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.transaction-", dir=output_dir.parent))
+    try:
+        for name, content in artifacts:
+            _atomic_write(stage / name, content)
+        _publish_transaction(stage, output_dir, names, force=force)
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

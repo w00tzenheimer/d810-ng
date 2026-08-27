@@ -8,6 +8,7 @@ the existing verification engine remains the authority for equivalence.
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -104,6 +105,38 @@ class MbaExhaustionReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class MbaDiscoveryReceipt:
+    """Truthful completion evidence for one bounded discovery run."""
+
+    budget: MbaSynthesisBudget
+    candidate_attempts: int
+    generated_terms: int
+    retained_terms: int
+    witness_identity: str
+    selected_candidate_fingerprint: str
+    selected_candidate_rank: int
+    completion_reason: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.budget, MbaSynthesisBudget):
+            raise TypeError("discovery budget must be an MbaSynthesisBudget")
+        for field_name in ("candidate_attempts", "generated_terms", "retained_terms", "selected_candidate_rank"):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if self.retained_terms > self.generated_terms:
+            raise ValueError("retained_terms cannot exceed generated_terms")
+        if self.selected_candidate_rank >= self.retained_terms:
+            raise ValueError("selected candidate rank is outside retained terms")
+        for field_name in ("witness_identity", "selected_candidate_fingerprint"):
+            value = getattr(self, field_name)
+            if type(value) is not str or not value:
+                raise ValueError(f"{field_name} must be a non-empty string")
+        if self.completion_reason != "certified_candidate":
+            raise ValueError("unsupported discovery completion reason")
+
+
+@dataclass(frozen=True, slots=True)
 class EnumeratedTerm:
     term: TypedBvTerm
     cost: tuple[int, int]
@@ -171,6 +204,7 @@ class MbaSynthesisResult:
     exhaustion: MbaExhaustionReceipt | None
     width_relative_all_ones: tuple[GrammarAllOnesOrigin, ...] = ()
     fixed_operation_descriptors: tuple[tuple[str, int, int], ...] = ()
+    discovery_receipt: MbaDiscoveryReceipt | None = None
 
     def __post_init__(self) -> None:
         if self.source_cost != term_cost(self.source):
@@ -181,6 +215,16 @@ class MbaSynthesisResult:
             if self.width_relative_all_ones or self.fixed_operation_descriptors:
                 raise ValueError("failed synthesis cannot retain candidate descriptors")
             return
+        if self.discovery_receipt is not None and not isinstance(
+            self.discovery_receipt, MbaDiscoveryReceipt
+        ):
+            raise TypeError("discovery_receipt must be an MbaDiscoveryReceipt or None")
+        if (
+            self.discovery_receipt is not None
+            and self.discovery_receipt.selected_candidate_fingerprint
+            != term_fingerprint(self.replacement)
+        ):
+            raise ValueError("discovery receipt does not identify the replacement")
         if self.replacement_cost != term_cost(self.replacement):
             raise ValueError("replacement_cost does not match replacement")
         validated_origins = _validate_all_ones_origins(
@@ -399,6 +443,21 @@ def _signature(term: TypedBvTerm, witnesses: tuple[Mapping[tuple[object, ...], i
     return tuple(_evaluate_term(term, witness) for witness in witnesses)
 
 
+def _witness_identity(
+    witnesses: tuple[Mapping[tuple[object, ...], int], ...],
+) -> str:
+    payload = [
+        [
+            [list(leaf_key_fingerprint(key)), value]
+            for key, value in sorted(row.items(), key=lambda item: leaf_key_fingerprint(item[0]))
+        ]
+        for row in witnesses
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    ).hexdigest()
+
+
 def _input_terminals(term: TypedBvTerm) -> tuple[TypedBvTerm, ...]:
     leaves: dict[str, TypedBvTerm] = {}
     constants: dict[tuple[int, int], TypedBvTerm] = {}
@@ -436,6 +495,7 @@ def enumerate_terms(
     budget: MbaSynthesisBudget | None = None,
     witnesses: tuple[Mapping[tuple[object, ...], int], ...] | None = None,
     on_candidate: Callable[[EnumeratedTerm], bool] | None = None,
+    attempt_counter: dict[str, int] | None = None,
 ) -> tuple[tuple[EnumeratedTerm, ...], MbaExhaustionReceipt | None]:
     budget = MbaSynthesisBudget() if budget is None else budget
     candidate_attempts = 0
@@ -448,6 +508,8 @@ def enumerate_terms(
         if candidate_attempts >= budget.max_candidate_attempts:
             raise _CandidateAttemptLimit
         candidate_attempts += 1
+        if attempt_counter is not None:
+            attempt_counter["candidate_attempts"] = candidate_attempts
         return _canonical_candidate(term)
 
     if isinstance(term_or_terminals, TypedBvTerm):
@@ -543,6 +605,8 @@ def enumerate_terms(
         records[record.fingerprint] = record
         by_cost[0].append(record.term)
         generated += 1
+        if attempt_counter is not None:
+            attempt_counter["generated_terms"] = generated
         if on_candidate is not None and on_candidate(record):
             result = tuple(sorted(records.values(), key=order_key))
             return result, None
@@ -592,6 +656,8 @@ def enumerate_terms(
                 continue
             records[fingerprint] = record
             generated += 1
+            if attempt_counter is not None:
+                attempt_counter["generated_terms"] = generated
             if on_candidate is not None:
                 if on_candidate(record):
                     result = tuple(sorted(records.values(), key=order_key))
@@ -808,9 +874,31 @@ def synthesize_residual(
         failed_certification = certification
         return False
 
-    _, receipt = enumerate_terms(source, budget=budget, witnesses=witnesses, on_candidate=inspect)
+    attempt_counter: dict[str, int] = {}
+    enumerated, receipt = enumerate_terms(
+        source,
+        budget=budget,
+        witnesses=witnesses,
+        on_candidate=inspect,
+        attempt_counter=attempt_counter,
+    )
     if certified_candidate:
         candidate, certification = certified_candidate[0]
+        selected_rank = next(
+            index
+            for index, item in enumerate(enumerated)
+            if item.fingerprint == candidate.fingerprint
+        )
+        discovery = MbaDiscoveryReceipt(
+            budget=budget,
+            candidate_attempts=attempt_counter.get("candidate_attempts", 0),
+            generated_terms=attempt_counter.get("generated_terms", len(enumerated)),
+            retained_terms=len(enumerated),
+            witness_identity=_witness_identity(witnesses),
+            selected_candidate_fingerprint=candidate.fingerprint,
+            selected_candidate_rank=selected_rank,
+            completion_reason="certified_candidate",
+        )
         return MbaSynthesisResult(
             source,
             candidate.term,
@@ -820,6 +908,7 @@ def synthesize_residual(
             None,
             candidate.width_relative_all_ones,
             _fixed_operation_descriptors(source, candidate.term),
+            discovery,
         )
     reason = (
         "proof_failed"
@@ -841,6 +930,7 @@ __all__ = [
     "EnumeratedTerm",
     "GrammarAllOnesOrigin",
     "MbaCertification",
+    "MbaDiscoveryReceipt",
     "MbaExhaustionReceipt",
     "MbaSynthesisBudget",
     "MbaSynthesisResult",
