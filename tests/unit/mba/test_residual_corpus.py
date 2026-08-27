@@ -87,12 +87,13 @@ def _observation(
 
 
 def _v2_observation(raw_term: TypedBvTerm) -> MbaResidualObservation:
+    canonical_term = canonicalize_mba_term(raw_term).canonical_term
     return MbaResidualObservation(
         schema_version=RESIDUAL_CORPUS_SCHEMA_VERSION,
         source=_source(),
-        canonical_term=canonicalize_mba_term(raw_term).canonical_term,
+        canonical_term=canonical_term,
         raw_term=raw_term,
-        outcomes=(_outcome(),),
+        outcomes=(_outcome(fingerprint=term_fingerprint(canonical_term)),),
     )
 
 
@@ -131,6 +132,37 @@ def test_mismatched_candidate_fingerprints_are_rejected() -> None:
                     provider=MbaProviderKind.EGRAPH,
                 ),
             )
+        )
+
+
+@pytest.mark.parametrize(
+    "outcomes",
+    (
+        (_outcome(fingerprint="not-the-canonical-term"),),
+        (
+            _outcome(fingerprint="not-the-canonical-term"),
+            _outcome(
+                ProviderOutcomeStatus.PROOF_FAILED,
+                fingerprint="not-the-canonical-term",
+                provider=MbaProviderKind.EGRAPH,
+                refusal_reason="proof_failed",
+            ),
+        ),
+    ),
+)
+def test_v2_outcome_fingerprints_must_match_canonical_term(
+    outcomes: tuple[MbaProviderOutcome, ...],
+) -> None:
+    raw_term = _term()
+    canonical_term = canonicalize_mba_term(raw_term).canonical_term
+
+    with pytest.raises(ValueError, match="fingerprint.*canonical_term"):
+        MbaResidualObservation(
+            schema_version=RESIDUAL_CORPUS_SCHEMA_VERSION,
+            source=_source(),
+            canonical_term=canonical_term,
+            raw_term=raw_term,
+            outcomes=outcomes,
         )
 
 
@@ -214,7 +246,7 @@ def test_corpus_deduplicates_terms_but_retains_sources_and_outcomes() -> None:
         source=_source(case_id="c"),
     )
 
-    corpus = MbaResidualCorpus()
+    corpus = MbaResidualCorpus(schema_version=1)
     corpus.add(first)
     corpus.add(second)
     corpus.add(different)
@@ -254,6 +286,25 @@ def test_v2_corpus_groups_alternate_raw_associations_by_canonical_identity() -> 
     assert MbaResidualCorpus.from_dict(wire).to_dict() == wire
 
 
+def test_v2_raw_evidence_serialization_is_insertion_independent() -> None:
+    x, y, z = (_term(name=name) for name in ("x", "y", "z"))
+    raw_left = TypedBvTerm(
+        "add", 32, children=(x, TypedBvTerm("add", 32, children=(y, z)))
+    )
+    raw_right = TypedBvTerm(
+        "add", 32, children=(z, TypedBvTerm("add", 32, children=(x, y)))
+    )
+    first = MbaResidualCorpus((_v2_observation(raw_left), _v2_observation(raw_right)))
+    reversed_order = MbaResidualCorpus(
+        (_v2_observation(raw_right), _v2_observation(raw_left))
+    )
+
+    assert first.to_dict() == reversed_order.to_dict()
+    assert first.to_json() == reversed_order.to_json()
+    assert first.groups[0].evidence_terms == reversed_order.groups[0].evidence_terms
+    assert first.groups[0].mining_term == reversed_order.groups[0].mining_term
+
+
 def test_legacy_v1_corpus_is_explicitly_read_only_compatible() -> None:
     legacy = MbaResidualCorpus((_observation(),)).to_dict()
 
@@ -262,6 +313,72 @@ def test_legacy_v1_corpus_is_explicitly_read_only_compatible() -> None:
     decoded = MbaResidualCorpus.from_dict(legacy)
     assert decoded.to_dict() == legacy
     assert LEGACY_RESIDUAL_CORPUS_METADATA_KEY == "mba_residual_corpus_v1"
+
+
+@pytest.mark.parametrize("schema_version", (1, RESIDUAL_CORPUS_SCHEMA_VERSION))
+def test_empty_decoded_corpus_preserves_wire_version(schema_version: int) -> None:
+    wire = {"schema_version": schema_version, "groups": []}
+
+    decoded = MbaResidualCorpus.from_dict(wire)
+
+    assert decoded.schema_version == schema_version
+    assert decoded.to_dict() == wire
+    assert (
+        MbaResidualCorpus.from_json(decoded.to_json()).schema_version
+        == schema_version
+    )
+
+
+def test_unknown_corpus_wire_version_remains_strictly_rejected() -> None:
+    with pytest.raises(ValueError, match="unsupported residual corpus schema version"):
+        MbaResidualCorpus.from_dict({"schema_version": 3, "groups": []})
+    with pytest.raises(ValueError, match="unsupported residual corpus schema version"):
+        MbaResidualCorpus(schema_version=3)
+
+
+def test_nonempty_corpus_reports_observation_wire_version() -> None:
+    legacy = MbaResidualCorpus((_observation(),))
+    current = MbaResidualCorpus((_v2_observation(_term()),))
+
+    assert legacy.schema_version == 1
+    assert current.schema_version == RESIDUAL_CORPUS_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    (
+        (_observation(), _v2_observation(_term())),
+        (_v2_observation(_term()), _observation()),
+    ),
+)
+def test_add_rejects_mixed_wire_versions_immediately(
+    first: MbaResidualObservation,
+    second: MbaResidualObservation,
+) -> None:
+    corpus = MbaResidualCorpus((first,))
+
+    with pytest.raises(ValueError, match="cannot mix schema versions"):
+        corpus.add(second)
+
+    assert corpus.observations == (first,)
+
+
+@pytest.mark.parametrize(
+    "observations",
+    (
+        (_observation(), _v2_observation(_term())),
+        (_v2_observation(_term()), _observation()),
+    ),
+)
+def test_extend_rejects_mixed_wire_versions_before_materialization(
+    observations: tuple[MbaResidualObservation, MbaResidualObservation],
+) -> None:
+    corpus = MbaResidualCorpus(schema_version=observations[0].schema_version)
+
+    with pytest.raises(ValueError, match="cannot mix schema versions"):
+        corpus.extend(observations)
+
+    assert corpus.observations == observations[:1]
 
 
 def test_v2_observation_rejects_missing_or_noncanonical_evidence() -> None:
@@ -282,7 +399,7 @@ def test_v2_observation_rejects_missing_or_noncanonical_evidence() -> None:
 def test_corpus_round_trip_preserves_fingerprints_status_reasons_metadata_and_order() -> (
     None
 ):
-    corpus = MbaResidualCorpus()
+    corpus = MbaResidualCorpus(schema_version=1)
     corpus.add(
         _observation(
             source=_source(case_id="b"),
@@ -314,7 +431,7 @@ def test_corpus_round_trip_preserves_fingerprints_status_reasons_metadata_and_or
 
 
 def test_default_mining_excludes_error_only_groups_but_corpus_retains_them() -> None:
-    corpus = MbaResidualCorpus()
+    corpus = MbaResidualCorpus(schema_version=1)
     corpus.add(
         _observation(
             term=_term(name="error"),
@@ -338,7 +455,7 @@ def test_corpus_decoder_uses_existing_provider_outcome_decoder(
         return outcome_from_dict(data)
 
     monkeypatch.setattr("d810.mba.residual_corpus.outcome_from_dict", decode)
-    corpus = MbaResidualCorpus()
+    corpus = MbaResidualCorpus(schema_version=1)
     corpus.add(_observation())
     MbaResidualCorpus.from_dict(corpus.to_dict())
     assert len(calls) == 1

@@ -81,6 +81,13 @@ def _observation_sort_key(observation: "MbaResidualObservation") -> tuple[object
             separators=(",", ":"),
             sort_keys=True,
         ),
+        json.dumps(
+            typed_term_to_dict(observation.raw_term),
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
     )
 
 
@@ -230,6 +237,15 @@ class MbaResidualObservation:
             not isinstance(outcome, MbaProviderOutcome) for outcome in self.outcomes
         ):
             raise TypeError("outcomes must contain MbaProviderOutcome objects")
+        if self.schema_version == RESIDUAL_CORPUS_SCHEMA_VERSION:
+            expected_fingerprint = term_fingerprint(term)
+            if any(
+                outcome.fingerprint != expected_fingerprint
+                for outcome in self.outcomes
+            ):
+                raise ValueError(
+                    "schema-2 residual outcome fingerprint must match canonical_term"
+                )
         fingerprints = {outcome.fingerprint for outcome in self.outcomes}
         if len(fingerprints) != 1:
             raise ValueError(
@@ -365,15 +381,38 @@ class MbaResidualGroup:
 class MbaResidualCorpus:
     """Insertion-preserving recorder with deterministic report materialization."""
 
-    schema_version = RESIDUAL_CORPUS_SCHEMA_VERSION
-
-    def __init__(self, observations: Iterable[MbaResidualObservation] = ()) -> None:
+    def __init__(
+        self,
+        observations: Iterable[MbaResidualObservation] = (),
+        *,
+        schema_version: int | None = None,
+    ) -> None:
+        initial_observations = tuple(observations)
+        if schema_version is None:
+            schema_version = (
+                initial_observations[0].schema_version
+                if initial_observations
+                and isinstance(initial_observations[0], MbaResidualObservation)
+                else RESIDUAL_CORPUS_SCHEMA_VERSION
+            )
+        if type(schema_version) is not int or schema_version not in {
+            LEGACY_RESIDUAL_CORPUS_SCHEMA_VERSION,
+            RESIDUAL_CORPUS_SCHEMA_VERSION,
+        }:
+            raise ValueError("unsupported residual corpus schema version")
+        self._schema_version = schema_version
         self._observations: list[MbaResidualObservation] = []
-        self.extend(observations)
+        self.extend(initial_observations)
+
+    @property
+    def schema_version(self) -> int:
+        return self._schema_version
 
     def add(self, observation: MbaResidualObservation) -> None:
         if not isinstance(observation, MbaResidualObservation):
             raise TypeError("observation must be an MbaResidualObservation")
+        if observation.schema_version != self.schema_version:
+            raise ValueError("residual corpus cannot mix schema versions")
         self._observations.append(observation)
 
     record = add
@@ -426,12 +465,8 @@ class MbaResidualCorpus:
     select_for_mining = groups_for_mining
 
     def to_dict(self) -> dict[str, object]:
-        versions = {observation.schema_version for observation in self._observations}
-        if len(versions) > 1:
-            raise ValueError("residual corpus cannot mix schema versions")
-        schema_version = next(iter(versions), RESIDUAL_CORPUS_SCHEMA_VERSION)
         return {
-            "schema_version": schema_version,
+            "schema_version": self.schema_version,
             "groups": [group.to_dict() for group in self.groups],
         }
 
@@ -460,7 +495,7 @@ class MbaResidualCorpus:
         raw_groups = data["groups"]
         if not isinstance(raw_groups, list):
             raise ValueError("residual corpus groups must be a list")
-        corpus = cls()
+        corpus = cls(schema_version=schema_version)
         seen: set[str] = set()
         for raw_group in raw_groups:
             if not isinstance(raw_group, Mapping):

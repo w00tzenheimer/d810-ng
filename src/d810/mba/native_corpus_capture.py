@@ -383,7 +383,9 @@ class NativeMbaCorpusCapture:
         if not isinstance(observation, MbaResidualObservation):
             raise TypeError("observation must be an MbaResidualObservation")
         if self._residual_corpus is None:
-            self._residual_corpus = MbaResidualCorpus()
+            self._residual_corpus = MbaResidualCorpus(
+                schema_version=observation.schema_version
+            )
         self._residual_corpus.add(observation)
 
     def add_case(

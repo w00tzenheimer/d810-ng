@@ -496,7 +496,7 @@ class TestNativeMbaExtensionHost:
         outcome = MbaProviderOutcome(
             provider=MbaProviderKind.CATALOGUE,
             status=ProviderOutcomeStatus.UNCHANGED,
-            fingerprint="candidate-triggering",
+            fingerprint=candidate.profile.fingerprint,
             input_cost=(11, 22),
             refusal_reason="not_simplified",
         )

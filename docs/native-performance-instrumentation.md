@@ -159,6 +159,15 @@ and refusal metadata. Capture callbacks must not run synthesis, SMT, source
 generation, or publication. Persist the report first, then perform those
 operations offline.
 
+Schema 2 groups observations by `canonical_term` and mines the explicitly
+recorded `raw_term` evidence. Each raw term must canonicalize to the group term;
+when several raw associations share one canonical identity, the miner selects
+the evidence term deterministically. Schema 1 is strict legacy-readable input:
+its observations contain only `canonical_term`, never `raw_term`, and are not
+silently reinterpreted as schema 2. New capture emits only the metadata key that
+matches the corpus wire version: `mba_residual_corpus_v2` for schema 2 or
+`mba_residual_corpus_v1` for legacy schema 1.
+
 An extension provider uses the portable host contract by calling
 `capture_instruction` or `capture_ast`, passing the resulting candidate to
 `atomize_native_candidate`, and giving the atomized term to its provider. The
@@ -168,8 +177,9 @@ the host proof method before any mutation. Unknown reserved atoms are rejected
 before reconstruction. A failed proof or reconstruction leaves the original
 instruction unchanged.
 
-After report persistence, extract the
-    `capture_metadata.mba_residual_corpus_v2` object and run the offline miner:
+After report persistence, extract the matching
+`capture_metadata.mba_residual_corpus_v2` (or legacy
+`capture_metadata.mba_residual_corpus_v1`) object and run the offline miner:
 
 ```bash
 PYTHONPATH=src python tools/scripts/mba_residual_rule_miner.py \
