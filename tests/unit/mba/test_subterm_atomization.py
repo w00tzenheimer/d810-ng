@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from dataclasses import replace
 
 from d810.mba.extension_api import (
     AtomizedNativeMbaCandidate,
@@ -16,6 +17,7 @@ from d810.mba.subterm_atomization import (
 )
 from d810.mba.typed_term import TypedBvTerm, term_cost, term_fingerprint
 from d810.mba.island_profile import profile_typed_term
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 
 
 def _leaf(name: str, *, width: int = 32) -> TypedBvTerm:
@@ -421,11 +423,15 @@ def test_restore_uses_reverse_binding_order_for_nested_bindings() -> None:
 
 
 def _native_candidate(term: TypedBvTerm, *, context: object = None) -> NativeMbaCandidate:
+    canonical = canonicalize_mba_term(term).canonical_term
+    profile = replace(
+        profile_typed_term(term), fingerprint=term_fingerprint(canonical)
+    )
     return NativeMbaCandidate(
         destination_size=term.width // 8,
-        term=term,
+        term=canonical,
         raw_term=term,
-        profile=profile_typed_term(term),
+        profile=profile,
         native_context=object() if context is None else context,
     )
 

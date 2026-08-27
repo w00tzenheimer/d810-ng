@@ -169,7 +169,7 @@ before reconstruction. A failed proof or reconstruction leaves the original
 instruction unchanged.
 
 After report persistence, extract the
-`capture_metadata.mba_residual_corpus_v1` object and run the offline miner:
+    `capture_metadata.mba_residual_corpus_v2` object and run the offline miner:
 
 ```bash
 PYTHONPATH=src python tools/scripts/mba_residual_rule_miner.py \

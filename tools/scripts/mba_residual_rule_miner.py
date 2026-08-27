@@ -336,7 +336,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             groups = groups[: args.max_groups]
         outputs: list[tuple[MbaRuleProposal, dict[str, object]]] = []
         for group in groups:
-            atomized = atomize_repeated_subterms(group.canonical_term, max_atoms=budget.max_atoms)
+            atomized = atomize_repeated_subterms(
+                group.mining_term, max_atoms=budget.max_atoms
+            )
             result = synthesize_residual(atomized, budget=budget)
             if result.replacement is None and any(
                 receipt.error is not None

@@ -24,6 +24,7 @@ from d810.mba.provider_outcome import (
     ProviderOutcomeStatus,
 )
 from d810.mba.residual_corpus import (
+    LEGACY_RESIDUAL_CORPUS_METADATA_KEY,
     MbaResidualCorpus,
     MbaResidualObservation,
     RESIDUAL_CORPUS_METADATA_KEY,
@@ -367,7 +368,10 @@ class NativeMbaCorpusCapture:
         for key, value in metadata.items():
             if type(key) is not str or not key:
                 raise ValueError("capture metadata keys must be non-empty strings")
-            if key == RESIDUAL_CORPUS_METADATA_KEY:
+            if key in {
+                RESIDUAL_CORPUS_METADATA_KEY,
+                LEGACY_RESIDUAL_CORPUS_METADATA_KEY,
+            }:
                 raise ValueError(f"capture metadata key {key} is reserved")
             if key in self._capture_metadata:
                 raise ValueError(f"capture metadata already records {key}")
@@ -408,13 +412,17 @@ class NativeMbaCorpusCapture:
     def report(self) -> MbaDifferentialReport:
         capture_metadata = dict(self._capture_metadata)
         if self._residual_corpus is not None:
-            if RESIDUAL_CORPUS_METADATA_KEY in capture_metadata:
-                raise ValueError(
-                    f"capture metadata key {RESIDUAL_CORPUS_METADATA_KEY} is reserved"
-                )
-            capture_metadata[RESIDUAL_CORPUS_METADATA_KEY] = (
-                self._residual_corpus.to_dict()
+            corpus_wire = self._residual_corpus.to_dict()
+            metadata_key = (
+                RESIDUAL_CORPUS_METADATA_KEY
+                if corpus_wire["schema_version"] == 2
+                else LEGACY_RESIDUAL_CORPUS_METADATA_KEY
             )
+            if metadata_key in capture_metadata:
+                raise ValueError(
+                    f"capture metadata key {metadata_key} is reserved"
+                )
+            capture_metadata[metadata_key] = corpus_wire
         return MbaDifferentialReport(
             schema_version=1,
             corpus_identity=self.corpus_identity,

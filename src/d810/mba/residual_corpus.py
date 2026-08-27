@@ -9,11 +9,14 @@ from dataclasses import dataclass
 from d810.mba.differential_report import outcome_from_dict
 from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 from d810.mba.term_codec import typed_term_from_dict, typed_term_to_dict
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
 
-RESIDUAL_CORPUS_SCHEMA_VERSION = 1
-RESIDUAL_CORPUS_METADATA_KEY = "mba_residual_corpus_v1"
+LEGACY_RESIDUAL_CORPUS_SCHEMA_VERSION = 1
+RESIDUAL_CORPUS_SCHEMA_VERSION = 2
+LEGACY_RESIDUAL_CORPUS_METADATA_KEY = "mba_residual_corpus_v1"
+RESIDUAL_CORPUS_METADATA_KEY = "mba_residual_corpus_v2"
 _SUPPORTED_WIDTHS = frozenset({8, 16, 32, 64})
 _OUTCOME_FIELDS = frozenset(
     {
@@ -46,6 +49,13 @@ def _validate_term(term: object) -> TypedBvTerm:
     if term.width not in _SUPPORTED_WIDTHS:
         raise ValueError("canonical_term width must be one of 8, 16, 32, or 64")
     return term
+
+
+def _validate_canonical_term(term: object) -> TypedBvTerm:
+    validated = _validate_term(term)
+    if canonicalize_mba_term(validated).canonical_term != validated:
+        raise ValueError("canonical_term is not semantically canonical")
+    return validated
 
 
 def _source_sort_key(source: "MbaResidualSource") -> tuple[object, ...]:
@@ -184,16 +194,36 @@ class MbaResidualObservation:
     source: MbaResidualSource
     canonical_term: TypedBvTerm
     outcomes: tuple[MbaProviderOutcome, ...]
+    raw_term: TypedBvTerm | None = None
 
     def __post_init__(self) -> None:
-        if (
-            self.schema_version != RESIDUAL_CORPUS_SCHEMA_VERSION
-            or type(self.schema_version) is not int
-        ):
+        if type(self.schema_version) is not int or self.schema_version not in {
+            LEGACY_RESIDUAL_CORPUS_SCHEMA_VERSION,
+            RESIDUAL_CORPUS_SCHEMA_VERSION,
+        }:
             raise ValueError("unsupported residual observation schema version")
         if not isinstance(self.source, MbaResidualSource):
             raise TypeError("source must be an MbaResidualSource")
-        term = _validate_term(self.canonical_term)
+        term = (
+            _validate_term(self.canonical_term)
+            if self.schema_version == LEGACY_RESIDUAL_CORPUS_SCHEMA_VERSION
+            else _validate_canonical_term(self.canonical_term)
+        )
+        raw_term = self.raw_term
+        if self.schema_version == LEGACY_RESIDUAL_CORPUS_SCHEMA_VERSION:
+            if raw_term is not None:
+                raise ValueError("legacy residual observations cannot carry raw_term")
+            raw_term = term
+        elif raw_term is None:
+            raise ValueError("schema-2 residual observations require raw_term")
+        raw_term = _validate_term(raw_term)
+        if raw_term.width != term.width:
+            raise ValueError("raw_term and canonical_term must have the same width")
+        if (
+            self.schema_version == RESIDUAL_CORPUS_SCHEMA_VERSION
+            and canonicalize_mba_term(raw_term).canonical_term != term
+        ):
+            raise ValueError("raw_term canonical form does not match canonical_term")
         if not isinstance(self.outcomes, tuple) or not self.outcomes:
             raise ValueError("outcomes must contain at least one provider outcome")
         if any(
@@ -224,6 +254,7 @@ class MbaResidualObservation:
                 "duplicate provider rows have contradictory terminal states"
             )
         object.__setattr__(self, "canonical_term", term)
+        object.__setattr__(self, "raw_term", raw_term)
         object.__setattr__(self, "outcomes", tuple(self.outcomes))
 
     @property
@@ -231,16 +262,24 @@ class MbaResidualObservation:
         return self.outcomes[0].fingerprint
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "source": self.source.to_dict(),
             "canonical_term": typed_term_to_dict(self.canonical_term),
             "outcomes": [outcome.to_dict() for outcome in self.outcomes],
         }
+        if self.schema_version == RESIDUAL_CORPUS_SCHEMA_VERSION:
+            result["raw_term"] = typed_term_to_dict(self.raw_term)
+        return result
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object]) -> "MbaResidualObservation":
-        expected = {"schema_version", "source", "canonical_term", "outcomes"}
+        schema_version = data.get("schema_version")
+        expected = (
+            {"schema_version", "source", "canonical_term", "outcomes"}
+            if schema_version == LEGACY_RESIDUAL_CORPUS_SCHEMA_VERSION
+            else {"schema_version", "source", "canonical_term", "raw_term", "outcomes"}
+        )
         if set(data) != expected:
             raise ValueError("residual observation has invalid fields")
         raw_outcomes = data["outcomes"]
@@ -251,6 +290,11 @@ class MbaResidualObservation:
             source=MbaResidualSource.from_dict(data["source"]),  # type: ignore[arg-type]
             canonical_term=typed_term_from_dict(data["canonical_term"]),  # type: ignore[arg-type]
             outcomes=tuple(_decode_outcome(item) for item in raw_outcomes),
+            raw_term=(
+                None
+                if schema_version == LEGACY_RESIDUAL_CORPUS_SCHEMA_VERSION
+                else typed_term_from_dict(data["raw_term"])  # type: ignore[arg-type]
+            ),
         )
 
 
@@ -263,12 +307,20 @@ class MbaResidualGroup:
     observations: tuple[MbaResidualObservation, ...]
 
     def __post_init__(self) -> None:
-        term = _validate_term(self.canonical_term)
+        if not isinstance(self.observations, tuple) or not self.observations:
+            raise ValueError("residual group must contain observations")
+        legacy = all(
+            observation.schema_version == LEGACY_RESIDUAL_CORPUS_SCHEMA_VERSION
+            for observation in self.observations
+        )
+        term = (
+            _validate_term(self.canonical_term)
+            if legacy
+            else _validate_canonical_term(self.canonical_term)
+        )
         expected_fingerprint = term_fingerprint(term)
         if self.fingerprint != expected_fingerprint:
             raise ValueError("residual group fingerprint does not match canonical term")
-        if not isinstance(self.observations, tuple) or not self.observations:
-            raise ValueError("residual group must contain observations")
         if any(
             not isinstance(observation, MbaResidualObservation)
             or term_fingerprint(observation.canonical_term) != expected_fingerprint
@@ -281,6 +333,23 @@ class MbaResidualGroup:
     @property
     def occurrence_count(self) -> int:
         return len(self.observations)
+
+    @property
+    def evidence_terms(self) -> tuple[TypedBvTerm, ...]:
+        """Return deterministic distinct raw terms for offline mining."""
+
+        return tuple(
+            sorted(
+                {observation.raw_term for observation in self.observations},
+                key=term_fingerprint,
+            )
+        )
+
+    @property
+    def mining_term(self) -> TypedBvTerm:
+        """Select the stable first raw evidence term for synthesis."""
+
+        return self.evidence_terms[0]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -357,8 +426,12 @@ class MbaResidualCorpus:
     select_for_mining = groups_for_mining
 
     def to_dict(self) -> dict[str, object]:
+        versions = {observation.schema_version for observation in self._observations}
+        if len(versions) > 1:
+            raise ValueError("residual corpus cannot mix schema versions")
+        schema_version = next(iter(versions), RESIDUAL_CORPUS_SCHEMA_VERSION)
         return {
-            "schema_version": RESIDUAL_CORPUS_SCHEMA_VERSION,
+            "schema_version": schema_version,
             "groups": [group.to_dict() for group in self.groups],
         }
 
@@ -378,11 +451,12 @@ class MbaResidualCorpus:
     def from_dict(cls, data: Mapping[str, object]) -> "MbaResidualCorpus":
         if set(data) != {"schema_version", "groups"}:
             raise ValueError("residual corpus has invalid fields")
-        if (
-            type(data["schema_version"]) is not int
-            or data["schema_version"] != RESIDUAL_CORPUS_SCHEMA_VERSION
-        ):
+        if type(data["schema_version"]) is not int or data["schema_version"] not in {
+            LEGACY_RESIDUAL_CORPUS_SCHEMA_VERSION,
+            RESIDUAL_CORPUS_SCHEMA_VERSION,
+        }:
             raise ValueError("unsupported residual corpus schema version")
+        schema_version = data["schema_version"]
         raw_groups = data["groups"]
         if not isinstance(raw_groups, list):
             raise ValueError("residual corpus groups must be a list")
@@ -405,6 +479,8 @@ class MbaResidualCorpus:
                 MbaResidualObservation.from_dict(item)  # type: ignore[arg-type]
                 for item in raw_observations
             )
+            if any(observation.schema_version != schema_version for observation in observations):
+                raise ValueError("residual observation schema does not match corpus")
             if type(raw_group["occurrence_count"]) is not int or (
                 raw_group["occurrence_count"] != len(observations)
             ):
@@ -436,5 +512,6 @@ __all__ = [
     "MbaResidualSource",
     "RESIDUAL_CORPUS_METADATA_KEY",
     "RESIDUAL_CORPUS_SCHEMA_VERSION",
+    "LEGACY_RESIDUAL_CORPUS_METADATA_KEY",
     "source_identity",
 ]

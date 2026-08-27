@@ -188,6 +188,49 @@ def test_native_atomization_uses_raw_capture_without_changing_canonical_identity
     assert atomized.term != candidate.term
 
 
+def test_native_candidate_rejects_noncanonical_term() -> None:
+    x = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    y = TypedBvTerm(None, 32, leaf_key=("register", "y"))
+    noncanonical = TypedBvTerm("add", 32, children=(y, x))
+
+    with pytest.raises(ValueError, match="canonical"):
+        NativeMbaCandidate(
+            destination_size=4,
+            term=noncanonical,
+            raw_term=noncanonical,
+            profile=profile_typed_term(noncanonical),
+            native_context=object(),
+        )
+
+
+def test_native_candidate_rejects_unrelated_raw_term() -> None:
+    term = TypedBvTerm(None, 32, value=0)
+    raw = TypedBvTerm(None, 32, value=1)
+
+    with pytest.raises(ValueError, match="raw_term"):
+        NativeMbaCandidate(
+            destination_size=4,
+            term=term,
+            raw_term=raw,
+            profile=profile_typed_term(raw),
+            native_context=object(),
+        )
+
+
+def test_native_candidate_rejects_unrelated_same_width_profile() -> None:
+    term = TypedBvTerm(None, 32, value=0)
+    raw = profile_typed_term(TypedBvTerm(None, 32, value=1))
+
+    with pytest.raises(ValueError, match="profile"):
+        NativeMbaCandidate(
+            destination_size=4,
+            term=term,
+            raw_term=term,
+            profile=raw,
+            native_context=object(),
+        )
+
+
 @pytest.mark.parametrize(
     "provider",
     [

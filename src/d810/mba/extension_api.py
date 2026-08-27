@@ -393,15 +393,37 @@ class NativeMbaCandidate:
         expected_width = self.destination_size * 8
         if self.term.width != expected_width:
             raise ValueError("term width must match destination_size")
+        canonical_term = canonicalize_mba_term(self.term).canonical_term
+        if canonical_term != self.term:
+            raise ValueError("term must be semantically canonical")
         if self.raw_term is not None:
             if not isinstance(self.raw_term, TypedBvTerm):
                 raise TypeError("raw_term must be a TypedBvTerm or None")
             if self.raw_term.width != expected_width:
                 raise ValueError("raw_term width must match destination_size")
+            if canonicalize_mba_term(self.raw_term).canonical_term != self.term:
+                raise ValueError("raw_term canonical form does not match term")
         if not isinstance(self.profile, MbaIslandProfile):
             raise TypeError("profile must be an MbaIslandProfile")
         if self.profile.width_bits != expected_width:
             raise ValueError("profile width must match destination_size")
+        profile_term = self.raw_term if self.raw_term is not None else self.term
+        expected_profile = profile_typed_term(profile_term)
+        if (
+            self.profile.operator_count != expected_profile.operator_count
+            or self.profile.total_node_count != expected_profile.total_node_count
+            or self.profile.distinct_leaf_count != expected_profile.distinct_leaf_count
+            or self.profile.constant_count != expected_profile.constant_count
+            or self.profile.operations != expected_profile.operations
+            or self.profile.has_boolean != expected_profile.has_boolean
+            or self.profile.has_arithmetic != expected_profile.has_arithmetic
+            or self.profile.nonlinear_product_count
+            != expected_profile.nonlinear_product_count
+            or self.profile.island_class != expected_profile.island_class
+            or self.profile.blockers != expected_profile.blockers
+            or self.profile.fingerprint != term_fingerprint(self.term)
+        ):
+            raise ValueError("profile does not describe candidate term and raw_term")
         if self.native_context is None:
             raise TypeError("native_context must be a non-null opaque context")
 

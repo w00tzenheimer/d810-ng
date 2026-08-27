@@ -18,10 +18,13 @@ from d810.mba.provider_outcome import (
     ProviderOutcomeStatus,
 )
 from d810.mba.residual_corpus import (
+    LEGACY_RESIDUAL_CORPUS_METADATA_KEY,
     MbaResidualCorpus,
     MbaResidualObservation,
     MbaResidualSource,
+    RESIDUAL_CORPUS_SCHEMA_VERSION,
 )
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
 
@@ -80,6 +83,16 @@ def _observation(
         source=_source() if source is None else source,
         canonical_term=_term() if term is None else term,
         outcomes=(_outcome(),) if outcomes is None else outcomes,
+    )
+
+
+def _v2_observation(raw_term: TypedBvTerm) -> MbaResidualObservation:
+    return MbaResidualObservation(
+        schema_version=RESIDUAL_CORPUS_SCHEMA_VERSION,
+        source=_source(),
+        canonical_term=canonicalize_mba_term(raw_term).canonical_term,
+        raw_term=raw_term,
+        outcomes=(_outcome(),),
     )
 
 
@@ -217,6 +230,53 @@ def test_corpus_deduplicates_terms_but_retains_sources_and_outcomes() -> None:
         ProviderOutcomeStatus.OVER_BUDGET,
         ProviderOutcomeStatus.UNCHANGED,
     ]
+
+
+def test_v2_corpus_groups_alternate_raw_associations_by_canonical_identity() -> None:
+    x, y, z = (_term(name=name) for name in ("x", "y", "z"))
+    raw_left = TypedBvTerm("add", 32, children=(x, TypedBvTerm("add", 32, children=(y, z))))
+    raw_right = TypedBvTerm("add", 32, children=(z, TypedBvTerm("add", 32, children=(x, y))))
+    first = _v2_observation(raw_left)
+    second = _v2_observation(raw_right)
+
+    corpus = MbaResidualCorpus((first, second))
+    groups = corpus.groups
+
+    assert len(groups) == 1
+    assert groups[0].canonical_term == first.canonical_term
+    assert {term_fingerprint(term) for term in groups[0].evidence_terms} == {
+        term_fingerprint(raw_left),
+        term_fingerprint(raw_right),
+    }
+    wire = corpus.to_dict()
+    assert wire["schema_version"] == RESIDUAL_CORPUS_SCHEMA_VERSION
+    assert "raw_term" in wire["groups"][0]["observations"][0]
+    assert MbaResidualCorpus.from_dict(wire).to_dict() == wire
+
+
+def test_legacy_v1_corpus_is_explicitly_read_only_compatible() -> None:
+    legacy = MbaResidualCorpus((_observation(),)).to_dict()
+
+    assert legacy["schema_version"] == 1
+    assert "raw_term" not in legacy["groups"][0]["observations"][0]
+    decoded = MbaResidualCorpus.from_dict(legacy)
+    assert decoded.to_dict() == legacy
+    assert LEGACY_RESIDUAL_CORPUS_METADATA_KEY == "mba_residual_corpus_v1"
+
+
+def test_v2_observation_rejects_missing_or_noncanonical_evidence() -> None:
+    raw = _term()
+    canonical = canonicalize_mba_term(raw).canonical_term
+    with pytest.raises(ValueError, match="require raw_term"):
+        MbaResidualObservation(2, _source(), canonical, (_outcome(),))
+    with pytest.raises(ValueError, match="canonical"):
+        MbaResidualObservation(
+            2,
+            _source(),
+            raw,
+            (_outcome(),),
+            raw_term=TypedBvTerm(None, 32, value=1),
+        )
 
 
 def test_corpus_round_trip_preserves_fingerprints_status_reasons_metadata_and_order() -> (

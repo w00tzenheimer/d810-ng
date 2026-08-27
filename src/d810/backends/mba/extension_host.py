@@ -9,7 +9,7 @@ behind this facade.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
 from d810.backends.mba.cross_block_preparation import (
@@ -151,6 +151,10 @@ class _NativeMbaHostServices:
         if result.view is None:
             return None
         canonical_view = result.view.to_canonical_view()
+        profile = replace(
+            result.profile,
+            fingerprint=term_fingerprint(canonical_view.canonical_term),
+        )
         ast, lowering = _ast_and_lowering(instruction, destination_size)
         context = _NativeMbaContext(
             source_ast=ast,
@@ -165,7 +169,7 @@ class _NativeMbaHostServices:
             destination_size=destination_size,
             term=canonical_view.canonical_term,
             raw_term=canonical_view.raw_term,
-            profile=result.profile,
+            profile=profile,
             native_context=context,
         )
 

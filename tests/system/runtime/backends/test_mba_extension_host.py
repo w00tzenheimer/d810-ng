@@ -393,8 +393,12 @@ class TestNativeMbaExtensionHost:
         self, monkeypatch
     ):
         host = native_mba_host_services()
-        repeated = _node(ida_hexrays.m_and, _leaf("x", 1), _leaf("y", 2))
-        source = _node(ida_hexrays.m_add, repeated, repeated)
+        repeated = _node(ida_hexrays.m_and, _leaf("y", 2), _constant(0xFFFFFBFB))
+        source = _node(
+            ida_hexrays.m_or,
+            _leaf("x", 1),
+            _node(ida_hexrays.m_and, repeated, repeated),
+        )
         source.dst_mop = _leaf("out", 7).create_mop(0x401000)
         instruction = _instruction(source)
         candidate = host.capture_instruction(instruction)
@@ -410,11 +414,16 @@ class TestNativeMbaExtensionHost:
             and node.leaf_key is not None
             and node.leaf_key[0] == "d810.mba.atom.v1"
         )
+        x = next(
+            node
+            for node in _walk_terms(atomized.term)
+            if node.operation is None and node.leaf_key == ("mop", 1, 4, 1)
+        )
         received: list[TypedBvTerm] = []
 
         def provider(term):
             received.append(term)
-            return term
+            return TypedBvTerm("or", term.width, children=(x, atom))
 
         reconstruction = reconstruct_native_provider_result(
             host,
@@ -433,7 +442,7 @@ class TestNativeMbaExtensionHost:
         )
         with pytest.raises(ValueError, match="unknown reserved atom"):
             atomized.restore_replacement(
-                TypedBvTerm("add", atomized.term.width, children=(unknown_atom, unknown_atom))
+                TypedBvTerm("or", atomized.term.width, children=(x, unknown_atom))
             )
 
         rebuild_called = False
@@ -448,9 +457,7 @@ class TestNativeMbaExtensionHost:
             reconstruct_native_provider_result(
                 host,
                 candidate,
-                lambda term: TypedBvTerm(
-                    "add", term.width, children=(unknown_atom, unknown_atom)
-                ),
+                lambda term: TypedBvTerm("or", term.width, children=(x, unknown_atom)),
             )
             is None
         )
@@ -494,7 +501,7 @@ class TestNativeMbaExtensionHost:
             refusal_reason="not_simplified",
         )
         observation = MbaResidualObservation(
-            schema_version=1,
+            schema_version=2,
             source=MbaResidualSource(
                 case_id="extension-host-residual",
                 stratum="public-codec",
@@ -502,8 +509,9 @@ class TestNativeMbaExtensionHost:
                 instruction_ea=0x401024,
                 maturity="MMAT_BUILT",
             ),
-            canonical_term=captured_source,
+            canonical_term=candidate.term,
             outcomes=(outcome,),
+            raw_term=captured_source,
         )
         capture = NativeMbaCorpusCapture(
             corpus_identity="extension-host-residual",
@@ -518,8 +526,9 @@ class TestNativeMbaExtensionHost:
         corpus_path = tmp_path / "residual-corpus.json"
         capture.write_json(report_path)
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        persisted = report["capture_metadata"]["mba_residual_corpus_v1"]
-        assert persisted["groups"][0]["canonical_term"] == captured_wire
+        persisted = report["capture_metadata"]["mba_residual_corpus_v2"]
+        assert persisted["groups"][0]["canonical_term"] == typed_term_to_dict(candidate.term)
+        assert persisted["groups"][0]["observations"][0]["raw_term"] == captured_wire
         corpus_path.write_text(json.dumps(persisted), encoding="utf-8")
         result_dir = tmp_path / "mined"
         completed = subprocess.run(
