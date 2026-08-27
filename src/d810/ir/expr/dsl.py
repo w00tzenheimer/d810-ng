@@ -315,6 +315,23 @@ def Const(name: str, value: int | None = None) -> SymbolicExpression:
     return SymbolicExpression(name=name, value=value, is_pattern_constant=True)
 
 
+def FixedRotate(
+    direction: str, operand: SymbolicExpression, count: int
+) -> SymbolicExpression:
+    """Build a fixed-count rotate whose complementary count is width-relative."""
+    if direction not in {"rol", "ror"}:
+        raise ValueError("direction must be rol or ror")
+    if not isinstance(operand, SymbolicExpression):
+        raise TypeError("operand must be a SymbolicExpression")
+    if type(count) is not int or count < 0:
+        raise ValueError("count must be a non-negative integer")
+    return SymbolicExpression(
+        operation=direction,
+        left=operand,
+        right=Const(f"rotate_{direction}_{count}", count),
+    )
+
+
 def Zext(expr: SymbolicExpression, target_width: int) -> SymbolicExpression:
     """Zero-extend an expression to a larger bit-width.
 

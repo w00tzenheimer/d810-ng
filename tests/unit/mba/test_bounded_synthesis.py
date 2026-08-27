@@ -122,6 +122,16 @@ def test_enumeration_budget_variable_cap_and_receipt_are_stable() -> None:
     assert first[1].generated_terms <= 3
 
 
+def test_iterable_insertion_order_keeps_records_and_signatures_identical() -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
+
+    a, b = leaf("a", 8), leaf("b", 8)
+    budget = MbaSynthesisBudget(max_generated_terms=20, max_candidate_operator_nodes=1)
+    first = enumerate_terms((a, b), budget=budget)
+    second = enumerate_terms((b, a), budget=budget)
+    assert first == second
+
+
 def test_triggering_residual_discovers_exact_or_replacement_and_negative_near_miss_fails() -> None:
     from d810.mba import bounded_synthesis
     from d810.mba.bounded_synthesis import synthesize_residual
@@ -281,6 +291,16 @@ def test_operator_cap_zero_forbids_or_candidate() -> None:
     assert result.exhaustion.reason in {"no_signature_match", "not_cheaper"}
 
 
+def test_equal_cost_signature_reports_not_cheaper() -> None:
+    from d810.mba.bounded_synthesis import synthesize_residual
+    from d810.mba.subterm_atomization import AtomizedMbaTerm
+
+    x = leaf("x")
+    result = synthesize_residual(AtomizedMbaTerm(x, x, ()))
+    assert not result.certified
+    assert result.exhaustion.reason == "not_cheaper"
+
+
 def test_iterable_leaf_and_constant_inputs_have_exact_terminal_prefix() -> None:
     from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
 
@@ -291,6 +311,29 @@ def test_iterable_leaf_and_constant_inputs_have_exact_terminal_prefix() -> None:
     assert receipt.reason == "generation_budget"
     terms, _ = enumerate_terms((const(7),), budget=MbaSynthesisBudget(max_generated_terms=1))
     assert terms[0].term == const(7)
+
+
+def test_candidate_attempt_budget_bounds_canonicalization_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    from d810.mba import bounded_synthesis
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
+
+    x = leaf("x")
+    calls = 0
+    original = bounded_synthesis._canonical_candidate
+
+    def counted(term):
+        nonlocal calls
+        calls += 1
+        return original(term)
+
+    monkeypatch.setattr(bounded_synthesis, "_canonical_candidate", counted)
+    _, receipt = enumerate_terms(
+        x,
+        budget=MbaSynthesisBudget(max_generated_terms=6, max_candidate_attempts=6),
+    )
+    assert calls <= 6
+    assert receipt.reason == "generation_budget"
+    assert receipt.budget.max_candidate_attempts == 6
 
 
 def test_distinct_novel_constant_count_and_injected_witness_shape() -> None:
@@ -312,6 +355,18 @@ def test_atom_cap_is_enforced() -> None:
     atom = TypedBvTerm(None, 32, leaf_key=("d810.mba.atom.v1", 0, "fp"))
     _, receipt = enumerate_terms((x, atom), budget=MbaSynthesisBudget(max_atoms=0))
     assert receipt.reason == "too_many_variables"
+
+
+def test_enumeration_callback_acceptance_is_not_an_exhaustion_receipt() -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
+
+    x = leaf("x")
+    records, receipt = enumerate_terms(
+        x,
+        budget=MbaSynthesisBudget(max_generated_terms=5),
+        on_candidate=lambda record: record.term == x,
+    )
+    assert records and receipt is None
 
 
 def test_ror_evaluator_matches_independent_concrete_oracle() -> None:

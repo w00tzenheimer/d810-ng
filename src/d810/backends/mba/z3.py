@@ -374,6 +374,16 @@ class Z3VerificationVisitor:
             case "sar":
                 return left >> right  # Arithmetic shift right
 
+            case "rol" | "ror":
+                if expr.right is None or type(expr.right.value) is not int:
+                    raise ValueError(f"{expr.operation} requires a fixed integer count")
+                count = expr.right.value % self.bit_width
+                if count == 0:
+                    return left
+                if expr.operation == "rol":
+                    return (left << count) | z3.LShR(left, self.bit_width - count)
+                return z3.LShR(left, count) | (left << (self.bit_width - count))
+
             # Part extraction operations
             case "low":
                 target_width = expr.value or self.bit_width

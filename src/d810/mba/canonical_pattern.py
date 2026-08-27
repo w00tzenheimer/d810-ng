@@ -346,9 +346,23 @@ def lower_symbolic_template(
     if node.left is None:
         raise CanonicalPatternMalformed(f"malformed {operation} expression")
     if operation in FIXED_SHIFT_OPERATIONS:
-        raise CanonicalPatternUnsupported(
-            f"symbolic {operation} requires a fixed-count term"
-        )
+        if operation in {"shl", "lshr"}:
+            raise CanonicalPatternUnsupported(
+                f"symbolic {operation} requires a fixed-count term"
+            )
+        if node.right is None or node.right.operation is not None or type(node.right.value) is not int:
+            raise CanonicalPatternUnsupported(
+                f"symbolic {operation} requires a fixed-count constant"
+            )
+        count = node.right.value
+        if operation in {"rol", "ror"}:
+            count %= width
+        if count < 0 or count >= width:
+            raise CanonicalPatternUnsupported(
+                f"symbolic {operation} count is outside the target width"
+            )
+        left, kinds = lower_symbolic_template(node.left, width=width)
+        return TypedBvTerm(operation, width, children=(left,), shift_count=count), kinds
     if operation in {"bnot", "neg"}:
         if node.right is not None:
             raise CanonicalPatternMalformed(f"malformed unary {operation} expression")
@@ -392,6 +406,8 @@ def _fixed_constant_values(
         if node.left is None:
             raise CanonicalPatternMalformed("malformed symbolic expression")
         visit(node.left)
+        if node.operation in FIXED_SHIFT_OPERATIONS:
+            return
         if node.right is not None:
             visit(node.right)
 

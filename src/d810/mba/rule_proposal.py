@@ -56,6 +56,12 @@ def _keys(term: TypedBvTerm) -> tuple[tuple[object, ...], ...]:
     return tuple(sorted(found, key=leaf_key_fingerprint))
 
 
+def _walk(term: TypedBvTerm):
+    yield term
+    for child in term.children:
+        yield from _walk(child)
+
+
 def _binding_dict(binding: MbaAtomBinding) -> dict[str, object]:
     return {
         "leaf_key": _json_ready(binding.leaf_key),
@@ -219,10 +225,30 @@ class MbaRuleProposal:
                 or type(width) is not int
             ):
                 raise TypeError("fixed operation descriptors have invalid types")
+            if count < 0 or width <= 0 or count >= width:
+                raise ValueError("fixed operation descriptor count is outside its width")
+            if operation in {"rol", "ror"} and width not in {8, 16, 32, 64}:
+                raise ValueError("rotate descriptor width is unsupported")
         object.__setattr__(self, "width_relative_all_ones", tuple(sorted(set(self.width_relative_all_ones))))
         object.__setattr__(self, "fixed_operation_descriptors", tuple(sorted(set(self.fixed_operation_descriptors))))
         if not set(_keys(self.replacement)).issubset(set(_keys(self.pattern))):
             raise ValueError("replacement introduces an unknown generalized leaf")
+        source_width = self.pattern.width
+        replacement_mask_markers = {
+            term_fingerprint(node)
+            for node in _walk(self.replacement)
+            if node.operation is None and node.value == (1 << source_width) - 1
+        }
+        if set(self.width_relative_all_ones) != replacement_mask_markers:
+            raise ValueError("width-relative all-ones metadata does not match replacement provenance")
+        actual_fixed_descriptors = {
+            (node.operation, node.shift_count, node.width)
+            for term in (self.pattern, self.replacement)
+            for node in _walk(term)
+            if node.operation in {"shl", "lshr", "rol", "ror"}
+        }
+        if set(self.fixed_operation_descriptors) != actual_fixed_descriptors:
+            raise ValueError("fixed operation metadata does not match the certified terms")
         expected = proposal_fingerprint(
             source_fingerprints=self.source_fingerprints, occurrence_count=self.occurrence_count,
             pattern=self.pattern, replacement=self.replacement, source_cost=self.source_cost,
@@ -270,7 +296,7 @@ class MbaRuleProposal:
 def render_rule_source(proposal: MbaRuleProposal) -> str:
     keys = _keys(proposal.pattern)
     names = {key: f"x_{index}" for index, key in enumerate(keys)}
-    lines = ['"""Proposed MBA rule; review and admit explicitly."""', "", "from d810.mba.dsl import Const, Var", "from d810.mba.rules._base import VerifiableRule", ""]
+    lines = ['"""Proposed MBA rule; review and admit explicitly."""', "", "from d810.mba.dsl import Const, FixedRotate, Var", "from d810.mba.rules._base import VerifiableRule", ""]
     lines.extend(f'{name} = Var("{name}")' for name in names.values())
     if names:
         lines.append("")

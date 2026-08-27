@@ -38,6 +38,7 @@ class MbaSynthesisBudget:
     max_variables: int = 3
     max_candidate_operator_nodes: int = 4
     max_generated_terms: int = 50_000
+    max_candidate_attempts: int = 100_000
     witness_count: int = 96
 
     def __post_init__(self) -> None:
@@ -46,6 +47,7 @@ class MbaSynthesisBudget:
             "max_variables",
             "max_candidate_operator_nodes",
             "max_generated_terms",
+            "max_candidate_attempts",
             "witness_count",
         ):
             value = getattr(self, field_name)
@@ -329,8 +331,20 @@ def enumerate_terms(
     budget: MbaSynthesisBudget | None = None,
     witnesses: tuple[Mapping[tuple[object, ...], int], ...] | None = None,
     on_candidate: Callable[[EnumeratedTerm], bool] | None = None,
-) -> tuple[tuple[EnumeratedTerm, ...], MbaExhaustionReceipt]:
+) -> tuple[tuple[EnumeratedTerm, ...], MbaExhaustionReceipt | None]:
     budget = MbaSynthesisBudget() if budget is None else budget
+    candidate_attempts = 0
+
+    class _CandidateAttemptLimit(Exception):
+        pass
+
+    def canonicalize_with_budget(term: TypedBvTerm) -> TypedBvTerm:
+        nonlocal candidate_attempts
+        if candidate_attempts >= budget.max_candidate_attempts:
+            raise _CandidateAttemptLimit
+        candidate_attempts += 1
+        return _canonical_candidate(term)
+
     if isinstance(term_or_terminals, TypedBvTerm):
         source = term_or_terminals
         input_constant_fps = {
@@ -350,14 +364,17 @@ def enumerate_terms(
             term_fingerprint(item) for item in raw_terminals if item.value is not None
         }
         dedup: dict[str, TypedBvTerm] = {}
-        for item in raw_terminals:
-            normalized = _canonical_candidate(item)
-            dedup.setdefault(term_fingerprint(normalized), normalized)
+        try:
+            for item in raw_terminals:
+                normalized = canonicalize_with_budget(item)
+                dedup.setdefault(term_fingerprint(normalized), normalized)
+        except _CandidateAttemptLimit:
+            return (), MbaExhaustionReceipt("generation_budget", 0, budget)
         width = source.width
         for value in (0, 1, 2, _mask(width)):
             injected = TypedBvTerm(None, width, value=value)
             dedup.setdefault(term_fingerprint(injected), injected)
-        terminal_candidates = tuple(dedup.values())
+        terminal_candidates = tuple(sorted(dedup.values(), key=term_fingerprint))
     if any(item.width != source.width for item in terminal_candidates):
         raise ValueError("all terminals must have one width")
     all_key_set: set[tuple[object, ...]] = set()
@@ -432,7 +449,7 @@ def enumerate_terms(
         generated += 1
         if on_candidate is not None and on_candidate(record):
             result = tuple(sorted(records.values(), key=order_key))
-            return result, MbaExhaustionReceipt("not_cheaper", generated, budget)
+            return result, None
     max_nodes = budget.max_candidate_operator_nodes
     for cost in range(1, max_nodes + 1):
         level: dict[str, TypedBvTerm] = {}
@@ -447,20 +464,24 @@ def enumerate_terms(
             if any(fingerprint == term_fingerprint(item) for item in by_cost.get(cost, ())):
                 return
             level.setdefault(fingerprint, candidate)
-        for unary in _SYNTHESIZED_UNARY:
-            for child_cost in range(cost):
-                for child in by_cost.get(child_cost, ()):
-                    candidate = _canonical_candidate(TypedBvTerm(unary, source.width, children=(child,)))
-                    add_frontier(candidate)
-        for operation in _SYNTHESIZED_BINARY:
-            for left_cost in range(cost):
-                right_cost = cost - left_cost - 1
-                if right_cost < 0:
-                    continue
-                for left in by_cost.get(left_cost, ()):
-                    for right in by_cost.get(right_cost, ()):
-                        candidate = _canonical_candidate(TypedBvTerm(operation, source.width, children=(left, right)))
+        try:
+            for unary in _SYNTHESIZED_UNARY:
+                for child_cost in range(cost):
+                    for child in by_cost.get(child_cost, ()):
+                        candidate = canonicalize_with_budget(TypedBvTerm(unary, source.width, children=(child,)))
                         add_frontier(candidate)
+            for operation in _SYNTHESIZED_BINARY:
+                for left_cost in range(cost):
+                    right_cost = cost - left_cost - 1
+                    if right_cost < 0:
+                        continue
+                    for left in by_cost.get(left_cost, ()):
+                        for right in by_cost.get(right_cost, ()):
+                            candidate = canonicalize_with_budget(TypedBvTerm(operation, source.width, children=(left, right)))
+                            add_frontier(candidate)
+        except _CandidateAttemptLimit:
+            saw_unvisited = True
+            break
         frontier = sorted((make_record(candidate) for candidate in level.values()), key=order_key)
         # by_cost is the complete frontier, not merely the budget prefix. This
         # makes the consumed records an exact prefix of the uncapped order.
@@ -478,7 +499,7 @@ def enumerate_terms(
             if on_candidate is not None:
                 if on_candidate(record):
                     result = tuple(sorted(records.values(), key=order_key))
-                    return result, MbaExhaustionReceipt("not_cheaper", generated, budget)
+                    return result, None
         if saw_unvisited:
             break
     result = tuple(sorted(records.values(), key=order_key))
@@ -620,16 +641,38 @@ def synthesize_residual(
     source_cost = term_cost(source)
     witnesses = deterministic_witnesses(source, count=budget.witness_count)
     source_signature = _signature(source, witnesses)
+    if source.operation is None and budget.max_generated_terms == 0:
+        return MbaSynthesisResult(
+            source,
+            None,
+            source_cost,
+            None,
+            MbaCertification(()),
+            MbaExhaustionReceipt("generation_budget", 0, budget),
+        )
+    if source.operation is None:
+        return MbaSynthesisResult(
+            source,
+            None,
+            source_cost,
+            None,
+            MbaCertification(()),
+            MbaExhaustionReceipt("not_cheaper", 1, budget),
+        )
     had_signature = False
+    had_noncheaper_signature = False
     had_proof_failure = False
     failed_certification = MbaCertification(())
     certified_candidate: list[tuple[EnumeratedTerm, MbaCertification]] = []
 
     def inspect(candidate: EnumeratedTerm) -> bool:
-        nonlocal had_signature, had_proof_failure, failed_certification
-        if candidate.cost >= source_cost or candidate.signature != source_signature:
+        nonlocal had_signature, had_noncheaper_signature, had_proof_failure, failed_certification
+        if candidate.signature != source_signature:
             return False
         had_signature = True
+        if candidate.cost >= source_cost:
+            had_noncheaper_signature = True
+            return False
         markers = tuple(
             term_fingerprint(node)
             for node in _walk_terms(candidate.term)
@@ -658,8 +701,14 @@ def synthesize_residual(
             candidate.width_relative_all_ones_fingerprints,
             _fixed_operation_descriptors(source, candidate.term),
         )
-    reason = "proof_failed" if had_proof_failure else "no_signature_match" if not had_signature else "not_cheaper"
-    if receipt.reason in {"too_many_variables", "generation_budget"}:
+    reason = (
+        "proof_failed"
+        if had_proof_failure
+        else "not_cheaper"
+        if had_noncheaper_signature
+        else "no_signature_match"
+    )
+    if receipt is not None and receipt.reason in {"too_many_variables", "generation_budget"}:
         final_reason = receipt.reason
     else:
         final_reason = reason

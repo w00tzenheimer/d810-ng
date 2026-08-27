@@ -8,7 +8,7 @@ import pytest
 
 from d810.mba.bounded_synthesis import ProofReceipt
 from d810.mba.rule_proposal import MbaRuleProposal, render_rule_source
-from d810.mba.typed_term import TypedBvTerm, term_cost
+from d810.mba.typed_term import TypedBvTerm, term_cost, term_fingerprint
 
 
 def _term(op: str | None, width: int = 32, *, value: int | None = None, key: str | None = None, children=()):
@@ -129,6 +129,39 @@ def test_fingerprint_ignores_solver_timing_but_tracks_semantics_and_provenance()
     assert proposal_fingerprint(proof_receipts=first, **{**base, "replacement": pattern}) != proposal_fingerprint(proof_receipts=first, **base)
 
 
+def test_width_metadata_rejects_forged_markers_and_descriptors() -> None:
+    from d810.mba.rule_proposal import proposal_fingerprint
+
+    x = _term(None, key="x")
+    pattern = _term("mul", children=(x, _term(None, value=1)))
+    replacement = x
+    proofs = tuple(ProofReceipt(width=width, verdict=True, elapsed_ms=0.1) for width in (8, 16, 32, 64))
+    base = dict(
+        source_fingerprints=("r",), occurrence_count=1, pattern=pattern, replacement=replacement,
+        source_cost=term_cost(pattern), replacement_cost=term_cost(replacement), atomization_bindings=(),
+        proof_receipts=proofs, class_name="Forged", family="mul", description="d", provenance=("p",), fixture={},
+    )
+    forged_marker = term_fingerprint(_term(None, value=1))
+    with pytest.raises(ValueError, match="all-ones"):
+        MbaRuleProposal(
+            proposal_fingerprint=proposal_fingerprint(width_relative_all_ones=(forged_marker,), **base),
+            width_relative_all_ones=(forged_marker,),
+            **base,
+        )
+    with pytest.raises(ValueError):
+        MbaRuleProposal(
+            proposal_fingerprint=proposal_fingerprint(fixed_operation_descriptors=(("ror", 3, 32),), **base),
+            fixed_operation_descriptors=(("ror", 3, 32),),
+            **base,
+        )
+    with pytest.raises(ValueError):
+        MbaRuleProposal(
+            proposal_fingerprint=proposal_fingerprint(fixed_operation_descriptors=(("ror", -1, 32),), **base),
+            fixed_operation_descriptors=(("ror", -1, 32),),
+            **base,
+        )
+
+
 def test_width_metadata_survives_manifest_and_rendering() -> None:
     from d810.mba.rule_proposal import proposal_fingerprint
     from d810.mba.typed_term import fixed_shift_term, term_fingerprint
@@ -151,6 +184,45 @@ def test_width_metadata_survives_manifest_and_rendering() -> None:
     assert "NEGATIVE_ONE" in source
     assert 'FixedRotate("ror"' in source
     assert "shift_29" not in source
+
+
+def test_rotate_source_executes_and_compiles_in_isolated_process() -> None:
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    from d810.mba.rule_proposal import proposal_fingerprint
+    from d810.mba.typed_term import fixed_shift_term
+
+    x = _term(None, key="x")
+    rotate = fixed_shift_term("ror", 32, x, 3)
+    pattern = _term("add", children=(rotate, _term(None, value=0)))
+    replacement = rotate
+    proofs = tuple(ProofReceipt(width=width, verdict=True, elapsed_ms=0.1) for width in (8, 16, 32, 64))
+    base = dict(
+        source_fingerprints=("r",), occurrence_count=1, pattern=pattern, replacement=replacement,
+        source_cost=term_cost(pattern), replacement_cost=term_cost(replacement), atomization_bindings=(),
+        proof_receipts=proofs, class_name="ExecutableRotate", family="fixed", description="d", provenance=("p",), fixture={},
+        fixed_operation_descriptors=(("ror", 3, 32),),
+    )
+    proposal = MbaRuleProposal(proposal_fingerprint=proposal_fingerprint(**base), **base)
+    source = render_rule_source(proposal)
+    script = """
+import sys
+from d810.mba.canonical_pattern import compile_canonical_pattern
+from d810.mba.verifier import verify_transformation, VerificationOptions
+namespace = {}
+exec(compile(sys.stdin.read(), '<proposal>', 'exec'), namespace)
+rule = namespace['ExecutableRotate']()
+for width in (8, 16, 32, 64):
+    compiled = compile_canonical_pattern(rule, width=width, declaration_index=0)
+    assert compiled.pattern_term.operation == 'add'
+    assert verify_transformation(rule.PATTERN, rule.REPLACEMENT, options=VerificationOptions(bit_width=width, timeout_ms=5000))[0]
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = "src"
+    root = Path(__file__).resolve().parents[3]
+    subprocess.run([sys.executable, "-c", script], cwd=root, env=env, input=source, text=True, check=True)
 
 
 def test_proposal_rejects_keywords_unicode_and_non_json_fixture() -> None:
