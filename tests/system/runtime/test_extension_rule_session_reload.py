@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from pathlib import Path
 
+import pytest
 
+
+_RELOAD_GATE_ENV = "D810_RELOAD_GATE"
 _EXTENSION = "fake_d810_reload_extension"
 _RULE_NAME = "FakeReloadRule"
 
@@ -51,6 +55,11 @@ PLUGIN = Plugin()
 """
 
 
+def _reload_gate_enabled() -> bool:
+    """Require a dedicated runner process for live package identity changes."""
+    return os.environ.get(_RELOAD_GATE_ENV) == "1"
+
+
 def _write_extension(tmp_path: Path) -> None:
     package = tmp_path / _EXTENSION
     package.mkdir()
@@ -75,6 +84,12 @@ def _manifest_and_spec(*, manifest_type, spec_type):
 def test_fake_extension_rule_and_d810_classes_are_fresh_after_reload(
     tmp_path, monkeypatch
 ):
+    if not _reload_gate_enabled():
+        pytest.skip(
+            "package reload is standalone-only; set D810_RELOAD_GATE=1 in a "
+            "dedicated runner process"
+        )
+
     _write_extension(tmp_path)
     monkeypatch.syspath_prepend(str(tmp_path))
 
@@ -90,6 +105,8 @@ def test_fake_extension_rule_and_d810_classes_are_fresh_after_reload(
     old_candidate = old_registry.require_unique_implementation(
         "external-pass", install_hint="fake-reload-extension"
     )
+    assert _EXTENSION not in sys.modules
+    assert InstructionOptimizationRule.find(_RULE_NAME) is None
     old_activation = old_registry.activate(old_candidate.backend_name)
     old_rule = old_registry.activate_implementation(old_candidate)
     old_extension_module = sys.modules[_EXTENSION]
@@ -141,6 +158,8 @@ def test_fake_extension_rule_and_d810_classes_are_fresh_after_reload(
     assert type(new_rule).__module__ == _EXTENSION
     assert new_handler.InstructionOptimizationRule is not old_base_type
     assert type(new_rule) is not new_handler.InstructionOptimizationRule
+    assert isinstance(new_rule, new_handler.InstructionOptimizationRule)
+    assert issubclass(type(new_rule), new_handler.InstructionOptimizationRule)
     assert new_activation is not old_activation
     assert new_extension_module is not old_extension_module
     assert old_rule not in tuple(
