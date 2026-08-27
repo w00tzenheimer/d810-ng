@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 from uuid import UUID
+from types import MappingProxyType
 
 from d810.core.function_execution_identity import MbaObservationContext
 from d810.mba.provider_outcome import MbaProviderOutcome
@@ -54,8 +55,7 @@ class ResidualGroupState(enum.StrEnum):
 
 
 class MiningRunState(enum.StrEnum):
-    CLAIMED = "claimed"
-    ACTIVE = "claimed"
+    ACTIVE = "active"
     NO_PROPOSAL = "no_proposal"
     PROPOSED = "proposed"
     EXPIRED = "expired"
@@ -85,33 +85,41 @@ class ReceiptStatus(enum.StrEnum):
 
 # The sole transition authority.  Store methods may only use transitions in
 # this table; repeated operations are handled as idempotent receipts.
-GROUP_TRANSITIONS: dict[ResidualGroupState, frozenset[ResidualGroupState]] = {
-    ResidualGroupState.OBSERVED: frozenset({ResidualGroupState.ELIGIBLE}),
-    ResidualGroupState.ELIGIBLE: frozenset({ResidualGroupState.MINING}),
-    ResidualGroupState.MINING: frozenset(
-        {ResidualGroupState.NO_PROPOSAL, ResidualGroupState.PROPOSED}
-    ),
-    ResidualGroupState.NO_PROPOSAL: frozenset({ResidualGroupState.ELIGIBLE}),
-    ResidualGroupState.PROPOSED: frozenset(
-        {ResidualGroupState.MATERIALIZED, ResidualGroupState.REJECTED}
-    ),
-    ResidualGroupState.MATERIALIZED: frozenset(
-        {ResidualGroupState.ADMITTED, ResidualGroupState.REJECTED}
-    ),
-    ResidualGroupState.ADMITTED: frozenset(),
-    ResidualGroupState.REJECTED: frozenset(),
-}
+GROUP_TRANSITIONS = MappingProxyType(
+    {
+        ResidualGroupState.OBSERVED: frozenset({ResidualGroupState.ELIGIBLE}),
+        ResidualGroupState.ELIGIBLE: frozenset({ResidualGroupState.MINING}),
+        ResidualGroupState.MINING: frozenset(
+            {
+                ResidualGroupState.ELIGIBLE,
+                ResidualGroupState.NO_PROPOSAL,
+                ResidualGroupState.PROPOSED,
+            }
+        ),
+        ResidualGroupState.NO_PROPOSAL: frozenset({ResidualGroupState.ELIGIBLE}),
+        ResidualGroupState.PROPOSED: frozenset(
+            {ResidualGroupState.MATERIALIZED, ResidualGroupState.REJECTED}
+        ),
+        ResidualGroupState.MATERIALIZED: frozenset(
+            {ResidualGroupState.ADMITTED, ResidualGroupState.REJECTED}
+        ),
+        ResidualGroupState.ADMITTED: frozenset(),
+        ResidualGroupState.REJECTED: frozenset(),
+    }
+)
 
-PROPOSAL_TRANSITIONS: dict[ProposalState, frozenset[ProposalState]] = {
-    ProposalState.PROPOSED: frozenset(
-        {ProposalState.MATERIALIZED, ProposalState.REJECTED}
-    ),
-    ProposalState.MATERIALIZED: frozenset(
-        {ProposalState.ADMITTED, ProposalState.REJECTED}
-    ),
-    ProposalState.ADMITTED: frozenset(),
-    ProposalState.REJECTED: frozenset(),
-}
+PROPOSAL_TRANSITIONS = MappingProxyType(
+    {
+        ProposalState.PROPOSED: frozenset(
+            {ProposalState.MATERIALIZED, ProposalState.REJECTED}
+        ),
+        ProposalState.MATERIALIZED: frozenset(
+            {ProposalState.ADMITTED, ProposalState.REJECTED}
+        ),
+        ProposalState.ADMITTED: frozenset(),
+        ProposalState.REJECTED: frozenset(),
+    }
+)
 
 
 def valid_group_transition(
