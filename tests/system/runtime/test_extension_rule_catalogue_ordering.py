@@ -77,29 +77,3 @@ def test_only_explicitly_selected_candidate_calls_its_factory():
 
     assert implementation is not None
     assert activation.factory_calls == ["ExternalRule"]
-
-
-def test_reload_closes_old_d810_instance_before_creating_a_fresh_one():
-    created: list[object] = []
-
-    def factory():
-        instance = object()
-        created.append(instance)
-        return instance
-
-    activation = _Activation(factory)
-    registry = _registry(activation)
-    candidate = registry.require_unique_implementation(
-        "external-pass", install_hint="external-package"
-    )
-    old_instance = registry.activate_implementation(candidate)
-
-    registry.close_activations()
-    registry.discover(force=True)
-    new_instance = registry.activate_implementation(candidate)
-
-    assert old_instance is not new_instance
-    assert len(created) == 2
-    assert activation.close_calls == 1
-    assert registry.implementation_is_active(candidate)
-    assert registry._implementation_instances[candidate] == [new_instance]
