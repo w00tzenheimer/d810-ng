@@ -75,6 +75,16 @@ def _proof_dict(receipt: ProofReceipt) -> dict[str, object]:
     }
 
 
+def _proof_identity_dict(receipt: ProofReceipt) -> dict[str, object]:
+    """Return only stable proof facts for proposal identity."""
+    return {
+        "width": receipt.width,
+        "verdict": receipt.verdict,
+        "counterexample": _json_ready(receipt.counterexample),
+        "error": receipt.error,
+    }
+
+
 def proposal_fingerprint(**fields: object) -> str:
     """Compute the versioned digest for proposal semantic/provenance fields."""
     payload = {
@@ -86,24 +96,32 @@ def proposal_fingerprint(**fields: object) -> str:
         "source_cost": tuple(fields["source_cost"]),
         "replacement_cost": tuple(fields["replacement_cost"]),
         "atomization_bindings": tuple(_binding_dict(item) for item in fields["atomization_bindings"]),
-        "proof_receipts": tuple(_proof_dict(item) for item in fields["proof_receipts"]),
+        "proof_receipts": tuple(_proof_identity_dict(item) for item in fields["proof_receipts"]),
         "class_name": fields["class_name"],
         "family": fields["family"],
         "description": fields["description"],
         "provenance": tuple(sorted(set(fields["provenance"]))),
         "fixture": _json_ready(_freeze_json(fields["fixture"])),
+        "width_relative_all_ones": tuple(sorted(set(fields.get("width_relative_all_ones", ())))),
+        "fixed_operation_descriptors": tuple(sorted(set(fields.get("fixed_operation_descriptors", ())))),
     }
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(("mba-rule-proposal-v1:" + encoded).encode("ascii")).hexdigest()
 
 
-def _expr_source(term: TypedBvTerm, names: Mapping[tuple[object, ...], str]) -> str:
+def _expr_source(
+    term: TypedBvTerm,
+    names: Mapping[tuple[object, ...], str],
+    width_relative_all_ones: frozenset[str] = frozenset(),
+) -> str:
     if term.operation is None:
         if term.value is not None:
+            if term_fingerprint(term) in width_relative_all_ones:
+                return 'Const("NEGATIVE_ONE", -1)'
             return f'Const("const_{term.value}", {term.value})'
         assert term.leaf_key is not None
         return names[term.leaf_key]
-    child = tuple(_expr_source(item, names) for item in term.children)
+    child = tuple(_expr_source(item, names, width_relative_all_ones) for item in term.children)
     if term.operation == "bnot":
         return f"~({child[0]})"
     if term.operation == "neg":
@@ -118,8 +136,7 @@ def _expr_source(term: TypedBvTerm, names: Mapping[tuple[object, ...], str]) -> 
         count = term.shift_count % term.width
         if count == 0:
             return child[0]
-        left_count, right_count = (count, term.width - count) if term.operation == "rol" else (term.width - count, count)
-        return f"(({child[0]} << Const(\"shift_{left_count}\", {left_count})) | ({child[0]} >> Const(\"shift_{right_count}\", {right_count})))"
+        return f'FixedRotate("{term.operation}", {child[0]}, {count})'
     raise ValueError(f"cannot render unsupported operation: {term.operation}")
 
 
@@ -139,6 +156,8 @@ class MbaRuleProposal:
     description: str
     provenance: tuple[str, ...]
     fixture: Mapping[str, object]
+    width_relative_all_ones: tuple[str, ...] = ()
+    fixed_operation_descriptors: tuple[tuple[str, int, int], ...] = ()
 
     def __post_init__(self) -> None:
         if self.proposal_fingerprint is not None and (type(self.proposal_fingerprint) is not str or not self.proposal_fingerprint):
@@ -184,6 +203,24 @@ class MbaRuleProposal:
         if not isinstance(frozen_fixture, Mapping):
             raise TypeError("fixture must be a mapping")
         object.__setattr__(self, "fixture", frozen_fixture)
+        if type(self.width_relative_all_ones) is not tuple or any(
+            type(item) is not str or not item for item in self.width_relative_all_ones
+        ):
+            raise TypeError("width_relative_all_ones must be a tuple of fingerprints")
+        if type(self.fixed_operation_descriptors) is not tuple:
+            raise TypeError("fixed_operation_descriptors must be a tuple")
+        for descriptor in self.fixed_operation_descriptors:
+            if type(descriptor) is not tuple or len(descriptor) != 3:
+                raise TypeError("fixed operation descriptors must be (operation, count, width)")
+            operation, count, width = descriptor
+            if (
+                operation not in {"shl", "lshr", "rol", "ror"}
+                or type(count) is not int
+                or type(width) is not int
+            ):
+                raise TypeError("fixed operation descriptors have invalid types")
+        object.__setattr__(self, "width_relative_all_ones", tuple(sorted(set(self.width_relative_all_ones))))
+        object.__setattr__(self, "fixed_operation_descriptors", tuple(sorted(set(self.fixed_operation_descriptors))))
         if not set(_keys(self.replacement)).issubset(set(_keys(self.pattern))):
             raise ValueError("replacement introduces an unknown generalized leaf")
         expected = proposal_fingerprint(
@@ -192,6 +229,8 @@ class MbaRuleProposal:
             replacement_cost=self.replacement_cost, atomization_bindings=self.atomization_bindings,
             proof_receipts=self.proof_receipts, class_name=self.class_name, family=self.family,
             description=self.description, provenance=self.provenance, fixture=self.fixture,
+            width_relative_all_ones=self.width_relative_all_ones,
+            fixed_operation_descriptors=self.fixed_operation_descriptors,
         )
         if self.proposal_fingerprint is not None and self.proposal_fingerprint != expected:
             raise ValueError("proposal_fingerprint does not match canonical payload")
@@ -223,6 +262,8 @@ class MbaRuleProposal:
             "description": self.description,
             "provenance": list(self.provenance),
             "fixture": _json_ready(self.fixture),
+            "width_relative_all_ones": list(self.width_relative_all_ones),
+            "fixed_operation_descriptors": [list(item) for item in self.fixed_operation_descriptors],
         }
 
 
@@ -233,7 +274,19 @@ def render_rule_source(proposal: MbaRuleProposal) -> str:
     lines.extend(f'{name} = Var("{name}")' for name in names.values())
     if names:
         lines.append("")
-    lines.extend([f"class {proposal.class_name}(VerifiableRule):", f"    DESCRIPTION = {json.dumps(proposal.description, ensure_ascii=True)}", f"    PATTERN = {_expr_source(proposal.pattern, names)}", f"    REPLACEMENT = {_expr_source(proposal.replacement, names)}", ""])
+    lines.extend([
+        f"class {proposal.class_name}(VerifiableRule):",
+        f"    DESCRIPTION = {json.dumps(proposal.description, ensure_ascii=True)}",
+        f"    WIDTH_RELATIVE_ALL_ONES = {proposal.width_relative_all_ones!r}",
+        f"    FIXED_OPERATION_DESCRIPTORS = {proposal.fixed_operation_descriptors!r}",
+        "    WIDTH_POLYMORPHIC_DESCRIPTORS = {",
+        "        'all_ones': WIDTH_RELATIVE_ALL_ONES,",
+        "        'fixed_operations': FIXED_OPERATION_DESCRIPTORS,",
+        "    }",
+        f"    PATTERN = {_expr_source(proposal.pattern, names, frozenset(proposal.width_relative_all_ones))}",
+        f"    REPLACEMENT = {_expr_source(proposal.replacement, names, frozenset(proposal.width_relative_all_ones))}",
+        "",
+    ])
     source = "\n".join(lines)
     if not source.isascii():
         raise ValueError("proposal source must be ASCII-only")

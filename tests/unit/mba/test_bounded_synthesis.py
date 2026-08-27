@@ -5,7 +5,7 @@ import random
 import pytest
 
 from d810.mba.subterm_atomization import atomize_repeated_subterms
-from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term, term_fingerprint
+from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term, fixed_shift_term, term_fingerprint
 
 
 def leaf(name: str, width: int = 32) -> TypedBvTerm:
@@ -102,11 +102,12 @@ def test_bottom_up_enumeration_is_cost_ordered_ac_deduplicated_and_ordered_subtr
     x, y = leaf("x"), leaf("y")
     terms, receipt = enumerate_terms((x, y), budget=MbaSynthesisBudget(max_generated_terms=60))
     assert receipt.generated_terms <= 60
-    assert list(terms) == sorted(terms, key=lambda item: (item.cost, item.fingerprint))
+    assert list(terms) == sorted(terms, key=lambda item: (item.cost, item.novel_constant_count, item.fingerprint))
     fps = [item.fingerprint for item in terms]
     assert len(fps) == len(set(fps))
     assert any(item.term == op("sub", x, y) for item in terms)
-    assert not any(item.term == op("sub", y, x) and item.term == op("sub", x, y) for item in terms)
+    assert any(item.term == op("sub", y, x) for item in terms)
+    assert term_fingerprint(op("sub", x, y)) != term_fingerprint(op("sub", y, x))
 
 
 def test_enumeration_budget_variable_cap_and_receipt_are_stable() -> None:
@@ -122,6 +123,7 @@ def test_enumeration_budget_variable_cap_and_receipt_are_stable() -> None:
 
 
 def test_triggering_residual_discovers_exact_or_replacement_and_negative_near_miss_fails() -> None:
+    from d810.mba import bounded_synthesis
     from d810.mba.bounded_synthesis import synthesize_residual
 
     source, x, _ = triggering_fixture()
@@ -138,8 +140,11 @@ def test_triggering_residual_discovers_exact_or_replacement_and_negative_near_mi
     # Change the coefficient in one of the repeated arithmetic terms.
     near_miss = op("add", near_miss.children[0], op("mul", const(3), near_miss.children[1]))
     near_atomized = atomize_repeated_subterms(near_miss)
-    near_result = synthesize_residual(near_atomized)
-    assert not near_result.certified
+    near_atom = TypedBvTerm(None, 32, leaf_key=near_atomized.bindings[0].leaf_key)
+    near_certification = bounded_synthesis.certify_terms(near_atomized.atomized_term, op("or", x, near_atom))
+    assert not near_certification.certified
+    assert tuple(receipt.width for receipt in near_certification.receipts) == (8, 16, 32, 64)
+    assert all(not receipt.certified for receipt in near_certification.receipts)
 
 
 def test_certification_makes_four_fresh_requests(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -201,6 +206,7 @@ def test_witnesses_cover_full_width_structured_rows_and_all_variables() -> None:
     assert 0xAAAAAAAAAAAAAAAA in {row[x.leaf_key] for row in rows}
     assert 0x5555555555555555 in {row[x.leaf_key] for row in rows}
     assert all((1 << bit) in {row[x.leaf_key] for row in rows} for bit in range(64))
+    assert all((1 << bit) in {row[y.leaf_key] for row in rows} for bit in range(64))
     with pytest.raises((TypeError, ValueError)):
         deterministic_witnesses(x, count=True)  # type: ignore[arg-type]
 
@@ -240,6 +246,97 @@ def test_width_relative_all_ones_constant_is_rebuilt_for_each_proof_width() -> N
     ).certified
 
 
+def test_generic_synthesis_reaches_terminal_x_without_or_shortcut(monkeypatch: pytest.MonkeyPatch) -> None:
+    from d810.mba import bounded_synthesis
+    from d810.mba.bounded_synthesis import MbaCertification, ProofReceipt, synthesize_residual
+    from d810.mba.subterm_atomization import AtomizedMbaTerm
+
+    x, y = leaf("x"), leaf("y")
+    source = op("or", op("and", x, y), op("and", x, op("bnot", y)))
+    atomized = AtomizedMbaTerm(source, source, ())
+    seen: list[TypedBvTerm] = []
+
+    def fake_certify(pattern, replacement, **kwargs):
+        seen.append(replacement)
+        return MbaCertification(tuple(ProofReceipt(width, True, 0.0) for width in (8, 16, 32, 64)))
+
+    monkeypatch.setattr(bounded_synthesis, "certify_terms", fake_certify)
+    result = synthesize_residual(atomized)
+    assert result.certified
+    assert result.replacement == x
+    assert seen == [x]
+
+
+def test_operator_cap_zero_forbids_or_candidate() -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, synthesize_residual
+    from d810.mba.subterm_atomization import AtomizedMbaTerm
+
+    x, y = leaf("x"), leaf("y")
+    source = op("or", x, y)
+    result = synthesize_residual(
+        AtomizedMbaTerm(source, source, ()),
+        budget=MbaSynthesisBudget(max_candidate_operator_nodes=0),
+    )
+    assert not result.certified
+    assert result.exhaustion.reason in {"no_signature_match", "not_cheaper"}
+
+
+def test_iterable_leaf_and_constant_inputs_have_exact_terminal_prefix() -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
+
+    x = leaf("x")
+    terms, receipt = enumerate_terms((const(7), x), budget=MbaSynthesisBudget(max_generated_terms=1))
+    expected = min((const(7), x), key=lambda item: (term_fingerprint(item)))
+    assert terms[0].term == expected
+    assert receipt.reason == "generation_budget"
+    terms, _ = enumerate_terms((const(7),), budget=MbaSynthesisBudget(max_generated_terms=1))
+    assert terms[0].term == const(7)
+
+
+def test_distinct_novel_constant_count_and_injected_witness_shape() -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
+
+    x = leaf("x")
+    terms, _ = enumerate_terms((x,), budget=MbaSynthesisBudget(max_generated_terms=500))
+    nested = next(item for item in terms if item.fingerprint == term_fingerprint(canonicalize_ac_term(op("add", x, const(1)))))
+    assert nested.novel_constant_count == 1
+    budget = MbaSynthesisBudget(witness_count=2)
+    with pytest.raises(ValueError, match="exactly"):
+        enumerate_terms((x,), budget=budget, witnesses=({x.leaf_key: 0},))
+
+
+def test_atom_cap_is_enforced() -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
+
+    x = leaf("x")
+    atom = TypedBvTerm(None, 32, leaf_key=("d810.mba.atom.v1", 0, "fp"))
+    _, receipt = enumerate_terms((x, atom), budget=MbaSynthesisBudget(max_atoms=0))
+    assert receipt.reason == "too_many_variables"
+
+
+def test_ror_evaluator_matches_independent_concrete_oracle() -> None:
+    from d810.mba.bounded_synthesis import _evaluate_term
+
+    x = leaf("x", 8)
+    term = fixed_shift_term("ror", 8, x, 3)
+    for value in (0, 1, 0x80, 0xCC, 0xFF):
+        expected = ((value >> 3) | (value << 5)) & 0xFF
+        assert _evaluate_term(term, {x.leaf_key: value}) == expected
+
+
+def test_near_miss_exact_or_candidate_has_four_failed_receipts() -> None:
+    from d810.mba.bounded_synthesis import certify_terms
+
+    source, x, atom = triggering_fixture()
+    near = op("add", source.children[0], op("mul", const(3), source.children[1]))
+    near_atomized = atomize_repeated_subterms(near)
+    replacement = op("or", x, TypedBvTerm(None, 32, leaf_key=near_atomized.bindings[0].leaf_key))
+    certification = certify_terms(near_atomized.atomized_term, replacement)
+    assert not certification.certified
+    assert tuple(receipt.width for receipt in certification.receipts) == (8, 16, 32, 64)
+    assert all(not receipt.certified for receipt in certification.receipts)
+
+
 @pytest.mark.parametrize("result", ((False, None), ("true", None), (True, {"x": 1})))
 def test_certification_fail_closed_for_nontrue_or_counterexample(
     result: tuple[object, object],
@@ -256,3 +353,38 @@ def test_certification_fail_closed_for_nontrue_or_counterexample(
     receipt = certify_terms(x, x, verifier=verify)  # type: ignore[arg-type]
     assert not receipt.certified
     assert calls == [8, 16, 32, 64]
+
+
+@pytest.mark.parametrize("failure", (RuntimeError("unavailable"), TimeoutError("timeout"), ValueError("backend error")))
+def test_certification_fail_closed_for_backend_failures(failure: Exception) -> None:
+    from d810.mba.bounded_synthesis import certify_terms
+
+    x = leaf("x")
+    calls: list[int] = []
+
+    def verify(pattern, replacement, *, options):
+        calls.append(options.bit_width)
+        raise failure
+
+    receipt = certify_terms(x, x, verifier=verify)
+    assert not receipt.certified
+    assert calls == [8, 16, 32, 64]
+
+
+def test_enumeration_does_not_load_z3_in_fresh_process() -> None:
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    code = """
+from d810.mba.bounded_synthesis import MbaSynthesisBudget, enumerate_terms
+from d810.mba.typed_term import TypedBvTerm
+x = TypedBvTerm(None, 8, leaf_key=('register', 'x'))
+enumerate_terms((x,), budget=MbaSynthesisBudget(max_generated_terms=1))
+assert 'z3' not in __import__('sys').modules
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = "src"
+    root = Path(__file__).resolve().parents[3]
+    subprocess.run([sys.executable, "-c", code], cwd=root, env=env, check=True)
