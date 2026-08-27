@@ -58,12 +58,12 @@ def test_catalogue_receipts_keep_exact_declaration_order_and_counts() -> None:
         for rule_type in rule_types
     )
 
-    assert len(catalogue.receipts) == 200
-    assert len(catalogue.compiled_rules) == 120
+    assert len(catalogue.receipts) == 201
+    assert len(catalogue.compiled_rules) == 121
     assert tuple(receipt.key for receipt in catalogue.receipts) == expected_keys
     assert Counter(receipt.status for receipt in catalogue.receipts) == Counter(
         {
-            RuleCompilationStatus.COMPILED: 120,
+            RuleCompilationStatus.COMPILED: 121,
             RuleCompilationStatus.DUPLICATE: 4,
             RuleCompilationStatus.REJECTED: 76,
         }

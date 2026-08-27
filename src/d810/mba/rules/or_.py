@@ -158,6 +158,26 @@ class Or_MbaRule_3(VerifiableRule):
     REFERENCE = "MBA pattern 3"
 
 
+class MbaResidualRule_2aa7de9f2ef4(VerifiableRule):
+    """Simplify the mined repeated-term MBA identity to OR.
+
+    The rule is the generalized, two-variable form admitted from the
+    proof-certified residual proposal.  The repeated term is represented by
+    ``x`` so a concrete masked subtree can be bound as one matcher variable.
+    """
+
+    maturities = _ALL_MATURITIES
+
+    PATTERN = (
+        ((y ^ x) - ((y & x) + (Const("const_2", 2) * (x & ~y))))
+        + (Const("const_2", 2) * x)
+    )
+    REPLACEMENT = x | y
+
+    DESCRIPTION = "Simplify repeated-term MBA identity to OR"
+    REFERENCE = "Proof-certified residual OR identity"
+
+
 class Or_FactorRule_1(VerifiableRule):
     """Simplify: (x & y) | (x ^ y) => x | y
 

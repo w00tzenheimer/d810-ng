@@ -186,6 +186,7 @@ MBA_RULE_FAMILIES: Mapping[str, tuple[type[VerifiableRule], ...]] = (
                 or_.Or_MbaRule_1_Commuted,
                 or_.Or_MbaRule_2,
                 or_.Or_MbaRule_3,
+                or_.MbaResidualRule_2aa7de9f2ef4,
                 or_.Or_FactorRule_1,
                 or_.Or_FactorRule_2,
                 or_.Or_Rule_2,
