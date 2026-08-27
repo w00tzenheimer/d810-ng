@@ -183,3 +183,57 @@ def test_out_of_range_known_bit_is_unknown():
 
     value = _call(_abstract(32, one=1 << 40), size=4)
     assert decide_zero_status(value) is AbstractZeroStatus.UNKNOWN
+
+
+def test_component_width_mismatch_is_unknown():
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    evidence = AbstractEvidence(32, KnownBits.top(64), WrappedInterval.top(64))
+    value = ConcolicValue(None, None, evidence, 32, PrecisionStatus.ABSTRACT)
+    assert decide_zero_status(_call(value, size=4)) is AbstractZeroStatus.UNKNOWN
+
+
+def test_inconsistent_singletons_are_reduced_to_unknown():
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    evidence = AbstractEvidence(32, KnownBits.of(1, 32), WrappedInterval.of(0, 32))
+    value = ConcolicValue(None, None, evidence, 32, PrecisionStatus.ABSTRACT)
+    assert decide_zero_status(_call(value, size=4)) is AbstractZeroStatus.UNKNOWN
+
+
+def test_out_of_width_interval_nested_under_outer_width_is_unknown():
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    evidence = AbstractEvidence(32, KnownBits.top(32), WrappedInterval.of(0x1_0000_0000, 64))
+    value = ConcolicValue(None, None, evidence, 32, PrecisionStatus.ABSTRACT)
+    root = _node(ida_hexrays.m_mov, _call(value, size=4), size=4)
+    assert decide_zero_status(root) is AbstractZeroStatus.UNKNOWN
+
+
+def test_valid_reduced_evidence_is_preserved():
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    evidence = AbstractEvidence(32, KnownBits(32, zero=0xFFFFFFFF ^ 0x40, one=0x40), WrappedInterval.top(32))
+    value = ConcolicValue(None, None, evidence, 32, PrecisionStatus.ABSTRACT)
+    assert decide_zero_status(_call(value, size=4)) is AbstractZeroStatus.ALWAYS_NONZERO
+
+
+@pytest.mark.parametrize(
+    ("source_width", "target_width", "value"),
+    ((64, 8, 0x101), (128, 32, 0x1_0000_0001)),
+)
+def test_m_low_accepts_supported_wider_to_narrower_truncation(source_width, target_width, value):
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    source = _call(ConcolicValue.of(value, source_width), size=source_width // 8)
+    root = _node(ida_hexrays.m_low, source, size=target_width // 8)
+    assert decide_zero_status(root) is AbstractZeroStatus.ALWAYS_NONZERO
+
+
+@pytest.mark.parametrize("target_width", [32, 64])
+def test_m_low_equal_or_wider_target_is_unknown(target_width):
+    from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
+
+    source = _call(ConcolicValue.of(1, 32), size=4)
+    root = _node(ida_hexrays.m_low, source, size=target_width // 8)
+    assert decide_zero_status(root) is AbstractZeroStatus.UNKNOWN

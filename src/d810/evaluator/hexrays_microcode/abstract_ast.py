@@ -89,14 +89,32 @@ def _call_evidence(value: typing.Any, width: int) -> AbstractEvidence | None:
     if not isinstance(concolic, ConcolicValue) or concolic.width != width:
         return None
     evidence = concolic.abstract
-    if evidence.width != width or evidence.is_bottom():
+    try:
+        if evidence.width != width:
+            return None
+        if evidence.bits.width != width or evidence.interval.width != width:
+            return None
+        mask = (1 << width) - 1
+        if (evidence.bits.zero | evidence.bits.one) & ~mask:
+            return None
+        if evidence.bits.zero & evidence.bits.one:
+            return None
+        if evidence.interval.kind not in {"range", "top", "bottom"}:
+            return None
+        if evidence.interval.kind == "range" and (
+            evidence.interval.lo & ~mask or evidence.interval.hi & ~mask
+        ):
+            return None
+        # Treat injected evidence exactly like producer evidence by restoring
+        # the reduced-product invariant before any proof conclusion.
+        reduced = evidence.meet(AbstractEvidence.top(width))
+        if reduced.is_bottom():
+            return None
+        if reduced.bits.width != width or reduced.interval.width != width:
+            return None
+        return reduced
+    except Exception:
         return None
-    mask = (1 << width) - 1
-    if (evidence.bits.zero | evidence.bits.one) & ~mask:
-        return None
-    if evidence.bits.zero & evidence.bits.one:
-        return None
-    return evidence
 
 
 def _resize_evidence(
@@ -109,9 +127,11 @@ def _resize_evidence(
         return None
     if opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds) and target_width < source_width:
         return None
-    if opcode in (ida_hexrays.m_low, ida_hexrays.m_high) and target_width > source_width:
+    if opcode == ida_hexrays.m_low and target_width >= source_width:
         return None
-    if opcode in (ida_hexrays.m_low, ida_hexrays.m_high) and source_width != target_width * 2:
+    if opcode == ida_hexrays.m_high and target_width > source_width:
+        return None
+    if opcode == ida_hexrays.m_high and source_width != target_width * 2:
         return None
     if opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds) and target_width <= source_width:
         return None
