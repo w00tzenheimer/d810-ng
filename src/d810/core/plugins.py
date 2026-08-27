@@ -233,9 +233,7 @@ class _EmptyHostCapabilities:
 
     def validate(self, requirements: Sequence[str]) -> None:
         if requirements:
-            raise BackendUnavailable(
-                f"missing host capability: {requirements[0]}"
-            )
+            raise BackendUnavailable(f"missing host capability: {requirements[0]}")
 
 
 @dataclass(frozen=True)
@@ -402,9 +400,7 @@ class PassImplementationMissing(PassImplementationError):
         hint = self.install_hint
         if not hint.lower().startswith("install "):
             hint = f"install {hint}"
-        super().__init__(
-            f"pass {self.pass_id!r} has no implementation; {hint}"
-        )
+        super().__init__(f"pass {self.pass_id!r} has no implementation; {hint}")
 
 
 class PassImplementationAmbiguous(PassImplementationError):
@@ -517,11 +513,7 @@ def manifest_of(raw: Any) -> BackendManifest:
     if isinstance(raw, Mapping):
         removed = {key for key in ("rules", "capabilities") if key in raw}
     else:
-        removed = {
-            key
-            for key in ("rules", "capabilities")
-            if hasattr(raw, key)
-        }
+        removed = {key for key in ("rules", "capabilities") if hasattr(raw, key)}
     if removed:
         raise ManifestError(
             "manifest contains removed field " + ", ".join(sorted(removed))
@@ -603,9 +595,7 @@ def _coerce_reload_modules(raw: Any) -> tuple[str, ...]:
     """Read optional extension-owned module prefixes for hot reload."""
     try:
         declared = (
-            raw["reload_modules"]
-            if isinstance(raw, Mapping)
-            else raw.reload_modules
+            raw["reload_modules"] if isinstance(raw, Mapping) else raw.reload_modules
         )
     except (KeyError, AttributeError):
         return ()
@@ -797,9 +787,8 @@ class BackendRegistry:
         source: Callable[[], Iterable[BackendSpec]] | None = None,
         host: PluginHostCapabilities | None = None,
         requirement_validator: Callable[[Sequence[str]], None] | None = None,
-        registration_lookup: Callable[
-            [PassImplementationCandidate], Any | None
-        ] | None = None,
+        registration_lookup: Callable[[PassImplementationCandidate], Any | None]
+        | None = None,
     ) -> None:
         self._builtins = tuple(builtins)
         self._source = source if source is not None else entry_point_source
@@ -1010,7 +999,11 @@ class BackendRegistry:
                     version=version,
                     origin=spec.origin,
                 ),
-                host=self._host,
+                host=(
+                    self._host.view_for(manifest.requires)
+                    if callable(getattr(self._host, "view_for", None))
+                    else self._host
+                ),
             )
             record = _ActivationRecord(
                 condition=threading.Condition(self._lock),
@@ -1030,9 +1023,7 @@ class BackendRegistry:
                     try:
                         close()
                     except Exception:
-                        logger.exception(
-                            "plugin %r failed while rolling back", name
-                        )
+                        logger.exception("plugin %r failed while rolling back", name)
             with self._lock:
                 record.error = exc
                 record.in_progress = False
@@ -1113,9 +1104,7 @@ class BackendRegistry:
             raise ManifestError("plugin.activate(context) returned None")
         for method in ("create_implementation", "capability_offers", "close"):
             if not callable(getattr(activation, method, None)):
-                raise ManifestError(
-                    f"activation is missing callable {method}()"
-                )
+                raise ManifestError(f"activation is missing callable {method}()")
         offers = activation.capability_offers()
         if not isinstance(offers, tuple):
             raise ManifestError("activation capability_offers() must return a tuple")
@@ -1173,62 +1162,83 @@ class BackendRegistry:
         stable identity promised by the extension contract so ambiguity is
         reproducible across entry-point ordering.
         """
+        return tuple(
+            candidate
+            for candidate, _manifest in self.implementation_declarations_for(pass_id)
+        )
+
+    def implementation_declarations_for(
+        self, pass_id: PassId | str
+    ) -> tuple[tuple[PassImplementationCandidate, BackendManifest], ...]:
+        """Return exact compatible candidates paired with inert manifests.
+
+        The candidate and manifest are read under the registry lock so callers
+        can validate every declaration without reaching through mutable
+        registry tables.  Resolving ``manifest.provides`` remains the concern
+        of :meth:`probe`; this accessor only loads the cheap declaration.
+        """
         pass_name = str(pass_id)
         self.discover()
         with self._lock:
             specs = tuple(
-                spec
-                for candidates in self._candidates.values()
-                for spec in candidates
+                spec for candidates in self._candidates.values() for spec in candidates
             )
 
-        found: list[PassImplementationCandidate] = []
-        for spec in specs:
-            try:
-                manifest = manifest_of(spec.load_manifest())
-            except ImportError:
-                # A manifest import can itself depend on an optional package.
-                # It contributes no declaration, just as implementation_for()
-                # historically treated it.
-                continue
-            except ManifestError as exc:
-                raise PassImplementationMisdeclared(
-                    pass_name,
-                    backend_name=spec.name,
-                    backend_origin=spec.origin,
-                    reason=str(exc),
-                ) from exc
-            except Exception:
-                # A broken manifest cannot be activated.  Keep declaration
-                # discovery conservative; probe() remains the diagnostic path
-                # that classifies arbitrary loader failures.
-                continue
+            found: list[tuple[PassImplementationCandidate, BackendManifest]] = []
+            for spec in specs:
+                try:
+                    manifest = manifest_of(spec.load_manifest())
+                except ImportError:
+                    # A manifest import can itself depend on an optional package.
+                    # It contributes no declaration, just as implementation_for()
+                    # historically treated it.
+                    continue
+                except ManifestError as exc:
+                    raise PassImplementationMisdeclared(
+                        pass_name,
+                        backend_name=spec.name,
+                        backend_origin=spec.origin,
+                        reason=str(exc),
+                    ) from exc
+                except Exception:
+                    # A broken manifest cannot be activated.  Keep declaration
+                    # discovery conservative; probe() remains the diagnostic path
+                    # that classifies arbitrary loader failures.
+                    continue
 
-            if manifest.api_version != PLUGIN_API_VERSION:
-                continue
-            rule_name = manifest.implements.get(pass_name)
-            if not rule_name:
-                continue
-            found.append(
-                PassImplementationCandidate(
-                    pass_id=pass_name,
-                    backend_name=spec.name,
-                    backend_origin=spec.origin,
-                    rule_modules=(),
-                    rule_name=rule_name,
+                if manifest.api_version != PLUGIN_API_VERSION:
+                    continue
+                rule_name = manifest.implements.get(pass_name)
+                if not rule_name:
+                    continue
+                found.append(
+                    (
+                        PassImplementationCandidate(
+                            pass_id=pass_name,
+                            backend_name=spec.name,
+                            backend_origin=spec.origin,
+                            rule_modules=(),
+                            rule_name=rule_name,
+                        ),
+                        manifest,
+                    )
+                )
+
+            return tuple(
+                sorted(
+                    found,
+                    key=lambda declaration: (
+                        declaration[0].backend_name,
+                        declaration[0].backend_origin,
+                        declaration[0].rule_name,
+                    ),
                 )
             )
 
-        return tuple(
-            sorted(
-                found,
-                key=lambda candidate: (
-                    candidate.backend_name,
-                    candidate.backend_origin,
-                    candidate.rule_name,
-                ),
-            )
-        )
+    def validate_requirements(self, requirements: Sequence[str]) -> None:
+        """Validate host requirements without resolving a provider."""
+        with self._lock:
+            self._validate_requirements(tuple(requirements))
 
     def extension_reload_module_prefixes(self) -> tuple[str, ...]:
         """Return declared extension-owned modules without probing providers.
@@ -1241,14 +1251,10 @@ class BackendRegistry:
         self.discover()
         with self._lock:
             specs = tuple(
-                spec
-                for candidates in self._candidates.values()
-                for spec in candidates
+                spec for candidates in self._candidates.values() for spec in candidates
             )
         prefixes = {
-            module_name
-            for spec in specs
-            for module_name in spec.reload_modules
+            module_name for spec in specs for module_name in spec.reload_modules
         }
         for spec in specs:
             try:
@@ -1313,9 +1319,7 @@ class BackendRegistry:
 
         raise AssertionError(f"backend {name!r} has no manifest candidates")
 
-    def implementation_is_active(
-        self, candidate: PassImplementationCandidate
-    ) -> bool:
+    def implementation_is_active(self, candidate: PassImplementationCandidate) -> bool:
         """Whether this exact declaration completed activation successfully."""
         with self._lock:
             return candidate in self._active_implementations
@@ -1403,9 +1407,7 @@ class BackendRegistry:
                     if lookup(candidate) is None:
                         reason = f"rule {candidate.rule_name!r} is not registered"
                 except Exception as exc:
-                    reason = (
-                        f"registration lookup raised {type(exc).__name__}: {exc}"
-                    )
+                    reason = f"registration lookup raised {type(exc).__name__}: {exc}"
             with self._lock:
                 failures = self._implementation_failures.setdefault(candidate, {})
                 if reason is None:
@@ -1427,9 +1429,7 @@ class BackendRegistry:
             raise PassImplementationAmbiguous(pass_name, candidates)
         return candidates[0]
 
-    def activate_implementation(
-        self, candidate: PassImplementationCandidate
-    ) -> None:
+    def activate_implementation(self, candidate: PassImplementationCandidate) -> None:
         """Activate exactly one declaration and retain truthful failure state."""
         with self._lock:
             self._active_implementations.discard(candidate)
@@ -1500,9 +1500,7 @@ class BackendRegistry:
                 backend_name=candidate.backend_name,
                 backend_origin=candidate.backend_origin,
                 candidate=candidate,
-                reason=(
-                    f"registration lookup raised {type(exc).__name__}: {exc}"
-                ),
+                reason=(f"registration lookup raised {type(exc).__name__}: {exc}"),
             ) from exc
         if registered is None:
             raise PassImplementationMisdeclared(
@@ -1670,9 +1668,7 @@ def has_defects(infos: Iterable[BackendInfo]) -> bool:
     builtin because the user's plugin is stale is a working configuration, but
     not the one they asked for, and it should not pass silently.
     """
-    return any(
-        info.status in DEFECT_STATUSES or info.rejected for info in infos
-    )
+    return any(info.status in DEFECT_STATUSES or info.rejected for info in infos)
 
 
 def format_report(infos: Sequence[BackendInfo]) -> str:

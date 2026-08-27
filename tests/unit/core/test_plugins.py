@@ -3,6 +3,7 @@
 import unittest
 import threading
 
+from d810.capabilities import PluginCapabilityAccessError, PluginHostCapabilityRegistry
 from d810.core.plugins import (
     PLUGIN_API_VERSION,
     BackendInfo,
@@ -25,6 +26,7 @@ from d810.core.plugins import (
     manifest_of,
     offers_capability,
 )
+from d810.core.typing import Protocol, runtime_checkable
 
 
 class Recorder:
@@ -46,9 +48,7 @@ def spec(name, load, *, api_version=PLUGIN_API_VERSION, origin="test"):
 
 
 def registry(specs=(), builtins=()):
-    return BackendRegistry(
-        builtins=tuple(builtins), source=lambda: list(specs)
-    )
+    return BackendRegistry(builtins=tuple(builtins), source=lambda: list(specs))
 
 
 class TestManifest(unittest.TestCase):
@@ -62,9 +62,7 @@ class TestManifest(unittest.TestCase):
                 "implements": {"mba-solve": "example-solve"},
             }
         )
-        self.assertEqual(
-            manifest.requires, ("d810.mba.residual-observation.v1",)
-        )
+        self.assertEqual(manifest.requires, ("d810.mba.residual-observation.v1",))
         self.assertEqual(manifest.implements, {"mba-solve": "example-solve"})
 
     def test_manifest_defaults_to_no_requirements(self):
@@ -127,9 +125,7 @@ class TestManifest(unittest.TestCase):
 
     def test_manifest_rejects_malformed_implementation_ids(self):
         for implements in ({"": "impl"}, {"pass": ""}, {1: "impl"}):
-            with self.subTest(implements=implements), self.assertRaises(
-                ManifestError
-            ):
+            with self.subTest(implements=implements), self.assertRaises(ManifestError):
                 manifest_of(
                     {
                         "name": "example",
@@ -233,6 +229,26 @@ class FakePlugin:
         return self.activation
 
 
+@runtime_checkable
+class DeclaredHostService(Protocol):
+    def run(self) -> str: ...
+
+
+@runtime_checkable
+class UndeclaredHostService(Protocol):
+    def inspect(self) -> str: ...
+
+
+class DeclaredHostServiceImpl:
+    def run(self):
+        return "declared"
+
+
+class UndeclaredHostServiceImpl:
+    def inspect(self):
+        return "undeclared"
+
+
 def registry_for(plugin, *, requires=(), host=None, name="example"):
     manifest = {
         "name": name,
@@ -255,6 +271,28 @@ def registry_for(plugin, *, requires=(), host=None, name="example"):
 
 
 class TestActivation(unittest.TestCase):
+    def test_activation_context_scopes_registered_host_services_to_manifest(self):
+        plugin = FakePlugin(FakeActivation())
+        host = PluginHostCapabilityRegistry()
+        declared = DeclaredHostServiceImpl()
+        host.register("example.declared.v1", DeclaredHostService, declared)
+        host.register(
+            "example.undeclared.v1", UndeclaredHostService, UndeclaredHostServiceImpl()
+        )
+        reg = registry_for(
+            plugin,
+            requires=("example.declared.v1",),
+            host=host,
+        )
+
+        reg.activate("example")
+
+        scoped_host = plugin.activate_calls[0].host
+        self.assertIs(scoped_host.require(DeclaredHostService), declared)
+        self.assertIsNone(scoped_host.optional(UndeclaredHostService))
+        with self.assertRaisesRegex(PluginCapabilityAccessError, "not declared"):
+            scoped_host.require(UndeclaredHostService)
+
     def test_activation_validates_requirements_and_calls_plugin_once(self):
         plugin = FakePlugin(FakeActivation())
         reg = registry_for(
@@ -342,9 +380,7 @@ class TestActivation(unittest.TestCase):
 
         self.assertIs(activation, builtin_plugin.activation)
         self.assertEqual(len(preferred_plugin.activate_calls), 0)
-        self.assertEqual(
-            builtin_plugin.activate_calls[0].identity.origin, "builtin"
-        )
+        self.assertEqual(builtin_plugin.activate_calls[0].identity.origin, "builtin")
 
     def test_protocol_only_host_cannot_satisfy_string_requirements(self):
         plugin = FakePlugin(FakeActivation())
@@ -482,9 +518,7 @@ class TestActivation(unittest.TestCase):
             return original_activate(context)
 
         plugin.activate = activate
-        activation_thread = threading.Thread(
-            target=lambda: reg.activate("example")
-        )
+        activation_thread = threading.Thread(target=lambda: reg.activate("example"))
         activation_thread.start()
         self.assertTrue(activation_entered.wait(timeout=2))
         activation_thread.join(timeout=2)
@@ -708,9 +742,7 @@ class TestPassImplementationRegression(unittest.TestCase):
 
     def test_resolution_does_not_import_the_backend(self):
         load = Recorder(result=object())
-        manifest = self.manifest(
-            {"mba-solve": "CobraSolveRule"}, provides=load
-        )
+        manifest = self.manifest({"mba-solve": "CobraSolveRule"}, provides=load)
         reg = registry(
             [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
         )
@@ -749,7 +781,9 @@ class TestPassImplementationRegression(unittest.TestCase):
         reg = registry(
             [
                 BackendSpec(
-                    name="cobra", origin="d810-cobra 1.0", load_manifest=lambda: manifest
+                    name="cobra",
+                    origin="d810-cobra 1.0",
+                    load_manifest=lambda: manifest,
                 )
             ]
         )
@@ -785,8 +819,12 @@ class TestPassImplementationRegression(unittest.TestCase):
         second = self.manifest({"mba-egraph": "SecondRule"})
         reg = registry(
             [
-                BackendSpec(name="zeta", origin="z-origin", load_manifest=lambda: second),
-                BackendSpec(name="acme", origin="a-origin", load_manifest=lambda: first),
+                BackendSpec(
+                    name="zeta", origin="z-origin", load_manifest=lambda: second
+                ),
+                BackendSpec(
+                    name="acme", origin="a-origin", load_manifest=lambda: first
+                ),
             ]
         )
         with self.assertRaises(PassImplementationAmbiguous) as ctx:
@@ -880,7 +918,6 @@ class TestPassImplementationRegression(unittest.TestCase):
 
 
 class TestLegacyDiscoveryRegressionContinued(unittest.TestCase):
-
     def test_empty_source_yields_no_backends(self):
         self.assertEqual(registry().names(), [])
 
@@ -906,9 +943,7 @@ class TestLegacyDiscoveryRegressionContinued(unittest.TestCase):
 
     def test_builtins_present_with_no_entry_points(self):
         load = Recorder()
-        reg = registry(
-            builtins=[spec("hexrays", load, origin="builtin")]
-        )
+        reg = registry(builtins=[spec("hexrays", load, origin="builtin")])
         self.assertEqual(reg.names(), ["hexrays"])
         self.assertEqual(reg.info("hexrays").origin, "builtin")
 
