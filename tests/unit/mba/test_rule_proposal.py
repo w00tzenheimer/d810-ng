@@ -397,6 +397,140 @@ for width in (8, 16, 32, 64):
     )
 
 
+@pytest.mark.parametrize("direction", ("rol", "ror"))
+def test_zero_count_rotate_identity_survives_proposal_admission_and_match(
+    direction: str,
+) -> None:
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from d810.mba.bounded_synthesis import (
+        MbaSynthesisResult,
+        certify_terms,
+    )
+    from d810.mba.rule_proposal import proposal_fingerprint
+    from d810.mba.typed_term import fixed_shift_term
+
+    x = _term(None, key="x")
+    rotate = fixed_shift_term(direction, 32, x, 0)
+    pattern = _term("add", children=(rotate, _term(None, value=0)))
+    certification = certify_terms(pattern, rotate)
+    assert certification.certified
+    result = MbaSynthesisResult(
+        source=pattern,
+        replacement=rotate,
+        source_cost=term_cost(pattern),
+        replacement_cost=term_cost(rotate),
+        certification=certification,
+        exhaustion=None,
+        fixed_operation_descriptors=((direction, 0, 32),),
+    )
+    base = dict(
+        source_fingerprints=(f"{direction}-zero",),
+        occurrence_count=1,
+        pattern=pattern,
+        replacement=rotate,
+        source_cost=result.source_cost,
+        replacement_cost=result.replacement_cost,
+        atomization_bindings=(),
+        proof_receipts=result.proof_receipts,
+        class_name=f"Executable{direction.title()}ZeroRule",
+        family="add",
+        description="zero-count fixed rotate admission regression",
+        provenance=("test",),
+        fixture={},
+        fixed_operation_descriptors=result.fixed_operation_descriptors,
+        synthesis_result=result,
+    )
+    proposal = MbaRuleProposal(
+        proposal_fingerprint=proposal_fingerprint(**base), **base
+    )
+
+    manifest = proposal.to_dict()
+    assert proposal.fingerprint == manifest["proposal_fingerprint"]
+    assert manifest["fixed_operation_descriptors"] == [[direction, 0, 32]]
+    assert manifest["pattern"]["children"][0]["operation"] == direction
+    assert manifest["pattern"]["children"][0]["shift_count"] == 0
+    assert manifest["replacement"]["operation"] == direction
+    assert manifest["replacement"]["shift_count"] == 0
+    source = render_rule_source(proposal)
+    assert source.count(f'FixedRotate("{direction}", x_0, 0)') == 2
+
+    script = f"""
+import sys
+
+from d810.mba.ac_matching import match_canonical_term_pattern
+from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+from d810.mba.canonical_pattern import compile_canonical_pattern
+from d810.mba.certified_rule_compiler import RuleCompilationStatus, _compile_rule_families
+from d810.mba.typed_term import TypedBvTerm, fixed_shift_term
+from d810.mba.verifier import VerificationOptions, verify_transformation
+from d810.mba.bounded_synthesis import generalize_terms
+
+namespace = {{}}
+exec(compile(sys.stdin.read(), '<proposal>', 'exec'), namespace)
+rule_type = namespace[{proposal.class_name!r}]
+assert rule_type.FIXED_OPERATION_DESCRIPTORS == (({direction!r}, 0, 32),)
+catalogue = _compile_rule_families({{'add': (rule_type,)}})
+receipt = catalogue.receipt_for('add', {proposal.class_name!r})
+assert receipt.status is RuleCompilationStatus.COMPILED, receipt.reason
+rule = receipt.compiled_rule
+assert rule is not None
+runtime_catalogue = CompiledPatternCatalogue.from_rules((rule,))
+def walk(node):
+    yield node
+    for child in node.children:
+        yield from walk(child)
+for width in (8, 16, 32, 64):
+    compiled = compile_canonical_pattern(rule, width=width, declaration_index=0)
+    pattern_rotates = tuple(
+        (node.operation, node.shift_count)
+        for node in walk(compiled.pattern_term)
+        if node.operation in {{'rol', 'ror'}}
+    )
+    assert pattern_rotates == (({direction!r}, 0),)
+    assert (compiled.replacement_template.operation, compiled.replacement_template.shift_count) == ({direction!r}, 0)
+    leaf = TypedBvTerm(None, width, leaf_key=('candidate', 'x'))
+    candidate = TypedBvTerm('add', width, children=(
+        fixed_shift_term({direction!r}, width, leaf, 0),
+        TypedBvTerm(None, width, value=0),
+    ))
+    matched = match_canonical_term_pattern(compiled, candidate, comparison_budget=32)
+    assert matched.matches
+    wrong = TypedBvTerm('add', width, children=(
+        fixed_shift_term({direction!r}, width, leaf, 7),
+        TypedBvTerm(None, width, value=0),
+    ))
+    assert not match_canonical_term_pattern(compiled, wrong, comparison_budget=32).matches
+    materialized = compiled.materialize_replacement(matched.matches[0].bindings)
+    assert (materialized.operation, materialized.shift_count) == ({direction!r}, 0)
+    applications = runtime_catalogue.canonical_applications(candidate)
+    assert len(applications) == 1
+    assert (applications[0][1].operation, applications[0][1].shift_count) == ({direction!r}, 0)
+    assert runtime_catalogue.canonical_applications(wrong) == ()
+    pattern_expr, replacement_expr = generalize_terms(candidate, materialized, width=width)
+    verdict, counterexample = verify_transformation(
+        pattern_expr,
+        replacement_expr,
+        options=VerificationOptions(bit_width=width, timeout_ms=5000),
+    )
+    assert verdict is True and counterexample is None
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = "src"
+    root = Path(__file__).resolve().parents[3]
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=root,
+        env=env,
+        input=source,
+        text=True,
+        check=True,
+    )
+
+
 def test_proposal_rejects_keywords_unicode_and_non_json_fixture() -> None:
     x = _term(None, key="x")
     pattern = _term("add", children=(_term("add", children=(x, x)), x))

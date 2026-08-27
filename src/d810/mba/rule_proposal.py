@@ -187,8 +187,6 @@ def _expr_source(
         return f"({child[0]} {operator} Const(\"shift_{term.shift_count}\", {term.shift_count}))"
     if term.operation in {"rol", "ror"}:
         count = term.shift_count % term.width
-        if count == 0:
-            return child[0]
         return f'FixedRotate("{term.operation}", {child[0]}, {count})'
     raise ValueError(f"cannot render unsupported operation: {term.operation}")
 
