@@ -26,7 +26,9 @@ from d810.analyses.data_flow.concolic.refs import LocationRef, ValueRef
 from d810.analyses.data_flow.concolic.values import ConcolicValue
 from d810.analyses.value_flow.call_return_value import (
     CallResultQuery,
+    CallResultRefinement,
     CallResultRefiner,
+    CallResultRefinementStatus,
     SUPPORTED_CALL_RESULT_WIDTHS,
 )
 from d810.hexrays.expr.ast import AstLeaf, AstNode, get_mop_key
@@ -66,17 +68,26 @@ class CallResultAstLeaf(AstLeaf):
         name: str,
         value_ref: ValueRef,
         concolic_value: ConcolicValue,
+        refinement: CallResultRefinement | None = None,
     ):
         super().__init__(name)
         self.value_ref = value_ref
         self.concolic_value = concolic_value
+        self.refinement = refinement or CallResultRefinement(
+            concolic_value, CallResultRefinementStatus.NO_EVIDENCE
+        )
+        # Descriptive alias for callers that want to distinguish this from
+        # the compatibility ``concolic_value`` field.
+        self.call_result_refinement = self.refinement
 
     def clone(self):
         # Do not delegate to AstLeaf.clone(): the Cython AstLeaf implementation
         # intentionally allocates a base AstLeaf, which cannot carry these
         # terminal metadata fields. Construct the concrete subclass directly
         # so Python and Cython clone routes preserve identity equally.
-        cloned = self.__class__(self.name, self.value_ref, self.concolic_value)
+        cloned = self.__class__(
+            self.name, self.value_ref, self.concolic_value, self.refinement
+        )
         cloned.ast_index = self.ast_index
         cloned.mop = self.mop
         cloned.proof_origin = self.proof_origin
@@ -91,8 +102,50 @@ def is_call_result_leaf(node: object) -> bool:
     return bool(
         getattr(node, "_is_call_result_leaf", False)
         and isinstance(getattr(node, "value_ref", None), ValueRef)
-        and isinstance(getattr(node, "concolic_value", None), ConcolicValue)
     )
+
+
+def _invalid_call_result_refinement(
+    width: int, reason: str
+) -> CallResultRefinement:
+    """Create a bounded, fail-open refinement for malformed callback data."""
+
+    return CallResultRefinement(
+        ConcolicValue.top(width),
+        CallResultRefinementStatus.INVALID_EVIDENCE,
+        reasons=(reason[:160],),
+    )
+
+
+def _normalize_call_result_refinement(
+    result: object, *, width: int
+) -> CallResultRefinement:
+    """Validate callback output without executing or interpreting its payload."""
+
+    if not isinstance(result, CallResultRefinement):
+        return _invalid_call_result_refinement(width, "refiner returned an invalid result")
+    value = getattr(result, "value", None)
+    if not isinstance(value, ConcolicValue):
+        return _invalid_call_result_refinement(width, "refiner returned an invalid value")
+    if value.width != width:
+        return _invalid_call_result_refinement(width, "refiner returned a width-mismatched value")
+    if getattr(value.status, "name", None) == "BOTTOM":
+        return _invalid_call_result_refinement(width, "refiner returned Bottom")
+    if type(result.status) is not CallResultRefinementStatus:
+        return _invalid_call_result_refinement(width, "refiner returned an invalid status")
+    for field_name in ("used_fact_ids", "rejected_fact_ids", "reasons"):
+        field = getattr(result, field_name, None)
+        if type(field) is not tuple or not all(type(item) is str for item in field):
+            return _invalid_call_result_refinement(
+                width, f"refiner returned invalid {field_name} metadata"
+            )
+    return result
+
+
+def _bounded_diagnostic_items(values: tuple[str, ...]) -> tuple[str, ...]:
+    """Keep callback-local diagnostics bounded and free of raw payload objects."""
+
+    return tuple(value[:160] for value in values[:16])
 
 
 def _call_result_location(dst: ida_hexrays.mop_t | None) -> LocationRef | None:
@@ -274,11 +327,31 @@ def _call_result_ast(
     value_ref = _call_result_value_ref(ins, blk)
     query = _call_result_query(ins, blk, value_ref)
     if call_result_refiner is None:
-        concolic_value = ConcolicValue.top(query.result_width_bits)
+        refinement = CallResultRefinement(
+            ConcolicValue.top(query.result_width_bits),
+            CallResultRefinementStatus.NO_EVIDENCE,
+        )
     else:
-        concolic_value = call_result_refiner(query).value
+        # Refiner execution errors are intentionally not swallowed.  The
+        # callback contract owns execution; this seam only normalizes malformed
+        # returned data so terminal identity cannot be lost.
+        refinement = _normalize_call_result_refinement(
+            call_result_refiner(query), width=query.result_width_bits
+        )
+    if logger.debug_on:
+        logger.debug(
+            "call-result-refinement status=%s used_fact_ids=%s "
+            "rejected_fact_ids=%s reasons=%s",
+            refinement.status.value,
+            _bounded_diagnostic_items(refinement.used_fact_ids),
+            _bounded_diagnostic_items(refinement.rejected_fact_ids),
+            _bounded_diagnostic_items(refinement.reasons),
+        )
     leaf = CallResultAstLeaf(
-        f"call_result_{value_ref.def_site:x}", value_ref, concolic_value
+        f"call_result_{value_ref.def_site:x}",
+        value_ref,
+        refinement.value,
+        refinement,
     )
     # Live IDA operands are snapshotted to avoid borrowed-mop lifetime hazards.
     # A pre-existing snapshot is already immutable and safe to retain.

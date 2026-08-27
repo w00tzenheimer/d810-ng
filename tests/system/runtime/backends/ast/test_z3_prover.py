@@ -125,6 +125,52 @@ class TestZ3MopProverAPI:
         assert len(variables) == 2
         assert left.z3_var is not right.z3_var
 
+    def test_z3_vars_coalesce_rebuilt_call_leaves_by_value_ref_at_valnum_zero(self):
+        from d810.backends.ast.z3 import create_z3_vars
+        from d810.analyses.data_flow.concolic.refs import LocationRef, ValueRef
+        from d810.evaluator.hexrays_microcode.def_search import CallResultAstLeaf
+        from d810.analyses.data_flow.concolic.values import ConcolicValue
+        from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+        value_ref = ValueRef(LocationRef.reg(3, 4), def_site=0x401000)
+        left = CallResultAstLeaf("left", value_ref, ConcolicValue.top(32))
+        right = CallResultAstLeaf(
+            "right", ValueRef(LocationRef.reg(3, 4), def_site=0x401000), ConcolicValue.top(32)
+        )
+        left.mop = MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=3, valnum=0)
+        right.mop = MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=3, valnum=0)
+        left.dest_size = right.dest_size = 4
+
+        variables = create_z3_vars([left, right])
+
+        assert len(variables) == 1
+        assert left.z3_var is right.z3_var
+
+    def test_z3_vars_split_call_leaves_by_value_ref_def_site_despite_same_valnum(self):
+        from d810.backends.ast.z3 import create_z3_vars
+        from d810.analyses.data_flow.concolic.refs import LocationRef, ValueRef
+        from d810.evaluator.hexrays_microcode.def_search import CallResultAstLeaf
+        from d810.analyses.data_flow.concolic.values import ConcolicValue
+        from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+        def leaf(name, def_site):
+            result = CallResultAstLeaf(
+                name,
+                ValueRef(LocationRef.reg(3, 4), def_site=def_site),
+                ConcolicValue.top(32),
+            )
+            result.mop = MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=3, valnum=9)
+            result.dest_size = 4
+            return result
+
+        first = leaf("first", 0x401000)
+        second = leaf("second", 0x402000)
+
+        variables = create_z3_vars([first, second])
+
+        assert len(variables) == 2
+        assert first.z3_var is not second.z3_var
+
     def test_z3_vars_keep_complex_operands_opaque(self):
         """Complex mops do not acquire identity from a partial snapshot."""
         from d810.backends.ast.z3 import create_z3_vars

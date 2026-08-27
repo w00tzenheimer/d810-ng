@@ -58,6 +58,7 @@ import ida_hexrays
 from d810.core import getLogger, typing
 from d810.core.typing import Dict
 from d810.errors import D810Z3Exception
+from d810.analyses.data_flow.concolic.refs import ValueRef
 from d810.evaluator.hexrays_microcode.def_search import (
     recursively_resolve_ast as _recursively_resolve_ast,
 )
@@ -269,10 +270,11 @@ def _z3_mop_identity(
     helper here can both merge distinct versions and produce different results
     between the Python and Cython backends.
 
-    Resolver-attested proof origins are stronger than the physical storage
-    fields and are accepted first.  An unversioned leaf without such an origin
-    remains identity-based rather than guessed from display text or register
-    number.
+    Definition-scoped ValueRef identity is stronger than physical storage,
+    valnum, proof-origin, and object identity.  Other resolver-attested proof
+    origins are still accepted before storage fields.  An unversioned leaf
+    without such an origin remains identity-based rather than guessed from
+    display text or register number.
     """
 
     scalar_types = (
@@ -305,6 +307,19 @@ def _z3_mop_identity(
             return tuple(to_cache_key())
         except Exception:
             return ("opaque-scalar", id(leaf_identity if leaf_identity is not None else owner))
+
+    candidate_value_ref = leaf_identity
+    if not isinstance(candidate_value_ref, ValueRef):
+        candidate_value_ref = getattr(leaf_identity, "value_ref", None)
+    if isinstance(candidate_value_ref, ValueRef):
+        location = candidate_value_ref.location
+        return (
+            "value-ref",
+            location.kind,
+            location.key,
+            location.width,
+            candidate_value_ref.def_site,
+        )
 
     if proof_origin is not None:
         return ("proof-origin", proof_origin)

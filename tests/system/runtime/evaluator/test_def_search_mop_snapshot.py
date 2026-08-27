@@ -496,6 +496,98 @@ def test_call_result_leaf_clone_preserves_terminal_metadata(monkeypatch):
     assert clone.concolic_value == leaf.concolic_value
 
 
+def test_malformed_refiner_value_keeps_call_leaf_terminal(monkeypatch):
+    """Invalid callback evidence must not reopen physical definition search."""
+
+    assignment, call, _destination, block, use = _call_result_test_parts()
+    later_write = SimpleNamespace(ea=0x401200)
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    monkeypatch.setattr(
+        def_search,
+        "resolve_mop_to_ast",
+        lambda *_args, **_kwargs: later_write,
+    )
+
+    def malformed(_query):
+        return SimpleNamespace(value="not-a-concolic-value")
+
+    result = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=malformed,
+    )
+
+    assert def_search.is_call_result_leaf(result)
+    assert result.value_ref.def_site == call.ea
+    assert result.concolic_value.status.name == "TOP"
+    assert result.refinement.status.name == "INVALID_EVIDENCE"
+
+
+@pytest.mark.parametrize(
+    "resolver_name", ["_py_slow_recursively_resolve_ast", "recursively_resolve_ast"]
+)
+def test_malformed_refiner_leaf_stays_terminal_in_recursive_resolvers(
+    monkeypatch, resolver_name
+):
+    assignment, call, _destination, block, use = _call_result_test_parts()
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+
+    def malformed(_query):
+        return SimpleNamespace(value=object())
+
+    leaf = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=malformed,
+    )
+    monkeypatch.setattr(
+        def_search,
+        "resolve_mop_to_ast",
+        lambda *_args, **_kwargs: SimpleNamespace(ea=0x401300),
+    )
+
+    result = getattr(def_search, resolver_name)(
+        leaf,
+        block,
+        SimpleNamespace(ea=0x401400),
+        call_result_refiner=malformed,
+    )
+
+    assert def_search.is_call_result_leaf(result)
+    assert result.value_ref.def_site == call.ea
+    assert result.refinement.status.name == "INVALID_EVIDENCE"
+
+
+def test_call_result_leaf_clone_preserves_refinement_metadata(monkeypatch):
+    from d810.analyses.data_flow.concolic.values import ConcolicValue
+    from d810.analyses.value_flow.call_return_value import (
+        CallResultRefinement,
+        CallResultRefinementStatus,
+    )
+
+    assignment, _call, _destination, block, use = _call_result_test_parts()
+    refinement = CallResultRefinement(
+        ConcolicValue.top(32),
+        CallResultRefinementStatus.INVALID_EVIDENCE,
+        used_fact_ids=("used-1",),
+        rejected_fact_ids=("rejected-1",),
+        reasons=("bounded reason",),
+    )
+    monkeypatch.setattr(def_search, "find_def_in_block", lambda *_args: assignment)
+    result = def_search.resolve_mop_via_predecessors(
+        use,
+        block,
+        SimpleNamespace(ea=0x401100),
+        call_result_refiner=lambda _query: refinement,
+    )
+    clone = result.clone()
+
+    assert clone.refinement is refinement
+    assert clone.concolic_value == refinement.value
+
+
 def test_bare_call_with_callinfo_destination_is_not_a_result_leaf(monkeypatch):
     _assignment, call, _destination, block, use = _call_result_test_parts()
     bare_call = call
