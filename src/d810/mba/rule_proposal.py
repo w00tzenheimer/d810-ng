@@ -7,10 +7,15 @@ import json
 import keyword
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from d810.mba.bounded_synthesis import CERTIFICATION_WIDTHS, ProofReceipt
+from d810.mba.bounded_synthesis import (
+    CERTIFICATION_WIDTHS,
+    GrammarAllOnesOrigin,
+    MbaSynthesisResult,
+    ProofReceipt,
+)
 from d810.mba.subterm_atomization import MbaAtomBinding
 from d810.mba.term_codec import typed_term_to_dict
 from d810.mba.typed_term import TypedBvTerm, leaf_key_fingerprint, term_cost, term_fingerprint
@@ -91,8 +96,38 @@ def _proof_identity_dict(receipt: ProofReceipt) -> dict[str, object]:
     }
 
 
+def _origin_dict(origin: GrammarAllOnesOrigin) -> dict[str, object]:
+    if not isinstance(origin, GrammarAllOnesOrigin):
+        raise TypeError("width-relative all-ones origin has an invalid type")
+    return {
+        "origin": origin.origin,
+        "occurrence_path": list(origin.occurrence_path),
+        "source_width": origin.source_width,
+        "terminal_fingerprint": origin.terminal_fingerprint,
+    }
+
+
 def proposal_fingerprint(**fields: object) -> str:
     """Compute the versioned digest for proposal semantic/provenance fields."""
+    synthesis_result = fields.get("synthesis_result")
+    if synthesis_result is not None and not isinstance(
+        synthesis_result, MbaSynthesisResult
+    ):
+        raise TypeError("synthesis_result must be an MbaSynthesisResult")
+    origins = fields.get("width_relative_all_ones")
+    if origins is None:
+        origins = (
+            synthesis_result.width_relative_all_ones
+            if isinstance(synthesis_result, MbaSynthesisResult)
+            else ()
+        )
+    fixed_descriptors = fields.get("fixed_operation_descriptors")
+    if fixed_descriptors is None:
+        fixed_descriptors = (
+            synthesis_result.fixed_operation_descriptors
+            if isinstance(synthesis_result, MbaSynthesisResult)
+            else ()
+        )
     payload = {
         "schema_version": 1,
         "source_fingerprints": tuple(sorted(set(fields["source_fingerprints"]))),
@@ -108,8 +143,11 @@ def proposal_fingerprint(**fields: object) -> str:
         "description": fields["description"],
         "provenance": tuple(sorted(set(fields["provenance"]))),
         "fixture": _json_ready(_freeze_json(fields["fixture"])),
-        "width_relative_all_ones": tuple(sorted(set(fields.get("width_relative_all_ones", ())))),
-        "fixed_operation_descriptors": tuple(sorted(set(fields.get("fixed_operation_descriptors", ())))),
+        "width_relative_all_ones": tuple(
+            _origin_dict(item)
+            for item in origins
+        ),
+        "fixed_operation_descriptors": tuple(sorted(set(fixed_descriptors))),
     }
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(("mba-rule-proposal-v1:" + encoded).encode("ascii")).hexdigest()
@@ -118,16 +156,25 @@ def proposal_fingerprint(**fields: object) -> str:
 def _expr_source(
     term: TypedBvTerm,
     names: Mapping[tuple[object, ...], str],
-    width_relative_all_ones: frozenset[str] = frozenset(),
+    width_relative_all_ones_paths: frozenset[tuple[int, ...]] = frozenset(),
+    path: tuple[int, ...] = (),
 ) -> str:
     if term.operation is None:
         if term.value is not None:
-            if term_fingerprint(term) in width_relative_all_ones:
+            if path in width_relative_all_ones_paths:
                 return 'Const("NEGATIVE_ONE", -1)'
             return f'Const("const_{term.value}", {term.value})'
         assert term.leaf_key is not None
         return names[term.leaf_key]
-    child = tuple(_expr_source(item, names, width_relative_all_ones) for item in term.children)
+    child = tuple(
+        _expr_source(
+            item,
+            names,
+            width_relative_all_ones_paths,
+            path + (index,),
+        )
+        for index, item in enumerate(term.children)
+    )
     if term.operation == "bnot":
         return f"~({child[0]})"
     if term.operation == "neg":
@@ -162,8 +209,12 @@ class MbaRuleProposal:
     description: str
     provenance: tuple[str, ...]
     fixture: Mapping[str, object]
-    width_relative_all_ones: tuple[str, ...] = ()
     fixed_operation_descriptors: tuple[tuple[str, int, int], ...] = ()
+    synthesis_result: MbaSynthesisResult | None = None
+    width_relative_all_ones: tuple[GrammarAllOnesOrigin, ...] = field(
+        init=False,
+        default=(),
+    )
 
     def __post_init__(self) -> None:
         if self.proposal_fingerprint is not None and (type(self.proposal_fingerprint) is not str or not self.proposal_fingerprint):
@@ -209,10 +260,34 @@ class MbaRuleProposal:
         if not isinstance(frozen_fixture, Mapping):
             raise TypeError("fixture must be a mapping")
         object.__setattr__(self, "fixture", frozen_fixture)
-        if type(self.width_relative_all_ones) is not tuple or any(
-            type(item) is not str or not item for item in self.width_relative_all_ones
-        ):
-            raise TypeError("width_relative_all_ones must be a tuple of fingerprints")
+        synthesis_result = self.synthesis_result
+        replacement_has_source_mask = any(
+            node.operation is None
+            and node.value == (1 << self.replacement.width) - 1
+            for node in _walk(self.replacement)
+        )
+        if synthesis_result is None and replacement_has_source_mask:
+            raise ValueError(
+                "all-ones replacement provenance requires a synthesis_result"
+            )
+        if synthesis_result is not None:
+            if not isinstance(synthesis_result, MbaSynthesisResult):
+                raise TypeError("synthesis_result must be an MbaSynthesisResult")
+            if (
+                not synthesis_result.certified
+                or synthesis_result.source != self.pattern
+                or synthesis_result.replacement != self.replacement
+                or synthesis_result.source_cost != self.source_cost
+                or synthesis_result.replacement_cost != self.replacement_cost
+                or synthesis_result.proof_receipts != self.proof_receipts
+            ):
+                raise ValueError("synthesis_result does not match proposal semantics")
+            origins = synthesis_result.width_relative_all_ones
+            if self.fixed_operation_descriptors != synthesis_result.fixed_operation_descriptors:
+                raise ValueError("synthesis_result fixed operation descriptors do not match")
+        else:
+            origins = ()
+        object.__setattr__(self, "width_relative_all_ones", origins)
         if type(self.fixed_operation_descriptors) is not tuple:
             raise TypeError("fixed_operation_descriptors must be a tuple")
         for descriptor in self.fixed_operation_descriptors:
@@ -229,18 +304,9 @@ class MbaRuleProposal:
                 raise ValueError("fixed operation descriptor count is outside its width")
             if operation in {"rol", "ror"} and width not in {8, 16, 32, 64}:
                 raise ValueError("rotate descriptor width is unsupported")
-        object.__setattr__(self, "width_relative_all_ones", tuple(sorted(set(self.width_relative_all_ones))))
         object.__setattr__(self, "fixed_operation_descriptors", tuple(sorted(set(self.fixed_operation_descriptors))))
         if not set(_keys(self.replacement)).issubset(set(_keys(self.pattern))):
             raise ValueError("replacement introduces an unknown generalized leaf")
-        source_width = self.pattern.width
-        replacement_mask_markers = {
-            term_fingerprint(node)
-            for node in _walk(self.replacement)
-            if node.operation is None and node.value == (1 << source_width) - 1
-        }
-        if set(self.width_relative_all_ones) != replacement_mask_markers:
-            raise ValueError("width-relative all-ones metadata does not match replacement provenance")
         actual_fixed_descriptors = {
             (node.operation, node.shift_count, node.width)
             for term in (self.pattern, self.replacement)
@@ -288,7 +354,9 @@ class MbaRuleProposal:
             "description": self.description,
             "provenance": list(self.provenance),
             "fixture": _json_ready(self.fixture),
-            "width_relative_all_ones": list(self.width_relative_all_ones),
+            "width_relative_all_ones": [
+                _origin_dict(item) for item in self.width_relative_all_ones
+            ],
             "fixed_operation_descriptors": [list(item) for item in self.fixed_operation_descriptors],
         }
 
@@ -303,14 +371,14 @@ def render_rule_source(proposal: MbaRuleProposal) -> str:
     lines.extend([
         f"class {proposal.class_name}(VerifiableRule):",
         f"    DESCRIPTION = {json.dumps(proposal.description, ensure_ascii=True)}",
-        f"    WIDTH_RELATIVE_ALL_ONES = {proposal.width_relative_all_ones!r}",
+        f"    WIDTH_RELATIVE_ALL_ONES = {tuple(_origin_dict(item) for item in proposal.width_relative_all_ones)!r}",
         f"    FIXED_OPERATION_DESCRIPTORS = {proposal.fixed_operation_descriptors!r}",
         "    WIDTH_POLYMORPHIC_DESCRIPTORS = {",
         "        'all_ones': WIDTH_RELATIVE_ALL_ONES,",
         "        'fixed_operations': FIXED_OPERATION_DESCRIPTORS,",
         "    }",
-        f"    PATTERN = {_expr_source(proposal.pattern, names, frozenset(proposal.width_relative_all_ones))}",
-        f"    REPLACEMENT = {_expr_source(proposal.replacement, names, frozenset(proposal.width_relative_all_ones))}",
+        f"    PATTERN = {_expr_source(proposal.pattern, names)}",
+        f"    REPLACEMENT = {_expr_source(proposal.replacement, names, frozenset(item.occurrence_path for item in proposal.width_relative_all_ones))}",
         "",
     ])
     source = "\n".join(lines)

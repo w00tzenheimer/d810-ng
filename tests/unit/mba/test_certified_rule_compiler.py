@@ -291,6 +291,72 @@ def test_unknown_verification_backend_fails_closed() -> None:
         get_verification_engine("missing")
 
 
+def test_compiler_admits_only_literal_supported_fixed_rotates() -> None:
+    from d810.mba.certified_rule_compiler import (
+        RuleCompilationStatus,
+        _compile_rule_families,
+    )
+    from d810.mba.dsl import Const, FixedRotate, Var
+    from d810.mba.rules._base import VerifiableRule
+
+    x = Var("x")
+
+    class LiteralRotateRule(VerifiableRule):
+        PATTERN = FixedRotate("ror", x, 3) + Const("zero", 0)
+        REPLACEMENT = FixedRotate("ror", x, 3)
+
+    class OrdinaryShiftRule(VerifiableRule):
+        PATTERN = (x << Const("count", 3)) + Const("zero", 0)
+        REPLACEMENT = x << Const("count", 3)
+
+    class CountSevenRotateRule(VerifiableRule):
+        PATTERN = FixedRotate("ror", x, 7) + Const("zero", 0)
+        REPLACEMENT = FixedRotate("ror", x, 7)
+
+    class UnsupportedWidthRotateRule(VerifiableRule):
+        PATTERN = FixedRotate("rol", x, 8) + Const("zero", 0)
+        REPLACEMENT = FixedRotate("rol", x, 8)
+
+    catalogue = _compile_rule_families(
+        {
+            "add": (
+                LiteralRotateRule,
+                CountSevenRotateRule,
+                OrdinaryShiftRule,
+                UnsupportedWidthRotateRule,
+            )
+        }
+    )
+
+    assert catalogue.receipt_for("add", "LiteralRotateRule").status is RuleCompilationStatus.COMPILED
+    assert catalogue.receipt_for("add", "CountSevenRotateRule").status is RuleCompilationStatus.COMPILED
+    assert catalogue.receipt_for("add", "OrdinaryShiftRule").status is RuleCompilationStatus.REJECTED
+    assert catalogue.receipt_for("add", "UnsupportedWidthRotateRule").status is RuleCompilationStatus.REJECTED
+
+    from d810.mba.certified_rule_compiler import apply_compiled_rule_to_term
+    from d810.mba.typed_term import fixed_shift_term
+
+    compiled = catalogue.receipt_for("add", "LiteralRotateRule").compiled_rule
+    assert compiled is not None
+    leaf = _leaf("x", 8)
+    expected = fixed_shift_term("ror", 8, leaf, 3)
+    accepted = TypedBvTerm(
+        "add",
+        8,
+        children=(expected, TypedBvTerm(None, 8, value=0)),
+    )
+    wrong_count = TypedBvTerm(
+        "add",
+        8,
+        children=(
+            fixed_shift_term("ror", 8, leaf, 7),
+            TypedBvTerm(None, 8, value=0),
+        ),
+    )
+    assert apply_compiled_rule_to_term(compiled, accepted) == expected
+    assert apply_compiled_rule_to_term(compiled, wrong_count) is None
+
+
 def _guard_rule(
     name: str,
     constraint,

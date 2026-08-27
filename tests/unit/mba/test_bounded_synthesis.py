@@ -5,7 +5,13 @@ import random
 import pytest
 
 from d810.mba.subterm_atomization import atomize_repeated_subterms
-from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term, fixed_shift_term, term_fingerprint
+from d810.mba.typed_term import (
+    TypedBvTerm,
+    canonicalize_ac_term,
+    fixed_shift_term,
+    term_cost,
+    term_fingerprint,
+)
 
 
 def leaf(name: str, width: int = 32) -> TypedBvTerm:
@@ -243,7 +249,10 @@ def test_generalization_allows_eliminated_but_not_introduced_leaves() -> None:
 
 
 def test_width_relative_all_ones_constant_is_rebuilt_for_each_proof_width() -> None:
-    from d810.mba.bounded_synthesis import certify_terms
+    from d810.mba.bounded_synthesis import (
+        certify_terms,
+        grammar_all_ones_origins,
+    )
 
     x = leaf("x", 32)
     all_ones = const((1 << 32) - 1)
@@ -252,8 +261,77 @@ def test_width_relative_all_ones_constant_is_rebuilt_for_each_proof_width() -> N
     assert certify_terms(
         pattern,
         replacement,
-        width_relative_all_ones=(term_fingerprint(all_ones),),
+        width_relative_all_ones=grammar_all_ones_origins(replacement),
     ).certified
+
+
+def test_synthesis_preserves_injected_and_fixed_all_ones_origins() -> None:
+    from d810.mba.bounded_synthesis import synthesize_residual
+    from d810.mba.subterm_atomization import AtomizedMbaTerm
+
+    zero = const(0)
+    injected_source = op("bnot", zero)
+    injected = synthesize_residual(
+        AtomizedMbaTerm(injected_source, injected_source, ())
+    )
+    assert injected.certified
+    assert injected.replacement == const(0xFFFFFFFF)
+    assert tuple(origin.occurrence_path for origin in injected.width_relative_all_ones) == ((),)
+    assert all(
+        origin.origin == "grammar_injected_all_ones"
+        for origin in injected.width_relative_all_ones
+    )
+
+    fixed_mask = const(0xFFFFFFFF)
+    fixed_source = op("xor", fixed_mask, zero)
+    fixed = synthesize_residual(AtomizedMbaTerm(fixed_source, fixed_source, ()))
+    assert fixed.certified
+    assert fixed.replacement == fixed_mask
+    assert fixed.width_relative_all_ones == ()
+    assert fixed.certification.certified
+
+
+def test_all_ones_origin_paths_distinguish_duplicate_equal_terminals() -> None:
+    from d810.mba.bounded_synthesis import grammar_all_ones_origins
+
+    mask = const(0xFFFFFFFF)
+    duplicate = op("add", mask, mask)
+    origins = grammar_all_ones_origins(duplicate)
+
+    assert tuple(origin.occurrence_path for origin in origins) == ((0,), (1,))
+    assert origins[0].terminal_fingerprint == origins[1].terminal_fingerprint
+
+
+def test_synthesis_result_rejects_forged_origin_for_fixed_input_mask() -> None:
+    from d810.mba.bounded_synthesis import (
+        GrammarAllOnesOrigin,
+        MbaCertification,
+        MbaSynthesisResult,
+        ProofReceipt,
+    )
+
+    mask = const(0xFFFFFFFF)
+    zero = const(0)
+    source = op("xor", mask, zero)
+    proofs = MbaCertification(
+        tuple(ProofReceipt(width, True, 0.0) for width in (8, 16, 32, 64))
+    )
+    forged = GrammarAllOnesOrigin(
+        occurrence_path=(),
+        terminal_fingerprint=term_fingerprint(mask),
+        source_width=32,
+    )
+
+    with pytest.raises(ValueError, match="input|origin"):
+        MbaSynthesisResult(
+            source,
+            mask,
+            term_cost(source),
+            term_cost(mask),
+            proofs,
+            None,
+            (forged,),
+        )
 
 
 def test_generic_synthesis_reaches_terminal_x_without_or_shortcut(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -299,6 +377,33 @@ def test_equal_cost_signature_reports_not_cheaper() -> None:
     result = synthesize_residual(AtomizedMbaTerm(x, x, ()))
     assert not result.certified
     assert result.exhaustion.reason == "not_cheaper"
+
+
+@pytest.mark.parametrize(
+    ("budget", "expected_reason", "expected_generated"),
+    (
+        ({"max_variables": 0}, "too_many_variables", 0),
+        ({"max_generated_terms": 0}, "generation_budget", 0),
+        ({"max_candidate_attempts": 0}, "generation_budget", 0),
+        ({}, "not_cheaper", 1),
+    ),
+)
+def test_terminal_source_routes_through_all_budget_gates(
+    budget: dict[str, int], expected_reason: str, expected_generated: int
+) -> None:
+    from d810.mba.bounded_synthesis import MbaSynthesisBudget, synthesize_residual
+    from d810.mba.subterm_atomization import AtomizedMbaTerm
+
+    x = leaf("x", 8)
+    result = synthesize_residual(
+        AtomizedMbaTerm(x, x, ()),
+        budget=MbaSynthesisBudget(**budget),
+    )
+
+    assert not result.certified
+    assert result.exhaustion is not None
+    assert result.exhaustion.reason == expected_reason
+    assert result.exhaustion.generated_terms == expected_generated
 
 
 def test_iterable_leaf_and_constant_inputs_have_exact_terminal_prefix() -> None:

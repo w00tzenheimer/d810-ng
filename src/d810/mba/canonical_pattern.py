@@ -1086,6 +1086,7 @@ def _materialize_template(
         term.operation,
         term.width,
         children=tuple(_materialize_template(child, bindings) for child in term.children),
+        shift_count=term.shift_count,
     )
 
 

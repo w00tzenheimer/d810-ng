@@ -38,11 +38,14 @@ _SUPPORTED_OPERATIONS = frozenset(
         "mul",
         "neg",
         "or",
+        "rol",
+        "ror",
         "sub",
         "xor",
     }
 )
 _UNARY_OPERATIONS = frozenset({"bnot", "neg"})
+_FIXED_ROTATE_OPERATIONS = frozenset({"rol", "ror"})
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 _SUPPORTED_COMPARISON_OPERATIONS = frozenset({"eq", "ne", "lt", "gt", "le", "ge"})
 
@@ -164,6 +167,49 @@ class MbaRuleCatalogue:
 
 
 
+def _fixed_rotate_count(expression: Any, *, bit_width: int | None = None) -> int:
+    count_node = expression.right
+    if (
+        count_node is None
+        or count_node.operation is not None
+        or count_node.left is not None
+        or count_node.right is not None
+        or type(count_node.value) is not int
+        or not bool(getattr(count_node, "is_pattern_constant", False))
+    ):
+        raise ValueError(
+            f"fixed {expression.operation} requires a literal count"
+        )
+    count = count_node.value
+    if count < 0:
+        raise ValueError(f"fixed {expression.operation} count must be non-negative")
+    if bit_width is not None:
+        if bit_width not in CERTIFICATE_WIDTHS:
+            raise ValueError(f"unsupported fixed-rotate width: {bit_width}")
+        if count >= bit_width:
+            raise ValueError(
+                f"fixed {expression.operation} count {count} is outside {bit_width}-bit width"
+            )
+    return count
+
+
+def _validate_fixed_rotate_widths(expression: Any, *, bit_width: int) -> None:
+    if not isinstance(expression, SymbolicExpressionProtocol):
+        raise ValueError(
+            f"expected symbolic expression, got {type(expression).__name__}"
+        )
+    if expression.operation is None:
+        return
+    if expression.operation in _FIXED_ROTATE_OPERATIONS:
+        _fixed_rotate_count(expression, bit_width=bit_width)
+        _validate_fixed_rotate_widths(expression.left, bit_width=bit_width)
+        return
+    if expression.left is not None:
+        _validate_fixed_rotate_widths(expression.left, bit_width=bit_width)
+    if expression.right is not None:
+        _validate_fixed_rotate_widths(expression.right, bit_width=bit_width)
+
+
 def _expression_fingerprint(expression: Any) -> tuple[Any, ...]:
     if not isinstance(expression, SymbolicExpressionProtocol):
         raise ValueError(
@@ -188,6 +234,13 @@ def _expression_fingerprint(expression: Any) -> tuple[Any, ...]:
         raise ValueError(f"unsupported expression operation: {operation}")
     if expression.is_leaf() or expression.left is None:
         raise ValueError(f"malformed {operation} expression")
+    if operation in _FIXED_ROTATE_OPERATIONS:
+        return (
+            "fixed_operation",
+            operation,
+            _fixed_rotate_count(expression),
+            _expression_fingerprint(expression.left),
+        )
     if operation in _UNARY_OPERATIONS:
         if expression.right is not None:
             raise ValueError(f"malformed unary {operation} expression")
@@ -405,6 +458,8 @@ def _compile_rule_families(
                     continue
 
                 for width in CERTIFICATE_WIDTHS:
+                    _validate_fixed_rotate_widths(rule.pattern, bit_width=width)
+                    _validate_fixed_rotate_widths(rule.replacement, bit_width=width)
                     _validate_declarative_constraints(rule, width)
                     if not verify_rule(rule, bit_width=width):
                         raise ValueError(f"verification returned false at {width} bits")
@@ -580,6 +635,19 @@ def _iter_symbolic_term_matches(
 
     if operation != term.operation:
         return
+    if operation in _FIXED_ROTATE_OPERATIONS:
+        if (
+            len(term.children) != 1
+            or term.shift_count
+            != _fixed_rotate_count(expression, bit_width=term.width)
+        ):
+            return
+        yield from _iter_symbolic_term_matches(
+            expression.left,
+            term.children[0],
+            bindings,
+        )
+        return
     if operation in _AC_OPERATIONS:
         pattern_items = _flatten_symbolic_ac(expression, operation)
         term_items = _flatten_term_ac(term, operation)
@@ -682,6 +750,21 @@ def _evaluate_constraint_expression(
         if expression.name:
             return _UnboundSymbolicTerm(expression.name)
         raise ValueError("unnamed constraint expression")
+
+    if expression.operation in _FIXED_ROTATE_OPERATIONS:
+        left = _evaluate_constraint_expression(
+            expression.left,
+            bindings,
+            width=width,
+        )
+        if isinstance(left, _UnboundSymbolicTerm):
+            raise ValueError("nested unbound constraint expression")
+        return TypedBvTerm(
+            operation=expression.operation,
+            width=width,
+            children=(left,),
+            shift_count=_fixed_rotate_count(expression, bit_width=width),
+        )
 
     left = _evaluate_constraint_expression(expression.left, bindings, width=width)
     right = (
@@ -872,6 +955,13 @@ def _materialize_symbolic_term(
     if expression.left is None:
         raise ValueError("operator expression has no left child")
     left = _materialize_symbolic_term(expression.left, bindings, width=width)
+    if expression.operation in _FIXED_ROTATE_OPERATIONS:
+        return TypedBvTerm(
+            operation=expression.operation,
+            width=width,
+            children=(left,),
+            shift_count=_fixed_rotate_count(expression, bit_width=width),
+        )
     right = (
         _materialize_symbolic_term(expression.right, bindings, width=width)
         if expression.right is not None

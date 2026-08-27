@@ -80,6 +80,7 @@ from d810.mba.residual_corpus import (
 from d810.mba.bounded_synthesis import (
     CERTIFICATION_WIDTHS,
     EnumeratedTerm,
+    GrammarAllOnesOrigin,
     MbaCertification,
     MbaExhaustionReceipt,
     MbaSynthesisBudget,
@@ -89,6 +90,7 @@ from d810.mba.bounded_synthesis import (
     deterministic_witnesses,
     enumerate_terms,
     generalize_terms,
+    grammar_all_ones_origins,
     synthesize_residual,
 )
 from d810.mba.rule_proposal import MbaRuleProposal, proposal_fingerprint, render_rule_source
@@ -608,6 +610,7 @@ __all__ = [
     "source_identity",
     "CERTIFICATION_WIDTHS",
     "EnumeratedTerm",
+    "GrammarAllOnesOrigin",
     "MbaCertification",
     "MbaExhaustionReceipt",
     "MbaSynthesisBudget",
@@ -617,6 +620,7 @@ __all__ = [
     "deterministic_witnesses",
     "enumerate_terms",
     "generalize_terms",
+    "grammar_all_ones_origins",
     "synthesize_residual",
     "MbaRuleProposal",
     "proposal_fingerprint",

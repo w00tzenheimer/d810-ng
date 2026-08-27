@@ -57,6 +57,29 @@ class MbaSynthesisBudget:
             raise ValueError("witness_count must be positive")
 
 
+@dataclass(frozen=True, slots=True, order=True)
+class GrammarAllOnesOrigin:
+    """One exact occurrence of the grammar-injected all-ones terminal."""
+
+    occurrence_path: tuple[int, ...]
+    terminal_fingerprint: str
+    source_width: int
+    origin: str = "grammar_injected_all_ones"
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.occurrence_path) is not tuple
+            or any(type(index) is not int or index < 0 for index in self.occurrence_path)
+        ):
+            raise TypeError("occurrence_path must contain non-negative integers")
+        if type(self.terminal_fingerprint) is not str or not self.terminal_fingerprint:
+            raise TypeError("terminal_fingerprint must be a non-empty string")
+        if type(self.source_width) is not int or self.source_width <= 0:
+            raise TypeError("source_width must be a positive integer")
+        if self.origin != "grammar_injected_all_ones":
+            raise ValueError("unsupported terminal origin")
+
+
 @dataclass(frozen=True, slots=True)
 class MbaExhaustionReceipt:
     reason: str
@@ -87,8 +110,7 @@ class EnumeratedTerm:
     fingerprint: str
     signature: tuple[int, ...]
     novel_constant_count: int = 0
-    width_relative_all_ones: bool = False
-    width_relative_all_ones_fingerprints: tuple[str, ...] = ()
+    width_relative_all_ones: tuple[GrammarAllOnesOrigin, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,8 +169,29 @@ class MbaSynthesisResult:
     replacement_cost: tuple[int, int] | None
     certification: MbaCertification
     exhaustion: MbaExhaustionReceipt | None
-    width_relative_all_ones: tuple[str, ...] = ()
+    width_relative_all_ones: tuple[GrammarAllOnesOrigin, ...] = ()
     fixed_operation_descriptors: tuple[tuple[str, int, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.source_cost != term_cost(self.source):
+            raise ValueError("source_cost does not match source")
+        if self.replacement is None:
+            if self.replacement_cost is not None:
+                raise ValueError("replacement_cost requires a replacement")
+            if self.width_relative_all_ones or self.fixed_operation_descriptors:
+                raise ValueError("failed synthesis cannot retain candidate descriptors")
+            return
+        if self.replacement_cost != term_cost(self.replacement):
+            raise ValueError("replacement_cost does not match replacement")
+        validated_origins = _validate_all_ones_origins(
+            self.source,
+            self.replacement,
+            self.width_relative_all_ones,
+        )
+        object.__setattr__(self, "width_relative_all_ones", validated_origins)
+        expected_fixed = _fixed_operation_descriptors(self.source, self.replacement)
+        if self.fixed_operation_descriptors != expected_fixed:
+            raise ValueError("fixed operation descriptors do not match result terms")
 
     @property
     def certified(self) -> bool:
@@ -161,6 +204,68 @@ class MbaSynthesisResult:
 
 def _mask(width: int) -> int:
     return (1 << width) - 1
+
+
+def _walk_term_paths(
+    term: TypedBvTerm,
+    path: tuple[int, ...] = (),
+) -> Iterable[tuple[tuple[int, ...], TypedBvTerm]]:
+    yield path, term
+    for index, child in enumerate(term.children):
+        yield from _walk_term_paths(child, path + (index,))
+
+
+def grammar_all_ones_origins(
+    term: TypedBvTerm,
+) -> tuple[GrammarAllOnesOrigin, ...]:
+    """Describe known grammar-origin mask occurrences without guessing origin."""
+
+    mask = _mask(term.width)
+    return tuple(
+        GrammarAllOnesOrigin(path, term_fingerprint(node), term.width)
+        for path, node in _walk_term_paths(term)
+        if node.operation is None and node.value == mask
+    )
+
+
+def _term_at_path(term: TypedBvTerm, path: tuple[int, ...]) -> TypedBvTerm:
+    current = term
+    for index in path:
+        try:
+            current = current.children[index]
+        except IndexError as exc:
+            raise ValueError("all-ones origin path is outside the replacement") from exc
+    return current
+
+
+def _validate_all_ones_origins(
+    source: TypedBvTerm,
+    replacement: TypedBvTerm,
+    origins: Iterable[GrammarAllOnesOrigin],
+) -> tuple[GrammarAllOnesOrigin, ...]:
+    frozen = tuple(origins)
+    if any(not isinstance(origin, GrammarAllOnesOrigin) for origin in frozen):
+        raise TypeError("width-relative all-ones origins have invalid types")
+    if frozen != tuple(sorted(set(frozen))):
+        raise ValueError("width-relative all-ones origins must be unique and ordered")
+    input_mask_fingerprints = {
+        term_fingerprint(node)
+        for _path, node in _walk_term_paths(source)
+        if node.operation is None and node.value == _mask(source.width)
+    }
+    for origin in frozen:
+        if origin.source_width != source.width:
+            raise ValueError("all-ones origin width does not match the source")
+        target = _term_at_path(replacement, origin.occurrence_path)
+        if (
+            target.operation is not None
+            or target.value != _mask(source.width)
+            or term_fingerprint(target) != origin.terminal_fingerprint
+        ):
+            raise ValueError("all-ones origin does not identify a mask terminal")
+        if origin.terminal_fingerprint in input_mask_fingerprints:
+            raise ValueError("input-provided all-ones terminal cannot gain grammar origin")
+    return frozen
 
 
 def _evaluate_term(
@@ -396,16 +501,12 @@ def enumerate_terms(
     generated = 0
     saw_unvisited = False
 
-    def make_record(candidate: TypedBvTerm, *, grammar_all_ones: bool | None = None) -> EnumeratedTerm:
-        if grammar_all_ones is None:
-            grammar_all_ones = (
-                any(
-                    node.operation is None
-                    and node.value == _mask(source.width)
-                    and term_fingerprint(node) not in input_constant_fps
-                    for node in _walk_terms(candidate)
-                )
-            )
+    grammar_mask_fingerprint = term_fingerprint(
+        TypedBvTerm(None, source.width, value=_mask(source.width))
+    )
+    grammar_all_ones_available = grammar_mask_fingerprint not in input_constant_fps
+
+    def make_record(candidate: TypedBvTerm) -> EnumeratedTerm:
         candidate_cost = term_cost(candidate)
         novel_fingerprints = {
             term_fingerprint(node)
@@ -414,23 +515,18 @@ def enumerate_terms(
             and node.value is not None
             and term_fingerprint(node) not in input_constant_fps
         }
-        marker_fingerprints = tuple(sorted(
-            (
-                term_fingerprint(node)
-                for node in _walk_terms(candidate)
-                if node.operation is None
-                and node.value == _mask(source.width)
-                and term_fingerprint(node) not in input_constant_fps
-            )
-        ))
+        origins = (
+            grammar_all_ones_origins(candidate)
+            if grammar_all_ones_available
+            else ()
+        )
         return EnumeratedTerm(
             candidate,
             candidate_cost,
             term_fingerprint(candidate),
             _signature(candidate, witness_rows),
             len(novel_fingerprints),
-            bool(marker_fingerprints),
-            marker_fingerprints,
+            origins,
         )
 
     def order_key(item: EnumeratedTerm) -> tuple[object, ...]:
@@ -530,16 +626,22 @@ def _to_symbolic(
     *,
     width: int,
     names: Mapping[tuple[object, ...], str],
-    width_relative_all_ones: frozenset[str] = frozenset(),
+    width_relative_all_ones_paths: frozenset[tuple[int, ...]] = frozenset(),
 ) -> SymbolicExpression:
-    def convert(node: TypedBvTerm) -> SymbolicExpression:
+    def convert(
+        node: TypedBvTerm,
+        path: tuple[int, ...],
+    ) -> SymbolicExpression:
         if node.operation is None:
             if node.value is not None:
-                value = _mask(width) if term_fingerprint(node) in width_relative_all_ones else node.value
+                value = _mask(width) if path in width_relative_all_ones_paths else node.value
                 return Const(f"const_{value}", value)
             assert node.leaf_key is not None
             return Var(names[node.leaf_key])
-        children = tuple(convert(child) for child in node.children)
+        children = tuple(
+            convert(child, path + (index,))
+            for index, child in enumerate(node.children)
+        )
         if node.operation == "bnot":
             return ~children[0]
         if node.operation == "neg":
@@ -572,7 +674,7 @@ def _to_symbolic(
                 right = children[0] << Const(f"shift_{width - count}", width - count)
             return left | right
         raise ValueError(f"unsupported symbolic operation: {node.operation}")
-    return convert(term)
+    return convert(term, ())
 
 
 def generalize_terms(
@@ -580,7 +682,7 @@ def generalize_terms(
     replacement: TypedBvTerm,
     *,
     width: int | None = None,
-    width_relative_all_ones: Iterable[str] = (),
+    width_relative_all_ones: Iterable[GrammarAllOnesOrigin] = (),
 ) -> tuple[SymbolicExpression, SymbolicExpression]:
     if pattern.width != replacement.width:
         raise ValueError("generalized terms must have matching widths")
@@ -592,10 +694,16 @@ def generalize_terms(
     replacement_keys = _leaf_keys(replacement)
     if not set(replacement_keys).issubset(set(keys)):
         raise ValueError("replacement introduces an unknown generalized leaf")
-    markers = frozenset(width_relative_all_ones)
+    origins = _validate_all_ones_origins(pattern, replacement, width_relative_all_ones)
+    replacement_paths = frozenset(origin.occurrence_path for origin in origins)
     return (
-        _to_symbolic(pattern, width=target_width, names=names, width_relative_all_ones=markers),
-        _to_symbolic(replacement, width=target_width, names=names, width_relative_all_ones=markers),
+        _to_symbolic(pattern, width=target_width, names=names),
+        _to_symbolic(
+            replacement,
+            width=target_width,
+            names=names,
+            width_relative_all_ones_paths=replacement_paths,
+        ),
     )
 
 
@@ -604,10 +712,10 @@ def certify_terms(
     replacement: TypedBvTerm,
     *,
     verifier: Callable[..., tuple[bool, Mapping[str, int] | None]] | None = None,
-    width_relative_all_ones: Iterable[str] = (),
+    width_relative_all_ones: Iterable[GrammarAllOnesOrigin] = (),
 ) -> MbaCertification:
     verify = verify_transformation if verifier is None else verifier
-    markers = tuple(width_relative_all_ones)
+    origins = tuple(width_relative_all_ones)
     receipts: list[ProofReceipt] = []
     for width in CERTIFICATION_WIDTHS:
         started = time.monotonic()
@@ -616,7 +724,7 @@ def certify_terms(
                 pattern,
                 replacement,
                 width=width,
-                width_relative_all_ones=markers,
+                width_relative_all_ones=origins,
             )
             verdict, counterexample = verify(
                 pattern_expr,
@@ -639,18 +747,31 @@ def synthesize_residual(
     budget = MbaSynthesisBudget() if budget is None else budget
     source = atomized.atomized_term
     source_cost = term_cost(source)
-    witnesses = deterministic_witnesses(source, count=budget.witness_count)
-    source_signature = _signature(source, witnesses)
-    if source.operation is None and budget.max_generated_terms == 0:
-        return MbaSynthesisResult(
-            source,
-            None,
-            source_cost,
-            None,
-            MbaCertification(()),
-            MbaExhaustionReceipt("generation_budget", 0, budget),
-        )
     if source.operation is None:
+        source_keys = _leaf_keys(source)
+        source_atoms = sum(
+            1
+            for key in source_keys
+            if key and key[0] == "d810.mba.atom.v1"
+        )
+        if len(source_keys) > budget.max_variables or source_atoms > budget.max_atoms:
+            return MbaSynthesisResult(
+                source,
+                None,
+                source_cost,
+                None,
+                MbaCertification(()),
+                MbaExhaustionReceipt("too_many_variables", 0, budget),
+            )
+        if budget.max_generated_terms == 0 or budget.max_candidate_attempts == 0:
+            return MbaSynthesisResult(
+                source,
+                None,
+                source_cost,
+                None,
+                MbaCertification(()),
+                MbaExhaustionReceipt("generation_budget", 0, budget),
+            )
         return MbaSynthesisResult(
             source,
             None,
@@ -659,6 +780,8 @@ def synthesize_residual(
             MbaCertification(()),
             MbaExhaustionReceipt("not_cheaper", 1, budget),
         )
+    witnesses = deterministic_witnesses(source, count=budget.witness_count)
+    source_signature = _signature(source, witnesses)
     had_signature = False
     had_noncheaper_signature = False
     had_proof_failure = False
@@ -673,13 +796,10 @@ def synthesize_residual(
         if candidate.cost >= source_cost:
             had_noncheaper_signature = True
             return False
-        markers = tuple(
-            term_fingerprint(node)
-            for node in _walk_terms(candidate.term)
-            if node.operation is None and node.value == _mask(source.width)
-        ) if candidate.width_relative_all_ones else ()
         certification = certify_terms(
-            source, candidate.term, width_relative_all_ones=markers
+            source,
+            candidate.term,
+            width_relative_all_ones=candidate.width_relative_all_ones,
         )
         if certification.certified:
             certified_candidate.append((candidate, certification))
@@ -698,7 +818,7 @@ def synthesize_residual(
             candidate.cost,
             certification,
             None,
-            candidate.width_relative_all_ones_fingerprints,
+            candidate.width_relative_all_ones,
             _fixed_operation_descriptors(source, candidate.term),
         )
     reason = (
@@ -719,6 +839,7 @@ def synthesize_residual(
 __all__ = [
     "CERTIFICATION_WIDTHS",
     "EnumeratedTerm",
+    "GrammarAllOnesOrigin",
     "MbaCertification",
     "MbaExhaustionReceipt",
     "MbaSynthesisBudget",
@@ -729,5 +850,6 @@ __all__ = [
     "deterministic_witnesses",
     "enumerate_terms",
     "generalize_terms",
+    "grammar_all_ones_origins",
     "synthesize_residual",
 ]

@@ -15,6 +15,7 @@ from d810.core.typing import TYPE_CHECKING
 from d810.mba.dsl import SymbolicExpressionProtocol
 from d810.mba.typed_term import (
     AC_OPERATIONS,
+    FIXED_SHIFT_OPERATIONS,
     TypedBvTerm,
     _term_sort_key,
     term_fingerprint,
@@ -243,6 +244,13 @@ def _iter_matches(
         return
     if adapter.candidate_operation(candidate) != operation:
         return
+    if operation in FIXED_SHIFT_OPERATIONS and isinstance(pattern, TypedBvTerm):
+        if (
+            not isinstance(candidate, TypedBvTerm)
+            or pattern.width != candidate.width
+            or pattern.shift_count != candidate.shift_count
+        ):
+            return
     if operation in AC_OPERATIONS:
         pattern_items = _flatten_pattern(pattern, operation, adapter)
         candidate_items = _flatten_candidate(
