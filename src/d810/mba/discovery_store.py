@@ -11,6 +11,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from d810.core.function_execution_identity import (
+    FunctionExecutionIdentity,
+    MbaObservationContext,
+)
+from d810.core.plugins import PluginIdentity
 from d810.mba.differential_report import outcome_from_dict
 from d810.mba.bounded_synthesis import (
     CERTIFICATION_WIDTHS,
@@ -52,6 +57,128 @@ from d810.core.typing import Iterator
 SCHEMA_VERSION = 1
 DISCOVERY_LEASE_TIMEOUT = timedelta(minutes=5)
 DISCOVERY_LEASE_TIMEOUT_SECONDS = DISCOVERY_LEASE_TIMEOUT.total_seconds()
+
+_SCHEMA_SQL = """
+    CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+    );
+    CREATE TABLE inputs (
+        input_id INTEGER PRIMARY KEY,
+        input_identity TEXT NOT NULL UNIQUE,
+        identity_provenance TEXT,
+        external_evidence_allowed INTEGER NOT NULL
+    );
+    CREATE TABLE databases (
+        database_id INTEGER PRIMARY KEY,
+        database_uuid TEXT NOT NULL,
+        database_identity TEXT NOT NULL,
+        input_id INTEGER NOT NULL REFERENCES inputs,
+        UNIQUE(database_uuid, database_identity, input_id)
+    );
+    CREATE TABLE functions (
+        function_id INTEGER PRIMARY KEY,
+        database_id INTEGER NOT NULL REFERENCES databases,
+        function_ea INTEGER NOT NULL,
+        function_rva INTEGER,
+        function_fingerprint TEXT NOT NULL,
+        UNIQUE(database_id, function_ea, function_fingerprint)
+    );
+    CREATE TABLE terms (
+        term_id INTEGER PRIMARY KEY,
+        canonical_fingerprint TEXT NOT NULL UNIQUE,
+        width INTEGER NOT NULL,
+        canonical_term BLOB NOT NULL,
+        canonical_codec_version INTEGER NOT NULL
+    );
+    CREATE TABLE raw_terms (
+        raw_term_id INTEGER PRIMARY KEY,
+        term_id INTEGER NOT NULL REFERENCES terms,
+        raw_fingerprint TEXT NOT NULL,
+        raw_term BLOB NOT NULL,
+        raw_codec_version INTEGER NOT NULL,
+        UNIQUE(term_id, raw_fingerprint)
+    );
+    CREATE TABLE provider_attempts (
+        attempt_id INTEGER PRIMARY KEY,
+        attempt_uuid TEXT NOT NULL UNIQUE,
+        function_id INTEGER NOT NULL REFERENCES functions,
+        term_id INTEGER NOT NULL REFERENCES terms,
+        raw_term_id INTEGER NOT NULL REFERENCES raw_terms,
+        session_id TEXT NOT NULL,
+        top_level_epoch INTEGER NOT NULL,
+        evidence_generation INTEGER NOT NULL,
+        maturity TEXT NOT NULL,
+        instruction_ea INTEGER NOT NULL,
+        block_serial INTEGER,
+        block_ea INTEGER,
+        provider TEXT NOT NULL,
+        plugin_name TEXT NOT NULL,
+        plugin_version TEXT,
+        status TEXT NOT NULL,
+        input_cost_ops INTEGER,
+        input_cost_nodes INTEGER,
+        output_cost_ops INTEGER,
+        output_cost_nodes INTEGER,
+        proof_verdict INTEGER,
+        elapsed_ms REAL NOT NULL,
+        refusal_reason TEXT,
+        outcome_payload BLOB NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE residual_groups (
+        group_id INTEGER PRIMARY KEY,
+        term_id INTEGER NOT NULL UNIQUE REFERENCES terms,
+        state TEXT NOT NULL,
+        eligible_observation_count INTEGER NOT NULL,
+        last_observed_at TEXT NOT NULL,
+        last_mined_at TEXT,
+        materialized_at TEXT,
+        admitted_at TEXT,
+        revision INTEGER NOT NULL
+    );
+    CREATE TABLE mining_runs (
+        run_id TEXT PRIMARY KEY,
+        group_id INTEGER NOT NULL REFERENCES residual_groups,
+        claimed_revision INTEGER NOT NULL,
+        miner_version TEXT NOT NULL,
+        budget_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        finished_at TEXT,
+        failure_reason TEXT
+    );
+    CREATE TABLE proposals (
+        proposal_id TEXT PRIMARY KEY,
+        group_id INTEGER NOT NULL REFERENCES residual_groups,
+        run_id TEXT NOT NULL REFERENCES mining_runs,
+        proposal_fingerprint TEXT NOT NULL UNIQUE,
+        replacement_term BLOB NOT NULL,
+        proposal_payload BLOB NOT NULL,
+        proof_receipt_payload BLOB NOT NULL,
+        state TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        materialized_path TEXT,
+        materialized_digest TEXT,
+        materialized_at TEXT,
+        admitted_rule_id TEXT,
+        admitted_at TEXT,
+        rejection_reason TEXT
+    );
+    CREATE INDEX idx_residual_groups_claim
+        ON residual_groups(state, last_observed_at, group_id);
+    CREATE INDEX idx_mining_runs_lease
+        ON mining_runs(state, heartbeat_at, group_id);
+    CREATE INDEX idx_provider_attempts_term
+        ON provider_attempts(term_id, created_at, attempt_id);
+    CREATE INDEX idx_provider_attempts_function
+        ON provider_attempts(function_id, created_at, attempt_id);
+    CREATE INDEX idx_provider_attempts_provider
+        ON provider_attempts(provider, created_at, attempt_id);
+    CREATE INDEX idx_proposals_group_state
+        ON proposals(group_id, state, created_at, proposal_id);
+"""
 
 _TABLES: dict[str, tuple[str, ...]] = {
     "schema_migrations": ("version", "applied_at"),
@@ -309,6 +436,32 @@ _INDEX_DDL = {
     "idx_proposals_group_state": "create index idx_proposals_group_state on proposals(group_id, state, created_at, proposal_id)",
 }
 
+_ATTEMPT_AUTHORITY_SELECT = """
+    SELECT pa.*,
+           f.function_ea AS authority_function_ea,
+           f.function_rva AS authority_function_rva,
+           f.function_fingerprint AS authority_function_fingerprint,
+           d.database_uuid AS authority_database_uuid,
+           d.database_identity AS authority_database_identity,
+           i.input_identity AS authority_input_identity,
+           i.identity_provenance AS authority_identity_provenance,
+           i.external_evidence_allowed AS authority_external_evidence_allowed,
+           t.canonical_fingerprint AS authority_canonical_fingerprint,
+           rt.raw_fingerprint AS authority_raw_fingerprint,
+           rt.term_id AS raw_owner_term_id,
+           t.width AS authority_width,
+           t.canonical_term AS authority_canonical_term,
+           t.canonical_codec_version AS authority_canonical_codec_version,
+           rt.raw_term AS authority_raw_term,
+           rt.raw_codec_version AS authority_raw_codec_version
+    FROM provider_attempts pa
+    JOIN functions f ON f.function_id = pa.function_id
+    JOIN databases d ON d.database_id = f.database_id
+    JOIN inputs i ON i.input_id = d.input_id
+    JOIN terms t ON t.term_id = pa.term_id
+    JOIN raw_terms rt ON rt.raw_term_id = pa.raw_term_id
+"""
+
 
 def _normalized_ddl(value: str) -> str:
     return " ".join(value.lower().split())
@@ -463,12 +616,65 @@ def _proof_payload(proofs: tuple[ProofReceipt, ...]) -> bytes:
     ).encode("utf-8")
 
 
-def _proofs_from_payload(payload: bytes) -> tuple[ProofReceipt, ...]:
+_LIFECYCLE_KEYS = frozenset({"materialized", "terminal"})
+_TRANSITION_IDENTITY_KEYS = frozenset({"source_state", "source_revision"})
+
+
+def _proof_envelope(
+    proofs: tuple[ProofReceipt, ...],
+    *,
+    materialized: dict[str, object] | None = None,
+    terminal: dict[str, object] | None = None,
+) -> bytes:
+    return _json_bytes(
+        {
+            "schema_version": 1,
+            "proof_receipts": _strict_loads(_proof_payload(proofs)),
+            "lifecycle": {
+                "materialized": materialized,
+                "terminal": terminal,
+            },
+        },
+        name="proof receipt payload",
+    )
+
+
+def _decode_proof_envelope(
+    payload: bytes,
+) -> tuple[tuple[ProofReceipt, ...], dict[str, object]]:
     decoded = _strict_loads(payload)
-    if type(decoded) is not list:
-        raise ValueError("proof receipt payload must be a list")
+    if type(decoded) is list:
+        proof_rows = decoded
+        lifecycle: dict[str, object] = {"materialized": None, "terminal": None}
+    elif type(decoded) is dict and set(decoded) == {
+        "schema_version",
+        "proof_receipts",
+        "lifecycle",
+    }:
+        if decoded["schema_version"] != 1:
+            raise ValueError("unsupported proof receipt payload schema")
+        proof_rows = decoded["proof_receipts"]
+        lifecycle_raw = decoded["lifecycle"]
+        if type(lifecycle_raw) is not dict or set(lifecycle_raw) != _LIFECYCLE_KEYS:
+            raise ValueError("proof receipt lifecycle payload has invalid fields")
+        lifecycle = dict(lifecycle_raw)
+        for name, identity in lifecycle.items():
+            if identity is None:
+                continue
+            if (
+                type(identity) is not dict
+                or set(identity) != _TRANSITION_IDENTITY_KEYS
+                or type(identity["source_state"]) is not str
+                or type(identity["source_revision"]) is not int
+                or identity["source_revision"] < 0
+            ):
+                raise ValueError(f"{name} retry identity is invalid")
+    else:
+        raise ValueError("proof receipt payload must be an envelope")
+    if type(proof_rows) is not list:
+        raise ValueError("proof receipt payload must contain a list")
     proofs: list[ProofReceipt] = []
-    for row in decoded:
+    for row in proof_rows:
         if type(row) is not dict or set(row) != _PROOF_FIELDS:
             raise ValueError("proof receipt has invalid fields")
         proofs.append(
@@ -489,9 +695,45 @@ def _proofs_from_payload(payload: bytes) -> tuple[ProofReceipt, ...]:
         raise ValueError("proof receipts must cover exactly 8, 16, 32, and 64 bits")
     if any(not item.certified for item in result):
         raise ValueError("proof receipts must all be certified")
-    if _proof_payload(result) != payload:
+    if type(decoded) is list and _proof_payload(result) != payload:
         raise ValueError("proof receipt payload is not canonical")
-    return result
+    if (
+        type(decoded) is dict
+        and _proof_envelope(
+            result,
+            materialized=lifecycle["materialized"],  # type: ignore[arg-type]
+            terminal=lifecycle["terminal"],  # type: ignore[arg-type]
+        )
+        != payload
+    ):
+        raise ValueError("proof receipt payload is not canonical")
+    return result, lifecycle
+
+
+def _proofs_from_payload(payload: bytes) -> tuple[ProofReceipt, ...]:
+    return _decode_proof_envelope(payload)[0]
+
+
+def _with_retry_identity(
+    payload: bytes,
+    transition: str,
+    source_state: ProposalState,
+    source_revision: int,
+) -> bytes:
+    proofs, lifecycle = _decode_proof_envelope(payload)
+    if transition not in _LIFECYCLE_KEYS:
+        raise ValueError("unknown lifecycle retry transition")
+    if lifecycle[transition] is not None:
+        raise ValueError("lifecycle retry identity already exists")
+    lifecycle[transition] = {
+        "source_state": source_state.value,
+        "source_revision": source_revision,
+    }
+    return _proof_envelope(
+        proofs,
+        materialized=lifecycle["materialized"],  # type: ignore[arg-type]
+        terminal=lifecycle["terminal"],  # type: ignore[arg-type]
+    )
 
 
 def _proposal_from_bytes(payload: bytes) -> MbaRuleProposal:
@@ -620,22 +862,20 @@ def _coerce_proposal_payload(value: object) -> tuple[MbaRuleProposal, bytes]:
 
 def _coerce_proof_payload(value: object, proposal: MbaRuleProposal) -> bytes:
     if value is None:
-        return _proof_payload(proposal.proof_receipts)
+        return _proof_envelope(proposal.proof_receipts)
     if type(value) is bytes:
         proofs = _proofs_from_payload(value)
-        payload = value
     elif type(value) in (tuple, list) and all(
         isinstance(item, ProofReceipt) for item in value
     ):
         proofs = tuple(value)
-        payload = _proof_payload(proofs)
     else:
         raise TypeError(
             "proof receipt payload must be canonical bytes or ProofReceipt values"
         )
     if proofs != proposal.proof_receipts:
         raise ValueError("proof receipts do not match proposal")
-    return payload
+    return _proof_envelope(proofs)
 
 
 def _decode_term(payload: bytes, *, name: str) -> TypedBvTerm:
@@ -649,13 +889,21 @@ def _decode_term(payload: bytes, *, name: str) -> TypedBvTerm:
         raise ValueError(f"invalid {name} bytes") from exc
 
 
-def _attempt_payload_bytes(
-    outcome: MbaProviderOutcome, eligible_for_mining: bool
-) -> bytes:
+def _attempt_payload_bytes(attempt: DiscoveryAttempt) -> bytes:
+    outcome = attempt.outcome
+    eligible_for_mining = attempt.eligible_for_mining
     if type(eligible_for_mining) is not bool:
         raise TypeError("eligible_for_mining must be a bool")
     payload = json.dumps(
-        {"eligible_for_mining": eligible_for_mining, "outcome": outcome.to_dict()},
+        {
+            "schema_version": 1,
+            "attempt_uuid": attempt.attempt_uuid,
+            "canonical_fingerprint": term_fingerprint(attempt.canonical_term),
+            "raw_fingerprint": term_fingerprint(attempt.raw_term),
+            "eligible_for_mining": eligible_for_mining,
+            "context": attempt.context.to_dict(),
+            "outcome": outcome.to_dict(),
+        },
         allow_nan=False,
         ensure_ascii=True,
         separators=(",", ":"),
@@ -664,18 +912,34 @@ def _attempt_payload_bytes(
     decoded = _strict_loads(payload)
     try:
         if type(decoded) is not dict or set(decoded) != {
+            "schema_version",
+            "attempt_uuid",
+            "canonical_fingerprint",
+            "raw_fingerprint",
             "eligible_for_mining",
+            "context",
             "outcome",
         }:
             raise ValueError("attempt payload has invalid fields")
+        if decoded["schema_version"] != 1:
+            raise ValueError("unsupported attempt payload schema")
+        if (
+            decoded["attempt_uuid"] != attempt.attempt_uuid
+            or decoded["canonical_fingerprint"]
+            != term_fingerprint(attempt.canonical_term)
+            or decoded["raw_fingerprint"] != term_fingerprint(attempt.raw_term)
+        ):
+            raise ValueError("attempt payload identity is invalid")
         if type(decoded["eligible_for_mining"]) is not bool:
             raise ValueError("attempt eligibility must be a boolean")
         restored = outcome_from_dict(decoded["outcome"])  # type: ignore[arg-type]
+        restored_context = _context_from_dict(decoded["context"])
     except (TypeError, ValueError, KeyError, IndexError) as exc:
         raise ValueError("attempt payload is not canonically representable") from exc
     if (
         decoded["eligible_for_mining"] is not eligible_for_mining
         or restored.to_dict() != decoded["outcome"]
+        or restored_context != attempt.context
         or json.dumps(
             decoded,
             allow_nan=False,
@@ -689,20 +953,78 @@ def _attempt_payload_bytes(
     return payload
 
 
-def _validate_attempt_payload(payload: bytes) -> tuple[bool, MbaProviderOutcome]:
+def _context_from_dict(value: object) -> MbaObservationContext:
+    if type(value) is not dict or set(value) != {
+        "function_identity",
+        "plugin_identity",
+        "plugin_name",
+        "plugin_version",
+        "instruction_ea",
+        "block_serial",
+        "block_ea",
+        "block_identity",
+    }:
+        raise ValueError("attempt context has invalid fields")
+    identity_raw = value["function_identity"]
+    plugin_raw = value["plugin_identity"]
+    if type(identity_raw) is not dict or type(plugin_raw) is not dict:
+        raise ValueError("attempt context identity is invalid")
+    try:
+        identity = FunctionExecutionIdentity(**identity_raw)
+        plugin = PluginIdentity(**plugin_raw)
+        context = MbaObservationContext(
+            function_identity=identity,
+            plugin_identity=plugin,
+            instruction_ea=value["instruction_ea"],
+            block_serial=value["block_serial"],
+            block_ea=value["block_ea"],
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("attempt context is invalid") from exc
+    if context.to_dict() != value:
+        raise ValueError("attempt context is not canonical")
+    return context
+
+
+def _validate_attempt_payload(
+    payload: bytes,
+) -> tuple[bool, MbaProviderOutcome, MbaObservationContext]:
     decoded = _strict_loads(payload)
-    if type(decoded) is not dict or set(decoded) != {"eligible_for_mining", "outcome"}:
+    if type(decoded) is not dict or set(decoded) != {
+        "schema_version",
+        "attempt_uuid",
+        "canonical_fingerprint",
+        "raw_fingerprint",
+        "eligible_for_mining",
+        "context",
+        "outcome",
+    }:
         raise ValueError("attempt payload has invalid fields")
+    if decoded["schema_version"] != 1:
+        raise ValueError("unsupported attempt payload schema")
+    try:
+        if str(UUID(decoded["attempt_uuid"])) != decoded["attempt_uuid"]:
+            raise ValueError("attempt UUID is not canonical")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("attempt payload UUID is invalid") from exc
+    if (
+        type(decoded["canonical_fingerprint"]) is not str
+        or not decoded["canonical_fingerprint"]
+        or type(decoded["raw_fingerprint"]) is not str
+        or not decoded["raw_fingerprint"]
+    ):
+        raise ValueError("attempt payload fingerprints are invalid")
     if type(decoded["eligible_for_mining"]) is not bool:
         raise ValueError("attempt eligibility must be a boolean")
     try:
         outcome = outcome_from_dict(decoded["outcome"])  # type: ignore[arg-type]
+        context = _context_from_dict(decoded["context"])
     except (TypeError, ValueError, KeyError, IndexError) as exc:
         raise ValueError("attempt payload has invalid outcome") from exc
-    canonical = _attempt_payload_bytes(outcome, decoded["eligible_for_mining"])
+    canonical = _json_bytes(decoded, name="attempt payload")
     if canonical != payload:
         raise ValueError("attempt payload is not canonical")
-    return decoded["eligible_for_mining"], outcome
+    return decoded["eligible_for_mining"], outcome, context
 
 
 def _timestamp(value: object) -> str:
@@ -862,128 +1184,7 @@ class MbaDiscoveryStore:
             raise ValueError("busy timeout is not 5000ms")
 
     def _create_schema(self) -> None:
-        schema_sql = """
-            CREATE TABLE schema_migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL
-            );
-            CREATE TABLE inputs (
-                input_id INTEGER PRIMARY KEY,
-                input_identity TEXT NOT NULL UNIQUE,
-                identity_provenance TEXT,
-                external_evidence_allowed INTEGER NOT NULL
-            );
-            CREATE TABLE databases (
-                database_id INTEGER PRIMARY KEY,
-                database_uuid TEXT NOT NULL,
-                database_identity TEXT NOT NULL,
-                input_id INTEGER NOT NULL REFERENCES inputs,
-                UNIQUE(database_uuid, database_identity, input_id)
-            );
-            CREATE TABLE functions (
-                function_id INTEGER PRIMARY KEY,
-                database_id INTEGER NOT NULL REFERENCES databases,
-                function_ea INTEGER NOT NULL,
-                function_rva INTEGER,
-                function_fingerprint TEXT NOT NULL,
-                UNIQUE(database_id, function_ea, function_fingerprint)
-            );
-            CREATE TABLE terms (
-                term_id INTEGER PRIMARY KEY,
-                canonical_fingerprint TEXT NOT NULL UNIQUE,
-                width INTEGER NOT NULL,
-                canonical_term BLOB NOT NULL,
-                canonical_codec_version INTEGER NOT NULL
-            );
-            CREATE TABLE raw_terms (
-                raw_term_id INTEGER PRIMARY KEY,
-                term_id INTEGER NOT NULL REFERENCES terms,
-                raw_fingerprint TEXT NOT NULL,
-                raw_term BLOB NOT NULL,
-                raw_codec_version INTEGER NOT NULL,
-                UNIQUE(term_id, raw_fingerprint)
-            );
-            CREATE TABLE provider_attempts (
-                attempt_id INTEGER PRIMARY KEY,
-                attempt_uuid TEXT NOT NULL UNIQUE,
-                function_id INTEGER NOT NULL REFERENCES functions,
-                term_id INTEGER NOT NULL REFERENCES terms,
-                raw_term_id INTEGER NOT NULL REFERENCES raw_terms,
-                session_id TEXT NOT NULL,
-                top_level_epoch INTEGER NOT NULL,
-                evidence_generation INTEGER NOT NULL,
-                maturity TEXT NOT NULL,
-                instruction_ea INTEGER NOT NULL,
-                block_serial INTEGER,
-                block_ea INTEGER,
-                provider TEXT NOT NULL,
-                plugin_name TEXT NOT NULL,
-                plugin_version TEXT,
-                status TEXT NOT NULL,
-                input_cost_ops INTEGER,
-                input_cost_nodes INTEGER,
-                output_cost_ops INTEGER,
-                output_cost_nodes INTEGER,
-                proof_verdict INTEGER,
-                elapsed_ms REAL NOT NULL,
-                refusal_reason TEXT,
-                outcome_payload BLOB NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE residual_groups (
-                group_id INTEGER PRIMARY KEY,
-                term_id INTEGER NOT NULL UNIQUE REFERENCES terms,
-                state TEXT NOT NULL,
-                eligible_observation_count INTEGER NOT NULL,
-                last_observed_at TEXT NOT NULL,
-                last_mined_at TEXT,
-                materialized_at TEXT,
-                admitted_at TEXT,
-                revision INTEGER NOT NULL
-            );
-            CREATE TABLE mining_runs (
-                run_id TEXT PRIMARY KEY,
-                group_id INTEGER NOT NULL REFERENCES residual_groups,
-                claimed_revision INTEGER NOT NULL,
-                miner_version TEXT NOT NULL,
-                budget_fingerprint TEXT NOT NULL,
-                state TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                heartbeat_at TEXT NOT NULL,
-                finished_at TEXT,
-                failure_reason TEXT
-            );
-            CREATE TABLE proposals (
-                proposal_id TEXT PRIMARY KEY,
-                group_id INTEGER NOT NULL REFERENCES residual_groups,
-                run_id TEXT NOT NULL REFERENCES mining_runs,
-                proposal_fingerprint TEXT NOT NULL UNIQUE,
-                replacement_term BLOB NOT NULL,
-                proposal_payload BLOB NOT NULL,
-                proof_receipt_payload BLOB NOT NULL,
-                state TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                materialized_path TEXT,
-                materialized_digest TEXT,
-                materialized_at TEXT,
-                admitted_rule_id TEXT,
-                admitted_at TEXT,
-                rejection_reason TEXT
-            );
-            CREATE INDEX idx_residual_groups_claim
-                ON residual_groups(state, last_observed_at, group_id);
-            CREATE INDEX idx_mining_runs_lease
-                ON mining_runs(state, heartbeat_at, group_id);
-            CREATE INDEX idx_provider_attempts_term
-                ON provider_attempts(term_id, created_at, attempt_id);
-            CREATE INDEX idx_provider_attempts_function
-                ON provider_attempts(function_id, created_at, attempt_id);
-            CREATE INDEX idx_provider_attempts_provider
-                ON provider_attempts(provider, created_at, attempt_id);
-            CREATE INDEX idx_proposals_group_state
-                ON proposals(group_id, state, created_at, proposal_id);
-            """
-        for statement in schema_sql.split(";"):
+        for statement in _SCHEMA_SQL.split(";"):
             statement = statement.strip()
             if statement:
                 self._connection.execute(statement)
@@ -999,12 +1200,19 @@ class MbaDiscoveryStore:
         expected_indexes = {("index", index) for index in _INDEXES}
         if user_objects != expected_tables | expected_indexes:
             raise ValueError("partial schema: unexpected schema objects")
+        expected_table_ddl = {
+            statement.split()[2]: _normalized_ddl(statement)
+            for statement in _SCHEMA_SQL.split(";")
+            if statement.strip().lower().startswith("create table")
+        }
         for table, expected in _TABLES.items():
             row = self._connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
             ).fetchone()
             if row is None:
                 raise ValueError("partial schema")
+            if _normalized_ddl(row[0]) != expected_table_ddl[table]:
+                raise ValueError(f"partial schema: {table} definition")
             xinfo = tuple(
                 (item[1], item[2], item[3], item[4], item[5], item[6])
                 for item in self._connection.execute(f'PRAGMA table_xinfo("{table}")')
@@ -1327,42 +1535,111 @@ class MbaDiscoveryStore:
         ):
             raise ValueError("invalid residual group transition")
         conn.execute(
-            "UPDATE residual_groups SET state=?, eligible_observation_count=eligible_observation_count+?, last_observed_at=?, revision=? WHERE group_id=?",
-            (next_state.value, int(eligible), now, revision, row[0]),
+            "UPDATE residual_groups SET state=?, eligible_observation_count=eligible_observation_count+?, last_observed_at=?, last_mined_at=?, revision=? WHERE group_id=?",
+            (
+                next_state.value,
+                int(eligible),
+                now,
+                None
+                if current is ResidualGroupState.NO_PROPOSAL
+                and next_state is ResidualGroupState.ELIGIBLE
+                else row[5],
+                revision,
+                row[0],
+            ),
         )
         return int(row[0]), next_state, revision
+
+    def _validate_attempt_row(
+        self,
+        row: sqlite3.Row,
+        *,
+        expected_term_id: int | None = None,
+    ) -> tuple[bool, MbaProviderOutcome, MbaObservationContext]:
+        eligible, outcome, context = _validate_attempt_payload(
+            bytes(row["outcome_payload"])
+        )
+        payload_identity = _strict_loads(bytes(row["outcome_payload"]))
+        if type(payload_identity) is not dict:
+            raise ValueError("provider attempt payload authority is corrupt")
+        identity = context.function_identity
+        input_cost = outcome.input_cost or (None, None)
+        output_cost = outcome.output_cost or (None, None)
+        canonical = _decode_term(
+            bytes(row["authority_canonical_term"]), name="canonical term"
+        )
+        raw = _decode_term(bytes(row["authority_raw_term"]), name="raw term")
+        expected = {
+            "session_id": identity.decompilation_session_id,
+            "top_level_epoch": identity.top_level_epoch,
+            "evidence_generation": identity.evidence_generation,
+            "maturity": identity.maturity,
+            "instruction_ea": context.instruction_ea,
+            "block_serial": context.block_serial,
+            "block_ea": context.block_ea,
+            "provider": outcome.provider.value,
+            "plugin_name": context.plugin_identity.name,
+            "plugin_version": context.plugin_identity.version,
+            "status": outcome.status.value,
+            "input_cost_ops": input_cost[0],
+            "input_cost_nodes": input_cost[1],
+            "output_cost_ops": output_cost[0],
+            "output_cost_nodes": output_cost[1],
+            "proof_verdict": None
+            if outcome.proof_verdict is None
+            else int(outcome.proof_verdict),
+            "elapsed_ms": outcome.elapsed_ms,
+            "refusal_reason": outcome.refusal_reason,
+            "authority_function_ea": identity.function_ea,
+            "authority_function_rva": identity.function_rva,
+            "authority_function_fingerprint": identity.function_fingerprint,
+            "authority_database_uuid": identity.database_uuid,
+            "authority_database_identity": identity.database_identity,
+            "authority_input_identity": identity.input_identity,
+            "authority_identity_provenance": identity.input_identity_provenance,
+            "authority_external_evidence_allowed": int(
+                identity.external_evidence_allowed
+            ),
+        }
+        if any(row[name] != value for name, value in expected.items()):
+            raise ValueError("provider attempt normalized authority is corrupt")
+        if (
+            str(UUID(row["attempt_uuid"])) != row["attempt_uuid"]
+            or row["attempt_uuid"] != payload_identity["attempt_uuid"]
+            or row["raw_owner_term_id"] != row["term_id"]
+            or expected_term_id is not None
+            and row["term_id"] != expected_term_id
+            or row["authority_canonical_fingerprint"] != term_fingerprint(canonical)
+            or row["authority_canonical_fingerprint"]
+            != payload_identity["canonical_fingerprint"]
+            or row["authority_raw_fingerprint"] != term_fingerprint(raw)
+            or row["authority_raw_fingerprint"] != payload_identity["raw_fingerprint"]
+            or row["authority_width"] != canonical.width
+            or raw.width != canonical.width
+            or row["authority_canonical_codec_version"] != TERM_WIRE_SCHEMA_VERSION
+            or row["authority_raw_codec_version"] != TERM_WIRE_SCHEMA_VERSION
+            or outcome.fingerprint != term_fingerprint(canonical)
+        ):
+            raise ValueError("stored term identity is corrupt")
+        _parse_timestamp(row["created_at"], name="created_at")
+        return eligible, outcome, context
 
     def record_attempt(self, attempt: DiscoveryAttempt) -> DiscoveryReceipt:
         if not isinstance(attempt, DiscoveryAttempt):
             raise TypeError("attempt must be a DiscoveryAttempt")
         canonical = _term_bytes(attempt.canonical_term, name="canonical term")
         raw = _term_bytes(attempt.raw_term, name="raw term")
-        outcome_payload = _attempt_payload_bytes(
-            attempt.outcome, attempt.eligible_for_mining
-        )
+        outcome_payload = _attempt_payload_bytes(attempt)
         try:
             with self._transaction(immediate=True) as conn:
                 # Check UUID identity before any upsert so both an exact
                 # retry and a conflicting collision are mutation-free.
                 existing = conn.execute(
-                    """
-                    SELECT pa.*, f.function_ea, f.function_rva, f.function_fingerprint,
-                           d.database_uuid, d.database_identity, i.input_identity,
-                           i.identity_provenance, i.external_evidence_allowed,
-                           t.canonical_fingerprint, rt.raw_fingerprint, rt.term_id,
-                           t.width, t.canonical_term, t.canonical_codec_version,
-                           rt.raw_term, rt.raw_codec_version
-                    FROM provider_attempts pa
-                    JOIN functions f ON f.function_id = pa.function_id
-                    JOIN databases d ON d.database_id = f.database_id
-                    JOIN inputs i ON i.input_id = d.input_id
-                    JOIN terms t ON t.term_id = pa.term_id
-                    JOIN raw_terms rt ON rt.raw_term_id = pa.raw_term_id
-                    WHERE pa.attempt_uuid=?
-                    """,
+                    _ATTEMPT_AUTHORITY_SELECT + " WHERE pa.attempt_uuid=?",
                     (attempt.attempt_uuid,),
                 ).fetchone()
                 if existing is not None:
+                    self._validate_attempt_row(existing)
                     stored_canonical = _decode_term(
                         bytes(existing[37]), name="canonical term"
                     )
@@ -1424,8 +1701,8 @@ class MbaDiscoveryStore:
                         and existing[22] == outcome.refusal_reason
                         and bytes(existing[23]) == outcome_payload
                     )
-                    _stored_eligible, _stored_outcome = _validate_attempt_payload(
-                        bytes(existing[23])
+                    _stored_eligible, _stored_outcome, _stored_context = (
+                        _validate_attempt_payload(bytes(existing[23]))
                     )
                     if _stored_outcome.fingerprint != term_fingerprint(
                         attempt.canonical_term
@@ -1434,6 +1711,8 @@ class MbaDiscoveryStore:
                     group = conn.execute(
                         "SELECT * FROM residual_groups WHERE term_id=?", (existing[3],)
                     ).fetchone()
+                    if group is not None:
+                        self._validate_relational_lifecycle(conn, int(group[0]))
                     if exact and group is not None:
                         return DiscoveryReceipt(
                             ReceiptStatus.DUPLICATE,
@@ -1451,6 +1730,11 @@ class MbaDiscoveryStore:
                 database_id = self._database(conn, attempt, input_id)
                 function_id = self._function(conn, attempt, database_id)
                 term_id, raw_id, canonical, raw = self._term(conn, attempt)
+                existing_group = conn.execute(
+                    "SELECT group_id FROM residual_groups WHERE term_id=?", (term_id,)
+                ).fetchone()
+                if existing_group is not None:
+                    self._validate_relational_lifecycle(conn, int(existing_group[0]))
                 identity = attempt.context.function_identity
                 context = attempt.context
                 outcome = attempt.outcome
@@ -1492,6 +1776,7 @@ class MbaDiscoveryStore:
                 group_id, state, revision = self._group(
                     conn, term_id, eligible=attempt.eligible_for_mining, now=self._now()
                 )
+                self._validate_relational_lifecycle(conn, group_id)
                 return DiscoveryReceipt(
                     ReceiptStatus.STORED,
                     attempt_id=attempt_id,
@@ -1509,7 +1794,9 @@ class MbaDiscoveryStore:
             )
             return DiscoveryReceipt(ReceiptStatus.REFUSED, reason=reason)
 
-    def _project_group(self, conn: sqlite3.Connection, group_id: int) -> ResidualGroup:
+    def _project_group_local(
+        self, conn: sqlite3.Connection, group_id: int
+    ) -> ResidualGroup:
         row = conn.execute(
             "SELECT * FROM residual_groups WHERE group_id=?", (group_id,)
         ).fetchone()
@@ -1538,26 +1825,21 @@ class MbaDiscoveryStore:
         )
         if any(raw.width != canonical.width for raw in raws):
             raise ValueError("raw and canonical term widths are inconsistent")
-        raw_ids = {
-            int(raw[0])
-            for raw in conn.execute(
-                "SELECT raw_term_id FROM raw_terms WHERE term_id=?", (row[1],)
-            )
-        }
         eligible_count = 0
         for attempt in conn.execute(
-            "SELECT raw_term_id, term_id, outcome_payload, created_at FROM provider_attempts WHERE term_id=?",
+            _ATTEMPT_AUTHORITY_SELECT + " WHERE pa.term_id=? ORDER BY pa.attempt_id",
             (row[1],),
         ):
-            if int(attempt[0]) not in raw_ids or int(attempt[1]) != int(row[1]):
-                raise ValueError("provider attempt term links are corrupt")
-            _eligible, outcome = _validate_attempt_payload(bytes(attempt[2]))
-            if outcome.fingerprint != term[1]:
-                raise ValueError("provider attempt outcome is corrupt")
-            _parse_timestamp(attempt[3], name="created_at")
+            _eligible, _outcome, _context = self._validate_attempt_row(
+                attempt, expected_term_id=int(row[1])
+            )
             eligible_count += int(_eligible)
         if int(row[3]) != eligible_count:
             raise ValueError("eligible observation count is corrupt")
+        if state is ResidualGroupState.OBSERVED and eligible_count != 0:
+            raise ValueError("observed group cannot contain eligible evidence")
+        if state is not ResidualGroupState.OBSERVED and eligible_count == 0:
+            raise ValueError("non-observed group requires eligible evidence")
         observed_at = _parse_timestamp(row[4], name="last_observed_at")
         mined_at = _parse_timestamp(row[5], name="last_mined_at", required=False)
         materialized_at = _parse_timestamp(
@@ -1566,16 +1848,8 @@ class MbaDiscoveryStore:
         admitted_at = _parse_timestamp(row[7], name="admitted_at", required=False)
         if state is ResidualGroupState.NO_PROPOSAL and mined_at is None:
             raise ValueError("no-proposal group requires last_mined_at")
-        if (
-            state
-            in {
-                ResidualGroupState.OBSERVED,
-                ResidualGroupState.ELIGIBLE,
-                ResidualGroupState.MINING,
-            }
-            and mined_at is not None
-        ):
-            raise ValueError("active group has terminal timestamps")
+        if state is not ResidualGroupState.NO_PROPOSAL and mined_at is not None:
+            raise ValueError("non-no-proposal group has last_mined_at")
         if state in {
             ResidualGroupState.OBSERVED,
             ResidualGroupState.ELIGIBLE,
@@ -1591,6 +1865,10 @@ class MbaDiscoveryStore:
                 raise ValueError("admitted group timestamps are incomplete")
         if state is ResidualGroupState.REJECTED and admitted_at is not None:
             raise ValueError("rejected group cannot have admitted_at")
+        if state is ResidualGroupState.PROPOSED and (
+            materialized_at is not None or admitted_at is not None
+        ):
+            raise ValueError("proposed group has terminal timestamps")
         if (
             materialized_at is not None
             and mined_at is not None
@@ -1619,7 +1897,7 @@ class MbaDiscoveryStore:
             raise ValueError("raw term identity is corrupt")
         return term
 
-    def _project_run(self, row: sqlite3.Row) -> MiningRun:
+    def _project_run_local(self, row: sqlite3.Row) -> MiningRun:
         try:
             state = MiningRunState(row[5])
         except ValueError as exc:
@@ -1660,7 +1938,9 @@ class MbaDiscoveryStore:
             row[9],
         )
 
-    def _project_proposal(self, conn: sqlite3.Connection, row: sqlite3.Row) -> Proposal:
+    def _project_proposal_local(
+        self, conn: sqlite3.Connection, row: sqlite3.Row
+    ) -> Proposal:
         replacement = _decode_term(bytes(row[4]), name="replacement term")
         proposal = _proposal_from_bytes(bytes(row[5]))
         proofs = _proofs_from_payload(bytes(row[6]))
@@ -1679,9 +1959,9 @@ class MbaDiscoveryStore:
         ).fetchone()
         if group is None or run is None or run[1] != group[0] or run[2] > group[8]:
             raise ValueError("proposal ownership is corrupt")
-        self._project_group(conn, int(group[0]))
+        self._project_group_local(conn, int(group[0]))
         try:
-            self._project_run(run)
+            self._project_run_local(run)
         except ValueError as exc:
             raise ValueError("proposal lifecycle ownership is corrupt") from exc
         group_term = conn.execute(
@@ -1764,6 +2044,164 @@ class MbaDiscoveryStore:
             row[14],
         )
 
+    def _validate_relational_lifecycle(
+        self, conn: sqlite3.Connection, group_id: int
+    ) -> tuple[
+        ResidualGroup,
+        dict[str, MiningRun],
+        dict[str, Proposal],
+    ]:
+        group_row = conn.execute(
+            "SELECT * FROM residual_groups WHERE group_id=?", (group_id,)
+        ).fetchone()
+        if group_row is None:
+            raise ValueError("unknown group")
+        group = self._project_group_local(conn, group_id)
+        run_rows = conn.execute(
+            "SELECT * FROM mining_runs WHERE group_id=? ORDER BY started_at, run_id",
+            (group_id,),
+        ).fetchall()
+        proposal_rows = conn.execute(
+            "SELECT * FROM proposals WHERE group_id=? ORDER BY created_at, proposal_id",
+            (group_id,),
+        ).fetchall()
+        try:
+            runs = {row[0]: self._project_run_local(row) for row in run_rows}
+        except ValueError as exc:
+            if proposal_rows:
+                raise ValueError("proposal lifecycle ownership is corrupt") from exc
+            raise
+        proposals = {
+            row[0]: self._project_proposal_local(conn, row) for row in proposal_rows
+        }
+        attempt_rows = conn.execute(
+            "SELECT created_at FROM provider_attempts WHERE term_id=? ORDER BY attempt_id",
+            (group.term_id,),
+        ).fetchall()
+        if not attempt_rows:
+            raise ValueError("residual group requires provider attempts")
+        attempt_times = [
+            _parse_timestamp(row[0], name="created_at") for row in attempt_rows
+        ]
+        observed_at = _parse_timestamp(group.last_observed_at, name="last_observed_at")
+        if any(created > observed_at for created in attempt_times):
+            raise ValueError("provider attempt timestamps exceed last observation")
+        if group.revision != len(attempt_rows) + len(run_rows):
+            raise ValueError("group revision ownership is corrupt")
+
+        active = [run for run in runs.values() if run.state is MiningRunState.ACTIVE]
+        if len(active) > 1:
+            raise ValueError("duplicate active mining owners")
+        if group.state is ResidualGroupState.MINING:
+            if len(active) != 1:
+                raise ValueError("mining group requires exactly one active owner")
+            if active[0].claimed_revision > group.revision:
+                raise ValueError("active mining owner revision is corrupt")
+        elif active:
+            raise ValueError("active mining owner requires a mining group")
+
+        proposal_states = {
+            ResidualGroupState.PROPOSED,
+            ResidualGroupState.MATERIALIZED,
+            ResidualGroupState.ADMITTED,
+            ResidualGroupState.REJECTED,
+        }
+        if group.state in proposal_states and len(proposals) != 1:
+            raise ValueError("proposal lifecycle requires exactly one proposal")
+        if group.state not in proposal_states and proposals:
+            raise ValueError("pre-proposal group owns a proposal")
+
+        raw_runs = {row[0]: row for row in run_rows}
+        raw_proposals = {row[0]: row for row in proposal_rows}
+        for proposal_id, proposal in proposals.items():
+            run = runs.get(proposal.run_id)
+            run_row = raw_runs.get(proposal.run_id)
+            proposal_row = raw_proposals[proposal_id]
+            if (
+                run is None
+                or run_row is None
+                or run.group_id != group_id
+                or run.claimed_revision > group.revision
+                or run.state is not MiningRunState.PROPOSED
+                or run.finished_at is None
+                or proposal.created_at != run.finished_at
+            ):
+                raise ValueError("proposal publication lifecycle is corrupt")
+            if proposal.materialized_at != group.materialized_at:
+                raise ValueError("materialized timestamps are inconsistent")
+            if proposal.admitted_at != group.admitted_at:
+                raise ValueError("admitted timestamps are inconsistent")
+            if proposal.state is ProposalState.REJECTED:
+                has_materialization = proposal.materialized_at is not None
+                if has_materialization != (group.materialized_at is not None):
+                    raise ValueError("rejection source lifecycle is corrupt")
+            if proposal_row[8] != run_row[8]:
+                raise ValueError("proposal publication timestamps are inconsistent")
+            _proofs, lifecycle = _decode_proof_envelope(bytes(proposal_row[6]))
+            materialized_identity = lifecycle["materialized"]
+            terminal_identity = lifecycle["terminal"]
+            if proposal.state is ProposalState.PROPOSED:
+                if materialized_identity is not None or terminal_identity is not None:
+                    raise ValueError("proposed lifecycle retry identity is corrupt")
+            elif proposal.state is ProposalState.MATERIALIZED:
+                if (
+                    materialized_identity is None
+                    or materialized_identity["source_state"]
+                    != ProposalState.PROPOSED.value
+                    or terminal_identity is not None
+                ):
+                    raise ValueError("materialized lifecycle retry identity is corrupt")
+            elif proposal.state is ProposalState.ADMITTED:
+                if (
+                    materialized_identity is None
+                    or terminal_identity is None
+                    or terminal_identity["source_state"]
+                    != ProposalState.MATERIALIZED.value
+                ):
+                    raise ValueError("admitted lifecycle retry identity is corrupt")
+            elif proposal.state is ProposalState.REJECTED:
+                expected_source = (
+                    ProposalState.MATERIALIZED.value
+                    if proposal.materialized_at is not None
+                    else ProposalState.PROPOSED.value
+                )
+                if (
+                    terminal_identity is None
+                    or terminal_identity["source_state"] != expected_source
+                    or (proposal.materialized_at is None)
+                    != (materialized_identity is None)
+                ):
+                    raise ValueError("rejected lifecycle retry identity is corrupt")
+            for identity in (materialized_identity, terminal_identity):
+                if identity is not None and not (
+                    run.claimed_revision
+                    <= identity["source_revision"]
+                    <= group.revision
+                ):
+                    raise ValueError("lifecycle retry revision is corrupt")
+        return group, runs, proposals
+
+    def _project_group(self, conn: sqlite3.Connection, group_id: int) -> ResidualGroup:
+        return self._validate_relational_lifecycle(conn, group_id)[0]
+
+    def _project_run(self, row: sqlite3.Row) -> MiningRun:
+        _group, runs, _proposals = self._validate_relational_lifecycle(
+            self._connection, int(row[1])
+        )
+        try:
+            return runs[row[0]]
+        except KeyError as exc:
+            raise ValueError("unknown mining run") from exc
+
+    def _project_proposal(self, conn: sqlite3.Connection, row: sqlite3.Row) -> Proposal:
+        _group, _runs, proposals = self._validate_relational_lifecycle(
+            conn, int(row[1])
+        )
+        try:
+            return proposals[row[0]]
+        except KeyError as exc:
+            raise ValueError("unknown proposal") from exc
+
     def claim_next_group(
         self,
         miner_version: str,
@@ -1790,37 +2228,56 @@ class MbaDiscoveryStore:
         try:
             with self._transaction(immediate=True) as conn:
                 now = self._now()
-                cutoff = datetime.fromisoformat(now.replace("Z", "+00:00")) - timedelta(
+                cutoff = _parse_timestamp(now, name="claim timestamp") - timedelta(
                     seconds=timeout
                 )
-                cutoff_text = _timestamp(cutoff)
-                expired = conn.execute(
-                    "SELECT run_id FROM mining_runs WHERE state=? AND heartbeat_at<=? ORDER BY heartbeat_at, run_id",
-                    (MiningRunState.ACTIVE.value, cutoff_text),
+                for group_row in conn.execute(
+                    "SELECT group_id FROM residual_groups ORDER BY group_id"
+                ):
+                    self._validate_relational_lifecycle(conn, int(group_row[0]))
+                active_rows = conn.execute(
+                    "SELECT * FROM mining_runs WHERE state=? ORDER BY heartbeat_at, run_id",
+                    (MiningRunState.ACTIVE.value,),
                 ).fetchall()
+                expired = [
+                    old
+                    for old in active_rows
+                    if _parse_timestamp(old[7], name="heartbeat_at") <= cutoff
+                ]
                 for old in expired:
+                    group = conn.execute(
+                        "SELECT * FROM residual_groups WHERE group_id=?", (old[1],)
+                    ).fetchone()
+                    if group is None:
+                        raise ValueError("active mining owner group is missing")
                     if not valid_group_transition(
                         ResidualGroupState.MINING, ResidualGroupState.ELIGIBLE
                     ):
                         raise ValueError("invalid lease reclaim transition")
-                    conn.execute(
-                        "UPDATE mining_runs SET state=?, finished_at=?, failure_reason=? WHERE run_id=? AND state=?",
+                    run_updated = conn.execute(
+                        "UPDATE mining_runs SET state=?, finished_at=?, failure_reason=? WHERE run_id=? AND group_id=? AND claimed_revision=? AND state=? AND heartbeat_at=?",
                         (
                             MiningRunState.EXPIRED.value,
                             now,
                             "lease_expired",
                             old[0],
+                            old[1],
+                            old[2],
                             MiningRunState.ACTIVE.value,
+                            old[7],
                         ),
-                    )
-                    conn.execute(
-                        "UPDATE residual_groups SET state=? WHERE group_id=(SELECT group_id FROM mining_runs WHERE run_id=?) AND state=?",
+                    ).rowcount
+                    group_updated = conn.execute(
+                        "UPDATE residual_groups SET state=? WHERE group_id=? AND state=? AND revision=?",
                         (
                             ResidualGroupState.ELIGIBLE.value,
-                            old[0],
+                            old[1],
                             ResidualGroupState.MINING.value,
+                            group[8],
                         ),
-                    )
+                    ).rowcount
+                    if run_updated != 1 or group_updated != 1:
+                        raise ValueError("lease_reclaim_conflict")
                 candidate = conn.execute(
                     "SELECT group_id, revision FROM residual_groups WHERE state=? ORDER BY last_observed_at, group_id LIMIT 1",
                     (ResidualGroupState.ELIGIBLE.value,),
@@ -1878,6 +2335,14 @@ class MbaDiscoveryStore:
         if type(claimed_revision) is not int or claimed_revision < 0:
             raise ValueError("claimed_revision must be non-negative")
         with self._transaction(immediate=True) as conn:
+            existing_run = conn.execute(
+                "SELECT * FROM mining_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if existing_run is None:
+                return HeartbeatReceipt(
+                    ReceiptStatus.REFUSED, reason="stale_or_not_owner"
+                )
+            self._validate_relational_lifecycle(conn, int(existing_run[1]))
             now = self._now()
             updated = conn.execute(
                 "UPDATE mining_runs SET heartbeat_at=? WHERE run_id=? AND claimed_revision=? AND state=? AND group_id IN (SELECT group_id FROM residual_groups WHERE state=? AND revision=?)",
@@ -1943,6 +2408,7 @@ class MbaDiscoveryStore:
                 "SELECT state, revision FROM residual_groups WHERE group_id=?",
                 (run[1],),
             ).fetchone()
+            self._validate_relational_lifecycle(conn, int(run[1]))
             if (
                 group is None
                 or group[0] != ResidualGroupState.MINING.value
@@ -2038,6 +2504,8 @@ class MbaDiscoveryStore:
             group = conn.execute(
                 "SELECT * FROM residual_groups WHERE group_id=?", (run[1],)
             ).fetchone()
+            if group is not None:
+                self._validate_relational_lifecycle(conn, int(group[0]))
             existing = conn.execute(
                 "SELECT * FROM proposals WHERE proposal_fingerprint=?",
                 (supplied_fingerprint,),
@@ -2082,7 +2550,8 @@ class MbaDiscoveryStore:
                     and existing_run[0] == claimed_revision
                     and bytes(existing[4]) == replacement
                     and bytes(existing[5]) == proposal_bytes
-                    and bytes(existing[6]) == proof_bytes
+                    and _proofs_from_payload(bytes(existing[6]))
+                    == _proofs_from_payload(proof_bytes)
                 )
                 return LifecycleReceipt(
                     ReceiptStatus.DUPLICATE if exact else ReceiptStatus.REFUSED,
@@ -2213,19 +2682,13 @@ class MbaDiscoveryStore:
                     return LifecycleReceipt(
                         ReceiptStatus.REFUSED, reason="invalid_transition"
                     )
-                original_retry = (
-                    requested_state is ProposalState.PROPOSED
-                    and expected_revision == group[8]
-                )
-                current_retry = (
-                    requested_state is ProposalState.MATERIALIZED
-                    and expected_revision == group[8]
-                )
-                if (
-                    row[9] == path
-                    and row[10] == digest
-                    and (original_retry or current_retry)
-                ):
+                _proofs, lifecycle = _decode_proof_envelope(bytes(row[6]))
+                identity = lifecycle["materialized"]
+                original_retry = identity == {
+                    "source_state": requested_state.value,
+                    "source_revision": expected_revision,
+                }
+                if row[9] == path and row[10] == digest and original_retry:
                     return LifecycleReceipt(
                         ReceiptStatus.DUPLICATE,
                         proposal=self._project_proposal(conn, row),
@@ -2255,14 +2718,21 @@ class MbaDiscoveryStore:
                     ReceiptStatus.REFUSED, reason="invalid_transition"
                 )
             now = self._now()
+            proof_payload = _with_retry_identity(
+                bytes(row[6]),
+                "materialized",
+                requested_state,
+                expected_revision,
+            )
             if (
                 conn.execute(
-                    "UPDATE proposals SET state=?, materialized_path=?, materialized_digest=?, materialized_at=? WHERE proposal_id=? AND state=?",
+                    "UPDATE proposals SET state=?, materialized_path=?, materialized_digest=?, materialized_at=?, proof_receipt_payload=? WHERE proposal_id=? AND state=?",
                     (
                         ProposalState.MATERIALIZED.value,
                         path,
                         digest,
                         now,
+                        proof_payload,
                         proposal_id,
                         ProposalState.PROPOSED.value,
                     ),
@@ -2387,23 +2857,18 @@ class MbaDiscoveryStore:
                     return LifecycleReceipt(
                         ReceiptStatus.REFUSED, reason="invalid_transition"
                     )
-                source_state = (
-                    ProposalState.MATERIALIZED
-                    if row[9] is not None
-                    else ProposalState.PROPOSED
-                )
-                original_retry = (
-                    requested_state is source_state and expected_revision == group[8]
-                )
-                current_retry = (
-                    requested_state is target and expected_revision == group[8]
-                )
+                _proofs, lifecycle = _decode_proof_envelope(bytes(row[6]))
+                identity = lifecycle["terminal"]
+                original_retry = identity == {
+                    "source_state": requested_state.value,
+                    "source_revision": expected_revision,
+                }
                 if (
                     target is ProposalState.ADMITTED
                     and row[12] == rule_id
                     or target is ProposalState.REJECTED
                     and row[14] == reason
-                ) and (original_retry or current_retry):
+                ) and original_retry:
                     return LifecycleReceipt(
                         ReceiptStatus.DUPLICATE,
                         proposal=self._project_proposal(conn, row),
@@ -2431,15 +2896,31 @@ class MbaDiscoveryStore:
                     ReceiptStatus.REFUSED, reason="invalid_transition"
                 )
             now = self._now()
+            proof_payload = _with_retry_identity(
+                bytes(row[6]), "terminal", current, expected_revision
+            )
             if target is ProposalState.ADMITTED:
                 updated = conn.execute(
-                    "UPDATE proposals SET state=?, admitted_rule_id=?, admitted_at=? WHERE proposal_id=? AND state=?",
-                    (target.value, rule_id, now, proposal_id, current.value),
+                    "UPDATE proposals SET state=?, admitted_rule_id=?, admitted_at=?, proof_receipt_payload=? WHERE proposal_id=? AND state=?",
+                    (
+                        target.value,
+                        rule_id,
+                        now,
+                        proof_payload,
+                        proposal_id,
+                        current.value,
+                    ),
                 ).rowcount
             else:
                 updated = conn.execute(
-                    "UPDATE proposals SET state=?, rejection_reason=? WHERE proposal_id=? AND state=?",
-                    (target.value, reason, proposal_id, current.value),
+                    "UPDATE proposals SET state=?, rejection_reason=?, proof_receipt_payload=? WHERE proposal_id=? AND state=?",
+                    (
+                        target.value,
+                        reason,
+                        proof_payload,
+                        proposal_id,
+                        current.value,
+                    ),
                 ).rowcount
             if updated != 1:
                 conn.rollback()

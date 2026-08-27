@@ -4,6 +4,7 @@ import json
 import hashlib
 import sqlite3
 import threading
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -1259,4 +1260,720 @@ def test_group_projection_rejects_state_timestamp_field_ghosts(
     store._connection.commit()
     with pytest.raises(ValueError):
         store.status_counts()
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("name", "table", "needle", "replacement"),
+    (
+        (
+            "deferred-fk",
+            "raw_terms",
+            "term_id INTEGER NOT NULL REFERENCES terms",
+            "term_id INTEGER NOT NULL REFERENCES terms DEFERRABLE INITIALLY DEFERRED",
+        ),
+        (
+            "check",
+            "inputs",
+            "external_evidence_allowed INTEGER NOT NULL",
+            "external_evidence_allowed INTEGER NOT NULL CHECK(external_evidence_allowed IN (0,1))",
+        ),
+    ),
+)
+def test_reopen_rejects_enforcement_changing_table_ddl_without_mutation(
+    tmp_path: Path, name: str, table: str, needle: str, replacement: str
+) -> None:
+    source = tmp_path / "canonical.sqlite3"
+    mutated = tmp_path / f"{name}.sqlite3"
+    MbaDiscoveryStore(source).close()
+    with sqlite3.connect(source) as connection:
+        dump = list(connection.iterdump())
+    changed = False
+    with sqlite3.connect(mutated) as connection:
+        for statement in dump:
+            if statement.startswith(f"CREATE TABLE {table} "):
+                assert needle in statement
+                statement = statement.replace(needle, replacement, 1)
+                changed = True
+            connection.execute(statement)
+        connection.commit()
+    assert changed
+    before = mutated.read_bytes()
+    with sqlite3.connect(mutated) as connection:
+        journal = connection.execute("PRAGMA journal_mode").fetchone()[0]
+    with pytest.raises(ValueError, match="partial schema"):
+        MbaDiscoveryStore(mutated)
+    assert mutated.read_bytes() == before
+    with sqlite3.connect(mutated) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == journal
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        (
+            "UPDATE residual_groups SET eligible_observation_count=1, state='observed'",
+            "eligible",
+        ),
+        (
+            "UPDATE residual_groups SET materialized_at=created_at FROM proposals WHERE proposals.group_id=residual_groups.group_id",
+            "proposed",
+        ),
+        (
+            "UPDATE proposals SET created_at='2026-01-02T00:00:00.000000Z'",
+            "publication",
+        ),
+        (
+            "UPDATE proposals SET materialized_at='2026-01-02T00:00:00.000000Z'",
+            "timestamps",
+        ),
+    ),
+)
+def test_status_rejects_relational_lifecycle_corruption(
+    tmp_path: Path, mutation: str, message: str
+) -> None:
+    store, _proposal_input, published = _published_store(
+        tmp_path, f"relational-{message}"
+    )
+    assert published.proposal is not None and published.group is not None
+    if "materialized_at" in mutation and mutation.startswith("UPDATE proposals"):
+        materialized = store.mark_materialized(
+            published.proposal.proposal_id,
+            "/x",
+            "digest",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=published.group.revision,
+        )
+        assert materialized.status == "materialized"
+        mutation = "UPDATE proposals SET materialized_at='2026-01-02T00:00:00.000000Z'"
+    store._connection.execute(mutation)
+    store._connection.commit()
+    with pytest.raises(ValueError, match=message):
+        store.status_counts()
+    store.close()
+
+
+def test_mark_admitted_refuses_mismatched_materialized_timestamp_without_mutation(
+    tmp_path: Path,
+) -> None:
+    store, _proposal_input, published = _published_store(tmp_path, "admit-pair")
+    assert published.proposal is not None and published.group is not None
+    materialized = store.mark_materialized(
+        published.proposal.proposal_id,
+        "/x",
+        "digest",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=published.group.revision,
+    )
+    assert materialized.status == "materialized"
+    store._connection.execute(
+        "UPDATE residual_groups SET materialized_at='2026-01-02T00:00:00.000000Z'"
+    )
+    store._connection.commit()
+    before = tuple(
+        store._connection.execute(
+            "SELECT state, admitted_at FROM residual_groups"
+        ).fetchone()
+    )
+    with pytest.raises(ValueError, match="materialized"):
+        store.mark_admitted(
+            published.proposal.proposal_id,
+            "rule",
+            expected_state=ProposalState.MATERIALIZED,
+            expected_revision=materialized.group.revision,
+        )
+    assert (
+        tuple(
+            store._connection.execute(
+                "SELECT state, admitted_at FROM residual_groups"
+            ).fetchone()
+        )
+        == before
+    )
+    assert (
+        store._connection.execute("SELECT state FROM proposals").fetchone()[0]
+        == "materialized"
+    )
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("malformed", "out_of_order", "group_state", "group_revision", "duplicate_owner"),
+)
+def test_status_and_reclaim_refuse_corrupt_active_lease_without_mutation(
+    tmp_path: Path, corruption: str
+) -> None:
+    now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+    store = MbaDiscoveryStore(
+        tmp_path / f"lease-{corruption}.sqlite3", clock=lambda: now[0]
+    )
+    store.record_attempt(_attempt())
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    run = claim.claim.run
+    if corruption == "malformed":
+        store._connection.execute("UPDATE mining_runs SET heartbeat_at='0000'")
+    elif corruption == "out_of_order":
+        store._connection.execute(
+            "UPDATE mining_runs SET heartbeat_at='2025-12-31T23:59:59.000000Z'"
+        )
+    elif corruption == "group_state":
+        store._connection.execute("UPDATE residual_groups SET state='eligible'")
+    elif corruption == "group_revision":
+        store._connection.execute(
+            "UPDATE residual_groups SET revision=?", (run.claimed_revision - 1,)
+        )
+    else:
+        store._connection.execute(
+            "INSERT INTO mining_runs(run_id,group_id,claimed_revision,miner_version,budget_fingerprint,state,started_at,heartbeat_at) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                str(uuid4()),
+                run.group_id,
+                run.claimed_revision,
+                "other",
+                "budget",
+                "active",
+                run.started_at,
+                run.heartbeat_at,
+            ),
+        )
+    store._connection.commit()
+    snapshot = tuple(
+        store._connection.execute(
+            "SELECT run_id,state,heartbeat_at FROM mining_runs ORDER BY run_id"
+        )
+    )
+    with pytest.raises(ValueError):
+        store.status_counts()
+    now[0] += timedelta(seconds=301)
+    refused = store.claim_next_group("miner", "budget")
+    assert refused.status == "refused"
+    assert (
+        tuple(
+            store._connection.execute(
+                "SELECT run_id,state,heartbeat_at FROM mining_runs ORDER BY run_id"
+            )
+        )
+        == snapshot
+    )
+    store.close()
+
+
+@pytest.mark.parametrize("cas", ("run", "group"))
+def test_reclaim_rolls_back_when_either_cas_loses(tmp_path: Path, cas: str) -> None:
+    now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+    store = MbaDiscoveryStore(tmp_path / f"reclaim-{cas}.sqlite3", clock=lambda: now[0])
+    store.record_attempt(_attempt())
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    target = "mining_runs" if cas == "run" else "residual_groups"
+    target_state = "expired" if cas == "run" else "eligible"
+    store._connection.execute(
+        f"""
+        CREATE TRIGGER ignore_reclaim_{cas}
+        BEFORE UPDATE OF state ON {target}
+        WHEN NEW.state = '{target_state}'
+        BEGIN SELECT RAISE(IGNORE); END
+        """
+    )
+    store._connection.commit()
+    now[0] += timedelta(seconds=301)
+    receipt = store.claim_next_group("miner", "budget")
+    assert receipt.status == "refused"
+    assert [
+        tuple(row) for row in store._connection.execute("SELECT state FROM mining_runs")
+    ] == [("active",)]
+    assert [
+        tuple(row)
+        for row in store._connection.execute("SELECT state FROM residual_groups")
+    ] == [("mining",)]
+    store.close()
+
+
+def _record_later_evidence(
+    store: MbaDiscoveryStore, pattern: TypedBvTerm, value: int
+) -> int:
+    receipt = store.record_attempt(
+        _attempt(
+            raw=TypedBvTerm("xor", 32, children=(_term(value), _term(value + 1))),
+            canonical=pattern,
+        )
+    )
+    assert receipt.revision is not None
+    return receipt.revision
+
+
+def test_materialization_exact_original_retry_survives_later_evidence(
+    tmp_path: Path,
+) -> None:
+    store, proposal, published = _published_store(tmp_path, "materialize-durable")
+    assert published.proposal is not None and published.group is not None
+    source_revision = published.group.revision
+    first = store.mark_materialized(
+        published.proposal.proposal_id,
+        "/x",
+        "digest",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=source_revision,
+    )
+    assert first.status == "materialized"
+    current_revision = _record_later_evidence(store, proposal.pattern, 10)
+    exact = store.mark_materialized(
+        published.proposal.proposal_id,
+        "/x",
+        "digest",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=source_revision,
+    )
+    assert exact.status == "duplicate"
+    changed = store.mark_materialized(
+        published.proposal.proposal_id,
+        "/x",
+        "digest",
+        expected_state=ProposalState.MATERIALIZED,
+        expected_revision=current_revision,
+    )
+    assert changed.status == "refused"
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "transition", ("admit", "reject_proposed", "reject_materialized")
+)
+def test_terminal_exact_original_retry_survives_later_evidence(
+    tmp_path: Path, transition: str
+) -> None:
+    store, proposal, published = _published_store(tmp_path, f"terminal-{transition}")
+    assert published.proposal is not None and published.group is not None
+    source_state = ProposalState.PROPOSED
+    source_revision = published.group.revision
+    if transition in {"admit", "reject_materialized"}:
+        materialized = store.mark_materialized(
+            published.proposal.proposal_id,
+            "/x",
+            "digest",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=source_revision,
+        )
+        assert materialized.status == "materialized" and materialized.group is not None
+        source_state = ProposalState.MATERIALIZED
+        source_revision = materialized.group.revision
+    if transition == "admit":
+        first = store.mark_admitted(
+            published.proposal.proposal_id,
+            "rule",
+            expected_state=source_state,
+            expected_revision=source_revision,
+        )
+    else:
+        first = store.mark_rejected(
+            published.proposal.proposal_id,
+            "reason",
+            expected_state=source_state,
+            expected_revision=source_revision,
+        )
+    assert first.status in {"admitted", "rejected"}
+    current_revision = _record_later_evidence(store, proposal.pattern, 20)
+    if transition == "admit":
+        exact = store.mark_admitted(
+            published.proposal.proposal_id,
+            "rule",
+            expected_state=source_state,
+            expected_revision=source_revision,
+        )
+        changed = store.mark_admitted(
+            published.proposal.proposal_id,
+            "rule",
+            expected_state=ProposalState.ADMITTED,
+            expected_revision=current_revision,
+        )
+    else:
+        exact = store.mark_rejected(
+            published.proposal.proposal_id,
+            "reason",
+            expected_state=source_state,
+            expected_revision=source_revision,
+        )
+        changed = store.mark_rejected(
+            published.proposal.proposal_id,
+            "reason",
+            expected_state=ProposalState.REJECTED,
+            expected_revision=current_revision,
+        )
+    assert exact.status == "duplicate"
+    assert changed.status == "refused"
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    (
+        ("session_id", "different-session"),
+        ("top_level_epoch", 99),
+        ("evidence_generation", 99),
+        ("maturity", "ir.lifted"),
+        ("instruction_ea", 1),
+        ("block_serial", 9),
+        ("block_ea", 9),
+        ("provider", "unknown"),
+        ("plugin_name", "different"),
+        ("plugin_version", "2.0"),
+        ("status", "error"),
+        ("input_cost_ops", 99),
+        ("input_cost_nodes", 99),
+        ("output_cost_ops", 99),
+        ("output_cost_nodes", 99),
+        ("proof_verdict", 0),
+        ("elapsed_ms", 99.0),
+        ("refusal_reason", "different"),
+    ),
+)
+def test_status_rejects_every_corrupt_normalized_attempt_column(
+    tmp_path: Path, column: str, value: object
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / f"attempt-{column}.sqlite3")
+    base = _attempt()
+    outcome = replace(
+        base.outcome,
+        output_cost=(2, 3),
+        proof_verdict=True,
+        refusal_reason="expected",
+    )
+    attempt = replace(base, outcome=outcome)
+    assert store.record_attempt(attempt).status == "stored"
+    store._connection.execute(f"UPDATE provider_attempts SET {column}=?", (value,))
+    store._connection.commit()
+    with pytest.raises(ValueError, match="provider attempt"):
+        store.status_counts()
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("target", "column", "value"),
+    (
+        ("inputs", "identity_provenance", "idb_local"),
+        ("inputs", "external_evidence_allowed", 1),
+        ("databases", "database_identity", "different"),
+        ("functions", "function_rva", 2),
+        ("functions", "function_fingerprint", "different"),
+    ),
+)
+def test_status_rejects_corrupt_attempt_identity_authority(
+    tmp_path: Path, target: str, column: str, value: object
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / f"identity-{target}-{column}.sqlite3")
+    store.record_attempt(_attempt())
+    store._connection.execute(f"UPDATE {target} SET {column}=?", (value,))
+    store._connection.commit()
+    with pytest.raises(ValueError, match="provider attempt"):
+        store.status_counts()
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("target_state", "trigger_table", "trigger_value"),
+    (
+        ("publish_run", "mining_runs", "proposed"),
+        ("publish", "residual_groups", "proposed"),
+        ("materialize", "residual_groups", "materialized"),
+        ("admit", "residual_groups", "admitted"),
+        ("reject", "residual_groups", "rejected"),
+    ),
+)
+def test_lifecycle_second_cas_failure_rolls_back_first_mutation(
+    tmp_path: Path, target_state: str, trigger_table: str, trigger_value: str
+) -> None:
+    store, proposal, published = _published_store(tmp_path, f"cas-{target_state}")
+    assert published.proposal is not None and published.group is not None
+    if target_state.startswith("publish"):
+        store.close()
+        store = MbaDiscoveryStore(tmp_path / "cas-publish-fresh.sqlite3")
+        store.record_attempt(_attempt(raw=proposal.pattern, canonical=proposal.pattern))
+        claim = store.claim_next_group("miner", "budget")
+        assert claim.claim is not None
+        proposal_id = None
+    else:
+        claim = None
+        proposal_id = published.proposal.proposal_id
+    if target_state in {"admit", "reject"}:
+        materialized = store.mark_materialized(
+            proposal_id,
+            "/x",
+            "digest",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=published.group.revision,
+        )
+        assert materialized.status == "materialized" and materialized.group is not None
+    store._connection.execute(
+        f"""
+        CREATE TRIGGER ignore_second_{target_state}
+        BEFORE UPDATE OF state ON {trigger_table}
+        WHEN NEW.state = '{trigger_value}'
+        BEGIN SELECT RAISE(IGNORE); END
+        """
+    )
+    store._connection.commit()
+    if target_state.startswith("publish"):
+        receipt = store.publish_proposal(
+            claim.claim.run.run_id,
+            claim.claim.run.claimed_revision,
+            proposal,
+            proposal.replacement,
+            proposal,
+        )
+        assert receipt.status == "refused"
+        assert store.count_rows("proposals") == 0
+        assert (
+            store._connection.execute("SELECT state FROM mining_runs").fetchone()[0]
+            == "active"
+        )
+    elif target_state == "materialize":
+        receipt = store.mark_materialized(
+            proposal_id,
+            "/x",
+            "digest",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=published.group.revision,
+        )
+        assert receipt.status == "refused"
+        assert (
+            store._connection.execute("SELECT state FROM proposals").fetchone()[0]
+            == "proposed"
+        )
+    elif target_state == "admit":
+        receipt = store.mark_admitted(
+            proposal_id,
+            "rule",
+            expected_state=ProposalState.MATERIALIZED,
+            expected_revision=materialized.group.revision,
+        )
+        assert receipt.status == "refused"
+        assert (
+            store._connection.execute("SELECT state FROM proposals").fetchone()[0]
+            == "materialized"
+        )
+    else:
+        receipt = store.mark_rejected(
+            proposal_id,
+            "reason",
+            expected_state=ProposalState.MATERIALIZED,
+            expected_revision=materialized.group.revision,
+        )
+        assert receipt.status == "refused"
+        assert (
+            store._connection.execute("SELECT state FROM proposals").fetchone()[0]
+            == "materialized"
+        )
+    store.close()
+
+
+@pytest.mark.parametrize("collision", ("input", "function", "canonical", "raw"))
+def test_identity_and_fingerprint_collisions_roll_back_every_partial_row(
+    tmp_path: Path, collision: str
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / f"rollback-{collision}.sqlite3")
+    first = _attempt()
+    assert store.record_attempt(first).status == "stored"
+    before = {
+        table: store.count_rows(table)
+        for table in (
+            "inputs",
+            "databases",
+            "functions",
+            "terms",
+            "raw_terms",
+            "provider_attempts",
+            "residual_groups",
+        )
+    }
+    if collision == "input":
+        identity = replace(_identity(), input_identity_provenance="idb_local")
+        context = replace(first.context, function_identity=identity)
+        conflicting = replace(first, attempt_uuid=str(uuid4()), context=context)
+    elif collision == "function":
+        identity = replace(_identity(), function_rva=0x2000)
+        context = replace(first.context, function_identity=identity)
+        conflicting = replace(first, attempt_uuid=str(uuid4()), context=context)
+    else:
+        conflicting = replace(first, attempt_uuid=str(uuid4()))
+        if collision == "canonical":
+            store._connection.execute("UPDATE terms SET canonical_term=?", (b"{}",))
+        else:
+            store._connection.execute("UPDATE raw_terms SET raw_term=?", (b"{}",))
+        store._connection.commit()
+    refused = store.record_attempt(conflicting)
+    assert refused.status == "refused"
+    assert {table: store.count_rows(table) for table in before} == before
+    store.close()
+
+
+def test_heartbeat_refuses_unknown_terminal_and_wrong_revision_without_mutation(
+    tmp_path: Path,
+) -> None:
+    now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+    store = MbaDiscoveryStore(
+        tmp_path / "heartbeat-matrix.sqlite3", clock=lambda: now[0]
+    )
+    store.record_attempt(_attempt())
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    run = claim.claim.run
+    original = run.heartbeat_at
+    assert store.heartbeat(str(uuid4()), run.claimed_revision).status == "refused"
+    assert store.heartbeat(run.run_id, run.claimed_revision + 1).status == "refused"
+    assert (
+        store._connection.execute("SELECT heartbeat_at FROM mining_runs").fetchone()[0]
+        == original
+    )
+    finished = store.finish_no_proposal(run.run_id, run.claimed_revision)
+    assert finished.status == "finished"
+    assert store.heartbeat(run.run_id, run.claimed_revision).status == "refused"
+    assert (
+        store._connection.execute("SELECT heartbeat_at FROM mining_runs").fetchone()[0]
+        == original
+    )
+    store.close()
+
+
+def test_proposal_id_collision_rolls_back_run_group_and_insert(tmp_path: Path) -> None:
+    values = iter(
+        (
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002",
+            "00000000-0000-4000-8000-000000000003",
+            "00000000-0000-4000-8000-000000000002",
+        )
+    )
+    store = MbaDiscoveryStore(
+        tmp_path / "proposal-id-collision.sqlite3", uuid_factory=lambda: next(values)
+    )
+    first_pattern = TypedBvTerm(
+        "add", 32, children=(TypedBvTerm(None, 32, leaf_key=("register", "x")),) * 2
+    )
+    second_pattern = TypedBvTerm(
+        "xor", 32, children=(TypedBvTerm(None, 32, leaf_key=("register", "x")),) * 2
+    )
+    store.record_attempt(_attempt(raw=first_pattern, canonical=first_pattern))
+    store.record_attempt(_attempt(raw=second_pattern, canonical=second_pattern))
+    first_claim = store.claim_next_group("miner", "budget")
+    assert first_claim.claim is not None
+    first_proposal = _proposal(first_pattern)
+    assert (
+        store.publish_proposal(
+            first_claim.claim.run.run_id,
+            first_claim.claim.run.claimed_revision,
+            first_proposal,
+            first_proposal.replacement,
+            first_proposal,
+        ).status
+        == "published"
+    )
+    second_claim = store.claim_next_group("miner", "budget")
+    assert second_claim.claim is not None
+    second_proposal = _proposal(second_pattern)
+    receipt = store.publish_proposal(
+        second_claim.claim.run.run_id,
+        second_claim.claim.run.claimed_revision,
+        second_proposal,
+        second_proposal.replacement,
+        second_proposal,
+    )
+    assert receipt.status == "refused"
+    assert store.count_rows("proposals") == 1
+    assert (
+        store._connection.execute(
+            "SELECT state FROM mining_runs WHERE run_id=?",
+            (second_claim.claim.run.run_id,),
+        ).fetchone()[0]
+        == "active"
+    )
+    assert (
+        store._connection.execute(
+            "SELECT state FROM residual_groups WHERE group_id=?",
+            (second_claim.claim.group.group_id,),
+        ).fetchone()[0]
+        == "mining"
+    )
+    store.close()
+
+
+def test_proposal_run_group_cross_link_is_corruption_on_status_and_duplicate(
+    tmp_path: Path,
+) -> None:
+    store, proposal, published = _published_store(tmp_path, "proposal-cross-link")
+    assert published.proposal is not None
+    store.record_attempt(_attempt(value=9))
+    other = store.claim_next_group("miner", "budget")
+    assert other.claim is not None
+    store._connection.execute(
+        "UPDATE proposals SET run_id=? WHERE proposal_id=?",
+        (other.claim.run.run_id, published.proposal.proposal_id),
+    )
+    store._connection.commit()
+    with pytest.raises(ValueError, match="ownership"):
+        store.status_counts()
+    with pytest.raises(ValueError, match="ownership"):
+        store.publish_proposal(
+            published.run.run_id,
+            published.run.claimed_revision,
+            proposal,
+            proposal.replacement,
+            proposal,
+        )
+    store.close()
+
+
+def test_normalized_attempt_corruption_blocks_claim_and_exact_duplicate(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "attempt-shared-read.sqlite3")
+    attempt = _attempt()
+    store.record_attempt(attempt)
+    store._connection.execute("UPDATE provider_attempts SET elapsed_ms=99")
+    store._connection.commit()
+    assert store.claim_next_group("miner", "budget").status == "refused"
+    duplicate = store.record_attempt(attempt)
+    assert duplicate.status == "refused"
+    assert duplicate.reason == "provider attempt normalized authority is corrupt"
+    store.close()
+
+
+def test_same_store_read_write_close_race_has_only_deterministic_close_errors(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "same-store-close.sqlite3")
+    barrier = threading.Barrier(4)
+    errors: list[BaseException] = []
+
+    def exercise(kind: str) -> None:
+        try:
+            barrier.wait()
+            for index in range(50):
+                try:
+                    if kind == "write":
+                        store.record_attempt(
+                            _attempt(
+                                attempt_uuid=f"cccccccc-cccc-4ccc-8ccc-{index:012d}"
+                            )
+                        )
+                    else:
+                        store.status_counts()
+                except RuntimeError as exc:
+                    assert str(exc) == "discovery store is closed"
+                    return
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=exercise, args=(kind,))
+        for kind in ("write", "read", "read")
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    store.close()
+    for thread in threads:
+        thread.join()
+    assert errors == []
     store.close()
