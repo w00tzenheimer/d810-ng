@@ -148,3 +148,79 @@ future work. The provider registry and lifecycle callbacks are intentionally
 IDA-main-thread-only for this bounded phase. Concurrent registration,
 configuration, and snapshot calls are unsupported; the registry lock is not a
 promise of thread-safe semantics.
+
+## MBA residual rule discovery
+
+The MBA residual path captures unresolved provider observations only when an
+activated provider inspected a supported native island but did not produce an
+accepted replacement. The capture records bounded immutable evidence: the
+canonical term, source anchors, candidate fingerprint, provider status, costs,
+and refusal metadata. Capture callbacks must not run synthesis, SMT, source
+generation, or publication. Persist the report first, then perform those
+operations offline.
+
+An extension provider uses the portable host contract by calling
+`capture_instruction` or `capture_ast`, passing the resulting candidate to
+`atomize_native_candidate`, and giving the atomized term to its provider. The
+provider returns a fixed-width `TypedBvTerm`; the caller restores it through
+`restore_replacement`, rebuilds with `rebuild` (or `rebuild_ast`), and invokes
+the host proof method before any mutation. Unknown reserved atoms are rejected
+before reconstruction. A failed proof or reconstruction leaves the original
+instruction unchanged.
+
+After report persistence, extract the
+`capture_metadata.mba_residual_corpus_v1` object and run the offline miner:
+
+```bash
+PYTHONPATH=src python tools/scripts/mba_residual_rule_miner.py \
+  --input residual-corpus.json \
+  --output-dir mined-rules
+```
+
+Witness signatures and provider outcomes nominate candidates; they are not
+proof. Catalogue admission requires the same source/replacement identity to be
+proved at 8, 16, 32, and 64 bits. The current generated
+`MbaResidualRule_2aa7de9f2ef4` is admitted under that four-width authority.
+Measured proof timings remain truthful telemetry but are excluded from the
+stable proposal fingerprint.
+
+The D810 portable core supplies this atomization, restoration, corpus, miner,
+and proof contract. The external `d810-cobra` and `d810-egglog` repositories
+have not adopted it in this change; their adapters require separate repository
+changes and must independently preserve the callback/evidence boundary.
+
+For acceptance, run local tests and architecture checks from the worktree:
+
+```bash
+PYTHONPATH=src pytest -q tests/unit/mba
+sg scan --config sgconfig.yml --report-style short
+PYTHONPATH=src lint-imports --config .importlinter
+graphify update .
+```
+
+Run IDA-dependent checks from the main repository root using the worktree
+selector:
+
+```bash
+./tools/scripts/run_system_tests_docker.sh test \
+  -w mba-residual-rule-discovery \
+  -o mba-residual-rule-unit-docker.txt -- \
+  tests/unit/mba -q
+
+./tools/scripts/run_system_tests_docker.sh test \
+  -w mba-residual-rule-discovery \
+  -o mba-residual-rule-system-docker.txt -- \
+  tests/system/runtime/backends/test_mba_extension_host.py \
+  tests/system/runtime/backends/test_mba_provider_outcome_matrix.py -q
+
+./tools/scripts/run_system_tests_docker.sh system \
+  -w mba-residual-rule-discovery \
+  -l \
+  -o mba-residual-rule-system-broad.txt -- \
+  -k 'mba or egraph or cobra'
+```
+
+The runner writes these outputs under the worktree `.tmp` directory. Classify
+broad-slice failures as feature-caused, baseline-existing,
+environment/fixture, or unrelated; fix only feature-caused failures in this
+change.

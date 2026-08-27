@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from types import MappingProxyType, SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +18,23 @@ from d810.backends.mba.cross_block_preparation import (  # noqa: E402
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.mba.typed_term import TypedBvTerm  # noqa: E402
+from d810.mba.term_codec import typed_term_from_dict  # noqa: E402
+from d810.mba.extension_api import atomize_native_candidate  # noqa: E402
+from d810.mba.native_corpus_capture import NativeMbaCorpusCapture  # noqa: E402
+from d810.mba.provider_outcome import (  # noqa: E402
+    MbaProviderKind,
+    MbaProviderOutcome,
+    ProviderOutcomeStatus,
+)
+from d810.mba.residual_corpus import (  # noqa: E402
+    MbaResidualObservation,
+    MbaResidualSource,
+)
+
+
+_ROOT = Path(__file__).resolve().parents[4]
+_RESIDUAL_MINER = _ROOT / "tools" / "scripts" / "mba_residual_rule_miner.py"
+_RESIDUAL_FIXTURE = _ROOT / "tests" / "fixtures" / "mba" / "residual_or_masked_subterm.json"
 
 
 def _leaf(name: str, register: int, size: int = 4):
@@ -39,6 +60,34 @@ def _node(opcode: int, left, right=None, size: int = 4):
 def _instruction(ast, *, ea: int = 0x401000, destination_size: int = 4):
     destination = _leaf("out", 7, destination_size).create_mop(ea)
     return ast.create_minsn(ea, destination)
+
+
+def _residual_source_ast():
+    x = _leaf("v17", 1)
+    masked = _node(ida_hexrays.m_and, _leaf("v135", 2), _constant(0xFFFFFBFB))
+    return _node(
+        ida_hexrays.m_add,
+        _node(
+            ida_hexrays.m_sub,
+            _node(ida_hexrays.m_xor, x, masked),
+            _node(
+                ida_hexrays.m_add,
+                _node(ida_hexrays.m_and, x, masked),
+                _node(
+                    ida_hexrays.m_mul,
+                    _constant(2),
+                    _node(ida_hexrays.m_and, masked, _node(ida_hexrays.m_bnot, x)),
+                ),
+            ),
+        ),
+        _node(ida_hexrays.m_mul, _constant(2), masked),
+    )
+
+
+def _walk_terms(term):
+    yield term
+    for child in term.children:
+        yield from _walk_terms(child)
 
 
 @pytest.mark.usefixtures("libobfuscated_setup")
@@ -254,6 +303,134 @@ class TestNativeMbaExtensionHost:
         )
 
         assert host.rebuild(candidate, leaf) is None
+
+    def test_provider_shaped_atomization_restoration_and_fail_closed_proof(
+        self, monkeypatch
+    ):
+        host = native_mba_host_services()
+        source = _residual_source_ast()
+        source.dst_mop = _leaf("out", 7).create_mop(0x401000)
+        candidate = host.capture_ast(source, destination_size=4)
+        atomized = atomize_native_candidate(candidate)
+
+        atom = next(
+            node
+            for node in _walk_terms(atomized.term)
+            if node.operation is None
+            and node.leaf_key is not None
+            and node.leaf_key[0] == "d810.mba.atom.v1"
+        )
+        x = next(
+            node.children[0]
+            for node in _walk_terms(atomized.term)
+            if node.operation == "bnot"
+        )
+        provider_replacement = TypedBvTerm(
+            "or", atomized.term.width, children=(x, atom)
+        )
+        restored = atomized.restore_replacement(provider_replacement)
+        reconstruction = host.rebuild(candidate, restored)
+        assert reconstruction is not None
+        assert host.prove(
+            candidate,
+            reconstruction,
+            certificate=None,
+            known_constants=None,
+            proof_timeout_ms=250,
+        )
+
+        unknown_atom = TypedBvTerm(
+            None,
+            atomized.term.width,
+            leaf_key=("d810.mba.atom.v1", 99, "unknown"),
+        )
+        with pytest.raises(ValueError, match="unknown reserved atom"):
+            atomized.restore_replacement(
+                TypedBvTerm("or", atomized.term.width, children=(x, unknown_atom))
+            )
+
+        monkeypatch.setattr(
+            extension_host, "prove_native_ast_equivalence", lambda *args, **kwargs: False
+        )
+        assert not host.prove_ast(
+            candidate,
+            reconstruction.replacement_ast,
+            certificate=None,
+            known_constants=None,
+        )
+        assert candidate.native_context.source_ast is source
+        assert source.dst_mop is not None
+
+    def test_residual_capture_persists_before_offline_mining(self, tmp_path):
+        host = native_mba_host_services()
+        source = _residual_source_ast()
+        candidate = host.capture_ast(source, destination_size=4)
+        assert candidate.term.width == 32
+        fixture = json.loads(_RESIDUAL_FIXTURE.read_text(encoding="utf-8"))
+        canonical_term = typed_term_from_dict(fixture["groups"][0]["canonical_term"])
+        outcome = MbaProviderOutcome(
+            provider=MbaProviderKind.CATALOGUE,
+            status=ProviderOutcomeStatus.UNCHANGED,
+            fingerprint="candidate-triggering",
+            input_cost=(11, 22),
+            refusal_reason="not_simplified",
+        )
+        observation = MbaResidualObservation(
+            schema_version=1,
+            source=MbaResidualSource(
+                case_id="extension-host-residual",
+                stratum="public-codec",
+                function_ea=0x401000,
+                instruction_ea=0x401024,
+                maturity="MMAT_BUILT",
+            ),
+            canonical_term=canonical_term,
+            outcomes=(outcome,),
+        )
+        capture = NativeMbaCorpusCapture(
+            corpus_identity="extension-host-residual",
+            toolchain_identity={"provider": "catalogue"},
+        )
+        callback_active = True
+        capture.add_residual(observation)
+        callback_active = False
+        assert callback_active is False
+
+        report_path = tmp_path / "capture-report.json"
+        corpus_path = tmp_path / "residual-corpus.json"
+        capture.write_json(report_path)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        corpus_path.write_text(
+            json.dumps(report["capture_metadata"]["mba_residual_corpus_v1"]),
+            encoding="utf-8",
+        )
+        result_dir = tmp_path / "mined"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(_RESIDUAL_MINER),
+                "--input",
+                str(corpus_path),
+                "--output-dir",
+                str(result_dir),
+            ],
+            cwd=_ROOT,
+            env={"PYTHONPATH": str(_ROOT / "src")},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        proposals = tuple(result_dir.glob("*.proposal.json"))
+        assert len(proposals) == 1
+        proposal = json.loads(proposals[0].read_text(encoding="utf-8"))
+        assert proposal["class_name"].startswith("MbaResidualRule_")
+        assert [receipt["width"] for receipt in proposal["proof_receipts"]] == [
+            8,
+            16,
+            32,
+            64,
+        ]
 
     def test_mixed_width_capture_and_rebuild_fail_closed(self):
         host = native_mba_host_services()

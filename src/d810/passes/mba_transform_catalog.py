@@ -109,6 +109,13 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         ),
     ),
     (
+        "boolean",
+        "Boolean algebra",
+        "or",
+        "OR",
+        ("mba-residual-2-aa-7-de-9-f-2-ef-4",),
+    ),
+    (
         "arithmetic",
         "Arithmetic",
         "multiplication",
@@ -259,6 +266,12 @@ _SPECIAL_TRANSFORM_METADATA = {
         "description": "Collapse Hodur's complementary-mask MBA residual to subtraction.",
         "reference": "D810 MASM Hodur residual, generalized by complement masks.",
         "default_selected": False,
+    },
+    "mba-residual-2-aa-7-de-9-f-2-ef-4": {
+        "description": "Simplify the proof-certified repeated-term MBA residual to OR.",
+        "reference": "Proof-certified residual OR identity.",
+        "verification": VerificationStatus.VERIFIED,
+        "verification_reason": "The admitted rule is certified at 8, 16, 32, and 64 bits.",
     },
     "mul-mba-1": {
         "description": "Simplify an MBA multiplication pattern to x * y.",
