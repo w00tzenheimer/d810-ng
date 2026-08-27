@@ -184,6 +184,43 @@ def test_record_deduplicates_terms_raw_shapes_and_exact_attempt(tmp_path: Path) 
     store.close()
 
 
+def test_distinct_raw_shapes_share_one_canonical_group(tmp_path: Path) -> None:
+    store = MbaDiscoveryStore(tmp_path / "db.sqlite3")
+    canonical = _term(1)
+    first = _attempt(raw=_term(1), canonical=canonical)
+    second = _attempt(
+        raw=TypedBvTerm("xor", 32, children=(_term(2), _term(3))),
+        canonical=canonical,
+    )
+    one = store.record_attempt(first)
+    two = store.record_attempt(second)
+    assert one.group_id == two.group_id
+    assert one.revision == 1 and two.revision == 2
+    assert store.count_rows("terms") == 1
+    assert store.count_rows("raw_terms") == 2
+    store.close()
+
+
+def test_claim_order_is_oldest_observation_then_group_id(tmp_path: Path) -> None:
+    now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+    store = MbaDiscoveryStore(tmp_path / "db.sqlite3", clock=lambda: now[0])
+    first = _attempt(value=1)
+    second = _attempt(value=2)
+    assert store.record_attempt(first).status == "stored"
+    now[0] += timedelta(seconds=1)
+    assert store.record_attempt(second).status == "stored"
+    first_claim = store.claim_next_group("miner", "budget")
+    assert first_claim.claim is not None
+    assert first_claim.claim.group.canonical_term == _term(1)
+    store.finish_no_proposal(
+        first_claim.claim.run.run_id, first_claim.claim.run.claimed_revision
+    )
+    second_claim = store.claim_next_group("miner", "budget")
+    assert second_claim.claim is not None
+    assert second_claim.claim.group.canonical_term == _term(2)
+    store.close()
+
+
 def test_new_evidence_updates_revision_without_invalidating_proposal(
     tmp_path: Path,
 ) -> None:
@@ -292,6 +329,14 @@ def test_proposal_lifecycle_and_invalid_order_are_typed_refusals(
     assert published.proposal is not None
     proposal = published.proposal
     assert proposal.state is ProposalState.PROPOSED
+    retried_publish = store.publish_proposal(
+        run.run_id,
+        run.claimed_revision,
+        proposal_input,
+        proposal_input.replacement,
+        proposal_input,
+    )
+    assert retried_publish.status == "duplicate"
     assert (
         store.mark_admitted(proposal.proposal_id, "rule-1").reason
         == "expected_state_required"
@@ -304,6 +349,14 @@ def test_proposal_lifecycle_and_invalid_order_are_typed_refusals(
         expected_revision=claim.claim.group.revision,
     )
     assert materialized.status == "materialized"
+    retried_materialized = store.mark_materialized(
+        proposal.proposal_id,
+        "/review/rule.py",
+        "sha256:abc",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=claim.claim.group.revision,
+    )
+    assert retried_materialized.status == "duplicate"
     admitted = store.mark_admitted(
         proposal.proposal_id,
         "rule-1",
@@ -311,6 +364,13 @@ def test_proposal_lifecycle_and_invalid_order_are_typed_refusals(
         expected_revision=materialized.group.revision,
     )
     assert admitted.status == "admitted"
+    retried_admitted = store.mark_admitted(
+        proposal.proposal_id,
+        "rule-1",
+        expected_state=ProposalState.MATERIALIZED,
+        expected_revision=materialized.group.revision,
+    )
+    assert retried_admitted.status == "duplicate"
     assert (
         store.mark_rejected(
             proposal.proposal_id,
@@ -321,6 +381,135 @@ def test_proposal_lifecycle_and_invalid_order_are_typed_refusals(
         == "invalid_transition"
     )
     store.close()
+
+
+@pytest.mark.parametrize("materialize_first", (False, True))
+def test_rejection_exact_and_conflicting_retries_are_typed(
+    tmp_path: Path, materialize_first: bool
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / f"reject-{materialize_first}.sqlite3")
+    pattern = TypedBvTerm(
+        "add",
+        32,
+        children=(TypedBvTerm(None, 32, leaf_key=("register", "x")),) * 2,
+    )
+    proposal = _proposal(pattern)
+    store.record_attempt(_attempt(raw=pattern, canonical=pattern))
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    published = store.publish_proposal(
+        claim.claim.run.run_id,
+        claim.claim.run.claimed_revision,
+        proposal,
+        proposal.replacement,
+        proposal,
+    )
+    assert published.proposal is not None
+    expected_state = ProposalState.PROPOSED
+    expected_revision = claim.claim.group.revision
+    if materialize_first:
+        materialized = store.mark_materialized(
+            published.proposal.proposal_id,
+            "/x",
+            "d",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=expected_revision,
+        )
+        assert materialized.group is not None
+        expected_state = ProposalState.MATERIALIZED
+        expected_revision = materialized.group.revision
+    rejected = store.mark_rejected(
+        published.proposal.proposal_id,
+        "not-safe",
+        expected_state=expected_state,
+        expected_revision=expected_revision,
+    )
+    assert rejected.status == "rejected"
+    retried = store.mark_rejected(
+        published.proposal.proposal_id,
+        "not-safe",
+        expected_state=expected_state,
+        expected_revision=claim.claim.group.revision,
+    )
+    assert retried.status == "duplicate"
+    conflict = store.mark_rejected(
+        published.proposal.proposal_id,
+        "different",
+        expected_state=expected_state,
+        expected_revision=claim.claim.group.revision,
+    )
+    assert conflict.status == "refused"
+    store.close()
+
+
+def test_every_public_operation_fails_deterministically_after_close(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "closed.sqlite3")
+    pattern = TypedBvTerm(
+        "add",
+        32,
+        children=(TypedBvTerm(None, 32, leaf_key=("register", "x")),) * 2,
+    )
+    proposal = _proposal(pattern)
+    store.record_attempt(_attempt(raw=pattern, canonical=pattern))
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    published = store.publish_proposal(
+        claim.claim.run.run_id,
+        claim.claim.run.claimed_revision,
+        proposal,
+        proposal.replacement,
+        proposal,
+    )
+    assert published.proposal is not None
+    store.close()
+    store.close()
+    calls = (
+        lambda: store.schema_version(),
+        lambda: store.table_columns(),
+        lambda: store.connection_pragmas(),
+        lambda: store.journal_mode(),
+        lambda: store.count_rows("terms"),
+        lambda: store.record_attempt(_attempt(raw=pattern, canonical=pattern)),
+        lambda: store.claim_next_group("miner", "budget"),
+        lambda: store.heartbeat(
+            claim.claim.run.run_id, claim.claim.run.claimed_revision
+        ),
+        lambda: store.finish_no_proposal(
+            claim.claim.run.run_id, claim.claim.run.claimed_revision
+        ),
+        lambda: store.publish_proposal(
+            claim.claim.run.run_id,
+            claim.claim.run.claimed_revision,
+            proposal,
+            proposal.replacement,
+            proposal,
+        ),
+        lambda: store.mark_materialized(
+            published.proposal.proposal_id,
+            "/x",
+            "d",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=claim.claim.group.revision,
+        ),
+        lambda: store.mark_admitted(
+            published.proposal.proposal_id,
+            "rule",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=claim.claim.group.revision,
+        ),
+        lambda: store.mark_rejected(
+            published.proposal.proposal_id,
+            "reason",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=claim.claim.group.revision,
+        ),
+        lambda: store.status_counts(),
+    )
+    for call in calls:
+        with pytest.raises(RuntimeError, match="closed"):
+            call()
 
 
 def test_two_stores_only_one_claim_wins(tmp_path: Path) -> None:
@@ -600,4 +789,151 @@ def test_finish_no_proposal_rolls_back_when_group_cas_fails(tmp_path: Path) -> N
         store._connection.execute("SELECT state FROM residual_groups").fetchone()[0]
         == "mining"
     )
+    store.close()
+
+
+@pytest.mark.parametrize(
+    ("name", "statement"),
+    (
+        (
+            "hidden",
+            "ALTER TABLE terms ADD COLUMN shadow INTEGER GENERATED ALWAYS AS (width + 1) VIRTUAL",
+        ),
+        ("table", "CREATE TABLE surprise(value TEXT)"),
+        ("index", "CREATE INDEX surprise_idx ON terms(width)"),
+        ("index_order", "DROP INDEX idx_residual_groups_claim"),
+    ),
+)
+def test_reopen_rejects_each_schema_object_drift(
+    tmp_path: Path, name: str, statement: str
+) -> None:
+    path = tmp_path / f"{name}.sqlite3"
+    store = MbaDiscoveryStore(path)
+    store.close()
+    connection = sqlite3.connect(path)
+    connection.execute(statement)
+    if name == "index_order":
+        connection.execute(
+            "CREATE INDEX idx_residual_groups_claim ON residual_groups(group_id, state, last_observed_at)"
+        )
+    connection.commit()
+    connection.close()
+    with pytest.raises(ValueError, match="partial schema"):
+        MbaDiscoveryStore(path)
+
+
+def test_unversioned_foreign_database_is_not_adopted(tmp_path: Path) -> None:
+    path = tmp_path / "foreign.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE unrelated(value TEXT)")
+    connection.commit()
+    connection.close()
+    with pytest.raises(ValueError, match="partial schema"):
+        MbaDiscoveryStore(path)
+    connection = sqlite3.connect(path)
+    assert connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall() == [("unrelated",)]
+    connection.close()
+
+
+@pytest.mark.parametrize("column", ("canonical_term", "width", "raw_term_id"))
+def test_attempt_duplicate_path_rejects_corrupt_term_identity(
+    tmp_path: Path, column: str
+) -> None:
+    path = tmp_path / f"{column}.sqlite3"
+    store = MbaDiscoveryStore(path)
+    attempt = _attempt()
+    assert store.record_attempt(attempt).status == "stored"
+    if column == "canonical_term":
+        store._connection.execute("UPDATE terms SET canonical_term=?", (b"{}",))
+    elif column == "width":
+        store._connection.execute("UPDATE terms SET width=8")
+    else:
+        store._connection.execute("UPDATE raw_terms SET raw_codec_version=99")
+    store._connection.commit()
+    retry = store.record_attempt(attempt)
+    assert retry.status == "refused"
+    assert retry.reason in {
+        "stored term identity is corrupt",
+        "invalid canonical term bytes",
+    }
+    store.close()
+
+
+def test_proposal_projection_rejects_corrupt_publishing_run_before_mutation(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "db.sqlite3")
+    pattern = TypedBvTerm(
+        "add",
+        32,
+        children=(TypedBvTerm(None, 32, leaf_key=("register", "x")),) * 2,
+    )
+    proposal = _proposal(pattern)
+    store.record_attempt(_attempt(raw=pattern, canonical=pattern))
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    published = store.publish_proposal(
+        claim.claim.run.run_id,
+        claim.claim.run.claimed_revision,
+        proposal,
+        proposal.replacement,
+        proposal,
+    )
+    assert published.proposal is not None
+    store._connection.execute(
+        "UPDATE mining_runs SET state='failed', finished_at=NULL WHERE run_id=?",
+        (claim.claim.run.run_id,),
+    )
+    store._connection.commit()
+    with pytest.raises(ValueError, match="proposal lifecycle ownership"):
+        store.mark_materialized(
+            published.proposal.proposal_id,
+            "/x",
+            "d",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=claim.claim.group.revision,
+        )
+    assert (
+        store._connection.execute("SELECT state FROM proposals").fetchone()[0]
+        == "proposed"
+    )
+    store.close()
+
+
+def test_unknown_proposal_state_is_corruption_before_request_comparison(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "unknown-proposal.sqlite3")
+    pattern = TypedBvTerm(
+        "add",
+        32,
+        children=(TypedBvTerm(None, 32, leaf_key=("register", "x")),) * 2,
+    )
+    proposal = _proposal(pattern)
+    store.record_attempt(_attempt(raw=pattern, canonical=pattern))
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    published = store.publish_proposal(
+        claim.claim.run.run_id,
+        claim.claim.run.claimed_revision,
+        proposal,
+        proposal.replacement,
+        proposal,
+    )
+    assert published.proposal is not None
+    store._connection.execute(
+        "UPDATE proposals SET state='bogus' WHERE proposal_id=?",
+        (published.proposal.proposal_id,),
+    )
+    store._connection.commit()
+    with pytest.raises(ValueError, match="unknown proposal state"):
+        store.mark_materialized(
+            published.proposal.proposal_id,
+            "/x",
+            "d",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=claim.claim.group.revision,
+        )
     store.close()

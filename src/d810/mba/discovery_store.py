@@ -254,6 +254,9 @@ _UNIQUE_COLUMNS = {
     "proposals": {("proposal_id",), ("proposal_fingerprint",)},
 }
 _FOREIGN_KEYS = {
+    "schema_migrations": set(),
+    "inputs": set(),
+    "terms": set(),
     "databases": {("input_id", "inputs", None, "NO ACTION", "NO ACTION")},
     "functions": {("database_id", "databases", None, "NO ACTION", "NO ACTION")},
     "raw_terms": {("term_id", "terms", None, "NO ACTION", "NO ACTION")},
@@ -268,6 +271,33 @@ _FOREIGN_KEYS = {
         ("group_id", "residual_groups", None, "NO ACTION", "NO ACTION"),
         ("run_id", "mining_runs", None, "NO ACTION", "NO ACTION"),
     },
+}
+
+_NAMED_INDEX_COLUMNS = {
+    "idx_residual_groups_claim": (
+        "residual_groups",
+        ("state", "last_observed_at", "group_id"),
+    ),
+    "idx_mining_runs_lease": (
+        "mining_runs",
+        ("state", "heartbeat_at", "group_id"),
+    ),
+    "idx_provider_attempts_term": (
+        "provider_attempts",
+        ("term_id", "created_at", "attempt_id"),
+    ),
+    "idx_provider_attempts_function": (
+        "provider_attempts",
+        ("function_id", "created_at", "attempt_id"),
+    ),
+    "idx_provider_attempts_provider": (
+        "provider_attempts",
+        ("provider", "created_at", "attempt_id"),
+    ),
+    "idx_proposals_group_state": (
+        "proposals",
+        ("group_id", "state", "created_at", "proposal_id"),
+    ),
 }
 
 
@@ -646,6 +676,22 @@ def _attempt_payload_bytes(
     return payload
 
 
+def _validate_attempt_payload(payload: bytes) -> tuple[bool, MbaProviderOutcome]:
+    decoded = _strict_loads(payload)
+    if type(decoded) is not dict or set(decoded) != {"eligible_for_mining", "outcome"}:
+        raise ValueError("attempt payload has invalid fields")
+    if type(decoded["eligible_for_mining"]) is not bool:
+        raise ValueError("attempt eligibility must be a boolean")
+    try:
+        outcome = outcome_from_dict(decoded["outcome"])  # type: ignore[arg-type]
+    except (TypeError, ValueError, KeyError, IndexError) as exc:
+        raise ValueError("attempt payload has invalid outcome") from exc
+    canonical = _attempt_payload_bytes(outcome, decoded["eligible_for_mining"])
+    if canonical != payload:
+        raise ValueError("attempt payload is not canonical")
+    return decoded["eligible_for_mining"], outcome
+
+
 def _timestamp(value: object) -> str:
     if isinstance(value, datetime):
         if value.tzinfo is None:
@@ -752,9 +798,7 @@ class MbaDiscoveryStore:
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
                 ).fetchone()
                 any_expected = self._connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name IN (%s) LIMIT 1"
-                    % ",".join("?" for _ in _TABLES),
-                    tuple(_TABLES),
+                    "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
                 ).fetchone()
                 if not migration_exists:
                     if any_expected:
@@ -914,6 +958,16 @@ class MbaDiscoveryStore:
                 self._connection.execute(statement)
 
     def _validate_schema(self) -> None:
+        user_objects = {
+            (row[0], row[1])
+            for row in self._connection.execute(
+                "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+            )
+        }
+        expected_tables = {("table", table) for table in _TABLES}
+        expected_indexes = {("index", index) for index in _INDEXES}
+        if user_objects != expected_tables | expected_indexes:
+            raise ValueError("partial schema: unexpected schema objects")
         for table, expected in _TABLES.items():
             row = self._connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
@@ -921,9 +975,8 @@ class MbaDiscoveryStore:
             if row is None:
                 raise ValueError("partial schema")
             xinfo = tuple(
-                (item[1], item[2], item[3], item[4], item[5])
+                (item[1], item[2], item[3], item[4], item[5], item[6])
                 for item in self._connection.execute(f'PRAGMA table_xinfo("{table}")')
-                if item[6] == 0
             )
             if tuple(item[0] for item in xinfo) != expected:
                 raise ValueError(f"partial schema: {table} columns")
@@ -934,6 +987,7 @@ class MbaDiscoveryStore:
                     int(_NOT_NULL[table][index]),
                     None,
                     int(_PRIMARY_KEYS[table][index]),
+                    0,
                 )
                 for index, name in enumerate(expected)
             )
@@ -941,14 +995,11 @@ class MbaDiscoveryStore:
                 raise ValueError(f"partial schema: {table} metadata")
         indexes = {
             row[1]
-            for row in self._connection.execute("PRAGMA index_list('residual_groups')")
-        }
-        indexes |= {
-            row[1]
-            for table in ("mining_runs", "provider_attempts", "proposals")
+            for table in _TABLES
             for row in self._connection.execute(f"PRAGMA index_list('{table}')")
+            if not row[1].startswith("sqlite_autoindex_")
         }
-        if not _INDEXES <= indexes:
+        if indexes != _INDEXES:
             raise ValueError("partial schema: indexes")
         for table, expected_unique in _UNIQUE_COLUMNS.items():
             actual_unique = {
@@ -963,34 +1014,8 @@ class MbaDiscoveryStore:
             }
             if actual_unique != expected_unique:
                 raise ValueError(f"partial schema: unique constraints on {table}")
-        named_index_columns = {
-            "idx_residual_groups_claim": (
-                "residual_groups",
-                ("state", "last_observed_at", "group_id"),
-            ),
-            "idx_mining_runs_lease": (
-                "mining_runs",
-                ("state", "heartbeat_at", "group_id"),
-            ),
-            "idx_provider_attempts_term": (
-                "provider_attempts",
-                ("term_id", "created_at", "attempt_id"),
-            ),
-            "idx_provider_attempts_function": (
-                "provider_attempts",
-                ("function_id", "created_at", "attempt_id"),
-            ),
-            "idx_provider_attempts_provider": (
-                "provider_attempts",
-                ("provider", "created_at", "attempt_id"),
-            ),
-            "idx_proposals_group_state": (
-                "proposals",
-                ("group_id", "state", "created_at", "proposal_id"),
-            ),
-        }
         actual_named = {}
-        for index_name, (table, _) in named_index_columns.items():
+        for index_name, (table, _) in _NAMED_INDEX_COLUMNS.items():
             if not self._connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
                 (index_name,),
@@ -1002,8 +1027,11 @@ class MbaDiscoveryStore:
                     f"PRAGMA index_info('{index_name}')"
                 )
             )
+            index_row = self._connection.execute(f"PRAGMA index_list('{table}')")
+            if any(row[1] == index_name and row[2] != 0 for row in index_row):
+                raise ValueError("partial schema: named index uniqueness")
         if actual_named != {
-            name: columns for name, (_, columns) in named_index_columns.items()
+            name: columns for name, (_, columns) in _NAMED_INDEX_COLUMNS.items()
         }:
             raise ValueError("partial schema: named index columns")
         for table, expected_fks in _FOREIGN_KEYS.items():
@@ -1225,7 +1253,9 @@ class MbaDiscoveryStore:
                     SELECT pa.*, f.function_ea, f.function_rva, f.function_fingerprint,
                            d.database_uuid, d.database_identity, i.input_identity,
                            i.identity_provenance, i.external_evidence_allowed,
-                           t.canonical_fingerprint, rt.raw_fingerprint
+                           t.canonical_fingerprint, rt.raw_fingerprint,
+                           t.width, t.canonical_term, t.canonical_codec_version,
+                           rt.raw_term, rt.raw_codec_version
                     FROM provider_attempts pa
                     JOIN functions f ON f.function_id = pa.function_id
                     JOIN databases d ON d.database_id = f.database_id
@@ -1237,6 +1267,20 @@ class MbaDiscoveryStore:
                     (attempt.attempt_uuid,),
                 ).fetchone()
                 if existing is not None:
+                    stored_canonical = _decode_term(
+                        bytes(existing[36]), name="canonical term"
+                    )
+                    stored_raw = _decode_term(bytes(existing[38]), name="raw term")
+                    if (
+                        stored_canonical != attempt.canonical_term
+                        or stored_raw != attempt.raw_term
+                        or existing[33] != term_fingerprint(stored_canonical)
+                        or existing[34] != term_fingerprint(stored_raw)
+                        or existing[35] != stored_canonical.width
+                        or existing[37] != TERM_WIRE_SCHEMA_VERSION
+                        or existing[39] != TERM_WIRE_SCHEMA_VERSION
+                    ):
+                        raise ValueError("stored term identity is corrupt")
                     identity = attempt.context.function_identity
                     context = attempt.context
                     outcome = attempt.outcome
@@ -1253,6 +1297,11 @@ class MbaDiscoveryStore:
                         and existing[32] == int(identity.external_evidence_allowed)
                         and existing[33] == term_fingerprint(attempt.canonical_term)
                         and existing[34] == term_fingerprint(attempt.raw_term)
+                        and existing[35] == attempt.canonical_term.width
+                        and existing[36] == canonical
+                        and existing[37] == TERM_WIRE_SCHEMA_VERSION
+                        and existing[38] == raw
+                        and existing[39] == TERM_WIRE_SCHEMA_VERSION
                         and existing[5] == identity.decompilation_session_id
                         and existing[6] == identity.top_level_epoch
                         and existing[7] == identity.evidence_generation
@@ -1278,6 +1327,13 @@ class MbaDiscoveryStore:
                         and existing[22] == outcome.refusal_reason
                         and bytes(existing[23]) == outcome_payload
                     )
+                    _stored_eligible, _stored_outcome = _validate_attempt_payload(
+                        bytes(existing[23])
+                    )
+                    if _stored_outcome.fingerprint != term_fingerprint(
+                        attempt.canonical_term
+                    ):
+                        raise ValueError("stored attempt outcome is corrupt")
                     group = conn.execute(
                         "SELECT * FROM residual_groups WHERE term_id=?", (existing[3],)
                     ).fetchone()
@@ -1454,8 +1510,22 @@ class MbaDiscoveryStore:
             raise ValueError("proposal source group is corrupt")
         try:
             state = ProposalState(row[7])
+            run_state = MiningRunState(run[5])
+            group_state = ResidualGroupState(group[2])
         except ValueError as exc:
-            raise ValueError("unknown proposal state") from exc
+            raise ValueError("unknown proposal ownership state") from exc
+        expected_group_state = {
+            ProposalState.PROPOSED: ResidualGroupState.PROPOSED,
+            ProposalState.MATERIALIZED: ResidualGroupState.MATERIALIZED,
+            ProposalState.ADMITTED: ResidualGroupState.ADMITTED,
+            ProposalState.REJECTED: ResidualGroupState.REJECTED,
+        }[state]
+        if (
+            run_state is not MiningRunState.PROPOSED
+            or run[8] is None
+            or group_state is not expected_group_state
+        ):
+            raise ValueError("proposal lifecycle ownership is corrupt")
         return Proposal(
             row[0],
             int(row[1]),
@@ -1509,6 +1579,10 @@ class MbaDiscoveryStore:
                     (MiningRunState.ACTIVE.value, cutoff_text),
                 ).fetchall()
                 for old in expired:
+                    if not valid_group_transition(
+                        ResidualGroupState.MINING, ResidualGroupState.ELIGIBLE
+                    ):
+                        raise ValueError("invalid lease reclaim transition")
                     conn.execute(
                         "UPDATE mining_runs SET state=?, finished_at=?, failure_reason=? WHERE run_id=? AND state=?",
                         (
@@ -1535,6 +1609,10 @@ class MbaDiscoveryStore:
                     return ClaimReceipt(
                         ReceiptStatus.REFUSED, reason="no_eligible_group"
                     )
+                if not valid_group_transition(
+                    ResidualGroupState.ELIGIBLE, ResidualGroupState.MINING
+                ):
+                    raise ValueError("invalid claim transition")
                 claimed_revision = int(candidate[1]) + 1
                 updated = conn.execute(
                     "UPDATE residual_groups SET state=?, revision=? WHERE group_id=? AND state=? AND revision=?",
@@ -1651,6 +1729,10 @@ class MbaDiscoveryStore:
                 or group[1] != claimed_revision
             ):
                 return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_revision")
+            if not valid_group_transition(ResidualGroupState.MINING, group_state):
+                return LifecycleReceipt(
+                    ReceiptStatus.REFUSED, reason="invalid_transition"
+                )
             updated = conn.execute(
                 "UPDATE mining_runs SET state=?, finished_at=?, failure_reason=? WHERE run_id=? AND state=? AND claimed_revision=?",
                 (
@@ -1736,7 +1818,11 @@ class MbaDiscoveryStore:
             group = conn.execute(
                 "SELECT * FROM residual_groups WHERE group_id=?", (run[1],)
             ).fetchone()
-            if (
+            existing = conn.execute(
+                "SELECT * FROM proposals WHERE proposal_fingerprint=?",
+                (supplied_fingerprint,),
+            ).fetchone()
+            if existing is None and (
                 run[5] != MiningRunState.ACTIVE.value
                 or run[2] != claimed_revision
                 or group is None
@@ -1744,22 +1830,27 @@ class MbaDiscoveryStore:
                 or group[8] != claimed_revision
             ):
                 return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_revision")
+            if existing is None and not valid_group_transition(
+                ResidualGroupState.MINING, ResidualGroupState.PROPOSED
+            ):
+                return LifecycleReceipt(
+                    ReceiptStatus.REFUSED, reason="invalid_transition"
+                )
+            if run[2] != claimed_revision:
+                return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_revision")
+            canonical_row = conn.execute(
+                "SELECT canonical_term FROM terms WHERE term_id=?", (group[1],)
+            ).fetchone()
+            if canonical_row is None:
+                raise ValueError("proposal source group is corrupt")
             if proposal.pattern != _decode_term(
-                bytes(
-                    conn.execute(
-                        "SELECT canonical_term FROM terms WHERE term_id=?", (group[1],)
-                    ).fetchone()[0]
-                ),
-                name="canonical term",
+                bytes(canonical_row[0]), name="canonical term"
             ):
                 return LifecycleReceipt(
                     ReceiptStatus.REFUSED, reason="proposal_source_mismatch"
                 )
-            existing = conn.execute(
-                "SELECT * FROM proposals WHERE proposal_fingerprint=?",
-                (supplied_fingerprint,),
-            ).fetchone()
             if existing is not None:
+                existing_projection = self._project_proposal(conn, existing)
                 existing_run = conn.execute(
                     "SELECT claimed_revision FROM mining_runs WHERE run_id=?",
                     (existing[2],),
@@ -1775,7 +1866,7 @@ class MbaDiscoveryStore:
                 )
                 return LifecycleReceipt(
                     ReceiptStatus.DUPLICATE if exact else ReceiptStatus.REFUSED,
-                    proposal=self._project_proposal(conn, existing) if exact else None,
+                    proposal=existing_projection if exact else None,
                     reason=None if exact else "proposal_fingerprint_conflict",
                 )
             proposal_id = self._new_uuid()
@@ -1875,36 +1966,46 @@ class MbaDiscoveryStore:
                 return LifecycleReceipt(
                     ReceiptStatus.REFUSED, reason="unknown_proposal"
                 )
-            if expected_state is None:
+            if expected_state is None or expected_revision is None:
                 return LifecycleReceipt(
                     ReceiptStatus.REFUSED, reason="expected_state_required"
-                )
-            if expected_revision is None:
-                return LifecycleReceipt(
-                    ReceiptStatus.REFUSED, reason="expected_revision_required"
                 )
             if type(expected_revision) is not int or expected_revision < 0:
                 raise ValueError("expected_revision must be non-negative")
             try:
                 requested_state = ProposalState(expected_state)
-            except ValueError:
-                return LifecycleReceipt(
-                    ReceiptStatus.REFUSED, reason="unknown_expected_state"
-                )
-            if requested_state.value != row[7]:
-                return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_state")
+                current_state = ProposalState(row[7])
+            except ValueError as exc:
+                raise ValueError("unknown proposal state") from exc
             group = conn.execute(
                 "SELECT * FROM residual_groups WHERE group_id=?", (row[1],)
             ).fetchone()
-            if group is None or group[8] != expected_revision:
+            if group is None:
                 return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_revision")
             self._project_proposal(conn, row)
-            if row[7] == ProposalState.MATERIALIZED.value:
+            run = conn.execute(
+                "SELECT claimed_revision FROM mining_runs WHERE run_id=?", (row[2],)
+            ).fetchone()
+            if run is None:
+                raise ValueError("proposal publishing run is corrupt")
+            if current_state is ProposalState.MATERIALIZED:
                 if group[2] != ResidualGroupState.MATERIALIZED.value:
                     return LifecycleReceipt(
                         ReceiptStatus.REFUSED, reason="invalid_transition"
                     )
-                if row[9] == path and row[10] == digest:
+                original_retry = (
+                    requested_state is ProposalState.PROPOSED
+                    and expected_revision == run[0]
+                )
+                current_retry = (
+                    requested_state is ProposalState.MATERIALIZED
+                    and expected_revision == group[8]
+                )
+                if (
+                    row[9] == path
+                    and row[10] == digest
+                    and (original_retry or current_retry)
+                ):
                     return LifecycleReceipt(
                         ReceiptStatus.DUPLICATE,
                         proposal=self._project_proposal(conn, row),
@@ -1912,10 +2013,14 @@ class MbaDiscoveryStore:
                 return LifecycleReceipt(
                     ReceiptStatus.REFUSED, reason="materialization_conflict"
                 )
-            if row[7] != ProposalState.PROPOSED.value:
+            if current_state is not ProposalState.PROPOSED:
                 return LifecycleReceipt(
                     ReceiptStatus.REFUSED, reason="invalid_transition"
                 )
+            if requested_state is not ProposalState.PROPOSED:
+                return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_state")
+            if group[8] != expected_revision:
+                return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_revision")
             if (
                 group is None
                 or group[2] != ResidualGroupState.PROPOSED.value
@@ -2029,42 +2134,50 @@ class MbaDiscoveryStore:
                 return LifecycleReceipt(
                     ReceiptStatus.REFUSED, reason="unknown_proposal"
                 )
-            if expected_state is None:
+            if expected_state is None or expected_revision is None:
                 return LifecycleReceipt(
                     ReceiptStatus.REFUSED, reason="expected_state_required"
-                )
-            if expected_revision is None:
-                return LifecycleReceipt(
-                    ReceiptStatus.REFUSED, reason="expected_revision_required"
                 )
             if type(expected_revision) is not int or expected_revision < 0:
                 raise ValueError("expected_revision must be non-negative")
             try:
                 requested_state = ProposalState(expected_state)
                 current = ProposalState(row[7])
-            except ValueError:
-                return LifecycleReceipt(
-                    ReceiptStatus.REFUSED, reason="unknown_proposal_state"
-                )
+            except ValueError as exc:
+                raise ValueError("unknown proposal state") from exc
             if requested_state is not current:
-                return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_state")
+                if current is not target:
+                    return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_state")
             group = conn.execute(
                 "SELECT * FROM residual_groups WHERE group_id=?", (row[1],)
             ).fetchone()
-            if group is None or group[8] != expected_revision:
+            if group is None:
                 return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_revision")
             self._project_proposal(conn, row)
+            run = conn.execute(
+                "SELECT claimed_revision FROM mining_runs WHERE run_id=?", (row[2],)
+            ).fetchone()
+            if run is None:
+                raise ValueError("proposal publishing run is corrupt")
             if current is target:
                 if group[2] != group_target.value:
                     return LifecycleReceipt(
                         ReceiptStatus.REFUSED, reason="invalid_transition"
                     )
+                original_retry = (
+                    requested_state
+                    in {ProposalState.PROPOSED, ProposalState.MATERIALIZED}
+                    and expected_revision == run[0]
+                )
+                current_retry = (
+                    requested_state is target and expected_revision == group[8]
+                )
                 if (
                     target is ProposalState.ADMITTED
                     and row[12] == rule_id
                     or target is ProposalState.REJECTED
                     and row[14] == reason
-                ):
+                ) and (original_retry or current_retry):
                     return LifecycleReceipt(
                         ReceiptStatus.DUPLICATE,
                         proposal=self._project_proposal(conn, row),
@@ -2084,6 +2197,8 @@ class MbaDiscoveryStore:
             if (
                 group is None
                 or ResidualGroupState(group[2]) is not expected_group
+                or requested_state is not current
+                or group[8] != expected_revision
                 or not valid_group_transition(expected_group, group_target)
             ):
                 return LifecycleReceipt(
