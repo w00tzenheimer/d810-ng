@@ -185,12 +185,20 @@ def test_out_of_range_known_bit_is_unknown():
     assert decide_zero_status(value) is AbstractZeroStatus.UNKNOWN
 
 
-def test_component_width_mismatch_is_unknown():
+def test_decisive_component_width_mismatch_is_rejected(monkeypatch):
+    from d810.evaluator.hexrays_microcode import abstract_ast
     from d810.evaluator.hexrays_microcode.abstract_ast import AbstractZeroStatus, decide_zero_status
 
-    evidence = AbstractEvidence(32, KnownBits.top(64), WrappedInterval.top(64))
+    evidence = AbstractEvidence(32, KnownBits(64, one=0x40), WrappedInterval.top(32))
     value = ConcolicValue(None, None, evidence, 32, PrecisionStatus.ABSTRACT)
-    assert decide_zero_status(_call(value, size=4)) is AbstractZeroStatus.UNKNOWN
+    leaf = _call(value, size=4)
+
+    assert decide_zero_status(leaf) is AbstractZeroStatus.UNKNOWN
+
+    # Mutation witness: without the component-width guard, this evidence is
+    # decisive and would incorrectly authorize a nonzero proof.
+    monkeypatch.setattr(abstract_ast, "_call_evidence", lambda _node, _width: evidence)
+    assert decide_zero_status(leaf) is AbstractZeroStatus.ALWAYS_NONZERO
 
 
 def test_inconsistent_singletons_are_reduced_to_unknown():
