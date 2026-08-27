@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from functools import partial
+from pathlib import Path
 
 import ida_hexrays
 import idaapi
@@ -13,13 +13,11 @@ import idc
 from d810.analyses.value_flow import CALL_RETURN_VALUE_FACT_TYPE
 from d810.analyses.value_flow.model import FactStatus, FactMapping, ValidatedFactView
 from d810.analyses.value_flow.observation import FactObservation
-from d810.analyses.value_flow.call_return_value import refine_call_result
 from d810.backends.ast import z3 as z3_backend
 from d810.core.observability import reset_diagnostic_bus, subscribe, unsubscribe
 from d810.core.observability_events import Z3PredicateProofObserved
-from d810.core.z3_proof import Z3ProofStatus
 from d810.evaluator.hexrays_microcode import def_search
-from d810.evaluator.hexrays_microcode.abstract_ast import decide_zero_status
+from d810.optimizers.microcode.instructions.z3 import handler as z3_handler
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from tests.system.runtime.conftest import gen_microcode_at_maturity
@@ -30,11 +28,18 @@ class TestCallResultPredicateRegression:
 
     @staticmethod
     def _project_index(state):
-        return next(
-            index
-            for index, project in enumerate(state.project_manager.projects())
-            if project.path.name == "default_instruction_only.json"
+        for index, project in enumerate(state.project_manager.projects()):
+            if project.path.name == "call_result_predicate_acceptance.json":
+                return index
+        from d810.core.config import ProjectConfiguration
+
+        config_path = (
+            Path(__file__).resolve().parents[4]
+            / "src/d810/conf/call_result_predicate_acceptance.json"
         )
+        project = ProjectConfiguration.from_file(config_path)
+        state.project_manager.update("default_instruction_only.json", project)
+        return state.project_manager.index(config_path.name)
 
     def test_native_fixture_exposes_required_chain(self, libobfuscated_setup):
         fixture_path = libobfuscated_setup.get(
@@ -97,11 +102,15 @@ class TestCallResultPredicateRegression:
                 f"{idc.print_operand(address, 0)}, {idc.print_operand(address, 1)}"
             )
             address = ida_bytes.next_head(address, function.end_ea)
-        normalized = {line.replace(" ", "").lower() for line in disassembly}
-        assert "shr ecx,0ah".replace(" ", "") in normalized
-        assert "shr eax,6".replace(" ", "") in normalized
-        assert "and eax,1".replace(" ", "") in normalized
-        assert "cmp eax,0".replace(" ", "") in normalized
+        normalized = {
+            line.replace(" ", "").replace(",", "").lower() for line in disassembly
+        }
+        assert "shr ecx,0ah".replace(" ", "").replace(",", "") in normalized
+        assert "shr eax,6".replace(" ", "").replace(",", "") in normalized
+        assert "and eax,1".replace(" ", "").replace(",", "") in normalized
+        assert "cmp eax,0".replace(" ", "").replace(",", "") in normalized
+        assert "setnz dl".replace(" ", "").replace(",", "") in normalized
+        assert "movzx edx,dl".replace(" ", "").replace(",", "") in normalized
 
     def test_native_no_fact_production_route_retains_branch_and_later_load(
         self, libobfuscated_setup
@@ -123,7 +132,7 @@ class TestCallResultPredicateRegression:
                 for instruction in self._instructions(mba, serial)
             )
         )
-        condition = branch.l.d if branch.l.t == ida_hexrays.mop_d else branch
+        condition = self._branch_condition(block, branch)
         ast = minsn_to_ast(condition)
         assert ast is not None
         resolved = def_search.recursively_resolve_ast(ast, block, branch)
@@ -176,7 +185,7 @@ class TestCallResultPredicateRegression:
         )
         # The branch itself is a control-flow opcode; its xdu condition is the
         # native expression-bearing minsn accepted by the AST adapter.
-        condition = branch.l.d if branch.l.t == ida_hexrays.mop_d else branch
+        condition = self._branch_condition(block, branch)
         ast = minsn_to_ast(condition)
         assert ast is not None
         resolved = def_search.recursively_resolve_ast(ast, block, branch)
@@ -242,7 +251,7 @@ class TestCallResultPredicateRegression:
         assert not original_is_call_result_leaf(mutated_python)
 
     def test_native_fact_view_uses_production_manager_route(
-        self, libobfuscated_setup, d810_state, pseudocode_to_string
+        self, libobfuscated_setup, d810_state
     ):
         function_ea = idc.get_name_ea_simple("call_result_predicate_fixture")
         mba = gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_CALLS)
@@ -256,29 +265,24 @@ class TestCallResultPredicateRegression:
         nested_call, _destination = def_search._call_result_assignment(assignment)
         call_ea = int(nested_call.ea)
         helper_ea = idc.get_name_ea_simple("call_result_predicate_helper")
-        native_branch_instruction = next(
-            instruction
-            for serial in range(mba.qty)
-            for instruction in self._instructions(mba, serial)
-            if instruction.opcode == ida_hexrays.m_jnz
-        )
-        native_branch_block = next(
-            mba.get_mblock(serial)
-            for serial in range(mba.qty)
-            if any(
-                instruction.ea == native_branch_instruction.ea
-                and instruction.opcode == ida_hexrays.m_jnz
-                for instruction in self._instructions(mba, serial)
+        # Build untouched native snapshots before starting D-810.  Starting the
+        # manager may run its regular optimizer callbacks and consume the
+        # materialized SETNZ candidate; each production probe therefore gets a
+        # distinct pre-callback MBA snapshot.
+        case_mbas = {
+            kind: gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_CALLS)
+            for kind in (
+                "none",
+                "zero",
+                "one",
+                "stale",
+                "malformed",
+                "conflicting",
+                "carrier",
+                "empty",
             )
-        )
-        native_branch_mop = native_branch_instruction.l
-        native_condition = (
-            native_branch_mop.d
-            if native_branch_mop.t == ida_hexrays.mop_d
-            else native_branch_instruction
-        )
-        assert native_branch_block is not None and native_condition is not None
-
+        }
+        assert all(case_mbas.values())
         with d810_state() as state:
             state.load_project(self._project_index(state))
             state.start_d810()
@@ -286,21 +290,73 @@ class TestCallResultPredicateRegression:
             previous = manager._validated_fact_view_provider
             provider_calls = []
             proof_events = []
+            production_refiner_calls = []
+            production_decisions = []
+            current_case = {"value": None}
+            real_refine_call_result = z3_handler.refine_call_result
+            real_decide_zero_status = z3_backend.decide_zero_status
+            real_make_z3_mop_prover = z3_handler.Z3Rule.make_z3_mop_prover
+            production_rule_views = []
+
+            def recording_refine_call_result(query, view):
+                result = real_refine_call_result(query, view)
+                production_refiner_calls.append(
+                    {
+                        "case": current_case["value"],
+                        "call_ea": int(query.call_ea),
+                        "width": int(query.result_width_bits),
+                        "fact_ids": tuple(
+                            sorted(
+                                str(observation.fact_id)
+                                for observation in getattr(
+                                    view, "active_observations", ()
+                                )
+                            )
+                        ),
+                        "status": result.status.value,
+                    }
+                )
+                return result
+
+            def recording_decide_zero_status(root):
+                decision = real_decide_zero_status(root)
+                production_decisions.append(
+                    {
+                        "case": current_case["value"],
+                        "ast": str(root),
+                        "status": decision.value,
+                    }
+                )
+                return decision
+
+            def recording_make_z3_mop_prover(rule, **kwargs):
+                production_rule_views.append(
+                    {
+                        "case": current_case["value"],
+                        "rule": type(rule).__name__,
+                        "view": type(rule.validated_fact_view).__name__
+                        if rule.validated_fact_view is not None
+                        else None,
+                        "fact_ids": tuple(
+                            sorted(
+                                str(observation.fact_id)
+                                for observation in getattr(
+                                    rule.validated_fact_view,
+                                    "active_observations",
+                                    (),
+                                )
+                            )
+                        ),
+                    }
+                )
+                return real_make_z3_mop_prover(rule, **kwargs)
+
+            z3_handler.refine_call_result = recording_refine_call_result
+            z3_backend.decide_zero_status = recording_decide_zero_status
+            z3_handler.Z3Rule.make_z3_mop_prover = recording_make_z3_mop_prover
             reset_diagnostic_bus()
             subscribe(Z3PredicateProofObserved, proof_events.append)
-            solver_calls = 0
-            original_new_query_solver = z3_backend._new_query_solver
-
-            def recording_new_query_solver(*args, **kwargs):
-                nonlocal solver_calls
-                solver_calls += 1
-                return original_new_query_solver(*args, **kwargs)
-
-            z3_backend._new_query_solver = recording_new_query_solver
-
-            codes = {}
-            direct_results = {}
-            direct_solver_deltas = {}
+            production_rule_outcomes = {}
             try:
                 for kind in (
                     "none",
@@ -311,58 +367,7 @@ class TestCallResultPredicateRegression:
                     "conflicting",
                     "carrier",
                 ):
-                    native_kind_view = self._fact_view(
-                        kind, call_ea=call_ea, callee_ea=helper_ea
-                    )
-                    native_ast = minsn_to_ast(native_condition)
-                    assert native_ast is not None
-                    native_resolved = def_search.recursively_resolve_ast(
-                        native_ast,
-                        native_branch_block,
-                        native_branch_instruction,
-                        cache={},
-                        call_result_refiner=partial(
-                            refine_call_result, view=native_kind_view
-                        ),
-                    )
-                    solver_count_before_direct = solver_calls
-                    direct_prover = z3_backend.Z3MopProver(
-                        blk=native_branch_block,
-                        ins=native_branch_instruction,
-                        call_result_refiner=partial(
-                            refine_call_result, view=native_kind_view
-                        ),
-                    )
-                    direct_zero = direct_prover.prove_always_zero(native_branch_mop)
-                    direct_nonzero = direct_prover.prove_always_nonzero(
-                        native_branch_mop
-                    )
-                    direct_results[kind] = (direct_zero, direct_nonzero)
-                    direct_solver_deltas[kind] = (
-                        solver_calls - solver_count_before_direct
-                    )
-                    print(
-                        "native_abstract="
-                        + repr(
-                            {
-                                "kind": kind,
-                                "status": decide_zero_status(native_resolved).value,
-                                "ast": str(native_resolved),
-                                "prove_zero": direct_zero.status.name,
-                                "prove_nonzero": direct_nonzero.status.name,
-                                "solver_delta": direct_solver_deltas[kind],
-                            }
-                        )
-                    )
-                for kind in (
-                    "none",
-                    "zero",
-                    "one",
-                    "stale",
-                    "malformed",
-                    "conflicting",
-                    "carrier",
-                ):
+                    current_case["value"] = kind
 
                     def provider(_function_ea, _maturity, *, _kind=kind):
                         provider_calls.append(_kind)
@@ -371,70 +376,69 @@ class TestCallResultPredicateRegression:
                         )
 
                     manager.configure_validated_fact_view_provider(provider)
-                    cfunc = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
-                    assert cfunc is not None
-                    code = pseudocode_to_string(cfunc.get_pseudocode())
-                    print(f"{kind}:\n{code}")
-                    codes[kind] = code
-                    print(
-                        "oracle="
-                        + repr(
-                            {
-                                "kind": kind,
-                                "has_if": "if" in code,
-                                "has_zero_arm": "0x12345678" in code,
-                                "has_one_arm": "0xCAFEBABE" in code,
-                            }
-                        )
+                    case_mba = case_mbas[kind]
+                    setnz_block, setnz_instruction = self._find_nested_opcode(
+                        case_mba, ida_hexrays.m_setnz
                     )
+                    assert setnz_block is not None and setnz_instruction is not None
+                    z3_optimizer = next(
+                        optimizer
+                        for optimizer in manager.instruction_optimizers
+                        if type(optimizer).__name__ == "Z3Optimizer"
+                    )
+                    z3_rule = next(
+                        rule
+                        for rule in z3_optimizer.rules
+                        if type(rule).__name__ == "Z3setnzRuleGeneric"
+                    )
+                    bound = manager._bind_validated_fact_view_for_callback(setnz_block)
+                    try:
+                        replacement = z3_rule.check_and_replace(
+                            setnz_block, setnz_instruction
+                        )
+                    finally:
+                        for binder, previous_view in reversed(bound):
+                            binder(previous_view)
+                    production_rule_outcomes[kind] = replacement
                 manager.configure_validated_fact_view_provider(
                     lambda _function_ea, _maturity: ValidatedFactView(
                         maturity="MMAT_CALLS"
                     )
                 )
-                empty_view = manager._validated_fact_view_provider(
-                    function_ea, "MMAT_CALLS"
+                current_case["value"] = "empty"
+                empty_mba = case_mbas["empty"]
+                empty_setnz_block, empty_setnz_instruction = self._find_nested_opcode(
+                    empty_mba, ida_hexrays.m_setnz
                 )
-                empty_ast = minsn_to_ast(native_condition)
-                assert empty_ast is not None
-                empty_resolved = def_search.recursively_resolve_ast(
-                    empty_ast,
-                    native_branch_block,
-                    native_branch_instruction,
-                    cache={},
-                    call_result_refiner=partial(refine_call_result, view=empty_view),
+                assert (
+                    empty_setnz_block is not None
+                    and empty_setnz_instruction is not None
                 )
-                empty_prover = z3_backend.Z3MopProver(
-                    blk=native_branch_block,
-                    ins=native_branch_instruction,
-                    call_result_refiner=partial(refine_call_result, view=empty_view),
+                z3_optimizer = next(
+                    optimizer
+                    for optimizer in manager.instruction_optimizers
+                    if type(optimizer).__name__ == "Z3Optimizer"
                 )
-                empty_zero = empty_prover.prove_always_zero(native_branch_mop)
-                empty_nonzero = empty_prover.prove_always_nonzero(native_branch_mop)
-                print(
-                    "always-empty-abstract="
-                    + repr(
-                        {
-                            "status": decide_zero_status(empty_resolved).value,
-                            "prove_zero": empty_zero.status.name,
-                            "prove_nonzero": empty_nonzero.status.name,
-                        }
+                z3_rule = next(
+                    rule
+                    for rule in z3_optimizer.rules
+                    if type(rule).__name__ == "Z3setnzRuleGeneric"
+                )
+                empty_bound = manager._bind_validated_fact_view_for_callback(
+                    empty_setnz_block
+                )
+                try:
+                    production_rule_outcomes["empty"] = z3_rule.check_and_replace(
+                        empty_setnz_block, empty_setnz_instruction
                     )
-                )
-                assert empty_zero.status is Z3ProofStatus.DISPROVED
-                assert empty_nonzero.status is Z3ProofStatus.DISPROVED
-                assert (empty_zero, empty_nonzero) != direct_results["zero"]
-                assert (empty_zero, empty_nonzero) != direct_results["one"]
-                empty_cfunc = idaapi.decompile(
-                    function_ea, flags=idaapi.DECOMP_NO_CACHE
-                )
-                assert empty_cfunc is not None
-                empty_code = pseudocode_to_string(empty_cfunc.get_pseudocode())
-                print(f"always-empty-provider:\n{empty_code}")
-                codes["empty"] = empty_code
+                finally:
+                    for binder, previous_view in reversed(empty_bound):
+                        binder(previous_view)
             finally:
                 manager.configure_validated_fact_view_provider(previous)
-                z3_backend._new_query_solver = original_new_query_solver
+                z3_handler.refine_call_result = real_refine_call_result
+                z3_backend.decide_zero_status = real_decide_zero_status
+                z3_handler.Z3Rule.make_z3_mop_prover = real_make_z3_mop_prover
                 unsubscribe(Z3PredicateProofObserved, proof_events.append)
             assert set(provider_calls) == {
                 "none",
@@ -446,31 +450,80 @@ class TestCallResultPredicateRegression:
                 "carrier",
             }
             print(
-                "codes_differ="
-                + repr(
-                    {
-                        "zero_vs_none": codes["zero"] != codes["none"],
-                        "one_vs_none": codes["one"] != codes["none"],
-                    }
-                )
-            )
-            print(
                 "proof_events="
                 + repr([(event.operation, event.status.name) for event in proof_events])
             )
-            assert direct_results["none"][0].status is Z3ProofStatus.DISPROVED
-            assert direct_results["none"][1].status is Z3ProofStatus.DISPROVED
-            assert direct_results["zero"][0].status is Z3ProofStatus.PROVED
-            assert direct_results["zero"][1].status is Z3ProofStatus.DISPROVED
-            assert direct_results["one"][0].status is Z3ProofStatus.DISPROVED
-            assert direct_results["one"][1].status is Z3ProofStatus.PROVED
-            assert direct_solver_deltas["zero"] == 0
-            assert direct_solver_deltas["one"] == 0
-            for kind in ("stale", "malformed", "conflicting", "carrier"):
-                assert direct_results[kind][0].status is Z3ProofStatus.DISPROVED
-                assert direct_results[kind][1].status is Z3ProofStatus.DISPROVED
-            assert direct_results["zero"] != direct_results["none"]
-            assert direct_results["one"] != direct_results["none"]
+            print("production_refiner_calls=" + repr(production_refiner_calls))
+            print(
+                "production_rule_views="
+                + repr(
+                    sorted(
+                        set(tuple(record.items()) for record in production_rule_views)
+                    )
+                )
+            )
+            print(
+                "production_decisions="
+                + repr(
+                    {
+                        case: sorted(
+                            {
+                                record["status"]
+                                for record in production_decisions
+                                if record["case"] == case and "0x40" in record["ast"]
+                            }
+                        )
+                        for case in ("none", "zero", "one", "empty")
+                    }
+                )
+            )
+            print("production_rule_outcomes=" + repr(production_rule_outcomes))
+            assert production_rule_outcomes["none"] is None
+            assert production_rule_outcomes["zero"] is not None
+            assert production_rule_outcomes["one"] is not None
+            for kind in ("stale", "malformed", "conflicting", "carrier", "empty"):
+                assert production_rule_outcomes[kind] is None
+            relevant_refiners = [
+                record
+                for record in production_refiner_calls
+                if record["case"] in ("none", "zero", "one", "empty")
+                and record["call_ea"] == call_ea
+            ]
+            assert relevant_refiners
+            assert any(
+                record["case"] == "zero"
+                and record["status"] == "refined"
+                and record["fact_ids"] == ("known-zero",)
+                for record in relevant_refiners
+            )
+            assert any(
+                record["case"] == "one"
+                and record["status"] == "refined"
+                and record["fact_ids"] == ("known-one",)
+                for record in relevant_refiners
+            )
+            assert not any(
+                record["case"] == "empty" and record["status"] == "refined"
+                for record in relevant_refiners
+            )
+            zero_decisions = {
+                record["status"]
+                for record in production_decisions
+                if record["case"] == "zero" and "0x40" in record["ast"]
+            }
+            one_decisions = {
+                record["status"]
+                for record in production_decisions
+                if record["case"] == "one" and "0x40" in record["ast"]
+            }
+            empty_decisions = {
+                record["status"]
+                for record in production_decisions
+                if record["case"] == "empty" and "0x40" in record["ast"]
+            }
+            assert "always_zero" in zero_decisions
+            assert "always_nonzero" in one_decisions
+            assert empty_decisions == {"unknown"}
 
     @staticmethod
     def _fact_view(kind, *, call_ea, callee_ea):
@@ -573,3 +626,49 @@ class TestCallResultPredicateRegression:
         while instruction is not None:
             yield instruction
             instruction = instruction.next
+
+    @staticmethod
+    def _find_nested_opcode(mba, opcode):
+        """Find an opcode in native instructions and nested minsn operands."""
+        for serial in range(mba.qty):
+            block = mba.get_mblock(serial)
+            instruction = None if block is None else block.head
+            seen = set()
+            while instruction is not None:
+                stack = [instruction]
+                while stack:
+                    candidate = stack.pop()
+                    if candidate is None or id(candidate) in seen:
+                        continue
+                    seen.add(id(candidate))
+                    if candidate.opcode == opcode:
+                        return block, candidate
+                    for mop in (
+                        getattr(candidate, "l", None),
+                        getattr(candidate, "r", None),
+                        getattr(candidate, "d", None),
+                    ):
+                        nested = getattr(mop, "d", None)
+                        if nested is not None:
+                            stack.append(nested)
+                instruction = instruction.next
+        return None, None
+
+    @staticmethod
+    def _branch_condition(block, branch):
+        """Return the expression minsn that materializes a native JNZ value."""
+        if branch.l.t == ida_hexrays.mop_d:
+            return branch.l.d
+        target = getattr(branch.l, "r", None)
+        candidate = block.head
+        last = None
+        while candidate is not None and candidate != branch:
+            destination = getattr(candidate, "d", None)
+            if (
+                destination is not None
+                and getattr(destination, "t", None) == ida_hexrays.mop_r
+                and getattr(destination, "r", None) == target
+            ):
+                last = candidate
+            candidate = candidate.next
+        return last if last is not None else branch

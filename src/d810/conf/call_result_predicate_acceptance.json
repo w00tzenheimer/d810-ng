@@ -1,0 +1,13 @@
+{
+  "description": "Minimal production Z3 predicate route for call-result acceptance.",
+  "additional_configuration": {
+    "pipeline_v2": [
+      {
+        "pass_id": "mba-simplify",
+        "options": {
+          "transforms": ["z-3-setz-generic", "z-3-setnz-generic"]
+        }
+      }
+    ]
+  }
+}

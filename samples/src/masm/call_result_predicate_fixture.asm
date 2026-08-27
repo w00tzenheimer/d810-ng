@@ -28,10 +28,16 @@ call_result_predicate_fixture:
     ; The branch predicate is the call-result bit itself.  ECX remains a
     ; deliberately live decoy in the later materializable path.
     cmp eax, 0
+    ; Keep a materialized setnz candidate for the production Z3 rule.  SETNZ
+    ; does not alter flags, so the following JNE remains the actual branch on
+    ; the EAX predicate above.
+    setnz dl
+    movzx edx, dl
     jne short call_result_predicate_taken
     mov eax, DWORD PTR call_result_later_value
     ; Keep the decoy ECX definition live in the materializable path.
     add eax, ecx
+    add eax, edx
     jmp short call_result_predicate_done
 
 call_result_predicate_taken:
