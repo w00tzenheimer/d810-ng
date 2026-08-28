@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from d810.mba.extension_api import (
     NativeMbaReconstruction,
     TypedBvTerm,
     reconstruct_native_provider_result,
+    D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
 )
 from d810.mba.island_profile import profile_typed_term
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
@@ -94,6 +96,36 @@ def test_optimizer_runtime_contract_is_exported_through_extension_api() -> None:
         "egraph_receipt_to_outcome",
     ):
         assert hasattr(extension_api, name), name
+
+
+def test_residual_observation_contract_is_exported() -> None:
+    assert D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY == (
+        "d810.mba.residual-observation.v1"
+    )
+    assert "MbaResidualRecord" in extension_api.__all__
+    assert "MbaResidualReceipt" in extension_api.__all__
+    assert "MbaResidualObservationSink" in extension_api.__all__
+
+
+def test_residual_contract_imports_without_ida_modules() -> None:
+    code = (
+        "import builtins\n"
+        "real_import = builtins.__import__\n"
+        "def blocked(name, *args, **kwargs):\n"
+        "    if name == 'idaapi' or name.startswith('ida_'):\n"
+        "        raise AssertionError(name)\n"
+        "    return real_import(name, *args, **kwargs)\n"
+        "builtins.__import__ = blocked\n"
+        "from d810.mba.extension_api import MbaResidualRecord, MbaResidualReceipt\n"
+        "assert MbaResidualReceipt('stored').status == 'stored'\n"
+        "assert MbaResidualRecord.__name__ == 'MbaResidualRecord'\n"
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).parents[3] / "src")
+    result = subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_canonical_fixed_bindings_is_an_extension_api_dto() -> None:

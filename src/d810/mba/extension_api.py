@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from d810.core.typing import Protocol
+from d810.core.function_execution_identity import MbaObservationContext
 import d810.mba.typed_term as typed_term_module
 from d810.mba.ac_matching import AcMatchStopReason
 from d810.mba.certified_rule_compiler import (
@@ -22,7 +23,11 @@ from d810.mba.certified_rule_compiler import (
     compiled_rules_for_families,
     require_admitted_compiled_rules,
 )
-from d810.mba.certified_catalogue import build_certified_catalogue_snapshot
+from d810.mba.certified_catalogue import (
+    build_certified_catalogue_snapshot,
+    enroll_structural_rule,
+    is_enrolled_structural_rule,
+)
 from d810.mba.canonical_pattern import (
     CanonicalCompiledPattern,
     CanonicalFixedBindings,
@@ -94,7 +99,11 @@ from d810.mba.bounded_synthesis import (
     grammar_all_ones_origins,
     synthesize_residual,
 )
-from d810.mba.rule_proposal import MbaRuleProposal, proposal_fingerprint, render_rule_source
+from d810.mba.rule_proposal import (
+    MbaRuleProposal,
+    proposal_fingerprint,
+    render_rule_source,
+)
 from d810.mba.performance_timing import (
     EMPTY_MBA_STAGE_TIMINGS,
     MbaStageTimer,
@@ -104,10 +113,111 @@ from d810.mba.provider_outcome import (
     MbaProviderOutcome,
     ProviderOutcomeStatus,
 )
-from d810.mba.certified_catalogue import (
-    enroll_structural_rule,
-    is_enrolled_structural_rule,
-)
+
+
+D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY = "d810.mba.residual-observation.v1"
+_RESIDUAL_WIDTHS = frozenset({8, 16, 32, 64})
+
+
+def _residual_cost(value: object, *, field: str) -> tuple[int, int] | None:
+    if value is None:
+        return None
+    if type(value) is not tuple or len(value) != 2:
+        raise TypeError(f"{field} must be a two-item tuple or None")
+    if any(type(item) is not int or item < 0 for item in value):
+        raise ValueError(f"{field} must contain finite non-negative integers")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class MbaResidualRecord:
+    """One terminal, non-applied provider observation owned by the host."""
+
+    context: MbaObservationContext
+    attempt_uuid: str
+    raw_term: TypedBvTerm
+    canonical_term: TypedBvTerm
+    outcome: MbaProviderOutcome
+    materialized: bool = False
+    candidate_cost: tuple[int, int] | None = None
+    replacement_cost: tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.context, MbaObservationContext):
+            raise TypeError("context must be an MbaObservationContext")
+        if type(self.attempt_uuid) is not str:
+            raise TypeError("attempt_uuid must be a canonical UUID string")
+        from uuid import UUID
+
+        try:
+            normalized_uuid = str(UUID(self.attempt_uuid))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("attempt_uuid must be a canonical UUID string") from exc
+        if normalized_uuid != self.attempt_uuid:
+            raise ValueError("attempt_uuid must use canonical UUID spelling")
+        if (
+            type(self.raw_term) is not TypedBvTerm
+            or type(self.canonical_term) is not TypedBvTerm
+        ):
+            raise TypeError("raw_term and canonical_term must be TypedBvTerm values")
+        if (
+            self.raw_term.width not in _RESIDUAL_WIDTHS
+            or self.canonical_term.width not in _RESIDUAL_WIDTHS
+        ):
+            raise ValueError("term width must be one of 8, 16, 32, or 64")
+        if self.raw_term.width != self.canonical_term.width:
+            raise ValueError("raw and canonical term widths must match")
+        if not isinstance(self.outcome, MbaProviderOutcome):
+            raise TypeError("outcome must be an MbaProviderOutcome")
+        if type(self.materialized) is not bool:
+            raise TypeError("materialized must be a bool")
+        candidate_cost = _residual_cost(self.candidate_cost, field="candidate_cost")
+        replacement_cost = _residual_cost(
+            self.replacement_cost, field="replacement_cost"
+        )
+        if (
+            candidate_cost is not None
+            and self.outcome.input_cost is not None
+            and candidate_cost != self.outcome.input_cost
+        ):
+            raise ValueError("candidate_cost must agree with outcome.input_cost")
+        if (
+            replacement_cost is not None
+            and self.outcome.output_cost is not None
+            and replacement_cost != self.outcome.output_cost
+        ):
+            raise ValueError("replacement_cost must agree with outcome.output_cost")
+        object.__setattr__(self, "candidate_cost", candidate_cost)
+        object.__setattr__(self, "replacement_cost", replacement_cost)
+
+
+@dataclass(frozen=True, slots=True)
+class MbaResidualReceipt:
+    """Host sink result with a deliberately tiny stable status vocabulary."""
+
+    status: str
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not str or self.status not in {
+            "stored",
+            "duplicate",
+            "rejected",
+        }:
+            raise ValueError("status must be stored, duplicate, or rejected")
+        if self.status == "rejected":
+            if type(self.reason) is not str or not self.reason:
+                raise ValueError("rejected receipts require a non-empty reason")
+        elif self.reason is not None:
+            raise ValueError("stored and duplicate receipts cannot have a reason")
+
+
+class MbaResidualObservationSink(Protocol):
+    """Host-owned persistence boundary exposed to external MBA providers."""
+
+    def record(self, observation: MbaResidualRecord) -> MbaResidualReceipt: ...
+
+    def close(self) -> None: ...
 
 
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
@@ -617,6 +727,7 @@ class NativeMbaHostServices(Protocol):
 
 
 __all__ = [
+    "D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY",
     "CANONICALIZER_SCHEMA_VERSION",
     "AcMatchStopReason",
     "CanonicalCompiledPattern",
@@ -644,6 +755,9 @@ __all__ = [
     "NativeMbaUnsupportedCandidate",
     "MbaAtomBinding",
     "MbaProviderOutcome",
+    "MbaResidualObservationSink",
+    "MbaResidualReceipt",
+    "MbaResidualRecord",
     "ProviderOutcomeHistory",
     "ProviderOutcomeStatus",
     "EMPTY_MBA_STAGE_TIMINGS",

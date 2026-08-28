@@ -23,7 +23,11 @@ from .native_cfg_normalization import (
     NativeCfgFreezeObserver,
     NativeEdgeStateProofCapability,
 )
-from .plugin_host import PluginCapabilityAccessError, PluginHostCapabilityRegistry
+from .plugin_host import (
+    CapabilityRegistrationLease,
+    PluginCapabilityAccessError,
+    PluginHostCapabilityRegistry,
+)
 from .recurrence import ExternalRecurrenceCapability, RecurrenceAnalysis
 from .source_lifter import (
     LiveLifter,
@@ -37,6 +41,7 @@ from .value_range import ValRange, ValRangeCapability
 
 __all__ = [
     "CapabilityNotProvided",
+    "CapabilityRegistrationLease",
     "BranchWitnessCapability",
     "CapabilitySet",
     "ConstantFixpointBackend",  # back-compat alias of ConstantFixpointCapability

@@ -76,6 +76,33 @@ def test_plugin_view_rejects_access_to_undeclared_host_service() -> None:
         view.require(ExampleService)
 
 
+def test_registration_lease_is_idempotent_and_cannot_release_new_owner() -> None:
+    registry = PluginHostCapabilityRegistry()
+    first = registry.register(
+        "example.service.v1", ExampleService, ExampleServiceImpl()
+    )
+    first.release()
+    first.close()
+    second = registry.register(
+        "example.service.v1", ExampleService, ExampleServiceImpl()
+    )
+    first.release()
+    assert registry.require(ExampleService) is not None
+    second.release()
+    with pytest.raises(PluginCapabilityAccessError, match="not registered"):
+        registry.require(ExampleService)
+
+
+def test_duplicate_live_owner_is_rejected_until_lease_release() -> None:
+    registry = PluginHostCapabilityRegistry()
+    lease = registry.register(
+        "example.service.v1", ExampleService, ExampleServiceImpl()
+    )
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register("example.service.v1", ExampleService, ExampleServiceImpl())
+    lease.release()
+
+
 def test_plugin_view_is_immutable_and_copies_requirements() -> None:
     registry = PluginHostCapabilityRegistry()
     registry.register("example.service.v1", ExampleService, ExampleServiceImpl())

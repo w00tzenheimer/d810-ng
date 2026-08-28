@@ -131,6 +131,12 @@ from d810.manager.function_recipe_activation import (
     select_workbench_recipe_projection,
 )
 from d810.core.function_storage_config import FunctionRecipeStorageConfig
+from d810.mba.discovery_store import MbaDiscoveryStore
+from d810.mba.extension_api import (
+    D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
+    MbaResidualObservationSink,
+)
+from d810.mba.residual_observation_sink import SqliteMbaResidualObservationSink
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
 from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
 from d810.manager.profiling import ProfilingController
@@ -166,6 +172,21 @@ D810_LOG_DIR_NAME = "d810_logs"
 
 _MAX_EVIDENCE_REBIND_RETRIES = 4
 _MAX_POISON_RECOVERY_RETRIES = 1
+
+
+def _mba_residual_post_init_guard(initializer):
+    """Acquire the process-wide residual service around manager construction."""
+
+    def guarded(manager):
+        manager._initialize_mba_residual_observation()
+        try:
+            initializer(manager)
+        except BaseException:
+            manager._release_mba_residual_observation()
+            raise
+
+    return guarded
+
 
 logger = getLogger("d810")
 
@@ -713,6 +734,12 @@ class D810Manager:
     diagnostic_cleanup_service: DiagnosticCleanupService = dataclasses.field(init=False)
     config_v2_editing_service: ConfigV2EditingService = dataclasses.field(init=False)
     backend_registry: typing.Any = dataclasses.field(init=False, repr=False)
+    _mba_residual_observation_sink: typing.Any = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    _mba_residual_observation_lease: typing.Any = dataclasses.field(
+        default=None, init=False, repr=False
+    )
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
@@ -815,6 +842,37 @@ class D810Manager:
         repr=False,
     )
 
+    def _initialize_mba_residual_observation(self) -> None:
+        from d810.backends import host_capability_registry
+
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        store = MbaDiscoveryStore(self.log_dir / "d810_mba_discovery.sqlite3")
+        sink = SqliteMbaResidualObservationSink(store)
+        try:
+            lease = host_capability_registry().register(
+                D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
+                MbaResidualObservationSink,
+                sink,
+            )
+        except BaseException:
+            sink.close()
+            raise
+        self._mba_residual_observation_sink = sink
+        self._mba_residual_observation_lease = lease
+
+    def _release_mba_residual_observation(self) -> None:
+        lease = self._mba_residual_observation_lease
+        self._mba_residual_observation_lease = None
+        try:
+            if lease is not None:
+                lease.release()
+        finally:
+            sink = self._mba_residual_observation_sink
+            self._mba_residual_observation_sink = None
+            if sink is not None:
+                sink.close()
+
+    @_mba_residual_post_init_guard
     def __post_init__(self) -> None:
         self.profiling = ProfilingController(self.log_dir)
         self.function_storage_runtime = FunctionStorageRuntime(
@@ -2546,6 +2604,8 @@ class D810Manager:
     def start(self):
         if self._started:
             self.stop()
+        if self._mba_residual_observation_sink is None:
+            self._initialize_mba_residual_observation()
         self._runtime_invalidated = False
         logger.debug("Starting manager...")
         load_optimizer_registries()
@@ -3214,7 +3274,7 @@ class D810Manager:
             gateway=gateway,
             user_enabled=lambda request: native_patch_function_is_authorized(
                 globally_available=bool(self.config.get("native_patch_enabled", False)),
-                function_tags=self.get_function_tags(request.materialization.function_ea),
+            function_tags=self.get_function_tags(request.materialization.function_ea),
             ),
             execution_journal=self._native_patch_execution_journal,
             parent_attempt_for_request=_parent_attempt,
@@ -4647,6 +4707,10 @@ class D810Manager:
                 "plugin activations.close",
                 self.backend_registry.close_activations,
             )
+            self._safe_lifecycle_step(
+                "mba residual observation.release",
+                self._release_mba_residual_observation,
+            )
             return None
         self._started = False
         telemetry_active = self._discard_telemetry_lifecycle()
@@ -4766,6 +4830,10 @@ class D810Manager:
         self._safe_lifecycle_step(
             "plugin activations.close",
             self.backend_registry.close_activations,
+        )
+        self._safe_lifecycle_step(
+            "mba residual observation.release",
+            self._release_mba_residual_observation,
         )
         if full_cleanup:
             self._cleanup_errors = cleanup_errors
