@@ -61,6 +61,11 @@ from d810.core.typing import Iterator
 SCHEMA_VERSION = 1
 DISCOVERY_LEASE_TIMEOUT = timedelta(minutes=5)
 DISCOVERY_LEASE_TIMEOUT_SECONDS = DISCOVERY_LEASE_TIMEOUT.total_seconds()
+DISCOVERY_HEARTBEAT_LOCK_TIMEOUT_SECONDS = 0.25
+
+
+class _StoreBusy(RuntimeError):
+    """The store serialization boundary could not be acquired in time."""
 
 _SCHEMA_SQL = """
     CREATE TABLE schema_migrations (
@@ -1322,8 +1327,16 @@ class MbaDiscoveryStore:
             raise RuntimeError("discovery store is closed")
 
     @contextmanager
-    def _transaction(self, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
-        with self._lock:
+    def _transaction(
+        self, *, immediate: bool = False, lock_timeout: float | None = None
+    ) -> Iterator[sqlite3.Connection]:
+        if lock_timeout is None:
+            acquired = self._lock.acquire()
+        else:
+            acquired = self._lock.acquire(timeout=lock_timeout)
+        if not acquired:
+            raise _StoreBusy("storage_busy")
+        try:
             self._ensure_open()
             try:
                 self._connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
@@ -1334,6 +1347,8 @@ class MbaDiscoveryStore:
                 raise
             else:
                 self._connection.commit()
+        finally:
+            self._lock.release()
 
     def _configure_and_migrate(self) -> None:
         with self._lock:
@@ -2115,6 +2130,7 @@ class MbaDiscoveryStore:
         conn: sqlite3.Connection,
         proposal: MbaRuleProposal,
         group: sqlite3.Row,
+        publishing_revision: int,
     ) -> bool:
         """Require proposal atoms to replay from one stored raw source."""
 
@@ -2142,14 +2158,9 @@ class MbaDiscoveryStore:
             )
         except (TypeError, ValueError):
             return False
-        if proposal.provenance == ("provider:test",):
-            # Preserve the pre-Task-8 provider fixtures used by the store's
-            # historical lifecycle tests; mined proposals use the strict
-            # database-bound contract below.
-            return True
         if not proposal.provenance or not proposal.provenance[0].startswith("discovery_db:"):
             return False
-        expected_provenance = f"discovery_db:group:{group[0]}:revision:{group[8]}"
+        expected_provenance = f"discovery_db:group:{group[0]}:revision:{publishing_revision}"
         if proposal.provenance != (expected_provenance,) or proposal.source_fingerprints != (canonical_fingerprint,):
             return False
         fixture = proposal.fixture
@@ -2265,7 +2276,7 @@ class MbaDiscoveryStore:
             self._project_run_local(run)
         except ValueError as exc:
             raise ValueError("proposal lifecycle ownership is corrupt") from exc
-        if not self._proposal_source_matches_group(conn, proposal, group):
+        if not self._proposal_source_matches_group(conn, proposal, group, int(run[2])):
             raise ValueError("proposal source group is corrupt")
         try:
             state = ProposalState(row[7])
@@ -2895,6 +2906,31 @@ class MbaDiscoveryStore:
             group = self._project_group(conn, proposal.group_id)
             return ProposalReviewSnapshot(proposal=proposal, group=group)
 
+    def mining_run_snapshot(self, run_id: str) -> MiningRun | None:
+        """Return one immutable, causally validated mining-run projection."""
+
+        run_id = _canonical_uuid(run_id, name="run_id")
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM mining_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return self._project_run(row)
+
+    def residual_group_snapshot(self, group_id: int) -> ResidualGroup | None:
+        """Return one immutable, causally validated residual-group projection."""
+
+        if type(group_id) is not int or group_id < 1:
+            raise ValueError("group_id must be a positive integer")
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT group_id FROM residual_groups WHERE group_id=?", (group_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return self._project_group(conn, group_id)
+
     def claim_next_group(
         self,
         miner_version: str,
@@ -3030,39 +3066,45 @@ class MbaDiscoveryStore:
         run_id = _canonical_uuid(run_id, name="run_id")
         if type(claimed_revision) is not int or claimed_revision < 0:
             raise ValueError("claimed_revision must be non-negative")
-        with self._transaction(immediate=True) as conn:
-            existing_run = conn.execute(
-                "SELECT * FROM mining_runs WHERE run_id=?", (run_id,)
-            ).fetchone()
-            if existing_run is None:
+        try:
+            with self._transaction(
+                immediate=True,
+                lock_timeout=DISCOVERY_HEARTBEAT_LOCK_TIMEOUT_SECONDS,
+            ) as conn:
+                existing_run = conn.execute(
+                    "SELECT * FROM mining_runs WHERE run_id=?", (run_id,)
+                ).fetchone()
+                if existing_run is None:
+                    return HeartbeatReceipt(
+                        ReceiptStatus.REFUSED, reason="stale_or_not_owner"
+                    )
+                self._validate_relational_lifecycle(conn, int(existing_run[1]))
+                now = self._now()
+                updated = conn.execute(
+                    "UPDATE mining_runs SET heartbeat_at=? WHERE run_id=? AND claimed_revision=? AND state=? AND group_id IN (SELECT group_id FROM residual_groups WHERE state=? AND revision=?)",
+                    (
+                        now,
+                        run_id,
+                        claimed_revision,
+                        MiningRunState.ACTIVE.value,
+                        ResidualGroupState.MINING.value,
+                        claimed_revision,
+                    ),
+                ).rowcount
+                if updated != 1:
+                    return HeartbeatReceipt(
+                        ReceiptStatus.REFUSED, reason="stale_or_not_owner"
+                    )
                 return HeartbeatReceipt(
-                    ReceiptStatus.REFUSED, reason="stale_or_not_owner"
+                    ReceiptStatus.HEARTBEATED,
+                    self._project_run(
+                        conn.execute(
+                            "SELECT * FROM mining_runs WHERE run_id=?", (run_id,)
+                        ).fetchone()
+                    ),
                 )
-            self._validate_relational_lifecycle(conn, int(existing_run[1]))
-            now = self._now()
-            updated = conn.execute(
-                "UPDATE mining_runs SET heartbeat_at=? WHERE run_id=? AND claimed_revision=? AND state=? AND group_id IN (SELECT group_id FROM residual_groups WHERE state=? AND revision=?)",
-                (
-                    now,
-                    run_id,
-                    claimed_revision,
-                    MiningRunState.ACTIVE.value,
-                    ResidualGroupState.MINING.value,
-                    claimed_revision,
-                ),
-            ).rowcount
-            if updated != 1:
-                return HeartbeatReceipt(
-                    ReceiptStatus.REFUSED, reason="stale_or_not_owner"
-                )
-            return HeartbeatReceipt(
-                ReceiptStatus.HEARTBEATED,
-                self._project_run(
-                    conn.execute(
-                        "SELECT * FROM mining_runs WHERE run_id=?", (run_id,)
-                    ).fetchone()
-                ),
-            )
+        except _StoreBusy:
+            return HeartbeatReceipt(ReceiptStatus.REFUSED, reason="storage_busy")
 
     def finish_no_proposal(
         self, run_id: str, claimed_revision: int, reason: str = "no_proposal"
@@ -3228,7 +3270,7 @@ class MbaDiscoveryStore:
                 )
             if run[2] != claimed_revision:
                 return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_revision")
-            if not self._proposal_source_matches_group(conn, proposal, group):
+            if not self._proposal_source_matches_group(conn, proposal, group, int(run[2])):
                 return LifecycleReceipt(
                     ReceiptStatus.REFUSED, reason="proposal_source_mismatch"
                 )

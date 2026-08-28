@@ -29,6 +29,8 @@ from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 from d810.mba.provider_routing import MbaProviderKind
 from d810.mba.rule_proposal import MbaRuleProposal
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
+from d810.mba.subterm_atomization import AtomizedMbaTerm
+from d810.mba.term_codec import typed_term_to_dict
 from d810.mba.typed_term import (
     TypedBvTerm,
     canonicalize_ac_term,
@@ -116,6 +118,73 @@ def _proposal(pattern: TypedBvTerm) -> MbaRuleProposal:
         provenance=("provider:test",),
         fixture={"case_id": "test"},
     )
+
+
+def _strict_proposal(
+    proposal: MbaRuleProposal, group: object, claimed_revision: int
+) -> MbaRuleProposal:
+    raw = group.raw_terms[0]
+    atomized = AtomizedMbaTerm(
+        original_term=raw,
+        atomized_term=proposal.pattern,
+        bindings=proposal.atomization_bindings,
+    )
+    canonical_fingerprint = term_fingerprint(group.canonical_term)
+    fixture = {
+        "original": typed_term_to_dict(raw),
+        "atomized": typed_term_to_dict(proposal.pattern),
+        "certified_atomized_replacement": typed_term_to_dict(proposal.replacement),
+        "restored_replacement": typed_term_to_dict(atomized.restore(proposal.replacement)),
+        "atomization_bindings": [],
+        "proof_widths": [receipt.width for receipt in proposal.proof_receipts],
+        "source_fingerprint": canonical_fingerprint,
+    }
+    return replace(
+        proposal,
+        proposal_fingerprint=None,
+        source_fingerprints=(canonical_fingerprint,),
+        provenance=(
+            f"discovery_db:group:{group.group_id}:revision:{claimed_revision}",
+        ),
+        fixture=fixture,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _bind_legacy_fixture_proposals(monkeypatch):
+    """Bind historical fixture proposals before they cross the public API."""
+
+    original = MbaDiscoveryStore.publish_proposal
+
+    def publish(store, run_id, claimed_revision, proposal_fingerprint, replacement, payload, proof_receipt_payload=None):
+        proposal = proposal_fingerprint if isinstance(proposal_fingerprint, MbaRuleProposal) else payload
+        if isinstance(proposal, MbaRuleProposal) and proposal.provenance == ("provider:test",):
+            run = store.mining_run_snapshot(run_id)
+            assert run is not None
+            group = store.residual_group_snapshot(run.group_id)
+            assert group is not None
+            strict = _strict_proposal(proposal, group, run.claimed_revision)
+            if isinstance(proposal_fingerprint, MbaRuleProposal):
+                proposal_fingerprint = strict
+            elif proposal_fingerprint == proposal.fingerprint:
+                proposal_fingerprint = strict.fingerprint
+            if replacement == proposal.replacement:
+                replacement = strict.replacement
+            if payload is proposal:
+                payload = strict
+            if proof_receipt_payload is proposal:
+                proof_receipt_payload = strict
+        return original(
+            store,
+            run_id,
+            claimed_revision,
+            proposal_fingerprint,
+            replacement,
+            payload,
+            proof_receipt_payload,
+        )
+
+    monkeypatch.setattr(MbaDiscoveryStore, "publish_proposal", publish)
 
 
 _CAUSAL_DOMAIN_TABLES = (

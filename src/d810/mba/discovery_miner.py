@@ -28,6 +28,7 @@ from d810.mba.discovery_models import (
     ReceiptStatus,
 )
 from d810.mba.discovery_store import (
+    DISCOVERY_HEARTBEAT_LOCK_TIMEOUT_SECONDS,
     DISCOVERY_LEASE_TIMEOUT_SECONDS,
     MbaDiscoveryStore,
     decode_proposal_payload,
@@ -75,10 +76,11 @@ class _HeartbeatCoordinator:
 
     def stop(self) -> tuple[str | None, BaseException | None, bool]:
         self._stop.set()
-        # Store heartbeat transactions are bounded by the store's serialized
-        # discipline.  Never return while this worker could still touch it.
-        self._thread.join()
-        return self._refusal, self._error, True
+        # heartbeat() bounds acquisition of the store serialization lock, so
+        # this join has a finite deadline and cannot strand a store-touching
+        # worker on a stalled collaborator.
+        self._thread.join(timeout=DISCOVERY_HEARTBEAT_LOCK_TIMEOUT_SECONDS + 1.0)
+        return self._refusal, self._error, not self._thread.is_alive()
 
 
 def budget_fingerprint(budget: MbaSynthesisBudget) -> str:
@@ -337,6 +339,19 @@ def _open_at(directory_fd: int, name: str, flags: int) -> int:
     return os.open(name, flags | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
 
 
+def _verify_parent_path(path: Path, parent_fd: int) -> None:
+    """Ensure the lexical parent still names the descriptor-anchored inode."""
+
+    current_fd = _open_dir(path)
+    try:
+        expected = os.fstat(parent_fd)
+        current = os.fstat(current_fd)
+        if (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
+            raise FileExistsError("materialization parent path was replaced")
+    finally:
+        os.close(current_fd)
+
+
 def _mkdtemp_at(parent_fd: int, prefix: str) -> str:
     """Create a private, mode-700 temporary directory beneath ``parent_fd``."""
 
@@ -476,21 +491,42 @@ def _quarantine_owned_tree(
         _exclusive_rename(parent_fd, output_name, quarantine_name)
     except FileNotFoundError:
         return
-    quarantine_fd = _open_at(parent_fd, quarantine_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    quarantine_fd = None
     try:
+        quarantine_fd = _open_at(
+            parent_fd,
+            quarantine_name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
         info = os.fstat(quarantine_fd)
         if (info.st_dev, info.st_ino) != root_identity:
-            _exclusive_rename(parent_fd, quarantine_name, output_name)
             raise RuntimeError("materialization recovery conflict")
+        _delete_exact_tree(
+            quarantine_fd, parent_path / quarantine_name, expected, child_identities
+        )
+    except BaseException as exc:
+        # Restore every inspection/open/type/content failure before exposing the
+        # original error.  A racing destination is never replaced; the private
+        # quarantine remains for explicit recovery instead.
         try:
-            _delete_exact_tree(quarantine_fd, parent_path / quarantine_name, expected, child_identities)
-        except RuntimeError:
             _exclusive_rename(parent_fd, quarantine_name, output_name)
-            raise
+        except BaseException as restore_exc:
+            raise RuntimeError("materialization recovery conflict") from restore_exc
+        os.fsync(parent_fd)
+        raise RuntimeError("materialization recovery conflict") from exc
     finally:
-        os.close(quarantine_fd)
-    os.rmdir(quarantine_name, dir_fd=parent_fd)
-    os.fsync(parent_fd)
+        if quarantine_fd is not None:
+            os.close(quarantine_fd)
+    try:
+        os.rmdir(quarantine_name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except BaseException as exc:
+        try:
+            _exclusive_rename(parent_fd, quarantine_name, output_name)
+        except BaseException as restore_exc:
+            raise RuntimeError("materialization recovery conflict") from restore_exc
+        os.fsync(parent_fd)
+        raise RuntimeError("materialization recovery conflict") from exc
 
 
 def _reject_symlink_components(path: Path) -> None:
@@ -573,6 +609,7 @@ def materialize_proposal(
                 )
                 os.fsync(final_fd)
                 os.fsync(parent_fd)
+                _verify_parent_path(output_dir.parent, parent_fd)
             finally:
                 os.close(final_fd)
                 final_fd = None
@@ -629,6 +666,7 @@ def materialize_proposal(
             raise OSError(errno.EIO, "published artifact digest changed")
         os.fsync(final_fd)
         os.fsync(parent_fd)
+        _verify_parent_path(output_dir.parent, parent_fd)
         os.close(final_fd)
         final_fd = None
         receipt = store.mark_materialized(
