@@ -778,6 +778,7 @@ def materialize_proposal(
         except BaseException as error:
             mark_error = error
             raise
+        cleanup_published = False
         try:
             receipt = store.mark_materialized(
                 proposal_id,
@@ -791,14 +792,12 @@ def materialize_proposal(
             )
         except BaseException as error:
             mark_error = error
-            cleanup_published = False
             _reconcile_materialization_error(
                 store, proposal_id, str(output_dir), digest, error
             )
             raise
         if receipt.status not in (ReceiptStatus.MATERIALIZED, ReceiptStatus.DUPLICATE):
             mark_error = RuntimeError(receipt.reason or receipt.status.value)
-            cleanup_published = False
             raise mark_error
         committed = True
         return str(output_dir), digest

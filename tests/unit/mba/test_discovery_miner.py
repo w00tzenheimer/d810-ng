@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import inspect
 import json
 import os
 import shutil
@@ -1590,6 +1591,72 @@ materialize_proposal(store, {proposal_id!r}, {output!r})
         assert snapshot.proposal.state.value == "materialized"
     finally:
         recovered.close()
+
+
+def test_successful_materialization_line_interruption_preserves_durable_tree(
+    tmp_path,
+) -> None:
+    from d810.mba.discovery_miner import _tree_digest, materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, "successful-receipt-interrupt"
+    )
+    external = MbaDiscoveryStore(store.path)
+    output = tmp_path / "successful-receipt-interrupt-review"
+    source, first_line = inspect.getsourcelines(materialize_proposal)
+    receipt_lines = [
+        first_line + offset
+        for offset, line in enumerate(source)
+        if line.lstrip().startswith("if receipt.status not in")
+    ]
+    assert len(receipt_lines) == 2
+    new_tree_receipt_line = receipt_lines[-1]
+    interruption = KeyboardInterrupt("controlled after successful mark return")
+    trace_hit = False
+
+    def interrupt_before_receipt_processing(frame, event, _argument):
+        nonlocal trace_hit
+        if (
+            event == "line"
+            and frame.f_code is materialize_proposal.__code__
+            and frame.f_lineno == new_tree_receipt_line
+        ):
+            receipt = frame.f_locals.get("receipt")
+            assert isinstance(receipt, LifecycleReceipt)
+            assert receipt.status is ReceiptStatus.MATERIALIZED
+            assert frame.f_locals["published"] is True
+            assert frame.f_locals["committed"] is False
+            trace_hit = True
+            raise interruption
+        return interrupt_before_receipt_processing
+
+    try:
+        sys.settrace(interrupt_before_receipt_processing)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            materialize_proposal(store, proposal_id, output)
+        sys.settrace(None)
+
+        assert raised.value is interruption
+        assert trace_hit
+        same = store.proposal_snapshot(proposal_id)
+        independently_read = external.proposal_snapshot(proposal_id)
+        assert same is not None
+        assert independently_read is not None
+        assert same.proposal == independently_read.proposal
+        assert same.group == independently_read.group
+        assert same.proposal.state is ProposalState.MATERIALIZED
+        assert same.proposal.materialized_path == str(output.resolve())
+        assert same.proposal.materialized_digest
+        assert output.is_dir()
+        assert _tree_digest(output) == same.proposal.materialized_digest
+        assert materialize_proposal(store, proposal_id, output) == (
+            same.proposal.materialized_path,
+            same.proposal.materialized_digest,
+        )
+    finally:
+        sys.settrace(None)
+        external.close()
+        store.close()
 
 
 def test_materialization_write_failure_leaves_proposed_and_cleans_stage(
