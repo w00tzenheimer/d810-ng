@@ -582,8 +582,11 @@ def test_external_orphan_event_fails_closed_for_status_and_reopen(
         MbaDiscoveryStore(path)
 
 
+@pytest.mark.parametrize("writer_schedule", ("during_validation", "after_reopen"))
 def test_reopen_causal_validation_uses_one_snapshot_with_concurrent_writer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writer_schedule: str,
 ) -> None:
     path = tmp_path / "reopen-race.sqlite3"
     seed = MbaDiscoveryStore(path)
@@ -592,12 +595,26 @@ def test_reopen_causal_validation_uses_one_snapshot_with_concurrent_writer(
     writer = MbaDiscoveryStore(path)
     validation_started = threading.Event()
     release_validation = threading.Event()
+    allow_writer = threading.Event()
     writer_begin_attempted = threading.Event()
     writer_done = threading.Event()
     writer_receipts: list[object] = []
     writer_errors: list[BaseException] = []
     original_connect = discovery_store_module.sqlite3.connect
     traced_connection = False
+    reopen_connections: list[sqlite3.Connection] = []
+    reopen_sql: list[str] = []
+    trace_errors: list[BaseException] = []
+
+    causal_group_query = "SELECT group_id FROM residual_groups"
+    causal_event_query = (
+        "SELECT event_id, group_id, provider_attempt_id, run_id, proposal_id "
+        "FROM residual_group_events ORDER BY event_id"
+    )
+    causal_owner_query_prefix = "SELECT term_id FROM residual_groups WHERE group_id="
+
+    def normalize_sql(statement: str) -> str:
+        return " ".join(statement.strip().split())
 
     def trace_writer(statement: str) -> None:
         if statement == "BEGIN IMMEDIATE":
@@ -610,15 +627,17 @@ def test_reopen_causal_validation_uses_one_snapshot_with_concurrent_writer(
         connection = original_connect(*args, **kwargs)
         if not traced_connection and str(args[0]) == str(path):
             traced_connection = True
+            reopen_connections.append(connection)
 
             def trace(statement: str) -> None:
-                if (
-                    statement.strip()
-                    .lower()
-                    .startswith("select group_id from residual_groups")
-                ):
+                normalized = normalize_sql(statement)
+                reopen_sql.append(normalized)
+                if normalized == causal_group_query:
                     validation_started.set()
-                    assert release_validation.wait(5)
+                    if not release_validation.wait(5):
+                        trace_errors.append(
+                            AssertionError("reopen validation barrier timed out")
+                        )
 
             connection.set_trace_callback(trace)
         return connection
@@ -637,6 +656,7 @@ def test_reopen_causal_validation_uses_one_snapshot_with_concurrent_writer(
 
     def write() -> None:
         try:
+            assert allow_writer.wait(5)
             writer_receipts.append(writer.record_attempt(_attempt(value=2)))
         except BaseException as exc:
             writer_errors.append(exc)
@@ -653,61 +673,86 @@ def test_reopen_causal_validation_uses_one_snapshot_with_concurrent_writer(
         if validation_observed:
             writer_thread.start()
             writer_thread_started = True
-            writer_begin_observed = writer_begin_attempted.wait(5)
-            if writer_begin_observed:
-                # The traced BEGIN is the synchronization authority: validation
-                # is still paused while its reopen transaction prevents completion.
-                if writer_errors:
-                    raise writer_errors[0]
-                assert not writer_done.is_set()
+            if writer_schedule == "during_validation":
+                allow_writer.set()
+                writer_begin_observed = writer_begin_attempted.wait(5)
+            release_validation.set()
+        reopen_thread.join(5)
+        assert not reopen_thread.is_alive()
+        if reopen_errors:
+            raise reopen_errors[0]
+        if trace_errors:
+            raise trace_errors[0]
+        assert validation_observed
+        assert len(reopened) == 1
+
+        if writer_schedule == "after_reopen":
+            allow_writer.set()
+        writer_thread.join(5)
+        assert not writer_thread.is_alive()
+        if writer_errors:
+            raise writer_errors[0]
+        assert writer_thread_started
+        if writer_schedule == "during_validation":
+            assert writer_begin_observed
+        assert writer_done.is_set()
+        assert len(writer_receipts) == 1
+        assert writer_receipts[0].status == "stored"
+
+        begin_index = reopen_sql.index("BEGIN IMMEDIATE")
+        group_index = reopen_sql.index(causal_group_query)
+        event_index = reopen_sql.index(causal_event_query)
+        owner_index = next(
+            index
+            for index, statement in enumerate(reopen_sql)
+            if statement.startswith(causal_owner_query_prefix)
+        )
+        commit_index = reopen_sql.index("COMMIT")
+        assert begin_index < group_index < event_index < owner_index < commit_index
+
+        status = reopened[0].status_counts()
+        assert status.group_counts == (
+            (ResidualGroupState.OBSERVED, 0),
+            (ResidualGroupState.ELIGIBLE, 2),
+            (ResidualGroupState.MINING, 0),
+            (ResidualGroupState.NO_PROPOSAL, 0),
+            (ResidualGroupState.PROPOSED, 0),
+            (ResidualGroupState.MATERIALIZED, 0),
+            (ResidualGroupState.ADMITTED, 0),
+            (ResidualGroupState.REJECTED, 0),
+        )
+        rows = (
+            reopened[0]
+            ._connection.execute(
+                "SELECT e.event_id, e.group_id, e.event_kind, e.group_revision, "
+                "e.provider_attempt_id, e.run_id, e.proposal_id, g.state, g.revision, "
+                "g.term_id, pa.term_id "
+                "FROM residual_group_events AS e "
+                "JOIN residual_groups AS g ON g.group_id = e.group_id "
+                "JOIN provider_attempts AS pa ON pa.attempt_id = e.provider_attempt_id "
+                "ORDER BY e.event_id"
+            )
+            .fetchall()
+        )
+        assert [tuple(row) for row in rows] == [
+            (1, 1, "observed", 1, 1, None, None, "eligible", 1, 1, 1),
+            (2, 2, "observed", 1, 2, None, None, "eligible", 1, 2, 2),
+        ]
     finally:
         release_validation.set()
+        allow_writer.set()
         reopen_thread.join(5)
         if writer_thread_started:
             writer_thread.join(5)
-    assert not reopen_thread.is_alive()
-    assert not writer_thread_started or not writer_thread.is_alive()
-    if reopen_errors:
-        raise reopen_errors[0]
-    if writer_errors:
-        raise writer_errors[0]
-    assert validation_observed
-    assert writer_thread_started
-    assert writer_begin_observed
-    assert len(reopened) == 1
-    assert writer_done.is_set()
-    assert len(writer_receipts) == 1
-    assert writer_receipts[0].status == "stored"
-    status = reopened[0].status_counts()
-    assert status.group_counts == (
-        (ResidualGroupState.OBSERVED, 0),
-        (ResidualGroupState.ELIGIBLE, 2),
-        (ResidualGroupState.MINING, 0),
-        (ResidualGroupState.NO_PROPOSAL, 0),
-        (ResidualGroupState.PROPOSED, 0),
-        (ResidualGroupState.MATERIALIZED, 0),
-        (ResidualGroupState.ADMITTED, 0),
-        (ResidualGroupState.REJECTED, 0),
-    )
-    rows = (
-        reopened[0]
-        ._connection.execute(
-            "SELECT e.event_id, e.group_id, e.event_kind, e.group_revision, "
-            "e.provider_attempt_id, e.run_id, e.proposal_id, g.state, g.revision, "
-            "g.term_id, pa.term_id "
-            "FROM residual_group_events AS e "
-            "JOIN residual_groups AS g ON g.group_id = e.group_id "
-            "JOIN provider_attempts AS pa ON pa.attempt_id = e.provider_attempt_id "
-            "ORDER BY e.event_id"
-        )
-        .fetchall()
-    )
-    assert [tuple(row) for row in rows] == [
-        (1, 1, "observed", 1, 1, None, None, "eligible", 1, 1, 1),
-        (2, 2, "observed", 1, 2, None, None, "eligible", 1, 2, 2),
-    ]
-    reopened[0].close()
-    writer.close()
+        writer._connection.set_trace_callback(None)
+        for connection in reopen_connections:
+            try:
+                connection.set_trace_callback(None)
+            except sqlite3.ProgrammingError:
+                pass
+        for store in reopened:
+            store.close()
+        writer.close()
 
 
 def test_claimed_revision_transfer_fails_all_authority_paths_without_mutation(
