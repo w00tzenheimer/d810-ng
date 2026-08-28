@@ -1019,6 +1019,14 @@ Unit tests are pure-Python and run rapidly without requiring an active IDA Pro d
 PYTHONPATH=src:tests pyenv exec python -m pytest tests/unit/ -v --tb=short -x
 ```
 
+The ordinary unit gate excludes full-width MBA certification and the deferred
+RHAD generated-checksum suite. Run the expensive Z3 certification gate
+explicitly when MBA rules change:
+
+```bash
+PYTHONPATH=src:tests pyenv exec python -m pytest tests/unit/mba/ -m slow -v --tb=short
+```
+
 ### System & E2E Tests (Headless IDA)
 
 D-810 ng has a comprehensive integration/system test suite that runs inside headless IDA Pro (`idalib`). These tests run within local Docker containers containing pre-configured IDA instances.

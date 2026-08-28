@@ -50,6 +50,7 @@ _RULE_NAMES = (
 
 @pytest.mark.parametrize("bit_width", (8, 16, 32, 64))
 @pytest.mark.parametrize("rule_name", _RULE_NAMES)
+@pytest.mark.slow
 def test_eid_rules_are_z3_valid_at_every_native_width(rule_name, bit_width):
     rule_type = getattr(eid, rule_name, None)
     assert rule_type is not None, f"missing Eid transform {rule_name}"

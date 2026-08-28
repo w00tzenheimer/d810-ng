@@ -6,11 +6,10 @@ from dataclasses import dataclass
 
 import pytest
 
-from d810.mba.certified_rule_compiler import (
-    compile_mba_rule_catalogue,
-)
 from d810.mba.dsl import Const, SymbolicExpression, Var, Zext
+from d810.mba.rules.catalogue import MBA_RULE_FAMILIES
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
+from tests.unit.mba._compiled_rule_fixture import admitted_rule
 
 
 @dataclass(frozen=True)
@@ -95,14 +94,19 @@ def _fake_pattern(pattern: object, replacement: object | None = None) -> _TestRu
     return _TestRule(pattern, pattern if replacement is None else replacement)
 
 
+def _catalogue_rule(family: str, name: str):
+    rule_type = next(
+        rule for rule in MBA_RULE_FAMILIES[family] if rule.__name__ == name
+    )
+    return admitted_rule(rule_type, family=family)
+
+
 def test_negative_coefficient_rule_and_sub_candidate_share_canonical_bucket():
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
     from d810.mba.canonical_pattern import compile_canonical_pattern
     from d810.mba.semantic_canonicalization import canonicalize_mba_term
 
-    rule = compile_mba_rule_catalogue().receipt_for(
-        "xor", "Xor_HackersDelightRule_3"
-    ).compiled_rule
+    rule = _catalogue_rule("xor", "Xor_HackersDelightRule_3")
     assert rule is not None
     compiled = compile_canonical_pattern(rule, width=32, declaration_index=0)
     candidate = canonicalize_mba_term(_xor_subtraction_candidate(32)).canonical_term
@@ -175,9 +179,7 @@ def test_native_binding_resolution_prefers_earliest_raw_paths_for_catalogue_07()
         resolve_canonical_match_paths,
     )
 
-    rule = compile_mba_rule_catalogue().receipt_for(
-        "add", "Add_HackersDelightRule_2"
-    ).compiled_rule
+    rule = _catalogue_rule("add", "Add_HackersDelightRule_2")
     assert rule is not None
     compiled = compile_canonical_pattern(rule, width=32, declaration_index=0)
     terms = {
@@ -304,12 +306,8 @@ def test_malformed_symbolic_tree_is_not_legacy_unsupported(malformed):
 def test_declaration_order_survives_canonical_alias_collapse():
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
-    first = compile_mba_rule_catalogue().receipt_for(
-        "xor", "Xor_HackersDelightRule_3"
-    ).compiled_rule
-    second = compile_mba_rule_catalogue().receipt_for(
-        "xor", "Xor_HackersDelightRule_3"
-    ).compiled_rule
+    first = _catalogue_rule("xor", "Xor_HackersDelightRule_3")
+    second = _catalogue_rule("xor", "Xor_HackersDelightRule_3")
     assert first is not None and second is not None
     catalogue = CompiledPatternCatalogue.from_rules((first, second))
     canonical_entries = catalogue.canonical_root_width_buckets[("sub", 32)]

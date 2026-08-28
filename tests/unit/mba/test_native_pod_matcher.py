@@ -8,10 +8,6 @@ import pytest
 
 from d810.backends.mba import native_pod_matcher
 from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-from d810.mba.certified_rule_compiler import (
-    _compile_rule_families,
-    compile_add_rule_catalogue,
-)
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.backends.mba.native_pod_matcher import (
     OP_ADD,
@@ -37,6 +33,7 @@ from d810.mba.certified_catalogue import (
     StructuralMatcherParityCertificate,
     StructuralMatcherParityExpectation,
 )
+from tests.unit.mba._compiled_rule_fixture import admitted_rule
 
 
 _TIGHT_X, _TIGHT_Y, _TIGHT_Z = Var("tight_x"), Var("tight_y"), Var("tight_z")
@@ -134,7 +131,10 @@ def test_runtime_digest_binds_active_pod_backend_and_artifact_identity() -> None
 
 
 def _rule(name: str):
-    return compile_add_rule_catalogue().receipt_for(name).compiled_rule
+    from d810.mba.rules.add import ADD_RULE_CLASSES
+
+    rule_type = next(rule for rule in ADD_RULE_CLASSES if rule.__name__ == name)
+    return admitted_rule(rule_type, family="add")
 
 
 def test_packed_view_separates_numeric_nodes_from_live_identity_sidecar() -> None:
@@ -211,7 +211,7 @@ def test_pod_adapter_matches_portable_catalogue_exactly() -> None:
 def test_pod_adapter_preserves_asymmetric_subtraction_bindings() -> None:
     """AC traversal must retain the binding orientation used by ``x - y``."""
 
-    rules = _compile_rule_families({"sub": (Sub_HackersDelightRule_2,)}).compiled_rules
+    rules = (admitted_rule(Sub_HackersDelightRule_2, family="sub"),)
     catalogue = CompiledPatternCatalogue.from_rules(rules)
     a, b = _leaf("a"), _leaf("b")
     candidate = _node(
@@ -233,9 +233,7 @@ def test_pod_adapter_preserves_asymmetric_subtraction_bindings() -> None:
 
 
 def test_eid_or_rule_binds_one_repeated_compound_operand() -> None:
-    rules = _compile_rule_families(
-        {"or": (Or_EidRepeatedMaskedOperand_1,)}
-    ).compiled_rules
+    rules = (admitted_rule(Or_EidRepeatedMaskedOperand_1, family="or"),)
     catalogue = CompiledPatternCatalogue.from_rules(rules)
     x = _leaf("x")
     masked_source = _leaf("masked_source")
@@ -273,7 +271,7 @@ def test_eid_or_rule_binds_one_repeated_compound_operand() -> None:
 def _assert_exact_eid_xor_candidate_matches(
     rule_type: type[VerifiableRule], candidate: NativeMbaTermView
 ) -> None:
-    rules = _compile_rule_families({"xor": (rule_type,)}).compiled_rules
+    rules = (admitted_rule(rule_type, family="xor"),)
     catalogue = CompiledPatternCatalogue.from_rules(rules)
 
     portable = catalogue._match_root_portable(candidate, comparison_budget=1024)
@@ -290,7 +288,7 @@ def _assert_exact_eid_candidate_matches(
     rule_type: type[VerifiableRule],
     candidate: NativeMbaTermView,
 ) -> None:
-    rules = _compile_rule_families({family: (rule_type,)}).compiled_rules
+    rules = (admitted_rule(rule_type, family=family),)
     catalogue = CompiledPatternCatalogue.from_rules(rules)
 
     portable = catalogue._match_root_portable(candidate, comparison_budget=4096)
@@ -576,9 +574,10 @@ def test_eid_complement_partition_3_matches_unsigned_minus_8_source_tree() -> No
 def test_shared_feasibility_filter_preserves_later_match_under_tight_budget() -> None:
     """Impossible earlier patterns must not consume the shared budget in either mode."""
 
-    rules = _compile_rule_families(
-        {"add": (_ImpossibleBeforeValidRule, _ValidAfterImpossibleRule)}
-    ).compiled_rules
+    rules = (
+        admitted_rule(_ImpossibleBeforeValidRule, family="add", proof_widths=(32,)),
+        admitted_rule(_ValidAfterImpossibleRule, family="add", proof_widths=(32,)),
+    )
     catalogue = CompiledPatternCatalogue.from_rules(rules)
     candidate = _node("add", _leaf("x"), _constant(0))
 
@@ -603,7 +602,7 @@ def test_pod_adapter_falls_back_for_fixed_shift_child(
         PATTERN = left + right
         REPLACEMENT = PATTERN
 
-    rules = _compile_rule_families({"add": (_WildcardRootRule,)}).compiled_rules
+    rules = (admitted_rule(_WildcardRootRule, family="add", proof_widths=(32,)),)
     catalogue = CompiledPatternCatalogue.from_rules(rules)
     shifted = NativeMbaTermView(
         operation,
@@ -635,7 +634,7 @@ def test_portable_repeated_binding_distinguishes_fixed_shift_counts(
         PATTERN = value + value
         REPLACEMENT = PATTERN
 
-    rules = _compile_rule_families({"add": (_RepeatedBindingRule,)}).compiled_rules
+    rules = (admitted_rule(_RepeatedBindingRule, family="add", proof_widths=(32,)),)
     catalogue = CompiledPatternCatalogue.from_rules(rules)
 
     def shifted(count: int) -> NativeMbaTermView:

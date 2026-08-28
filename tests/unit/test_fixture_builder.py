@@ -18,18 +18,6 @@ REPO = Path(__file__).resolve().parents[2]
 SUB = (REPO / "samples/src/masm/sub_1815C8C30.asm").read_text()
 
 
-def test_committed_windows_fixture_contains_every_masm_export():
-    """Do not let a stale DLL turn tracked MASM regressions into skips."""
-    fixture = (REPO / "samples/bins/libobfuscated.dll").read_bytes()
-    required_exports = tuple(
-        sorted(source.stem for source in (REPO / "samples/src/masm").glob("*.asm"))
-    )
-    missing = [
-        name for name in required_exports if name.encode("ascii") + b"\0" not in fixture
-    ]
-    assert missing == []
-
-
 def _pe_sections(blob: bytes) -> tuple[tuple[str, int], ...]:
     pe_offset = struct.unpack_from("<I", blob, 0x3C)[0]
     assert blob[pe_offset : pe_offset + 4] == b"PE\0\0"

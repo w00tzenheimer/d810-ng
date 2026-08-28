@@ -44,6 +44,9 @@ from d810.transforms.rhad_reference_compiler import (
 from tests.native_preanalysis import make_native_key
 
 
+pytestmark = pytest.mark.rhad
+
+
 _REPO = Path(__file__).resolve().parents[4]
 _GENERATED_INVENTORY_ROOT = _REPO / "docs" / "experiments"
 _GENERATED_INVENTORY_NAMES = frozenset(

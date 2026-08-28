@@ -55,6 +55,7 @@ STANDALONE_BUNDLED_PROJECTS = frozenset(
 
 FIXTURE_ONLY_BUNDLED_PROJECTS = frozenset(
     {
+        "call_result_predicate_acceptance.json",
         "constant_stage_controls.json",
         "dead_store_elimination_fixture.json",
         "hodur_flag2_s1a_fixture_constant_simplification.json",

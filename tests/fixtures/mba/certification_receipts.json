@@ -1,0 +1,1611 @@
+{
+  "certificate_widths": [
+    8,
+    16,
+    32,
+    64
+  ],
+  "receipts": [
+    {
+      "canonical_name": "Add_EidSboxOffset13_1",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "5c92382fec108c2a7ae4c22dd08980ca4719b3a02c9fae8ca9816a200ccccf94",
+      "source_name": "Add_EidSboxOffset13_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_EidSboxOffset23_1",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "32a83da20447c33659ded412941de0f3c57188a8304e1ad57bfa1b272aabd9f9",
+      "source_name": "Add_EidSboxOffset23_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_HackersDelightRule_1",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "5dfa144c6d4d8c3fda81e9a95d840c4a473e615b578793a65abbbf5f856a5c20",
+      "source_name": "Add_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_HackersDelightRule_2",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "8f91ada535ae6dd659c5c1167219caf661fb025b120ea44de939523bea596de2",
+      "source_name": "Add_HackersDelightRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_HackersDelightRule_3",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "983041eb0c8313d4fb3fe65ba9ca2372399151ff571f3c41147c3ca71170037c",
+      "source_name": "Add_HackersDelightRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_HackersDelightRule_4",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "c922fcc099b5b7b89fb18ec68f4fb33b1da728df33f797fe64da3966dfe3c4f8",
+      "source_name": "Add_HackersDelightRule_4",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_HackersDelightRule_5",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "6fbbfe706f314d05b1f682ebb12f83ace63020a7e90948a344187e2d161bdd14",
+      "source_name": "Add_HackersDelightRule_5",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_OllvmRule_1",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "9adb0b3fd204706023e945b859afa314b8df739c3a77a9c15b422a30fc67d03a",
+      "source_name": "Add_OllvmRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_HackersDelightRule_2",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "8f91ada535ae6dd659c5c1167219caf661fb025b120ea44de939523bea596de2",
+      "source_name": "Add_OllvmRule_3",
+      "status": "duplicate"
+    },
+    {
+      "canonical_name": "Add_SpecialConstantRule_1",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "791d6c1e29f4159930b1f4e3edf332db8e40474e359487623b82cc0a0051d3dd",
+      "source_name": "Add_SpecialConstantRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_SpecialConstantRule_2",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "e0aa9329729632d776364a5f67e9b615c683a8483dfe9fb1af8c7409cee65a75",
+      "source_name": "Add_SpecialConstantRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_SpecialConstantRule_3",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "90644406ce16a33959d12dbe8cb35662d8464753ac0e34ecda232118f31f9171",
+      "source_name": "Add_SpecialConstantRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_OllvmRule_1",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "9adb0b3fd204706023e945b859afa314b8df739c3a77a9c15b422a30fc67d03a",
+      "source_name": "Add_OllvmRule_DynamicConst",
+      "status": "duplicate"
+    },
+    {
+      "canonical_name": "Add_OllvmRule_2",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "75086b52cd7aee4ea81a3b9036054b66f996ddf986baa723217dd14d7f84391c",
+      "source_name": "Add_OllvmRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Add_OllvmRule_4",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "f595714ce061a678ff25e3b0dfbbc80c6042547053660b0c62aaf977c8ccf18a",
+      "source_name": "Add_OllvmRule_4",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "AddXor_Rule_1",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "c399cdb5a47914488b8638fbb956258fa8ecff4253fa373d3eb13ed311950f22",
+      "source_name": "AddXor_Rule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "AddXor_Rule_2",
+      "family": "add",
+      "reason": null,
+      "semantic_fingerprint": "1d7197627a69c1b613c98fb01299938882fd5d09b3a59c30a91429442b0a318b",
+      "source_name": "AddXor_Rule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "And_HackersDelightRule_1",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "bdd3415987f348924e87c2e73a5f477b5666addacf8b934155d64bad2f4146df",
+      "source_name": "And_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "And_HackersDelightRule_3",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "c8f2676d95afc8405f6dc70a83be69f85e2c54d4e16491a894aebe7e90746e2a",
+      "source_name": "And_HackersDelightRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "And_HackersDelightRule_4",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "79b88516070d1de3075f881ffeaabbbfa2444fd100ed9fbda4a4336e97372efd",
+      "source_name": "And_HackersDelightRule_4",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "And_OllvmRule_1",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "1a7057853ad5cb6b9e3a201fac4501b72b31a5ee42a3905397089ae3da44898d",
+      "source_name": "And_OllvmRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "And_OllvmRule_3",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "c5b9cb5e77f3d5db3e44567da3d099135d4cbe2f508e5f20f65941c3c618fdd7",
+      "source_name": "And_OllvmRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "And_FactorRule_2",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "c9d3537853cab2bd9d53683b52b9cdf020bac2c2dc642cea42d1a1d75ffffd82",
+      "source_name": "And_FactorRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "AndBnot_HackersDelightRule_1",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "7ad78a7848946fc141f35ee71e30ce24f08e32b808ec140a9414bb6cd20c5e1c",
+      "source_name": "AndBnot_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "AndBnot_HackersDelightRule_2",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "f802905edfd969a23ba6ed0f0352ad3eba75f18222a87b75ff25f5231c4d0240",
+      "source_name": "AndBnot_HackersDelightRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "AndBnot_FactorRule_1",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "9b8d1b66ecc38c40f70c00cd039d2674b05b1473cfe2074f82d42e71966186f7",
+      "source_name": "AndBnot_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "AndBnot_FactorRule_2",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "a3f6f366ca4afd0f863e97492411d6c3e0ffbd2f9ae304b3ce5c6c8672248e3c",
+      "source_name": "AndBnot_FactorRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "AndBnot_FactorRule_3",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "0a51db5f75e09ecae4e274c079f463509b730cdde581b407bb6b434f2da5d2bc",
+      "source_name": "AndBnot_FactorRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "AndOr_FactorRule_1",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "66e05a233955a6002513b5dd6fd36c26a3ed8715c8f1e1535f0b58e9183c0d55",
+      "source_name": "AndOr_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "AndXor_FactorRule_1",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "925ed38dd2b16618fc388361de0c2cbb8acb791cddd4b8018b31e19eb27d3085",
+      "source_name": "AndXor_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "And_HackersDelightRule_2",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "26489dd1fd4d34f04fbec920b967d7c27c2780685552acabd1405504a7de4f2e",
+      "source_name": "And_HackersDelightRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "And_OllvmRule_2",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "1a4bc8e0ba83c3ee757162b56a9ba55f83e6a12bb9e3cbfeafe9e75f0299c910",
+      "source_name": "And_OllvmRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "And_FactorRule_1",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "8551ee7b7514c25088124dd72305df31178b4b0e46816a025bc808295677375c",
+      "source_name": "And_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "AndBnot_FactorRule_4",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "67176044b0096bb9e43c163853fb0cfe05cb0decb4a26d0ba10fb97c7b830323",
+      "source_name": "AndBnot_FactorRule_4",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "And1_MbaRule_1",
+      "family": "and",
+      "reason": null,
+      "semantic_fingerprint": "f9501b9d1a93c8811273314eb472f8b11155e6d3c000cd73add81a7686a42885",
+      "source_name": "And1_MbaRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": null,
+      "family": "and",
+      "reason": "unsupported expression operation: shr",
+      "semantic_fingerprint": null,
+      "source_name": "AndGetUpperBits_FactorRule_1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": "Bnot_EidSboxOffset27_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "d55a70492fa09d737216186c4d694ae839fff2491f18fab43564b61232d63318",
+      "source_name": "Bnot_EidSboxOffset27_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Bnot_HackersDelightRule_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "2b0bbdd08b226aa961e9742c76b41e83fb0f443ab3056ae8cbba295cc79437ee",
+      "source_name": "Bnot_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Bnot_HackersDelightRule_2",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "1a7d13d7bce9d32368db2d8dd1e4c4e4a76d82550967c6d86eba78a54aa5e4f2",
+      "source_name": "Bnot_HackersDelightRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Bnot_MbaRule_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "9a7f9b37498eb322b5d4f36eb3429eedef752f274e841b7a94db471dd7b0ff48",
+      "source_name": "Bnot_MbaRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Bnot_FactorRule_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "9b958b7353c649f0dbe8abf3f8d3f205cdac6cb7a8268cef617d12cac4b82795",
+      "source_name": "Bnot_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Bnot_FactorRule_4",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "b71cf0a5483482d0fc4235350719ae246b57bfbd9e086841ae0c70ffc90c30cf",
+      "source_name": "Bnot_FactorRule_4",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "BnotXor_FactorRule_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "66770bfb38807bed1e209b58d36245a7aedf694016798dfd30d813ca114a497d",
+      "source_name": "BnotXor_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "BnotAnd_FactorRule_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "5463400dad8ac06bbb9c2fcd0b08e25a8dfa8b47ede8e2c9e44786d24f1c96fe",
+      "source_name": "BnotAnd_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "BnotAnd_FactorRule_3",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "68c0bf023e887a7f9175943fc079503656c6ed65e5dbf48cfc1700f2de4fb199",
+      "source_name": "BnotAnd_FactorRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "BnotOr_FactorRule_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "9058f92cd0f73c769b8118783c2eb71d46affa60f4ae7929da24683d54f1c109",
+      "source_name": "BnotOr_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Bnot_XorRule_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "d32dc93ea0fb58a9e7566c0d45a336b13a9a22532dff307e4556ebc56b879148",
+      "source_name": "Bnot_XorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Bnot_FactorRule_2",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "f99de0b0547b9920aa9e5f5b20fde3cb427a56ee639e98869c34d5116262185a",
+      "source_name": "Bnot_FactorRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Bnot_FactorRule_3",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "eac76533466deb9dff41c4c27a66a383e91e54fe55e69749d27b87ddf38feace",
+      "source_name": "Bnot_FactorRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "BnotXor_Rule_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "38a477b1dbb6fb0cc2d7eaa580892539bbc52bf8f4ba255d9ef944136c4157aa",
+      "source_name": "BnotXor_Rule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "BnotXor_Rule_2",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "41601a970144b34c8835c9c6866a9a2042c3b2467b6d1f5aef9d004098af8a6a",
+      "source_name": "BnotXor_Rule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "BnotXor_Rule_3",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "056fbe13391f5c530eab358d4ced6f6f5cc876ad216e382218502b3f7162bc69",
+      "source_name": "BnotXor_Rule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "BnotAnd_FactorRule_2",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "5db1b8f1d7518b947c1634e12c5c58a78a94d3009031d2ef7579e8c39f365f2a",
+      "source_name": "BnotAnd_FactorRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "BnotAnd_FactorRule_4",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "09c175eaf04b13c2de53947042ea9274d5e6e4aaae5f3bfa74df026252c6b59d",
+      "source_name": "BnotAnd_FactorRule_4",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "BnotAdd_MbaRule_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "506d2d77787e9a06d463d9c269ec6ac20dbbba45988729fe8a5eedaaf1eefe11",
+      "source_name": "BnotAdd_MbaRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Bnot_Rule_1",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "2c23e7b6c3afac767a9139a8cf2fca0ea4512e5ecf43bd5d7235eb874ffc1f61",
+      "source_name": "Bnot_Rule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Bnot_FactorRule_5",
+      "family": "bnot",
+      "reason": null,
+      "semantic_fingerprint": "22b18701769508c306baab1396cdc79d7be392f3f402498721137f11d5e9cf20",
+      "source_name": "Bnot_FactorRule_5",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule3",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule4",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule5",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule6",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule7",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule8",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule9",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule10",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule11",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule12",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule13",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule14",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "custom get_constraints is not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule15",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule16",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule17",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule18",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "custom get_constraints is not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule19",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule20",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule21",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "cst",
+      "reason": "constant-folding semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "CstSimplificationRule22",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "division",
+      "reason": "division and cast semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "UnsignedMagicModulo3Rule",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "hodur",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Xor_Hodur_1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "hodur",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Bnot_Hodur_1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "hodur",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Or_Hodur_1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "hodur",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Or_Hodur_2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "hodur",
+      "reason": "custom get_constraints is not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Xor_Hodur_2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "misc",
+      "reason": "miscellaneous semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "WeirdRule1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "misc",
+      "reason": "miscellaneous semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "WeirdRule2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "misc",
+      "reason": "miscellaneous semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "WeirdRule3",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "misc",
+      "reason": "miscellaneous semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "WeirdRule4",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "misc",
+      "reason": "miscellaneous semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "WeirdRule5",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "misc",
+      "reason": "miscellaneous semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "WeirdRule6",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "mov",
+      "reason": "move and identity semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "GetIdentRule1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "mov",
+      "reason": "move and identity semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "GetIdentRule2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "mov",
+      "reason": "move and identity semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "GetIdentRule3",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "mul",
+      "reason": "verification skipped",
+      "semantic_fingerprint": null,
+      "source_name": "Mul_MBA_1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "mul",
+      "reason": "\n--- VERIFICATION FAILED ---\nRule:        Mul_MBA_2\nDescription: INCORRECT: MBA multiplication with constant (marked as false)\nIdentity:    (((x_0 | c_1) * x_0) + ((x_0 & bnot_c_1) * (c_1 & bnot_x_0))) => (x_0 * c_1)\nCounterexample: {'bnot_c_1': 178, 'bnot_x_0': 24, 'c_1': 77, 'x_0': 231}\nConstraints were: [bnot_c_1 == ~c_1, bnot_x_0 == ~x_0]\nThis rule does NOT preserve semantics and should not be used.\nPlease fix the pattern, replacement, or constraints.",
+      "semantic_fingerprint": null,
+      "source_name": "Mul_MBA_2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "mul",
+      "reason": "\n--- VERIFICATION FAILED ---\nRule:        Mul_MBA_3\nDescription: INCORRECT: MBA multiplication with even constant (marked as false)\nIdentity:    (((x_0 | c_1) * (x_0 & c_1)) + (x_0 * (c_1 & bnot_x_0))) => (x_0 * c_1)\nCounterexample: {'bnot_x_0': 170, 'c_1': 235, 'x_0': 85}\nConstraints were: [bnot_x_0 == ~x_0]\nThis rule does NOT preserve semantics and should not be used.\nPlease fix the pattern, replacement, or constraints.",
+      "semantic_fingerprint": null,
+      "source_name": "Mul_MBA_3",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "mul",
+      "reason": "verification skipped",
+      "semantic_fingerprint": null,
+      "source_name": "Mul_MBA_4",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": "Mul_FactorRule_1",
+      "family": "mul",
+      "reason": null,
+      "semantic_fingerprint": "7df3a89e56eee18f43a4dc4474088527c6d814286b7def8995a80b8df09f06cf",
+      "source_name": "Mul_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Mul_FactorRule_2",
+      "family": "mul",
+      "reason": null,
+      "semantic_fingerprint": "86b95f9c6cda4d63f9da7c00681635b63d526cd6987c51ca48e8a6aadf006521",
+      "source_name": "Mul_FactorRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Neg_HackersDelightRule_1",
+      "family": "neg",
+      "reason": null,
+      "semantic_fingerprint": "3f883898c684d8720ef2c331d05949db0f6eb2c96c621ac37a5fd1f23d5ebc48",
+      "source_name": "Neg_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Neg_HackersDelightRule_2",
+      "family": "neg",
+      "reason": null,
+      "semantic_fingerprint": "396bda264b230ce9dcf3e3d7e908600a750d100404bd3bf2d76940c77d579a7c",
+      "source_name": "Neg_HackersDelightRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "NegSub_HackersDelightRule_1",
+      "family": "neg",
+      "reason": null,
+      "semantic_fingerprint": "56944ae5bb6f3ba145662b2c6a2e999d97c51d282aa6adbfbb8f43258392dc79",
+      "source_name": "NegSub_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "NegAdd_HackersDelightRule_1",
+      "family": "neg",
+      "reason": null,
+      "semantic_fingerprint": "e472473d8922d9a097617e30848c3cc5b546acbb2740d176cca8868a57d67137",
+      "source_name": "NegAdd_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "NegAdd_HackersDelightRule_2",
+      "family": "neg",
+      "reason": null,
+      "semantic_fingerprint": "eef2b8d88587589926e1ef5e3b11e2af9d5d4b0f3198cdf76a90e317b84c9d78",
+      "source_name": "NegAdd_HackersDelightRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "NegOr_HackersDelightRule_1",
+      "family": "neg",
+      "reason": null,
+      "semantic_fingerprint": "13d543753ca45bec7b8d5b9245c536e6112ed88d74112084652aec8db78936fd",
+      "source_name": "NegOr_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "NegXor_HackersDelightRule_1",
+      "family": "neg",
+      "reason": null,
+      "semantic_fingerprint": "7d950784b5d37b4ed2e0c90c0aae7e2fb2cd8d14e8f5f350ab872ad4be0dc119",
+      "source_name": "NegXor_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "NegXor_HackersDelightRule_2",
+      "family": "neg",
+      "reason": null,
+      "semantic_fingerprint": "f5cc3c3348f93ff93f42eb78bed989d48564d9362aa6334d9251e95f8f857dff",
+      "source_name": "NegXor_HackersDelightRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_EidRepeatedMaskedOperand_1",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "5c1789bb54f15374e38795b345f79c7143e704e0a1772afbafe8a4046900cd96",
+      "source_name": "Or_EidRepeatedMaskedOperand_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_HackersDelightRule_2",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "79b736d36c6f89eb6f2451d5dd21e6c031a64d4f23831fa8fb836d19bd15043d",
+      "source_name": "Or_HackersDelightRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_HackersDelightRule_2_variant_1",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "76784537c3643418e92e767db52936b6f0c67ef18aa1202bcc83f392c9623d12",
+      "source_name": "Or_HackersDelightRule_2_variant_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_MbaRule_1",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "c7db95c1b07845fe28bfcc2157117b7e1dbba036d3f23ba3c1f255d38270b482",
+      "source_name": "Or_MbaRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_MbaRule_1_Commuted",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "7c52f9e8305a073fb6c87c3c6ba40d26d4e730cd6f8891c6eab2c2cf6d17cd3f",
+      "source_name": "Or_MbaRule_1_Commuted",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_MbaRule_2",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "530ea43b91902fd59f2b60be17e43dc098d92b3403a541f164e9a1d1d03029c4",
+      "source_name": "Or_MbaRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_MbaRule_3",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "32be73ca3bd3b16800aa185a3ed7467609a4fdb9701e1df269e53c614612c143",
+      "source_name": "Or_MbaRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_FactorRule_1",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "e60d74e1a2eea28973f5c1a890253afac109e3280c22b52786402490aa13de4d",
+      "source_name": "Or_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_FactorRule_2",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "132eb312e09dc79ae1ebfaa050ec4445ce2e989020ac1af94b92cb02cf80e184",
+      "source_name": "Or_FactorRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_Rule_2",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "67821146e9d4c6c33a8c964125e4927cf2634729f11da14606254034c6d2c12e",
+      "source_name": "Or_Rule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_Rule_4",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "24d79fc8e40283f81f7f89c8c8f4524e81325b20dce94d5ae7ea5eb33407f041",
+      "source_name": "Or_Rule_4",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "OrBnot_FactorRule_1",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "5ccdbed893f846a19605f4ec1b7287b1a47479e80e4d26e47f65f2e323755679",
+      "source_name": "OrBnot_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "OrBnot_FactorRule_2",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "9c9c34ea779ff28534b30618679c025e3e5fe81f0d323ea201fe63fce1628293",
+      "source_name": "OrBnot_FactorRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_HackersDelightRule_1",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "e90a94451105beda6caf439e7b6cee7c73987dc4f57294889d94e130129dedd5",
+      "source_name": "Or_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_FactorRule_3",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "d93850c105b35d81f24e87feb3f1e963bf7437455ee46c7ff1c615a6902fdb50",
+      "source_name": "Or_FactorRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_OllvmRule_1",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "70283303f180aa8dbcca01162f51c9479c7b6ffc501d7f941ecaa750d7334000",
+      "source_name": "Or_OllvmRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_Rule_1",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "1bb92abcd36554383b1d3729396b51826087a877acee6ad84c6f5eda240a3d7c",
+      "source_name": "Or_Rule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Or_Rule_3",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "19eb1211b9524caca32e47c0ab5ce59a63847e04623e1f2925343ca9ded1a884",
+      "source_name": "Or_Rule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "OrBnot_FactorRule_3",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "776b0e196a0e43c96e07aa88f174585f9e174a323fd8bbe0f24a6434b75727d5",
+      "source_name": "OrBnot_FactorRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "OrBnot_FactorRule_4",
+      "family": "or",
+      "reason": null,
+      "semantic_fingerprint": "bdb7bf10a76c841aefcba665a4300b72170f736f02d109337a9b342cf54adb85",
+      "source_name": "OrBnot_FactorRule_4",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetnzRule1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetnzRule2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetnzRule3",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetnzRule4",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetnzRule5",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetnzRule6",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetnzRule8",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetzRule1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetzRule2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetzRule3",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredSetbRule1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Pred0Rule1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Pred0Rule2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Pred0Rule3",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Pred0Rule4",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Pred0Rule5",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Pred0Rule6",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "Pred0Rule7",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredFFRule1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredFFRule2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredFFRule3",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredFFRule4",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredOr2_Rule_1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredOr1_Rule_1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredOdd1",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "predicates",
+      "reason": "predicate semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "PredOdd2",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": "Sub_HackersDelightRule_1",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "2e4852081c868cddbc232ac2276d8b4f46f65316ebba72f72ee8a16b56605e0b",
+      "source_name": "Sub_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Sub_HackersDelightRule_2",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "4617445d708ca24d5649fab2bcf66fd9d843ec58a5654048b390dadc5225c091",
+      "source_name": "Sub_HackersDelightRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Sub_HackersDelightRule_3",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "e874d7be7f134a0ad964626a2a998147db6c697239fed4299b326771f91ae6ab",
+      "source_name": "Sub_HackersDelightRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Sub_HackersDelightRule_4",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "7fa3890e8d7a28f08ddf490a18bd2c8eb61dc1a3a50c8a28247181bb57aa4904",
+      "source_name": "Sub_HackersDelightRule_4",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Sub_ComplementMaskHodurRule_1",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "abad1bb12ac8a3d5c4b030b9a64f5c399855373f503100d01d35cd69e4dd70cd",
+      "source_name": "Sub_ComplementMaskHodurRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Sub1_FactorRule_1",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "27af0e92b0897590ca7cfda90e0934fe3568e5af666d35f3bacfec2ec1dffad4",
+      "source_name": "Sub1_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Sub1_FactorRule_2",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "6b345201c663bbe2f53fceeb0a4cba63544c1e3c895ef8d502dbcf35ab276926",
+      "source_name": "Sub1_FactorRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Sub1Add_HackersDelightRule_1",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "b0100810083cb3cee8a1fd5edd9e466794fabdeef4007c18d3299b5706cb85e7",
+      "source_name": "Sub1Add_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Sub1And_HackersDelightRule_1",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "d572c92a0c3a5564ad540c90b9b99e731a16619e0103ea424ba5bfd0f2445673",
+      "source_name": "Sub1And_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Sub1Or_MbaRule_1",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "4ba488dc0d29ba346441c974aea0f13bdacd0a4235b27358ff99775aa338ba8a",
+      "source_name": "Sub1Or_MbaRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Sub1And1_MbaRule_1",
+      "family": "sub",
+      "reason": null,
+      "semantic_fingerprint": "669653d0fe3971f186e6f0088071270f2e6e377d390ad09f9169a5611b2a1089",
+      "source_name": "Sub1And1_MbaRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": null,
+      "family": "tigress",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "TigressIncrementRule",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "tigress",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "TigressXorViaOrMinusAndRule",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "tigress",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "TigressAddViaXorOrRule",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "tigress",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "TigressXorViaSubOrRule",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "tigress",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "TigressNotEqualSignBitRule",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "tigress",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "TigressNotEqualSignBitRule64",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": null,
+      "family": "tigress",
+      "reason": "profile-specific semantics are not portable",
+      "semantic_fingerprint": null,
+      "source_name": "TigressMultiplyBitPartitionRule",
+      "status": "rejected"
+    },
+    {
+      "canonical_name": "Xor_HackersDelightRule_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "76f3a5a3e6e352bc082e434083ea6b8df8a26c079908ab30d08f89c2a37e23e1",
+      "source_name": "Xor_HackersDelightRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_HackersDelightRule_2",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "a7ae6d49d3109d231180dec54065886725de6f44372222e62e6623f7080c7d7f",
+      "source_name": "Xor_HackersDelightRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_HackersDelightRule_3",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "604266b90588798b94b1ec7e9b4d9a8da741985f67f838a3decb9acb0983e25c",
+      "source_name": "Xor_HackersDelightRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_HackersDelightRule_4",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "1fa6044508f94e2a9b1914da6e27dcad25e418653f77220b53d386cbf38a5781",
+      "source_name": "Xor_HackersDelightRule_4",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_HackersDelightRule_5",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "5257940a7a8fb97a01412161fd35996db7fc73c71f63e8244d1e1d72c62be054",
+      "source_name": "Xor_HackersDelightRule_5",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_EidComplementPartition_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "da39bcc589c564c18d898ea5d08179aa684e113db755fba4724632509250b4e6",
+      "source_name": "Xor_EidComplementPartition_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_EidComplementPartition_2",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "6d193f9df031a0814fb01016be4ec75f112124bd01962e1d56ce132024e76d37",
+      "source_name": "Xor_EidComplementPartition_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_EidComplementPartition_3",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "9b4decb45a3ae0e25bc962b15be6aeed5db0543e0fb57d52388e8a5172abb35f",
+      "source_name": "Xor_EidComplementPartition_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_EidComplementConsensus_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "2fb9f7e21987ce08c2436a1703eab739f3a2018e6d4c53cb063e6834f182be9f",
+      "source_name": "Xor_EidComplementConsensus_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_EidKeySchedule_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "271a91eac0a139a7efcf7fcab9dd7756974e878b51a93cfb0ce19eb8b309ad65",
+      "source_name": "Xor_EidKeySchedule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_EidKeySchedule_2",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "c435c015b058bfa73523f449725ade890cf3523f961d435aa3cc53b9d96a674a",
+      "source_name": "Xor_EidKeySchedule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_EidKeySchedule_3",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "091e2fd5bb316eec59466197f9b642c549ca6d618ed92529ffad68842e9379a0",
+      "source_name": "Xor_EidKeySchedule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_MbaRule_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "af8ab00da0a169a89cd0f4993bc0ea38a3419843b8b2b2d53038327ce7b1e889",
+      "source_name": "Xor_MbaRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_HackersDelightRule_5",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "5257940a7a8fb97a01412161fd35996db7fc73c71f63e8244d1e1d72c62be054",
+      "source_name": "Xor_MbaRule_2",
+      "status": "duplicate"
+    },
+    {
+      "canonical_name": "Xor_MbaRule_3",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "c47289701bf13b7ba08ea8d5dc9045cbf6126d9b4a0cc94db0926c752cedc216",
+      "source_name": "Xor_MbaRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_FactorRule_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "c41718a6a9be09971042c2473d40f5b7db7edd8d13666246534fa279e40a69a3",
+      "source_name": "Xor_FactorRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_FactorRule_2",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "2d42a938019e9f653e661a79e9f6fffa92c43b8c4b437b996f9f8d7ca83b416e",
+      "source_name": "Xor_FactorRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_FactorRule_3",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "5f7de773fe9fecc0da3ee42580346b12a4517dd117d5f08895cfffe1b634cc57",
+      "source_name": "Xor_FactorRule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_FactorRule_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "c41718a6a9be09971042c2473d40f5b7db7edd8d13666246534fa279e40a69a3",
+      "source_name": "Xor_Rule_4",
+      "status": "duplicate"
+    },
+    {
+      "canonical_name": "Xor_SpecialConstantRule_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "ce0287e31c9e8d59e89cffc770088f2aa49103229f577b253cd5e9f6f54bef94",
+      "source_name": "Xor_SpecialConstantRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_SpecialConstantRule_2",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "bd9613f04f0df04d151d37c910d66fd51c2d57f63b21c8011ce73f4e2a7b6863",
+      "source_name": "Xor_SpecialConstantRule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor1_MbaRule_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "05a061514ffdb24e2f456534b370f1ee0ad126284a5f59704a28d307dd247cac",
+      "source_name": "Xor1_MbaRule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_Rule_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "82c47a8d406d2bdf164ec3592b3b7522d2286adbcf884fe8958bab570030c983",
+      "source_name": "Xor_Rule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_Rule_2",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "d6ad501f85c3e416028c344caa7692342961473e8725548b079c8a531d59a797",
+      "source_name": "Xor_Rule_2",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_Rule_3",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "8b2d7980de7534cd1658cc8cbbb38fcc726bc472cde1c04ddef517c4a8873596",
+      "source_name": "Xor_Rule_3",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "XorAlmost_Rule_1",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "8cfaa9d5e8068a53bb7bc64d4b94400015c9d6d4315fda2fd72da7f68321fba7",
+      "source_name": "XorAlmost_Rule_1",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": "Xor_NestedStuff",
+      "family": "xor",
+      "reason": null,
+      "semantic_fingerprint": "10f540b6f6326c4e258dfd1def39ff6e92ec76d0ab5e340ff661ed9c47d0018f",
+      "source_name": "Xor_NestedStuff",
+      "status": "compiled"
+    },
+    {
+      "canonical_name": null,
+      "family": "xor",
+      "reason": "verification skipped",
+      "semantic_fingerprint": null,
+      "source_name": "Xor_Rule_4_WithXdu",
+      "status": "rejected"
+    }
+  ],
+  "schema_version": 1
+}

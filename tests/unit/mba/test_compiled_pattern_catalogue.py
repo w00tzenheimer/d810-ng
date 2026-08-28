@@ -7,7 +7,6 @@ import pytest
 from d810.mba.certified_rule_compiler import (
     CompiledMbaRule,
     _enroll_admitted_rule,
-    compile_add_rule_catalogue,
 )
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.ir.expr.dsl import SymbolicExpression
@@ -15,6 +14,8 @@ from d810.mba.dsl import Const, Var
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import canonicalize_ac_term
+from d810.mba.rules.catalogue import MBA_RULE_FAMILIES
+from tests.unit.mba._compiled_rule_fixture import admitted_rule
 
 
 def _leaf(name: str) -> NativeMbaTermView:
@@ -29,14 +30,15 @@ def _node(name: str, *children: NativeMbaTermView) -> NativeMbaTermView:
     return NativeMbaTermView(name, 32, children=children)
 
 
-def _rule(name: str):
-    return compile_add_rule_catalogue().receipt_for(name).compiled_rule
+def _rule(name: str, family: str = "add"):
+    rule_type = next(
+        rule for rule in MBA_RULE_FAMILIES[family] if rule.__name__ == name
+    )
+    return admitted_rule(rule_type, family=family)
 
 
 def _xor_rule(name: str):
-    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
-
-    return compile_mba_rule_catalogue().receipt_for("xor", name).compiled_rule
+    return _rule(name, "xor")
 
 
 def _admitted_probe_rule(name: str, pattern: SymbolicExpression):
@@ -245,12 +247,9 @@ def test_canonical_catalogue_preserves_earlier_match_at_declaration_budget_bound
 
 
 def test_canonical_catalogue_keeps_constraint_derived_bindings_without_paths():
-    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
-    rule = compile_mba_rule_catalogue().receipt_for(
-        "add", "Add_SpecialConstantRule_3"
-    ).compiled_rule
+    rule = _rule("Add_SpecialConstantRule_3")
     assert rule is not None
     x = _leaf("x")
     candidate = _node(
@@ -276,12 +275,9 @@ def test_canonical_catalogue_keeps_constraint_derived_bindings_without_paths():
 
 def test_canonical_catalogue_uses_frozen_constraints_at_match_time(monkeypatch):
     import d810.backends.mba.compiled_pattern_catalogue as catalogue_module
-    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
-    rule = compile_mba_rule_catalogue().receipt_for(
-        "add", "Add_SpecialConstantRule_3"
-    ).compiled_rule
+    rule = _rule("Add_SpecialConstantRule_3")
     assert rule is not None
     x = _leaf("x")
     candidate = _node(

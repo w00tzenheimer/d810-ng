@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import json
 import inspect
 import os
 import subprocess
@@ -10,12 +11,19 @@ import sys
 import textwrap
 from collections import Counter
 from dataclasses import fields
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from d810.mba.rules.catalogue import MBA_RULE_FAMILIES
 from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term
+from tests.unit.mba._compiled_rule_fixture import admitted_rule
+
+
+RECEIPT_MANIFEST = (
+    Path(__file__).resolve().parents[2] / "fixtures/mba/certification_receipts.json"
+)
 
 
 def _leaf(name: str, width: int = 32) -> TypedBvTerm:
@@ -36,6 +44,7 @@ def _node(
     )
 
 
+@pytest.mark.slow
 def test_catalogue_receipts_keep_exact_declaration_order_and_counts() -> None:
     from d810.mba.certified_rule_compiler import (
         RuleCompilationStatus,
@@ -61,6 +70,41 @@ def test_catalogue_receipts_keep_exact_declaration_order_and_counts() -> None:
     )
 
 
+def test_checked_in_certification_receipts_match_current_rule_fingerprints() -> None:
+    from d810.mba.certified_rule_compiler import CERTIFICATE_WIDTHS
+    from tools.scripts.render_mba_certification_receipts import _fingerprint
+
+    manifest = json.loads(RECEIPT_MANIFEST.read_text(encoding="ascii"))
+    declarations = tuple(
+        (family, rule_type.__name__, rule_type)
+        for family, rule_types in MBA_RULE_FAMILIES.items()
+        for rule_type in rule_types
+    )
+    receipts = manifest["receipts"]
+
+    assert manifest["schema_version"] == 1
+    assert tuple(manifest["certificate_widths"]) == CERTIFICATE_WIDTHS
+    assert tuple(
+        (receipt["family"], receipt["source_name"]) for receipt in receipts
+    ) == tuple((family, name) for family, name, _rule_type in declarations)
+    for receipt, (_family, _name, rule_type) in zip(receipts, declarations):
+        fingerprint = receipt["semantic_fingerprint"]
+        if fingerprint is not None:
+            assert fingerprint == _fingerprint(rule_type)
+
+
+@pytest.mark.slow
+def test_full_certification_reproduces_checked_in_receipts() -> None:
+    from tools.scripts.render_mba_certification_receipts import (
+        build_receipt_manifest,
+    )
+    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
+
+    expected = json.loads(RECEIPT_MANIFEST.read_text(encoding="ascii"))
+    assert build_receipt_manifest(compile_mba_rule_catalogue()) == expected
+
+
+@pytest.mark.slow
 def test_catalogue_preserves_aliases_proof_widths_and_guard_metadata() -> None:
     from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
 
@@ -81,6 +125,7 @@ def test_catalogue_preserves_aliases_proof_widths_and_guard_metadata() -> None:
     assert catalogue.receipt_for("xor", "Xor_FactorRule_1").compiled_rule.guarded
 
 
+@pytest.mark.slow
 def test_duplicate_and_rejected_receipts_retain_exact_provenance() -> None:
     from d810.mba.certified_rule_compiler import (
         RuleCompilationStatus,
@@ -107,7 +152,8 @@ def test_duplicate_and_rejected_receipts_retain_exact_provenance() -> None:
 
 
 def test_compiled_rule_fields_are_portable_descriptors_only() -> None:
-    from d810.mba.certified_rule_compiler import CompiledMbaRule, compile_mba_rule_catalogue
+    from d810.mba.certified_rule_compiler import CompiledMbaRule
+    from d810.mba.rules.add import Add_HackersDelightRule_2
 
     assert tuple(field.name for field in fields(CompiledMbaRule)) == (
         "source_name",
@@ -117,7 +163,7 @@ def test_compiled_rule_fields_are_portable_descriptors_only() -> None:
         "guarded",
         "family",
     )
-    for rule in compile_mba_rule_catalogue().compiled_rules:
+    for rule in (admitted_rule(Add_HackersDelightRule_2, family="add"),):
         assert type(rule) is CompiledMbaRule
         assert all(
             "astnode" not in type(value).__name__.lower()
@@ -136,12 +182,10 @@ def test_compiled_rule_fields_are_portable_descriptors_only() -> None:
 def test_guarded_typed_term_application_matches_and_rejects_exact_constants() -> None:
     from d810.mba.certified_rule_compiler import (
         apply_compiled_rule_to_term,
-        compile_mba_rule_catalogue,
     )
+    from d810.mba.rules.add import Add_SpecialConstantRule_1
 
-    rule = compile_mba_rule_catalogue().receipt_for(
-        "add", "Add_SpecialConstantRule_1"
-    ).compiled_rule
+    rule = admitted_rule(Add_SpecialConstantRule_1, family="add")
     assert rule is not None and rule.guarded
     x = _leaf("x")
     accepted = _node(
@@ -160,7 +204,8 @@ def test_guarded_typed_term_application_matches_and_rejects_exact_constants() ->
 
 
 def test_compilation_does_not_load_provider_or_native_runtime_modules(monkeypatch) -> None:
-    from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
+    import d810.mba.certified_rule_compiler as compiler
+    from d810.mba.rules.add import Add_HackersDelightRule_2
 
     blocked = {
         "egglog",
@@ -177,8 +222,11 @@ def test_compilation_does_not_load_provider_or_native_runtime_modules(monkeypatc
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
-    catalogue = compile_mba_rule_catalogue()
-    assert len(catalogue.compiled_rules) == 120
+    monkeypatch.setattr(compiler, "verify_rule", lambda *_args, **_kwargs: True)
+    catalogue = compiler._compile_rule_families(
+        {"add": (Add_HackersDelightRule_2,)}
+    )
+    assert len(catalogue.compiled_rules) == 1
 
 
 def test_fresh_process_compilation_does_not_scan_provider_tree() -> None:
@@ -211,11 +259,15 @@ def test_fresh_process_compilation_does_not_scan_provider_tree() -> None:
             return real_import(name, *args, **kwargs)
 
         builtins.__import__ = guarded_import
-        from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
+        import d810.mba.certified_rule_compiler as compiler
+        from d810.mba.rules.add import Add_HackersDelightRule_2
 
-        catalogue = compile_mba_rule_catalogue()
-        assert len(catalogue.receipts) == 200
-        assert len(catalogue.compiled_rules) == 120
+        compiler.verify_rule = lambda *_args, **_kwargs: True
+        catalogue = compiler._compile_rule_families(
+            {"add": (Add_HackersDelightRule_2,)}
+        )
+        assert len(catalogue.receipts) == 1
+        assert len(catalogue.compiled_rules) == 1
         assert not attempted, attempted
         """
     )

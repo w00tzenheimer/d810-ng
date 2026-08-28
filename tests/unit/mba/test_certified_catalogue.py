@@ -12,7 +12,6 @@ import pytest
 
 from d810.core.logging import getLogger
 from d810.core.typing import Iterator
-from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
 from d810.mba.certified_catalogue import (
     ShadowMatcherParityLedger,
     StructuralMatcherParityCertificate,
@@ -658,9 +657,10 @@ def test_snapshot_and_template_fingerprints_ignore_operational_logger_state() ->
 
 
 def test_snapshot_records_width_specific_canonical_templates_and_version() -> None:
-    rule = compile_mba_rule_catalogue().receipt_for(
-        "add", "Add_HackersDelightRule_2"
-    ).compiled_rule
+    from d810.mba.rules.add import Add_HackersDelightRule_2
+    from tests.unit.mba._compiled_rule_fixture import admitted_rule
+
+    rule = admitted_rule(Add_HackersDelightRule_2, family="add")
     assert rule is not None
     snapshot = build_certified_catalogue_snapshot(
         (rule,), compiler_version="canonical-v1", widths=(32,)

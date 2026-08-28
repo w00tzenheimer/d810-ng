@@ -52,7 +52,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = ["-m", "not profile and not pseudocode_dump and not manual"]
+addopts = ["-m", "not profile and not pseudocode_dump and not manual and not slow and not rhad"]
 markers = [
     "pure_python: Tests that run without IDA Pro (fast, no external dependencies)",
     "requires_ida: Tests that require IDA Pro to run",
@@ -60,6 +60,7 @@ markers = [
     "e2e: End-to-end pipeline tests with golden output comparison",
     "hexrays: Tests that require Hex-Rays decompiler",
     "slow: Slow tests (>10s) - typically Z3 verification or complex deobfuscation",
+    "rhad: Deferred RHAD-specific tests excluded from the ordinary unit gate",
     "speedup_parity: Runtime-boundary slice that must pass with Cython enabled and disabled",
     "profile: marks tests as performance profiling (deselect with '-m \"not profile\"')",
     "pseudocode_dump: manual utility tests for before/after pseudocode dumping",
