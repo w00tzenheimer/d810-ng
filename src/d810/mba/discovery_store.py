@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1328,7 +1328,12 @@ class MbaDiscoveryStore:
 
     @contextmanager
     def _transaction(
-        self, *, immediate: bool = False, lock_timeout: float | None = None
+        self,
+        *,
+        immediate: bool = False,
+        lock_timeout: float | None = None,
+        sqlite_busy_timeout: float | None = None,
+        pre_commit_guard: Callable[[], None] | None = None,
     ) -> Iterator[sqlite3.Connection]:
         if lock_timeout is None:
             acquired = self._lock.acquire()
@@ -1336,19 +1341,34 @@ class MbaDiscoveryStore:
             acquired = self._lock.acquire(timeout=lock_timeout)
         if not acquired:
             raise _StoreBusy("storage_busy")
+        previous_busy_timeout: int | None = None
         try:
             self._ensure_open()
+            if sqlite_busy_timeout is not None:
+                previous_busy_timeout = int(
+                    self._connection.execute("PRAGMA busy_timeout").fetchone()[0]
+                )
+                self._connection.execute(
+                    f"PRAGMA busy_timeout={int(sqlite_busy_timeout * 1000)}"
+                )
             try:
                 self._connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
                 self._validate_causal_domain(self._connection)
                 yield self._connection
+                if pre_commit_guard is not None:
+                    pre_commit_guard()
+                self._connection.commit()
             except Exception:
                 self._connection.rollback()
                 raise
-            else:
-                self._connection.commit()
         finally:
-            self._lock.release()
+            try:
+                if previous_busy_timeout is not None and not self._closed:
+                    self._connection.execute(
+                        f"PRAGMA busy_timeout={previous_busy_timeout}"
+                    )
+            finally:
+                self._lock.release()
 
     def _configure_and_migrate(self) -> None:
         with self._lock:
@@ -3070,6 +3090,7 @@ class MbaDiscoveryStore:
             with self._transaction(
                 immediate=True,
                 lock_timeout=DISCOVERY_HEARTBEAT_LOCK_TIMEOUT_SECONDS,
+                sqlite_busy_timeout=DISCOVERY_HEARTBEAT_LOCK_TIMEOUT_SECONDS,
             ) as conn:
                 existing_run = conn.execute(
                     "SELECT * FROM mining_runs WHERE run_id=?", (run_id,)
@@ -3103,7 +3124,11 @@ class MbaDiscoveryStore:
                         ).fetchone()
                     ),
                 )
-        except _StoreBusy:
+        except (_StoreBusy, sqlite3.OperationalError) as exc:
+            if isinstance(exc, sqlite3.OperationalError) and getattr(
+                exc, "sqlite_errorcode", None
+            ) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise
             return HeartbeatReceipt(ReceiptStatus.REFUSED, reason="storage_busy")
 
     def finish_no_proposal(
@@ -3383,11 +3408,14 @@ class MbaDiscoveryStore:
         *,
         expected_state: ProposalState | str | None = None,
         expected_revision: int | None = None,
+        path_commit_guard: Callable[[], None] | None = None,
     ) -> LifecycleReceipt:
         proposal_id = _canonical_uuid(proposal_id, name="proposal_id")
         _canonical_text(path, name="materialized_path")
         _canonical_text(digest, name="materialized_digest")
-        with self._transaction(immediate=True) as conn:
+        with self._transaction(
+            immediate=True, pre_commit_guard=path_commit_guard
+        ) as conn:
             row = conn.execute(
                 "SELECT * FROM proposals WHERE proposal_id=?", (proposal_id,)
             ).fetchone()

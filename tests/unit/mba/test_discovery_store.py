@@ -2797,6 +2797,71 @@ def test_proposal_snapshot_is_typed_and_read_only(tmp_path: Path) -> None:
     store.close()
 
 
+def test_public_proposal_snapshot_rejects_causal_corruption_without_mutation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "snapshot-causal-corruption.sqlite3"
+    store, _proposal, published = _published_store(
+        tmp_path, "snapshot-causal-corruption"
+    )
+    assert published.proposal is not None
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            "UPDATE residual_group_events SET run_id=? WHERE event_kind='proposal_published'",
+            (str(uuid4()),),
+        )
+        connection.commit()
+    before = _logical_domain_snapshot(store)
+
+    with pytest.raises(ValueError, match="event|run|causal"):
+        store.proposal_snapshot(published.proposal.proposal_id)
+
+    assert _logical_domain_snapshot(store) == before
+    store.close()
+
+
+def test_materialization_commit_guard_observes_staged_owner_and_event_then_rolls_back(
+    tmp_path: Path,
+) -> None:
+    store, _proposal, published = _published_store(tmp_path, "commit-guard")
+    assert published.proposal is not None and published.group is not None
+    proposal_id = published.proposal.proposal_id
+    before = _logical_domain_snapshot(store)
+    guard_observation: list[tuple[str, tuple[str, ...]]] = []
+
+    def refuse_at_pre_commit() -> None:
+        proposal_state = store._connection.execute(
+            "SELECT state FROM proposals WHERE proposal_id=?", (proposal_id,)
+        ).fetchone()[0]
+        event_kinds = tuple(
+            row[0]
+            for row in store._connection.execute(
+                "SELECT event_kind FROM residual_group_events WHERE proposal_id=? ORDER BY event_id",
+                (proposal_id,),
+            )
+        )
+        guard_observation.append((proposal_state, event_kinds))
+        raise RuntimeError("path identity changed at commit")
+
+    with pytest.raises(RuntimeError, match="path identity changed at commit"):
+        store.mark_materialized(
+            proposal_id,
+            "/review",
+            "digest",
+            expected_state=published.proposal.state,
+            expected_revision=published.group.revision,
+            path_commit_guard=refuse_at_pre_commit,
+        )
+
+    assert guard_observation == [("materialized", ("proposal_published", "materialized"))]
+    assert _logical_domain_snapshot(store) == before
+    snapshot = store.proposal_snapshot(proposal_id)
+    assert snapshot is not None
+    assert snapshot.proposal.state is ProposalState.PROPOSED
+    store.close()
+
+
 def test_post_evidence_admission_retry_uses_current_group_revision(
     tmp_path: Path,
 ) -> None:

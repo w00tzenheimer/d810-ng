@@ -28,7 +28,6 @@ from d810.mba.discovery_models import (
     ReceiptStatus,
 )
 from d810.mba.discovery_store import (
-    DISCOVERY_HEARTBEAT_LOCK_TIMEOUT_SECONDS,
     DISCOVERY_LEASE_TIMEOUT_SECONDS,
     MbaDiscoveryStore,
     decode_proposal_payload,
@@ -57,7 +56,11 @@ class _HeartbeatCoordinator:
         self._stop = threading.Event()
         self._error: BaseException | None = None
         self._refusal: str | None = None
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"d810-mba-heartbeat-{claim.run.run_id}",
+            daemon=True,
+        )
 
     def _run(self) -> None:
         try:
@@ -76,10 +79,10 @@ class _HeartbeatCoordinator:
 
     def stop(self) -> tuple[str | None, BaseException | None, bool]:
         self._stop.set()
-        # heartbeat() bounds acquisition of the store serialization lock, so
-        # this join has a finite deadline and cannot strand a store-touching
-        # worker on a stalled collaborator.
-        self._thread.join(timeout=DISCOVERY_HEARTBEAT_LOCK_TIMEOUT_SECONDS + 1.0)
+        # heartbeat() bounds both the Python serialization lock and SQLite's
+        # writer wait.  Wait for that bounded operation to leave the store
+        # before the caller can return or close it.
+        self._thread.join()
         return self._refusal, self._error, not self._thread.is_alive()
 
 
@@ -468,6 +471,21 @@ def _remove_private_tree(parent_fd: int, parent_path: Path, name: str) -> None:
     os.fsync(parent_fd)
 
 
+def _retained_quarantine_error(
+    parent_path: Path, output_name: str, quarantine_name: str
+) -> RuntimeError:
+    visible_path = os.path.normpath(
+        os.path.abspath(os.fspath(parent_path / output_name))
+    )
+    quarantine_path = os.path.normpath(
+        os.path.abspath(os.fspath(parent_path / quarantine_name))
+    )
+    return RuntimeError(
+        "materialization recovery conflict: visible destination preserved at "
+        f"{visible_path}; quarantined owned tree retained at {quarantine_path}"
+    )
+
+
 def _quarantine_owned_tree(
     parent_fd: int,
     parent_path: Path,
@@ -511,7 +529,9 @@ def _quarantine_owned_tree(
         try:
             _exclusive_rename(parent_fd, quarantine_name, output_name)
         except BaseException as restore_exc:
-            raise RuntimeError("materialization recovery conflict") from restore_exc
+            raise _retained_quarantine_error(
+                parent_path, output_name, quarantine_name
+            ) from restore_exc
         os.fsync(parent_fd)
         raise RuntimeError("materialization recovery conflict") from exc
     finally:
@@ -524,7 +544,9 @@ def _quarantine_owned_tree(
         try:
             _exclusive_rename(parent_fd, quarantine_name, output_name)
         except BaseException as restore_exc:
-            raise RuntimeError("materialization recovery conflict") from restore_exc
+            raise _retained_quarantine_error(
+                parent_path, output_name, quarantine_name
+            ) from restore_exc
         os.fsync(parent_fd)
         raise RuntimeError("materialization recovery conflict") from exc
 
@@ -619,6 +641,9 @@ def materialize_proposal(
                 digest,
                 expected_state=proposal_row.state,
                 expected_revision=snapshot.group.revision,
+                path_commit_guard=lambda: _verify_parent_path(
+                    output_dir.parent, parent_fd
+                ),
             )
             if receipt.status not in (ReceiptStatus.MATERIALIZED, ReceiptStatus.DUPLICATE):
                 raise RuntimeError(receipt.reason or receipt.status.value)
@@ -675,6 +700,9 @@ def materialize_proposal(
             digest,
             expected_state=proposal_row.state,
             expected_revision=snapshot.group.revision,
+            path_commit_guard=lambda: _verify_parent_path(
+                output_dir.parent, parent_fd
+            ),
         )
         if receipt.status not in (ReceiptStatus.MATERIALIZED, ReceiptStatus.DUPLICATE):
             raise RuntimeError(receipt.reason or receipt.status.value)
