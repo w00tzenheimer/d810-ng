@@ -297,6 +297,7 @@ def is_supported_opcode_name(name: str) -> bool:
     return insn_kind_for_opcode_name(name) is not None
 
 _CONDITIONALS = frozenset(name for name, entry in _VOCABULARY_ROWS if entry.control_transfer_kind is ControlTransferKind.CONDITIONAL_BRANCH)
+_DIRECT_TARGET_KINDS = frozenset({OperandKind.BLOCK, OperandKind.GLOBAL})
 
 
 def operand_shape_for_opcode_name(name: str) -> OperandShape | None:
@@ -310,9 +311,14 @@ def _present(operand: Any) -> bool:
 
 def _validate_roles(name: str, *, l: Any, r: Any, d: Any) -> None:
     canonical = canonical_opcode_name(name)
-    if canonical == "m_goto" and getattr(l, "kind", None) is not OperandKind.BLOCK:
+    if canonical == "m_goto" and getattr(l, "kind", None) not in _DIRECT_TARGET_KINDS:
         raise ValueError(f"opcode {name} operand shape rejects non-block target")
-    if canonical in _CONDITIONALS and getattr(d, "kind", None) is not OperandKind.BLOCK:
+    # The SDK documents m_jcnd.d as mop_v or mop_b.  Preserve both target
+    # encodings at capture because direct-address branches occur in live
+    # microcode before they are normalized to local CFG block references.
+    if canonical == "m_jcnd" and getattr(d, "kind", None) not in _DIRECT_TARGET_KINDS:
+        raise ValueError(f"opcode {name} operand shape rejects non-block target")
+    if canonical in _CONDITIONALS - {"m_jcnd"} and getattr(d, "kind", None) is not OperandKind.BLOCK:
         raise ValueError(f"opcode {name} operand shape rejects non-block target")
     if canonical == "m_jtbl" and getattr(r, "kind", None) is not OperandKind.CASE_LIST:
         raise ValueError(f"opcode {name} operand shape rejects non-case-list table")

@@ -21,6 +21,8 @@ materialization.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import ida_hexrays
 import pytest
 
@@ -30,6 +32,8 @@ from d810.hexrays.mutation.ir_translator import (
     classify_call_kind,
     classify_control_transfer,
 )
+from d810.ir.insn_projection import project_instruction
+from d810.ir.instructions import InstructionControl
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 
@@ -47,17 +51,49 @@ class _StubInsn:
 class _EmptyMop:
     t = int(ida_hexrays.mop_z)
     size = 0
+    valnum = 0
+
+
+class _SnapshotMop:
+    """Scalar mop stand-in accepted by both snapshot representations.
+
+    These tests only need read-only scalar fields. Constructing ``mop_t`` here
+    can access uninitialized processor state outside a decompilation.
+    """
+
+    def __init__(
+        self,
+        mop_type: int,
+        *,
+        size: int = 0,
+        value: int | None = None,
+        gaddr: int | None = None,
+    ) -> None:
+        self.t = int(mop_type)
+        self.size = int(size)
+        self.valnum = 0
+        if value is not None:
+            self.nnn = SimpleNamespace(value=int(value))
+        if gaddr is not None:
+            self.g = int(gaddr)
 
 
 class _SnapshotInsn:
     """Duck-typed instruction for snapshot capture without allocating minsn_t."""
 
-    def __init__(self, opcode: int) -> None:
+    def __init__(
+        self,
+        opcode: int,
+        *,
+        left: object | None = None,
+        right: object | None = None,
+        dest: object | None = None,
+    ) -> None:
         self.opcode = int(opcode)
         self.ea = 0
-        self.l = _EmptyMop()
-        self.r = _EmptyMop()
-        self.d = _EmptyMop()
+        self.l = left if left is not None else _EmptyMop()
+        self.r = right if right is not None else _EmptyMop()
+        self.d = dest if dest is not None else _EmptyMop()
 
     def dstr(self) -> str:
         return ""
@@ -72,6 +108,10 @@ def _required(name: str) -> int:
     if value is None:
         pytest.skip(f"ida_hexrays.{name} not present in this SDK")
     return int(value)
+
+
+def _number(value: int, size: int) -> _SnapshotMop:
+    return _SnapshotMop(ida_hexrays.mop_n, value=value, size=size)
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +310,12 @@ class TestHexraysOpcodeLift:
 
 class TestCaptureInsnSnapshotOperationFamilies:
     def test_set_predicate_survives_snapshot_capture_without_transfer(self) -> None:
-        insn = _SnapshotInsn(_required("m_setz"))
+        insn = _SnapshotInsn(
+            _required("m_setz"),
+            left=_number(7, 1),
+            right=_number(7, 1),
+            dest=_number(0, 1),
+        )
 
         snapshot = capture_insn_snapshot(insn)
 
@@ -279,6 +324,45 @@ class TestCaptureInsnSnapshotOperationFamilies:
         assert snapshot.control_transfer_kind is None
         assert snapshot.is_conditional_jump is False
         assert snapshot.opcode_attrs["raw_opcode_name"] == "m_setz"
+
+    @pytest.mark.parametrize(
+        ("opcode_name", "left", "dest", "transfer"),
+        (
+            (
+                "m_jcnd",
+                _number(1, 1),
+                _SnapshotMop(ida_hexrays.mop_v, gaddr=0x7801),
+                ControlTransferKind.CONDITIONAL_BRANCH,
+            ),
+            (
+                "m_goto",
+                _SnapshotMop(ida_hexrays.mop_v, gaddr=0x7801),
+                _EmptyMop(),
+                ControlTransferKind.GOTO,
+            ),
+        ),
+    )
+    def test_direct_global_target_captures_and_projects_fail_closed(
+        self,
+        opcode_name: str,
+        left: object,
+        dest: object,
+        transfer: ControlTransferKind,
+    ) -> None:
+        snapshot = capture_insn_snapshot(
+            _SnapshotInsn(_required(opcode_name), left=left, dest=dest)
+        )
+        target = snapshot.d if opcode_name == "m_jcnd" else snapshot.l
+
+        assert target is not None
+        assert target.kind.value == "global"
+        assert target.gaddr == 0x7801
+        projected = project_instruction(snapshot)
+        assert projected.control == InstructionControl(
+            transfer=transfer,
+            predicate=(PredicateKind.TRUTHY if opcode_name == "m_jcnd" else None),
+        )
+        assert projected.control.target is None
 
 
 # ---------------------------------------------------------------------------

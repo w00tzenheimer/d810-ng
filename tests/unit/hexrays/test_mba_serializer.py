@@ -360,6 +360,42 @@ class TestMbaSerializerInstructionMeta:
         )
         assert (left, right, width) == (register, number, 4)
 
+    @pytest.mark.parametrize(
+        ("opcode_name", "target_slot"),
+        (("m_jcnd", "d"), ("m_goto", "l")),
+    )
+    def test_direct_branch_targets_accept_sdk_global_and_block_forms(
+        self, opcode_name: str, target_slot: str,
+    ) -> None:
+        """Hex-Rays permits ``mop_v`` as well as ``mop_b`` direct targets."""
+        from d810.hexrays.instruction_vocabulary import validate_operand_shape
+        from d810.ir.flowgraph import MopSnapshot, OperandKind
+
+        condition = MopSnapshot(kind=OperandKind.REGISTER, size=1, reg=1)
+        block_target = MopSnapshot(kind=OperandKind.BLOCK, size=0, block_ref=2)
+        global_target = MopSnapshot(
+            kind=OperandKind.GLOBAL, size=0, gaddr=0x7801,
+        )
+        register_target = MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=2)
+
+        def operands(target: MopSnapshot) -> tuple[MopSnapshot, None, MopSnapshot | None]:
+            return (
+                (condition if target_slot == "d" else target),
+                None,
+                (target if target_slot == "d" else None),
+        )
+
+        for target in (block_target, global_target):
+            left, right, dest = operands(target)
+            assert validate_operand_shape(
+                opcode_name, l=left, r=right, d=dest,
+            ) is not None
+        with pytest.raises(ValueError, match="non-block target"):
+            left, right, dest = operands(register_target)
+            validate_operand_shape(
+                opcode_name, l=left, r=right, d=dest,
+            )
+
     def test_opcode_name_comes_from_sdk_opcode_constants(
         self,
         monkeypatch: pytest.MonkeyPatch,
