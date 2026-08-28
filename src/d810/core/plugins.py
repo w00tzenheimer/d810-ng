@@ -1188,11 +1188,10 @@ class BackendRegistry:
         """Return the opaque implementation ID declared for ``pass_id``.
 
         d810 derives a pass's ``allowed_rule_names`` from its stage
-        descriptors, so it needs the implementing rule's *name* at pass
-        registration time -- long before rules are imported. Hardcoding it
-        (``MBA_SOLVE_IMPLEMENTATION = "CobraSolveRule"``) put one vendor's class
-        name in core, which meant d810 could host exactly one solver and the
-        name survived the backend being extracted into its own distribution.
+        descriptors, so it needs the opaque implementation ID at pass
+        registration time -- long before rules are imported. Hardcoding one
+        vendor's implementation ID in core would make d810 host exactly one
+        solver and keep the backend-specific choice in the host distribution.
 
         Reads manifests only. It deliberately does NOT probe: probing resolves
         ``provides`` and imports the backend, and this runs during pass
