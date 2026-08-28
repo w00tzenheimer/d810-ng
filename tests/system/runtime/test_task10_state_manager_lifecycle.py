@@ -14,33 +14,37 @@ def _stop_state(state: D810State) -> None:
 
 def test_load_releases_old_manager_before_acquiring_a_fresh_lease() -> None:
     state = D810State()
-    old_manager = state.manager
-    old_lease = old_manager._mba_residual_observation_lease
-    old_sink = old_manager._mba_residual_observation_sink
-    assert old_lease is not None
-    assert old_sink is not None
-    order: list[str] = []
-
-    close_activations = old_manager.backend_registry.close_activations
-    release_observation = old_manager._release_mba_residual_observation
-    close_sink = old_sink.close
-
-    def close_plugins() -> None:
-        order.append("activations")
-        close_activations()
-
-    def release() -> None:
-        order.append("lease")
-        release_observation()
-
-    def close_store() -> None:
-        order.append("store")
-        close_sink()
-
-    old_manager.backend_registry.close_activations = close_plugins
-    old_manager._release_mba_residual_observation = release
-    old_sink.close = close_store
     try:
+        # A prior lifecycle test may leave the singleton's manager unloaded.
+        # Establish a fresh live manager before capturing the manager whose
+        # cleanup order this test observes.
+        state.reset()
+        old_manager = state.manager
+        old_lease = old_manager._mba_residual_observation_lease
+        old_sink = old_manager._mba_residual_observation_sink
+        assert old_lease is not None
+        assert old_sink is not None
+        order: list[str] = []
+
+        close_activations = old_manager.backend_registry.close_activations
+        release_observation = old_manager._release_mba_residual_observation
+        close_sink = old_sink.close
+
+        def close_plugins() -> None:
+            order.append("activations")
+            close_activations()
+
+        def release() -> None:
+            order.append("lease")
+            release_observation()
+
+        def close_store() -> None:
+            order.append("store")
+            close_sink()
+
+        old_manager.backend_registry.close_activations = close_plugins
+        old_manager._release_mba_residual_observation = release
+        old_sink.close = close_store
         state.load(gui=False)
         new_manager = state.manager
         assert new_manager is not old_manager
