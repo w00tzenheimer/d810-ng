@@ -592,11 +592,18 @@ def test_reopen_causal_validation_uses_one_snapshot_with_concurrent_writer(
     writer = MbaDiscoveryStore(path)
     validation_started = threading.Event()
     release_validation = threading.Event()
-    writer_started = threading.Event()
+    writer_begin_attempted = threading.Event()
     writer_done = threading.Event()
     writer_receipts: list[object] = []
+    writer_errors: list[BaseException] = []
     original_connect = discovery_store_module.sqlite3.connect
     traced_connection = False
+
+    def trace_writer(statement: str) -> None:
+        if statement == "BEGIN IMMEDIATE":
+            writer_begin_attempted.set()
+
+    writer._connection.set_trace_callback(trace_writer)
 
     def connect(*args: object, **kwargs: object) -> sqlite3.Connection:
         nonlocal traced_connection
@@ -627,28 +634,78 @@ def test_reopen_causal_validation_uses_one_snapshot_with_concurrent_writer(
             reopen_errors.append(exc)
 
     reopen_thread = threading.Thread(target=reopen)
-    reopen_thread.start()
-    assert validation_started.wait(5)
 
     def write() -> None:
-        writer_started.set()
-        writer_receipts.append(writer.record_attempt(_attempt(value=2)))
-        writer_done.set()
+        try:
+            writer_receipts.append(writer.record_attempt(_attempt(value=2)))
+        except BaseException as exc:
+            writer_errors.append(exc)
+        finally:
+            writer_done.set()
 
     writer_thread = threading.Thread(target=write)
-    writer_thread.start()
-    assert writer_started.wait(5)
-    # A transactional reopen holds the writer behind its snapshot. The
-    # pre-fix implementation committed before validation and let this write
-    # complete, producing a torn group/event read.
-    assert not writer_done.wait(0.2)
-    release_validation.set()
-    reopen_thread.join(5)
-    writer_thread.join(5)
-    assert not reopen_errors
+    validation_observed = False
+    writer_thread_started = False
+    writer_begin_observed = False
+    reopen_thread.start()
+    try:
+        validation_observed = validation_started.wait(5)
+        if validation_observed:
+            writer_thread.start()
+            writer_thread_started = True
+            writer_begin_observed = writer_begin_attempted.wait(5)
+            if writer_begin_observed:
+                # The traced BEGIN is the synchronization authority: validation
+                # is still paused while its reopen transaction prevents completion.
+                if writer_errors:
+                    raise writer_errors[0]
+                assert not writer_done.is_set()
+    finally:
+        release_validation.set()
+        reopen_thread.join(5)
+        if writer_thread_started:
+            writer_thread.join(5)
+    assert not reopen_thread.is_alive()
+    assert not writer_thread_started or not writer_thread.is_alive()
+    if reopen_errors:
+        raise reopen_errors[0]
+    if writer_errors:
+        raise writer_errors[0]
+    assert validation_observed
+    assert writer_thread_started
+    assert writer_begin_observed
     assert len(reopened) == 1
     assert writer_done.is_set()
+    assert len(writer_receipts) == 1
     assert writer_receipts[0].status == "stored"
+    status = reopened[0].status_counts()
+    assert status.group_counts == (
+        (ResidualGroupState.OBSERVED, 0),
+        (ResidualGroupState.ELIGIBLE, 2),
+        (ResidualGroupState.MINING, 0),
+        (ResidualGroupState.NO_PROPOSAL, 0),
+        (ResidualGroupState.PROPOSED, 0),
+        (ResidualGroupState.MATERIALIZED, 0),
+        (ResidualGroupState.ADMITTED, 0),
+        (ResidualGroupState.REJECTED, 0),
+    )
+    rows = (
+        reopened[0]
+        ._connection.execute(
+            "SELECT e.event_id, e.group_id, e.event_kind, e.group_revision, "
+            "e.provider_attempt_id, e.run_id, e.proposal_id, g.state, g.revision, "
+            "g.term_id, pa.term_id "
+            "FROM residual_group_events AS e "
+            "JOIN residual_groups AS g ON g.group_id = e.group_id "
+            "JOIN provider_attempts AS pa ON pa.attempt_id = e.provider_attempt_id "
+            "ORDER BY e.event_id"
+        )
+        .fetchall()
+    )
+    assert [tuple(row) for row in rows] == [
+        (1, 1, "observed", 1, 1, None, None, "eligible", 1, 1, 1),
+        (2, 2, "observed", 1, 2, None, None, "eligible", 1, 2, 2),
+    ]
     reopened[0].close()
     writer.close()
 
