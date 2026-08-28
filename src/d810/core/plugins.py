@@ -1204,7 +1204,9 @@ class BackendRegistry:
         Version-incompatible backends contribute nothing: their manifest is
         read, rejected, and never trusted for anything else.
         """
-        declarations = self.implementation_declarations_for(pass_id)
+        declarations = self.implementation_declarations_for(
+            pass_id, tolerate_manifest_errors=True
+        )
         if len(declarations) > 1:
             raise PassImplementationAmbiguous(
                 str(pass_id),
@@ -1231,7 +1233,10 @@ class BackendRegistry:
         )
 
     def implementation_declarations_for(
-        self, pass_id: PassId | str
+        self,
+        pass_id: PassId | str,
+        *,
+        tolerate_manifest_errors: bool = False,
     ) -> tuple[tuple[PassImplementationCandidate, BackendManifest], ...]:
         """Return exact compatible candidates paired with inert manifests.
 
@@ -1263,6 +1268,8 @@ class BackendRegistry:
                     # historically treated it.
                     continue
                 except ManifestError as exc:
+                    if tolerate_manifest_errors:
+                        continue
                     raise PassImplementationMisdeclared(
                         pass_name,
                         backend_name=spec.name,

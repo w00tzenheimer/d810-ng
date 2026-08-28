@@ -1187,6 +1187,27 @@ class TestPassImplementationRegression(unittest.TestCase):
         )
         self.assertIsNone(reg.implementation_for("mba-solve"))
 
+    def test_malformed_optional_provider_does_not_block_implementation(self):
+        malformed = {
+            "name": "egglog",
+            "api_version": PLUGIN_API_VERSION,
+            "provides": Recorder(result=object()),
+            "implements": {"mba-egraph": "EgglogOptimizer"},
+            "rules": (),
+        }
+        valid = self.manifest({"mba-solve": "CobraSolveRule"})
+        reg = registry(
+            [
+                BackendSpec(
+                    name="egglog", origin="egglog-wheel", load_manifest=lambda: malformed
+                ),
+                BackendSpec(
+                    name="cobra", origin="cobra-wheel", load_manifest=lambda: valid
+                ),
+            ]
+        )
+        self.assertEqual(reg.implementation_for("mba-solve"), "CobraSolveRule")
+
     def test_multiple_compatible_declarations_are_ambiguous(self):
         first = self.manifest({"mba-solve": "FirstSolver"})
         second = self.manifest({"mba-solve": "SecondSolver"})
