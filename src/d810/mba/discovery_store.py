@@ -1347,12 +1347,12 @@ class MbaDiscoveryStore:
                         raise ValueError("partial schema")
                     _parse_timestamp(versions[0][1], name="applied_at")
                     self._validate_schema()
+                self._validate_causal_domain(self._connection)
             except Exception:
                 self._connection.rollback()
                 raise
             else:
                 self._connection.commit()
-            self._validate_causal_domain(self._connection)
             journal = self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
             if self.path != ":memory:" and str(journal).lower() != "wal":
                 raise ValueError("WAL journal mode could not be enabled")

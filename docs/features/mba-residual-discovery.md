@@ -15,10 +15,13 @@ the event last, validate the resulting projection, and commit. Any owner CAS,
 event insert, foreign-key check, or projection validation failure rolls back
 the complete transaction. Callers never provide `event_id`.
 
-Every global read, write, and reopen validates the complete event domain. It
-rejects orphan group/attempt/run/proposal references even if another SQLite
-connection inserted them with `foreign_keys=OFF`, and then consumes every event
-exactly once through its owning group projection.
+Every global lifecycle/status read, write, and reopen validates the complete
+event domain. It rejects orphan group/attempt/run/proposal references even if
+another SQLite connection inserted them with `foreign_keys=OFF`, and then
+consumes every event exactly once through its owning group projection. The
+schema-version, table-column, connection-pragma, journal-mode, and row-count
+helpers are diagnostic metadata/count queries and are non-authoritative; they
+do not establish causal validity.
 
 ## Schema version 1
 
