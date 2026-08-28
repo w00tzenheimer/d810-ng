@@ -255,7 +255,12 @@ def _project(name: str) -> ProjectConfiguration:
     return ProjectConfiguration(path=Path(name), description=name)
 
 
-def _snapshot(project: ProjectConfiguration, activation: object, *implementations):
+def _snapshot(
+    project: ProjectConfiguration,
+    activation: object,
+    *implementations,
+    candidates=None,
+):
     old_candidate = PassImplementationCandidate(
         pass_id="old-pass",
         backend_name="old-backend",
@@ -263,6 +268,7 @@ def _snapshot(project: ProjectConfiguration, activation: object, *implementation
         rule_modules=(),
         rule_name="OldRule",
     )
+    ownership_candidates = candidates or (old_candidate,) * len(implementations)
     return ProjectRuntimeSnapshot(
         project=ProjectIdentitySnapshot(
             basename=project.path.name,
@@ -272,8 +278,10 @@ def _snapshot(project: ProjectConfiguration, activation: object, *implementation
         effective_pass_ids=("old-pass",),
         activated_plugins=(activation,),
         activated_implementations=tuple(
-            ImplementationOwnership(old_candidate, implementation)
-            for implementation in implementations
+            ImplementationOwnership(candidate, implementation)
+            for candidate, implementation in zip(
+                ownership_candidates, implementations, strict=True
+            )
         ),
     )
 
@@ -624,7 +632,11 @@ def test_shared_opaque_id_selects_each_configured_pass_owner_once(monkeypatch):
     )
     new_project = _project("new.json")
     new_snapshot = _snapshot(
-        new_project, registry.new_activation, first_rule, second_rule
+        new_project,
+        registry.new_activation,
+        first_rule,
+        second_rule,
+        candidates=(registry.candidate, registry.second_candidate),
     )
 
     def build(**kwargs):
@@ -641,6 +653,10 @@ def test_shared_opaque_id_selects_each_configured_pass_owner_once(monkeypatch):
         registry.second_candidate,
     ]
     assert state.current_ins_rules == [first_rule, second_rule]
+    assert tuple(
+        ownership.candidate
+        for ownership in state.current_project_runtime_snapshot.activated_implementations
+    ) == (registry.candidate, registry.second_candidate)
     assert first_rule.configure_calls == 1
     assert second_rule.configure_calls == 1
     assert len(first_rule.bound_services) == 1
