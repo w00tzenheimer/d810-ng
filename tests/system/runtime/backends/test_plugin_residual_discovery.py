@@ -97,7 +97,11 @@ def _context(identity, block, instruction) -> MbaObservationContext:
         function_fingerprint="task11-native-function",
         decompilation_session_id="12345678-1234-5678-1234-567812345679",
         top_level_epoch=1,
-        maturity="CANONICAL",
+        maturity=(
+            "GLOBAL_OPTIMIZED"
+            if block.mba.maturity == ida_hexrays.MMAT_GLBOPT2
+            else "CANONICAL"
+        ),
         evidence_generation=1,
     )
     return MbaObservationContext(
@@ -117,9 +121,9 @@ class _Optimizer(InstructionOptimizer):
         return True
 
 
-def _manager(optimizer):
+def _manager(optimizer, maturity):
     manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
-    manager.current_maturity = ida_hexrays.MMAT_PREOPTIMIZED
+    manager.current_maturity = maturity
     manager._active_optimizers = [optimizer]
     manager._last_optimizer_tried = None
     manager._rewrite_seen = defaultdict(set)
@@ -156,13 +160,21 @@ def _activate_real_provider(
                     "pass_id": pass_id,
                     "options": (
                         {
-                            "maturities": ["CANONICAL"],
+                            "maturities": [
+                                "GLOBAL_OPTIMIZED"
+                                if pass_id == "mba-egraph"
+                                else "CANONICAL"
+                            ],
                             "require_proof": True,
                             "max_leaves": max_leaves,
                         }
                         if pass_id == "mba-solve"
                         else {
-                            "maturities": ["CANONICAL"],
+                            "maturities": [
+                                "GLOBAL_OPTIMIZED"
+                                if pass_id == "mba-egraph"
+                                else "CANONICAL"
+                            ],
                             "max_leaves": max_leaves,
                             "max_operator_nodes": 128,
                             "max_degree": 1,
@@ -219,20 +231,26 @@ class TestRealProviderResidualDiscovery:
             pass_id, store, max_leaves=1
         )
         assert schedule.instruction_bindings
+        runtime_maturity = (
+            ida_hexrays.MMAT_GLBOPT2
+            if pass_id == "mba-egraph"
+            else ida_hexrays.MMAT_PREOPTIMIZED
+        )
+        assert rule.maturities == [runtime_maturity]
         block = SimpleNamespace(
             mba=SimpleNamespace(
-                maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+                maturity=runtime_maturity,
                 entry_ea=0x401000,
             ),
             serial=7,
         )
         instruction = _native_instruction()
-        optimizer = _Optimizer([ida_hexrays.MMAT_PREOPTIMIZED], stats=None)
+        optimizer = _Optimizer([runtime_maturity], stats=None)
         optimizer.add_rule(rule)
-        manager = _manager(optimizer)
+        manager = _manager(optimizer, runtime_maturity)
 
         try:
-            manager.optimize(block, instruction)
+            assert manager.optimize(block, instruction) is False
             pending = rule.pending_provider_observation()
             assert pending is None
             snapshots = store.provider_attempt_snapshots()
@@ -251,7 +269,11 @@ class TestRealProviderResidualDiscovery:
             assert attempt.context.instruction_ea == 0x401002
             assert attempt.context.block_serial == 7
             assert attempt.context.block_ea == 0x401000
-            assert attempt.context.maturity == "CANONICAL"
+            assert attempt.context.maturity == (
+                "GLOBAL_OPTIMIZED"
+                if pass_id == "mba-egraph"
+                else "CANONICAL"
+            )
             assert term_fingerprint(attempt.canonical_term) == attempt.outcome.fingerprint
             assert snapshot.group.revision == 1
             assert snapshot.group.state.value in {"eligible", "observed"}
@@ -275,17 +297,19 @@ class TestRealProviderResidualDiscovery:
             "mba-egraph", store, max_leaves=8
         )
         assert schedule.instruction_bindings
+        runtime_maturity = ida_hexrays.MMAT_GLBOPT2
+        assert rule.maturities == [runtime_maturity]
         block = SimpleNamespace(
             mba=SimpleNamespace(
-                maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+                maturity=runtime_maturity,
                 entry_ea=0x401000,
             ),
             serial=7,
         )
         instruction = _native_instruction()
-        optimizer = _Optimizer([ida_hexrays.MMAT_PREOPTIMIZED], stats=None)
+        optimizer = _Optimizer([runtime_maturity], stats=None)
         optimizer.add_rule(rule)
-        manager = _manager(optimizer)
+        manager = _manager(optimizer, runtime_maturity)
 
         try:
             assert manager.optimize(block, instruction) is True
