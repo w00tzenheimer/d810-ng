@@ -359,6 +359,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         """Remove the live rule set before a transactional project swap."""
 
         self.rules.clear()
+        self._provider_finalized_rules.clear()
 
     def _observation_context_for_rule(
         self,
@@ -596,18 +597,15 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                         getattr(rule, "name", type(rule).__name__),
                         exc_info=True,
                     )
-                try:
-                    rule.finalize_provider_observation(
-                        context,
-                        accepted=True,
-                        reason="accepted",
-                    )
-                except Exception:
-                    optimizer_logger.error(
-                        "provider observation finalizer failed for %s",
-                        getattr(rule, "name", type(rule).__name__),
-                        exc_info=True,
-                    )
+                self._finalize_provider_rule(
+                    rule,
+                    None,
+                    None,
+                    None,
+                    accepted=True,
+                    reason="accepted",
+                    context=context,
+                )
                 if self.stats is not None:
                     self.stats.record_rule_fired(
                         rule=rule,

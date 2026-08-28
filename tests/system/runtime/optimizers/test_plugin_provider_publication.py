@@ -399,6 +399,10 @@ def test_acceptance_drains_improved_attempt_without_residual_or_losing_hook():
     assert optimizer._pending_replacement_rule is None
     assert rule.finalizer_calls == 1
     assert rule.pending_calls == 1
+    assert rule.finalizer_reasons == ["accepted"]
+    optimizer.clear_pending_provider_observation()
+    assert rule.finalizer_calls == 1
+    assert rule.pending_calls == 1
 
 
 def test_missing_context_and_forged_identity_clear_without_publication():
@@ -829,6 +833,19 @@ def test_real_pattern_and_z3_optimizers_publish_terminal_and_defer_replacement(
         assert rule.finalizer_calls == 2
         assert rule.finalizer_reasons == ["provider_terminal", "rewrite_cycle"]
 
+        rule.pending = _pending(ProviderOutcomeStatus.IMPROVED)
+        assert (
+            optimizer.get_optimized_instruction(
+                blk, ins, observation_context_factory=_context_factory
+            )
+            is replacement
+        )
+        optimizer.record_mutation_accepted()
+        optimizer.clear_pending_provider_observation()
+        assert len(sink.records) == 2
+        assert rule.finalizer_calls == 3
+        assert rule.finalizer_reasons[-1] == "accepted"
+
 
 def test_real_pattern_runtime_exception_finalizes_once(monkeypatch):
     from d810.optimizers.microcode.instructions.pattern_matching.handler import (
@@ -1003,6 +1020,44 @@ def test_real_adapter_entry_and_finally_drain_on_unexpected_exception():
     with pytest.raises(ValueError, match="adapter failure"):
         manager.func(blk, ins)
     assert rule.pending is None
+    assert optimizer._pending_replacement_rule is None
+    assert optimizer._pending_replacement_context is None
+
+
+def test_real_adapter_acceptance_drains_once_and_clears_after_finally(monkeypatch):
+    stats = _manager_stats()
+    rule, sink = _runtime_rule(
+        ProviderOutcomeStatus.IMPROVED,
+        replacement=SimpleNamespace(
+            opcode=ida_hexrays.m_mov,
+            ea=0x401002,
+            valid=True,
+            _print=lambda: "replacement",
+        ),
+    )
+    optimizer, blk, ins = _runtime_optimizer(rule, stats=stats)
+    manager = _manager_for(optimizer, stats)
+    manager.instruction_optimizers = [optimizer]
+    manager._decompilation_lifecycle = None
+    manager._capture_callback_nop_sites = lambda _blk: set()
+    manager.log_info_on_input = lambda _blk, _ins: False
+    manager._report_callback_nop_delta = lambda *_args, **_kwargs: None
+    manager._bind_validated_fact_view_for_callback = lambda _blk: []
+    ins.swap = lambda _other: None
+    ins.optimize_solo = lambda: None
+    blk.mark_lists_dirty = lambda: None
+    monkeypatch.setattr(optinsn_adapter, "check_ins_mop_size_are_ok", lambda _x: True)
+    monkeypatch.setattr(optinsn_adapter, "safe_verify", lambda *_args, **_kwargs: None)
+    hashes = iter((10, 20))
+    monkeypatch.setattr(optinsn_adapter, "hash_minsn", lambda *_args: next(hashes))
+
+    assert manager.func(blk, ins) is True
+    assert sink.records == []
+    assert rule.accepted == 1
+    assert rule.finalizer_reasons == ["callback_cleanup", "accepted"]
+    assert rule.finalizer_calls == 2
+    assert rule.pending_calls == 2
+    assert stats.events == ["rule", "optimizer"]
     assert optimizer._pending_replacement_rule is None
     assert optimizer._pending_replacement_context is None
 
