@@ -2711,6 +2711,20 @@ def test_post_evidence_retries_use_current_group_revision(tmp_path: Path) -> Non
     store.close()
 
 
+def test_proposal_snapshot_is_typed_and_read_only(tmp_path: Path) -> None:
+    store, _proposal, published = _published_store(tmp_path, "snapshot")
+    assert published.proposal is not None
+    before = _logical_domain_snapshot(store)
+    snapshot = store.proposal_snapshot(published.proposal.proposal_id)
+    assert snapshot is not None
+    assert snapshot.proposal.proposal_id == published.proposal.proposal_id
+    assert snapshot.group.group_id == published.proposal.group_id
+    assert _logical_domain_snapshot(store) == before
+    assert store.proposal_snapshot("00000000-0000-0000-0000-000000000000") is None
+    assert _logical_domain_snapshot(store) == before
+    store.close()
+
+
 def test_post_evidence_admission_retry_uses_current_group_revision(
     tmp_path: Path,
 ) -> None:

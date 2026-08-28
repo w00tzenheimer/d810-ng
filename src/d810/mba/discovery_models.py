@@ -268,6 +268,22 @@ class Proposal:
 
 
 @dataclass(frozen=True, slots=True)
+class ProposalReviewSnapshot:
+    """Immutable, causally validated state needed for review materialization."""
+
+    proposal: Proposal
+    group: ResidualGroup
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.proposal, Proposal):
+            raise TypeError("proposal must be a Proposal")
+        if not isinstance(self.group, ResidualGroup):
+            raise TypeError("group must be a ResidualGroup")
+        if self.proposal.group_id != self.group.group_id:
+            raise ValueError("proposal and group ownership mismatch")
+
+
+@dataclass(frozen=True, slots=True)
 class DiscoveryReceipt:
     status: ReceiptStatus | str
     reason: str | None = None
@@ -331,6 +347,7 @@ __all__ = [
     "MiningRunState",
     "PROPOSAL_TRANSITIONS",
     "Proposal",
+    "ProposalReviewSnapshot",
     "ProposalState",
     "ProposalReceipt",
     "RecordAttemptReceipt",

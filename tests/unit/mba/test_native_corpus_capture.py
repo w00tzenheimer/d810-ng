@@ -23,8 +23,6 @@ from d810.mba.provider_outcome import (
     MbaProviderOutcome,
     ProviderOutcomeStatus,
 )
-from d810.mba.residual_corpus import MbaResidualObservation, MbaResidualSource
-from d810.mba.typed_term import TypedBvTerm
 
 
 class _Provider:
@@ -381,48 +379,6 @@ def test_profile_selection_ignores_non_candidate_receipts_without_native_profile
     )
 
     assert select_native_capture_profile((provider,)) == profile
-
-
-def _residual_observation() -> MbaResidualObservation:
-    return MbaResidualObservation(
-        schema_version=1,
-        source=MbaResidualSource(
-            case_id="residual-1",
-            stratum="native",
-            function_ea=0x401000,
-            instruction_ea=0x401024,
-            maturity="MMAT_BUILT",
-        ),
-        canonical_term=TypedBvTerm(None, 32, leaf_key=("register", "x")),
-        outcomes=(
-            MbaProviderOutcome(
-                provider=MbaProviderKind.CATALOGUE,
-                status=ProviderOutcomeStatus.UNCHANGED,
-                fingerprint="candidate-1",
-                refusal_reason="not_simplified",
-            ),
-        ),
-    )
-
-
-def test_native_capture_reports_optional_residual_metadata_without_schema_change() -> (
-    None
-):
-    capture = NativeMbaCorpusCapture("residual", {"runtime": "python"})
-    capture.add_residual(_residual_observation())
-
-    report = capture.report()
-    assert report.schema_version == 1
-    assert "mba_residual_corpus_v1" in report.capture_metadata
-    residual = report.capture_metadata["mba_residual_corpus_v1"]
-    assert residual["schema_version"] == 1
-    assert residual["groups"][0]["occurrence_count"] == 1
-
-
-def test_native_capture_rejects_manual_residual_metadata_collision() -> None:
-    capture = NativeMbaCorpusCapture("residual", {"runtime": "python"})
-    with pytest.raises(ValueError, match="reserved|mba_residual_corpus_v1"):
-        capture.set_capture_metadata({"mba_residual_corpus_v1": {}})
 
 
 def test_native_capture_without_residuals_preserves_existing_metadata_shape() -> None:

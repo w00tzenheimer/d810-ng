@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import json
-import subprocess
-import sys
 from types import MappingProxyType, SimpleNamespace
-from pathlib import Path
 
 import pytest
 
@@ -18,25 +14,10 @@ from d810.backends.mba.cross_block_preparation import (  # noqa: E402
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint  # noqa: E402
-from d810.mba.term_codec import typed_term_to_dict  # noqa: E402
 from d810.mba.extension_api import (  # noqa: E402
     atomize_native_candidate,
     reconstruct_native_provider_result,
 )
-from d810.mba.native_corpus_capture import NativeMbaCorpusCapture  # noqa: E402
-from d810.mba.provider_outcome import (  # noqa: E402
-    MbaProviderKind,
-    MbaProviderOutcome,
-    ProviderOutcomeStatus,
-)
-from d810.mba.residual_corpus import (  # noqa: E402
-    MbaResidualObservation,
-    MbaResidualSource,
-)
-
-
-_ROOT = Path(__file__).resolve().parents[4]
-_RESIDUAL_MINER = _ROOT / "tools" / "scripts" / "mba_residual_rule_miner.py"
 
 
 def _leaf(name: str, register: int, size: int = 4):
@@ -481,84 +462,6 @@ class TestNativeMbaExtensionHost:
         assert _instruction_shape(instruction) == original_shape
         assert term_fingerprint(candidate.term) == original_fingerprint
         assert candidate.native_context.source_instruction is instruction
-
-    def test_residual_capture_persists_before_offline_mining(self, tmp_path):
-        host = native_mba_host_services()
-        instruction = _fake_native_residual_instruction()
-        candidate = host.capture_instruction(instruction)
-        assert candidate is not None
-        assert candidate.term.width == 32
-        # ``term`` is the shared canonical identity; the capture view retains
-        # the exact raw source needed by the offline residual miner.
-        captured_source = atomize_native_candidate(candidate).view.original_term
-        assert candidate.raw_term == captured_source
-        captured_wire = typed_term_to_dict(captured_source)
-        outcome = MbaProviderOutcome(
-            provider=MbaProviderKind.CATALOGUE,
-            status=ProviderOutcomeStatus.UNCHANGED,
-            fingerprint=candidate.profile.fingerprint,
-            input_cost=(11, 22),
-            refusal_reason="not_simplified",
-        )
-        observation = MbaResidualObservation(
-            schema_version=2,
-            source=MbaResidualSource(
-                case_id="extension-host-residual",
-                stratum="public-codec",
-                function_ea=0x401000,
-                instruction_ea=0x401024,
-                maturity="MMAT_BUILT",
-            ),
-            canonical_term=candidate.term,
-            outcomes=(outcome,),
-            raw_term=captured_source,
-        )
-        capture = NativeMbaCorpusCapture(
-            corpus_identity="extension-host-residual",
-            toolchain_identity={"provider": "catalogue"},
-        )
-        callback_active = True
-        capture.add_residual(observation)
-        callback_active = False
-        assert callback_active is False
-
-        report_path = tmp_path / "capture-report.json"
-        corpus_path = tmp_path / "residual-corpus.json"
-        capture.write_json(report_path)
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        persisted = report["capture_metadata"]["mba_residual_corpus_v2"]
-        assert persisted["groups"][0]["canonical_term"] == typed_term_to_dict(candidate.term)
-        assert persisted["groups"][0]["observations"][0]["raw_term"] == captured_wire
-        corpus_path.write_text(json.dumps(persisted), encoding="utf-8")
-        result_dir = tmp_path / "mined"
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(_RESIDUAL_MINER),
-                "--input",
-                str(corpus_path),
-                "--output-dir",
-                str(result_dir),
-            ],
-            cwd=_ROOT,
-            env={"PYTHONPATH": str(_ROOT / "src")},
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        assert completed.returncode == 0, (
-            f"term={candidate.term!r} atomized={atomize_native_candidate(candidate).term!r}"
-        )
-        proposals = tuple(result_dir.glob("*.proposal.json"))
-        assert len(proposals) == 1
-        proposal = json.loads(proposals[0].read_text(encoding="utf-8"))
-        assert proposal["class_name"].startswith("MbaResidualRule_")
-        assert [receipt["width"] for receipt in proposal["proof_receipts"]] == [
-            8,
-            16,
-            32,
-            64,
-        ]
 
     def test_mixed_width_capture_and_rebuild_fail_closed(self):
         host = native_mba_host_services()

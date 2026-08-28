@@ -25,8 +25,6 @@ from d810.mba.provider_outcome import (
 )
 from d810.mba.residual_corpus import (
     LEGACY_RESIDUAL_CORPUS_METADATA_KEY,
-    MbaResidualCorpus,
-    MbaResidualObservation,
     RESIDUAL_CORPUS_METADATA_KEY,
 )
 
@@ -355,7 +353,6 @@ class NativeMbaCorpusCapture:
     toolchain_identity: Mapping[str, str]
     _cases: list[MbaCorpusCaseReport] = field(default_factory=list)
     _capture_metadata: dict[str, object] = field(default_factory=dict)
-    _residual_corpus: MbaResidualCorpus | None = None
 
     def set_capture_metadata(self, metadata: Mapping[str, object]) -> None:
         """Attach measured run-level evidence before the report is rendered.
@@ -376,17 +373,6 @@ class NativeMbaCorpusCapture:
             if key in self._capture_metadata:
                 raise ValueError(f"capture metadata already records {key}")
             self._capture_metadata[key] = value
-
-    def add_residual(self, observation: MbaResidualObservation) -> None:
-        """Record one unresolved observation for optional report metadata."""
-
-        if not isinstance(observation, MbaResidualObservation):
-            raise TypeError("observation must be an MbaResidualObservation")
-        if self._residual_corpus is None:
-            self._residual_corpus = MbaResidualCorpus(
-                schema_version=observation.schema_version
-            )
-        self._residual_corpus.add(observation)
 
     def add_case(
         self,
@@ -412,25 +398,12 @@ class NativeMbaCorpusCapture:
         return case
 
     def report(self) -> MbaDifferentialReport:
-        capture_metadata = dict(self._capture_metadata)
-        if self._residual_corpus is not None:
-            corpus_wire = self._residual_corpus.to_dict()
-            metadata_key = (
-                RESIDUAL_CORPUS_METADATA_KEY
-                if corpus_wire["schema_version"] == 2
-                else LEGACY_RESIDUAL_CORPUS_METADATA_KEY
-            )
-            if metadata_key in capture_metadata:
-                raise ValueError(
-                    f"capture metadata key {metadata_key} is reserved"
-                )
-            capture_metadata[metadata_key] = corpus_wire
         return MbaDifferentialReport(
             schema_version=1,
             corpus_identity=self.corpus_identity,
             toolchain_identity=self.toolchain_identity,
             cases=tuple(self._cases),
-            capture_metadata=capture_metadata,
+            capture_metadata=dict(self._capture_metadata),
         )
 
     def write_json(self, path: Path) -> None:

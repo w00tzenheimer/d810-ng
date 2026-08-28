@@ -35,6 +35,7 @@ from d810.mba.discovery_models import (
     MiningRun,
     MiningRunState,
     Proposal,
+    ProposalReviewSnapshot,
     ProposalState,
     ReceiptStatus,
     ResidualGroup,
@@ -964,6 +965,14 @@ def _proposal_from_bytes(payload: bytes) -> MbaRuleProposal:
     ):
         raise ValueError("proposal payload is not canonical")
     return proposal
+
+
+def decode_proposal_payload(payload: bytes) -> MbaRuleProposal:
+    """Decode one store-certified canonical proposal payload."""
+
+    if type(payload) is not bytes:
+        raise TypeError("proposal payload must be bytes")
+    return _proposal_from_bytes(payload)
 
 
 def _proposal_payload_bytes(proposal: MbaRuleProposal) -> bytes:
@@ -2787,6 +2796,20 @@ class MbaDiscoveryStore:
         except KeyError as exc:
             raise ValueError("unknown proposal") from exc
 
+    def proposal_snapshot(self, proposal_id: str) -> ProposalReviewSnapshot | None:
+        """Return a complete immutable proposal/group read projection."""
+
+        proposal_id = _canonical_uuid(proposal_id, name="proposal_id")
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM proposals WHERE proposal_id=?", (proposal_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            proposal = self._project_proposal(conn, row)
+            group = self._project_group(conn, proposal.group_id)
+            return ProposalReviewSnapshot(proposal=proposal, group=group)
+
     def claim_next_group(
         self,
         miner_version: str,
@@ -3658,4 +3681,9 @@ class MbaDiscoveryStore:
                 self._closed = True
 
 
-__all__ = ["DISCOVERY_LEASE_TIMEOUT", "MbaDiscoveryStore", "SCHEMA_VERSION"]
+__all__ = [
+    "DISCOVERY_LEASE_TIMEOUT",
+    "MbaDiscoveryStore",
+    "SCHEMA_VERSION",
+    "decode_proposal_payload",
+]
