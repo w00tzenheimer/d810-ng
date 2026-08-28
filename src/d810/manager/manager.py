@@ -843,16 +843,17 @@ class D810Manager:
     )
 
     def _initialize_mba_residual_observation(self) -> None:
-        from d810.backends import host_capability_registry
+        from d810.backends import _host_capability_registry
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
         store = MbaDiscoveryStore(self.log_dir / "d810_mba_discovery.sqlite3")
         sink = SqliteMbaResidualObservationSink(store)
         try:
-            lease = host_capability_registry().register(
+            lease = _host_capability_registry().register(
                 D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
                 MbaResidualObservationSink,
                 sink,
+                activation_binder=sink.bind_activation,
             )
         except BaseException:
             sink.close()

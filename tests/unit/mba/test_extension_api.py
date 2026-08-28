@@ -113,6 +113,13 @@ def test_public_sink_protocol_exposes_only_record() -> None:
     assert "close" not in MbaResidualObservationSink.__dict__
 
 
+def test_public_backend_surface_does_not_export_host_registry() -> None:
+    import d810.backends as backends
+
+    assert "host_capability_registry" not in backends.__all__
+    assert not hasattr(backends, "host_capability_registry")
+
+
 def test_residual_contract_imports_without_ida_modules() -> None:
     code = (
         "import builtins\n"

@@ -232,6 +232,15 @@ def test_close_is_idempotent_and_post_close_does_not_touch_store() -> None:
         receipt.status = "stored"
 
 
+def test_issued_activation_facade_fails_closed_after_sink_close() -> None:
+    sink = SqliteMbaResidualObservationSink(MbaDiscoveryStore(":memory:"))
+    identity = PluginIdentity("cobra", "cobra", "1.0", "test")
+    facade = sink.bind_activation(identity)
+    sink.close()
+
+    assert facade.record(_record(context=_context())).reason == "closed"
+
+
 def test_record_projects_record_only_costs_before_task5_translation() -> None:
     class CapturingStore:
         def __init__(self):
@@ -346,6 +355,7 @@ def test_real_backend_activation_binds_sink_identity_and_rejects_forgery() -> No
         D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
         MbaResidualObservationSink,
         sink,
+        activation_binder=sink.bind_activation,
     )
     seen = []
 

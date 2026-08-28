@@ -75,16 +75,59 @@ def test_activation_view_binds_services_to_host_identity() -> None:
 
         def bind_activation(self, identity):
             self.identities.append(identity)
-            return (identity, self)
+            return self
 
     service = BoundService()
     registry = PluginHostCapabilityRegistry()
-    registry.register("example.service.v1", ExampleService, service)
+    registry.register(
+        "example.service.v1",
+        ExampleService,
+        service,
+        activation_binder=service.bind_activation,
+    )
     identity = PluginIdentity("example", "example", "1", "origin")
     view = registry.view_for(("example.service.v1",), identity)
 
-    assert view.require(ExampleService) == (identity, service)
+    assert view.require(ExampleService) is service
+    assert view.require(ExampleService) is view.optional(ExampleService)
     assert service.identities == [identity]
+
+
+def test_coincidental_bind_activation_method_is_not_discovered() -> None:
+    service = ExampleServiceImpl()
+    service.bind_activation = lambda _identity: object()  # type: ignore[attr-defined]
+    registry = PluginHostCapabilityRegistry()
+    registry.register("example.service.v1", ExampleService, service)
+    view = registry.view_for(
+        ("example.service.v1",), PluginIdentity("example", None, None, "test")
+    )
+
+    assert view.require(ExampleService) is service
+
+
+def test_activation_binder_result_and_failure_are_deterministic() -> None:
+    registry = PluginHostCapabilityRegistry()
+    registry.register(
+        "example.service.v1",
+        ExampleService,
+        ExampleServiceImpl(),
+        activation_binder=lambda _identity: object(),
+    )
+    identity = PluginIdentity("example", None, None, "test")
+    with pytest.raises(TypeError, match="does not implement"):
+        registry.view_for(("example.service.v1",), identity)
+
+    registry = PluginHostCapabilityRegistry()
+    registry.register(
+        "example.service.v1",
+        ExampleService,
+        ExampleServiceImpl(),
+        activation_binder=lambda _identity: (_ for _ in ()).throw(
+            RuntimeError("binder failed")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="binder failed"):
+        registry.view_for(("example.service.v1",), identity)
 
 
 def test_plugin_view_returns_none_for_optional_missing_service() -> None:
@@ -155,6 +198,64 @@ def test_concurrent_view_reads_and_release_are_safe() -> None:
     reader.join(timeout=1)
     assert not reader.is_alive()
     assert failures == []
+
+
+@pytest.mark.parametrize("method", ["require", "optional"])
+def test_activation_view_revalidates_token_after_outside_lock_binder(method) -> None:
+    entered = threading.Event()
+    resume = threading.Event()
+    registry = PluginHostCapabilityRegistry()
+
+    def binder(_identity):
+        entered.set()
+        assert resume.wait(timeout=1)
+        return ExampleServiceImpl()
+
+    lease = registry.register(
+        "example.service.v1",
+        ExampleService,
+        ExampleServiceImpl(),
+        activation_binder=binder,
+    )
+    identity = PluginIdentity("example", None, None, "test")
+    result = []
+
+    def build_view():
+        try:
+            view = registry.view_for(("example.service.v1",), identity)
+            result.append(getattr(view, method)(ExampleService))
+        except BaseException as exc:  # pragma: no cover - assertion below
+            result.append(exc)
+
+    thread = threading.Thread(target=build_view)
+    thread.start()
+    assert entered.wait(timeout=1)
+    lease.release()
+    replacement = registry.register(
+        "example.service.v1", ExampleService, ExampleServiceImpl()
+    )
+    resume.set()
+    thread.join(timeout=1)
+    replacement.release()
+    assert not thread.is_alive()
+    assert len(result) == 1
+    assert isinstance(result[0], PluginCapabilityAccessError)
+    assert "changed" in str(result[0])
+
+
+def test_unrestricted_lookup_rejects_activation_bound_registration() -> None:
+    registry = PluginHostCapabilityRegistry()
+    lease = registry.register(
+        "example.service.v1",
+        ExampleService,
+        ExampleServiceImpl(),
+        activation_binder=lambda _identity: ExampleServiceImpl(),
+    )
+    with pytest.raises(PluginCapabilityAccessError, match="activation view"):
+        registry.require(ExampleService)
+    with pytest.raises(PluginCapabilityAccessError, match="activation view"):
+        registry.optional(ExampleService)
+    lease.release()
 
 
 def test_plugin_view_is_immutable_and_copies_requirements() -> None:

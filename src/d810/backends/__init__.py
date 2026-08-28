@@ -40,7 +40,6 @@ from d810.core.plugins import (
 
 __all__ = [
     "BUILTIN_BACKENDS",
-    "host_capability_registry",
     "registry",
 ]
 
@@ -48,7 +47,7 @@ logger = getLogger(__name__)
 
 
 # One process-wide registry owns host services for every backend activation.
-host_capability_registry = make_singleton(PluginHostCapabilityRegistry)
+_host_capability_registry = make_singleton(PluginHostCapabilityRegistry)
 
 #: Backends that ship inside d810.
 #:
@@ -88,8 +87,8 @@ BUILTIN_BACKENDS: tuple[BackendSpec, ...] = (
 registry = make_singleton(
     lambda: BackendRegistry(
         builtins=BUILTIN_BACKENDS,
-        host=host_capability_registry(),
-        requirement_validator=host_capability_registry().validate,
-        host_view_factory=host_capability_registry().view_for,
+        host=_host_capability_registry(),
+        requirement_validator=_host_capability_registry().validate,
+        host_view_factory=_host_capability_registry().view_for,
     )
 )

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import threading
+from types import MappingProxyType
 from d810.core.plugins import (
     BackendUnavailable,
     PluginHostCapabilities,
     PluginIdentity,
 )
-from d810.core.typing import Any, Sequence, TypeVar
+from d810.core.typing import Any, Callable, Mapping, Sequence, TypeVar
 
 __all__ = [
     "CapabilityRegistrationLease",
@@ -96,15 +97,30 @@ class PluginHostCapabilityRegistry(PluginHostCapabilities):
     __slots__ = ("_by_id", "_id_by_protocol", "_lock")
 
     def __init__(self) -> None:
-        self._by_id: dict[str, tuple[type[Any], object, object]] = {}
+        self._by_id: dict[
+            str,
+            tuple[
+                type[Any],
+                object,
+                object,
+                Callable[[PluginIdentity], object] | None,
+            ],
+        ] = {}
         self._id_by_protocol: dict[type[Any], str] = {}
         self._lock = threading.RLock()
 
     def register(
-        self, capability_id: str, protocol: type[C], service: C
+        self,
+        capability_id: str,
+        protocol: type[C],
+        service: C,
+        *,
+        activation_binder: Callable[[PluginIdentity], C] | None = None,
     ) -> CapabilityRegistrationLease:
         """Register one stable capability ID and its typed service instance."""
         capability_id = _validate_capability_id(capability_id)
+        if activation_binder is not None and not callable(activation_binder):
+            raise TypeError("activation_binder must be callable")
         with self._lock:
             if capability_id in self._by_id:
                 raise ValueError(
@@ -129,7 +145,12 @@ class PluginHostCapabilityRegistry(PluginHostCapabilities):
                     f"capability protocol {protocol!r} is already registered"
                 )
             token = object()
-            self._by_id[capability_id] = (protocol, service, token)
+            self._by_id[capability_id] = (
+                protocol,
+                service,
+                token,
+                activation_binder,
+            )
             self._id_by_protocol[protocol] = capability_id
         return CapabilityRegistrationLease(self, capability_id, protocol, token)
 
@@ -156,7 +177,7 @@ class PluginHostCapabilityRegistry(PluginHostCapabilities):
         """Resolve a registered service from the unrestricted host view."""
         with self._lock:
             try:
-                _protocol, service, _token = self._by_id[
+                _protocol, service, _token, binder = self._by_id[
                     self._id_by_protocol[capability]
                 ]
             except KeyError as exc:
@@ -164,6 +185,10 @@ class PluginHostCapabilityRegistry(PluginHostCapabilities):
                 raise PluginCapabilityAccessError(
                     f"host capability {name!r} is not registered"
                 ) from exc
+            if binder is not None:
+                raise PluginCapabilityAccessError(
+                    "activation-bound host capability requires an activation view"
+                )
             return service  # type: ignore[return-value]
 
     def optional(self, capability: type[C]) -> C | None:
@@ -172,6 +197,10 @@ class PluginHostCapabilityRegistry(PluginHostCapabilities):
             capability_id = self._id_by_protocol.get(capability)
             if capability_id is None:
                 return None
+            if self._by_id[capability_id][3] is not None:
+                raise PluginCapabilityAccessError(
+                    "activation-bound host capability requires an activation view"
+                )
             return self._by_id[capability_id][1]  # type: ignore[return-value]
 
     def view_for(
@@ -182,34 +211,43 @@ class PluginHostCapabilityRegistry(PluginHostCapabilities):
             raise TypeError("host capability views require a PluginIdentity")
         declared = tuple(requirements)
         self.validate(declared)
-        return _PluginHostCapabilityView(self, declared, identity)
-
-    def _require_declared(
-        self,
-        capability: type[C],
-        declared: tuple[str, ...],
-        identity: PluginIdentity,
-    ) -> C:
         with self._lock:
-            capability_id = self._id_by_protocol.get(capability)
-            if capability_id is None:
-                name = getattr(capability, "__name__", repr(capability))
-                raise PluginCapabilityAccessError(
-                    f"host capability {name!r} is not registered"
+            snapshots = []
+            seen_ids: set[str] = set()
+            for capability_id in declared:
+                if capability_id in seen_ids:
+                    continue
+                seen_ids.add(capability_id)
+                protocol, service, token, binder = self._by_id[capability_id]
+                snapshots.append((capability_id, protocol, service, token, binder))
+        bound: dict[type[Any], object] = {}
+        for capability_id, protocol, service, token, binder in snapshots:
+            value = binder(identity) if binder is not None else service
+            if not _service_matches_protocol(protocol, value):
+                name = getattr(protocol, "__name__", repr(protocol))
+                raise TypeError(
+                    f"bound service for capability {capability_id!r} does not implement {name}"
                 )
-            if capability_id not in declared:
-                raise PluginCapabilityAccessError(
-                    f"host capability {capability_id!r} is not declared"
-                )
-            service = self._by_id[capability_id][1]
-        return self._bind_activation(service, identity)
-
-    @staticmethod
-    def _bind_activation(service: object, identity: PluginIdentity) -> object:
-        binder = getattr(service, "bind_activation", None)
-        if callable(binder):
-            return binder(identity)
-        return service
+            bound[protocol] = value
+        with self._lock:
+            for capability_id, protocol, service, token, binder in snapshots:
+                current = self._by_id.get(capability_id)
+                if (
+                    current is None
+                    or current[0] is not protocol
+                    or current[1] is not service
+                    or current[2] is not token
+                    or current[3] is not binder
+                ):
+                    raise PluginCapabilityAccessError(
+                        "host capability registration changed during activation view construction"
+                    )
+        return _PluginHostCapabilityView(
+            self,
+            declared,
+            identity,
+            MappingProxyType(bound),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,16 +255,14 @@ class _PluginHostCapabilityView(PluginHostCapabilities):
     _registry: PluginHostCapabilityRegistry
     requirements: tuple[str, ...]
     _identity: PluginIdentity
+    _bound: Mapping[type[Any], object]
 
     def require(self, capability: type[C]) -> C:
-        return self._registry._require_declared(
-            capability, self.requirements, self._identity
-        )
+        if capability not in self._bound:
+            raise PluginCapabilityAccessError(
+                "host capability is not declared in this activation view"
+            )
+        return self._bound[capability]  # type: ignore[return-value]
 
     def optional(self, capability: type[C]) -> C | None:
-        with self._registry._lock:
-            capability_id = self._registry._id_by_protocol.get(capability)
-            if capability_id is None or capability_id not in self.requirements:
-                return None
-            service = self._registry._by_id[capability_id][1]
-        return self._registry._bind_activation(service, self._identity)  # type: ignore[return-value]
+        return self._bound.get(capability)  # type: ignore[return-value]
