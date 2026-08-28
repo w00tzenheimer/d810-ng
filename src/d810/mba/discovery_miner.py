@@ -567,6 +567,51 @@ def _fixture_json(value: Mapping[str, object]) -> str:
     return json.dumps(_json_ready(value), allow_nan=False, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
 
 
+def _cleanup_after_materialization_error(
+    store: MbaDiscoveryStore,
+    proposal_id: str,
+    path: str,
+    digest: str,
+    error: BaseException,
+) -> bool:
+    """Return whether an exact owned tree is definitively safe to remove."""
+
+    try:
+        snapshot = store.proposal_snapshot(proposal_id)
+    except BaseException as reconciliation_error:
+        error.add_note(
+            "materialization commit outcome could not be reconciled through "
+            "proposal_snapshot(); exact artifact tree preserved for adoption: "
+            f"{type(reconciliation_error).__name__}: {reconciliation_error}"
+        )
+        return False
+    if snapshot is None:
+        error.add_note(
+            "materialization commit outcome is indeterminate because the proposal "
+            "snapshot is unknown; exact artifact tree preserved for adoption"
+        )
+        return False
+    proposal = snapshot.proposal
+    if proposal.state is ProposalState.PROPOSED:
+        return True
+    if (
+        proposal.state is ProposalState.MATERIALIZED
+        and proposal.materialized_path == path
+        and proposal.materialized_digest == digest
+    ):
+        error.add_note(
+            "materialization commit was durably reconciled to the exact path and "
+            "digest; exact artifact tree preserved"
+        )
+        return False
+    error.add_note(
+        "materialization commit outcome is indeterminate because the authoritative "
+        f"snapshot is {proposal.state.value} with different ownership; exact "
+        "artifact tree preserved for adoption"
+    )
+    return False
+
+
 def materialize_proposal(
     store: MbaDiscoveryStore,
     proposal_id: str,
@@ -599,6 +644,8 @@ def materialize_proposal(
     stage_path: Path | None = None
     published = False
     committed = False
+    cleanup_published = True
+    mark_error: BaseException | None = None
     root_identity: tuple[int, int] | None = None
     child_identities: dict[str, tuple[int, int]] = {}
     try:
@@ -694,16 +741,23 @@ def materialize_proposal(
         _verify_parent_path(output_dir.parent, parent_fd)
         os.close(final_fd)
         final_fd = None
-        receipt = store.mark_materialized(
-            proposal_id,
-            str(output_dir),
-            digest,
-            expected_state=proposal_row.state,
-            expected_revision=snapshot.group.revision,
-            path_commit_guard=lambda: _verify_parent_path(
-                output_dir.parent, parent_fd
-            ),
-        )
+        try:
+            receipt = store.mark_materialized(
+                proposal_id,
+                str(output_dir),
+                digest,
+                expected_state=proposal_row.state,
+                expected_revision=snapshot.group.revision,
+                path_commit_guard=lambda: _verify_parent_path(
+                    output_dir.parent, parent_fd
+                ),
+            )
+        except BaseException as error:
+            mark_error = error
+            cleanup_published = _cleanup_after_materialization_error(
+                store, proposal_id, str(output_dir), digest, error
+            )
+            raise
         if receipt.status not in (ReceiptStatus.MATERIALIZED, ReceiptStatus.DUPLICATE):
             raise RuntimeError(receipt.reason or receipt.status.value)
         committed = True
@@ -715,15 +769,29 @@ def materialize_proposal(
             os.close(stage_fd)
         if stage_path is not None:
             _remove_private_tree(parent_fd, output_dir.parent, stage_path.name)
-        if published and not committed and root_identity is not None:
-            _quarantine_owned_tree(
-                parent_fd,
-                output_dir.parent,
-                output_name,
-                expected,
-                root_identity,
-                child_identities,
-            )
+        if (
+            published
+            and not committed
+            and cleanup_published
+            and root_identity is not None
+        ):
+            try:
+                _quarantine_owned_tree(
+                    parent_fd,
+                    output_dir.parent,
+                    output_name,
+                    expected,
+                    root_identity,
+                    child_identities,
+                )
+            except BaseException as cleanup_error:
+                if mark_error is None:
+                    raise
+                mark_error.add_note(
+                    "materialization cleanup failed without replacing the original "
+                    "exception; artifact tree preserved: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}"
+                )
         os.close(parent_fd)
 
 

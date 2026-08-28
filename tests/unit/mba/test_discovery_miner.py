@@ -31,6 +31,7 @@ from d810.mba.discovery_models import (
     DiscoveryAttempt,
     HeartbeatReceipt,
     LifecycleReceipt,
+    ProposalState,
     ReceiptStatus,
 )
 from d810.mba.discovery_store import MbaDiscoveryStore
@@ -38,6 +39,31 @@ from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 from d810.mba.provider_routing import MbaProviderKind
 from d810.mba.subterm_atomization import atomize_repeated_subterms
 from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term, term_cost, term_fingerprint
+
+
+class _PostCommitInterruptConnection:
+    """Commit durably, then expose an ambiguous exceptional outcome."""
+
+    def __init__(self, connection: sqlite3.Connection, proposal_id: str) -> None:
+        self.connection = connection
+        self.proposal_id = proposal_id
+        self.raised = False
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.connection, name)
+
+    def commit(self) -> None:
+        self.connection.commit()
+        state = self.connection.execute(
+            "SELECT state FROM proposals WHERE proposal_id=?", (self.proposal_id,)
+        ).fetchone()
+        if (
+            not self.raised
+            and state is not None
+            and state[0] == ProposalState.MATERIALIZED.value
+        ):
+            self.raised = True
+            raise SystemExit("controlled interruption after successful commit")
 
 
 def _attempt(term: TypedBvTerm) -> DiscoveryAttempt:
@@ -1073,6 +1099,174 @@ def test_materialization_pre_commit_baseexception_restores_store_and_artifacts(
         assert snapshot is not None
         assert snapshot.proposal.state.value == "proposed"
     finally:
+        store.close()
+
+
+def test_materialization_post_commit_baseexception_preserves_durable_tree(
+    tmp_path,
+) -> None:
+    from d810.mba.discovery_miner import _tree_digest, materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, "post-commit-interrupt"
+    )
+    output = tmp_path / "post-commit-interrupt-review"
+    real_connection = store._connection
+    store._connection = _PostCommitInterruptConnection(  # type: ignore[assignment]
+        real_connection, proposal_id
+    )
+    try:
+        with pytest.raises(
+            SystemExit, match="controlled interruption after successful commit"
+        ) as raised:
+            materialize_proposal(store, proposal_id, output)
+
+        assert any(
+            "durably reconciled" in note and "tree preserved" in note
+            for note in getattr(raised.value, "__notes__", ())
+        )
+        same_connection = store.proposal_snapshot(proposal_id)
+        assert same_connection is not None
+        assert same_connection.proposal.state is ProposalState.MATERIALIZED
+        assert same_connection.proposal.materialized_path == str(output.resolve())
+        assert same_connection.proposal.materialized_digest
+        external = MbaDiscoveryStore(store.path)
+        try:
+            external_snapshot = external.proposal_snapshot(proposal_id)
+            assert external_snapshot is not None
+            assert external_snapshot.proposal == same_connection.proposal
+            assert external_snapshot.group == same_connection.group
+        finally:
+            external.close()
+        assert output.is_dir()
+        assert same_connection.proposal.materialized_digest == _tree_digest(output)
+        assert materialize_proposal(store, proposal_id, output) == (
+            same_connection.proposal.materialized_path,
+            same_connection.proposal.materialized_digest,
+        )
+    finally:
+        store.close()
+
+
+def test_materialization_reconciliation_failure_preserves_adoptable_orphan(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, "reconciliation-failure"
+    )
+    output = tmp_path / "reconciliation-failure-review"
+    original_mark = store.mark_materialized
+    original_snapshot = store.proposal_snapshot
+    interruption = SystemExit("controlled ambiguous recording outcome")
+    snapshot_calls = 0
+
+    def interrupt_recording(*_args, **_kwargs):
+        raise interruption
+
+    def fail_reconciliation(requested_proposal_id):
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 2:
+            raise OSError("controlled reconciliation read failure")
+        return original_snapshot(requested_proposal_id)
+
+    monkeypatch.setattr(store, "mark_materialized", interrupt_recording)
+    monkeypatch.setattr(store, "proposal_snapshot", fail_reconciliation)
+    try:
+        with pytest.raises(SystemExit) as raised:
+            materialize_proposal(store, proposal_id, output)
+
+        assert raised.value is interruption
+        assert output.is_dir()
+        assert any(
+            "reconciliation" in note
+            and "controlled reconciliation read failure" in note
+            and "preserved" in note
+            for note in getattr(raised.value, "__notes__", ())
+        )
+        current = original_snapshot(proposal_id)
+        assert current is not None
+        assert current.proposal.state is ProposalState.PROPOSED
+
+        monkeypatch.setattr(store, "mark_materialized", original_mark)
+        materialize_proposal(store, proposal_id, output)
+        adopted = original_snapshot(proposal_id)
+        assert adopted is not None
+        assert adopted.proposal.state is ProposalState.MATERIALIZED
+        assert adopted.proposal.materialized_path == str(output.resolve())
+    finally:
+        store.close()
+
+
+def test_materialization_exception_reconciliation_never_removes_replacement_owner(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, "reconciliation-replacement"
+    )
+    output = tmp_path / "reconciliation-replacement-review"
+    interruption = KeyboardInterrupt("controlled replacement-owner race")
+
+    def replace_then_interrupt(*_args, **_kwargs):
+        shutil.rmtree(output)
+        output.mkdir()
+        (output / "replacement-owner.txt").write_text("keep")
+        raise interruption
+
+    monkeypatch.setattr(store, "mark_materialized", replace_then_interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt) as raised:
+            materialize_proposal(store, proposal_id, output)
+
+        assert raised.value is interruption
+        assert (output / "replacement-owner.txt").read_text() == "keep"
+        current = store.proposal_snapshot(proposal_id)
+        assert current is not None
+        assert current.proposal.state is ProposalState.PROPOSED
+    finally:
+        shutil.rmtree(output)
+        store.close()
+
+
+def test_materialization_cleanup_failure_does_not_mask_original_baseexception(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, "reconciliation-cleanup-conflict"
+    )
+    output = tmp_path / "reconciliation-cleanup-conflict-review"
+    snapshot = store.proposal_snapshot(proposal_id)
+    assert snapshot is not None
+    rule_path = output / f"{snapshot.proposal.proposal_fingerprint}.rule.py"
+    interruption = KeyboardInterrupt("controlled cleanup-conflict interruption")
+
+    def mutate_then_interrupt(*_args, **_kwargs):
+        rule_path.write_text("replacement owner content")
+        raise interruption
+
+    monkeypatch.setattr(store, "mark_materialized", mutate_then_interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt) as raised:
+            materialize_proposal(store, proposal_id, output)
+
+        assert raised.value is interruption
+        assert rule_path.read_text() == "replacement owner content"
+        assert any(
+            "cleanup failed" in note
+            and "materialization recovery conflict" in note
+            for note in getattr(raised.value, "__notes__", ())
+        )
+        current = store.proposal_snapshot(proposal_id)
+        assert current is not None
+        assert current.proposal.state is ProposalState.PROPOSED
+    finally:
+        shutil.rmtree(output)
         store.close()
 
 
