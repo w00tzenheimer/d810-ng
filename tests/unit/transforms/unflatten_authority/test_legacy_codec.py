@@ -454,6 +454,7 @@ def _legacy_route_proposal(*, duplicate: bool = False):
     if duplicate:
         sibling = replace(
             proof,
+            proof_id=f"{proof.proof_id}:legacy-sibling",
             predicate=replace(proof.predicate, compare_constant=6),
         )
         evidence = _recanonicalize(evidence, (proof, sibling))
@@ -520,6 +521,8 @@ def test_legacy_route_selector_requires_exact_provenance_and_cardinality() -> No
         )
 
     _source, ambiguous, refs, _proof = _legacy_route_proposal(duplicate=True)
+    assert len(ambiguous.route_evidence.route_proofs) == 2
+    assert len({item.proof_id for item in ambiguous.route_evidence.route_proofs}) == 2
     with pytest.raises(ValueError, match="multiple"):
         codec.equivalent_route_claims_from_legacy_metadata(
             [native_row], proposal=ambiguous,
@@ -544,6 +547,7 @@ def test_legacy_decode_selects_row_proof_ids_before_building_proposal(monkeypatc
     )
     sibling = replace(
         proof,
+        proof_id=f"{proof.proof_id}:legacy-sibling",
         predicate=replace(proof.predicate, compare_constant=6),
         diagnostic_provenance=tuple(
             (key, "sibling-fact" if key == "fact_id" else value)
