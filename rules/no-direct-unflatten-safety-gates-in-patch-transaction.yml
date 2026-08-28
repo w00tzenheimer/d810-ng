@@ -25,6 +25,10 @@ rule:
     - pattern: canonicalize_observed_dispatcher_graph($$$)
     - pattern: compose_legacy_unflatten_allowance($$$)
     - pattern: compose_legacy_allowance($$$)
+    - pattern: validate_projected_effect_loss_ledger($$$)
+    - pattern: validate_projected_dispatcher_removal_ledger($$$)
+    - pattern: validate_projected_corridor_coverage_ledger($$$)
+    - pattern: validate_projected_terminal_loss_ledger($$$)
     - pattern: $MODULE._validated_exact_effect_exclusions($$$)
     - pattern: $MODULE._validated_local_alias_effect_exclusions($$$)
     - pattern: $MODULE.validate_dispatcher_corridor_coverage_metadata($$$)
@@ -33,6 +37,10 @@ rule:
     - pattern: $MODULE.canonicalize_observed_dispatcher_graph($$$)
     - pattern: $MODULE.compose_legacy_unflatten_allowance($$$)
     - pattern: $MODULE.compose_legacy_allowance($$$)
+    - pattern: $MODULE.validate_projected_effect_loss_ledger($$$)
+    - pattern: $MODULE.validate_projected_dispatcher_removal_ledger($$$)
+    - pattern: $MODULE.validate_projected_corridor_coverage_ledger($$$)
+    - pattern: $MODULE.validate_projected_terminal_loss_ledger($$$)
 
 note: |
   Direct calls to generic reachability gates and transaction_api.prepare or

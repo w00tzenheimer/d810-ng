@@ -18,6 +18,8 @@ invalid:
   - |
       from .evaluate import evaluate_case
   - |
+      from .gates import validate_projected_effect_loss_ledger
+  - |
       from .transaction_api import prepare_unflatten_authority_timed
   - |
       from d810.transforms.unflatten_authority import transaction_api
@@ -26,7 +28,13 @@ invalid:
   - |
       import d810.transforms.unflatten_authority.evaluate as evaluation
   - |
+      import d810.transforms.unflatten_authority.gates as gates
+  - |
+      import d810.transforms.unflatten_authority
+  - |
       from d810.transforms import unflatten_authority_facade
+  - |
+      from d810.transforms import unflatten_authority
   - |
       from d810.transforms import unflatten_authority_facade as facade
   - |

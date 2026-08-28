@@ -15,12 +15,26 @@ snapshots:
       start: 0
       end: 35
   ? |
+    from .gates import validate_projected_effect_loss_ledger
+  : labels:
+    - source: from .gates import validate_projected_effect_loss_ledger
+      style: primary
+      start: 0
+      end: 56
+  ? |
     from .transaction_api import prepare_unflatten_authority_timed
   : labels:
     - source: from .transaction_api import prepare_unflatten_authority_timed
       style: primary
       start: 0
       end: 62
+  ? |
+    from d810.transforms import unflatten_authority
+  : labels:
+    - source: from d810.transforms import unflatten_authority
+      style: primary
+      start: 0
+      end: 47
   ? |
     from d810.transforms import unflatten_authority as ua
     ua.transaction_api.prepare_unflatten_authority_timed(plan)
@@ -58,6 +72,13 @@ snapshots:
       start: 0
       end: 88
   ? |
+    import d810.transforms.unflatten_authority
+  : labels:
+    - source: import d810.transforms.unflatten_authority
+      style: primary
+      start: 0
+      end: 42
+  ? |
     import d810.transforms.unflatten_authority as ua
     ua.transaction_api.prepare_unflatten_authority_timed(plan)
   : labels:
@@ -79,6 +100,13 @@ snapshots:
       style: primary
       start: 0
       end: 65
+  ? |
+    import d810.transforms.unflatten_authority.gates as gates
+  : labels:
+    - source: import d810.transforms.unflatten_authority.gates as gates
+      style: primary
+      start: 0
+      end: 57
   ? |
     import d810.transforms.unflatten_authority_facade
   : labels:

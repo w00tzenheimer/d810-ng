@@ -356,6 +356,7 @@ source_modules =
 forbidden_modules =
     d810.transforms.unflatten_authority.bind
     d810.transforms.unflatten_authority.evaluate
+    d810.transforms.unflatten_authority.gates
     d810.transforms.unflatten_authority.transaction_api
     d810.transforms.unflatten_authority_facade
 
@@ -369,5 +370,7 @@ source_modules =
 forbidden_modules =
     d810.transforms.unflatten_authority.bind
     d810.transforms.unflatten_authority.evaluate
+    d810.transforms.unflatten_authority.gates
+    d810.transforms.unflatten_authority.proposal
     d810.transforms.unflatten_authority.transaction_api
     d810.transforms.unflatten_authority_facade

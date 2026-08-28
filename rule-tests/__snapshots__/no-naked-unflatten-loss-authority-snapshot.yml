@@ -15,6 +15,42 @@ snapshots:
       start: 0
       end: 70
   ? |
+    def emit(*, allowed_lost_serials):
+        return allowed_lost_serials
+  : labels:
+    - source: allowed_lost_serials
+      style: primary
+      start: 12
+      end: 32
+    - source: (*, allowed_lost_serials)
+      style: secondary
+      start: 8
+      end: 33
+  ? |
+    def emit(alias_effect_exclusion_serials):
+        return alias_effect_exclusion_serials
+  : labels:
+    - source: alias_effect_exclusion_serials
+      style: primary
+      start: 9
+      end: 39
+    - source: (alias_effect_exclusion_serials)
+      style: secondary
+      start: 8
+      end: 40
+  ? |
+    def emit(allowed_effect_serials):
+        return allowed_effect_serials
+  : labels:
+    - source: allowed_effect_serials
+      style: primary
+      start: 9
+      end: 31
+    - source: (allowed_effect_serials)
+      style: secondary
+      start: 8
+      end: 32
+  ? |
     def emit(allowed_target_serials):
         retained = allowed_target_serials
         return retained
@@ -45,6 +81,18 @@ snapshots:
       start: 0
       end: 65
   ? |
+    def emit(effect_exclusion_serials):
+        return effect_exclusion_serials
+  : labels:
+    - source: effect_exclusion_serials
+      style: primary
+      start: 9
+      end: 33
+    - source: (effect_exclusion_serials)
+      style: secondary
+      start: 8
+      end: 34
+  ? |
     def emit(effect_exclusion_serials, alias_effect_exclusion_serials):
         return effect_exclusion_serials, alias_effect_exclusion_serials
   : labels:
@@ -58,6 +106,30 @@ snapshots:
       style: secondary
       start: 0
       end: 135
+  ? |
+    def emit(exact_effect_exclusion_serials):
+        return exact_effect_exclusion_serials
+  : labels:
+    - source: exact_effect_exclusion_serials
+      style: primary
+      start: 9
+      end: 39
+    - source: (exact_effect_exclusion_serials)
+      style: secondary
+      start: 8
+      end: 40
+  ? |
+    def emit(lost_block_serials):
+        return lost_block_serials
+  : labels:
+    - source: lost_block_serials
+      style: primary
+      start: 9
+      end: 27
+    - source: (lost_block_serials)
+      style: secondary
+      start: 8
+      end: 28
   ? |
     def emit(lost_block_serials, reachable_handler_serials):
         return lost_block_serials | reachable_handler_serials
@@ -80,12 +152,46 @@ snapshots:
       style: primary
       start: 9
       end: 33
-    - source: |-
-        def emit(permitted_effect_serials):
-            return permitted_effect_serials
+    - source: (permitted_effect_serials)
       style: secondary
-      start: 0
-      end: 71
+      start: 8
+      end: 34
+  ? |
+    def emit(permitted_loss_serials):
+        return permitted_loss_serials
+  : labels:
+    - source: permitted_loss_serials
+      style: primary
+      start: 9
+      end: 31
+    - source: (permitted_loss_serials)
+      style: secondary
+      start: 8
+      end: 32
+  ? |
+    def emit(reachable_effect_serials):
+        return reachable_effect_serials
+  : labels:
+    - source: reachable_effect_serials
+      style: primary
+      start: 9
+      end: 33
+    - source: (reachable_effect_serials)
+      style: secondary
+      start: 8
+      end: 34
+  ? |
+    def emit(retained_transaction_local_serial_allowance):
+        return retained_transaction_local_serial_allowance
+  : labels:
+    - source: retained_transaction_local_serial_allowance
+      style: primary
+      start: 9
+      end: 52
+    - source: (retained_transaction_local_serial_allowance)
+      style: secondary
+      start: 8
+      end: 53
   ? |
     def emit(validated_source_serials):
         return validated_source_serials
@@ -94,12 +200,10 @@ snapshots:
       style: primary
       start: 9
       end: 33
-    - source: |-
-        def emit(validated_source_serials):
-            return validated_source_serials
+    - source: (validated_source_serials)
       style: secondary
-      start: 0
-      end: 71
+      start: 8
+      end: 34
   ? |
     def retained(retained_transaction_local_serial_allowance):
         return retained_transaction_local_serial_allowance
@@ -114,3 +218,14 @@ snapshots:
       style: secondary
       start: 0
       end: 113
+  ? |
+    emit(authority, allowed_effect_serials=serials)
+  : labels:
+    - source: allowed_effect_serials=serials
+      style: primary
+      start: 16
+      end: 46
+    - source: allowed_effect_serials
+      style: secondary
+      start: 16
+      end: 38

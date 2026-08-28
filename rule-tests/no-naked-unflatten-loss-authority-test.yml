@@ -10,30 +10,43 @@ valid:
   - |
       def generic(serial):
           return serial
+  - |
+      class RawCodecDto:
+          allowed_lost_block_serials: tuple[int, ...]
 
 invalid:
   - |
       def emit(validated_source_serials):
           return validated_source_serials
   - |
-      def emit(*, allowed_effect_serials):
+      def emit(*, allowed_lost_serials):
+          return allowed_lost_serials
+  - |
+      def emit(permitted_loss_serials):
+          return permitted_loss_serials
+  - |
+      def emit(allowed_effect_serials):
           return allowed_effect_serials
   - |
       def emit(permitted_effect_serials):
           return permitted_effect_serials
   - |
-      def retained(retained_transaction_local_serial_allowance):
+      def emit(effect_exclusion_serials):
+          return effect_exclusion_serials
+  - |
+      def emit(exact_effect_exclusion_serials):
+          return exact_effect_exclusion_serials
+  - |
+      def emit(alias_effect_exclusion_serials):
+          return alias_effect_exclusion_serials
+  - |
+      def emit(lost_block_serials):
+          return lost_block_serials
+  - |
+      def emit(retained_transaction_local_serial_allowance):
           return retained_transaction_local_serial_allowance
   - |
-      def emit(lost_block_serials, reachable_handler_serials):
-          return lost_block_serials | reachable_handler_serials
+      def emit(reachable_effect_serials):
+          return reachable_effect_serials
   - |
-      def emit(effect_exclusion_serials, alias_effect_exclusion_serials):
-          return effect_exclusion_serials, alias_effect_exclusion_serials
-  - |
-      def emit(allowed_target_serials):
-          retained = allowed_target_serials
-          return retained
-  - |
-      def emit(coverage):
-          return coverage.reachable_handler_serials
+      emit(authority, allowed_effect_serials=serials)

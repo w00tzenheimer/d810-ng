@@ -1,0 +1,15 @@
+id: no-unflatten-route-assessment-in-transaction
+valid:
+  - |
+      def prepare(authority):
+          return authority
+invalid:
+  - |
+      def prepare(graph):
+          return assess_canonical_route(graph)
+  - |
+      def prepare(graph):
+          return route_model.assess_canonical_route(graph)
+  - |
+      def bind(graph):
+          return route_model.assess_canonical_route(graph)

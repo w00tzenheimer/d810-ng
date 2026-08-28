@@ -38,3 +38,9 @@ invalid:
   - |
       def execute(graph):
           return legacy.canonicalize_observed_dispatcher_graph(graph)
+  - |
+      def execute(ledger, case):
+          return validate_projected_effect_loss_ledger(ledger, case)
+  - |
+      def execute(ledger, case):
+          return facade.validate_projected_terminal_loss_ledger(ledger, case)

@@ -5,8 +5,22 @@ valid:
       from .model import SemanticSafetyCase
   - |
       from d810.transforms.unflatten_authority import model
+  - |
+      from .legacy_codec import encode_observation
 
 invalid:
+  - |
+      from .bind import bind_subjects
+  - |
+      from .evaluate import evaluate_case
+  - |
+      from .gates import validate_projected_effect_loss_ledger
+  - |
+      from .proposal import validate_proposal
+  - |
+      from .transaction_api import prepare_unflatten_authority
+  - |
+      from . import gates
   - |
       from d810.transforms import unflatten_authority_facade
   - |
@@ -17,3 +31,13 @@ invalid:
       import d810.transforms.unflatten_authority_facade
   - |
       import d810.transforms.unflatten_authority_facade as facade
+  - |
+      import d810.transforms.unflatten_authority.gates as gates
+  - |
+      import d810.transforms.unflatten_authority as authority
+  - |
+      import d810.transforms.unflatten_authority
+  - |
+      from d810.transforms import unflatten_authority as authority
+  - |
+      from d810.transforms import unflatten_authority

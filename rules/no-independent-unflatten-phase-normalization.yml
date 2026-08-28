@@ -29,6 +29,14 @@ rule:
     - pattern: $MODULE._validated_local_alias_effect_exclusions($$$)
     - pattern: $MODULE.compose_legacy_unflatten_allowance($$$)
     - pattern: $MODULE.compose_legacy_allowance($$$)
+    - pattern: SemanticLossLedger($$$)
+    - pattern: $MODULE.SemanticLossLedger($$$)
+    - pattern: ObservedSemanticLossDelta($$$)
+    - pattern: $MODULE.ObservedSemanticLossDelta($$$)
+    - pattern: $GRAPH.successors($$$)
+    - pattern: $GRAPH.predecessors($$$)
+    - pattern: $GRAPH.reachable($$$)
+    - pattern: $GRAPH.walk($$$)
     - pattern: $SOURCE.difference($OBSERVED)
     - pattern: $SOURCE.difference_update($OBSERVED)
     - all:
@@ -37,6 +45,10 @@ rule:
         - has:
             regex: "[-&|]"
             stopBy: end
+
+constraints:
+  GRAPH:
+    regex: "(?i)^(?:[a-z_][a-z0-9_]*_)?(?:projected|observed|source|candidate)(?:_[a-z0-9_]*)?$"
 
 note: |
   Source-indexed lineage calls through transaction_api and generic CFG gate

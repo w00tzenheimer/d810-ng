@@ -1,6 +1,62 @@
 id: no-unflatten-diagnostic-transaction-facade-import
 snapshots:
   ? |
+    from . import gates
+  : labels:
+    - source: from . import gates
+      style: primary
+      start: 0
+      end: 19
+  ? |
+    from .bind import bind_subjects
+  : labels:
+    - source: from .bind import bind_subjects
+      style: primary
+      start: 0
+      end: 31
+  ? |
+    from .evaluate import evaluate_case
+  : labels:
+    - source: from .evaluate import evaluate_case
+      style: primary
+      start: 0
+      end: 35
+  ? |
+    from .gates import validate_projected_effect_loss_ledger
+  : labels:
+    - source: from .gates import validate_projected_effect_loss_ledger
+      style: primary
+      start: 0
+      end: 56
+  ? |
+    from .proposal import validate_proposal
+  : labels:
+    - source: from .proposal import validate_proposal
+      style: primary
+      start: 0
+      end: 39
+  ? |
+    from .transaction_api import prepare_unflatten_authority
+  : labels:
+    - source: from .transaction_api import prepare_unflatten_authority
+      style: primary
+      start: 0
+      end: 56
+  ? |
+    from d810.transforms import unflatten_authority
+  : labels:
+    - source: from d810.transforms import unflatten_authority
+      style: primary
+      start: 0
+      end: 47
+  ? |
+    from d810.transforms import unflatten_authority as authority
+  : labels:
+    - source: from d810.transforms import unflatten_authority as authority
+      style: primary
+      start: 0
+      end: 60
+  ? |
     from d810.transforms import unflatten_authority_facade
   : labels:
     - source: from d810.transforms import unflatten_authority_facade
@@ -21,6 +77,27 @@ snapshots:
       style: primary
       start: 0
       end: 72
+  ? |
+    import d810.transforms.unflatten_authority
+  : labels:
+    - source: import d810.transforms.unflatten_authority
+      style: primary
+      start: 0
+      end: 42
+  ? |
+    import d810.transforms.unflatten_authority as authority
+  : labels:
+    - source: import d810.transforms.unflatten_authority as authority
+      style: primary
+      start: 0
+      end: 55
+  ? |
+    import d810.transforms.unflatten_authority.gates as gates
+  : labels:
+    - source: import d810.transforms.unflatten_authority.gates as gates
+      style: primary
+      start: 0
+      end: 57
   ? |
     import d810.transforms.unflatten_authority_facade
   : labels:

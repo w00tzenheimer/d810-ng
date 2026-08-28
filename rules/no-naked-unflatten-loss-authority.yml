@@ -11,10 +11,12 @@ severity: error
 
 files:
   - "src/d810/transforms/minimal_unflatten_emit.py"
-  - "src/d810/transforms/dispatcher_corridor_coverage.py"
+  - "src/d810/transforms/unflatten_authority/**/*.py"
+  - "src/d810/transforms/unflatten_authority_facade.py"
+  - "src/d810/hexrays/mutation/patch_transaction.py"
+  - "src/d810/analyses/control_flow/effect_branch_exclusion.py"
   - "src/d810/analyses/control_flow/minimal_state_recovery.py"
   - "src/d810/analyses/control_flow/semantic_route_evidence.py"
-  - "src/d810/analyses/control_flow/effect_branch_exclusion.py"
   - "src/d810/passes/unflatten/state_machine.py"
 
 message: |
@@ -22,14 +24,23 @@ message: |
   not naked serial sets. Carry the typed authority model across phases.
 
 rule:
-  all:
-    - kind: identifier
-    - regex: "^(validated_.*serials|allowed_.*serials|permitted_.*serials|effect_exclusion_serials|lost_block_serials|alias_effect_exclusion_serials|reachable_.*serials|retained_transaction_local_serial_allowance)$"
-    - inside:
-        kind: function_definition
-        stopBy: end
+  any:
+    - all:
+        - kind: identifier
+        - regex: "^(validated_.*_serials|allowed_.*_serials|permitted_.*_serials|effect_exclusion_serials|exact_effect_exclusion_serials|alias_effect_exclusion_serials|lost_block_serials|retained_transaction_local_serial_allowance|reachable_.*_serials)$"
+        - inside:
+            kind: parameters
+            stopBy: end
+    - all:
+        - kind: keyword_argument
+        - has:
+            field: name
+            regex: "^(validated_.*_serials|allowed_.*_serials|permitted_.*_serials|effect_exclusion_serials|exact_effect_exclusion_serials|alias_effect_exclusion_serials|lost_block_serials|retained_transaction_local_serial_allowance|reachable_.*_serials)$"
 
 note: |
-  A local `serial` paired with an `anchor_ea` in PhaseSubjectBinding is
-  permitted. Generic reachability DTOs outside the migrated unflatten files
-  are not enrolled in this guard.
+  The broad historical seam vocabulary is intentionally scoped to the
+  migrated unflatten producer/transaction path. It guards function and call
+  boundaries; canonical implementations may still use serial-keyed locals and
+  fields internally. A local `serial` paired with an `anchor_ea` in
+  PhaseSubjectBinding is permitted. Generic reachability DTOs outside these
+  files are not enrolled in this guard.

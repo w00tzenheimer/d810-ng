@@ -11,16 +11,51 @@ files:
 
 message: |
   Unflatten diagnostic and view modules must consume sealed authority facts;
-  only the mutation transaction may import the transaction facade.
+  they must not import transaction binders, evaluators, gates, proposal
+  validators, or the transaction facade.
 
 rule:
   any:
+    - pattern: from .bind import $$$
+    - pattern: from .evaluate import $$$
+    - pattern: from .gates import $$$
+    - pattern: from .proposal import $$$
+    - pattern: from .transaction_api import $$$
+    - pattern: from . import bind
+    - pattern: from . import evaluate
+    - pattern: from . import gates
+    - pattern: from . import proposal
+    - pattern: from . import transaction_api
+    - pattern: from d810.transforms.unflatten_authority.bind import $$$
+    - pattern: from d810.transforms.unflatten_authority.evaluate import $$$
+    - pattern: from d810.transforms.unflatten_authority.gates import $$$
+    - pattern: from d810.transforms.unflatten_authority.proposal import $$$
+    - pattern: from d810.transforms.unflatten_authority.transaction_api import $$$
+    - pattern: from d810.transforms.unflatten_authority import bind
+    - pattern: from d810.transforms.unflatten_authority import evaluate
+    - pattern: from d810.transforms.unflatten_authority import gates
+    - pattern: from d810.transforms.unflatten_authority import proposal
+    - pattern: from d810.transforms.unflatten_authority import transaction_api
     - pattern: from d810.transforms import unflatten_authority_facade
     - pattern: from d810.transforms import unflatten_authority_facade as $ALIAS
     - pattern: from d810.transforms.unflatten_authority_facade import $$$
     - pattern: import d810.transforms.unflatten_authority_facade
     - pattern: import d810.transforms.unflatten_authority_facade as $ALIAS
+    - pattern: import d810.transforms.unflatten_authority.bind
+    - pattern: import d810.transforms.unflatten_authority.evaluate
+    - pattern: import d810.transforms.unflatten_authority.gates
+    - pattern: import d810.transforms.unflatten_authority.proposal
+    - pattern: import d810.transforms.unflatten_authority.transaction_api
+    - pattern: import d810.transforms.unflatten_authority.bind as $ALIAS
+    - pattern: import d810.transforms.unflatten_authority.evaluate as $ALIAS
+    - pattern: import d810.transforms.unflatten_authority.gates as $ALIAS
+    - pattern: import d810.transforms.unflatten_authority.proposal as $ALIAS
+    - pattern: import d810.transforms.unflatten_authority.transaction_api as $ALIAS
+    - pattern: import d810.transforms.unflatten_authority
+    - pattern: import d810.transforms.unflatten_authority as $ALIAS
+    - pattern: from d810.transforms import unflatten_authority
+    - pattern: from d810.transforms import unflatten_authority as $ALIAS
 
 note: |
-  The mutation transaction is the sole enrolled facade consumer. Diagnostics
-  and views remain graph-free projections over sealed cases and verdicts.
+  Diagnostics and views may import models/codecs only. They remain graph-free
+  projections over sealed cases and verdicts and never execute validation.

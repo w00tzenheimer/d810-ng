@@ -1,0 +1,9 @@
+id: no-generic-assessment-fields-in-transaction-model
+valid:
+  - |
+      class Prepared:
+          authority_id: str
+invalid:
+  - |
+      class Prepared:
+          source_route_assessment: object

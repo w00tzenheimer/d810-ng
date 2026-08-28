@@ -1,0 +1,10 @@
+id: no-generic-assessment-fields-in-transaction-model
+snapshots:
+  ? |
+    class Prepared:
+        source_route_assessment: object
+  : labels:
+    - source: source_route_assessment
+      style: primary
+      start: 20
+      end: 43

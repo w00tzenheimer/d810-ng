@@ -17,6 +17,22 @@ snapshots:
       start: 31
       end: 83
   ? |
+    def execute(ledger, case):
+        return facade.validate_projected_terminal_loss_ledger(ledger, case)
+  : labels:
+    - source: facade.validate_projected_terminal_loss_ledger(ledger, case)
+      style: primary
+      start: 38
+      end: 98
+  ? |
+    def execute(ledger, case):
+        return validate_projected_effect_loss_ledger(ledger, case)
+  : labels:
+    - source: validate_projected_effect_loss_ledger(ledger, case)
+      style: primary
+      start: 38
+      end: 89
+  ? |
     def execute(plan):
         return _validated_exact_effect_exclusions(plan)
   : labels:

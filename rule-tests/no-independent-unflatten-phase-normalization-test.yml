@@ -10,6 +10,21 @@ valid:
   - |
       def render(case):
           return views.compatibility_projection(case)
+  - |
+      def render(ledger):
+          return ledger.ledger_id
+  - |
+      def traverse(graph):
+          return graph.successors(0)
+  - |
+      def traverse(graph):
+          return graph.predecessors(0)
+  - |
+      def traverse(graph):
+          return graph.reachable(0)
+  - |
+      def traverse(graph):
+          return graph.walk(0)
 
 invalid:
   - |
@@ -27,3 +42,21 @@ invalid:
   - |
       def normalize(graph):
           return coverage.canonicalize_observed_dispatcher_graph(graph)
+  - |
+      def mint(case):
+          return SemanticLossLedger(case)
+  - |
+      def mint(case):
+          return model.ObservedSemanticLossDelta(case)
+  - |
+      def traverse(observed_graph):
+          return observed_graph.successors(0)
+  - |
+      def traverse(projected_graph):
+          return projected_graph.predecessors(0)
+  - |
+      def traverse(source_graph):
+          return source_graph.reachable(0)
+  - |
+      def traverse(candidate_graph):
+          return candidate_graph.walk(0)

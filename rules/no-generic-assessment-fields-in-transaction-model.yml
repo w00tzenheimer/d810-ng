@@ -1,0 +1,10 @@
+id: no-generic-assessment-fields-in-transaction-model
+language: python
+severity: error
+files:
+  - "src/d810/transforms/unflatten_authority/model.py"
+rule:
+  all:
+    - kind: identifier
+    - regex: "^(route_assessment_digest|source_route_assessment|candidate_route_assessment|projected_route_assessment|bound_routes)$"
+message: Transaction authority models must retain sealed authority occurrences, not generic assessments.
