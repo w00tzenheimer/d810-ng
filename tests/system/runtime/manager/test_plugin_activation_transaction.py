@@ -11,6 +11,7 @@ from d810.core.plugins import (
     BackendRegistry,
     BackendSpec,
     ImplementationOwnership,
+    PassImplementationAmbiguous,
     PassImplementationCandidate,
     PassImplementationMisdeclared,
     PassImplementationUnavailable,
@@ -201,6 +202,36 @@ class _Registry:
         self.discarded.append(tuple(staged))
 
 
+class _AmbiguousRegistry(_Registry):
+    def __init__(self, implementation):
+        super().__init__(implementation)
+        self.second_candidate = PassImplementationCandidate(
+            pass_id=self.candidate.pass_id,
+            backend_name="second-external",
+            backend_origin="second-external-wheel",
+            rule_modules=(),
+            rule_name=self.candidate.rule_name,
+        )
+        self.second_manifest = BackendManifest(
+            name="second-external",
+            api_version=1,
+            provides=lambda: object(),
+            implements={"external-pass": self.second_candidate.rule_name},
+        )
+        self.activated_candidates = []
+
+    def implementation_declarations_for(self, pass_id: str):
+        assert pass_id == "external-pass"
+        return (
+            (self.candidate, self.manifest),
+            (self.second_candidate, self.second_manifest),
+        )
+
+    def activate_implementation(self, candidate):
+        self.activated_candidates.append(candidate)
+        return super().activate_implementation(self.candidate)
+
+
 def _project(name: str) -> ProjectConfiguration:
     return ProjectConfiguration(path=Path(name), description=name)
 
@@ -251,11 +282,18 @@ def _state(registry, old_project, old_snapshot):
     return state
 
 
-def _patch_activation(monkeypatch, *, binding_name="ExternalRule"):
+def _patch_activation(
+    monkeypatch, *, binding_name="ExternalRule", block_binding_name=None
+):
     schedule = ConfigV2HookSchedule(
         configured_pass_ids=("external-pass",),
         instruction_bindings=(
             RuleConfiguration(name=binding_name, is_activated=True, config={}),
+        ),
+        block_bindings=(
+            (RuleConfiguration(name=block_binding_name, is_activated=True, config={}),)
+            if block_binding_name is not None
+            else ()
         ),
     )
     monkeypatch.setattr(
@@ -512,12 +550,70 @@ def test_opaque_external_binding_rejects_multiple_owners():
         rule_name="opaque-implementation-id",
     )
     bindings = {
-        (first.pass_id, first.rule_name): ImplementationOwnership(first, _Rule()),
-        (second.pass_id, second.rule_name): ImplementationOwnership(second, _Rule()),
+        (first.pass_id, first.rule_name): state_module._ExternalImplementationBinding(
+            ImplementationOwnership(first, _Rule()), "instruction"
+        ),
+        (second.pass_id, second.rule_name): state_module._ExternalImplementationBinding(
+            ImplementationOwnership(second, _Rule()), "instruction"
+        ),
     }
 
     with pytest.raises(PipelineConfigError, match="binding .* ambiguous"):
-        state_module._external_binding_for_name("opaque-implementation-id", bindings)
+        state_module._external_binding_for_name(
+            "opaque-implementation-id", "instruction", bindings
+        )
+
+
+def test_external_instruction_binding_does_not_capture_same_name_block_binding(
+    monkeypatch,
+):
+    external_rule = _OpaqueBindingRule()
+    registry = _Registry(external_rule, declared_name="opaque-implementation-id")
+    old_activation = _Activation("old")
+    old_project = _project("old.json")
+    old_snapshot = _snapshot(old_project, old_activation, "old-ins")
+    registry.old_activation = old_activation
+    state = _state(registry, old_project, old_snapshot)
+    block_rule = _InternalOpaqueNameRule()
+    state._build_known_block_rules = lambda: [block_rule]
+    _patch_activation(
+        monkeypatch,
+        binding_name="opaque-implementation-id",
+        block_binding_name="opaque-implementation-id",
+    )
+    new_project = _project("new.json")
+    new_snapshot = _snapshot(new_project, registry.new_activation, external_rule)
+    registry.expected_snapshot = new_snapshot
+    monkeypatch.setattr(
+        state_module, "build_project_runtime_snapshot", lambda **_kwargs: new_snapshot
+    )
+
+    state._activate_project(project_index=1, project=new_project)
+
+    assert state.current_ins_rules == [external_rule]
+    assert state.current_blk_rules == [block_rule]
+    assert external_rule.configure_calls == 1
+    assert external_rule.log_dir_calls == 1
+    assert block_rule.configure_calls == 1
+
+
+def test_ambiguous_external_declarations_abort_before_activation(monkeypatch):
+    registry = _AmbiguousRegistry(_Rule())
+    old_activation = _Activation("old")
+    old_project = _project("old.json")
+    old_snapshot = _snapshot(old_project, old_activation, "old-ins")
+    registry.old_activation = old_activation
+    state = _state(registry, old_project, old_snapshot)
+    _patch_activation(monkeypatch)
+
+    with pytest.raises(PassImplementationAmbiguous):
+        state._activate_project(project_index=1, project=_project("new.json"))
+
+    assert registry.activated_candidates == []
+    assert state.current_project is old_project
+    assert state.current_project_runtime_snapshot is old_snapshot
+    assert registry.close_calls == [(old_activation,)]
+    assert registry.new_activation.close_calls == 1
 
 
 def test_success_publishes_before_closing_superseded_activation(monkeypatch):

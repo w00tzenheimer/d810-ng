@@ -1187,7 +1187,7 @@ class TestPassImplementationRegression(unittest.TestCase):
         )
         self.assertIsNone(reg.implementation_for("mba-solve"))
 
-    def test_first_compatible_declaration_remains_the_legacy_answer(self):
+    def test_multiple_compatible_declarations_are_ambiguous(self):
         first = self.manifest({"mba-solve": "FirstSolver"})
         second = self.manifest({"mba-solve": "SecondSolver"})
         reg = registry(
@@ -1200,7 +1200,8 @@ class TestPassImplementationRegression(unittest.TestCase):
                 ),
             ]
         )
-        self.assertEqual(reg.implementation_for("mba-solve"), "FirstSolver")
+        with self.assertRaises(PassImplementationAmbiguous):
+            reg.implementation_for("mba-solve")
 
     def test_compatible_manifest_produces_an_immutable_candidate(self):
         manifest = self.manifest({"mba-egraph": "EgglogOptimizer"})

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from d810.core.config import ProjectConfiguration
 from d810.core.plugins import (
     PLUGIN_API_VERSION,
@@ -14,6 +16,7 @@ from d810.core.plugins import (
 from d810.passes.config_v2_hook_runtime import (
     compile_config_v2_hook_schedule as pipeline_v2_hook_activation,
 )
+from d810.passes.pass_pipeline import PipelineConfigError
 
 
 def test_declaration_resolution_never_imports_runtime_or_rule_module(
@@ -57,8 +60,8 @@ def test_declaration_resolution_never_imports_runtime_or_rule_module(
     assert not rule_marker.exists()
 
 
-def test_mba_solve_still_uses_first_compatible_declaration(monkeypatch):
-    """The strict e-graph resolver must not change legacy ``mba-solve``."""
+def test_mba_solve_rejects_ambiguous_compatible_declarations(monkeypatch):
+    """The API-1 resolver rejects more than one compatible provider."""
 
     import d810.backends as backends
 
@@ -90,20 +93,17 @@ def test_mba_solve_still_uses_first_compatible_declaration(monkeypatch):
     )
     monkeypatch.setattr(backends, "registry", lambda: registry)
 
-    activation = pipeline_v2_hook_activation(
-        ProjectConfiguration(
-            path=Path("task16-mba-solve.json"),
-            additional_configuration={
-                "pipeline_v2": [
-                    {
-                        "pass_id": "mba-solve",
-                        "options": {"max_leaves": 4, "require_proof": True},
-                    }
-                ],
-            },
+    with pytest.raises(PipelineConfigError, match="ambiguous"):
+        pipeline_v2_hook_activation(
+            ProjectConfiguration(
+                path=Path("task16-mba-solve.json"),
+                additional_configuration={
+                    "pipeline_v2": [
+                        {
+                            "pass_id": "mba-solve",
+                            "options": {"max_leaves": 4, "require_proof": True},
+                        }
+                    ],
+                },
+            )
         )
-    )
-
-    assert activation.configured_pass_ids == ("mba-solve",)
-    assert [rule.name for rule in activation.instruction_rules] == ["FirstSolver"]
-    assert activation.block_rules == ()

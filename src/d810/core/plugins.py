@@ -1185,7 +1185,7 @@ class BackendRegistry:
             )
 
     def implementation_for(self, pass_id: PassId | str) -> str | None:
-        """The rule class name an installed extension declares for ``pass_id``.
+        """Return the opaque implementation ID declared for ``pass_id``.
 
         d810 derives a pass's ``allowed_rule_names`` from its stage
         descriptors, so it needs the implementing rule's *name* at pass
@@ -1204,23 +1204,15 @@ class BackendRegistry:
         Version-incompatible backends contribute nothing: their manifest is
         read, rejected, and never trusted for anything else.
         """
-        self.discover()
-        with self._lock:
-            candidates = {n: list(c) for n, c in self._candidates.items()}
-        for specs in candidates.values():
-            for spec in specs:
-                try:
-                    manifest = manifest_of(spec.load_manifest())
-                except Exception:
-                    # Classification is probe()'s job and it reports properly
-                    # there; here a bad manifest simply contributes nothing.
-                    continue
-                if manifest.api_version != PLUGIN_API_VERSION:
-                    continue
-                found = manifest.implements.get(pass_id)
-                if found:
-                    return found
-        return None
+        declarations = self.implementation_declarations_for(pass_id)
+        if len(declarations) > 1:
+            raise PassImplementationAmbiguous(
+                str(pass_id),
+                tuple(candidate for candidate, _manifest in declarations),
+            )
+        if not declarations:
+            return None
+        return declarations[0][0].rule_name
 
     def implementation_candidates_for(
         self, pass_id: PassId | str

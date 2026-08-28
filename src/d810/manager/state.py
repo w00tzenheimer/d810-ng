@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import inspect
 import importlib
 import os
@@ -27,7 +28,7 @@ from d810.core.diagnostics_capture_preferences import (
     set_diagnostics_capture_enabled as persist_diagnostics_capture_enabled,
 )
 from d810.core.logging import clear_logs, configure_loggers, getLogger
-from d810.core.plugins import ImplementationOwnership
+from d810.core.plugins import ImplementationOwnership, PassImplementationAmbiguous
 from d810.core.platform import resolve_arch_config
 from d810.core.project import (
     ProjectContext,
@@ -118,24 +119,41 @@ class RuntimeActivationRollbackError(RuntimeError):
     """The previous live runtime could not be re-established after failure."""
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ExternalImplementationBinding:
+    """One activated external implementation bound to one hook lane."""
+
+    ownership: ImplementationOwnership
+    lane: str
+
+    @property
+    def candidate(self):
+        return self.ownership.candidate
+
+    @property
+    def instance(self):
+        return self.ownership.instance
+
+
 def _external_binding_for_name(
     binding_name: str,
-    external_bindings: dict[tuple[str, str], ImplementationOwnership],
-) -> ImplementationOwnership | None:
-    """Resolve one schedule name to its exact activated external ownership."""
+    lane: str,
+    external_bindings: dict[tuple[str, str], _ExternalImplementationBinding],
+) -> _ExternalImplementationBinding | None:
+    """Resolve a schedule name and hook lane to exact external ownership."""
     matches = tuple(
-        ownership
-        for ownership in external_bindings.values()
-        if ownership.candidate.rule_name == binding_name
+        binding
+        for binding in external_bindings.values()
+        if binding.lane == lane and binding.candidate.rule_name == binding_name
     )
     if len(matches) > 1:
         candidates = tuple(
             (
-                ownership.candidate.pass_id,
-                ownership.candidate.backend_name,
-                ownership.candidate.backend_origin,
+                binding.candidate.pass_id,
+                binding.candidate.backend_name,
+                binding.candidate.backend_origin,
             )
-            for ownership in matches
+            for binding in matches
         )
         raise PipelineConfigError(
             f"external implementation binding {binding_name!r} is ambiguous: "
@@ -148,7 +166,9 @@ def _require_registered_schedule_bindings(
     schedule: ConfigV2HookSchedule,
     known_ins_rules: list,
     known_blk_rules: list,
-    external_bindings: dict[tuple[str, str], ImplementationOwnership] | None = None,
+    external_bindings: dict[
+        tuple[str, str], _ExternalImplementationBinding
+    ] | None = None,
 ) -> None:
     """Reject a v2 schedule whose concrete Hex-Rays hooks are unavailable."""
     external_bindings = external_bindings or {}
@@ -164,7 +184,10 @@ def _require_registered_schedule_bindings(
             for binding in schedule.instruction_bindings
             if binding.is_activated
             and binding.name not in known_ins_names
-            and _external_binding_for_name(binding.name, external_bindings) is None
+            and _external_binding_for_name(
+                binding.name, "instruction", external_bindings
+            )
+            is None
         )
     )
     missing_blk = tuple(
@@ -173,7 +196,8 @@ def _require_registered_schedule_bindings(
             for binding in schedule.block_bindings
             if binding.is_activated
             and binding.name not in known_blk_names
-            and _external_binding_for_name(binding.name, external_bindings) is None
+            and _external_binding_for_name(binding.name, "block", external_bindings)
+            is None
         )
     )
     if not (missing_ins or missing_blk):
@@ -541,59 +565,58 @@ class D810State(metaclass=SingletonMeta):
             for binding in schedule.instruction_bindings
             if binding.is_activated
         }
-        block_names = {
-            str(binding.name)
-            for binding in schedule.block_bindings
-            if binding.is_activated
-        }
-        external_rules: dict[tuple[str, str], ImplementationOwnership] = {}
+        external_rules: dict[
+            tuple[str, str], _ExternalImplementationBinding
+        ] = {}
         staged_activations: list[object] = []
-        all_binding_names = instruction_names | block_names
         for pass_id in schedule.configured_pass_ids:
             declarations = _stage_call(
                 backend_registry.implementation_declarations_for,
                 pass_id,
             )
-            for candidate, _manifest in declarations:
-                if candidate.rule_name not in all_binding_names:
-                    continue
-                external_key = (candidate.pass_id, candidate.rule_name)
-                if external_key in external_rules:
-                    _stage_call(
-                        _raise,
-                        PipelineConfigError(
-                            f"pass implementation {candidate.rule_name!r} is ambiguous"
-                        ),
-                    )
-                implementation = _stage_call(
-                    backend_registry.activate_implementation,
-                    candidate,
+            if len(declarations) > 1:
+                _stage_call(
+                    _raise,
+                    PassImplementationAmbiguous(
+                        pass_id,
+                        tuple(candidate for candidate, _manifest in declarations),
+                    ),
                 )
-                staged_ownership = ImplementationOwnership(candidate, implementation)
-                staged_implementations.append(staged_ownership)
-                if not isinstance(implementation, InstructionOptimizationRule):
-                    _stage_call(
-                        _raise,
-                        TypeError(
-                            f"plugin implementation {candidate.rule_name!r} must be "
-                            "an InstructionOptimizationRule"
-                        ),
-                    )
-                services = _stage_call(
-                    backend_registry.plugin_rule_services,
-                    candidate,
+            if not declarations:
+                continue
+            candidate, _manifest = declarations[0]
+            if candidate.rule_name not in instruction_names:
+                continue
+            external_key = (candidate.pass_id, candidate.rule_name)
+            implementation = _stage_call(
+                backend_registry.activate_implementation,
+                candidate,
+            )
+            staged_ownership = ImplementationOwnership(candidate, implementation)
+            staged_implementations.append(staged_ownership)
+            if not isinstance(implementation, InstructionOptimizationRule):
+                _stage_call(
+                    _raise,
+                    TypeError(
+                        f"plugin implementation {candidate.rule_name!r} must be "
+                        "an InstructionOptimizationRule"
+                    ),
                 )
-                _stage_call(implementation.bind_plugin_services, services)
-                external_rules[external_key] = staged_ownership
-                activation = _stage_call(
-                    backend_registry.activation_for_candidate, candidate
-                )
-                if not any(existing is activation for existing in staged_activations):
-                    staged_activations.append(activation)
-                if candidate.rule_name in instruction_names:
-                    candidate_known_ins_rules.append(implementation)
-                if candidate.rule_name in block_names:
-                    candidate_known_blk_rules.append(implementation)
+            services = _stage_call(
+                backend_registry.plugin_rule_services,
+                candidate,
+            )
+            _stage_call(implementation.bind_plugin_services, services)
+            external_rules[external_key] = _ExternalImplementationBinding(
+                ownership=staged_ownership,
+                lane="instruction",
+            )
+            activation = _stage_call(
+                backend_registry.activation_for_candidate, candidate
+            )
+            if not any(existing is activation for existing in staged_activations):
+                staged_activations.append(activation)
+            candidate_known_ins_rules.append(implementation)
 
         snapshot = _stage_call(
             build_project_runtime_snapshot,
@@ -662,7 +685,7 @@ class D810State(metaclass=SingletonMeta):
             if not rule_conf.is_activated:
                 continue
             external_binding = _external_binding_for_name(
-                rule_conf.name, external_rules
+                rule_conf.name, "instruction", external_rules
             )
             rules = (
                 (external_binding.instance,)
@@ -769,7 +792,7 @@ class D810State(metaclass=SingletonMeta):
             if not rule_conf.is_activated:
                 continue
             external_binding = _external_binding_for_name(
-                rule_conf.name, external_rules
+                rule_conf.name, "block", external_rules
             )
             rules = (
                 (external_binding.instance,)
