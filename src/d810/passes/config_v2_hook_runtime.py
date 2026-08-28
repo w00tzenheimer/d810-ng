@@ -65,12 +65,43 @@ STATE_MACHINE_RUNTIME_HOST = "__d810_state_machine_runtime_host__"
 
 
 @dataclass(frozen=True, slots=True)
+class ConfigV2HookBinding:
+    """One compiled hook rule with its owning pass and execution lane."""
+
+    pass_id: str
+    implementation_id: str
+    lane: str
+    rule: RuleConfiguration
+
+    @property
+    def name(self) -> str | None:
+        """Delegate the legacy rule name surface to the payload."""
+        return self.rule.name
+
+    @property
+    def implementation_name(self) -> str:
+        return self.implementation_id
+
+    @property
+    def is_activated(self) -> bool:
+        return self.rule.is_activated
+
+    @property
+    def config(self):
+        return self.rule.config
+
+    def to_dict(self):
+        """Preserve the legacy serialized RuleConfiguration shape."""
+        return self.rule.to_dict()
+
+
+@dataclass(frozen=True, slots=True)
 class ConfigV2HookSchedule:
     """Live callback bindings compiled from one valid config-v2 pipeline."""
 
     configured_pass_ids: tuple[str, ...]
-    instruction_bindings: tuple[RuleConfiguration, ...] = ()
-    block_bindings: tuple[RuleConfiguration, ...] = ()
+    instruction_bindings: tuple[ConfigV2HookBinding, ...] = ()
+    block_bindings: tuple[ConfigV2HookBinding, ...] = ()
     native_state_machine_pass_ids: tuple[str, ...] = ()
     global_const_persistence_enabled: bool = False
     constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = (
@@ -78,11 +109,11 @@ class ConfigV2HookSchedule:
     )
 
     @property
-    def instruction_rules(self) -> tuple[RuleConfiguration, ...]:
+    def instruction_rules(self) -> tuple[ConfigV2HookBinding, ...]:
         return self.instruction_bindings
 
     @property
-    def block_rules(self) -> tuple[RuleConfiguration, ...]:
+    def block_rules(self) -> tuple[ConfigV2HookBinding, ...]:
         return self.block_bindings
 
 
@@ -255,25 +286,39 @@ def _cleanup_family_rule_from(config: PipelineConfig) -> RuleConfiguration:
     return _rule_config(adapter.implementation_name, adapter.transform_options)
 
 
+def _hook_binding(
+    pass_id: str,
+    lane: str,
+    rule: RuleConfiguration,
+) -> ConfigV2HookBinding:
+    return ConfigV2HookBinding(
+        pass_id=pass_id,
+        implementation_id=str(rule.name or ""),
+        lane=lane,
+        rule=rule,
+    )
+
+
 def _dedupe_rule_configs(
-    rules: list[RuleConfiguration],
+    rules: list[ConfigV2HookBinding],
     *,
     field_name: str,
-) -> tuple[RuleConfiguration, ...]:
-    seen: dict[str, dict[str, object]] = {}
-    ordered: list[RuleConfiguration] = []
+) -> tuple[ConfigV2HookBinding, ...]:
+    seen: dict[tuple[str, str, str], dict[str, object]] = {}
+    ordered: list[ConfigV2HookBinding] = []
     for rule in rules:
         name = str(rule.name or "")
         if not name:
             raise PipelineConfigError(f"{field_name} contains an empty rule name")
         config = dict(rule.config)
-        if name in seen:
-            if seen[name] != config:
+        identity = (rule.pass_id, rule.implementation_id, rule.lane)
+        if identity in seen:
+            if seen[identity] != config:
                 raise PipelineConfigError(
                     f"{field_name} contains conflicting duplicate config for {name}"
                 )
             continue
-        seen[name] = config
+        seen[identity] = config
         ordered.append(rule)
     return tuple(ordered)
 
@@ -343,15 +388,21 @@ def compile_config_v2_hook_schedule(project_config) -> ConfigV2HookSchedule:
     configs = _runtime_pipeline_configs(project_config)
     _validate_constant_simplification_ownership(configs)
 
-    instruction_bindings: list[RuleConfiguration] = []
-    block_bindings: list[RuleConfiguration] = []
+    instruction_bindings: list[ConfigV2HookBinding] = []
+    block_bindings: list[ConfigV2HookBinding] = []
     global_const_persistence_enabled = False
     constant_simplification_schedule = None
     native_present = any(
         config.pass_id in STATE_MACHINE_NATIVE_PASS_IDS for config in configs
     )
     if native_present:
-        block_bindings.append(_state_machine_rule_config(configs))
+        block_bindings.append(
+            _hook_binding(
+                STATE_MACHINE_RUNTIME_HOST,
+                "block",
+                _state_machine_rule_config(configs),
+            )
+        )
 
     for config in configs:
         pass_id = config.pass_id
@@ -383,15 +434,25 @@ def compile_config_v2_hook_schedule(project_config) -> ConfigV2HookSchedule:
                 ),
                 schedule=constant_simplification_schedule,
             )
-            instruction_bindings.extend(bundle.instruction_rules)
-            block_bindings.extend(bundle.block_rules)
+            instruction_bindings.extend(
+                _hook_binding(pass_id, "instruction", rule)
+                for rule in bundle.instruction_rules
+            )
+            block_bindings.extend(
+                _hook_binding(pass_id, "block", rule) for rule in bundle.block_rules
+            )
             continue
         if pass_id == MBA_SIMPLIFY_PASS_ID:
             mba_instruction_bindings, mba_block_bindings = _mba_simplify_rules_from(
                 config
             )
-            instruction_bindings.extend(mba_instruction_bindings)
-            block_bindings.extend(mba_block_bindings)
+            instruction_bindings.extend(
+                _hook_binding(pass_id, "instruction", rule)
+                for rule in mba_instruction_bindings
+            )
+            block_bindings.extend(
+                _hook_binding(pass_id, "block", rule) for rule in mba_block_bindings
+            )
             continue
         if pass_id == MBA_SOLVE_PASS_ID:
             # Solver-backed simplification is a single instruction rule rather
@@ -406,7 +467,11 @@ def compile_config_v2_hook_schedule(project_config) -> ConfigV2HookSchedule:
                 # absent, which is what "no solver installed" means.
                 continue
             instruction_bindings.append(
-                _rule_config(rule_name, _mba_solve_options(config))
+                _hook_binding(
+                    pass_id,
+                    "instruction",
+                    _rule_config(rule_name, _mba_solve_options(config)),
+                )
             )
             continue
         if pass_id == MBA_EGRAPH_PASS_ID:
@@ -418,23 +483,33 @@ def compile_config_v2_hook_schedule(project_config) -> ConfigV2HookSchedule:
                 install_hint="d810-egglog",
             )
             instruction_bindings.append(
-                _rule_config(candidate.rule_name, _mba_egraph_options(config))
+                _hook_binding(
+                    pass_id,
+                    "instruction",
+                    _rule_config(candidate.rule_name, _mba_egraph_options(config)),
+                )
             )
             continue
         if pass_id == ROTATE_IDIOM_RECOVERY_PASS_ID:
             block_bindings.append(
-                _rule_config(
-                    ROTATE_IDIOM_RECOVERY_IMPLEMENTATION,
-                    _rotate_idiom_recovery_options(config),
+                _hook_binding(
+                    pass_id,
+                    "block",
+                    _rule_config(
+                        ROTATE_IDIOM_RECOVERY_IMPLEMENTATION,
+                        _rotate_idiom_recovery_options(config),
+                    ),
                 )
             )
             continue
         if pass_id in STATE_MACHINE_NATIVE_PASS_IDS:
             continue
         if pass_id == SIMPLE_FLATTENING_CLEANUP_PASS_ID:
-            block_bindings.append(_cleanup_family_rule_from(config))
+            block_bindings.append(
+                _hook_binding(pass_id, "block", _cleanup_family_rule_from(config))
+            )
             continue
-        block_bindings.append(_flow_rule_from(config))
+        block_bindings.append(_hook_binding(pass_id, "block", _flow_rule_from(config)))
 
     return ConfigV2HookSchedule(
         configured_pass_ids=tuple(config.pass_id for config in configs),
@@ -465,6 +540,7 @@ def config_v2_native_state_machine_configs(
 
 
 __all__ = [
+    "ConfigV2HookBinding",
     "ConfigV2HookSchedule",
     "STATE_MACHINE_NATIVE_PASS_IDS",
     "STATE_MACHINE_RUNTIME_HOST",

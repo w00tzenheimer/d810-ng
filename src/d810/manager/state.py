@@ -99,6 +99,7 @@ from d810.passes.constant_simplification import (
     constant_simplification_provider_maturities,
 )
 from d810.passes.config_v2_hook_runtime import (
+    ConfigV2HookBinding,
     ConfigV2HookSchedule,
     compile_config_v2_hook_schedule,
     requires_native_preanalysis_handlers,
@@ -135,31 +136,17 @@ class _ExternalImplementationBinding:
         return self.ownership.instance
 
 
-def _external_binding_for_name(
-    binding_name: str,
+def _external_binding_for_schedule(
+    schedule_binding: ConfigV2HookBinding,
     lane: str,
-    external_bindings: dict[tuple[str, str], _ExternalImplementationBinding],
+    external_bindings: dict[
+        tuple[str, str, str], _ExternalImplementationBinding
+    ],
 ) -> _ExternalImplementationBinding | None:
-    """Resolve a schedule name and hook lane to exact external ownership."""
-    matches = tuple(
-        binding
-        for binding in external_bindings.values()
-        if binding.lane == lane and binding.candidate.rule_name == binding_name
+    """Resolve one schedule binding to its exact external ownership."""
+    return external_bindings.get(
+        (schedule_binding.pass_id, schedule_binding.implementation_id, lane)
     )
-    if len(matches) > 1:
-        candidates = tuple(
-            (
-                binding.candidate.pass_id,
-                binding.candidate.backend_name,
-                binding.candidate.backend_origin,
-            )
-            for binding in matches
-        )
-        raise PipelineConfigError(
-            f"external implementation binding {binding_name!r} is ambiguous: "
-            f"{candidates!r}"
-        )
-    return matches[0] if matches else None
 
 
 def _require_registered_schedule_bindings(
@@ -167,7 +154,7 @@ def _require_registered_schedule_bindings(
     known_ins_rules: list,
     known_blk_rules: list,
     external_bindings: dict[
-        tuple[str, str], _ExternalImplementationBinding
+        tuple[str, str, str], _ExternalImplementationBinding
     ] | None = None,
 ) -> None:
     """Reject a v2 schedule whose concrete Hex-Rays hooks are unavailable."""
@@ -184,9 +171,7 @@ def _require_registered_schedule_bindings(
             for binding in schedule.instruction_bindings
             if binding.is_activated
             and binding.name not in known_ins_names
-            and _external_binding_for_name(
-                binding.name, "instruction", external_bindings
-            )
+            and _external_binding_for_schedule(binding, "instruction", external_bindings)
             is None
         )
     )
@@ -196,7 +181,7 @@ def _require_registered_schedule_bindings(
             for binding in schedule.block_bindings
             if binding.is_activated
             and binding.name not in known_blk_names
-            and _external_binding_for_name(binding.name, "block", external_bindings)
+            and _external_binding_for_schedule(binding, "block", external_bindings)
             is None
         )
     )
@@ -560,13 +545,13 @@ class D810State(metaclass=SingletonMeta):
         candidate_known_ins_rules = _stage_call(self._build_known_instruction_rules)
         candidate_known_blk_rules = _stage_call(self._build_known_block_rules)
 
-        instruction_names = {
-            str(binding.name)
+        external_binding_keys = {
+            (binding.pass_id, binding.implementation_id, "instruction")
             for binding in schedule.instruction_bindings
             if binding.is_activated
         }
         external_rules: dict[
-            tuple[str, str], _ExternalImplementationBinding
+            tuple[str, str, str], _ExternalImplementationBinding
         ] = {}
         staged_activations: list[object] = []
         for pass_id in schedule.configured_pass_ids:
@@ -585,9 +570,9 @@ class D810State(metaclass=SingletonMeta):
             if not declarations:
                 continue
             candidate, _manifest = declarations[0]
-            if candidate.rule_name not in instruction_names:
+            external_key = (candidate.pass_id, candidate.rule_name, "instruction")
+            if external_key not in external_binding_keys:
                 continue
-            external_key = (candidate.pass_id, candidate.rule_name)
             implementation = _stage_call(
                 backend_registry.activate_implementation,
                 candidate,
@@ -684,8 +669,8 @@ class D810State(metaclass=SingletonMeta):
         for rule_conf in schedule.instruction_bindings:
             if not rule_conf.is_activated:
                 continue
-            external_binding = _external_binding_for_name(
-                rule_conf.name, "instruction", external_rules
+            external_binding = _external_binding_for_schedule(
+                rule_conf, "instruction", external_rules
             )
             rules = (
                 (external_binding.instance,)
@@ -791,8 +776,8 @@ class D810State(metaclass=SingletonMeta):
         for rule_conf in schedule.block_bindings:
             if not rule_conf.is_activated:
                 continue
-            external_binding = _external_binding_for_name(
-                rule_conf.name, "block", external_rules
+            external_binding = _external_binding_for_schedule(
+                rule_conf, "block", external_rules
             )
             rules = (
                 (external_binding.instance,)

@@ -11,7 +11,6 @@ from d810.core.plugins import (
     BackendRegistry,
     BackendSpec,
     ImplementationOwnership,
-    PassImplementationAmbiguous,
     PassImplementationCandidate,
     PassImplementationMisdeclared,
     PassImplementationUnavailable,
@@ -20,7 +19,7 @@ from d810.core.plugins import (
 )
 from d810.manager import state as state_module
 from d810.manager.project_runtime import ProjectIdentitySnapshot, ProjectRuntimeSnapshot
-from d810.passes.config_v2_hook_runtime import ConfigV2HookSchedule
+from d810.passes.config_v2_hook_runtime import ConfigV2HookBinding, ConfigV2HookSchedule
 from d810.passes.pass_pipeline import PipelineConfigError
 
 
@@ -202,34 +201,54 @@ class _Registry:
         self.discarded.append(tuple(staged))
 
 
-class _AmbiguousRegistry(_Registry):
-    def __init__(self, implementation):
-        super().__init__(implementation)
+class _SharedImplementationIdRegistry(_Registry):
+    def __init__(self, first, second):
+        super().__init__(first, declared_name="shared-implementation-id")
+        self.second = second
         self.second_candidate = PassImplementationCandidate(
-            pass_id=self.candidate.pass_id,
+            pass_id="second-pass",
             backend_name="second-external",
             backend_origin="second-external-wheel",
             rule_modules=(),
-            rule_name=self.candidate.rule_name,
+            rule_name="shared-implementation-id",
         )
         self.second_manifest = BackendManifest(
             name="second-external",
             api_version=1,
             provides=lambda: object(),
-            implements={"external-pass": self.second_candidate.rule_name},
+            implements={"second-pass": self.second_candidate.rule_name},
         )
         self.activated_candidates = []
 
     def implementation_declarations_for(self, pass_id: str):
-        assert pass_id == "external-pass"
-        return (
-            (self.candidate, self.manifest),
-            (self.second_candidate, self.second_manifest),
-        )
+        if pass_id == self.candidate.pass_id:
+            return ((self.candidate, self.manifest),)
+        assert pass_id == self.second_candidate.pass_id
+        return ((self.second_candidate, self.second_manifest),)
 
     def activate_implementation(self, candidate):
         self.activated_candidates.append(candidate)
-        return super().activate_implementation(self.candidate)
+        if candidate is self.second_candidate:
+            self.factory_calls += 1
+            return self.second
+        return super().activate_implementation(candidate)
+
+    def plugin_rule_services(self, candidate):
+        if candidate is self.second_candidate:
+            return PluginRuleServices(
+                plugin=PluginIdentity(
+                    "second-external",
+                    "second-external",
+                    "1",
+                    "second-external-wheel",
+                ),
+                host=SimpleNamespace(),
+            )
+        return super().plugin_rule_services(candidate)
+
+    def activation_for_candidate(self, candidate):
+        assert candidate in (self.candidate, self.second_candidate)
+        return self.new_activation
 
 
 def _project(name: str) -> ProjectConfiguration:
@@ -283,15 +302,37 @@ def _state(registry, old_project, old_snapshot):
 
 
 def _patch_activation(
-    monkeypatch, *, binding_name="ExternalRule", block_binding_name=None
+    monkeypatch,
+    *,
+    binding_name="ExternalRule",
+    block_binding_name=None,
+    configured_pass_ids=("external-pass",),
 ):
+    instruction_bindings = tuple(
+        ConfigV2HookBinding(
+            pass_id=pass_id,
+            implementation_id=binding_name,
+            lane="instruction",
+            rule=RuleConfiguration(
+                name=binding_name, is_activated=True, config={}
+            ),
+        )
+        for pass_id in configured_pass_ids
+    )
     schedule = ConfigV2HookSchedule(
-        configured_pass_ids=("external-pass",),
-        instruction_bindings=(
-            RuleConfiguration(name=binding_name, is_activated=True, config={}),
-        ),
+        configured_pass_ids=configured_pass_ids,
+        instruction_bindings=instruction_bindings,
         block_bindings=(
-            (RuleConfiguration(name=block_binding_name, is_activated=True, config={}),)
+            (
+                ConfigV2HookBinding(
+                    pass_id="external-pass",
+                    implementation_id=block_binding_name,
+                    lane="block",
+                    rule=RuleConfiguration(
+                        name=block_binding_name, is_activated=True, config={}
+                    ),
+                ),
+            )
             if block_binding_name is not None
             else ()
         ),
@@ -534,36 +575,6 @@ def test_opaque_external_binding_selects_owned_instance_once(monkeypatch):
     assert internal_rule.configure_calls == 0
 
 
-def test_opaque_external_binding_rejects_multiple_owners():
-    first = PassImplementationCandidate(
-        pass_id="first-pass",
-        backend_name="first-backend",
-        backend_origin="first-origin",
-        rule_modules=(),
-        rule_name="opaque-implementation-id",
-    )
-    second = PassImplementationCandidate(
-        pass_id="second-pass",
-        backend_name="second-backend",
-        backend_origin="second-origin",
-        rule_modules=(),
-        rule_name="opaque-implementation-id",
-    )
-    bindings = {
-        (first.pass_id, first.rule_name): state_module._ExternalImplementationBinding(
-            ImplementationOwnership(first, _Rule()), "instruction"
-        ),
-        (second.pass_id, second.rule_name): state_module._ExternalImplementationBinding(
-            ImplementationOwnership(second, _Rule()), "instruction"
-        ),
-    }
-
-    with pytest.raises(PipelineConfigError, match="binding .* ambiguous"):
-        state_module._external_binding_for_name(
-            "opaque-implementation-id", "instruction", bindings
-        )
-
-
 def test_external_instruction_binding_does_not_capture_same_name_block_binding(
     monkeypatch,
 ):
@@ -597,23 +608,43 @@ def test_external_instruction_binding_does_not_capture_same_name_block_binding(
     assert block_rule.configure_calls == 1
 
 
-def test_ambiguous_external_declarations_abort_before_activation(monkeypatch):
-    registry = _AmbiguousRegistry(_Rule())
+def test_shared_opaque_id_selects_each_configured_pass_owner_once(monkeypatch):
+    first_rule = _OpaqueBindingRule()
+    second_rule = _OpaqueBindingRule()
+    registry = _SharedImplementationIdRegistry(first_rule, second_rule)
     old_activation = _Activation("old")
     old_project = _project("old.json")
     old_snapshot = _snapshot(old_project, old_activation, "old-ins")
     registry.old_activation = old_activation
     state = _state(registry, old_project, old_snapshot)
-    _patch_activation(monkeypatch)
+    _patch_activation(
+        monkeypatch,
+        binding_name="shared-implementation-id",
+        configured_pass_ids=("external-pass", "second-pass"),
+    )
+    new_project = _project("new.json")
+    new_snapshot = _snapshot(
+        new_project, registry.new_activation, first_rule, second_rule
+    )
 
-    with pytest.raises(PassImplementationAmbiguous):
-        state._activate_project(project_index=1, project=_project("new.json"))
+    def build(**kwargs):
+        assert tuple(
+            ownership.candidate for ownership in kwargs["activated_implementations"]
+        ) == (registry.candidate, registry.second_candidate)
+        return new_snapshot
 
-    assert registry.activated_candidates == []
-    assert state.current_project is old_project
-    assert state.current_project_runtime_snapshot is old_snapshot
-    assert registry.close_calls == [(old_activation,)]
-    assert registry.new_activation.close_calls == 1
+    monkeypatch.setattr(state_module, "build_project_runtime_snapshot", build)
+    state._activate_project(project_index=1, project=new_project)
+
+    assert registry.activated_candidates == [
+        registry.candidate,
+        registry.second_candidate,
+    ]
+    assert state.current_ins_rules == [first_rule, second_rule]
+    assert first_rule.configure_calls == 1
+    assert second_rule.configure_calls == 1
+    assert len(first_rule.bound_services) == 1
+    assert len(second_rule.bound_services) == 1
 
 
 def test_success_publishes_before_closing_superseded_activation(monkeypatch):

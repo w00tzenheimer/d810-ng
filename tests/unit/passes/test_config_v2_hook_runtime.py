@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.config import ProjectConfiguration
+from d810.core.config import ProjectConfiguration, RuleConfiguration
 from d810.passes.cleanup_family_adapter import (
     SIMPLE_FLATTENING_CLEANUP_PASS_ID,
     SIMPLE_FLATTENING_CLEANUP_RULE,
@@ -15,7 +15,9 @@ from d810.passes.cleanup_family_adapter import (
 from d810.passes.config_v2_hook_runtime import (
     STATE_MACHINE_NATIVE_PASS_IDS,
     STATE_MACHINE_RUNTIME_HOST,
+    ConfigV2HookBinding,
     ConfigV2HookSchedule,
+    _dedupe_rule_configs,
     compile_config_v2_hook_schedule,
     config_v2_native_state_machine_configs,
     requires_native_preanalysis_handlers,
@@ -90,6 +92,25 @@ def test_schedule_preserves_declared_order_and_typed_bindings() -> None:
         "IndirectCallResolver",
     ]
     assert schedule.instruction_bindings == ()
+
+
+def test_schedule_deduplicates_by_pass_owner_not_shared_implementation_id() -> None:
+    bindings = [
+        ConfigV2HookBinding(
+            pass_id="first-pass",
+            implementation_id="shared-id",
+            lane="instruction",
+            rule=RuleConfiguration(name="shared-id", is_activated=True, config={}),
+        ),
+        ConfigV2HookBinding(
+            pass_id="second-pass",
+            implementation_id="shared-id",
+            lane="instruction",
+            rule=RuleConfiguration(name="shared-id", is_activated=True, config={}),
+        ),
+    ]
+
+    assert _dedupe_rule_configs(bindings, field_name="instruction") == tuple(bindings)
 
 
 def test_native_spine_compiles_private_runtime_host() -> None:
