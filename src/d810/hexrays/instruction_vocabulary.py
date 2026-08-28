@@ -133,8 +133,11 @@ _VOCABULARY_ROWS = (
     ("m_jle", _entry(InsnKind.COND_JUMP, OperandShape(True, True, True), predicate=PredicateKind.SLE, transfer=ControlTransferKind.CONDITIONAL_BRANCH)),
     ("m_jl", _entry(InsnKind.COND_JUMP, OperandShape(True, True, True), predicate=PredicateKind.SLT, transfer=ControlTransferKind.CONDITIONAL_BRANCH)),
     ("m_jcnd", _entry(InsnKind.COND_JUMP, OperandShape(True, False, True), predicate=PredicateKind.TRUTHY, transfer=ControlTransferKind.CONDITIONAL_BRANCH)),
-    ("m_call", _entry(InsnKind.CALL, OperandShape(True, False, True), call=CallKind.DIRECT)),
-    ("m_icall", _entry(InsnKind.CALL, OperandShape(True, True, True), call=CallKind.INDIRECT)),
+    # IDA 9.4 emits target-only direct calls with ``d=mop_z``; when present,
+    # d carries the call-info argument list.
+    ("m_call", _entry(InsnKind.CALL, OperandShape(True, False, None), call=CallKind.DIRECT)),
+    # IDA 9.4 applies the same optional call-info encoding to indirect calls.
+    ("m_icall", _entry(InsnKind.CALL, OperandShape(True, True, None), call=CallKind.INDIRECT)),
     # SDK-known retained operations without a portable semantic model. Their
     # exact roles remain closed and replayable; authority consumers must ignore
     # them unless an independent semantic fact authorizes use.
@@ -322,9 +325,14 @@ def _validate_roles(name: str, *, l: Any, r: Any, d: Any) -> None:
         raise ValueError(f"opcode {name} operand shape rejects non-block target")
     if canonical == "m_jtbl" and getattr(r, "kind", None) is not OperandKind.CASE_LIST:
         raise ValueError(f"opcode {name} operand shape rejects non-case-list table")
-    if canonical in {"m_call", "m_icall"} and (
+    if canonical == "m_call" and (
         getattr(l, "kind", None) in {None, OperandKind.EMPTY}
-        or getattr(d, "kind", None) is not OperandKind.ARG_LIST
+        or (_present(d) and getattr(d, "kind", None) is not OperandKind.ARG_LIST)
+    ):
+        raise ValueError(f"opcode {name} operand shape rejects incomplete call")
+    if canonical == "m_icall" and (
+        getattr(l, "kind", None) in {None, OperandKind.EMPTY}
+        or (_present(d) and getattr(d, "kind", None) is not OperandKind.ARG_LIST)
     ):
         raise ValueError(f"opcode {name} operand shape rejects incomplete call")
 

@@ -263,8 +263,8 @@ class TestMbaSerializerInstructionMeta:
             "m_jge": OperandShape(True, True, True),
             "m_jl": OperandShape(True, True, True),
             "m_jle": OperandShape(True, True, True),
-            "m_call": OperandShape(True, False, True),
-            "m_icall": OperandShape(True, True, True),
+            "m_call": OperandShape(True, False, None),
+            "m_icall": OperandShape(True, True, None),
             "m_ext": OperandShape(True, True, True),
         }
         expected: dict[str, OperandShape] = {}
@@ -396,6 +396,45 @@ class TestMbaSerializerInstructionMeta:
                 opcode_name, l=left, r=right, d=dest,
             )
 
+    def test_direct_call_accepts_target_only_but_rejects_non_argument_destination(
+        self,
+    ) -> None:
+        """SDK 9.4 can omit m_call.d when the direct call has no call-info."""
+        from d810.hexrays.instruction_vocabulary import validate_operand_shape
+        from d810.ir.flowgraph import MopSnapshot, OperandKind
+
+        target = MopSnapshot(kind=OperandKind.GLOBAL, size=0, gaddr=0xB290)
+        args = MopSnapshot(kind=OperandKind.ARG_LIST, size=0, args=())
+        invalid_dest = MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=1)
+
+        assert validate_operand_shape("m_call", l=target, r=None, d=None) is not None
+        assert validate_operand_shape("m_call", l=target, r=None, d=args) is not None
+        with pytest.raises(ValueError, match="incomplete call"):
+            validate_operand_shape("m_call", l=target, r=None, d=invalid_dest)
+
+    def test_indirect_call_accepts_target_only_but_rejects_non_argument_destination(
+        self,
+    ) -> None:
+        """SDK 9.4 can omit m_icall.d when the indirect call has no call-info."""
+        from d810.hexrays.instruction_vocabulary import validate_operand_shape
+        from d810.ir.flowgraph import MopSnapshot, OperandKind
+
+        selector = MopSnapshot(kind=OperandKind.REGISTER, size=2, reg=240)
+        offset = MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=8)
+        args = MopSnapshot(kind=OperandKind.ARG_LIST, size=0, args=())
+        invalid_dest = MopSnapshot(kind=OperandKind.REGISTER, size=8, reg=1)
+
+        assert validate_operand_shape(
+            "m_icall", l=selector, r=offset, d=None,
+        ) is not None
+        assert validate_operand_shape(
+            "m_icall", l=selector, r=offset, d=args,
+        ) is not None
+        with pytest.raises(ValueError, match="incomplete call"):
+            validate_operand_shape(
+                "m_icall", l=selector, r=offset, d=invalid_dest,
+            )
+
     def test_opcode_name_comes_from_sdk_opcode_constants(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -453,6 +492,26 @@ class TestMbaSerializerInstructionMeta:
 
         assert validate_live_operand_shape(
             "m_icall", l=selector, r=offset, d=arguments,
+            kind_classifier=serializer._live_operand_kind,
+        ) is not None
+
+    def test_live_shape_accepts_call_info_omitted_as_mop_z(self, monkeypatch) -> None:
+        """Live mop_z call-info is absent, not an invalid non-argument mop."""
+        import d810.hexrays.mba_serializer as serializer
+        from d810.hexrays.instruction_vocabulary import validate_live_operand_shape
+
+        monkeypatch.setattr(serializer, "_ihr", _FakeIhr)
+        empty = _FakeMop(_FakeIhr.mop_z)
+        direct_target = _FakeMop(_FakeIhr.mop_v, 8, "target", g=0xB290)
+        selector = _FakeMop(_FakeIhr.mop_r, 2, "selector", r=240)
+        offset = _FakeMop(_FakeIhr.mop_r, 8, "offset", r=8)
+
+        assert validate_live_operand_shape(
+            "m_call", l=direct_target, r=empty, d=empty,
+            kind_classifier=serializer._live_operand_kind,
+        ) is not None
+        assert validate_live_operand_shape(
+            "m_icall", l=selector, r=offset, d=empty,
             kind_classifier=serializer._live_operand_kind,
         ) is not None
 

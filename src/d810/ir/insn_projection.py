@@ -94,6 +94,12 @@ def _instruction_attrs(insn: InsnSnapshot) -> dict[str, object]:
     raw_opcode = insn.raw_opcode if insn.raw_opcode is not None else insn.opcode
     if raw_opcode >= 0:
         attrs.setdefault("raw_opcode_int", int(raw_opcode))
+    if insn.call_kind is not None and (
+        insn.d is None or insn.d.kind is OperandKind.EMPTY
+    ):
+        # Without an mcallinfo operand, an empty portable args tuple or absent
+        # result cannot prove zero arguments or no return registers.
+        attrs["call_info_state"] = "unknown"
     address_refs = _address_stack_refs_from_operands(insn)
     if address_refs:
         attrs["address_stack_refs"] = address_refs

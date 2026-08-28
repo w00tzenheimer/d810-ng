@@ -458,6 +458,52 @@ def test_instruction_projection_call_and_return_operations():
     )
 
 
+def test_instruction_projection_target_only_direct_call_marks_call_info_unknown():
+    call = project_instruction(
+        InsnSnapshot(
+            opcode=0x41,
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.CALL,
+            l=_glob(0xB290),
+            call_kind=CallKind.DIRECT,
+        )
+    )
+
+    target = Varnode(Space.GLOBAL, 0xB290, 8)
+    assert call.inputs == (target,)
+    assert call.effects[0].kind is InstructionEffectKind.CALL
+    assert call.effects[0].target == target
+    assert call.control == InstructionControl(
+        call_kind=CallKind.DIRECT, call_target=target,
+    )
+    assert call.attrs["call_info_state"] == "unknown"
+
+
+def test_instruction_projection_target_only_indirect_call_marks_call_info_unknown():
+    call = project_instruction(
+        InsnSnapshot(
+            opcode=0x42,
+            ea=0x1000,
+            operands=(),
+            kind=InsnKind.CALL,
+            l=_reg(240, size=2),
+            r=_reg(8, size=8),
+            call_kind=CallKind.INDIRECT,
+        )
+    )
+
+    target = Varnode(Space.REGISTER, 240, 2)
+    offset = Varnode(Space.REGISTER, 8, 8)
+    assert call.inputs == (target, offset)
+    assert call.effects[0].kind is InstructionEffectKind.CALL
+    assert call.effects[0].target == target
+    assert call.control == InstructionControl(
+        call_kind=CallKind.INDIRECT, call_target=target,
+    )
+    assert call.attrs["call_info_state"] == "unknown"
+
+
 def test_instruction_projection_call_argument_list_becomes_call_args():
     call = project_instruction(
         InsnSnapshot(
