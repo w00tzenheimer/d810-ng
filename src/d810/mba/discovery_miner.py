@@ -567,14 +567,14 @@ def _fixture_json(value: Mapping[str, object]) -> str:
     return json.dumps(_json_ready(value), allow_nan=False, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
 
 
-def _cleanup_after_materialization_error(
+def _reconcile_materialization_error(
     store: MbaDiscoveryStore,
     proposal_id: str,
     path: str,
     digest: str,
     error: BaseException,
-) -> bool:
-    """Return whether an exact owned tree is definitively safe to remove."""
+) -> None:
+    """Attach public-store outcome context without authorizing tree deletion."""
 
     try:
         snapshot = store.proposal_snapshot(proposal_id)
@@ -584,16 +584,20 @@ def _cleanup_after_materialization_error(
             "proposal_snapshot(); exact artifact tree preserved for adoption: "
             f"{type(reconciliation_error).__name__}: {reconciliation_error}"
         )
-        return False
+        return
     if snapshot is None:
         error.add_note(
             "materialization commit outcome is indeterminate because the proposal "
             "snapshot is unknown; exact artifact tree preserved for adoption"
         )
-        return False
+        return
     proposal = snapshot.proposal
     if proposal.state is ProposalState.PROPOSED:
-        return True
+        error.add_note(
+            "materialization reconciliation observed PROPOSED, but a read snapshot "
+            "is not cleanup authority; exact artifact tree preserved for adoption"
+        )
+        return
     if (
         proposal.state is ProposalState.MATERIALIZED
         and proposal.materialized_path == path
@@ -603,13 +607,12 @@ def _cleanup_after_materialization_error(
             "materialization commit was durably reconciled to the exact path and "
             "digest; exact artifact tree preserved"
         )
-        return False
+        return
     error.add_note(
         "materialization commit outcome is indeterminate because the authoritative "
         f"snapshot is {proposal.state.value} with different ownership; exact "
         "artifact tree preserved for adoption"
     )
-    return False
 
 
 def materialize_proposal(
@@ -725,22 +728,26 @@ def materialize_proposal(
         digest = _digest_files(expected)
         _exclusive_rename(parent_fd, stage_name, output_name)
         published = True
-        stage_path = None
-        os.close(stage_fd)
-        stage_fd = None
-        final_fd = _open_at(parent_fd, output_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        info = os.fstat(final_fd)
-        root_identity = (info.st_dev, info.st_ino)
-        inspected_digest, child_identities = _inspect_tree(
-            final_fd, output_dir, expected, fsync_files=True
-        )
-        if inspected_digest != digest:
-            raise OSError(errno.EIO, "published artifact digest changed")
-        os.fsync(final_fd)
-        os.fsync(parent_fd)
-        _verify_parent_path(output_dir.parent, parent_fd)
-        os.close(final_fd)
-        final_fd = None
+        try:
+            stage_path = None
+            os.close(stage_fd)
+            stage_fd = None
+            final_fd = _open_at(parent_fd, output_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            info = os.fstat(final_fd)
+            root_identity = (info.st_dev, info.st_ino)
+            inspected_digest, child_identities = _inspect_tree(
+                final_fd, output_dir, expected, fsync_files=True
+            )
+            if inspected_digest != digest:
+                raise OSError(errno.EIO, "published artifact digest changed")
+            os.fsync(final_fd)
+            os.fsync(parent_fd)
+            _verify_parent_path(output_dir.parent, parent_fd)
+            os.close(final_fd)
+            final_fd = None
+        except BaseException as error:
+            mark_error = error
+            raise
         try:
             receipt = store.mark_materialized(
                 proposal_id,
@@ -754,7 +761,8 @@ def materialize_proposal(
             )
         except BaseException as error:
             mark_error = error
-            cleanup_published = _cleanup_after_materialization_error(
+            cleanup_published = False
+            _reconcile_materialization_error(
                 store, proposal_id, str(output_dir), digest, error
             )
             raise

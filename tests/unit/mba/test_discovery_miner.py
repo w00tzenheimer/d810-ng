@@ -1027,7 +1027,7 @@ def test_materialization_rejects_parent_replacement_at_store_cas_boundary(
 
     monkeypatch.setattr(store, "mark_materialized", replace_parent_at_cas)
     try:
-        with pytest.raises((OSError, ValueError), match="parent"):
+        with pytest.raises((OSError, ValueError), match="parent") as raised:
             materialize_proposal(store, proposal_id, output)
         snapshot = store.proposal_snapshot(proposal_id)
         assert snapshot is not None
@@ -1035,7 +1035,13 @@ def test_materialization_rejects_parent_replacement_at_store_cas_boundary(
         assert store.count_rows("residual_group_events") == before_events
         assert not output.exists()
         assert tuple(parent.iterdir()) == ()
-        assert tuple(moved.iterdir()) == ()
+        orphan = moved / "review"
+        assert orphan.is_dir()
+        assert len(tuple(orphan.iterdir())) == 2
+        assert any(
+            "not cleanup authority" in note and "preserved" in note
+            for note in getattr(raised.value, "__notes__", ())
+        )
     finally:
         if parent.exists():
             shutil.rmtree(parent)
@@ -1070,11 +1076,18 @@ def test_materialization_pre_commit_baseexception_restores_store_and_artifacts(
     )
     before_events = store.count_rows("residual_group_events")
     try:
-        with pytest.raises(interrupt_type, match="controlled pre-commit interruption"):
+        with pytest.raises(
+            interrupt_type, match="controlled pre-commit interruption"
+        ) as raised:
             materialize_proposal(store, proposal_id, output)
 
         assert verify_calls == 2
-        assert not output.exists()
+        assert output.is_dir()
+        assert len(tuple(output.iterdir())) == 2
+        assert any(
+            "not cleanup authority" in note and "preserved" in note
+            for note in getattr(raised.value, "__notes__", ())
+        )
         assert not store._connection.in_transaction
         assert tuple(store._connection.execute(
             "SELECT state FROM proposals WHERE proposal_id=?", (proposal_id,)
@@ -1098,6 +1111,12 @@ def test_materialization_pre_commit_baseexception_restores_store_and_artifacts(
         snapshot = store.proposal_snapshot(proposal_id)
         assert snapshot is not None
         assert snapshot.proposal.state.value == "proposed"
+        monkeypatch.setattr(discovery_miner, "_verify_parent_path", original_verify)
+        path, digest = materialize_proposal(store, proposal_id, output)
+        assert (path, digest) == (
+            str(output.resolve()),
+            store.proposal_snapshot(proposal_id).proposal.materialized_digest,
+        )
     finally:
         store.close()
 
@@ -1200,6 +1219,61 @@ def test_materialization_reconciliation_failure_preserves_adoptable_orphan(
         store.close()
 
 
+def test_stale_proposed_reconciliation_cannot_delete_competitor_materialization(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba.discovery_miner import _tree_digest, materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, "stale-proposed-reconciliation"
+    )
+    competitor = MbaDiscoveryStore(store.path)
+    output = tmp_path / "stale-proposed-reconciliation-review"
+    original_snapshot = store.proposal_snapshot
+    interruption = SystemExit("controlled ambiguous recording outcome")
+    snapshot_calls = 0
+    competitor_result: tuple[str, str] | None = None
+
+    def interrupt_recording(*_args, **_kwargs):
+        raise interruption
+
+    def reconcile_then_compete(requested_proposal_id):
+        nonlocal snapshot_calls, competitor_result
+        snapshot_calls += 1
+        reconciled = original_snapshot(requested_proposal_id)
+        if snapshot_calls == 2:
+            assert reconciled is not None
+            assert reconciled.proposal.state is ProposalState.PROPOSED
+            competitor_result = materialize_proposal(
+                competitor, requested_proposal_id, output
+            )
+            durable = competitor.proposal_snapshot(requested_proposal_id)
+            assert durable is not None
+            assert durable.proposal.state is ProposalState.MATERIALIZED
+        return reconciled
+
+    monkeypatch.setattr(store, "mark_materialized", interrupt_recording)
+    monkeypatch.setattr(store, "proposal_snapshot", reconcile_then_compete)
+    try:
+        with pytest.raises(SystemExit) as raised:
+            materialize_proposal(store, proposal_id, output)
+
+        assert raised.value is interruption
+        assert snapshot_calls == 2
+        assert competitor_result is not None
+        durable = competitor.proposal_snapshot(proposal_id)
+        assert durable is not None
+        assert durable.proposal.state is ProposalState.MATERIALIZED
+        assert durable.proposal.materialized_path == competitor_result[0]
+        assert durable.proposal.materialized_digest == competitor_result[1]
+        assert output.is_dir()
+        assert _tree_digest(output) == competitor_result[1]
+        assert materialize_proposal(competitor, proposal_id, output) == competitor_result
+    finally:
+        competitor.close()
+        store.close()
+
+
 def test_materialization_exception_reconciliation_never_removes_replacement_owner(
     tmp_path, monkeypatch
 ) -> None:
@@ -1232,7 +1306,7 @@ def test_materialization_exception_reconciliation_never_removes_replacement_owne
         store.close()
 
 
-def test_materialization_cleanup_failure_does_not_mask_original_baseexception(
+def test_mark_exception_preserves_foreign_content_and_original_baseexception(
     tmp_path, monkeypatch
 ) -> None:
     from d810.mba.discovery_miner import materialize_proposal
@@ -1257,6 +1331,49 @@ def test_materialization_cleanup_failure_does_not_mask_original_baseexception(
 
         assert raised.value is interruption
         assert rule_path.read_text() == "replacement owner content"
+        assert any(
+            "not cleanup authority" in note and "preserved" in note
+            for note in getattr(raised.value, "__notes__", ())
+        )
+        current = store.proposal_snapshot(proposal_id)
+        assert current is not None
+        assert current.proposal.state is ProposalState.PROPOSED
+    finally:
+        shutil.rmtree(output)
+        store.close()
+
+
+def test_post_publication_pre_mark_baseexception_is_not_masked_by_cleanup(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba import discovery_miner
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, "pre-mark-cleanup-conflict"
+    )
+    output = tmp_path / "pre-mark-cleanup-conflict-review"
+    snapshot = store.proposal_snapshot(proposal_id)
+    assert snapshot is not None
+    rule_path = output / f"{snapshot.proposal.proposal_fingerprint}.rule.py"
+    interruption = KeyboardInterrupt("controlled post-publication interruption")
+    verify_calls = 0
+
+    def mutate_then_interrupt(_path, _parent_fd):
+        nonlocal verify_calls
+        verify_calls += 1
+        assert output.is_dir()
+        rule_path.write_text("foreign pre-mark content")
+        raise interruption
+
+    monkeypatch.setattr(discovery_miner, "_verify_parent_path", mutate_then_interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt) as raised:
+            materialize_proposal(store, proposal_id, output)
+
+        assert raised.value is interruption
+        assert verify_calls == 1
+        assert rule_path.read_text() == "foreign pre-mark content"
         assert any(
             "cleanup failed" in note
             and "materialization recovery conflict" in note
@@ -1340,11 +1457,14 @@ def test_materialization_write_failure_leaves_proposed_and_cleans_stage(
         store.close()
 
 
-def test_materialization_cas_exception_rolls_back_owned_tree(tmp_path, monkeypatch) -> None:
+def test_materialization_cas_exception_preserves_adoptable_orphan(
+    tmp_path, monkeypatch
+) -> None:
     from d810.mba.discovery_miner import materialize_proposal
 
     store, proposal_id = _published_for_materialization(tmp_path)
     output = tmp_path / "cas-failure"
+    original_mark = store.mark_materialized
 
     def fail_mark(*_args, **_kwargs):
         raise RuntimeError("recording failed")
@@ -1355,13 +1475,23 @@ def test_materialization_cas_exception_rolls_back_owned_tree(tmp_path, monkeypat
         fail_mark,
     )
     try:
-        with pytest.raises(RuntimeError, match="recording failed"):
+        with pytest.raises(RuntimeError, match="recording failed") as raised:
             materialize_proposal(store, proposal_id, output)
-        assert not output.exists()
+        assert output.is_dir()
+        assert len(tuple(output.iterdir())) == 2
         assert not tuple(tmp_path.glob(".cas-failure.*"))
+        assert any(
+            "not cleanup authority" in note and "preserved" in note
+            for note in getattr(raised.value, "__notes__", ())
+        )
         snapshot = store.proposal_snapshot(proposal_id)
         assert snapshot is not None
         assert snapshot.proposal.state.value == "proposed"
+        monkeypatch.setattr(store, "mark_materialized", original_mark)
+        materialize_proposal(store, proposal_id, output)
+        adopted = store.proposal_snapshot(proposal_id)
+        assert adopted is not None
+        assert adopted.proposal.state is ProposalState.MATERIALIZED
     finally:
         store.close()
 
