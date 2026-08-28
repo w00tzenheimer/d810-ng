@@ -483,6 +483,7 @@ def test_pattern_optimizer_forwards_catalogue_outcome_to_central_statistics():
     )
 
     assert result is not None
+    assert optimizer.last_matched_rule_name == "DirectCatalogue"
     assert stats.get_rule_execution("DirectCatalogue") is None
 
     optimizer.record_mutation_accepted()
@@ -490,6 +491,42 @@ def test_pattern_optimizer_forwards_catalogue_outcome_to_central_statistics():
     assert execution is not None
     assert execution.metadata["mba_provider_outcome"]["provider"] == "catalogue"
     assert execution.metadata["mba_provider_outcome"]["status"] == "applied"
+
+
+def test_pattern_optimizer_skips_cycle_quarantined_custom_candidates():
+    """The custom catalogue route must honor the central cycle quarantine."""
+
+    class Rule:
+        name = "QuarantinedRule"
+        maturities = [7]
+        calls = 0
+
+        @staticmethod
+        def check_pattern_and_replace(pattern, test_ast):
+            del pattern, test_ast
+            Rule.calls += 1
+            return object()
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._cycle_quarantined_rule_names = frozenset({"QuarantinedRule"})
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(Rule(), object())]
+
+    result = optimizer._try_matches(
+        None,
+        object(),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="unit",
+    )
+
+    assert result is None
+    assert Rule.calls == 0
 
 
 def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypatch):

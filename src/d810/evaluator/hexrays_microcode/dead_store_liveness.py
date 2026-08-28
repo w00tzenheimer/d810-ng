@@ -8,6 +8,7 @@ from collections import Counter
 import ida_hexrays
 
 from d810.core.logging import getLogger
+from d810.analyses.data_flow.exceptions import FixpointDidNotConverge
 
 from d810.analyses.value_flow.dead_store import (
     DeadStoreCandidate,
@@ -266,7 +267,7 @@ class HexRaysDeadStoreLivenessBackend:
                     if isinstance(location, RegisterLocation)
                 ),
             )
-        except (RuntimeError, ValueError) as exc:
+        except (FixpointDidNotConverge, RuntimeError, ValueError) as exc:
             return DeadStoreEvidence(
                 authoritative=True,
                 rejections=(

@@ -574,6 +574,7 @@ class PatternOptimizer(InstructionOptimizer):
         scheduled_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
         del contextual_anchor_ins
+        self.last_matched_rule_name = None
         self._pending_replacement_rule = None
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
@@ -877,6 +878,12 @@ class PatternOptimizer(InstructionOptimizer):
         scheduled_rule_names = scheduled_rule_names or frozenset()
         for i, rule_pattern_info in enumerate(all_matches):
             rule_name = str(rule_pattern_info.rule.name)
+            if rule_name in getattr(
+                self,
+                "_cycle_quarantined_rule_names",
+                frozenset(),
+            ):
+                continue
             if allowed_rule_names is not None and rule_name not in allowed_rule_names:
                 continue
             # Per-rule maturity check (Gate 2)
@@ -997,6 +1004,7 @@ class PatternOptimizer(InstructionOptimizer):
                             "  new : %s",
                             format_minsn_t(new_ins),
                         )
+                    self.last_matched_rule_name = str(rule_pattern_info.rule.name)
                     self._pending_replacement_rule = rule_pattern_info.rule
                     return new_ins
             except RuntimeError as e:

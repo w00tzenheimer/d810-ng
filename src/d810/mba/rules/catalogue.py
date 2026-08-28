@@ -53,6 +53,8 @@ MBA_RULE_FAMILIES: Mapping[str, tuple[type[VerifiableRule], ...]] = (
     MappingProxyType(
         {
             "add": (
+                eid.Add_EidSboxOffset13_1,
+                eid.Add_EidSboxOffset23_1,
                 add.Add_HackersDelightRule_1,
                 add.Add_HackersDelightRule_2,
                 add.Add_HackersDelightRule_3,
@@ -91,6 +93,7 @@ MBA_RULE_FAMILIES: Mapping[str, tuple[type[VerifiableRule], ...]] = (
                 and_.AndGetUpperBits_FactorRule_1,
             ),
             "bnot": (
+                eid.Bnot_EidSboxOffset27_1,
                 bnot.Bnot_HackersDelightRule_1,
                 bnot.Bnot_HackersDelightRule_2,
                 bnot.Bnot_MbaRule_1,
@@ -256,6 +259,7 @@ MBA_RULE_FAMILIES: Mapping[str, tuple[type[VerifiableRule], ...]] = (
                 eid.Xor_EidComplementPartition_1,
                 eid.Xor_EidComplementPartition_2,
                 eid.Xor_EidComplementPartition_3,
+                eid.Xor_EidComplementConsensus_1,
                 eid.Xor_EidKeySchedule_1,
                 eid.Xor_EidKeySchedule_2,
                 eid.Xor_EidKeySchedule_3,

@@ -30,7 +30,8 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "addition",
         "Addition",
         (
-            "add-xor-1", "add-xor-2", "add-hackers-delight-1",
+            "add-xor-1", "add-xor-2", "add-eid-sbox-offset-13-1",
+            "add-eid-sbox-offset-23-1", "add-hackers-delight-1",
             "add-hackers-delight-2", "add-hackers-delight-3",
             "add-hackers-delight-4", "add-hackers-delight-5", "add-ollvm-1",
             "add-ollvm-2", "add-ollvm-3", "add-ollvm-4",
@@ -70,7 +71,8 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
             "bnot-add-mba-1", "bnot-and-factor-1", "bnot-and-factor-2",
             "bnot-and-factor-3", "bnot-and-factor-4", "bnot-or-factor-1",
             "bnot-xor-factor-1", "bnot-xor-paired-not-1", "bnot-xor-2",
-            "bnot-xor-3", "bnot-factor-1", "bnot-factor-2", "bnot-factor-3",
+            "bnot-xor-3", "bnot-eid-sbox-offset-27-1", "bnot-factor-1",
+            "bnot-factor-2", "bnot-factor-3",
             "bnot-factor-4", "bnot-factor-5", "bnot-hackers-delight-1",
             "bnot-hackers-delight-2", "bnot-hodur-1", "bnot-mba-1", "bnot-1",
             "bnot-xor-demorgan-1",
@@ -213,6 +215,7 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "XOR",
         (
             "xor-1-mba-1", "xor-almost-1", "xor-chain",
+            "xor-eid-complement-consensus-1",
             "xor-eid-complement-partition-1", "xor-eid-complement-partition-2",
             "xor-eid-complement-partition-3",
             "xor-eid-key-schedule-1", "xor-eid-key-schedule-2",

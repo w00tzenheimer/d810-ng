@@ -20,7 +20,11 @@ from d810.backends.mba.native_pod_matcher import (
 )
 from d810.mba.rules.sub import Sub_HackersDelightRule_2
 from d810.mba.rules.eid import (
+    Add_EidSboxOffset13_1,
+    Add_EidSboxOffset23_1,
+    Bnot_EidSboxOffset27_1,
     Or_EidRepeatedMaskedOperand_1,
+    Xor_EidComplementConsensus_1,
     Xor_EidComplementPartition_1,
     Xor_EidComplementPartition_2,
     Xor_EidComplementPartition_3,
@@ -279,6 +283,151 @@ def _assert_exact_eid_xor_candidate_matches(
         rule_type.__name__,
     )
     assert pod == portable
+
+
+def _assert_exact_eid_candidate_matches(
+    family: str,
+    rule_type: type[VerifiableRule],
+    candidate: NativeMbaTermView,
+) -> None:
+    rules = _compile_rule_families({family: (rule_type,)}).compiled_rules
+    catalogue = CompiledPatternCatalogue.from_rules(rules)
+
+    portable = catalogue._match_root_portable(candidate, comparison_budget=4096)
+    pod = match_root_pod(catalogue, candidate, comparison_budget=4096)
+
+    assert tuple(match.rule.source_name for match in portable.matches) == (
+        rule_type.__name__,
+    )
+    assert pod == portable
+
+
+@pytest.mark.parametrize(
+    ("rule_type", "offset", "low_clear", "clear", "bias"),
+    (
+        (
+            Add_EidSboxOffset13_1,
+            0x13,
+            0x7FFFFFFFFFFFFFEC,
+            0xFFFFFFFFFFFFFFEC,
+            0x49,
+        ),
+        (
+            Add_EidSboxOffset23_1,
+            0x23,
+            0x7FFFFFFFFFFFFFDC,
+            0xFFFFFFFFFFFFFFDC,
+            0x89,
+        ),
+    ),
+)
+def test_eid_sbox_offset_rules_match_exact_64_bit_source_trees(
+    rule_type: type[VerifiableRule],
+    offset: int,
+    low_clear: int,
+    clear: int,
+    bias: int,
+) -> None:
+    width = 64
+    value = _leaf("value", width=width)
+
+    def c(number: int) -> NativeMbaTermView:
+        return _constant(number, width=width)
+
+    def binary(name: str, left, right) -> NativeMbaTermView:
+        return _node(name, left, right, width=width)
+
+    candidate = binary(
+        "sub",
+        binary(
+            "sub",
+            binary(
+                "add",
+                binary(
+                    "sub",
+                    binary(
+                        "add",
+                        binary(
+                            "sub",
+                            binary("mul", c(2), binary("and", value, c(offset))),
+                            binary("mul", c(6), binary("and", value, c(low_clear))),
+                        ),
+                        binary("mul", c(11), binary("and", value, c(clear))),
+                    ),
+                    binary("mul", c(7), value),
+                ),
+                c(bias),
+            ),
+            binary("mul", c(3), binary("and", _node("bnot", value, width=width), c(offset))),
+        ),
+        binary("mul", c(3), _node("bnot", value, width=width)),
+    )
+
+    _assert_exact_eid_candidate_matches("add", rule_type, candidate)
+
+
+def test_eid_sbox_offset_27_rule_matches_exact_64_bit_source_tree() -> None:
+    width = 64
+    value = _leaf("value", width=width)
+
+    def c(number: int) -> NativeMbaTermView:
+        return _constant(number, width=width)
+
+    def binary(name: str, left, right) -> NativeMbaTermView:
+        return _node(name, left, right, width=width)
+
+    not_value = _node("bnot", value, width=width)
+    inner = binary(
+        "sub",
+        binary(
+            "sub",
+            binary(
+                "sub",
+                binary("sub", binary("or", not_value, c(0x27)), c(3)),
+                binary(
+                    "add",
+                    binary("mul", c(2), binary("and", value, c(0x7FFFFFFFFFFFFFD8))),
+                    binary("mul", c(2), binary("and", value, c(0x27))),
+                ),
+            ),
+            binary("mul", c(4), binary("and", not_value, c(0x3FFFFFFFFFFFFFD8))),
+        ),
+        binary("mul", c(3), binary("and", not_value, c(0x27))),
+    )
+    candidate = _node("bnot", inner, width=width)
+
+    _assert_exact_eid_candidate_matches("bnot", Bnot_EidSboxOffset27_1, candidate)
+
+
+def test_eid_complement_consensus_matches_exact_64_bit_source_tree() -> None:
+    width = 64
+    value = _leaf("value", width=width)
+    mask = _leaf("mask", width=width)
+    candidate = _node(
+        "sub",
+        _node(
+            "sub",
+            _node(
+                "mul",
+                _constant(2, width=width),
+                _node("bnot", _node("and", value, mask, width=width), width=width),
+                width=width,
+            ),
+            _node("xor", value, mask, width=width),
+            width=width,
+        ),
+        _node(
+            "mul",
+            _constant(2, width=width),
+            _node("bnot", _node("or", value, mask, width=width), width=width),
+            width=width,
+        ),
+        width=width,
+    )
+
+    _assert_exact_eid_candidate_matches(
+        "xor", Xor_EidComplementConsensus_1, candidate
+    )
 
 
 def test_eid_complement_partition_1_matches_exact_64_bit_source_tree() -> None:

@@ -20,7 +20,11 @@ _PROFILES = tuple(
     )
 )
 _TRANSFORM_IDS = (
+    "add-eid-sbox-offset-13-1",
+    "add-eid-sbox-offset-23-1",
+    "bnot-eid-sbox-offset-27-1",
     "or-eid-repeated-masked-operand-1",
+    "xor-eid-complement-consensus-1",
     "xor-eid-complement-partition-1",
     "xor-eid-complement-partition-2",
     "xor-eid-complement-partition-3",
@@ -30,6 +34,9 @@ _TRANSFORM_IDS = (
 )
 
 _RULE_NAMES = (
+    "Add_EidSboxOffset13_1",
+    "Add_EidSboxOffset23_1",
+    "Bnot_EidSboxOffset27_1",
     "Or_EidRepeatedMaskedOperand_1",
     "Xor_EidKeySchedule_1",
     "Xor_EidKeySchedule_2",
@@ -37,6 +44,7 @@ _RULE_NAMES = (
     "Xor_EidComplementPartition_1",
     "Xor_EidComplementPartition_2",
     "Xor_EidComplementPartition_3",
+    "Xor_EidComplementConsensus_1",
 )
 
 
@@ -76,6 +84,10 @@ def test_eid_rules_are_registered_and_catalogued():
         "xor-factor-1"
     )
     assert "or-eid-repeated-masked-operand-1" in transform_ids
+    assert "add-eid-sbox-offset-13-1" in transform_ids
+    assert "add-eid-sbox-offset-23-1" in transform_ids
+    assert "bnot-eid-sbox-offset-27-1" in transform_ids
+    assert "xor-eid-complement-consensus-1" in transform_ids
     assert transform_ids.index("xor-eid-complement-partition-1") < transform_ids.index(
         "xor-eid-complement-partition-2"
     )

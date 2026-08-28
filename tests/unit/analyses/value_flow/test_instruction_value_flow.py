@@ -153,9 +153,7 @@ def test_reaching_definitions_from_both_entries_wire_to_join_use() -> None:
         live_at_exit=frozenset(),
     )
 
-    expected_use = (
-        InstructionUseRef(InsnHandle(2), kind=InstructionUseKind.READ),
-    )
+    expected_use = (InstructionUseRef(InsnHandle(2), kind=InstructionUseKind.READ),)
     assert result.def_use.uses_of(DefinitionRef(slot, version=0)) == expected_use
     assert result.def_use.uses_of(DefinitionRef(slot, version=1)) == expected_use
 
@@ -174,3 +172,24 @@ def test_definition_in_closed_cycle_fails_closed_as_live() -> None:
     )
 
     assert result.is_definition_dead(DefinitionRef(slot, version=0)) is False
+
+
+def test_linear_instruction_graph_larger_than_default_solver_budget_converges() -> None:
+    """A valid graph must receive enough budget for at least one traversal."""
+    slot = StackSlot(offset=0x40, size=8)
+    node_count = 1_201
+    facts = (
+        InstructionAccessFacts(must_defs=frozenset({slot})),
+        *(InstructionAccessFacts() for _ in range(node_count - 1)),
+    )
+    successors = {
+        index: ((index + 1,) if index + 1 < node_count else ())
+        for index in range(node_count)
+    }
+
+    result = analyze_instruction_value_flow(
+        _graph(facts, successors),
+        live_at_exit=frozenset(),
+    )
+
+    assert result.is_definition_dead(DefinitionRef(slot, version=0)) is True

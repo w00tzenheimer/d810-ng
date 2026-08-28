@@ -49,12 +49,12 @@ def test_catalogue_receipts_keep_exact_declaration_order_and_counts() -> None:
         for rule_type in rule_types
     )
 
-    assert len(catalogue.receipts) == 196
-    assert len(catalogue.compiled_rules) == 116
+    assert len(catalogue.receipts) == 200
+    assert len(catalogue.compiled_rules) == 120
     assert tuple(receipt.key for receipt in catalogue.receipts) == expected_keys
     assert Counter(receipt.status for receipt in catalogue.receipts) == Counter(
         {
-            RuleCompilationStatus.COMPILED: 116,
+            RuleCompilationStatus.COMPILED: 120,
             RuleCompilationStatus.DUPLICATE: 4,
             RuleCompilationStatus.REJECTED: 76,
         }
@@ -178,7 +178,7 @@ def test_compilation_does_not_load_provider_or_native_runtime_modules(monkeypatc
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     catalogue = compile_mba_rule_catalogue()
-    assert len(catalogue.compiled_rules) == 116
+    assert len(catalogue.compiled_rules) == 120
 
 
 def test_fresh_process_compilation_does_not_scan_provider_tree() -> None:
@@ -214,8 +214,8 @@ def test_fresh_process_compilation_does_not_scan_provider_tree() -> None:
         from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
 
         catalogue = compile_mba_rule_catalogue()
-        assert len(catalogue.receipts) == 196
-        assert len(catalogue.compiled_rules) == 116
+        assert len(catalogue.receipts) == 200
+        assert len(catalogue.compiled_rules) == 120
         assert not attempted, attempted
         """
     )

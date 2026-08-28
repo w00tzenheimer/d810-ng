@@ -10,6 +10,7 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.analyses.value_flow.dead_store import DeadStoreRejectionReason  # noqa: E402
+from d810.analyses.data_flow.exceptions import FixpointDidNotConverge  # noqa: E402
 from d810.backends.hexrays.evidence.dead_store_liveness_live import (  # noqa: E402
     HexRaysDeadStoreLivenessBackend,
 )
@@ -311,6 +312,28 @@ def test_closed_cycle_with_live_definition_fails_closed() -> None:
 
     assert evidence.candidates == ()
     assert DeadStoreRejectionReason.CHAIN_UNAVAILABLE in _reasons(evidence)
+
+
+def test_instruction_flow_nonconvergence_abstains_without_escaping(monkeypatch) -> None:
+    """DSE must not disable every remaining GLBOPT2 block optimizer."""
+    target = _Mop(ida_hexrays.mop_S, stack_offset=0x40)
+    dead = _Insn(0x401010, destination=target)
+
+    def nonconvergent(*_args, **_kwargs):
+        raise FixpointDidNotConverge(iterations=1_000, max_iterations=1_000)
+
+    monkeypatch.setattr(
+        dead_store_liveness,
+        "analyze_instruction_value_flow",
+        nonconvergent,
+    )
+
+    evidence = HexRaysDeadStoreLivenessBackend().collect(_Mba((_Block(0, (dead,)),)))
+
+    assert evidence.authoritative is True
+    assert evidence.candidates == ()
+    assert _reasons(evidence) == {DeadStoreRejectionReason.CHAIN_UNAVAILABLE}
+    assert evidence.rejections[0].detail.startswith("instruction_value_flow:")
 
 
 def test_conflicting_native_location_mappings_fail_closed(monkeypatch) -> None:

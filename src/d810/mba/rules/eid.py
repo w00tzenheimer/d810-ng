@@ -5,8 +5,9 @@ the deterministic rule catalogue list this module explicitly; that is the
 startup path which makes the rules available outside IDA as well as after
 hot-reload.
 
-The catalogue includes rolling key-schedule XORs, a repeated masked-operand OR,
-and exact complementary-mask partitions observed in VM helper returns.
+The catalogue includes rolling key-schedule XORs, S-box index arithmetic,
+masked partitions, a repeated masked-operand OR, and exact complementary-mask
+partitions observed in VM helper returns.
 """
 
 from d810.mba.dsl import Const, Var
@@ -29,9 +30,13 @@ _ALL_MATURITIES = [
 x, y = Var("x_0"), Var("x_1")
 ONE = Const("1", 1)
 TWO = Const("2", 2)
+THREE = Const("3", 3)
+FOUR = Const("4", 4)
 FIVE = Const("5", 5)
 SIX = Const("6", 6)
+SEVEN = Const("7", 7)
 EIGHT = Const("8", 8)
+ELEVEN = Const("11", 11)
 NEG_EIGHT = Const("-8", -8)
 
 COMPLEMENT_1_LEFT = Const("0xF500C38D0EA2975A", 0xF500C38D0EA2975A)
@@ -43,6 +48,87 @@ COMPLEMENT_2_LEFT = Const("0x4C8ADE951AD35D8C", 0x4C8ADE951AD35D8C)
 COMPLEMENT_2_RIGHT = Const("0xB375216AE52CA273", 0xB375216AE52CA273)
 COMPLEMENT_3_MASK = Const("0x3C33682BB7D99927", 0x3C33682BB7D99927)
 REPEATED_OPERAND_MASK = Const("0xFFFFFBFB", 0xFFFFFBFB)
+
+SBOX_OFFSET_13 = Const("0x13", 0x13)
+SBOX_OFFSET_13_LOW_CLEAR = Const(
+    "0x7FFFFFFFFFFFFFEC", 0x7FFFFFFFFFFFFFEC
+)
+SBOX_OFFSET_13_CLEAR = Const("0xFFFFFFFFFFFFFFEC", 0xFFFFFFFFFFFFFFEC)
+SBOX_OFFSET_13_BIAS = Const("0x49", 0x49)
+SBOX_OFFSET_23 = Const("0x23", 0x23)
+SBOX_OFFSET_23_LOW_CLEAR = Const(
+    "0x7FFFFFFFFFFFFFDC", 0x7FFFFFFFFFFFFFDC
+)
+SBOX_OFFSET_23_CLEAR = Const("0xFFFFFFFFFFFFFFDC", 0xFFFFFFFFFFFFFFDC)
+SBOX_OFFSET_23_BIAS = Const("0x89", 0x89)
+SBOX_OFFSET_27 = Const("0x27", 0x27)
+SBOX_OFFSET_27_LOW_CLEAR = Const(
+    "0x7FFFFFFFFFFFFFD8", 0x7FFFFFFFFFFFFFD8
+)
+SBOX_OFFSET_27_QUARTER_CLEAR = Const(
+    "0x3FFFFFFFFFFFFFD8", 0x3FFFFFFFFFFFFFD8
+)
+
+
+class Add_EidSboxOffset13_1(VerifiableRule):
+    """Collapse the first fixed Eid S-box index MBA to ``x + 0x13``."""
+
+    maturities = _ALL_MATURITIES
+
+    PATTERN = (
+        TWO * (x & SBOX_OFFSET_13)
+        - SIX * (x & SBOX_OFFSET_13_LOW_CLEAR)
+        + ELEVEN * (x & SBOX_OFFSET_13_CLEAR)
+        - SEVEN * x
+        + SBOX_OFFSET_13_BIAS
+        - THREE * ((~x) & SBOX_OFFSET_13)
+        - THREE * (~x)
+    )
+    REPLACEMENT = x + SBOX_OFFSET_13
+
+    DESCRIPTION = "Simplify the Eid S-box index MBA to x + 0x13"
+    REFERENCE = "Eid packet-loop S-box index at offset 0x13"
+
+
+class Add_EidSboxOffset23_1(VerifiableRule):
+    """Collapse the second fixed Eid S-box index MBA to ``x + 0x23``."""
+
+    maturities = _ALL_MATURITIES
+
+    PATTERN = (
+        TWO * (x & SBOX_OFFSET_23)
+        - SIX * (x & SBOX_OFFSET_23_LOW_CLEAR)
+        + ELEVEN * (x & SBOX_OFFSET_23_CLEAR)
+        - SEVEN * x
+        + SBOX_OFFSET_23_BIAS
+        - THREE * ((~x) & SBOX_OFFSET_23)
+        - THREE * (~x)
+    )
+    REPLACEMENT = x + SBOX_OFFSET_23
+
+    DESCRIPTION = "Simplify the Eid S-box index MBA to x + 0x23"
+    REFERENCE = "Eid packet-loop S-box index at offset 0x23"
+
+
+class Bnot_EidSboxOffset27_1(VerifiableRule):
+    """Collapse the staged 0x27 S-box MBA to ``~(x + 0x27)``."""
+
+    maturities = _ALL_MATURITIES
+
+    PATTERN = ~(
+        ((~x) | SBOX_OFFSET_27)
+        - THREE
+        - (
+            TWO * (x & SBOX_OFFSET_27_LOW_CLEAR)
+            + TWO * (x & SBOX_OFFSET_27)
+        )
+        - FOUR * ((~x) & SBOX_OFFSET_27_QUARTER_CLEAR)
+        - THREE * ((~x) & SBOX_OFFSET_27)
+    )
+    REPLACEMENT = ~(x + SBOX_OFFSET_27)
+
+    DESCRIPTION = "Simplify the Eid staged S-box index MBA to ~(x + 0x27)"
+    REFERENCE = "Eid packet-loop staged S-box index at offset 0x27"
 
 
 class Or_EidRepeatedMaskedOperand_1(VerifiableRule):
@@ -142,6 +228,18 @@ class Xor_EidKeySchedule_3(VerifiableRule):
 
     DESCRIPTION = "Simplify the Eid coefficient-six linear-MBA XOR to x ^ y"
     REFERENCE = "Eid loader message-template rolling XOR"
+
+
+class Xor_EidComplementConsensus_1(VerifiableRule):
+    """Collapse a three-term complement consensus identity to ``x ^ y``."""
+
+    maturities = _ALL_MATURITIES
+
+    PATTERN = TWO * (~(x & y)) - (x ^ y) - TWO * (~(x | y))
+    REPLACEMENT = x ^ y
+
+    DESCRIPTION = "Simplify the Eid complement consensus MBA to x ^ y"
+    REFERENCE = "Eid packet metadata write-back"
 
 
 class Xor_EidComplementPartition_1(VerifiableRule):

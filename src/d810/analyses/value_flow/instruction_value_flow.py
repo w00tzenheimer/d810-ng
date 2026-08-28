@@ -29,6 +29,26 @@ __all__ = [
     "analyze_instruction_value_flow",
 ]
 
+_MIN_FIXPOINT_ITERATIONS = 1_000
+_MAX_FIXPOINT_ITERATIONS = 1_000_000
+
+
+def _fixpoint_configuration(
+    *,
+    direction: Direction,
+    node_count: int,
+    lattice_height: int,
+) -> FixpointConfiguration:
+    """Budget a finite-height bitvector analysis from its actual dimensions."""
+    required = max(1, int(node_count)) * (max(1, int(lattice_height)) + 1)
+    return FixpointConfiguration(
+        direction=direction,
+        max_iterations=min(
+            _MAX_FIXPOINT_ITERATIONS,
+            max(_MIN_FIXPOINT_ITERATIONS, required),
+        ),
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class InstructionAccessFacts:
@@ -78,10 +98,9 @@ class InstructionValueFlowResult:
         if definition not in self.definitions:
             return False
         node = InsnHandle(int(definition.version))
-        return (
-            not self.def_use.has_uses(definition)
-            and definition.location not in self.live_out.get(node, frozenset())
-        )
+        return not self.def_use.has_uses(
+            definition
+        ) and definition.location not in self.live_out.get(node, frozenset())
 
 
 def _liveness_facts(
@@ -104,9 +123,7 @@ def _reaching_facts(
     definitions: set[DefinitionRef] = set()
     for node, access in graph.facts_by_node.items():
         generated = {
-            location: frozenset(
-                {DefinitionRef(location=location, version=int(node))}
-            )
+            location: frozenset({DefinitionRef(location=location, version=int(node))})
             for location in access.must_defs
         }
         definitions.update(site for sites in generated.values() for site in sites)
@@ -140,14 +157,23 @@ def analyze_instruction_value_flow(
     if not graph.entry_nodes or not frozenset(graph.entry_nodes) <= node_set:
         raise ValueError("instruction value flow requires valid entry nodes")
 
+    liveness_facts = _liveness_facts(graph)
+    liveness_locations = set(live_at_exit)
+    for facts in liveness_facts.values():
+        liveness_locations.update(facts.used)
+        liveness_locations.update(facts.defined)
     liveness = run_fixpoint(
-        LivenessDomain(_liveness_facts(graph)),
+        LivenessDomain(liveness_facts),
         nodes=graph.nodes,
         entry_nodes=graph.exit_nodes,
         entry_state=live_at_exit,
         successors_of=graph.successors,
         predecessors_of=graph.predecessors,
-        config=FixpointConfiguration(direction=Direction.BACKWARD),
+        config=_fixpoint_configuration(
+            direction=Direction.BACKWARD,
+            node_count=len(graph.nodes),
+            lattice_height=len(liveness_locations),
+        ),
         raise_on_nonconvergence=True,
     )
 
@@ -158,7 +184,11 @@ def analyze_instruction_value_flow(
         entry_nodes=graph.entry_nodes,
         successors_of=graph.successors,
         predecessors_of=graph.predecessors,
-        config=FixpointConfiguration(direction=Direction.FORWARD),
+        config=_fixpoint_configuration(
+            direction=Direction.FORWARD,
+            node_count=len(graph.nodes),
+            lattice_height=len(definitions),
+        ),
         raise_on_nonconvergence=True,
     )
 
@@ -172,9 +202,7 @@ def analyze_instruction_value_flow(
         for locations, kind in occurrences:
             for location in locations:
                 use = InstructionUseRef(node, kind=kind)
-                for definition in reaching_defs_of(
-                    reaching.in_states[node], location
-                ):
+                for definition in reaching_defs_of(reaching.in_states[node], location):
                     consumers = uses_by_def.setdefault(definition, [])
                     if use not in consumers:
                         consumers.append(use)
@@ -197,8 +225,7 @@ def analyze_instruction_value_flow(
         },
         def_use=DefUseFacts(
             uses_by_def={
-                definition: tuple(uses)
-                for definition, uses in uses_by_def.items()
+                definition: tuple(uses) for definition, uses in uses_by_def.items()
             }
         ),
         definitions=definitions,
