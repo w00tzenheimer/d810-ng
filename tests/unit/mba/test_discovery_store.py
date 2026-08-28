@@ -363,10 +363,8 @@ def test_causal_validation_rejects_missing_and_mismatched_events(
     with pytest.raises(ValueError, match="observed event authority"):
         store.status_counts()
     store.close()
-    reopened = MbaDiscoveryStore(path)
     with pytest.raises(ValueError, match="observed event authority"):
-        reopened.status_counts()
-    reopened.close()
+        MbaDiscoveryStore(path)
 
 
 def test_two_stores_concurrent_observations_have_contiguous_causal_order(
@@ -418,6 +416,483 @@ def test_causal_event_append_failure_rolls_back_owner_mutation(
     assert store.count_rows("residual_groups") == 0
     assert store.count_rows("residual_group_events") == 0
     store.close()
+
+
+def test_external_orphan_event_fails_closed_for_status_and_reopen(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "orphan.sqlite3"
+    store = MbaDiscoveryStore(path)
+    store.record_attempt(_attempt())
+    external = sqlite3.connect(path)
+    external.execute("PRAGMA foreign_keys=OFF")
+    external.execute(
+        "INSERT INTO residual_group_events(group_id,event_kind,group_revision,run_id,occurred_at) VALUES (999,'claimed',2,'orphan-run','2026-01-01T00:00:00.000000Z')"
+    )
+    external.commit()
+    external.close()
+    with pytest.raises(ValueError, match="orphan|unconsumed|foreign"):
+        store.status_counts()
+    store.close()
+    with pytest.raises(ValueError, match="orphan|unconsumed|foreign"):
+        MbaDiscoveryStore(path)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "record",
+        "claim",
+        "heartbeat",
+        "finish",
+        "publication",
+        "materialize",
+        "admit",
+        "reject",
+    ),
+)
+def test_external_orphan_event_blocks_every_public_write(
+    tmp_path: Path, operation: str
+) -> None:
+    path = tmp_path / f"orphan-{operation}.sqlite3"
+    if operation in {"materialize", "admit", "reject"}:
+        store, _published_proposal, published = _published_store(
+            tmp_path, f"orphan-{operation}"
+        )
+        assert published.proposal is not None and published.group is not None
+    elif operation == "publication":
+        store = MbaDiscoveryStore(path)
+        pattern = TypedBvTerm(
+            "add",
+            32,
+            children=(TypedBvTerm(None, 32, leaf_key=("register", "x")),) * 2,
+        )
+        proposal = _proposal(pattern)
+        store.record_attempt(_attempt(raw=pattern, canonical=pattern))
+        claim = store.claim_next_group("miner", "budget")
+        assert claim.claim is not None
+    else:
+        store = MbaDiscoveryStore(path)
+        store.record_attempt(_attempt())
+        claim = None
+        if operation in {"heartbeat", "finish"}:
+            claim = store.claim_next_group("miner", "budget")
+            assert claim.claim is not None
+    before = store._connection.execute(
+        "SELECT COUNT(*) FROM residual_group_events"
+    ).fetchone()[0]
+    external = sqlite3.connect(path)
+    external.execute("PRAGMA foreign_keys=OFF")
+    external.execute(
+        "INSERT INTO residual_group_events(group_id,event_kind,group_revision,run_id,occurred_at) VALUES (999,'claimed',2,'orphan-run','2026-01-01T00:00:00.000000Z')"
+    )
+    external.commit()
+    external.close()
+    result = None
+    try:
+        if operation == "record":
+            result = store.record_attempt(_attempt(value=2))
+        elif operation == "claim":
+            result = store.claim_next_group("miner", "budget")
+        elif operation == "heartbeat":
+            assert claim is not None and claim.claim is not None
+            result = store.heartbeat(
+                claim.claim.run.run_id, claim.claim.run.claimed_revision
+            )
+        elif operation == "finish":
+            assert claim is not None and claim.claim is not None
+            result = store.finish_no_proposal(
+                claim.claim.run.run_id, claim.claim.run.claimed_revision
+            )
+        elif operation == "publication":
+            assert claim is not None and claim.claim is not None
+            result = store.publish_proposal(
+                claim.claim.run.run_id,
+                claim.claim.run.claimed_revision,
+                proposal,
+                proposal.replacement,
+                proposal,
+            )
+        elif operation == "materialize":
+            result = store.mark_materialized(
+                published.proposal.proposal_id,
+                "/rule.py",
+                "digest",
+                expected_state=ProposalState.PROPOSED,
+                expected_revision=published.group.revision,
+            )
+        elif operation == "admit":
+            materialized = store.mark_materialized(
+                published.proposal.proposal_id,
+                "/rule.py",
+                "digest",
+                expected_state=ProposalState.PROPOSED,
+                expected_revision=published.group.revision,
+            )
+            assert materialized.group is not None
+            result = store.mark_admitted(
+                published.proposal.proposal_id,
+                "rule-id",
+                expected_state=ProposalState.MATERIALIZED,
+                expected_revision=materialized.group.revision,
+            )
+        else:
+            result = store.mark_rejected(
+                published.proposal.proposal_id,
+                "unsafe",
+                expected_state=ProposalState.PROPOSED,
+                expected_revision=published.group.revision,
+            )
+    except ValueError as exc:
+        assert any(
+            word in str(exc) for word in ("orphan", "foreign", "owner", "domain")
+        )
+    else:
+        assert result is not None and result.status == "refused"
+    # The externally injected orphan is the only row added; the refused call
+    # must not append another causal event.
+    assert store.count_rows("residual_group_events") == before + 1
+    store.close()
+
+
+@pytest.mark.parametrize("materialize_first", (False, True))
+def test_rejected_event_source_must_match_normalized_terminal_source(
+    tmp_path: Path, materialize_first: bool
+) -> None:
+    timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store, _proposal, published = _published_store(
+        tmp_path,
+        f"reject-source-{materialize_first}",
+        clock=lambda: timestamp,
+    )
+    assert published.proposal is not None and published.group is not None
+    proposal_id = published.proposal.proposal_id
+    expected_state = ProposalState.PROPOSED
+    if materialize_first:
+        materialized = store.mark_materialized(
+            proposal_id,
+            "/rule.py",
+            "digest",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=published.group.revision,
+        )
+        assert materialized.group is not None
+        expected_state = ProposalState.MATERIALIZED
+    # Rejection must retain its source authority even after later equal-time
+    # evidence advances the group revision.
+    store.record_attempt(
+        _attempt(
+            raw=TypedBvTerm("xor", 32, children=(_term(2), _term(3))),
+            canonical=_proposal.pattern,
+        )
+    )
+    revision = store._connection.execute(
+        "SELECT revision FROM residual_groups WHERE group_id=?",
+        (published.group.group_id,),
+    ).fetchone()[0]
+    rejected = store.mark_rejected(
+        proposal_id,
+        "unsafe",
+        expected_state=expected_state,
+        expected_revision=revision,
+    )
+    assert rejected.proposal is not None
+    wrong_source = "proposed" if materialize_first else "materialized"
+    store._connection.execute(
+        "UPDATE residual_group_events SET source_proposal_state=? WHERE proposal_id=? AND event_kind='rejected'",
+        (wrong_source, proposal_id),
+    )
+    store._connection.commit()
+    with pytest.raises(ValueError, match="rejection event"):
+        store.status_counts()
+    with pytest.raises(ValueError, match="rejection event"):
+        store.mark_rejected(
+            proposal_id,
+            "unsafe",
+            expected_state=expected_state,
+            expected_revision=revision,
+        )
+    store.close()
+
+
+def test_claimed_event_application_owner_shape_rejects_forbidden_source(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "claimed-shape.sqlite3")
+    store.record_attempt(_attempt())
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    store._connection.execute("PRAGMA ignore_check_constraints=ON")
+    store._connection.execute(
+        "UPDATE residual_group_events SET source_proposal_state='proposed' WHERE event_kind='claimed'"
+    )
+    store._connection.execute("PRAGMA ignore_check_constraints=OFF")
+    store._connection.commit()
+    with pytest.raises(ValueError, match="claimed event owner shape"):
+        store.status_counts()
+    store.close()
+
+
+@pytest.mark.parametrize("field", ("provider_attempt_id", "proposal_id"))
+def test_claimed_event_application_owner_shape_rejects_forbidden_owner_columns(
+    tmp_path: Path, field: str
+) -> None:
+    store, _proposal, published = _published_store(tmp_path, f"claimed-{field}")
+    assert published.proposal is not None
+    if field == "provider_attempt_id":
+        store.record_attempt(
+            _attempt(
+                raw=TypedBvTerm("xor", 32, children=(_term(2), _term(3))),
+                canonical=_proposal.pattern,
+            )
+        )
+        value = store._connection.execute(
+            "SELECT attempt_id FROM provider_attempts ORDER BY attempt_id DESC LIMIT 1"
+        ).fetchone()[0]
+        store._connection.execute("PRAGMA ignore_check_constraints=ON")
+        store._connection.execute(
+            "UPDATE residual_group_events SET provider_attempt_id=NULL WHERE event_kind='observed' AND event_id=(SELECT MAX(event_id) FROM residual_group_events WHERE event_kind='observed')"
+        )
+    else:
+        value = published.proposal.proposal_id
+    store._connection.execute("PRAGMA ignore_check_constraints=ON")
+    store._connection.execute(
+        f"UPDATE residual_group_events SET {field}=? WHERE event_kind='claimed'",
+        (value,),
+    )
+    store._connection.execute("PRAGMA ignore_check_constraints=OFF")
+    store._connection.commit()
+    with pytest.raises(ValueError, match="claimed event owner shape"):
+        store.status_counts()
+    store.close()
+
+
+@pytest.mark.parametrize("event_kind", ("materialized", "admitted", "rejected"))
+def test_all_proposal_event_shapes_reject_null_source_on_corrupt_read(
+    tmp_path: Path, event_kind: str
+) -> None:
+    store, _proposal, published = _published_store(tmp_path, f"null-{event_kind}")
+    assert published.proposal is not None and published.group is not None
+    proposal_id = published.proposal.proposal_id
+    if event_kind == "materialized":
+        result = store.mark_materialized(
+            proposal_id,
+            "/rule.py",
+            "digest",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=published.group.revision,
+        )
+    elif event_kind == "admitted":
+        result = store.mark_materialized(
+            proposal_id,
+            "/rule.py",
+            "digest",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=published.group.revision,
+        )
+        assert result.group is not None
+        result = store.mark_admitted(
+            proposal_id,
+            "rule-id",
+            expected_state=ProposalState.MATERIALIZED,
+            expected_revision=result.group.revision,
+        )
+    else:
+        result = store.mark_rejected(
+            proposal_id,
+            "unsafe",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=published.group.revision,
+        )
+    assert result.status in {"materialized", "admitted", "rejected"}
+    store._connection.execute("PRAGMA ignore_check_constraints=ON")
+    store._connection.execute(
+        "UPDATE residual_group_events SET source_proposal_state=NULL WHERE proposal_id=? AND event_kind=?",
+        (proposal_id, event_kind),
+    )
+    store._connection.execute("PRAGMA ignore_check_constraints=OFF")
+    store._connection.commit()
+    with pytest.raises(ValueError, match="owner shape|rejection event"):
+        store.status_counts()
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "missing",
+        "wrong_kind",
+        "wrong_owner",
+        "noncontiguous",
+        "reordered",
+        "cross_group",
+    ),
+)
+def test_causal_event_corruption_matrix_fails_closed(
+    tmp_path: Path, corruption: str
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / f"event-corruption-{corruption}.sqlite3")
+    store.record_attempt(_attempt())
+    if corruption == "missing":
+        store._connection.execute("DELETE FROM residual_group_events")
+    elif corruption == "noncontiguous":
+        store._connection.execute(
+            "UPDATE residual_group_events SET group_revision=2 WHERE event_kind='observed'"
+        )
+    elif corruption == "wrong_kind":
+        store._connection.execute("PRAGMA ignore_check_constraints=ON")
+        store._connection.execute(
+            "UPDATE residual_group_events SET event_kind='claimed' WHERE event_kind='observed'"
+        )
+        store._connection.execute("PRAGMA ignore_check_constraints=OFF")
+    elif corruption == "wrong_owner":
+        claim = store.claim_next_group("miner", "budget")
+        assert claim.claim is not None
+        store._connection.execute("PRAGMA ignore_check_constraints=ON")
+        store._connection.execute(
+            "UPDATE residual_group_events SET run_id=? WHERE event_kind='observed'",
+            (claim.claim.run.run_id,),
+        )
+        store._connection.execute("PRAGMA ignore_check_constraints=OFF")
+    elif corruption == "reordered":
+        claim = store.claim_next_group("miner", "budget")
+        assert claim.claim is not None
+        store._connection.execute(
+            "UPDATE residual_group_events SET event_id=0 WHERE event_kind='claimed'"
+        )
+    else:
+        store.record_attempt(_attempt(value=2))
+        event_groups = store._connection.execute(
+            "SELECT event_id, group_id FROM residual_group_events ORDER BY event_id"
+        ).fetchall()
+        assert len(event_groups) == 2
+        store._connection.execute(
+            "UPDATE residual_group_events SET group_id=?, group_revision=2 WHERE event_id=?",
+            (event_groups[1][1], event_groups[0][0]),
+        )
+    store._connection.commit()
+    with pytest.raises(ValueError):
+        store.status_counts()
+    store.close()
+
+
+def test_causal_event_append_failure_rolls_back_every_lifecycle_path(
+    tmp_path: Path,
+) -> None:
+    def fail_append(*_args: object, **_kwargs: object) -> int:
+        raise RuntimeError("event append failed")
+
+    for operation in (
+        "record",
+        "claim",
+        "reclaim",
+        "finish",
+        "publish",
+        "materialize",
+        "admit",
+        "reject",
+    ):
+        case = tmp_path / operation
+        case.mkdir()
+        if operation in {"publish", "materialize", "admit", "reject"}:
+            if operation == "publish":
+                store = MbaDiscoveryStore(case / "store.sqlite3")
+                pattern = TypedBvTerm(
+                    "add",
+                    32,
+                    children=(TypedBvTerm(None, 32, leaf_key=("register", "x")),) * 2,
+                )
+                proposal = _proposal(pattern)
+                store.record_attempt(_attempt(raw=pattern, canonical=pattern))
+                claim = store.claim_next_group("miner", "budget")
+                assert claim.claim is not None
+            else:
+                store, _published_proposal, published = _published_store(
+                    case, operation
+                )
+                assert published.proposal is not None and published.group is not None
+        else:
+            now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+            store = MbaDiscoveryStore(case / "store.sqlite3", clock=lambda: now[0])
+            store.record_attempt(_attempt())
+            claim = None
+            if operation in {"reclaim", "finish"}:
+                claim = store.claim_next_group("miner", "budget")
+                assert claim.claim is not None
+            if operation == "reclaim":
+                now[0] += timedelta(seconds=301)
+        before = tuple(
+            store.count_rows(table)
+            for table in (
+                "provider_attempts",
+                "mining_runs",
+                "proposals",
+                "residual_groups",
+                "residual_group_events",
+            )
+        )
+        store._append_event = fail_append  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="event append failed"):
+            if operation == "record":
+                store.record_attempt(_attempt(value=2))
+            elif operation in {"claim", "reclaim"}:
+                store.claim_next_group("miner", "budget")
+            elif operation == "finish":
+                assert claim is not None and claim.claim is not None
+                store.finish_no_proposal(
+                    claim.claim.run.run_id, claim.claim.run.claimed_revision
+                )
+            elif operation == "publish":
+                assert claim is not None and claim.claim is not None
+                store.publish_proposal(
+                    claim.claim.run.run_id,
+                    claim.claim.run.claimed_revision,
+                    proposal,
+                    proposal.replacement,
+                    proposal,
+                )
+            elif operation == "materialize":
+                store.mark_materialized(
+                    published.proposal.proposal_id,
+                    "/rule.py",
+                    "digest",
+                    expected_state=ProposalState.PROPOSED,
+                    expected_revision=published.group.revision,
+                )
+            elif operation == "admit":
+                materialized = store.mark_materialized(
+                    published.proposal.proposal_id,
+                    "/rule.py",
+                    "digest",
+                    expected_state=ProposalState.PROPOSED,
+                    expected_revision=published.group.revision,
+                )
+                assert materialized.group is not None
+                store.mark_admitted(
+                    published.proposal.proposal_id,
+                    "rule-id",
+                    expected_state=ProposalState.MATERIALIZED,
+                    expected_revision=materialized.group.revision,
+                )
+            else:
+                store.mark_rejected(
+                    published.proposal.proposal_id,
+                    "unsafe",
+                    expected_state=ProposalState.PROPOSED,
+                    expected_revision=published.group.revision,
+                )
+        after = tuple(
+            store.count_rows(table)
+            for table in (
+                "provider_attempts",
+                "mining_runs",
+                "proposals",
+                "residual_groups",
+                "residual_group_events",
+            )
+        )
+        assert after == before
+        store.close()
 
 
 def test_record_deduplicates_terms_raw_shapes_and_exact_attempt(tmp_path: Path) -> None:
@@ -1163,6 +1638,8 @@ def test_attempt_duplicate_path_rejects_corrupt_term_identity(
     assert retry.reason in {
         "stored term identity is corrupt",
         "invalid canonical term bytes",
+        "canonical term identity is corrupt",
+        "raw term identity is corrupt",
     }
     store.close()
 
@@ -1322,9 +1799,11 @@ def test_reopen_rejects_unique_collation_and_conflict_policy_drift(
 
 
 def _published_store(
-    tmp_path: Path, name: str = "lifecycle"
+    tmp_path: Path, name: str = "lifecycle", *, clock=None
 ) -> tuple[MbaDiscoveryStore, MbaRuleProposal, object]:
-    store = MbaDiscoveryStore(tmp_path / f"{name}.sqlite3")
+    store = MbaDiscoveryStore(
+        tmp_path / f"{name}.sqlite3", **({"clock": clock} if clock is not None else {})
+    )
     pattern = TypedBvTerm(
         "add",
         32,
@@ -2821,7 +3300,7 @@ def test_persisted_lifecycle_identifiers_are_canonical(
         store._connection.execute("PRAGMA foreign_keys=OFF")
         store._connection.execute("UPDATE proposals SET proposal_id=?", (value,))
     store._connection.commit()
-    with pytest.raises((TypeError, ValueError), match=identifier):
+    with pytest.raises((TypeError, ValueError), match=f"{identifier}|causal domain"):
         store.status_counts()
     store.close()
 

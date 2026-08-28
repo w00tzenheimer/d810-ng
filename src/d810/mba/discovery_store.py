@@ -1307,6 +1307,7 @@ class MbaDiscoveryStore:
             self._ensure_open()
             try:
                 self._connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+                self._validate_causal_domain(self._connection)
                 yield self._connection
             except Exception:
                 self._connection.rollback()
@@ -1351,6 +1352,7 @@ class MbaDiscoveryStore:
                 raise
             else:
                 self._connection.commit()
+            self._validate_causal_domain(self._connection)
             journal = self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
             if self.path != ":memory:" and str(journal).lower() != "wal":
                 raise ValueError("WAL journal mode could not be enabled")
@@ -1512,7 +1514,7 @@ class MbaDiscoveryStore:
             )
             index_row = self._connection.execute(f"PRAGMA index_list('{table}')")
             if any(
-                row[1] == index_name and row[2] != int(_NAMED_INDEX_PARTIAL[index_name])
+                row[1] == index_name and row[2] != int(_NAMED_INDEX_UNIQUE[index_name])
                 for row in index_row
             ):
                 raise ValueError("partial schema: named index uniqueness")
@@ -2176,7 +2178,9 @@ class MbaDiscoveryStore:
             run_state = MiningRunState(run[5])
             group_state = ResidualGroupState(group[2])
         except ValueError as exc:
-            raise ValueError("unknown proposal ownership state") from exc
+            raise ValueError(
+                "unknown proposal state (ownership state is corrupt)"
+            ) from exc
         created_at = _parse_timestamp(row["created_at"], name="created_at")
         materialized_at = _parse_timestamp(
             row["materialized_at"], name="materialized_at", required=False
@@ -2353,6 +2357,14 @@ class MbaDiscoveryStore:
                     or row["source_proposal_state"] is not None
                 ):
                     raise ValueError("observed event owner shape is corrupt")
+            elif kind == "claimed":
+                if (
+                    row["provider_attempt_id"] is not None
+                    or row["run_id"] is None
+                    or row["proposal_id"] is not None
+                    or row["source_proposal_state"] is not None
+                ):
+                    raise ValueError("claimed event owner shape is corrupt")
             elif kind in _RUN_TERMINAL_EVENT_KINDS - {"proposal_published"}:
                 if (
                     row["provider_attempt_id"] is not None
@@ -2498,11 +2510,69 @@ class MbaDiscoveryStore:
                     ):
                         raise ValueError("admission event authority is corrupt")
                 elif row["event_kind"] == "rejected":
-                    if row["group_revision"] != proposal.terminal_source_revision:
+                    if (
+                        row["group_revision"] != proposal.terminal_source_revision
+                        or row["source_proposal_state"]
+                        != proposal.terminal_source_state.value
+                    ):
                         raise ValueError("rejection event authority is corrupt")
 
         if latest_revision != group.revision:
             raise ValueError("causal revision does not match group")
+
+    def _validate_causal_domain(self, conn: sqlite3.Connection) -> None:
+        """Reject unowned event rows before any global read or write."""
+        if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise ValueError("causal domain has foreign-key corruption")
+        groups = {
+            int(row[0]) for row in conn.execute("SELECT group_id FROM residual_groups")
+        }
+        events = conn.execute(
+            "SELECT event_id, group_id, provider_attempt_id, run_id, proposal_id FROM residual_group_events ORDER BY event_id"
+        ).fetchall()
+        if len({row["event_id"] for row in events}) != len(events):
+            raise ValueError("causal event identity is corrupt")
+        for row in events:
+            group_id = row["group_id"]
+            if group_id not in groups:
+                raise ValueError("causal domain contains an orphan event")
+            group_term = conn.execute(
+                "SELECT term_id FROM residual_groups WHERE group_id=?", (group_id,)
+            ).fetchone()[0]
+            if row["provider_attempt_id"] is not None:
+                attempt = conn.execute(
+                    "SELECT term_id FROM provider_attempts WHERE attempt_id=?",
+                    (row["provider_attempt_id"],),
+                ).fetchone()
+                if attempt is None or attempt[0] != group_term:
+                    raise ValueError("causal event attempt owner is corrupt")
+            if row["run_id"] is not None:
+                run = conn.execute(
+                    "SELECT group_id FROM mining_runs WHERE run_id=?", (row["run_id"],)
+                ).fetchone()
+                if run is None or run[0] != group_id:
+                    raise ValueError("causal event run owner is corrupt")
+            if row["proposal_id"] is not None:
+                proposal = conn.execute(
+                    "SELECT group_id FROM proposals WHERE proposal_id=?",
+                    (row["proposal_id"],),
+                ).fetchone()
+                if proposal is None or proposal[0] != group_id:
+                    raise ValueError("causal event proposal owner is corrupt")
+        event_ids = {int(row["event_id"]) for row in events}
+        consumed_ids: set[int] = set()
+        for group_id in groups:
+            consumed_ids.update(
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT event_id FROM residual_group_events WHERE group_id=?",
+                    (group_id,),
+                )
+            )
+        if consumed_ids != event_ids:
+            raise ValueError("causal event coverage is incomplete")
+        for group_id in groups:
+            self._validate_relational_lifecycle(conn, group_id)
 
     def _validate_relational_lifecycle(
         self, conn: sqlite3.Connection, group_id: int
@@ -3501,6 +3571,7 @@ class MbaDiscoveryStore:
             self._ensure_open()
             self._connection.execute("BEGIN")
             try:
+                self._validate_causal_domain(self._connection)
                 for row in self._connection.execute("SELECT * FROM residual_groups"):
                     self._project_group(self._connection, int(row[0]))
                 for row in self._connection.execute("SELECT * FROM mining_runs"):
