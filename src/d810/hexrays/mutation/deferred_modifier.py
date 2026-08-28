@@ -255,6 +255,7 @@ from d810.hexrays.mutation.cfg_mutations import (
 from d810.hexrays.mutation.cfg_mutations import coalesce_jtbl_cases
 from d810.hexrays.mutation.cfg_mutations import convert_jtbl_to_goto
 from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
+from d810.transforms.patch_binding import serial_for
 from d810.hexrays.mutation.cfg_mutations import create_standalone_block
 from d810.hexrays.mutation.cfg_mutations import downgrade_nway_null_tail_to_1way
 from d810.hexrays.mutation.cfg_mutations import duplicate_block
@@ -1363,7 +1364,7 @@ class DeferredGraphModifier:
         if gateway.current_transaction_attempt != attempt:
             raise ValueError("patch binding attempt is not the active gateway attempt")
         self._patch_plan_ref_by_bound_serial = {
-            int(bound_plan.serial_for(spec.block_id)): spec.block_id
+            int(serial_for(bound_plan, spec.block_id)): spec.block_id
             for spec in bound_plan.plan.new_blocks
         }
         self._realized_patch_serial_by_bound_serial.clear()

@@ -90,6 +90,7 @@ from d810.transforms.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,
 )
+from d810.transforms.patch_binding import serial_for
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.ir.mba_identity_index import BlockHandleProvenance
 from d810.hexrays.mutation.patch_binding import (
@@ -972,9 +973,12 @@ def _lower_bound(
             prepared=prepared,
             session_id=attempt.session_id,
             generation=attempt.generation,
-            bindings=binding.bindings,
+            bindings=binding.bound_plan.bindings,
             plan=plan,
-            patch_binding=binding,
+            # Backend reservations live in PatchBindingResult; transaction
+            # authority is the exact portable BoundPatchPlan, as in the
+            # production participant's bind lifecycle.
+            patch_binding=binding.bound_plan,
         )
         result = backend.lower(
             plan,
@@ -1459,23 +1463,24 @@ class _FakeDeferredGraphModifier:
         self.calls.append(("apply", kwargs))
         assert self.bound_plan is not None
         assert self.mutation_gateway is not None
+        planned_refs = tuple(
+            spec.block_id for spec in self.bound_plan.plan.new_blocks
+        )
         self.mutation_gateway.begin_patch_realization(
             self.bound_plan.attempt_id,
-            plan_refs=tuple(
-                reservation.plan_ref for reservation in self.bound_plan.reservations
-            ),
+            plan_refs=planned_refs,
         )
-        for reservation in self.bound_plan.reservations:
-            returned_serial = int(self.bound_plan.serial_for(reservation.plan_ref))
+        for plan_ref in planned_refs:
+            returned_serial = int(serial_for(self.bound_plan, plan_ref))
             self.mutation_gateway.bind_reserved_plan_block(
                 self.bound_plan.attempt_id,
-                reservation.plan_ref,
+                plan_ref,
                 insertion_serial=returned_serial,
                 returned_serial=returned_serial,
             )
-        if self.bound_plan.reservations:
+        if planned_refs:
             try:
-                self.mba.qty = int(self.mba.qty) + len(self.bound_plan.reservations)
+                self.mba.qty = int(self.mba.qty) + len(planned_refs)
             except Exception:
                 pass
         self.transaction_complete = True
@@ -2084,7 +2089,7 @@ class TestIDAIntegration:
         assert len(created) == 1
         assert created[0].calls[0][0] == "edge_split_trampoline"
         step = patch_plan.steps[0]
-        expected = created[0].bound_plan.serial_for(step.block_id)
+        expected = serial_for(created[0].bound_plan, step.block_id)
         assert created[0].calls[0][1:6] == (45, 122, 2, 2, expected)
 
     def test_lower_applies_edge_split_corridor_patch_plan(
@@ -2129,7 +2134,7 @@ class TestIDAIntegration:
         assert created[0].calls[0][0] == "edge_redirect"
         step = patch_plan.steps[0]
         expected_clones = tuple(
-            created[0].bound_plan.serial_for(ref) for ref in step.clone_block_ids
+            serial_for(created[0].bound_plan, ref) for ref in step.clone_block_ids
         )
         assert created[0].calls[0][1:9] == (
             45,
@@ -2218,9 +2223,9 @@ class TestIDAIntegration:
         assert len(created) == 1
         assert created[0].calls[0][0] == "create_conditional"
         step = patch_plan.steps[0]
-        expected_conditional = created[0].bound_plan.serial_for(step.block_id)
-        expected_fallthrough = created[0].bound_plan.serial_for(
-            step.fallthrough_block_id
+        expected_conditional = serial_for(created[0].bound_plan, step.block_id)
+        expected_fallthrough = serial_for(
+            created[0].bound_plan, step.fallthrough_block_id
         )
         assert created[0].calls[0][1:9] == (
             44,
@@ -2271,7 +2276,7 @@ class TestIDAIntegration:
         assert len(created) == 1
         assert created[0].calls[0][0] == "create_and_redirect"
         step = patch_plan.steps[0]
-        expected = created[0].bound_plan.serial_for(step.block_id)
+        expected = serial_for(created[0].bound_plan, step.block_id)
         assert created[0].calls[0][1:6] == (45, 199, 1, False, expected)
 
     def test_lower_applies_duplicate_block_patch_plan(
@@ -2312,7 +2317,7 @@ class TestIDAIntegration:
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_block"
         step = patch_plan.steps[0]
-        expected = created[0].bound_plan.serial_for(step.block_id)
+        expected = serial_for(created[0].bound_plan, step.block_id)
         assert created[0].calls[0][1:8] == (45, 44, 199, None, None, expected, None)
 
     def test_lower_applies_duplicate_replay_patch_plan(
@@ -2369,12 +2374,12 @@ class TestIDAIntegration:
         first, second = step.per_pred_replays
         bound = created[0].bound_plan
         assert created[0].calls[0][3] == (
-            (44, 199, bound.serial_for(first.replay_block_id), None, 1),
+            (44, 199, serial_for(bound, first.replay_block_id), None, 1),
             (
                 122,
                 199,
-                bound.serial_for(second.replay_block_id),
-                bound.serial_for(second.clone_block_id),
+                serial_for(bound, second.replay_block_id),
+                serial_for(bound, second.clone_block_id),
                 1,
             ),
         )
@@ -2490,8 +2495,8 @@ class TestIDAIntegration:
             None,
             2,
             3,
-            bound.serial_for(step.block_id),
-            bound.serial_for(step.fallthrough_block_id),
+            serial_for(bound, step.block_id),
+            serial_for(bound, step.fallthrough_block_id),
         )
 
     def test_lower_applies_conditional_duplicate_block_patch_plan_with_explicit_targets(
@@ -2541,8 +2546,8 @@ class TestIDAIntegration:
             None,
             199,
             3,
-            bound.serial_for(step.block_id),
-            bound.serial_for(step.fallthrough_block_id),
+            serial_for(bound, step.block_id),
+            serial_for(bound, step.fallthrough_block_id),
         )
 
     def test_lower_applies_clone_conditional_as_goto_patch_plan(
@@ -2584,7 +2589,7 @@ class TestIDAIntegration:
         assert len(created) == 1
         assert created[0].calls[0][0] == "clone_conditional_as_goto"
         step = patch_plan.steps[0]
-        expected = created[0].bound_plan.serial_for(step.block_id)
+        expected = serial_for(created[0].bound_plan, step.block_id)
         assert created[0].calls[0][1:5] == (45, 44, 2, expected)
         assert "fix predecessor simple case" in created[0].calls[0][5]
 
