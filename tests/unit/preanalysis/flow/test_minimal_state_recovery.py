@@ -40,7 +40,10 @@ from d810.analyses.control_flow.minimal_state_recovery import (
 from d810.analyses.control_flow.semantic_transition import (
     StateTransitionResolution,
 )
-from d810.analyses.control_flow.semantic_route_evidence import SemanticRouteFactKind
+from d810.analyses.control_flow.semantic_route_evidence import (
+    SemanticRouteFact,
+    SemanticRouteFactKind,
+)
 from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
@@ -632,9 +635,217 @@ def test_bootstrap_route_fact_keeps_entry_writer_and_owner_separate() -> None:
     assert fact.kind is SemanticRouteFactKind.BOOTSTRAP
     assert fact.owner_serial == 5
     assert fact.source_serial == 1
+    assert fact.owner_anchor_ea == 0x1500
     assert fact.bootstrap_witness is not None
     assert fact.bootstrap_witness.corridor_serials == (1, 3, 5, 6)
     assert tuple(site.instruction_ea for site in fact.bootstrap_witness.preserved_effect_sites) == (0x1508,)
+
+    native_prior = SemanticRouteFact(
+        kind=SemanticRouteFactKind.NATIVE_BOUND,
+        owner_serial=5,
+        source_serial=1,
+        source_instruction_ea=0x1108,
+        state_constant=state,
+        target_serial=7,
+        owner_anchor_ea=None,
+        target_anchor_ea=None,
+        path_serials=(5, 1),
+        path_edges=((5, 1),),
+        fact_id="native:entry",
+    )
+    upgraded = minimal_state_recovery._current_snapshot_route_fact_for_transition(
+        replace(transition, semantic_route_fact=native_prior),
+        route,
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert upgraded is not None
+    assert upgraded.kind is SemanticRouteFactKind.BOOTSTRAP
+
+    ambiguous_graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            1: replace(
+                graph.blocks[1],
+                insn_snapshots=(
+                    *_blk(1, (), (), (_mov(0x1108, _num(state), _stk(_STATE_OFF)),), ea=0x1100).insn_snapshots,
+                    _mov(0x110C, _num(state), _stk(_STATE_OFF)),
+                ),
+            ),
+        },
+    )
+    retained = minimal_state_recovery._current_snapshot_route_fact_for_transition(
+        replace(transition, semantic_route_fact=native_prior),
+        route,
+        ambiguous_graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+    )
+    assert retained is native_prior
+
+
+@pytest.mark.parametrize("entry_successors", ((1, 2), (2, 1)))
+def test_bootstrap_route_rejects_ambiguous_sibling_entry_writers(
+    entry_successors: tuple[int, int],
+) -> None:
+    """Two complete entry arms must abstain regardless of successor order."""
+    state = 7
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, entry_successors, (), (), ea=0x1000),
+            1: _blk(1, (3,), (0,), (_mov(0x1108, _num(state), _stk(_STATE_OFF)),), ea=0x1100),
+            2: _blk(2, (4,), (0,), (_mov(0x1208, _num(state), _stk(_STATE_OFF)),), ea=0x1200),
+            3: _blk(3, (5,), (1,), (), ea=0x1300),
+            4: _blk(4, (5,), (2,), (), ea=0x1400),
+            5: _blk(5, (6,), (3, 4), (), ea=0x1500),
+            6: _blk(6, (7,), (5,), (), ea=0x1600),
+            7: _blk(7, (), (6,), (), ea=0x1700),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(5, state, 7, False, None)
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=7,
+        certified_targets=frozenset({7}),
+        entry_serial=6,
+        path_serials=(6,),
+        path_anchors=(0x1600,),
+    )
+
+    assert minimal_state_recovery._bootstrap_semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_identity=minimal_state_recovery.StorageIdentity(
+            minimal_state_recovery.StorageIdentityKind.STACK, _STATE_OFF
+        ),
+    ) is None
+
+
+@pytest.mark.parametrize("entry_successors", ((1, 2), (2, 1)))
+def test_bootstrap_route_rejects_sibling_with_ambiguous_exact_writes(
+    entry_successors: tuple[int, int],
+) -> None:
+    """A duplicate exact write in either qualifying entry arm vetoes bootstrap."""
+    state = 7
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, entry_successors, (), (), ea=0x1000),
+            1: _blk(
+                1,
+                (3,),
+                (0,),
+                (
+                    _mov(0x1108, _num(state), _stk(_STATE_OFF)),
+                    _mov(0x110C, _num(state), _stk(_STATE_OFF)),
+                ),
+                ea=0x1100,
+            ),
+            2: _blk(2, (4,), (0,), (_mov(0x1208, _num(state), _stk(_STATE_OFF)),), ea=0x1200),
+            3: _blk(3, (5,), (1,), (), ea=0x1300),
+            4: _blk(4, (5,), (2,), (), ea=0x1400),
+            5: _blk(5, (6,), (3, 4), (), ea=0x1500),
+            6: _blk(6, (7,), (5,), (), ea=0x1600),
+            7: _blk(7, (), (6,), (), ea=0x1700),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(5, state, 7, False, None)
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=7,
+        certified_targets=frozenset({7}),
+        entry_serial=6,
+        path_serials=(6,),
+        path_anchors=(0x1600,),
+    )
+
+    assert minimal_state_recovery._bootstrap_semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_identity=minimal_state_recovery.StorageIdentity(
+            minimal_state_recovery.StorageIdentityKind.STACK, _STATE_OFF
+        ),
+    ) is None
+
+
+@pytest.mark.parametrize("entry_successors", ((1, 2), (2, 1)))
+def test_bootstrap_route_rejects_sibling_with_ambiguous_owner_corridors(
+    entry_successors: tuple[int, int],
+) -> None:
+    """Two owner corridors from either qualifying entry arm veto bootstrap."""
+    state = 7
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, entry_successors, (), (), ea=0x1000),
+            1: _blk(1, (3, 4), (0,), (_mov(0x1108, _num(state), _stk(_STATE_OFF)),), ea=0x1100),
+            2: _blk(2, (8,), (0,), (_mov(0x1208, _num(state), _stk(_STATE_OFF)),), ea=0x1200),
+            3: _blk(3, (5,), (1,), (), ea=0x1300),
+            4: _blk(4, (5,), (1,), (), ea=0x1400),
+            5: _blk(5, (6,), (3, 4, 8), (), ea=0x1500),
+            6: _blk(6, (7,), (5,), (), ea=0x1600),
+            7: _blk(7, (), (6,), (), ea=0x1700),
+            8: _blk(8, (5,), (2,), (), ea=0x1800),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(5, state, 7, False, None)
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=7,
+        certified_targets=frozenset({7}),
+        entry_serial=6,
+        path_serials=(6,),
+        path_anchors=(0x1600,),
+    )
+
+    assert minimal_state_recovery._bootstrap_semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_identity=minimal_state_recovery.StorageIdentity(
+            minimal_state_recovery.StorageIdentityKind.STACK, _STATE_OFF
+        ),
+    ) is None
+
+
+def test_bootstrap_route_requires_dag_to_begin_at_corridor_dispatcher() -> None:
+    """A valid DAG for another dispatcher cannot certify this bootstrap corridor."""
+    state = 7
+    graph = FlowGraph(
+        blocks={
+            0: _blk(0, (1,), (), (), ea=0x1000),
+            1: _blk(1, (3,), (0,), (_mov(0x1108, _num(state), _stk(_STATE_OFF)),), ea=0x1100),
+            3: _blk(3, (5,), (1,), (), ea=0x1300),
+            5: _blk(5, (6,), (3,), (), ea=0x1500),
+            6: _blk(6, (7,), (5,), (), ea=0x1600),
+            7: _blk(7, (), (6, 8), (), ea=0x1700),
+            8: _blk(8, (7,), (), (), ea=0x1800),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    transition = StateWriteTransition(5, state, 7, False, None)
+    route = minimal_state_recovery._DecisionDagStateRoute(
+        target=7,
+        certified_targets=frozenset({7}),
+        entry_serial=8,
+        path_serials=(8,),
+        path_anchors=(0x1800,),
+    )
+
+    assert minimal_state_recovery._bootstrap_semantic_route_fact_for_transition(
+        transition,
+        route,
+        graph,
+        state_identity=minimal_state_recovery.StorageIdentity(
+            minimal_state_recovery.StorageIdentityKind.STACK, _STATE_OFF
+        ),
+    ) is None
 
 
 @pytest.mark.parametrize("use_kind", (InsnKind.CALL, InsnKind.STORE))

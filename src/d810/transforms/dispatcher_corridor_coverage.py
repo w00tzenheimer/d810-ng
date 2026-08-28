@@ -453,6 +453,28 @@ def _upstream_corridor_paths(
             return False
         return int(dispatcher_serial) in predecessors.get(merge_serial, ())
 
+    def is_terminal_dispatcher_reentry(
+        predecessor: int,
+        suffix: tuple[int, ...],
+    ) -> bool:
+        """Accept a terminal dispatcher boundary, never an internal cycle."""
+        if predecessor != int(dispatcher_serial) or len(suffix) < 2:
+            return False
+        if int(suffix[-1]) != int(dispatcher_serial):
+            return False
+        merge_serial = int(suffix[0])
+        feeder_serial = int(suffix[-2])
+        if successors.get(feeder_serial, ()) != (int(dispatcher_serial),):
+            return False
+        if merge_serial not in successors.get(int(dispatcher_serial), ()):
+            return False
+        # A direct dispatcher -> handler -> dispatcher loop is its own
+        # terminal boundary.  In longer paths, an edge from the upstream merge
+        # back to the dispatcher instead proves an internal repeated cycle.
+        return merge_serial == feeder_serial or int(dispatcher_serial) not in successors.get(
+            merge_serial, ()
+        )
+
     def append_split_predecessor(
         predecessor: int,
         suffix: tuple[int, ...],
@@ -467,6 +489,12 @@ def _upstream_corridor_paths(
         reclassified as a merge.
         """
         nonlocal complete
+        if predecessor in seen:
+            if is_terminal_dispatcher_reentry(predecessor, suffix):
+                append(suffix)
+            else:
+                complete = False
+            return
         incoming_to_predecessor = predecessors.get(int(predecessor), ())
         if len(incoming_to_predecessor) > 1 and successors.get(
             int(predecessor), ()
@@ -480,7 +508,9 @@ def _upstream_corridor_paths(
                         suffix=suffix,
                         seen=seen,
                     ):
-                        append((merge_input, int(predecessor), *suffix))
+                        # Preserve the merge boundary while omitting the
+                        # already-recorded dispatcher re-entry node.
+                        append((int(predecessor), *suffix))
                     else:
                         complete = False
                     continue
@@ -503,8 +533,12 @@ def _upstream_corridor_paths(
             return
         predecessor = int(incoming[0])
         if predecessor in seen:
-            if predecessor == int(dispatcher_serial):
-                append((predecessor, *suffix))
+            if is_terminal_dispatcher_reentry(predecessor, suffix):
+                # The dispatcher re-entry is the corridor boundary, not a
+                # second path node.  Keeping it would manufacture a cyclic
+                # corridor that cannot be represented by the typed coverage
+                # path model.
+                append(suffix)
             else:
                 complete = False
             return

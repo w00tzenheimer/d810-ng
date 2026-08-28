@@ -720,6 +720,7 @@ def test_route_adapters_select_one_canonical_proof_and_reject_ambiguity() -> Non
     )
     from d810.analyses.control_flow.semantic_route_evidence import (
         canonical_semantic_evidence_from_proofs,
+        SemanticRouteEvidenceRejected,
     )
     native_evidence = canonical_semantic_evidence_from_proofs(
         native_key=proposal.route_evidence.native_key,
@@ -745,13 +746,12 @@ def test_route_adapters_select_one_canonical_proof_and_reject_ambiguity() -> Non
         proposal.route_evidence.route_proofs[0],
         source_owner_anchor_ea=0x1001,
     )
-    evidence = canonical_semantic_evidence_from_proofs(
-        native_key=proposal.route_evidence.native_key,
-        generation=proposal.route_evidence.generation,
-        proofs=(proposal.route_evidence.route_proofs[0], duplicate),
-    )
-    with pytest.raises(ValueError, match="multiple"):
-        producer_api.adapt_conditional_entry_route(conditional, **{**kwargs, "canonical_evidence": evidence})
+    with pytest.raises(SemanticRouteEvidenceRejected, match="divergent authoritative payload"):
+        canonical_semantic_evidence_from_proofs(
+            native_key=proposal.route_evidence.native_key,
+            generation=proposal.route_evidence.generation,
+            proofs=(proposal.route_evidence.route_proofs[0], duplicate),
+        )
 
 
 def test_state_transition_rejects_bootstrap_for_decision_dag_fact() -> None:
@@ -1146,7 +1146,7 @@ def test_bootstrap_transition_selects_actual_recovery_fact_and_entry_view() -> N
     )
     assert fact is not None
     assert fact.kind is SemanticRouteFactKind.BOOTSTRAP
-    assert fact.target_anchor_ea is None
+    assert fact.target_anchor_ea == 0x1700
     fact = replace(fact, fact_id="bootstrap:owned")
     context = CanonicalSemanticEvidenceProductionContext(
         key,
@@ -1175,9 +1175,10 @@ def test_bootstrap_transition_selects_actual_recovery_fact_and_entry_view() -> N
         for name, _value in unlabeled.evidence.route_proofs[0].diagnostic_provenance
     )
     duplicate = build_canonical_semantic_evidence((fact, fact), context)
-    assert duplicate.evidence is None
-    assert duplicate.abstention is not None
-    assert duplicate.abstention.reason.value == "canonical_model_rejected"
+    assert duplicate.abstention is None and duplicate.evidence is not None
+    assert len(duplicate.evidence.route_proofs) == 1
+    assert duplicate.evidence.atomic_group_id == result.evidence.atomic_group_id
+    assert duplicate.evidence.route_proofs[0].proof_id == proof.proof_id
     kwargs = dict(
         source=graph,
         source_catalog=source_catalog,

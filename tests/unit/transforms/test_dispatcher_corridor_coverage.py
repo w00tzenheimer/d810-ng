@@ -382,6 +382,11 @@ def test_dispatcher_self_reentry_corridor_is_enumerated_completely() -> None:
     assert report.enumeration_complete
     assert not report.residual_corridors
     assert report.covered_corridors
+    assert all(
+        len({(anchor.serial, anchor.ea) for anchor in corridor.path})
+        == len(corridor.path)
+        for corridor in report.covered_corridors
+    ), tuple(tuple(anchor.serial for anchor in corridor.path) for corridor in report.covered_corridors)
     for corridor in report.covered_corridors:
         assert corridor.label == " -> ".join(
             f"blk{anchor.serial}@0x{anchor.ea:x}" for anchor in corridor.path
@@ -791,6 +796,16 @@ def test_detached_component_analysis_proposes_only_dead_handler_island() -> None
         modifications=(RedirectGoto(from_serial=0, old_target=4, new_target=20),),
         dispatcher_entry_serial=4,
     )
+    assert coverage.enumeration_complete
+    assert {
+        tuple(anchor.serial for anchor in corridor.path)
+        for corridor in coverage.covered_corridors
+    } == {(0, 4), (21, 4)}
+    assert all(
+        len({(anchor.serial, anchor.ea) for anchor in corridor.path})
+        == len(corridor.path)
+        for corridor in coverage.covered_corridors
+    )
 
     analysis = build_detached_dead_handler_component_analysis(
         pre_graph,
@@ -881,6 +896,16 @@ def _detached_dead_handler_component_fixture() -> tuple[FlowGraph, FlowGraph, ob
             RedirectGoto(from_serial=21, old_target=113, new_target=20),
         ),
         dispatcher_entry_serial=4,
+    )
+    assert coverage.enumeration_complete
+    assert {
+        tuple(anchor.serial for anchor in corridor.path)
+        for corridor in coverage.covered_corridors
+    } == {(0, 10, 123, 3, 4), (0, 12, 112, 4), (21, 113, 4)}
+    assert all(
+        len({(anchor.serial, anchor.ea) for anchor in corridor.path})
+        == len(corridor.path)
+        for corridor in coverage.covered_corridors
     )
     post_graph = _replace_observed_edges(
         pre_graph,

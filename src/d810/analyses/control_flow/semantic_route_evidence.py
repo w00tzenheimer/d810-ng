@@ -3220,12 +3220,41 @@ def _stable_route_proof_payload(proof: SemanticRouteProof) -> object:
     )
 
 
+def _canonical_authoritative_proofs(
+    proofs: tuple[SemanticRouteProof, ...],
+) -> tuple[SemanticRouteProof, ...]:
+    """Merge repeated authoritative route payloads before canonical ID minting."""
+    by_payload: dict[str, SemanticRouteProof] = {}
+    payload_by_input_id: dict[str, str] = {}
+    for proof in proofs:
+        payload = json.dumps(
+            _stable_route_proof_payload(proof),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        prior_payload = payload_by_input_id.setdefault(proof.proof_id, payload)
+        if prior_payload != payload:
+            raise SemanticRouteEvidenceRejected(
+                "canonical semantic input proof id has divergent authoritative payload"
+            )
+        prior = by_payload.get(payload)
+        if prior is None:
+            by_payload[payload] = proof
+            continue
+        provenance = tuple(sorted(set(
+            (*prior.diagnostic_provenance, *proof.diagnostic_provenance)
+        )))
+        by_payload[payload] = replace(prior, diagnostic_provenance=provenance)
+    return tuple(by_payload[payload] for payload in sorted(by_payload))
+
+
 def _canonical_route_group_id(
     *,
     native_key: NativePreanalysisKey,
     generation: int,
     proofs: tuple[SemanticRouteProof, ...],
 ) -> str:
+    proofs = _canonical_authoritative_proofs(proofs)
     payload = {
         "native_key": _fingerprint_value(native_key),
         "generation": int(generation),
@@ -3259,7 +3288,7 @@ def canonical_semantic_evidence_from_proofs(
     proofs: tuple[SemanticRouteProof, ...],
 ) -> CanonicalSemanticEvidence:
     """Construct canonical evidence and mint all IDs from stable proof content."""
-    route_proofs = tuple(proofs)
+    route_proofs = _canonical_authoritative_proofs(tuple(proofs))
     group_id = _canonical_route_group_id(
         native_key=native_key,
         generation=generation,

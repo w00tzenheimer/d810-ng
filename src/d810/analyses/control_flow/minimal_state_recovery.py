@@ -853,11 +853,21 @@ def _bootstrap_semantic_route_fact_for_transition(
         return None
     owner = flow_graph.get_block(int(transition.write_block))
     entry = flow_graph.get_block(int(flow_graph.entry_serial))
-    if owner is None or entry is None or len(owner.succs) != 1:
+    target = flow_graph.get_block(int(transition.target_handler))
+    if owner is None or entry is None or target is None or len(owner.succs) != 1:
         return None
     dispatcher_serial = int(owner.succs[0])
     dispatcher = flow_graph.get_block(dispatcher_serial)
     if dispatcher is None or int(owner.serial) not in tuple(int(item) for item in dispatcher.preds):
+        return None
+    dispatcher_anchor = int(dispatcher.native_start_ea or dispatcher.start_ea)
+    if (
+        route.entry_serial != dispatcher_serial
+        or not route.path_serials
+        or int(route.path_serials[0]) != dispatcher_serial
+        or not route.path_anchors
+        or int(route.path_anchors[0]) != dispatcher_anchor
+    ):
         return None
 
     def write_candidates(block: BlockSnapshot) -> tuple[int, ...]:
@@ -893,50 +903,81 @@ def _bootstrap_semantic_route_fact_for_transition(
                     candidates.append(int(snapshot.ea))
         return tuple(candidates)
 
-    paths: list[tuple[int, ...]] = []
+    def paths_to_owner(source_serial: int) -> list[tuple[int, ...]]:
+        paths: list[tuple[int, ...]] = []
 
-    def visit(serial: int, path: tuple[int, ...]) -> None:
-        if len(path) > 16 or serial in path:
-            return
-        block = flow_graph.get_block(int(serial))
-        if block is None:
-            return
-        next_path = (*path, int(serial))
-        if int(serial) == int(owner.serial):
-            paths.append(next_path)
-            return
-        for successor in block.succs:
-            successor_block = flow_graph.get_block(int(successor))
-            if successor_block is not None and int(block.serial) in tuple(int(item) for item in successor_block.preds):
-                visit(int(successor), next_path)
+        def visit(serial: int, path: tuple[int, ...]) -> None:
+            if len(path) > 16 or serial in path:
+                return
+            block = flow_graph.get_block(int(serial))
+            if block is None:
+                return
+            next_path = (*path, int(serial))
+            if int(serial) == int(owner.serial):
+                paths.append(next_path)
+                return
+            for successor in block.succs:
+                if int(successor) == dispatcher_serial:
+                    continue
+                successor_block = flow_graph.get_block(int(successor))
+                if successor_block is not None and int(block.serial) in tuple(int(item) for item in successor_block.preds):
+                    visit(int(successor), next_path)
 
-    for source_serial in entry.succs:
+        visit(source_serial, ())
+        return paths
+
+    complete_candidates: list[
+        tuple[
+            BlockSnapshot,
+            int,
+            tuple[int, ...],
+            tuple[int, ...],
+            tuple[int, ...],
+            tuple[InstructionEffectSite, ...],
+        ]
+    ] = []
+    has_ambiguous_qualifying_arm = False
+    source_serials = (int(entry.serial), *(int(item) for item in entry.succs))
+    for source_serial in source_serials:
         source = flow_graph.get_block(int(source_serial))
-        if source is None or tuple(int(item) for item in source.preds) != (int(entry.serial),):
+        if source is None:
+            continue
+        if int(source.serial) != int(entry.serial) and tuple(int(item) for item in source.preds) != (int(entry.serial),):
             continue
         writes = write_candidates(source)
-        if len(writes) != 1:
+        if len(writes) > 1:
+            has_ambiguous_qualifying_arm = True
             continue
-        visit(int(source.serial), ())
-        if len(paths) != 1:
-            return None
+        if not writes:
+            continue
+        paths = paths_to_owner(int(source.serial))
+        if len(paths) > 1:
+            has_ambiguous_qualifying_arm = True
+            continue
+        if not paths:
+            continue
         path = paths[0]
         if path[-1] != int(owner.serial):
-            return None
+            continue
         write_ea = int(writes[0])
         corridor_anchors = [write_ea]
         for serial in path[1:]:
             block = flow_graph.get_block(int(serial))
             if block is None:
-                return None
+                corridor_anchors = []
+                break
             corridor_anchors.append(int(block.native_start_ea or block.start_ea))
+        if not corridor_anchors:
+            continue
         corridor_serials = (*path, dispatcher_serial)
-        corridor_anchors.append(int(dispatcher.native_start_ea or dispatcher.start_ea))
+        corridor_anchors.append(dispatcher_anchor)
         preserved_effect_sites = []
+        complete = True
         for serial in path:
             block = flow_graph.get_block(int(serial))
             if block is None:
-                return None
+                complete = False
+                break
             preserved_effect_sites.extend(project_instruction_effect_sites(block))
             state_store_eas = {
                 int(snapshot.ea)
@@ -950,7 +991,8 @@ def _bootstrap_semantic_route_fact_for_transition(
             for instruction in InstructionProjection.from_block(block):
                 ea = int(instruction.attrs.get("ea", -1))
                 if ea < 0:
-                    return None
+                    complete = False
+                    break
                 if (
                     state_identity.kind is StorageIdentityKind.STACK
                     and instruction_references_stack_identity(
@@ -962,65 +1004,85 @@ def _bootstrap_semantic_route_fact_for_transition(
                         or int(ea) not in state_store_eas
                     )
                 ):
-                    return None
+                    complete = False
+                    break
                 writes_state = (
                     instruction.result is not None
                     and storage_identity_from_varnode(instruction.result) == state_identity
                 )
-                if writes_state and int(ea) != write_ea:
-                    return None
-                if serial != int(source.serial) and writes_state:
-                    return None
-                if int(ea) in state_store_eas and int(ea) != write_ea:
-                    return None
-        dag_witness = DecisionDagRouteWitness(
-            state_identity,
-            int(transition.next_state),
-            int(route.entry_serial),
-            int(route.path_anchors[0]),
-            tuple(int(item) for item in route.path_serials),
-            tuple(int(item) for item in route.path_anchors),
-            tuple(route.comparisons),
-            tuple(route.aliases),
-        )
-        bootstrap = SemanticBootstrapRouteWitness(
-            entry_serial=int(entry.serial),
-            source_serial=int(source.serial),
-            source_instruction_ea=write_ea,
-            owner_serial=int(owner.serial),
-            dispatcher_serial=dispatcher_serial,
-            state_identity=state_identity,
-            state_constant=int(transition.next_state),
-            state_width=4,
-            corridor_serials=tuple(int(item) for item in corridor_serials),
-            corridor_anchors=tuple(int(item) for item in corridor_anchors),
-            preserved_effect_sites=tuple(
-                sorted(
-                    preserved_effect_sites,
-                    key=lambda site: (
-                        site.instruction_ea,
-                        site.host_instruction_ea,
-                        site.kind.value,
-                    ),
+                if (
+                    (writes_state and int(ea) != write_ea)
+                    or (serial != int(source.serial) and writes_state)
+                    or (int(ea) in state_store_eas and int(ea) != write_ea)
+                ):
+                    complete = False
+                    break
+            if not complete:
+                break
+        if complete:
+            complete_candidates.append(
+                (
+                    source,
+                    write_ea,
+                    path,
+                    corridor_serials,
+                    tuple(corridor_anchors),
+                    tuple(preserved_effect_sites),
                 )
-            ),
-            decision_dag_witness=dag_witness,
-        )
-        return SemanticRouteFact(
-            kind=SemanticRouteFactKind.BOOTSTRAP,
-            owner_serial=int(owner.serial),
-            source_serial=int(source.serial),
-            source_instruction_ea=write_ea,
-            state_constant=int(transition.next_state),
-            target_serial=int(route.target),
-            owner_anchor_ea=int(owner.native_start_ea or owner.start_ea),
-            target_anchor_ea=None,
-            path_serials=tuple(int(item) for item in path),
-            path_edges=tuple((int(left), int(right)) for left, right in zip(path, path[1:])),
-            bootstrap_witness=bootstrap,
-            decision_dag_witness=dag_witness,
-        )
-    return None
+            )
+
+    if has_ambiguous_qualifying_arm or len(complete_candidates) != 1:
+        return None
+    source, write_ea, path, corridor_serials, corridor_anchors, preserved_effect_sites = (
+        complete_candidates[0]
+    )
+    dag_witness = DecisionDagRouteWitness(
+        state_identity,
+        int(transition.next_state),
+        int(route.entry_serial),
+        int(route.path_anchors[0]),
+        tuple(int(item) for item in route.path_serials),
+        tuple(int(item) for item in route.path_anchors),
+        tuple(route.comparisons),
+        tuple(route.aliases),
+    )
+    bootstrap = SemanticBootstrapRouteWitness(
+        entry_serial=int(entry.serial),
+        source_serial=int(source.serial),
+        source_instruction_ea=write_ea,
+        owner_serial=int(owner.serial),
+        dispatcher_serial=dispatcher_serial,
+        state_identity=state_identity,
+        state_constant=int(transition.next_state),
+        state_width=4,
+        corridor_serials=tuple(int(item) for item in corridor_serials),
+        corridor_anchors=tuple(int(item) for item in corridor_anchors),
+        preserved_effect_sites=tuple(
+            sorted(
+                preserved_effect_sites,
+                key=lambda site: (
+                    site.instruction_ea,
+                    site.host_instruction_ea,
+                    site.kind.value,
+                ),
+            )
+        ),
+        decision_dag_witness=dag_witness,
+    )
+    return SemanticRouteFact(
+        kind=SemanticRouteFactKind.BOOTSTRAP,
+        owner_serial=int(owner.serial),
+        source_serial=int(source.serial),
+        source_instruction_ea=write_ea,
+        state_constant=int(transition.next_state),
+        target_serial=int(route.target),
+        owner_anchor_ea=int(corridor_anchors[-2]),
+        target_anchor_ea=int(target.native_start_ea or target.start_ea),
+        path_serials=tuple(int(item) for item in path),
+        path_edges=tuple((int(left), int(right)) for left, right in zip(path, path[1:])),
+        bootstrap_witness=bootstrap,
+        decision_dag_witness=dag_witness,
+    )
 
 
 def _semantic_route_fact_for_transition(
@@ -1161,6 +1223,11 @@ def _semantic_route_fact_for_transition(
                 path_edges=(),
                 transform_witness=transform_proof,
             )
+        bootstrap_fact = _bootstrap_semantic_route_fact_for_transition(
+            transition, route, flow_graph, state_identity=state_identity,
+        )
+        if bootstrap_fact is not None:
+            return bootstrap_fact
         source_candidates: list[tuple[int, int]] = []
         # A partitioned transition has two identities: ``write_block`` owns the
         # delivery edge, while ``via_block`` is the shared block that performs
@@ -2700,6 +2767,49 @@ def _fully_partitioned_state_transform_glues(
     return frozenset(complete)
 
 
+def _current_snapshot_route_fact_for_transition(
+    transition: StateWriteTransition,
+    route: _DecisionDagStateRoute,
+    flow_graph: FlowGraph,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    transform_proof: ExactStateTransformFeeder | None = None,
+    carrier_proof: ExactCarrierStateWrite | None = None,
+) -> SemanticRouteFact | None:
+    """Reclassify current graph semantics before retaining a native receipt."""
+    if state_var_stkoff is not None:
+        state_identity = StorageIdentity(StorageIdentityKind.STACK, int(state_var_stkoff))
+    elif state_var_reg is not None:
+        state_identity = StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
+    else:
+        return None
+    bootstrap = _bootstrap_semantic_route_fact_for_transition(
+        transition, route, flow_graph, state_identity=state_identity,
+    )
+    if bootstrap is not None:
+        return bootstrap
+    prior = transition.semantic_route_fact
+    if (
+        isinstance(prior, SemanticRouteFact)
+        and prior.kind is SemanticRouteFactKind.NATIVE_BOUND
+        and transition.next_state is not None
+        and transition.target_handler is not None
+        and int(prior.state_constant) == (int(transition.next_state) & 0xFFFFFFFF)
+        and int(prior.target_serial) == int(transition.target_handler)
+    ):
+        return prior
+    return _semantic_route_fact_for_transition(
+        transition,
+        route,
+        flow_graph,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        transform_proof=transform_proof,
+        carrier_proof=carrier_proof,
+    )
+
+
 def _reconcile_transition_routes_with_decision_dag(
     transitions: tuple[StateWriteTransition, ...],
     flow_graph: FlowGraph,
@@ -3201,24 +3311,14 @@ def _reconcile_transition_routes_with_decision_dag(
                 resolved_exact = _attach_preserved_feeder_clone_provenance(
                     resolved_exact
                 )
-            prior_fact = resolved_exact.semantic_route_fact
-            route_fact = (
-                prior_fact
-                if (
-                    isinstance(prior_fact, SemanticRouteFact)
-                    and prior_fact.kind is SemanticRouteFactKind.NATIVE_BOUND
-                    and int(prior_fact.state_constant) == int(resolved_exact.next_state)
-                    and int(prior_fact.target_serial) == int(route.target)
-                )
-                else _semantic_route_fact_for_transition(
-                    resolved_exact,
-                    route,
-                    flow_graph,
-                    state_var_stkoff=state_var_stkoff,
-                    state_var_reg=state_var_reg,
-                    transform_proof=transform_proof,
-                    carrier_proof=carrier_proof,
-                )
+            route_fact = _current_snapshot_route_fact_for_transition(
+                resolved_exact,
+                route,
+                flow_graph,
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+                transform_proof=transform_proof,
+                carrier_proof=carrier_proof,
             )
             if route_fact is None:
                 logger.info(
@@ -3308,24 +3408,14 @@ def _reconcile_transition_routes_with_decision_dag(
             resolved_transition = _attach_preserved_feeder_clone_provenance(
                 resolved_transition
             )
-        prior_fact = resolved_transition.semantic_route_fact
-        route_fact = (
-            prior_fact
-            if (
-                isinstance(prior_fact, SemanticRouteFact)
-                and prior_fact.kind is SemanticRouteFactKind.NATIVE_BOUND
-                and int(prior_fact.state_constant) == int(resolved_transition.next_state)
-                and int(prior_fact.target_serial) == int(route.target)
-            )
-            else _semantic_route_fact_for_transition(
-                resolved_transition,
-                route,
-                flow_graph,
-                state_var_stkoff=state_var_stkoff,
-                state_var_reg=state_var_reg,
-                transform_proof=transform_proof,
-                carrier_proof=carrier_proof,
-            )
+        route_fact = _current_snapshot_route_fact_for_transition(
+            resolved_transition,
+            route,
+            flow_graph,
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+            transform_proof=transform_proof,
+            carrier_proof=carrier_proof,
         )
         if route_fact is None:
             logger.info(

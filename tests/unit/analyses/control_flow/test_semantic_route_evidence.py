@@ -513,6 +513,38 @@ def test_bootstrap_production_and_binding_replay_entry_corridor() -> None:
     evidence = _accepted(result)
     assert bind_canonical_semantic_evidence(graph, evidence) is not None
     proof = evidence.route_proofs[0]
+    _ordinary_graph, ordinary_evidence = _ordinary_decision_dag_evidence()
+    ordinary = ordinary_evidence.route_proofs[0]
+    assert proof.state_write is not None and proof.state_dag is not None
+    assert ordinary.state_write is not None and ordinary.state_dag is not None
+    co_keyed_witness = replace(
+        ordinary.state_dag.witness,
+        state_constant=proof.destinations[0].state_constant,
+    )
+    co_keyed_state_dag = replace(
+        ordinary.state_dag,
+        witness=co_keyed_witness,
+        target_identity=proof.destinations[0].target_identity,
+        target_anchor_ea=proof.destinations[0].target_anchor_ea,
+    )
+    co_keyed_dag = replace(
+        ordinary,
+        proof_id="decision-dag:co-keyed-bootstrap",
+        destinations=proof.destinations,
+        state_write=replace(
+            ordinary.state_write,
+            state_constant=proof.destinations[0].state_constant,
+        ),
+        state_dag=co_keyed_state_dag,
+    )
+    distinct_kinds = canonical_semantic_evidence_from_proofs(
+        NATIVE_KEY, 1, (proof, co_keyed_dag),
+    )
+    assert len(distinct_kinds.route_proofs) == 2
+    assert {item.proof_kind for item in distinct_kinds.route_proofs} == {
+        SemanticRouteProofKind.BOOTSTRAP,
+        SemanticRouteProofKind.STATE_DAG,
+    }
     assert canonical_bytes(proof.bootstrap) == canonical_bytes(proof.bootstrap)
     assert canonical_bytes(evidence) == canonical_bytes(evidence)
     with pytest.raises(TypeError, match="no canonical encoding"):
@@ -1262,6 +1294,70 @@ def _proof() -> SemanticRouteProof:
             preserved_call_instruction_eas=(),
         ),
     )
+
+
+def test_canonical_factory_deduplicates_repeated_authoritative_payload() -> None:
+    proof = _proof()
+    choice = _storage_choice_proof()
+
+    single = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (proof,))
+    repeated = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (proof, proof))
+    ordered = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (proof, choice))
+    reordered = canonical_semantic_evidence_from_proofs(
+        NATIVE_KEY, 3, (choice, proof, choice, proof),
+    )
+
+    assert len(repeated.route_proofs) == 1
+    assert repeated.atomic_group_id == single.atomic_group_id
+    assert repeated.route_proofs[0].proof_id == single.route_proofs[0].proof_id
+    assert len(reordered.route_proofs) == 2
+    assert reordered.atomic_group_id == ordered.atomic_group_id
+    assert tuple(proof.proof_id for proof in reordered.route_proofs) == tuple(
+        proof.proof_id for proof in ordered.route_proofs
+    )
+
+
+def test_canonical_factory_rejects_one_input_id_with_divergent_payload() -> None:
+    proof = _proof()
+
+    with pytest.raises(SemanticRouteEvidenceRejected, match="divergent authoritative payload"):
+        canonical_semantic_evidence_from_proofs(
+            NATIVE_KEY,
+            3,
+            (proof, replace(
+                proof,
+                destinations=(replace(proof.destinations[0], target_anchor_ea=0x1201),),
+            )),
+        )
+
+
+def test_canonical_factory_merges_diagnostic_provenance_outside_authority_seal() -> None:
+    proof = _proof()
+    first = replace(proof, diagnostic_provenance=(("fact_id", "first"),))
+    second = replace(proof, diagnostic_provenance=(("fact_id", "second"),))
+
+    clean = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (proof,))
+    merged = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (second, first))
+
+    assert merged.atomic_group_id == clean.atomic_group_id
+    assert merged.route_proofs[0].proof_id == clean.route_proofs[0].proof_id
+    assert merged.route_proofs[0].diagnostic_provenance == (
+        ("fact_id", "first"),
+        ("fact_id", "second"),
+    )
+
+
+def test_canonical_evidence_still_rejects_duplicate_final_proof_ids() -> None:
+    evidence = canonical_semantic_evidence_from_proofs(NATIVE_KEY, 3, (_proof(),))
+    proof = evidence.route_proofs[0]
+
+    forged = object.__new__(CanonicalSemanticEvidence)
+    object.__setattr__(forged, "native_key", evidence.native_key)
+    object.__setattr__(forged, "generation", evidence.generation)
+    object.__setattr__(forged, "atomic_group_id", evidence.atomic_group_id)
+    object.__setattr__(forged, "route_proofs", (proof, proof))
+    with pytest.raises(SemanticRouteEvidenceRejected, match="duplicate proof ids"):
+        CanonicalSemanticEvidence.__post_init__(forged)
 
 
 def _storage_choice_proof() -> SemanticRouteProof:
