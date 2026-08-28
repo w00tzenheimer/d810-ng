@@ -118,12 +118,40 @@ class RuntimeActivationRollbackError(RuntimeError):
     """The previous live runtime could not be re-established after failure."""
 
 
+def _external_binding_for_name(
+    binding_name: str,
+    external_bindings: dict[tuple[str, str], ImplementationOwnership],
+) -> ImplementationOwnership | None:
+    """Resolve one schedule name to its exact activated external ownership."""
+    matches = tuple(
+        ownership
+        for ownership in external_bindings.values()
+        if ownership.candidate.rule_name == binding_name
+    )
+    if len(matches) > 1:
+        candidates = tuple(
+            (
+                ownership.candidate.pass_id,
+                ownership.candidate.backend_name,
+                ownership.candidate.backend_origin,
+            )
+            for ownership in matches
+        )
+        raise PipelineConfigError(
+            f"external implementation binding {binding_name!r} is ambiguous: "
+            f"{candidates!r}"
+        )
+    return matches[0] if matches else None
+
+
 def _require_registered_schedule_bindings(
     schedule: ConfigV2HookSchedule,
     known_ins_rules: list,
     known_blk_rules: list,
+    external_bindings: dict[tuple[str, str], ImplementationOwnership] | None = None,
 ) -> None:
     """Reject a v2 schedule whose concrete Hex-Rays hooks are unavailable."""
+    external_bindings = external_bindings or {}
     known_ins_names = frozenset(
         str(getattr(rule, "name", "")) for rule in known_ins_rules
     )
@@ -134,14 +162,18 @@ def _require_registered_schedule_bindings(
         dict.fromkeys(
             binding.name
             for binding in schedule.instruction_bindings
-            if binding.is_activated and binding.name not in known_ins_names
+            if binding.is_activated
+            and binding.name not in known_ins_names
+            and _external_binding_for_name(binding.name, external_bindings) is None
         )
     )
     missing_blk = tuple(
         dict.fromkeys(
             binding.name
             for binding in schedule.block_bindings
-            if binding.is_activated and binding.name not in known_blk_names
+            if binding.is_activated
+            and binding.name not in known_blk_names
+            and _external_binding_for_name(binding.name, external_bindings) is None
         )
     )
     if not (missing_ins or missing_blk):
@@ -514,7 +546,7 @@ class D810State(metaclass=SingletonMeta):
             for binding in schedule.block_bindings
             if binding.is_activated
         }
-        external_rules: dict[tuple[str, str], tuple[object, object]] = {}
+        external_rules: dict[tuple[str, str], ImplementationOwnership] = {}
         staged_activations: list[object] = []
         all_binding_names = instruction_names | block_names
         for pass_id in schedule.configured_pass_ids:
@@ -552,7 +584,7 @@ class D810State(metaclass=SingletonMeta):
                     candidate,
                 )
                 _stage_call(implementation.bind_plugin_services, services)
-                external_rules[external_key] = (candidate, implementation)
+                external_rules[external_key] = staged_ownership
                 activation = _stage_call(
                     backend_registry.activation_for_candidate, candidate
                 )
@@ -575,6 +607,7 @@ class D810State(metaclass=SingletonMeta):
             schedule,
             candidate_known_ins_rules,
             candidate_known_blk_rules,
+            external_rules,
         )
         # The registration preflight above is still part of the fallible
         # validation phase.  Existing-profile cleanup belongs before candidate
@@ -628,9 +661,19 @@ class D810State(metaclass=SingletonMeta):
         for rule_conf in schedule.instruction_bindings:
             if not rule_conf.is_activated:
                 continue
-            for rule in candidate_known_ins_rules:
-                if rule.name != rule_conf.name:
-                    continue
+            external_binding = _external_binding_for_name(
+                rule_conf.name, external_rules
+            )
+            rules = (
+                (external_binding.instance,)
+                if external_binding is not None
+                else tuple(
+                    rule
+                    for rule in candidate_known_ins_rules
+                    if rule.name == rule_conf.name
+                )
+            )
+            for rule in rules:
                 effective_config = _stage_call(resolve_arch_config, rule_conf.config)
                 effective_config["dump_intermediate_microcode"] = self.d810_config.get(
                     "dump_intermediate_microcode"
@@ -725,9 +768,19 @@ class D810State(metaclass=SingletonMeta):
         for rule_conf in schedule.block_bindings:
             if not rule_conf.is_activated:
                 continue
-            for blk_rule in candidate_known_blk_rules:
-                if blk_rule.name != rule_conf.name:
-                    continue
+            external_binding = _external_binding_for_name(
+                rule_conf.name, external_rules
+            )
+            rules = (
+                (external_binding.instance,)
+                if external_binding is not None
+                else tuple(
+                    rule
+                    for rule in candidate_known_blk_rules
+                    if rule.name == rule_conf.name
+                )
+            )
+            for blk_rule in rules:
                 effective_config = _stage_call(resolve_arch_config, rule_conf.config)
                 effective_config["dump_intermediate_microcode"] = self.d810_config.get(
                     "dump_intermediate_microcode"

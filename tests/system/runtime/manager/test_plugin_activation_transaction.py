@@ -39,6 +39,43 @@ class _Rule(state_module.InstructionOptimizationRule):
         return None
 
 
+class _OpaqueBindingRule(state_module.InstructionOptimizationRule):
+    name = "RuntimeRule"
+
+    def __init__(self):
+        super().__init__()
+        self.configure_calls = 0
+        self.log_dir_calls = 0
+        self.bound_services = []
+
+    def bind_plugin_services(self, services):
+        self.bound_services.append(services)
+        super().bind_plugin_services(services)
+
+    def configure(self, _config):
+        self.configure_calls += 1
+
+    def set_log_dir(self, _log_dir):
+        self.log_dir_calls += 1
+
+    def check_and_replace(self, _blk, _ins):
+        return None
+
+
+class _InternalOpaqueNameRule(state_module.InstructionOptimizationRule):
+    name = "opaque-implementation-id"
+
+    def __init__(self):
+        super().__init__()
+        self.configure_calls = 0
+
+    def configure(self, _config):
+        self.configure_calls += 1
+
+    def check_and_replace(self, _blk, _ins):
+        return None
+
+
 class _Manager:
     def __init__(self, registry) -> None:
         self.started = False
@@ -429,6 +466,58 @@ def test_undeclared_binding_rolls_back_without_publishing(monkeypatch):
     assert registry.factory_calls == 0
     assert registry.close_calls == [(old_activation,)]
     assert registry.new_activation.close_calls == 1
+
+
+def test_opaque_external_binding_selects_owned_instance_once(monkeypatch):
+    external_rule = _OpaqueBindingRule()
+    registry = _Registry(external_rule, declared_name="opaque-implementation-id")
+    old_activation = _Activation("old")
+    old_project = _project("old.json")
+    old_snapshot = _snapshot(old_project, old_activation, "old-ins")
+    registry.old_activation = old_activation
+    state = _state(registry, old_project, old_snapshot)
+    internal_rule = _InternalOpaqueNameRule()
+    state._build_known_instruction_rules = lambda: [internal_rule]
+    _patch_activation(monkeypatch, binding_name="opaque-implementation-id")
+    new_project = _project("new.json")
+    new_snapshot = _snapshot(new_project, registry.new_activation, external_rule)
+    registry.expected_snapshot = new_snapshot
+    monkeypatch.setattr(
+        state_module, "build_project_runtime_snapshot", lambda **_kwargs: new_snapshot
+    )
+
+    state._activate_project(project_index=1, project=new_project)
+
+    assert state.current_ins_rules == [external_rule]
+    assert external_rule.name == "RuntimeRule"
+    assert external_rule.configure_calls == 1
+    assert external_rule.log_dir_calls == 1
+    assert len(external_rule.bound_services) == 1
+    assert internal_rule.configure_calls == 0
+
+
+def test_opaque_external_binding_rejects_multiple_owners():
+    first = PassImplementationCandidate(
+        pass_id="first-pass",
+        backend_name="first-backend",
+        backend_origin="first-origin",
+        rule_modules=(),
+        rule_name="opaque-implementation-id",
+    )
+    second = PassImplementationCandidate(
+        pass_id="second-pass",
+        backend_name="second-backend",
+        backend_origin="second-origin",
+        rule_modules=(),
+        rule_name="opaque-implementation-id",
+    )
+    bindings = {
+        (first.pass_id, first.rule_name): ImplementationOwnership(first, _Rule()),
+        (second.pass_id, second.rule_name): ImplementationOwnership(second, _Rule()),
+    }
+
+    with pytest.raises(PipelineConfigError, match="binding .* ambiguous"):
+        state_module._external_binding_for_name("opaque-implementation-id", bindings)
 
 
 def test_success_publishes_before_closing_superseded_activation(monkeypatch):
