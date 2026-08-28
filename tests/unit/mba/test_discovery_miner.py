@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -183,7 +189,10 @@ def test_synthesis_exception_leaves_claim_active(tmp_path) -> None:
     store.close()
 
 
-@pytest.mark.parametrize("reason", ["generation_budget", "proof_failed", "not_cheaper"])
+@pytest.mark.parametrize(
+    "reason",
+    ["generation_budget", "proof_failed", "not_cheaper", "no_signature_match", "too_many_variables"],
+)
 def test_bounded_exhaustion_finishes_stably(tmp_path, reason) -> None:
     from d810.mba.discovery_miner import DiscoveryMiner
 
@@ -319,6 +328,48 @@ def test_raw_noncanonical_ac_order_publishes_against_canonical_group(tmp_path) -
     store.close()
 
 
+@pytest.mark.parametrize("field", ["source_fingerprints", "provenance", "fixture"])
+def test_store_rejects_mined_proposal_identity_mismatch(tmp_path, field) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner, _proposal_for
+
+    x = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    source = TypedBvTerm("add", 32, children=(x, x))
+    proofs = tuple(ProofReceipt(width, True, 0.1) for width in CERTIFICATION_WIDTHS)
+    result = MbaSynthesisResult(
+        source,
+        x,
+        term_cost(source),
+        term_cost(x),
+        MbaCertification(proofs),
+        None,
+    )
+    store = MbaDiscoveryStore(tmp_path / f"identity-{field}.sqlite3")
+    store.record_attempt(_attempt(source))
+    miner = DiscoveryMiner(store, synthesizer=lambda atomized, budget: result)
+    claim = miner.claim().claim
+    assert claim is not None
+    atomized = atomize_repeated_subterms(claim.group.raw_terms[0], max_atoms=4)
+    proposal = _proposal_for(claim, atomized, result)
+    if field == "source_fingerprints":
+        proposal = replace(proposal, proposal_fingerprint=None, source_fingerprints=("wrong",))
+    elif field == "provenance":
+        proposal = replace(proposal, proposal_fingerprint=None, provenance=("wrong",))
+    else:
+        fixture = dict(proposal.fixture)
+        fixture["source_fingerprint"] = "wrong"
+        proposal = replace(proposal, proposal_fingerprint=None, fixture=fixture)
+    receipt = store.publish_proposal(
+        claim.run.run_id,
+        claim.run.claimed_revision,
+        proposal,
+        proposal.replacement,
+        proposal,
+    )
+    assert receipt.status is ReceiptStatus.REFUSED
+    assert store.status_counts().run_counts[0][1] == 1
+    store.close()
+
+
 def test_heartbeat_exception_leaves_claim_active(tmp_path, monkeypatch) -> None:
     from d810.mba.discovery_miner import DiscoveryMiner
 
@@ -415,6 +466,48 @@ def test_heartbeat_refreshes_during_bounded_synthesis(tmp_path, monkeypatch) -> 
     outcome = miner.mine_claim(claim)
     assert outcome.status == "no_proposal"
     assert calls
+    store.close()
+
+
+def test_delayed_heartbeat_is_joined_before_mine_returns(tmp_path, monkeypatch) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    term = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    store = MbaDiscoveryStore(tmp_path / "heartbeat-join.sqlite3")
+    store.record_attempt(_attempt(term))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def delayed_heartbeat(*_args, **_kwargs):
+        entered.set()
+        release.wait(timeout=2.0)
+        return HeartbeatReceipt(ReceiptStatus.HEARTBEATED)
+
+    monkeypatch.setattr(store, "heartbeat", delayed_heartbeat)
+    miner = DiscoveryMiner(
+        store,
+        heartbeat_interval=0.001,
+        synthesizer=lambda atomized, budget: time.sleep(0.03)
+        or MbaSynthesisResult(
+            atomized.atomized_term,
+            None,
+            term_cost(atomized.atomized_term),
+            None,
+            MbaCertification(()),
+            None,
+        ),
+    )
+    claim = miner.claim().claim
+    assert claim is not None
+    result = []
+    worker = threading.Thread(target=lambda: result.append(miner.mine_claim(claim)))
+    worker.start()
+    assert entered.wait(timeout=1.0)
+    assert worker.is_alive()
+    release.set()
+    worker.join(timeout=2.0)
+    assert not worker.is_alive()
+    assert result and result[0].status == "no_proposal"
     store.close()
 
 
@@ -537,15 +630,11 @@ def test_materialization_destination_race_never_clobbers_empty_tree(tmp_path, mo
 
     store, proposal_id = _published_for_materialization(tmp_path)
     output = tmp_path / "race"
-    original_mkdir = discovery_miner.os.mkdir
+    def race_publish(parent_fd, source, destination):
+        output.mkdir()
+        raise FileExistsError("destination appeared")
 
-    def race_mkdir(path, *args, **kwargs):
-        if Path(path) == output:
-            original_mkdir(path, *args, **kwargs)
-            raise FileExistsError("destination appeared")
-        return original_mkdir(path, *args, **kwargs)
-
-    monkeypatch.setattr(discovery_miner.os, "mkdir", race_mkdir)
+    monkeypatch.setattr(discovery_miner, "_exclusive_rename", race_publish)
     try:
         with pytest.raises(FileExistsError):
             materialize_proposal(store, proposal_id, output)
@@ -557,6 +646,70 @@ def test_materialization_destination_race_never_clobbers_empty_tree(tmp_path, mo
         store.close()
 
 
+def test_materialization_publishes_complete_tree_before_reader_can_observe_it(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba import discovery_miner
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    output = tmp_path / "visibility"
+    original_publish = discovery_miner._exclusive_rename
+    observed = []
+
+    def observe_publish(parent_fd, source, destination):
+        assert not output.exists()
+        original_publish(parent_fd, source, destination)
+        observed.append(tuple(sorted(item.name for item in output.iterdir())))
+
+    monkeypatch.setattr(discovery_miner, "_exclusive_rename", observe_publish)
+    try:
+        materialize_proposal(store, proposal_id, output)
+        assert len(observed) == 1
+        assert len(observed[0]) == 2
+    finally:
+        store.close()
+
+
+def test_materialization_process_crash_leaves_exact_orphan_adoptable(tmp_path) -> None:
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    db = tmp_path / "materialize-safety.sqlite3"
+    output = tmp_path / "crash-recovery"
+    store.close()
+    script = """
+import os
+from d810.mba import discovery_miner
+from d810.mba.discovery_miner import materialize_proposal
+from d810.mba.discovery_store import MbaDiscoveryStore
+
+original = discovery_miner._exclusive_rename
+def crash_after_publish(parent_fd, source, destination):
+    original(parent_fd, source, destination)
+    os._exit(77)
+
+discovery_miner._exclusive_rename = crash_after_publish
+store = MbaDiscoveryStore({db!r})
+materialize_proposal(store, {proposal_id!r}, {output!r})
+""".format(db=str(db), proposal_id=proposal_id, output=str(output))
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(__file__).parents[3] / "src")
+    crashed = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, check=False
+    )
+    assert crashed.returncode == 77
+    assert len(tuple(output.iterdir())) == 2
+    recovered = MbaDiscoveryStore(db)
+    try:
+        materialize_proposal(recovered, proposal_id, output)
+        snapshot = recovered.proposal_snapshot(proposal_id)
+        assert snapshot is not None
+        assert snapshot.proposal.state.value == "materialized"
+    finally:
+        recovered.close()
+
+
 def test_materialization_write_failure_leaves_proposed_and_cleans_stage(
     tmp_path, monkeypatch
 ) -> None:
@@ -565,14 +718,17 @@ def test_materialization_write_failure_leaves_proposed_and_cleans_stage(
 
     store, proposal_id = _published_for_materialization(tmp_path)
     output = tmp_path / "write-failure"
-    original_open = discovery_miner.Path.open
+    original_write = discovery_miner.os.write
+    writes = 0
 
-    def fail_fixture_write(path, *args, **kwargs):
-        if path.name.endswith(".fixture.json"):
+    def fail_fixture_write(fd, content):
+        nonlocal writes
+        writes += 1
+        if writes > 1:
             raise OSError("fixture write failed")
-        return original_open(path, *args, **kwargs)
+        return original_write(fd, content)
 
-    monkeypatch.setattr(discovery_miner.Path, "open", fail_fixture_write)
+    monkeypatch.setattr(discovery_miner.os, "write", fail_fixture_write)
     try:
         with pytest.raises(OSError, match="fixture write failed"):
             materialize_proposal(store, proposal_id, output)
@@ -632,6 +788,39 @@ def test_materialization_cas_refusal_preserves_replacement_owner(tmp_path, monke
         assert (output / "other-owner.txt").read_text() == "keep"
     finally:
         monkeypatch.setattr(store, "mark_materialized", original_mark)
+        shutil.rmtree(output)
+        store.close()
+
+
+@pytest.mark.parametrize("mutation", ["extra", "content"])
+def test_materialization_rollback_preserves_same_inode_foreign_changes(
+    tmp_path, monkeypatch, mutation
+) -> None:
+    from d810.mba.discovery_miner import materialize_proposal
+    from d810.mba.discovery_models import LifecycleReceipt, ReceiptStatus
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    output = tmp_path / "same-owner"
+    snapshot = store.proposal_snapshot(proposal_id)
+    assert snapshot is not None
+    stem = snapshot.proposal.proposal_fingerprint
+
+    def mutate_then_refuse(*args, **kwargs):
+        if mutation == "extra":
+            (output / "other-owner.txt").write_text("keep")
+        else:
+            (output / f"{stem}.rule.py").write_text("foreign")
+        return LifecycleReceipt(ReceiptStatus.REFUSED, reason="race")
+
+    monkeypatch.setattr(store, "mark_materialized", mutate_then_refuse)
+    try:
+        with pytest.raises(RuntimeError, match="recovery conflict"):
+            materialize_proposal(store, proposal_id, output)
+        if mutation == "extra":
+            assert (output / "other-owner.txt").read_text() == "keep"
+        else:
+            assert (output / f"{stem}.rule.py").read_text() == "foreign"
+    finally:
         shutil.rmtree(output)
         store.close()
 

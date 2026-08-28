@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import ctypes
+import errno
 import os
 import stat
-import shutil
-import tempfile
+import sys
 import threading
+import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,8 +75,10 @@ class _HeartbeatCoordinator:
 
     def stop(self) -> tuple[str | None, BaseException | None, bool]:
         self._stop.set()
-        self._thread.join(timeout=max(self._interval * 2.0, 1.0))
-        return self._refusal, self._error, not self._thread.is_alive()
+        # Store heartbeat transactions are bounded by the store's serialized
+        # discipline.  Never return while this worker could still touch it.
+        self._thread.join()
+        return self._refusal, self._error, True
 
 
 def budget_fingerprint(budget: MbaSynthesisBudget) -> str:
@@ -268,27 +272,225 @@ class DiscoveryMiner:
                 _refusal, _error, stopped_cleanly = coordinator.stop()
 
 
-def _tree_digest(root: Path) -> str:
+def _digest_files(files: Mapping[str, bytes]) -> str:
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*")):
-        if path.is_dir():
-            continue
-        relative = path.relative_to(root).as_posix().encode("utf-8")
+    for name in sorted(files):
+        relative = name.encode("utf-8")
+        content = files[name]
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
-        content = path.read_bytes()
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return digest.hexdigest()
 
 
-def _fsync_dir(path: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(path, flags)
+def _read_fd(fd: int) -> bytes:
+    os.lseek(fd, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(fd, 1024 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _tree_digest(root: Path) -> str:
+    """Digest a tree through no-follow descriptors, never symlink targets."""
+
+    root = Path(root)
+    root_fd = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
     try:
-        os.fsync(descriptor)
+        files: dict[str, bytes] = {}
+        for name in sorted(os.listdir(root_fd)):
+            fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError("materialization tree contains a non-regular entry")
+                files[name] = _read_fd(fd)
+            finally:
+                os.close(fd)
+        return _digest_files(files)
     finally:
-        os.close(descriptor)
+        os.close(root_fd)
+
+
+def _open_dir(path: Path) -> int:
+    """Open an existing directory path with no-follow traversal."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    anchor = path.anchor or "."
+    fd = os.open(anchor, flags)
+    try:
+        parts = path.parts[1:] if path.anchor else path.parts
+        for component in parts:
+            next_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _open_at(directory_fd: int, name: str, flags: int) -> int:
+    return os.open(name, flags | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+
+
+def _mkdtemp_at(parent_fd: int, prefix: str) -> str:
+    """Create a private, mode-700 temporary directory beneath ``parent_fd``."""
+
+    # ``tempfile.mkdtemp`` has no dir-fd form.  Keep its random-name and
+    # exclusive-mkdir semantics while making the parent anchor explicit.
+    for _ in range(128):
+        name = f"{prefix}{uuid.uuid4().hex}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        return name
+    raise FileExistsError("unable to allocate a private staging directory")
+
+
+def _exclusive_rename(directory_fd: int, source: str, destination: str) -> None:
+    """Publish or quarantine one directory without replacing its destination."""
+
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        function = getattr(libc, "renameat2", None)
+        if function is None:
+            raise OSError(errno.ENOTSUP, "renameat2 is unavailable")
+        function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        function.restype = ctypes.c_int
+        result = function(directory_fd, os.fsencode(source), directory_fd, os.fsencode(destination), 1)
+    elif sys.platform == "darwin":
+        libc = ctypes.CDLL(None, use_errno=True)
+        function = getattr(libc, "renameatx_np", None)
+        if function is None:
+            raise OSError(errno.ENOTSUP, "renameatx_np is unavailable")
+        function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        function.restype = ctypes.c_int
+        result = function(directory_fd, os.fsencode(source), directory_fd, os.fsencode(destination), 0x00000004)
+    elif os.name == "nt":
+        raise OSError(errno.ENOTSUP, "exclusive directory rename is unavailable")
+    else:
+        raise OSError(errno.ENOTSUP, "exclusive directory rename is unsupported")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def _inspect_tree(
+    directory_fd: int,
+    directory_path: Path,
+    expected: Mapping[str, bytes],
+    *,
+    fsync_files: bool,
+) -> tuple[str, dict[str, tuple[int, int]]]:
+    names = tuple(sorted(os.listdir(directory_fd)))
+    if names != tuple(sorted(expected)):
+        raise FileExistsError("output tree conflicts with existing artifacts")
+    identities: dict[str, tuple[int, int]] = {}
+    for name, content in expected.items():
+        try:
+            fd = _open_at(directory_fd, name, os.O_RDONLY)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise FileExistsError("materialization artifact cannot be a symlink") from exc
+            raise
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise FileExistsError("materialization artifact is not regular")
+            actual = _read_fd(fd)
+            if actual != content:
+                raise FileExistsError("output tree conflicts with existing artifacts")
+            if fsync_files:
+                os.fsync(fd)
+            identities[name] = (info.st_dev, info.st_ino)
+        finally:
+            os.close(fd)
+    return _digest_files(expected), identities
+
+
+def _delete_exact_tree(directory_fd: int, directory_path: Path, expected: Mapping[str, bytes], identities: Mapping[str, tuple[int, int]]) -> None:
+    names = tuple(sorted(os.listdir(directory_fd)))
+    if names != tuple(sorted(expected)):
+        raise RuntimeError("materialization recovery conflict")
+    for name, content in expected.items():
+        fd = _open_at(directory_fd, name, os.O_RDONLY)
+        try:
+            info = os.fstat(fd)
+            if (info.st_dev, info.st_ino) != identities[name] or _read_fd(fd) != content:
+                raise RuntimeError("materialization recovery conflict")
+        finally:
+            os.close(fd)
+    for name in expected:
+        os.unlink(name, dir_fd=directory_fd)
+    os.fsync(directory_fd)
+
+
+def _remove_private_tree(parent_fd: int, parent_path: Path, name: str) -> None:
+    try:
+        directory_fd = _open_at(parent_fd, name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except FileNotFoundError:
+        return
+    try:
+        for child_name in tuple(os.listdir(directory_fd)):
+            try:
+                child_fd = _open_at(directory_fd, child_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            except NotADirectoryError:
+                os.unlink(child_name, dir_fd=directory_fd)
+                continue
+            try:
+                _remove_private_tree(directory_fd, parent_path / name, child_name)
+            finally:
+                os.close(child_fd)
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    os.rmdir(name, dir_fd=parent_fd)
+    os.fsync(parent_fd)
+
+
+def _quarantine_owned_tree(
+    parent_fd: int,
+    parent_path: Path,
+    output_name: str,
+    expected: Mapping[str, bytes],
+    root_identity: tuple[int, int],
+    child_identities: Mapping[str, tuple[int, int]],
+) -> None:
+    try:
+        current_fd = _open_at(parent_fd, output_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except FileNotFoundError:
+        return
+    try:
+        current_info = os.fstat(current_fd)
+        if (current_info.st_dev, current_info.st_ino) != root_identity:
+            return
+    finally:
+        os.close(current_fd)
+    quarantine_name = f".{output_name}.quarantine-{uuid.uuid4().hex}"
+    try:
+        _exclusive_rename(parent_fd, output_name, quarantine_name)
+    except FileNotFoundError:
+        return
+    quarantine_fd = _open_at(parent_fd, quarantine_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        info = os.fstat(quarantine_fd)
+        if (info.st_dev, info.st_ino) != root_identity:
+            _exclusive_rename(parent_fd, quarantine_name, output_name)
+            raise RuntimeError("materialization recovery conflict")
+        try:
+            _delete_exact_tree(quarantine_fd, parent_path / quarantine_name, expected, child_identities)
+        except RuntimeError:
+            _exclusive_rename(parent_fd, quarantine_name, output_name)
+            raise
+    finally:
+        os.close(quarantine_fd)
+    os.rmdir(quarantine_name, dir_fd=parent_fd)
+    os.fsync(parent_fd)
 
 
 def _reject_symlink_components(path: Path) -> None:
@@ -301,24 +503,6 @@ def _reject_symlink_components(path: Path) -> None:
         current /= component
         if os.path.lexists(current) and stat.S_ISLNK(os.lstat(current).st_mode):
             raise FileExistsError("output path cannot contain symlinks")
-
-
-def _owned_identity(path: Path) -> tuple[int, int]:
-    info = os.lstat(path)
-    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
-        raise FileExistsError("materialization root is not a directory")
-    return info.st_dev, info.st_ino
-
-
-def _remove_owned_tree(path: Path, identity: tuple[int, int]) -> bool:
-    try:
-        if _owned_identity(path) != identity:
-            return False
-        shutil.rmtree(path)
-        _fsync_dir(path.parent)
-        return True
-    except FileNotFoundError:
-        return False
 
 
 def _fixture_json(value: Mapping[str, object]) -> str:
@@ -346,76 +530,107 @@ def materialize_proposal(
         f"{proposal.fingerprint}.fixture.json": _fixture_json(proposal.fixture),
     }
     output_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    def exact_tree() -> bool:
-        if not output_dir.is_dir() or output_dir.is_symlink():
-            return False
-        existing = {
-            path.name: path.read_bytes()
-            for path in output_dir.iterdir()
-            if stat.S_ISREG(os.lstat(path).st_mode)
-        }
-        expected = {name: value.encode("utf-8") for name, value in names.items()}
-        return existing == expected and len(tuple(output_dir.iterdir())) == len(expected)
-
-    if proposal_row.state is ProposalState.MATERIALIZED:
-        digest = _tree_digest(output_dir) if exact_tree() else ""
-        if (
-            str(output_dir) == proposal_row.materialized_path
-            and digest
-            and digest == proposal_row.materialized_digest
-        ):
-            return str(output_dir), digest
-        raise ValueError("proposal_not_proposed")
-    if proposal_row.state is not ProposalState.PROPOSED:
-        raise ValueError("proposal_not_proposed")
-
-    if output_dir.exists():
-        if not output_dir.is_dir() or output_dir.is_symlink():
-            raise FileExistsError("output tree conflicts with a file")
-        if not exact_tree():
-            raise FileExistsError("output tree conflicts with existing artifacts")
-        digest = _tree_digest(output_dir)
-        _fsync_dir(output_dir)
-        _fsync_dir(output_dir.parent)
-        receipt = store.mark_materialized(
-            proposal_id,
-            str(output_dir),
-            digest,
-            expected_state=proposal_row.state,
-            expected_revision=snapshot.group.revision,
-        )
-        if receipt.status not in (ReceiptStatus.MATERIALIZED, ReceiptStatus.DUPLICATE):
-            raise RuntimeError(receipt.reason or receipt.status.value)
-        return str(output_dir), digest
-
-    stage = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_dir.parent))
-    created_final = False
+    parent_fd = _open_dir(output_dir.parent)
+    expected = {name: value.encode("utf-8") for name, value in names.items()}
+    output_name = output_dir.name
+    if not output_name:
+        os.close(parent_fd)
+        raise ValueError("output directory name must be non-empty")
+    final_fd: int | None = None
+    stage_fd: int | None = None
+    stage_path: Path | None = None
+    published = False
     committed = False
-    identity: tuple[int, int] | None = None
+    root_identity: tuple[int, int] | None = None
+    child_identities: dict[str, tuple[int, int]] = {}
     try:
-        for name, content in names.items():
-            target = stage / name
-            with target.open("w", encoding="utf-8", newline="") as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-        _fsync_dir(stage)
-        digest = _tree_digest(stage)
-        # Reserve the destination with mkdir.  Unlike directory rename, this
-        # is an atomic no-clobber operation even when an empty tree appears in
-        # the race window after our preflight check.
-        os.mkdir(output_dir)
-        created_final = True
-        identity = _owned_identity(output_dir)
-        for name in names:
-            source = stage / name
-            target = output_dir / name
-            os.link(source, target)
-            source.unlink()
-        stage.rmdir()
-        _fsync_dir(output_dir)
-        _fsync_dir(output_dir.parent)
+        try:
+            final_fd = _open_at(parent_fd, output_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        except FileNotFoundError:
+            final_fd = None
+
+        if proposal_row.state is ProposalState.MATERIALIZED:
+            if final_fd is None:
+                raise ValueError("proposal_not_proposed")
+            try:
+                info = os.fstat(final_fd)
+                digest, _ = _inspect_tree(final_fd, output_dir, expected, fsync_files=False)
+            finally:
+                os.close(final_fd)
+                final_fd = None
+            if str(output_dir) == proposal_row.materialized_path and digest == proposal_row.materialized_digest:
+                return str(output_dir), digest
+            raise ValueError("proposal_not_proposed")
+        if proposal_row.state is not ProposalState.PROPOSED:
+            raise ValueError("proposal_not_proposed")
+
+        if final_fd is not None:
+            try:
+                info = os.fstat(final_fd)
+                root_identity = (info.st_dev, info.st_ino)
+                digest, child_identities = _inspect_tree(
+                    final_fd, output_dir, expected, fsync_files=True
+                )
+                os.fsync(final_fd)
+                os.fsync(parent_fd)
+            finally:
+                os.close(final_fd)
+                final_fd = None
+            receipt = store.mark_materialized(
+                proposal_id,
+                str(output_dir),
+                digest,
+                expected_state=proposal_row.state,
+                expected_revision=snapshot.group.revision,
+            )
+            if receipt.status not in (ReceiptStatus.MATERIALIZED, ReceiptStatus.DUPLICATE):
+                raise RuntimeError(receipt.reason or receipt.status.value)
+            committed = True
+            return str(output_dir), digest
+
+        stage_name = _mkdtemp_at(
+            parent_fd, f".{output_name}.{proposal.fingerprint[:12]}."
+        )
+        stage_path = output_dir.parent / stage_name
+        stage_fd = _open_at(
+            parent_fd, stage_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        )
+        for name, content in expected.items():
+            descriptor = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=stage_fd,
+            )
+            try:
+                offset = 0
+                while offset < len(content):
+                    offset += os.write(descriptor, content[offset:])
+                os.fsync(descriptor)
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or _read_fd(descriptor) != content:
+                    raise OSError(errno.EIO, "staged artifact verification failed")
+            finally:
+                os.close(descriptor)
+        os.fsync(stage_fd)
+        digest = _digest_files(expected)
+        _exclusive_rename(parent_fd, stage_name, output_name)
+        published = True
+        stage_path = None
+        os.close(stage_fd)
+        stage_fd = None
+        final_fd = _open_at(parent_fd, output_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        info = os.fstat(final_fd)
+        root_identity = (info.st_dev, info.st_ino)
+        inspected_digest, child_identities = _inspect_tree(
+            final_fd, output_dir, expected, fsync_files=True
+        )
+        if inspected_digest != digest:
+            raise OSError(errno.EIO, "published artifact digest changed")
+        os.fsync(final_fd)
+        os.fsync(parent_fd)
+        os.close(final_fd)
+        final_fd = None
         receipt = store.mark_materialized(
             proposal_id,
             str(output_dir),
@@ -428,10 +643,22 @@ def materialize_proposal(
         committed = True
         return str(output_dir), digest
     finally:
-        if stage.exists():
-            shutil.rmtree(stage)
-        if created_final and not committed and identity is not None:
-            _remove_owned_tree(output_dir, identity)
+        if final_fd is not None:
+            os.close(final_fd)
+        if stage_fd is not None:
+            os.close(stage_fd)
+        if stage_path is not None:
+            _remove_private_tree(parent_fd, output_dir.parent, stage_path.name)
+        if published and not committed and root_identity is not None:
+            _quarantine_owned_tree(
+                parent_fd,
+                output_dir.parent,
+                output_name,
+                expected,
+                root_identity,
+                child_identities,
+            )
+        os.close(parent_fd)
 
 
 __all__ = [

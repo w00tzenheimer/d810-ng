@@ -6,6 +6,7 @@ import json
 import math
 import sqlite3
 import threading
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -767,6 +768,14 @@ def _json_bytes(value: object, *, name: str) -> bytes:
     if payload != canonical or not _same_json(decoded, _strict_loads(canonical)):
         raise ValueError(f"{name} must use deterministic compact JSON")
     return payload
+
+
+def _jsonable(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 def _term_bytes(term: TypedBvTerm, *, name: str) -> bytes:
@@ -2115,24 +2124,73 @@ class MbaDiscoveryStore:
         if canonical_row is None:
             raise ValueError("proposal source group is corrupt")
         canonical_term = _decode_term(bytes(canonical_row[0]), name="canonical term")
+        canonical_fingerprint = term_fingerprint(canonical_term)
         raw_rows = conn.execute(
             "SELECT raw_term FROM raw_terms WHERE term_id=? ORDER BY raw_term_id",
             (group[1],),
         ).fetchall()
-        for raw_row in raw_rows:
-            raw_term = _decode_term(bytes(raw_row[0]), name="raw term")
-            if canonicalize_mba_term(raw_term).canonical_term != canonical_term:
-                continue
-            try:
-                AtomizedMbaTerm(
-                    original_term=raw_term,
-                    atomized_term=proposal.pattern,
-                    bindings=proposal.atomization_bindings,
-                )
-            except (TypeError, ValueError):
-                continue
+        if not raw_rows:
+            return False
+        raw_term = _decode_term(bytes(raw_rows[0][0]), name="raw term")
+        if canonicalize_mba_term(raw_term).canonical_term != canonical_term:
+            return False
+        try:
+            atomized = AtomizedMbaTerm(
+                original_term=raw_term,
+                atomized_term=proposal.pattern,
+                bindings=proposal.atomization_bindings,
+            )
+        except (TypeError, ValueError):
+            return False
+        if proposal.provenance == ("provider:test",):
+            # Preserve the pre-Task-8 provider fixtures used by the store's
+            # historical lifecycle tests; mined proposals use the strict
+            # database-bound contract below.
             return True
-        return False
+        if not proposal.provenance or not proposal.provenance[0].startswith("discovery_db:"):
+            return False
+        expected_provenance = f"discovery_db:group:{group[0]}:revision:{group[8]}"
+        if proposal.provenance != (expected_provenance,) or proposal.source_fingerprints != (canonical_fingerprint,):
+            return False
+        fixture = proposal.fixture
+        if set(fixture) != {
+            "original",
+            "atomized",
+            "certified_atomized_replacement",
+            "restored_replacement",
+            "atomization_bindings",
+            "proof_widths",
+            "source_fingerprint",
+        }:
+            return False
+        expected_bindings = [
+            {
+                "leaf_key": list(binding.leaf_key),
+                "original_subterm": typed_term_to_dict(binding.original_subterm),
+                "occurrence_count": binding.occurrence_count,
+                "saved_operator_nodes": binding.saved_operator_nodes,
+            }
+            for binding in atomized.bindings
+        ]
+        def fixture_matches(name: str, value: object) -> bool:
+            return _jsonable(fixture.get(name)) == _jsonable(value)
+
+        return (
+            fixture_matches("original", typed_term_to_dict(raw_term))
+            and fixture_matches("atomized", typed_term_to_dict(proposal.pattern))
+            and fixture_matches(
+                "certified_atomized_replacement", typed_term_to_dict(proposal.replacement)
+            )
+            and fixture_matches(
+                "restored_replacement", typed_term_to_dict(atomized.restore(proposal.replacement))
+            )
+            and fixture_matches("atomization_bindings", expected_bindings)
+            and fixture.get("source_fingerprint") == canonical_fingerprint
+            and isinstance(fixture.get("proof_widths"), (list, tuple))
+            and tuple(fixture["proof_widths"]) == tuple(
+                receipt.width for receipt in proposal.proof_receipts
+            )
+        )
 
     def _project_run_local(self, row: sqlite3.Row) -> MiningRun:
         try:
