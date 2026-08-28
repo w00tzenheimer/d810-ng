@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import stat
 import shutil
 import tempfile
 import threading
@@ -18,6 +20,7 @@ from d810.mba.bounded_synthesis import (
     synthesize_residual,
 )
 from d810.mba.discovery_models import (
+    ClaimReceipt,
     MiningClaim,
     ProposalState,
     ReceiptStatus,
@@ -40,6 +43,38 @@ class MineOutcome:
     status: str
     reason: str | None = None
     proposal: MbaRuleProposal | None = None
+    proposal_id: str | None = None
+
+
+class _HeartbeatCoordinator:
+    def __init__(self, store: MbaDiscoveryStore, claim: MiningClaim, interval: float) -> None:
+        self._store = store
+        self._claim = claim
+        self._interval = interval
+        self._stop = threading.Event()
+        self._error: BaseException | None = None
+        self._refusal: str | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        try:
+            while not self._stop.wait(self._interval):
+                receipt = self._store.heartbeat(
+                    self._claim.run.run_id, self._claim.run.claimed_revision
+                )
+                if receipt.status is not ReceiptStatus.HEARTBEATED:
+                    self._refusal = receipt.reason or receipt.status.value
+                    return
+        except BaseException as exc:
+            self._error = exc
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> tuple[str | None, BaseException | None, bool]:
+        self._stop.set()
+        self._thread.join(timeout=max(self._interval * 2.0, 1.0))
+        return self._refusal, self._error, not self._thread.is_alive()
 
 
 def budget_fingerprint(budget: MbaSynthesisBudget) -> str:
@@ -85,8 +120,21 @@ def _proposal_for(
         source_fingerprint.encode("ascii")
     ).hexdigest()[:12]
     fixture = {
+        "original": typed_term_to_dict(atomized.original_term),
+        "atomized": typed_term_to_dict(atomized.atomized_term),
+        "certified_atomized_replacement": typed_term_to_dict(result.replacement),
+        "restored_replacement": typed_term_to_dict(restored),
+        "atomization_bindings": [
+            {
+                "leaf_key": list(binding.leaf_key),
+                "original_subterm": typed_term_to_dict(binding.original_subterm),
+                "occurrence_count": binding.occurrence_count,
+                "saved_operator_nodes": binding.saved_operator_nodes,
+            }
+            for binding in atomized.bindings
+        ],
+        "proof_widths": [receipt.width for receipt in result.proof_receipts],
         "source_fingerprint": source_fingerprint,
-        "expected_restored_replacement": typed_term_to_dict(restored),
     }
     return MbaRuleProposal(
         proposal_fingerprint=None,
@@ -141,10 +189,14 @@ class DiscoveryMiner:
             if heartbeat_interval is None
             else heartbeat_interval
         )
-        if type(self.heartbeat_interval) not in (int, float) or self.heartbeat_interval <= 0:
+        if (
+            type(self.heartbeat_interval) not in (int, float)
+            or not math.isfinite(float(self.heartbeat_interval))
+            or self.heartbeat_interval <= 0
+        ):
             raise ValueError("heartbeat_interval must be positive")
 
-    def claim(self) -> object:
+    def claim(self) -> ClaimReceipt:
         """Claim the next eligible group using this miner's stable identity."""
 
         return self.store.claim_next_group(
@@ -164,27 +216,23 @@ class DiscoveryMiner:
         if not claim.group.raw_terms:
             return MineOutcome("refused", "empty_raw_evidence")
 
-        stop = threading.Event()
-        stale = threading.Event()
-
-        def refresh() -> None:
-            while not stop.wait(float(self.heartbeat_interval)):
-                receipt = self.store.heartbeat(
-                    claim.run.run_id, claim.run.claimed_revision
-                )
-                if receipt.status is not ReceiptStatus.HEARTBEATED:
-                    stale.set()
-                    return
-
-        heartbeat_thread = threading.Thread(target=refresh, daemon=True)
-        heartbeat_thread.start()
+        coordinator = _HeartbeatCoordinator(
+            self.store, claim, float(self.heartbeat_interval)
+        )
+        coordinator.start()
+        stopped_cleanly = False
         try:
             atomized = self.atomizer(
                 claim.group.raw_terms[0], max_atoms=selected_budget.max_atoms
             )
             result = self.synthesizer(atomized, budget=selected_budget)
-            if stale.is_set():
-                return MineOutcome("refused", "stale_or_not_owner")
+            refusal, error, stopped_cleanly = coordinator.stop()
+            if not stopped_cleanly:
+                return MineOutcome("error", "heartbeat_worker_did_not_stop")
+            if error is not None:
+                return MineOutcome("error", f"heartbeat_error: {type(error).__name__}: {error}")
+            if refusal is not None:
+                return MineOutcome("refused", refusal)
             if result.certified:
                 proposal = _proposal_for(claim, atomized, result)
                 receipt = self.store.publish_proposal(
@@ -195,7 +243,12 @@ class DiscoveryMiner:
                     proposal,
                 )
                 if receipt.status in (ReceiptStatus.PUBLISHED, ReceiptStatus.DUPLICATE):
-                    return MineOutcome("published", receipt.status.value, proposal)
+                    return MineOutcome(
+                        "published",
+                        receipt.status.value,
+                        proposal,
+                        None if receipt.proposal is None else receipt.proposal.proposal_id,
+                    )
                 return MineOutcome("refused", receipt.reason or receipt.status.value)
             reason = (
                 result.exhaustion.reason
@@ -211,8 +264,8 @@ class DiscoveryMiner:
         except Exception as exc:
             return MineOutcome("error", f"{type(exc).__name__}: {exc}")
         finally:
-            stop.set()
-            heartbeat_thread.join(timeout=max(float(self.heartbeat_interval), 1.0))
+            if not stopped_cleanly:
+                _refusal, _error, stopped_cleanly = coordinator.stop()
 
 
 def _tree_digest(root: Path) -> str:
@@ -227,6 +280,45 @@ def _tree_digest(root: Path) -> str:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return digest.hexdigest()
+
+
+def _fsync_dir(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _reject_symlink_components(path: Path) -> None:
+    """Reject any existing symlink in the lexical output path."""
+
+    current = Path(path.anchor) if path.anchor else Path()
+    for component in path.parts:
+        if component == path.anchor:
+            continue
+        current /= component
+        if os.path.lexists(current) and stat.S_ISLNK(os.lstat(current).st_mode):
+            raise FileExistsError("output path cannot contain symlinks")
+
+
+def _owned_identity(path: Path) -> tuple[int, int]:
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise FileExistsError("materialization root is not a directory")
+    return info.st_dev, info.st_ino
+
+
+def _remove_owned_tree(path: Path, identity: tuple[int, int]) -> bool:
+    try:
+        if _owned_identity(path) != identity:
+            return False
+        shutil.rmtree(path)
+        _fsync_dir(path.parent)
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def _fixture_json(value: Mapping[str, object]) -> str:
@@ -247,7 +339,8 @@ def materialize_proposal(
     proposal = decode_proposal_payload(proposal_row.proposal_payload)
     if proposal.fingerprint != proposal_row.proposal_fingerprint:
         raise ValueError("proposal_payload_identity_mismatch")
-    output_dir = output_dir.expanduser().resolve()
+    output_dir = Path(os.path.abspath(os.fspath(Path(output_dir).expanduser())))
+    _reject_symlink_components(output_dir)
     names = {
         f"{proposal.fingerprint}.rule.py": render_rule_source(proposal),
         f"{proposal.fingerprint}.fixture.json": _fixture_json(proposal.fixture),
@@ -260,7 +353,7 @@ def materialize_proposal(
         existing = {
             path.name: path.read_bytes()
             for path in output_dir.iterdir()
-            if path.is_file()
+            if stat.S_ISREG(os.lstat(path).st_mode)
         }
         expected = {name: value.encode("utf-8") for name, value in names.items()}
         return existing == expected and len(tuple(output_dir.iterdir())) == len(expected)
@@ -283,6 +376,8 @@ def materialize_proposal(
         if not exact_tree():
             raise FileExistsError("output tree conflicts with existing artifacts")
         digest = _tree_digest(output_dir)
+        _fsync_dir(output_dir)
+        _fsync_dir(output_dir.parent)
         receipt = store.mark_materialized(
             proposal_id,
             str(output_dir),
@@ -295,20 +390,32 @@ def materialize_proposal(
         return str(output_dir), digest
 
     stage = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_dir.parent))
-    shutil.rmtree(stage)
     created_final = False
     committed = False
+    identity: tuple[int, int] | None = None
     try:
-        stage.mkdir()
         for name, content in names.items():
             target = stage / name
             with target.open("w", encoding="utf-8", newline="") as stream:
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
+        _fsync_dir(stage)
         digest = _tree_digest(stage)
-        os.replace(stage, output_dir)
+        # Reserve the destination with mkdir.  Unlike directory rename, this
+        # is an atomic no-clobber operation even when an empty tree appears in
+        # the race window after our preflight check.
+        os.mkdir(output_dir)
         created_final = True
+        identity = _owned_identity(output_dir)
+        for name in names:
+            source = stage / name
+            target = output_dir / name
+            os.link(source, target)
+            source.unlink()
+        stage.rmdir()
+        _fsync_dir(output_dir)
+        _fsync_dir(output_dir.parent)
         receipt = store.mark_materialized(
             proposal_id,
             str(output_dir),
@@ -323,8 +430,8 @@ def materialize_proposal(
     finally:
         if stage.exists():
             shutil.rmtree(stage)
-        if created_final and not committed and output_dir.exists():
-            shutil.rmtree(output_dir)
+        if created_final and not committed and identity is not None:
+            _remove_owned_tree(output_dir, identity)
 
 
 __all__ = [

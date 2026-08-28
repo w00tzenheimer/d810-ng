@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -88,8 +89,10 @@ def _mine(store: MbaDiscoveryStore, args: argparse.Namespace) -> int:
         outcome = miner.mine_claim(claim_receipt.claim, budget)
         counts[outcome.status if outcome.status in counts else "errors"] += 1
         completed += 1
+        if outcome.status in {"error", "refused"}:
+            break
     print(json.dumps(counts, sort_keys=True))
-    return 0
+    return 2 if counts["errors"] or counts["refused"] else 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -105,7 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         path, digest = materialize_proposal(store, args.proposal, args.output_dir)
         print(json.dumps({"path": path, "digest": digest}, sort_keys=True))
         return 0
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+    except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error) as exc:
         print(f"mba residual miner: {exc}", file=sys.stderr)
         return 2
     finally:

@@ -28,6 +28,7 @@ from d810.mba.discovery_store import MbaDiscoveryStore
 from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 from d810.mba.provider_routing import MbaProviderKind
 from d810.mba.rule_proposal import MbaRuleProposal
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import (
     TypedBvTerm,
     canonicalize_ac_term,
@@ -415,7 +416,9 @@ def test_causal_events_cover_proposal_lifecycle_and_exact_retries(
         32,
         children=(TypedBvTerm(None, 32, leaf_key=("register", "x")), _term(2)),
     )
-    store.record_attempt(_attempt(raw=pattern, canonical=pattern))
+    store.record_attempt(
+        _attempt(raw=pattern, canonical=canonicalize_mba_term(pattern).canonical_term)
+    )
     claim = store.claim_next_group("miner", "budget")
     assert claim.claim is not None
     proposal = _proposal(pattern)

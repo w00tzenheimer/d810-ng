@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import json
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
@@ -18,6 +20,23 @@ from d810.mba.extension_api import (  # noqa: E402
     atomize_native_candidate,
     reconstruct_native_provider_result,
 )
+from d810.core.function_execution_identity import (  # noqa: E402
+    FunctionExecutionIdentity,
+    MbaObservationContext,
+)
+from d810.core.plugins import PluginIdentity  # noqa: E402
+from d810.mba.bounded_synthesis import CERTIFICATION_WIDTHS  # noqa: E402
+from d810.mba.discovery_models import DiscoveryAttempt  # noqa: E402
+from d810.mba.discovery_miner import DiscoveryMiner, materialize_proposal  # noqa: E402
+from d810.mba.discovery_store import (  # noqa: E402
+    MbaDiscoveryStore,
+    decode_proposal_payload,
+)
+from d810.mba.provider_outcome import (  # noqa: E402
+    MbaProviderOutcome,
+    ProviderOutcomeStatus,
+)
+from d810.mba.provider_routing import MbaProviderKind  # noqa: E402
 
 
 def _leaf(name: str, register: int, size: int = 4):
@@ -462,6 +481,68 @@ class TestNativeMbaExtensionHost:
         assert _instruction_shape(instruction) == original_shape
         assert term_fingerprint(candidate.term) == original_fingerprint
         assert candidate.native_context.source_instruction is instruction
+
+    def test_live_raw_capture_mines_sqlite_and_materializes_proof(self, tmp_path):
+        host = native_mba_host_services()
+        candidate = host.capture_instruction(_fake_native_residual_instruction())
+        assert candidate is not None
+        assert candidate.raw_term is not None
+        identity = FunctionExecutionIdentity(
+            input_identity="sha256:" + "a" * 64,
+            input_identity_provenance="verified_loader_sha256",
+            external_evidence_allowed=True,
+            database_uuid="12345678-1234-5678-1234-567812345678",
+            database_identity="live-extension-host",
+            function_ea=0x401000,
+            function_rva=0x1000,
+            function_fingerprint="live-function",
+            decompilation_session_id="12345678-1234-5678-1234-567812345679",
+            top_level_epoch=1,
+            maturity="ir.canonical",
+            evidence_generation=1,
+        )
+        attempt = DiscoveryAttempt(
+            attempt_uuid="12345678-1234-5678-1234-567812345680",
+            context=MbaObservationContext(
+                function_identity=identity,
+                plugin_identity=PluginIdentity("egglog", "egglog", "1", "ida-test"),
+                instruction_ea=0x401000,
+                block_serial=1,
+                block_ea=0x401000,
+            ),
+            raw_term=candidate.raw_term,
+            canonical_term=candidate.term,
+            outcome=MbaProviderOutcome(
+                provider=MbaProviderKind.EGRAPH,
+                status=ProviderOutcomeStatus.UNCHANGED,
+                fingerprint=term_fingerprint(candidate.term),
+                elapsed_ms=1.0,
+            ),
+            eligible_for_mining=True,
+        )
+        store = MbaDiscoveryStore(tmp_path / "live-discovery.sqlite3")
+        try:
+            assert store.record_attempt(attempt).status.value == "stored"
+            claim = DiscoveryMiner(store).claim().claim
+            assert claim is not None
+            mined = DiscoveryMiner(store).mine_claim(claim)
+            assert mined.status == "published", mined.reason
+            assert mined.proposal_id is not None
+            output = tmp_path / "live-review"
+            materialize_proposal(store, mined.proposal_id, output)
+            snapshot = store.proposal_snapshot(mined.proposal_id)
+            assert snapshot is not None
+            stem = snapshot.proposal.proposal_fingerprint
+            source = (output / f"{stem}.rule.py").read_text()
+            ast.parse(source)
+            namespace = {}
+            exec(compile(source, str(output / f"{stem}.rule.py"), "exec"), namespace)
+            proposal = decode_proposal_payload(snapshot.proposal.proposal_payload)
+            assert proposal.class_name in namespace
+            fixture = json.loads((output / f"{stem}.fixture.json").read_text())
+            assert fixture["proof_widths"] == list(CERTIFICATION_WIDTHS)
+        finally:
+            store.close()
 
     def test_mixed_width_capture_and_rebuild_fail_closed(self):
         host = native_mba_host_services()

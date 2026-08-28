@@ -2,21 +2,33 @@
 
 from __future__ import annotations
 
+import json
+import shutil
+from pathlib import Path
 from uuid import uuid4
+
+import pytest
 
 from d810.core.function_execution_identity import FunctionExecutionIdentity, MbaObservationContext
 from d810.core.plugins import PluginIdentity
 from d810.mba.bounded_synthesis import (
     CERTIFICATION_WIDTHS,
+    MbaExhaustionReceipt,
     MbaCertification,
     MbaSynthesisResult,
     MbaSynthesisBudget,
     ProofReceipt,
 )
-from d810.mba.discovery_models import DiscoveryAttempt
+from d810.mba.discovery_models import (
+    DiscoveryAttempt,
+    HeartbeatReceipt,
+    LifecycleReceipt,
+    ReceiptStatus,
+)
 from d810.mba.discovery_store import MbaDiscoveryStore
 from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 from d810.mba.provider_routing import MbaProviderKind
+from d810.mba.subterm_atomization import atomize_repeated_subterms
 from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term, term_cost, term_fingerprint
 
 
@@ -105,12 +117,304 @@ def test_certified_claim_publishes_and_exposes_immutable_snapshot(tmp_path) -> N
     outcome = miner.mine_claim(claim)
     assert outcome.status == "published"
     assert outcome.proposal is not None
-    proposal_id = store._connection.execute("SELECT proposal_id FROM proposals").fetchone()[0]
+    proposal_id = outcome.proposal_id
+    assert proposal_id is not None
     snapshot = store.proposal_snapshot(proposal_id)
     assert snapshot is not None
     assert snapshot.proposal.proposal_payload
     assert snapshot.group.revision == claim.run.claimed_revision
     assert snapshot.proposal.proposal_payload is not None
+    store.close()
+
+
+def test_exact_publication_retry_is_duplicate_without_new_proposal(tmp_path) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    x = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    source = TypedBvTerm("add", 32, children=(x, x))
+    proofs = tuple(ProofReceipt(width, True, 0.1) for width in CERTIFICATION_WIDTHS)
+    result = MbaSynthesisResult(
+        source,
+        x,
+        term_cost(source),
+        term_cost(x),
+        MbaCertification(proofs),
+        None,
+    )
+    store = MbaDiscoveryStore(tmp_path / "publication-retry.sqlite3")
+    store.record_attempt(_attempt(source))
+    miner = DiscoveryMiner(store, synthesizer=lambda atomized, budget: result)
+    claim = miner.claim().claim
+    assert claim is not None
+    outcome = miner.mine_claim(claim)
+    assert outcome.status == "published"
+    assert outcome.proposal is not None
+    retry = store.publish_proposal(
+        claim.run.run_id,
+        claim.run.claimed_revision,
+        outcome.proposal.fingerprint,
+        outcome.proposal.replacement,
+        outcome.proposal,
+    )
+    assert retry.status is ReceiptStatus.DUPLICATE
+    assert retry.proposal is not None
+    assert retry.proposal.proposal_id == outcome.proposal_id
+    store.close()
+
+
+def test_synthesis_exception_leaves_claim_active(tmp_path) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    term = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    store = MbaDiscoveryStore(tmp_path / "synthesis-error.sqlite3")
+    store.record_attempt(_attempt(term))
+
+    def fail_synthesis(*_args, **_kwargs):
+        raise RuntimeError("bounded synthesis infrastructure failed")
+
+    miner = DiscoveryMiner(store, synthesizer=fail_synthesis)
+    claim = miner.claim().claim
+    assert claim is not None
+    outcome = miner.mine_claim(claim)
+    assert outcome.status == "error"
+    assert "bounded synthesis infrastructure failed" in (outcome.reason or "")
+    assert store.status_counts().run_counts[0][1] == 1
+    assert store.status_counts().group_counts[2][1] == 1
+    store.close()
+
+
+@pytest.mark.parametrize("reason", ["generation_budget", "proof_failed", "not_cheaper"])
+def test_bounded_exhaustion_finishes_stably(tmp_path, reason) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    term = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    store = MbaDiscoveryStore(tmp_path / f"{reason}.sqlite3")
+    store.record_attempt(_attempt(term))
+    budget = MbaSynthesisBudget()
+    result = MbaSynthesisResult(
+        term,
+        None,
+        term_cost(term),
+        None,
+        MbaCertification(()),
+        MbaExhaustionReceipt(reason, 0, budget),
+    )
+    miner = DiscoveryMiner(store, budget=budget, synthesizer=lambda atomized, budget: result)
+    claim = miner.claim().claim
+    assert claim is not None
+    outcome = miner.mine_claim(claim)
+    assert outcome.status == "no_proposal"
+    assert outcome.reason == reason
+    assert store.status_counts().run_counts[1][1] == 1
+    store.close()
+
+
+def test_process_interruption_leaves_claim_active(tmp_path) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    term = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    store = MbaDiscoveryStore(tmp_path / "interrupted.sqlite3")
+    store.record_attempt(_attempt(term))
+
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt()
+
+    miner = DiscoveryMiner(store, synthesizer=interrupt)
+    claim = miner.claim().claim
+    assert claim is not None
+    with pytest.raises(KeyboardInterrupt):
+        miner.mine_claim(claim)
+    assert store.status_counts().run_counts[0][1] == 1
+    store.close()
+
+
+def test_final_publication_cas_refusal_leaves_claim_active(tmp_path, monkeypatch) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    x = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    source = TypedBvTerm("add", 32, children=(x, x))
+    proofs = tuple(ProofReceipt(width, True, 0.1) for width in CERTIFICATION_WIDTHS)
+    result = MbaSynthesisResult(
+        source,
+        x,
+        term_cost(source),
+        term_cost(x),
+        MbaCertification(proofs),
+        None,
+    )
+    store = MbaDiscoveryStore(tmp_path / "publication-race.sqlite3")
+    store.record_attempt(_attempt(source))
+    monkeypatch.setattr(
+        store,
+        "publish_proposal",
+        lambda *_args, **_kwargs: LifecycleReceipt(
+            ReceiptStatus.REFUSED, reason="publication_conflict"
+        ),
+    )
+    miner = DiscoveryMiner(store, synthesizer=lambda atomized, budget: result)
+    claim = miner.claim().claim
+    assert claim is not None
+    outcome = miner.mine_claim(claim)
+    assert outcome.status == "refused"
+    assert outcome.reason == "publication_conflict"
+    assert store.status_counts().run_counts[0][1] == 1
+    assert store.status_counts().group_counts[2][1] == 1
+    store.close()
+
+
+def test_repeated_raw_subterm_publishes_atomized_identity(tmp_path) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    a = TypedBvTerm(None, 32, leaf_key=("register", "a"))
+    b = TypedBvTerm(None, 32, leaf_key=("register", "b"))
+    repeated = TypedBvTerm("add", 32, children=(a, b))
+    source = TypedBvTerm("or", 32, children=(repeated, repeated))
+    atomized = atomize_repeated_subterms(source)
+    atom = atomized.atomized_term.children[0]
+    proofs = tuple(ProofReceipt(width, True, 0.1) for width in CERTIFICATION_WIDTHS)
+    result = MbaSynthesisResult(
+        source=atomized.atomized_term,
+        replacement=atom,
+        source_cost=term_cost(atomized.atomized_term),
+        replacement_cost=term_cost(atom),
+        certification=MbaCertification(proofs),
+        exhaustion=None,
+    )
+    store = MbaDiscoveryStore(tmp_path / "repeated.sqlite3")
+    store.record_attempt(_attempt(source))
+    miner = DiscoveryMiner(store, synthesizer=lambda atomized, budget: result)
+    claim = miner.claim().claim
+    assert claim is not None
+    outcome = miner.mine_claim(claim)
+    assert outcome.status == "published"
+    assert outcome.proposal is not None
+    assert outcome.proposal.atomization_bindings
+    store.close()
+
+
+def test_raw_noncanonical_ac_order_publishes_against_canonical_group(tmp_path) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    a = TypedBvTerm(None, 32, leaf_key=("register", "a"))
+    b = TypedBvTerm(None, 32, leaf_key=("register", "b"))
+    raw = TypedBvTerm("add", 32, children=(b, a))
+    canonical = canonicalize_ac_term(raw)
+    replacement = a
+    proofs = tuple(ProofReceipt(width, True, 0.1) for width in CERTIFICATION_WIDTHS)
+    result = MbaSynthesisResult(
+        source=raw,
+        replacement=replacement,
+        source_cost=term_cost(raw),
+        replacement_cost=term_cost(replacement),
+        certification=MbaCertification(proofs),
+        exhaustion=None,
+    )
+    store = MbaDiscoveryStore(tmp_path / "raw-canonical.sqlite3")
+    store.record_attempt(_attempt(raw))
+    miner = DiscoveryMiner(store, synthesizer=lambda atomized, budget: result)
+    claim = miner.claim().claim
+    assert claim is not None
+    assert miner.mine_claim(claim).status == "published"
+    assert canonical != raw
+    store.close()
+
+
+def test_heartbeat_exception_leaves_claim_active(tmp_path, monkeypatch) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    term = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    store = MbaDiscoveryStore(tmp_path / "heartbeat-error.sqlite3")
+    store.record_attempt(_attempt(term))
+
+    def fail_heartbeat(*_args, **_kwargs):
+        raise RuntimeError("heartbeat infrastructure failed")
+
+    monkeypatch.setattr(store, "heartbeat", fail_heartbeat)
+    miner = DiscoveryMiner(
+        store,
+        heartbeat_interval=0.001,
+        synthesizer=lambda atomized, budget: __import__("time").sleep(0.03)
+        or MbaSynthesisResult(
+            atomized.atomized_term,
+            None,
+            term_cost(atomized.atomized_term),
+            None,
+            MbaCertification(()),
+            None,
+        ),
+    )
+    claim = miner.claim().claim
+    assert claim is not None
+    outcome = miner.mine_claim(claim)
+    assert outcome.status == "error"
+    assert store.status_counts().run_counts[0][1] == 1
+    store.close()
+
+
+def test_heartbeat_refusal_leaves_claim_active(tmp_path, monkeypatch) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    term = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    store = MbaDiscoveryStore(tmp_path / "heartbeat-refused.sqlite3")
+    store.record_attempt(_attempt(term))
+    monkeypatch.setattr(
+        store,
+        "heartbeat",
+        lambda *_args, **_kwargs: HeartbeatReceipt(ReceiptStatus.REFUSED, reason="lost"),
+    )
+    miner = DiscoveryMiner(
+        store,
+        heartbeat_interval=0.001,
+        synthesizer=lambda atomized, budget: __import__("time").sleep(0.03)
+        or MbaSynthesisResult(
+            atomized.atomized_term,
+            None,
+            term_cost(atomized.atomized_term),
+            None,
+            MbaCertification(()),
+            None,
+        ),
+    )
+    claim = miner.claim().claim
+    assert claim is not None
+    outcome = miner.mine_claim(claim)
+    assert outcome.status == "refused"
+    assert store.status_counts().run_counts[0][1] == 1
+    store.close()
+
+
+def test_heartbeat_refreshes_during_bounded_synthesis(tmp_path, monkeypatch) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    term = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    store = MbaDiscoveryStore(tmp_path / "heartbeat-refresh.sqlite3")
+    store.record_attempt(_attempt(term))
+    calls = []
+    original_heartbeat = store.heartbeat
+
+    def heartbeat(*args, **kwargs):
+        calls.append(args)
+        return original_heartbeat(*args, **kwargs)
+
+    monkeypatch.setattr(store, "heartbeat", heartbeat)
+
+    def bounded_no_proposal(atomized, budget):
+        __import__("time").sleep(0.03)
+        return MbaSynthesisResult(
+            atomized.atomized_term,
+            None,
+            term_cost(atomized.atomized_term),
+            None,
+            MbaCertification(()),
+            None,
+        )
+
+    miner = DiscoveryMiner(store, heartbeat_interval=0.001, synthesizer=bounded_no_proposal)
+    claim = miner.claim().claim
+    assert claim is not None
+    outcome = miner.mine_claim(claim)
+    assert outcome.status == "no_proposal"
+    assert calls
     store.close()
 
 
@@ -133,8 +437,10 @@ def test_materialization_is_exactly_rule_and_fixture_and_retryable(tmp_path) -> 
     miner = DiscoveryMiner(store, synthesizer=lambda atomized, budget: result)
     claim = miner.claim().claim
     assert claim is not None
-    assert miner.mine_claim(claim).status == "published"
-    proposal_id = store._connection.execute("SELECT proposal_id FROM proposals").fetchone()[0]
+    published = miner.mine_claim(claim)
+    assert published.status == "published"
+    proposal_id = published.proposal_id
+    assert proposal_id is not None
     output = tmp_path / "review"
     path, digest = materialize_proposal(store, proposal_id, output)
     assert path == str(output.resolve())
@@ -144,5 +450,198 @@ def test_materialization_is_exactly_rule_and_fixture_and_retryable(tmp_path) -> 
         f"{stem}.fixture.json",
         f"{stem}.rule.py",
     ]
+    fixture = json.loads((output / f"{stem}.fixture.json").read_text())
+    assert {
+        "original",
+        "atomized",
+        "certified_atomized_replacement",
+        "restored_replacement",
+        "atomization_bindings",
+        "proof_widths",
+        "source_fingerprint",
+    } == set(fixture)
+    assert fixture["proof_widths"] == [8, 16, 32, 64]
     assert materialize_proposal(store, proposal_id, output) == (path, digest)
     store.close()
+
+
+def test_materialization_unknown_and_terminal_proposals_fail_closed(tmp_path) -> None:
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="unknown_proposal"):
+            materialize_proposal(store, "12345678-1234-5678-1234-567812345678", tmp_path / "unknown")
+        materialize_proposal(store, proposal_id, tmp_path / "terminal")
+        with pytest.raises(ValueError, match="proposal_not_proposed"):
+            materialize_proposal(store, proposal_id, tmp_path / "other")
+    finally:
+        store.close()
+
+
+def _published_for_materialization(tmp_path):
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    x = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+    source = TypedBvTerm("add", 32, children=(x, x))
+    proofs = tuple(ProofReceipt(width, True, 0.1) for width in CERTIFICATION_WIDTHS)
+    result = MbaSynthesisResult(
+        source, x, term_cost(source), term_cost(x), MbaCertification(proofs), None
+    )
+    store = MbaDiscoveryStore(tmp_path / "materialize-safety.sqlite3")
+    store.record_attempt(_attempt(source))
+    miner = DiscoveryMiner(store, synthesizer=lambda atomized, budget: result)
+    claim = miner.claim().claim
+    assert claim is not None
+    outcome = miner.mine_claim(claim)
+    assert outcome.proposal_id is not None
+    return store, outcome.proposal_id
+
+
+def test_materialization_rejects_lexical_root_symlink(tmp_path) -> None:
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    target = tmp_path / "target"
+    output = tmp_path / "review-link"
+    output.symlink_to(target, target_is_directory=True)
+    try:
+        with pytest.raises((OSError, ValueError)):
+            materialize_proposal(store, proposal_id, output)
+        assert not target.exists()
+    finally:
+        store.close()
+
+
+def test_materialization_rejects_artifact_symlink(tmp_path) -> None:
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    output = tmp_path / "artifact-link"
+    output.mkdir()
+    snapshot = store.proposal_snapshot(proposal_id)
+    assert snapshot is not None
+    stem = snapshot.proposal.proposal_fingerprint
+    (output / f"{stem}.rule.py").symlink_to(tmp_path / "outside.py")
+    (output / f"{stem}.fixture.json").write_text("{}")
+    try:
+        with pytest.raises(FileExistsError):
+            materialize_proposal(store, proposal_id, output)
+    finally:
+        store.close()
+
+
+def test_materialization_destination_race_never_clobbers_empty_tree(tmp_path, monkeypatch) -> None:
+    from d810.mba import discovery_miner
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    output = tmp_path / "race"
+    original_mkdir = discovery_miner.os.mkdir
+
+    def race_mkdir(path, *args, **kwargs):
+        if Path(path) == output:
+            original_mkdir(path, *args, **kwargs)
+            raise FileExistsError("destination appeared")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(discovery_miner.os, "mkdir", race_mkdir)
+    try:
+        with pytest.raises(FileExistsError):
+            materialize_proposal(store, proposal_id, output)
+        assert output.is_dir()
+        assert not tuple(output.iterdir())
+    finally:
+        if output.exists():
+            output.rmdir()
+        store.close()
+
+
+def test_materialization_write_failure_leaves_proposed_and_cleans_stage(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba import discovery_miner
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    output = tmp_path / "write-failure"
+    original_open = discovery_miner.Path.open
+
+    def fail_fixture_write(path, *args, **kwargs):
+        if path.name.endswith(".fixture.json"):
+            raise OSError("fixture write failed")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(discovery_miner.Path, "open", fail_fixture_write)
+    try:
+        with pytest.raises(OSError, match="fixture write failed"):
+            materialize_proposal(store, proposal_id, output)
+        snapshot = store.proposal_snapshot(proposal_id)
+        assert snapshot is not None
+        assert snapshot.proposal.state.value == "proposed"
+        assert not output.exists()
+        assert not tuple(tmp_path.glob(".write-failure.*"))
+    finally:
+        store.close()
+
+
+def test_materialization_cas_exception_rolls_back_owned_tree(tmp_path, monkeypatch) -> None:
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    output = tmp_path / "cas-failure"
+
+    def fail_mark(*_args, **_kwargs):
+        raise RuntimeError("recording failed")
+
+    monkeypatch.setattr(
+        store,
+        "mark_materialized",
+        fail_mark,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="recording failed"):
+            materialize_proposal(store, proposal_id, output)
+        assert not output.exists()
+        assert not tuple(tmp_path.glob(".cas-failure.*"))
+        snapshot = store.proposal_snapshot(proposal_id)
+        assert snapshot is not None
+        assert snapshot.proposal.state.value == "proposed"
+    finally:
+        store.close()
+
+
+def test_materialization_cas_refusal_preserves_replacement_owner(tmp_path, monkeypatch) -> None:
+    from d810.mba.discovery_miner import materialize_proposal
+    from d810.mba.discovery_models import LifecycleReceipt, ReceiptStatus
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    output = tmp_path / "owned"
+    original_mark = store.mark_materialized
+
+    def replace_then_refuse(*args, **kwargs):
+        shutil.rmtree(output)
+        output.mkdir()
+        (output / "other-owner.txt").write_text("keep")
+        return LifecycleReceipt(ReceiptStatus.REFUSED, reason="race")
+
+    monkeypatch.setattr(store, "mark_materialized", replace_then_refuse)
+    try:
+        with pytest.raises(RuntimeError, match="race"):
+            materialize_proposal(store, proposal_id, output)
+        assert (output / "other-owner.txt").read_text() == "keep"
+    finally:
+        monkeypatch.setattr(store, "mark_materialized", original_mark)
+        shutil.rmtree(output)
+        store.close()
+
+
+def test_heartbeat_interval_must_be_finite(tmp_path) -> None:
+    from d810.mba.discovery_miner import DiscoveryMiner
+
+    store = MbaDiscoveryStore(tmp_path / "finite.sqlite3")
+    try:
+        with pytest.raises(ValueError):
+            DiscoveryMiner(store, heartbeat_interval=float("inf"))
+    finally:
+        store.close()

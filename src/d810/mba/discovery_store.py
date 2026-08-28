@@ -46,6 +46,8 @@ from d810.mba.discovery_models import (
 from d810.mba.provider_outcome import MbaProviderOutcome
 from d810.mba.rule_proposal import MbaRuleProposal
 from d810.mba.subterm_atomization import MbaAtomBinding
+from d810.mba.subterm_atomization import AtomizedMbaTerm
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.term_codec import (
     TERM_WIRE_SCHEMA_VERSION,
     typed_term_from_dict,
@@ -2099,6 +2101,39 @@ class MbaDiscoveryStore:
             raise ValueError("raw term identity is corrupt")
         return term
 
+    def _proposal_source_matches_group(
+        self,
+        conn: sqlite3.Connection,
+        proposal: MbaRuleProposal,
+        group: sqlite3.Row,
+    ) -> bool:
+        """Require proposal atoms to replay from one stored raw source."""
+
+        canonical_row = conn.execute(
+            "SELECT canonical_term FROM terms WHERE term_id=?", (group[1],)
+        ).fetchone()
+        if canonical_row is None:
+            raise ValueError("proposal source group is corrupt")
+        canonical_term = _decode_term(bytes(canonical_row[0]), name="canonical term")
+        raw_rows = conn.execute(
+            "SELECT raw_term FROM raw_terms WHERE term_id=? ORDER BY raw_term_id",
+            (group[1],),
+        ).fetchall()
+        for raw_row in raw_rows:
+            raw_term = _decode_term(bytes(raw_row[0]), name="raw term")
+            if canonicalize_mba_term(raw_term).canonical_term != canonical_term:
+                continue
+            try:
+                AtomizedMbaTerm(
+                    original_term=raw_term,
+                    atomized_term=proposal.pattern,
+                    bindings=proposal.atomization_bindings,
+                )
+            except (TypeError, ValueError):
+                continue
+            return True
+        return False
+
     def _project_run_local(self, row: sqlite3.Row) -> MiningRun:
         try:
             state = MiningRunState(row[5])
@@ -2172,15 +2207,7 @@ class MbaDiscoveryStore:
             self._project_run_local(run)
         except ValueError as exc:
             raise ValueError("proposal lifecycle ownership is corrupt") from exc
-        group_term = conn.execute(
-            "SELECT width, canonical_term FROM terms WHERE term_id=?", (group[1],)
-        ).fetchone()
-        if (
-            group_term is None
-            or group_term[0] != proposal.pattern.width
-            or bytes(group_term[1])
-            != _term_bytes(proposal.pattern, name="proposal pattern")
-        ):
+        if not self._proposal_source_matches_group(conn, proposal, group):
             raise ValueError("proposal source group is corrupt")
         try:
             state = ProposalState(row[7])
@@ -3143,14 +3170,7 @@ class MbaDiscoveryStore:
                 )
             if run[2] != claimed_revision:
                 return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_revision")
-            canonical_row = conn.execute(
-                "SELECT canonical_term FROM terms WHERE term_id=?", (group[1],)
-            ).fetchone()
-            if canonical_row is None:
-                raise ValueError("proposal source group is corrupt")
-            if proposal.pattern != _decode_term(
-                bytes(canonical_row[0]), name="canonical term"
-            ):
+            if not self._proposal_source_matches_group(conn, proposal, group):
                 return LifecycleReceipt(
                     ReceiptStatus.REFUSED, reason="proposal_source_mismatch"
                 )
