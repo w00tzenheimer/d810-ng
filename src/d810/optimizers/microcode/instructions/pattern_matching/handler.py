@@ -579,6 +579,7 @@ class PatternOptimizer(InstructionOptimizer):
         self.last_matched_rule_name = None
         self._pending_replacement_rule = None
         self._pending_replacement_context = None
+        self._provider_finalized_rules = set()
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
         # Optimizer-level maturity gate removed: per-rule maturities are checked in the loop below
@@ -921,6 +922,7 @@ class PatternOptimizer(InstructionOptimizer):
                 "clear_match_context",
                 None,
             )
+            attempt_finalized = False
             try:
                 if bind_match_context is not None:
                     bind_match_context(blk, ins)
@@ -1046,6 +1048,7 @@ class PatternOptimizer(InstructionOptimizer):
                     accepted=False,
                     reason="provider_exception",
                 )
+                attempt_finalized = True
             except Exception:
                 self._finalize_provider_rule(
                     rule_pattern_info.rule,
@@ -1055,6 +1058,7 @@ class PatternOptimizer(InstructionOptimizer):
                     accepted=False,
                     reason="provider_exception",
                 )
+                attempt_finalized = True
                 raise
             finally:
                 if self._run_later_callback is not None:
@@ -1064,7 +1068,7 @@ class PatternOptimizer(InstructionOptimizer):
                     )
                 if clear_match_context is not None:
                     clear_match_context()
-                if (
+                if not attempt_finalized and (
                     getattr(self, "_pending_replacement_rule", None)
                     is not rule_pattern_info.rule
                 ):

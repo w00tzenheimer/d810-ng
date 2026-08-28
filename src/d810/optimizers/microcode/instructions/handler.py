@@ -320,6 +320,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         self.last_matched_rule_name: str | None = None
         self._pending_replacement_rule: InstructionOptimizationRule | None = None
         self._pending_replacement_context: MbaObservationContext | None = None
+        self._provider_finalized_rules: set[int] = set()
 
     def set_run_later_callback(self, callback) -> None:
         self._run_later_callback = callback
@@ -411,6 +412,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                 getattr(rule, "name", type(rule).__name__),
                 exc_info=True,
             )
+        self._provider_finalized_rules.add(id(rule))
 
     def _set_pending_replacement(
         self,
@@ -450,6 +452,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         # instruction-level mutations making the chain look dead.
         self._pending_replacement_rule = None
         self._pending_replacement_context = None
+        self._provider_finalized_rules = set()
 
         def finalize(rule, *, accepted: bool, reason: str, context=None) -> None:
             """Drain one rule's provider state without affecting selection."""
@@ -618,10 +621,14 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
 
     def clear_pending_provider_observation(self) -> None:
         """Finalize stale callback state and always drop local references."""
+        selected_rule = self._pending_replacement_rule
         try:
             self.record_mutation_rejected("callback_cleanup")
             for rule in self.rules:
-                if rule is not self._pending_replacement_rule:
+                if (
+                    rule is not selected_rule
+                    and id(rule) not in self._provider_finalized_rules
+                ):
                     self._finalize_provider_rule(
                         rule,
                         None,
