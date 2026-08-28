@@ -117,6 +117,55 @@ def _proposal(pattern: TypedBvTerm) -> MbaRuleProposal:
     )
 
 
+_CAUSAL_DOMAIN_TABLES = (
+    "inputs",
+    "databases",
+    "functions",
+    "terms",
+    "raw_terms",
+    "provider_attempts",
+    "residual_groups",
+    "mining_runs",
+    "proposals",
+    "residual_group_events",
+)
+
+
+def _logical_domain_snapshot(store: MbaDiscoveryStore) -> tuple[object, ...]:
+    """Capture every causal owner/event column in primary-key order."""
+    snapshot: list[object] = []
+    connection = store._connection
+    for table in _CAUSAL_DOMAIN_TABLES:
+        columns = tuple(
+            row[1] for row in connection.execute(f"PRAGMA table_info('{table}')")
+        )
+        primary_key = tuple(
+            row[1]
+            for row in sorted(
+                connection.execute(f"PRAGMA table_info('{table}')").fetchall(),
+                key=lambda row: row[5],
+            )
+            if row[5]
+        )
+        order = ", ".join(f'"{column}"' for column in primary_key)
+        rows = tuple(
+            tuple(row)
+            for row in connection.execute(
+                f'SELECT * FROM "{table}" ORDER BY {order}'
+            ).fetchall()
+        )
+        snapshot.append((table, columns, rows))
+    return tuple(snapshot)
+
+
+def _call_without_domain_mutation(store: MbaDiscoveryStore, call: object) -> object:
+    before = _logical_domain_snapshot(store)
+    try:
+        return call()  # type: ignore[operator]
+    finally:
+        assert _logical_domain_snapshot(store) == before
+
+
 def test_schema_migration_is_exact_and_reopen_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "discovery.sqlite3"
     store = MbaDiscoveryStore(path)
@@ -630,17 +679,16 @@ def test_claimed_revision_transfer_fails_all_authority_paths_without_mutation(
         "UPDATE mining_runs SET claimed_revision=3 WHERE run_id=?", (run_id,)
     )
     store._connection.commit()
-    before = tuple(
-        store.count_rows(table)
-        for table in ("mining_runs", "residual_groups", "residual_group_events")
-    )
     with pytest.raises(ValueError):
-        store.status_counts()
+        _call_without_domain_mutation(store, store.status_counts)
     with pytest.raises(ValueError):
-        store._project_run(
-            store._connection.execute(
-                "SELECT * FROM mining_runs WHERE run_id=?", (run_id,)
-            ).fetchone()
+        _call_without_domain_mutation(
+            store,
+            lambda: store._project_run(
+                store._connection.execute(
+                    "SELECT * FROM mining_runs WHERE run_id=?", (run_id,)
+                ).fetchone()
+            ),
         )
     proposal = _proposal(pattern)
     calls = (
@@ -652,15 +700,10 @@ def test_claimed_revision_transfer_fails_all_authority_paths_without_mutation(
     )
     for call in calls:
         try:
-            receipt = call()
+            receipt = _call_without_domain_mutation(store, call)
         except ValueError:
             continue
         assert receipt.status == "refused"
-    after = tuple(
-        store.count_rows(table)
-        for table in ("mining_runs", "residual_groups", "residual_group_events")
-    )
-    assert after == before
     store.close()
 
 
@@ -734,18 +777,17 @@ def test_forward_receipt_revision_transfer_fails_after_equal_time_evidence(
         (later_revision, proposal_id),
     )
     store._connection.commit()
-    before = tuple(
-        store.count_rows(table)
-        for table in ("proposals", "residual_groups", "residual_group_events")
-    )
     with pytest.raises(ValueError):
-        store.status_counts()
+        _call_without_domain_mutation(store, store.status_counts)
     with pytest.raises(ValueError):
-        store._project_proposal(
-            store._connection,
-            store._connection.execute(
-                "SELECT * FROM proposals WHERE proposal_id=?", (proposal_id,)
-            ).fetchone(),
+        _call_without_domain_mutation(
+            store,
+            lambda: store._project_proposal(
+                store._connection,
+                store._connection.execute(
+                    "SELECT * FROM proposals WHERE proposal_id=?", (proposal_id,)
+                ).fetchone(),
+            ),
         )
     if transition == "materialized":
         calls = (
@@ -796,12 +838,7 @@ def test_forward_receipt_revision_transfer_fails_after_equal_time_evidence(
         )
     for call in calls:
         with pytest.raises(ValueError):
-            call()
-    after = tuple(
-        store.count_rows(table)
-        for table in ("proposals", "residual_groups", "residual_group_events")
-    )
-    assert after == before
+            _call_without_domain_mutation(store, call)
     store.close()
 
 
@@ -936,10 +973,6 @@ def test_external_orphan_event_blocks_actual_admission_without_mutation(
         expected_revision=published.group.revision,
     )
     assert materialized.group is not None
-    before = tuple(
-        store.count_rows(table)
-        for table in ("proposals", "residual_groups", "residual_group_events")
-    )
     external = sqlite3.connect(path)
     external.execute("PRAGMA foreign_keys=OFF")
     external.execute(
@@ -947,18 +980,18 @@ def test_external_orphan_event_blocks_actual_admission_without_mutation(
     )
     external.commit()
     external.close()
+    before = _logical_domain_snapshot(store)
     with pytest.raises(ValueError, match="orphan|foreign|domain"):
-        store.mark_admitted(
-            published.proposal.proposal_id,
-            "rule-id",
-            expected_state=ProposalState.MATERIALIZED,
-            expected_revision=materialized.group.revision,
+        _call_without_domain_mutation(
+            store,
+            lambda: store.mark_admitted(
+                published.proposal.proposal_id,
+                "rule-id",
+                expected_state=ProposalState.MATERIALIZED,
+                expected_revision=materialized.group.revision,
+            ),
         )
-    after = tuple(
-        store.count_rows(table)
-        for table in ("proposals", "residual_groups", "residual_group_events")
-    )
-    assert after == before[:-1] + (before[-1] + 1,)
+    assert _logical_domain_snapshot(store) == before
     store.close()
 
 
@@ -969,10 +1002,6 @@ def test_external_orphan_event_blocks_reclaim_without_mutation(tmp_path: Path) -
     store.record_attempt(_attempt())
     claim = store.claim_next_group("miner", "budget")
     assert claim.claim is not None
-    before = tuple(
-        store.count_rows(table)
-        for table in ("mining_runs", "residual_groups", "residual_group_events")
-    )
     external = sqlite3.connect(path)
     external.execute("PRAGMA foreign_keys=OFF")
     external.execute(
@@ -981,13 +1010,12 @@ def test_external_orphan_event_blocks_reclaim_without_mutation(tmp_path: Path) -
     external.commit()
     external.close()
     now[0] += timedelta(seconds=301)
-    result = store.claim_next_group("miner", "budget")
-    assert result.status == "refused"
-    after = tuple(
-        store.count_rows(table)
-        for table in ("mining_runs", "residual_groups", "residual_group_events")
+    before = _logical_domain_snapshot(store)
+    result = _call_without_domain_mutation(
+        store, lambda: store.claim_next_group("miner", "budget")
     )
-    assert after == before[:-1] + (before[-1] + 1,)
+    assert result.status == "refused"
+    assert _logical_domain_snapshot(store) == before
     store.close()
 
 
@@ -1001,16 +1029,28 @@ def test_exact_and_conflicting_lifecycle_retries_append_no_event(
     assert published.proposal is not None and published.group is not None
     proposal_id = published.proposal.proposal_id
     run_id = published.run.run_id
-    publication_count = store.count_rows("residual_group_events")
-    duplicate_publication = store.publish_proposal(
-        run_id,
-        published.run.claimed_revision,
-        proposal,
-        proposal.replacement,
-        proposal,
+    duplicate_publication = _call_without_domain_mutation(
+        store,
+        lambda: store.publish_proposal(
+            run_id,
+            published.run.claimed_revision,
+            proposal,
+            proposal.replacement,
+            proposal,
+        ),
     )
     assert duplicate_publication.status == "duplicate"
-    assert store.count_rows("residual_group_events") == publication_count
+    conflicting_publication = _call_without_domain_mutation(
+        store,
+        lambda: store.publish_proposal(
+            run_id,
+            published.run.claimed_revision,
+            proposal,
+            TypedBvTerm(None, 32, value=99),
+            proposal,
+        ),
+    )
+    assert conflicting_publication.status == "refused"
     source_state = ProposalState.PROPOSED
     source_revision = published.group.revision
     if terminal in {"admitted", "rejected_materialized"}:
@@ -1024,30 +1064,35 @@ def test_exact_and_conflicting_lifecycle_retries_append_no_event(
         assert materialized.group is not None
         source_state = ProposalState.MATERIALIZED
         source_revision = materialized.group.revision
-        materialized_count = store.count_rows("residual_group_events")
+        materialized_count = _logical_domain_snapshot(store)
         assert (
-            store.mark_materialized(
-                proposal_id,
-                "/rule.py",
-                "digest",
-                expected_state=ProposalState.PROPOSED,
-                expected_revision=source_revision,
+            _call_without_domain_mutation(
+                store,
+                lambda: store.mark_materialized(
+                    proposal_id,
+                    "/rule.py",
+                    "digest",
+                    expected_state=ProposalState.PROPOSED,
+                    expected_revision=source_revision,
+                ),
             ).status
             == "duplicate"
         )
         assert (
-            store.mark_materialized(
-                proposal_id,
-                "/different.py",
-                "different",
-                expected_state=ProposalState.PROPOSED,
-                expected_revision=source_revision,
+            _call_without_domain_mutation(
+                store,
+                lambda: store.mark_materialized(
+                    proposal_id,
+                    "/different.py",
+                    "different",
+                    expected_state=ProposalState.PROPOSED,
+                    expected_revision=source_revision,
+                ),
             ).status
             == "refused"
         )
-        assert store.count_rows("residual_group_events") == materialized_count
+        assert _logical_domain_snapshot(store) == materialized_count
     if terminal == "admitted":
-        admitted_count = store.count_rows("residual_group_events")
         admitted = store.mark_admitted(
             proposal_id,
             "rule-id",
@@ -1055,28 +1100,31 @@ def test_exact_and_conflicting_lifecycle_retries_append_no_event(
             expected_revision=source_revision,
         )
         assert admitted.status == "admitted"
-        admitted_count += 1
         assert (
-            store.mark_admitted(
-                proposal_id,
-                "rule-id",
-                expected_state=source_state,
-                expected_revision=source_revision,
+            _call_without_domain_mutation(
+                store,
+                lambda: store.mark_admitted(
+                    proposal_id,
+                    "rule-id",
+                    expected_state=source_state,
+                    expected_revision=source_revision,
+                ),
             ).status
             == "duplicate"
         )
         assert (
-            store.mark_admitted(
-                proposal_id,
-                "different-rule",
-                expected_state=source_state,
-                expected_revision=source_revision,
+            _call_without_domain_mutation(
+                store,
+                lambda: store.mark_admitted(
+                    proposal_id,
+                    "different-rule",
+                    expected_state=source_state,
+                    expected_revision=source_revision,
+                ),
             ).status
             == "refused"
         )
-        assert store.count_rows("residual_group_events") == admitted_count
     else:
-        rejected_count = store.count_rows("residual_group_events")
         rejected = store.mark_rejected(
             proposal_id,
             "unsafe",
@@ -1084,26 +1132,30 @@ def test_exact_and_conflicting_lifecycle_retries_append_no_event(
             expected_revision=source_revision,
         )
         assert rejected.status == "rejected"
-        rejected_count += 1
         assert (
-            store.mark_rejected(
-                proposal_id,
-                "unsafe",
-                expected_state=source_state,
-                expected_revision=source_revision,
+            _call_without_domain_mutation(
+                store,
+                lambda: store.mark_rejected(
+                    proposal_id,
+                    "unsafe",
+                    expected_state=source_state,
+                    expected_revision=source_revision,
+                ),
             ).status
             == "duplicate"
         )
         assert (
-            store.mark_rejected(
-                proposal_id,
-                "different",
-                expected_state=source_state,
-                expected_revision=source_revision,
+            _call_without_domain_mutation(
+                store,
+                lambda: store.mark_rejected(
+                    proposal_id,
+                    "different",
+                    expected_state=source_state,
+                    expected_revision=source_revision,
+                ),
             ).status
             == "refused"
         )
-        assert store.count_rows("residual_group_events") == rejected_count
     store.close()
 
 
