@@ -133,6 +133,7 @@ def test_schema_migration_is_exact_and_reopen_is_idempotent(tmp_path: Path) -> N
         "residual_groups",
         "mining_runs",
         "proposals",
+        "residual_group_events",
     }
     assert store.schema_version() == 1
     assert store.table_columns()["proposals"] == (
@@ -184,6 +185,239 @@ def test_schema_migration_is_exact_and_reopen_is_idempotent(tmp_path: Path) -> N
     reopened = MbaDiscoveryStore(path)
     assert reopened.schema_version() == 1
     reopened.close()
+
+
+def test_causal_event_schema_and_owner_shape_checks_are_exact(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "causal.sqlite3"
+    store = MbaDiscoveryStore(path)
+    assert "residual_group_events" in store.table_columns()
+    connection = sqlite3.connect(path)
+    indexes = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )
+    }
+    assert {
+        "idx_residual_group_events_revision",
+        "idx_residual_group_events_attempt_owner",
+        "idx_residual_group_events_run_kind",
+        "idx_residual_group_events_proposal_kind",
+        "idx_residual_group_events_run_terminal",
+        "idx_residual_group_events_proposal_terminal",
+        "idx_residual_group_events_group_order",
+    } <= indexes
+    connection.execute(
+        "INSERT INTO inputs(input_identity, identity_provenance, external_evidence_allowed) VALUES ('i', 'p', 0)"
+    )
+    connection.execute(
+        "INSERT INTO databases(database_uuid, database_identity, input_id) VALUES ('d', 'db', 1)"
+    )
+    connection.execute(
+        "INSERT INTO functions(database_id, function_ea, function_fingerprint) VALUES (1, 1, 'f')"
+    )
+    connection.execute(
+        "INSERT INTO terms(canonical_fingerprint, width, canonical_term, canonical_codec_version) VALUES ('t', 8, x'7b7d', 1)"
+    )
+    connection.execute(
+        "INSERT INTO residual_groups(term_id, state, eligible_observation_count, last_observed_at, revision) VALUES (1, 'eligible', 1, '2026-01-01T00:00:00.000000Z', 1)"
+    )
+    connection.execute(
+        "INSERT INTO mining_runs(run_id, group_id, claimed_revision, miner_version, budget_fingerprint, state, started_at, heartbeat_at) VALUES ('r', 1, 2, 'm', 'b', 'active', '2026-01-01T00:00:00.000000Z', '2026-01-01T00:00:00.000000Z')"
+    )
+    connection.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "INSERT INTO residual_group_events(group_id, event_kind, group_revision, run_id, occurred_at) VALUES (1, 'materialized', 2, 'r', '2026-01-01T00:00:00.000000Z')"
+        )
+    connection.close()
+    store.close()
+
+
+def test_causal_events_order_equal_timestamps_and_reject_stale_claim(
+    tmp_path: Path,
+) -> None:
+    timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    store = MbaDiscoveryStore(tmp_path / "causal.sqlite3", clock=lambda: timestamp)
+    first = store.record_attempt(_attempt(value=1))
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    second = store.record_attempt(
+        _attempt(
+            raw=TypedBvTerm("xor", 32, children=(_term(1), _term(2))),
+            canonical=_term(1),
+        )
+    )
+    assert first.revision == 1 and second.revision == 3
+    assert store.heartbeat(claim.claim.run.run_id, 2).status == "refused"
+    assert store.finish_no_proposal(claim.claim.run.run_id, 2).status == "refused"
+    events = store._connection.execute(
+        "SELECT event_id, event_kind, group_revision FROM residual_group_events ORDER BY event_id"
+    ).fetchall()
+    assert [(row[1], row[2]) for row in events] == [
+        ("observed", 1),
+        ("claimed", 2),
+        ("observed", 3),
+    ]
+    store.close()
+
+
+def test_causal_events_cover_proposal_lifecycle_and_exact_retries(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "causal.sqlite3")
+    pattern = TypedBvTerm(
+        "xor",
+        32,
+        children=(TypedBvTerm(None, 32, leaf_key=("register", "x")), _term(2)),
+    )
+    store.record_attempt(_attempt(raw=pattern, canonical=pattern))
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    proposal = _proposal(pattern)
+    published = store.publish_proposal(
+        claim.claim.run.run_id,
+        claim.claim.run.claimed_revision,
+        proposal.fingerprint,
+        proposal.replacement,
+        proposal,
+    )
+    assert published.proposal is not None
+    materialized = store.mark_materialized(
+        published.proposal.proposal_id,
+        "/tmp/rule.py",
+        "sha256:abc",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=published.group.revision,
+    )
+    assert materialized.proposal is not None
+    admitted = store.mark_admitted(
+        published.proposal.proposal_id,
+        "rule-id",
+        expected_state=ProposalState.MATERIALIZED,
+        expected_revision=materialized.group.revision,
+    )
+    assert admitted.proposal is not None
+    assert (
+        store.mark_admitted(
+            published.proposal.proposal_id,
+            "rule-id",
+            expected_state=ProposalState.MATERIALIZED,
+            expected_revision=materialized.group.revision,
+        ).status
+        == "duplicate"
+    )
+    events = store._connection.execute(
+        "SELECT event_kind, source_proposal_state, run_id, proposal_id FROM residual_group_events ORDER BY event_id"
+    ).fetchall()
+    assert [row[0] for row in events] == [
+        "observed",
+        "claimed",
+        "proposal_published",
+        "materialized",
+        "admitted",
+    ]
+    assert events[-2][1] == "proposed"
+    assert events[-1][1] == "materialized"
+    store.close()
+
+
+def test_duplicate_and_refused_calls_append_no_causal_event(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "causal.sqlite3")
+    attempt = _attempt()
+    assert store.record_attempt(attempt).status == "stored"
+    assert store.record_attempt(attempt).status == "duplicate"
+    assert (
+        store.record_attempt(replace(attempt, eligible_for_mining=False)).status
+        == "refused"
+    )
+    assert store.count_rows("residual_group_events") == 1
+    claim = store.claim_next_group("miner", "budget")
+    assert claim.claim is not None
+    assert (
+        store.finish_no_proposal(
+            claim.claim.run.run_id, claim.claim.run.claimed_revision + 1
+        ).status
+        == "refused"
+    )
+    assert store.count_rows("residual_group_events") == 2
+    store.close()
+
+
+def test_causal_validation_rejects_missing_and_mismatched_events(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "causal.sqlite3"
+    store = MbaDiscoveryStore(path)
+    stored = store.record_attempt(_attempt())
+    assert stored.attempt_id is not None
+    store._connection.execute(
+        "UPDATE residual_group_events SET occurred_at=?",
+        ("2026-01-01T00:00:00.000000Z",),
+    )
+    store._connection.commit()
+    with pytest.raises(ValueError, match="observed event authority"):
+        store.status_counts()
+    store.close()
+    reopened = MbaDiscoveryStore(path)
+    with pytest.raises(ValueError, match="observed event authority"):
+        reopened.status_counts()
+    reopened.close()
+
+
+def test_two_stores_concurrent_observations_have_contiguous_causal_order(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "causal-concurrent.sqlite3"
+    stores = (MbaDiscoveryStore(path), MbaDiscoveryStore(path))
+    barrier = threading.Barrier(2)
+    receipts: list[object] = []
+
+    def record(store: MbaDiscoveryStore, value: int) -> None:
+        barrier.wait()
+        receipts.append(store.record_attempt(_attempt(value=value)))
+
+    threads = [
+        threading.Thread(target=record, args=(store, value))
+        for store, value in zip(stores, (1, 2))
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert all(receipt.status == "stored" for receipt in receipts)
+    events = (
+        stores[0]
+        ._connection.execute(
+            "SELECT event_id, event_kind, group_revision FROM residual_group_events ORDER BY event_id"
+        )
+        .fetchall()
+    )
+    assert [row[0] for row in events] == [1, 2]
+    assert [row[1] for row in events] == ["observed", "observed"]
+    assert [row[2] for row in events] == [1, 1]
+    for store in stores:
+        store.close()
+
+
+def test_causal_event_append_failure_rolls_back_owner_mutation(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "causal.sqlite3")
+    store._connection.execute(
+        "CREATE TRIGGER fail_causal_event BEFORE INSERT ON residual_group_events BEGIN SELECT RAISE(ABORT, 'event append failed'); END"
+    )
+    receipt = store.record_attempt(_attempt())
+    assert receipt.status == "refused"
+    assert receipt.reason == "event append failed"
+    assert store.count_rows("provider_attempts") == 0
+    assert store.count_rows("residual_groups") == 0
+    assert store.count_rows("residual_group_events") == 0
+    store.close()
 
 
 def test_record_deduplicates_terms_raw_shapes_and_exact_attempt(tmp_path: Path) -> None:
@@ -2578,11 +2812,13 @@ def test_persisted_lifecycle_identifiers_are_canonical(
         store.finish_no_proposal(
             claim.claim.run.run_id, claim.claim.run.claimed_revision
         )
+        store._connection.execute("PRAGMA foreign_keys=OFF")
         store._connection.execute("UPDATE mining_runs SET run_id=?", (value,))
     else:
         store, _proposal_input, _published = _published_store(
             tmp_path, f"stored-{identifier}-{value!r}"
         )
+        store._connection.execute("PRAGMA foreign_keys=OFF")
         store._connection.execute("UPDATE proposals SET proposal_id=?", (value,))
     store._connection.commit()
     with pytest.raises((TypeError, ValueError), match=identifier):

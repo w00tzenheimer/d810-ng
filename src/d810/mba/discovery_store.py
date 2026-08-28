@@ -169,6 +169,72 @@ _SCHEMA_SQL = """
         terminal_source_revision INTEGER,
         rejection_reason TEXT
     );
+    CREATE TABLE residual_group_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL REFERENCES residual_groups,
+        event_kind TEXT NOT NULL CHECK (event_kind IN (
+            'observed',
+            'claimed',
+            'run_no_proposal',
+            'run_failed',
+            'run_expired',
+            'run_superseded',
+            'proposal_published',
+            'materialized',
+            'admitted',
+            'rejected'
+        )),
+        group_revision INTEGER NOT NULL,
+        source_proposal_state TEXT,
+        provider_attempt_id INTEGER REFERENCES provider_attempts,
+        run_id TEXT REFERENCES mining_runs,
+        proposal_id TEXT REFERENCES proposals,
+        occurred_at TEXT NOT NULL,
+        CHECK (group_revision >= 1),
+        CHECK (
+            (event_kind = 'observed'
+                AND provider_attempt_id IS NOT NULL
+                AND run_id IS NULL
+                AND proposal_id IS NULL
+                AND source_proposal_state IS NULL)
+            OR
+            (event_kind IN (
+                    'claimed', 'run_no_proposal', 'run_failed',
+                    'run_expired', 'run_superseded'
+                )
+                AND provider_attempt_id IS NULL
+                AND run_id IS NOT NULL
+                AND proposal_id IS NULL
+                AND source_proposal_state IS NULL)
+            OR
+            (event_kind = 'proposal_published'
+                AND provider_attempt_id IS NULL
+                AND run_id IS NOT NULL
+                AND proposal_id IS NOT NULL
+                AND source_proposal_state IS NULL)
+            OR
+            (event_kind = 'materialized'
+                AND provider_attempt_id IS NULL
+                AND run_id IS NOT NULL
+                AND proposal_id IS NOT NULL
+                AND source_proposal_state IS NOT NULL
+                AND source_proposal_state = 'proposed')
+            OR
+            (event_kind = 'admitted'
+                AND provider_attempt_id IS NULL
+                AND run_id IS NOT NULL
+                AND proposal_id IS NOT NULL
+                AND source_proposal_state IS NOT NULL
+                AND source_proposal_state = 'materialized')
+            OR
+            (event_kind = 'rejected'
+                AND provider_attempt_id IS NULL
+                AND run_id IS NOT NULL
+                AND proposal_id IS NOT NULL
+                AND source_proposal_state IS NOT NULL
+                AND source_proposal_state IN ('proposed', 'materialized'))
+        )
+    );
     CREATE INDEX idx_residual_groups_claim
         ON residual_groups(state, last_observed_at, group_id);
     CREATE INDEX idx_mining_runs_lease
@@ -181,6 +247,29 @@ _SCHEMA_SQL = """
         ON provider_attempts(provider, created_at, attempt_id);
     CREATE INDEX idx_proposals_group_state
         ON proposals(group_id, state, created_at, proposal_id);
+    CREATE UNIQUE INDEX idx_residual_group_events_revision
+        ON residual_group_events(group_id, group_revision)
+        WHERE event_kind IN ('observed', 'claimed');
+    CREATE UNIQUE INDEX idx_residual_group_events_attempt_owner
+        ON residual_group_events(provider_attempt_id)
+        WHERE provider_attempt_id IS NOT NULL;
+    CREATE UNIQUE INDEX idx_residual_group_events_run_kind
+        ON residual_group_events(run_id, event_kind)
+        WHERE run_id IS NOT NULL;
+    CREATE UNIQUE INDEX idx_residual_group_events_proposal_kind
+        ON residual_group_events(proposal_id, event_kind)
+        WHERE proposal_id IS NOT NULL;
+    CREATE UNIQUE INDEX idx_residual_group_events_run_terminal
+        ON residual_group_events(run_id)
+        WHERE event_kind IN (
+            'run_no_proposal', 'run_failed', 'run_expired',
+            'run_superseded', 'proposal_published'
+        );
+    CREATE UNIQUE INDEX idx_residual_group_events_proposal_terminal
+        ON residual_group_events(proposal_id)
+        WHERE event_kind IN ('admitted', 'rejected');
+    CREATE INDEX idx_residual_group_events_group_order
+        ON residual_group_events(group_id, event_id);
 """
 
 _TABLES: dict[str, tuple[str, ...]] = {
@@ -283,6 +372,17 @@ _TABLES: dict[str, tuple[str, ...]] = {
         "terminal_source_revision",
         "rejection_reason",
     ),
+    "residual_group_events": (
+        "event_id",
+        "group_id",
+        "event_kind",
+        "group_revision",
+        "source_proposal_state",
+        "provider_attempt_id",
+        "run_id",
+        "proposal_id",
+        "occurred_at",
+    ),
 }
 
 _INDEXES = {
@@ -292,6 +392,13 @@ _INDEXES = {
     "idx_provider_attempts_function",
     "idx_provider_attempts_provider",
     "idx_proposals_group_state",
+    "idx_residual_group_events_revision",
+    "idx_residual_group_events_attempt_owner",
+    "idx_residual_group_events_run_kind",
+    "idx_residual_group_events_proposal_kind",
+    "idx_residual_group_events_run_terminal",
+    "idx_residual_group_events_proposal_terminal",
+    "idx_residual_group_events_group_order",
 }
 
 _TYPE_BY_NAME = {
@@ -325,6 +432,14 @@ _TYPE_BY_NAME = {
     "terminal_source_revision": "INTEGER",
     "external_evidence_allowed": "INTEGER",
     "elapsed_ms": "REAL",
+    "event_id": "INTEGER",
+    "event_kind": "TEXT",
+    "group_revision": "INTEGER",
+    "source_proposal_state": "TEXT",
+    "provider_attempt_id": "INTEGER",
+    "run_id": "TEXT",
+    "proposal_id": "TEXT",
+    "occurred_at": "TEXT",
 }
 _BLOB_COLUMNS = {
     "canonical_term",
@@ -377,6 +492,17 @@ _NOT_NULL["schema_migrations"] = (False, True)
 for _table, _values in tuple(_NOT_NULL.items()):
     if _table != "schema_migrations":
         _NOT_NULL[_table] = (False,) + _values[1:]
+_NOT_NULL["residual_group_events"] = (
+    False,
+    True,
+    True,
+    True,
+    False,
+    False,
+    False,
+    False,
+    True,
+)
 _PRIMARY_KEYS = {
     table: tuple(name == columns[0] for name in columns)
     for table, columns in _TABLES.items()
@@ -410,6 +536,12 @@ _FOREIGN_KEYS = {
         ("group_id", "residual_groups", None, "NO ACTION", "NO ACTION"),
         ("run_id", "mining_runs", None, "NO ACTION", "NO ACTION"),
     },
+    "residual_group_events": {
+        ("group_id", "residual_groups", None, "NO ACTION", "NO ACTION"),
+        ("provider_attempt_id", "provider_attempts", None, "NO ACTION", "NO ACTION"),
+        ("run_id", "mining_runs", None, "NO ACTION", "NO ACTION"),
+        ("proposal_id", "proposals", None, "NO ACTION", "NO ACTION"),
+    },
 }
 
 _NAMED_INDEX_COLUMNS = {
@@ -437,6 +569,34 @@ _NAMED_INDEX_COLUMNS = {
         "proposals",
         ("group_id", "state", "created_at", "proposal_id"),
     ),
+    "idx_residual_group_events_revision": (
+        "residual_group_events",
+        ("group_id", "group_revision"),
+    ),
+    "idx_residual_group_events_attempt_owner": (
+        "residual_group_events",
+        ("provider_attempt_id",),
+    ),
+    "idx_residual_group_events_run_kind": (
+        "residual_group_events",
+        ("run_id", "event_kind"),
+    ),
+    "idx_residual_group_events_proposal_kind": (
+        "residual_group_events",
+        ("proposal_id", "event_kind"),
+    ),
+    "idx_residual_group_events_run_terminal": (
+        "residual_group_events",
+        ("run_id",),
+    ),
+    "idx_residual_group_events_proposal_terminal": (
+        "residual_group_events",
+        ("proposal_id",),
+    ),
+    "idx_residual_group_events_group_order": (
+        "residual_group_events",
+        ("group_id", "event_id"),
+    ),
 }
 _INDEX_DDL = {
     "idx_residual_groups_claim": "create index idx_residual_groups_claim on residual_groups(state, last_observed_at, group_id)",
@@ -445,6 +605,24 @@ _INDEX_DDL = {
     "idx_provider_attempts_function": "create index idx_provider_attempts_function on provider_attempts(function_id, created_at, attempt_id)",
     "idx_provider_attempts_provider": "create index idx_provider_attempts_provider on provider_attempts(provider, created_at, attempt_id)",
     "idx_proposals_group_state": "create index idx_proposals_group_state on proposals(group_id, state, created_at, proposal_id)",
+    "idx_residual_group_events_revision": "create unique index idx_residual_group_events_revision on residual_group_events(group_id, group_revision) where event_kind in ('observed', 'claimed')",
+    "idx_residual_group_events_attempt_owner": "create unique index idx_residual_group_events_attempt_owner on residual_group_events(provider_attempt_id) where provider_attempt_id is not null",
+    "idx_residual_group_events_run_kind": "create unique index idx_residual_group_events_run_kind on residual_group_events(run_id, event_kind) where run_id is not null",
+    "idx_residual_group_events_proposal_kind": "create unique index idx_residual_group_events_proposal_kind on residual_group_events(proposal_id, event_kind) where proposal_id is not null",
+    "idx_residual_group_events_run_terminal": "create unique index idx_residual_group_events_run_terminal on residual_group_events(run_id) where event_kind in ( 'run_no_proposal', 'run_failed', 'run_expired', 'run_superseded', 'proposal_published' )",
+    "idx_residual_group_events_proposal_terminal": "create unique index idx_residual_group_events_proposal_terminal on residual_group_events(proposal_id) where event_kind in ('admitted', 'rejected')",
+    "idx_residual_group_events_group_order": "create index idx_residual_group_events_group_order on residual_group_events(group_id, event_id)",
+}
+
+_NAMED_INDEX_PARTIAL = {
+    name: name.startswith("idx_residual_group_events_")
+    and name != "idx_residual_group_events_group_order"
+    for name in _NAMED_INDEX_COLUMNS
+}
+_NAMED_INDEX_UNIQUE = {
+    name: name.startswith("idx_residual_group_events_")
+    and name != "idx_residual_group_events_group_order"
+    for name in _NAMED_INDEX_COLUMNS
 }
 
 _ATTEMPT_AUTHORITY_SELECT = """
@@ -472,6 +650,37 @@ _ATTEMPT_AUTHORITY_SELECT = """
     JOIN terms t ON t.term_id = pa.term_id
     JOIN raw_terms rt ON rt.raw_term_id = pa.raw_term_id
 """
+
+_EVENT_KINDS = frozenset(
+    {
+        "observed",
+        "claimed",
+        "run_no_proposal",
+        "run_failed",
+        "run_expired",
+        "run_superseded",
+        "proposal_published",
+        "materialized",
+        "admitted",
+        "rejected",
+    }
+)
+_REVISION_EVENT_KINDS = frozenset({"observed", "claimed"})
+_RUN_TERMINAL_EVENT_KINDS = frozenset(
+    {
+        "run_no_proposal",
+        "run_failed",
+        "run_expired",
+        "run_superseded",
+        "proposal_published",
+    }
+)
+_RUN_STATE_FOR_EVENT = {
+    "run_no_proposal": MiningRunState.NO_PROPOSAL.value,
+    "run_failed": MiningRunState.FAILED.value,
+    "run_expired": MiningRunState.EXPIRED.value,
+    "run_superseded": MiningRunState.SUPERSEDED.value,
+}
 
 
 def _normalized_ddl(value: str) -> str:
@@ -1056,6 +1265,38 @@ class MbaDiscoveryStore:
         value = self._uuid_factory()  # type: ignore[operator]
         return _canonical_uuid(value, name="uuid factory result")
 
+    def _append_event(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        group_id: int,
+        event_kind: str,
+        group_revision: int,
+        occurred_at: str,
+        provider_attempt_id: int | None = None,
+        run_id: str | None = None,
+        proposal_id: str | None = None,
+        source_proposal_state: str | None = None,
+    ) -> int:
+        if event_kind not in _EVENT_KINDS:
+            raise ValueError("unknown causal event kind")
+        _parse_timestamp(occurred_at, name="occurred_at")
+        return int(
+            conn.execute(
+                "INSERT INTO residual_group_events(group_id,event_kind,group_revision,source_proposal_state,provider_attempt_id,run_id,proposal_id,occurred_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    group_id,
+                    event_kind,
+                    group_revision,
+                    source_proposal_state,
+                    provider_attempt_id,
+                    run_id,
+                    proposal_id,
+                    occurred_at,
+                ),
+            ).lastrowid
+        )
+
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("discovery store is closed")
@@ -1181,12 +1422,12 @@ class MbaDiscoveryStore:
         expected_index_signatures: set[
             tuple[int, str, int, tuple[tuple[int, str, int, str], ...]]
         ] = set()
-        for table, columns in _NAMED_INDEX_COLUMNS.values():
+        for index_name, (table, columns) in _NAMED_INDEX_COLUMNS.items():
             expected_index_signatures.add(
                 (
-                    0,
+                    int(_NAMED_INDEX_UNIQUE[index_name]),
                     "c",
-                    0,
+                    int(_NAMED_INDEX_PARTIAL[index_name]),
                     tuple(
                         (tuple(_TABLES[table]).index(column), column, 0, "BINARY")
                         for column in columns
@@ -1270,7 +1511,10 @@ class MbaDiscoveryStore:
                 )
             )
             index_row = self._connection.execute(f"PRAGMA index_list('{table}')")
-            if any(row[1] == index_name and row[2] != 0 for row in index_row):
+            if any(
+                row[1] == index_name and row[2] != int(_NAMED_INDEX_PARTIAL[index_name])
+                for row in index_row
+            ):
                 raise ValueError("partial schema: named index uniqueness")
         if actual_named != {
             name: columns for name, (_, columns) in _NAMED_INDEX_COLUMNS.items()
@@ -1678,6 +1922,7 @@ class MbaDiscoveryStore:
                 outcome = attempt.outcome
                 input_cost = outcome.input_cost or (None, None)
                 output_cost = outcome.output_cost or (None, None)
+                now = self._now()
                 attempt_id = int(
                     conn.execute(
                         "INSERT INTO provider_attempts(attempt_uuid,function_id,term_id,raw_term_id,session_id,top_level_epoch,evidence_generation,maturity,instruction_ea,block_serial,block_ea,provider,plugin_name,plugin_version,status,input_cost_ops,input_cost_nodes,output_cost_ops,output_cost_nodes,proof_verdict,elapsed_ms,refusal_reason,outcome_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1707,12 +1952,20 @@ class MbaDiscoveryStore:
                             outcome.elapsed_ms,
                             outcome.refusal_reason,
                             outcome_payload,
-                            self._now(),
+                            now,
                         ),
                     ).lastrowid
                 )
                 group_id, state, revision = self._group(
-                    conn, term_id, eligible=attempt.eligible_for_mining, now=self._now()
+                    conn, term_id, eligible=attempt.eligible_for_mining, now=now
+                )
+                self._append_event(
+                    conn,
+                    group_id=group_id,
+                    event_kind="observed",
+                    group_revision=revision,
+                    provider_attempt_id=attempt_id,
+                    occurred_at=now,
                 )
                 self._validate_relational_lifecycle(conn, group_id)
                 return DiscoveryReceipt(
@@ -2057,6 +2310,200 @@ class MbaDiscoveryStore:
             rejection_reason=row["rejection_reason"],
         )
 
+    def _validate_causal_events(
+        self,
+        conn: sqlite3.Connection,
+        group: ResidualGroup,
+        runs: dict[str, MiningRun],
+        proposals: dict[str, Proposal],
+    ) -> None:
+        rows = conn.execute(
+            "SELECT * FROM residual_group_events WHERE group_id=? ORDER BY event_id",
+            (group.group_id,),
+        ).fetchall()
+        if not rows:
+            raise ValueError("residual group requires causal events")
+        events = list(rows)
+        revision_events = [
+            row for row in events if row["event_kind"] in _REVISION_EVENT_KINDS
+        ]
+        if [row["group_revision"] for row in revision_events] != list(
+            range(1, group.revision + 1)
+        ):
+            raise ValueError("causal revision sequence is corrupt")
+        latest_revision = 0
+        for row in events:
+            kind = row["event_kind"]
+            if kind not in _EVENT_KINDS:
+                raise ValueError("unknown causal event kind")
+            if type(row["group_revision"]) is not int or row["group_revision"] < 1:
+                raise ValueError("causal event revision is corrupt")
+            _parse_timestamp(row["occurred_at"], name="occurred_at")
+            if kind in _REVISION_EVENT_KINDS:
+                if row["group_revision"] != latest_revision + 1:
+                    raise ValueError("causal revision ordering is corrupt")
+                latest_revision = row["group_revision"]
+            elif row["group_revision"] != latest_revision:
+                raise ValueError("causal event points at a stale revision")
+            if kind == "observed":
+                if (
+                    row["provider_attempt_id"] is None
+                    or row["run_id"] is not None
+                    or row["proposal_id"] is not None
+                    or row["source_proposal_state"] is not None
+                ):
+                    raise ValueError("observed event owner shape is corrupt")
+            elif kind in _RUN_TERMINAL_EVENT_KINDS - {"proposal_published"}:
+                if (
+                    row["provider_attempt_id"] is not None
+                    or row["run_id"] is None
+                    or row["proposal_id"] is not None
+                    or row["source_proposal_state"] is not None
+                ):
+                    raise ValueError("run event owner shape is corrupt")
+            elif kind == "proposal_published":
+                if (
+                    row["provider_attempt_id"] is not None
+                    or row["run_id"] is None
+                    or row["proposal_id"] is None
+                    or row["source_proposal_state"] is not None
+                ):
+                    raise ValueError("publication event owner shape is corrupt")
+            elif kind in {"materialized", "admitted", "rejected"}:
+                expected_sources = {
+                    "materialized": {"proposed"},
+                    "admitted": {"materialized"},
+                    "rejected": {"proposed", "materialized"},
+                }[kind]
+                if (
+                    row["provider_attempt_id"] is not None
+                    or row["run_id"] is None
+                    or row["proposal_id"] is None
+                    or row["source_proposal_state"] not in expected_sources
+                ):
+                    raise ValueError("proposal event owner shape is corrupt")
+
+        attempt_rows = conn.execute(
+            "SELECT pa.attempt_id, pa.created_at FROM provider_attempts pa WHERE pa.term_id=?",
+            (group.term_id,),
+        ).fetchall()
+        attempts = {int(row["attempt_id"]): row for row in attempt_rows}
+        observed = [row for row in events if row["event_kind"] == "observed"]
+        if len(observed) != len(attempts) or {
+            row["provider_attempt_id"] for row in observed
+        } != set(attempts):
+            raise ValueError("provider attempts and observed events disagree")
+        for row in observed:
+            attempt = attempts.get(row["provider_attempt_id"])
+            if attempt is None or row["occurred_at"] != attempt["created_at"]:
+                raise ValueError("observed event authority is corrupt")
+
+        run_claims: dict[str, list[sqlite3.Row]] = {run_id: [] for run_id in runs}
+        run_events: dict[str, list[sqlite3.Row]] = {run_id: [] for run_id in runs}
+        for row in events:
+            run_id = row["run_id"]
+            if run_id is not None:
+                if run_id not in runs:
+                    raise ValueError("causal run owner is corrupt")
+                run_events[run_id].append(row)
+                if row["event_kind"] == "claimed":
+                    run_claims[run_id].append(row)
+            if row["proposal_id"] is not None and row["proposal_id"] not in proposals:
+                raise ValueError("causal proposal owner is corrupt")
+        for run_id, run in runs.items():
+            claims = run_claims[run_id]
+            if len(claims) != 1:
+                raise ValueError("mining run claim event count is corrupt")
+            claim = claims[0]
+            if (
+                claim["group_revision"] != run.claimed_revision
+                or claim["occurred_at"] != run.started_at
+            ):
+                raise ValueError("mining run claim authority is corrupt")
+            terminals = [
+                row
+                for row in run_events[run_id]
+                if row["event_kind"] in _RUN_TERMINAL_EVENT_KINDS
+            ]
+            expected_terminal = {
+                MiningRunState.ACTIVE: None,
+                MiningRunState.NO_PROPOSAL: "run_no_proposal",
+                MiningRunState.FAILED: "run_failed",
+                MiningRunState.EXPIRED: "run_expired",
+                MiningRunState.SUPERSEDED: "run_superseded",
+                MiningRunState.PROPOSED: "proposal_published",
+            }[run.state]
+            if expected_terminal is None:
+                if terminals:
+                    raise ValueError("active run has a terminal causal event")
+            elif len(terminals) != 1 or terminals[0]["event_kind"] != expected_terminal:
+                raise ValueError("mining run terminal event disagrees with state")
+            if terminals:
+                terminal = terminals[0]
+                if (
+                    terminal["group_revision"] < run.claimed_revision
+                    or terminal["occurred_at"] != run.finished_at
+                ):
+                    raise ValueError("mining run terminal authority is corrupt")
+
+        for proposal_id, proposal in proposals.items():
+            proposal_events = [
+                row for row in events if row["proposal_id"] == proposal_id
+            ]
+            publication = [
+                row
+                for row in proposal_events
+                if row["event_kind"] == "proposal_published"
+            ]
+            if len(publication) != 1:
+                raise ValueError("proposal publication event count is corrupt")
+            publishing_run = runs.get(proposal.run_id)
+            if publishing_run is None:
+                raise ValueError("proposal publishing run is corrupt")
+            publication_row = publication[0]
+            if (
+                publication_row["run_id"] != proposal.run_id
+                or publication_row["group_revision"] != publishing_run.claimed_revision
+                or publication_row["occurred_at"] != proposal.created_at
+            ):
+                raise ValueError("proposal publication authority is corrupt")
+            ordered_kinds = [row["event_kind"] for row in proposal_events]
+            expected_kinds = {
+                ProposalState.PROPOSED: ["proposal_published"],
+                ProposalState.MATERIALIZED: ["proposal_published", "materialized"],
+                ProposalState.ADMITTED: [
+                    "proposal_published",
+                    "materialized",
+                    "admitted",
+                ],
+                ProposalState.REJECTED: ["proposal_published", "rejected"]
+                if proposal.terminal_source_state is ProposalState.PROPOSED
+                else ["proposal_published", "materialized", "rejected"],
+            }[proposal.state]
+            if ordered_kinds != expected_kinds:
+                raise ValueError("proposal causal transition order is corrupt")
+            for row in proposal_events:
+                if row["run_id"] != proposal.run_id:
+                    raise ValueError("proposal event publishing run is corrupt")
+                if row["event_kind"] == "materialized":
+                    if (
+                        row["group_revision"] != proposal.materialized_source_revision
+                        or row["occurred_at"] != proposal.materialized_at
+                    ):
+                        raise ValueError("materialization event authority is corrupt")
+                elif row["event_kind"] == "admitted":
+                    if (
+                        row["group_revision"] != proposal.terminal_source_revision
+                        or row["occurred_at"] != proposal.admitted_at
+                    ):
+                        raise ValueError("admission event authority is corrupt")
+                elif row["event_kind"] == "rejected":
+                    if row["group_revision"] != proposal.terminal_source_revision:
+                        raise ValueError("rejection event authority is corrupt")
+
+        if latest_revision != group.revision:
+            raise ValueError("causal revision does not match group")
+
     def _validate_relational_lifecycle(
         self, conn: sqlite3.Connection, group_id: int
     ) -> tuple[
@@ -2246,6 +2693,7 @@ class MbaDiscoveryStore:
                 and materialized_revision > terminal_revision
             ):
                 raise ValueError("lifecycle retry revision chronology is corrupt")
+        self._validate_causal_events(conn, group, runs, proposals)
         return group, runs, proposals
 
     def _project_group(self, conn: sqlite3.Connection, group_id: int) -> ResidualGroup:
@@ -2335,6 +2783,14 @@ class MbaDiscoveryStore:
                     ).rowcount
                     if run_updated != 1 or group_updated != 1:
                         raise ValueError("lease_reclaim_conflict")
+                    self._append_event(
+                        conn,
+                        group_id=int(old[1]),
+                        event_kind="run_expired",
+                        group_revision=int(group[8]),
+                        run_id=old[0],
+                        occurred_at=now,
+                    )
                 candidate = conn.execute(
                     "SELECT group_id, revision FROM residual_groups WHERE state=? ORDER BY last_observed_at, group_id LIMIT 1",
                     (ResidualGroupState.ELIGIBLE.value,),
@@ -2373,6 +2829,14 @@ class MbaDiscoveryStore:
                         now,
                         now,
                     ),
+                )
+                self._append_event(
+                    conn,
+                    group_id=int(candidate[0]),
+                    event_kind="claimed",
+                    group_revision=claimed_revision,
+                    run_id=run_id,
+                    occurred_at=now,
                 )
                 group = self._project_group(conn, int(candidate[0]))
                 run = self._project_run(
@@ -2493,6 +2957,19 @@ class MbaDiscoveryStore:
             if updated != 1 or group_updated != 1:
                 conn.rollback()
                 return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_revision")
+            self._append_event(
+                conn,
+                group_id=int(run[1]),
+                event_kind={
+                    MiningRunState.NO_PROPOSAL: "run_no_proposal",
+                    MiningRunState.FAILED: "run_failed",
+                    MiningRunState.EXPIRED: "run_expired",
+                    MiningRunState.SUPERSEDED: "run_superseded",
+                }.get(run_state, "run_failed"),
+                group_revision=claimed_revision,
+                run_id=run_id,
+                occurred_at=now,
+            )
             return LifecycleReceipt(
                 ReceiptStatus.FINISHED,
                 run=self._project_run(
@@ -2659,6 +3136,15 @@ class MbaDiscoveryStore:
                 return LifecycleReceipt(
                     ReceiptStatus.REFUSED, reason="publication_conflict"
                 )
+            self._append_event(
+                conn,
+                group_id=int(group[0]),
+                event_kind="proposal_published",
+                group_revision=claimed_revision,
+                run_id=run_id,
+                proposal_id=proposal_id,
+                occurred_at=now,
+            )
             proposal = self._project_proposal(
                 conn,
                 conn.execute(
@@ -2793,6 +3279,16 @@ class MbaDiscoveryStore:
             ):
                 conn.rollback()
                 return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_state")
+            self._append_event(
+                conn,
+                group_id=int(row[1]),
+                event_kind="materialized",
+                group_revision=expected_revision,
+                source_proposal_state=ProposalState.PROPOSED.value,
+                run_id=row[2],
+                proposal_id=proposal_id,
+                occurred_at=now,
+            )
             return LifecycleReceipt(
                 ReceiptStatus.MATERIALIZED,
                 proposal=self._project_proposal(
@@ -2975,6 +3471,18 @@ class MbaDiscoveryStore:
             if group_updated != 1:
                 conn.rollback()
                 return LifecycleReceipt(ReceiptStatus.REFUSED, reason="stale_state")
+            self._append_event(
+                conn,
+                group_id=int(row[1]),
+                event_kind="admitted"
+                if target is ProposalState.ADMITTED
+                else "rejected",
+                group_revision=expected_revision,
+                source_proposal_state=current.value,
+                run_id=row[2],
+                proposal_id=proposal_id,
+                occurred_at=now,
+            )
             return LifecycleReceipt(
                 ReceiptStatus.ADMITTED
                 if target is ProposalState.ADMITTED
