@@ -90,6 +90,12 @@ class InstructionDefUseCollector(ida_hexrays.mop_visitor_t):
                 return 0
             elif op.t == ida_hexrays.mop_n:
                 return 0
+            elif op.t == ida_hexrays.mop_p:
+                # ``for_all_ops`` visits the pair container and then its low
+                # and high sub-operands.  The children carry the actual
+                # register/stack uses, so the parent is supported plumbing
+                # rather than an unresolved value of its own.
+                return 0
             elif op.t == ida_hexrays.mop_d:
                 return 0
             elif op.t == ida_hexrays.mop_h:
