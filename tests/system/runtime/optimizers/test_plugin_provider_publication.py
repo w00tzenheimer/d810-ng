@@ -70,6 +70,8 @@ def _context(plugin: PluginIdentity | None = None) -> MbaObservationContext:
 
 def _pending(
     status: ProviderOutcomeStatus = ProviderOutcomeStatus.UNCHANGED,
+    *,
+    attempt_uuid: str = "12345678-1234-5678-1234-567812345670",
 ) -> PendingMbaProviderObservation:
     raw = TypedBvTerm(
         "xor",
@@ -78,7 +80,7 @@ def _pending(
     )
     canonical = canonicalize_mba_term(raw).canonical_term
     return PendingMbaProviderObservation(
-        attempt_uuid="12345678-1234-5678-1234-567812345670",
+        attempt_uuid=attempt_uuid,
         raw_term=raw,
         canonical_term=canonical,
         outcome=MbaProviderOutcome(
@@ -148,29 +150,38 @@ class _ProviderRule(InstructionOptimizationRule):
         accept_error: BaseException | None = None,
         finalizer_error: BaseException | None = None,
         pending_error: BaseException | None = None,
+        pending_factory=None,
     ):
         super().__init__()
-        self.pending = _pending(status)
+        self.pending = _pending(status) if pending_factory is None else None
         self.replacement = replacement
         self.error = error
         self.reject_error = reject_error
         self.accept_error = accept_error
         self.finalizer_error = finalizer_error
         self.pending_error = pending_error
+        self.pending_factory = pending_factory
         self.accepted = 0
         self.rejected: list[str] = []
         self.pending_calls = 0
         self.finalizer_calls = 0
         self.finalizer_reasons: list[str] = []
+        self.captured_attempt_uuids: list[str] = []
+        self.drained_attempt_uuids: list[str] = []
 
     def check_and_replace(self, _blk, _ins):
         if self.error is not None:
             raise self.error
+        if self.pending_factory is not None:
+            self.pending = self.pending_factory()
+            self.captured_attempt_uuids.append(self.pending.attempt_uuid)
         return self.replacement
 
     def pending_provider_observation(self):
         self.pending_calls += 1
         pending, self.pending = self.pending, None
+        if pending is not None:
+            self.drained_attempt_uuids.append(pending.attempt_uuid)
         if self.pending_error is not None:
             raise self.pending_error
         return pending
@@ -240,6 +251,7 @@ def _runtime_rule(
     accept_error: BaseException | None = None,
     finalizer_error: BaseException | None = None,
     pending_error: BaseException | None = None,
+    pending_factory=None,
 ):
     sink = _RecordingSink()
     rule = _ProviderRule(
@@ -250,6 +262,7 @@ def _runtime_rule(
         accept_error,
         finalizer_error,
         pending_error,
+        pending_factory,
     )
     rule.bind_plugin_services(
         PluginRuleServices(
@@ -1024,15 +1037,32 @@ def test_real_adapter_entry_and_finally_drain_on_unexpected_exception():
     assert optimizer._pending_replacement_context is None
 
 
-def test_real_adapter_acceptance_drains_once_and_clears_after_finally(monkeypatch):
+@pytest.mark.parametrize(
+    ("accept_error", "finalizer_error"),
+    (
+        (None, None),
+        (RuntimeError("accepted hook failed"), None),
+        (None, RuntimeError("accepted finalizer failed")),
+    ),
+    ids=("normal", "accepted-hook-runtime-error", "finalizer-runtime-error"),
+)
+def test_real_adapter_acceptance_drains_attempt_captured_inside_callback(
+    monkeypatch, accept_error, finalizer_error
+):
     stats = _manager_stats()
+    attempt_uuid = "12345678-1234-5678-1234-567812345671"
     rule, sink = _runtime_rule(
-        ProviderOutcomeStatus.IMPROVED,
         replacement=SimpleNamespace(
             opcode=ida_hexrays.m_mov,
             ea=0x401002,
             valid=True,
             _print=lambda: "replacement",
+        ),
+        accept_error=accept_error,
+        finalizer_error=finalizer_error,
+        pending_factory=lambda: _pending(
+            ProviderOutcomeStatus.IMPROVED,
+            attempt_uuid=attempt_uuid,
         ),
     )
     optimizer, blk, ins = _runtime_optimizer(rule, stats=stats)
@@ -1051,15 +1081,109 @@ def test_real_adapter_acceptance_drains_once_and_clears_after_finally(monkeypatc
     hashes = iter((10, 20))
     monkeypatch.setattr(optinsn_adapter, "hash_minsn", lambda *_args: next(hashes))
 
+    assert rule.pending is None
     assert manager.func(blk, ins) is True
     assert sink.records == []
     assert rule.accepted == 1
+    assert rule.pending is None
+    assert rule.captured_attempt_uuids == [attempt_uuid]
+    assert rule.drained_attempt_uuids == [attempt_uuid]
     assert rule.finalizer_reasons == ["callback_cleanup", "accepted"]
     assert rule.finalizer_calls == 2
     assert rule.pending_calls == 2
     assert stats.events == ["rule", "optimizer"]
     assert optimizer._pending_replacement_rule is None
     assert optimizer._pending_replacement_context is None
+
+
+def test_real_adapter_sequential_retry_processes_each_fresh_attempt_once(monkeypatch):
+    stats = _manager_stats()
+    attempt_uuids = (
+        "12345678-1234-5678-1234-567812345672",
+        "12345678-1234-5678-1234-567812345673",
+    )
+    attempts = iter(
+        _pending(ProviderOutcomeStatus.IMPROVED, attempt_uuid=attempt_uuid)
+        for attempt_uuid in attempt_uuids
+    )
+    tracker_snapshots: list[frozenset[int]] = []
+
+    def capture_attempt():
+        tracker_snapshots.append(frozenset(optimizer._provider_finalized_rules))
+        return next(attempts)
+
+    rule, sink = _runtime_rule(
+        replacement=SimpleNamespace(
+            opcode=ida_hexrays.m_mov,
+            ea=0x401002,
+            valid=True,
+            _print=lambda: "replacement",
+        ),
+        pending_factory=capture_attempt,
+    )
+    optimizer, blk, ins = _runtime_optimizer(rule, stats=stats)
+    manager = _manager_for(optimizer, stats)
+    manager.instruction_optimizers = [optimizer]
+    manager._decompilation_lifecycle = None
+    manager._capture_callback_nop_sites = lambda _blk: set()
+    manager.log_info_on_input = lambda _blk, _ins: False
+    manager._report_callback_nop_delta = lambda *_args, **_kwargs: None
+    manager._bind_validated_fact_view_for_callback = lambda _blk: []
+    ins.swap = lambda _other: None
+    ins.optimize_solo = lambda: None
+    blk.mark_lists_dirty = lambda: None
+    monkeypatch.setattr(optinsn_adapter, "check_ins_mop_size_are_ok", lambda _x: True)
+    monkeypatch.setattr(optinsn_adapter, "safe_verify", lambda *_args, **_kwargs: None)
+    hashes = iter((10, 20, 20, 30))
+    monkeypatch.setattr(optinsn_adapter, "hash_minsn", lambda *_args: next(hashes))
+
+    assert manager.func(blk, ins) is True
+    assert rule.pending is None
+    assert rule.captured_attempt_uuids == [attempt_uuids[0]]
+    assert rule.drained_attempt_uuids == [attempt_uuids[0]]
+
+    assert manager.func(blk, ins) is True
+    assert rule.pending is None
+    assert rule.captured_attempt_uuids == list(attempt_uuids)
+    assert rule.drained_attempt_uuids == list(attempt_uuids)
+    assert len(set(rule.captured_attempt_uuids)) == 2
+    assert tracker_snapshots == [frozenset(), frozenset()]
+    assert rule.accepted == 2
+    assert rule.finalizer_reasons == ["callback_cleanup", "accepted", "accepted"]
+    assert rule.finalizer_calls == 3
+    assert rule.pending_calls == 3
+    assert sink.records == []
+    assert stats.events == ["rule", "optimizer", "rule", "optimizer"]
+    assert optimizer._pending_replacement_rule is None
+    assert optimizer._pending_replacement_context is None
+
+
+def test_reset_rules_clears_stale_tracker_before_new_rule_is_drained():
+    old_rule, _old_sink = _runtime_rule()
+    optimizer, blk, ins = _runtime_optimizer(old_rule)
+    assert (
+        optimizer.get_optimized_instruction(
+            blk, ins, observation_context_factory=_context_factory
+        )
+        is None
+    )
+    assert optimizer._provider_finalized_rules == {id(old_rule)}
+
+    new_rule, new_sink = _runtime_rule()
+    optimizer._provider_finalized_rules.add(id(new_rule))
+    optimizer.reset_rules()
+    optimizer.add_rule(new_rule)
+    optimizer.clear_pending_provider_observation()
+
+    assert new_rule.pending is None
+    assert new_rule.finalizer_reasons == ["callback_cleanup"]
+    assert new_rule.finalizer_calls == 1
+    assert new_rule.pending_calls == 1
+    assert new_rule.drained_attempt_uuids == [
+        "12345678-1234-5678-1234-567812345670"
+    ]
+    assert new_sink.records == []
+    assert optimizer._provider_finalized_rules == {id(new_rule)}
 
 
 def test_real_adapter_early_gateway_and_no_match_retry_leave_no_provider_state():
