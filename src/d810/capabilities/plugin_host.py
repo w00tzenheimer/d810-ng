@@ -210,16 +210,7 @@ class PluginHostCapabilityRegistry(PluginHostCapabilities):
         if not isinstance(identity, PluginIdentity):
             raise TypeError("host capability views require a PluginIdentity")
         declared = tuple(requirements)
-        self.validate(declared)
-        with self._lock:
-            snapshots = []
-            seen_ids: set[str] = set()
-            for capability_id in declared:
-                if capability_id in seen_ids:
-                    continue
-                seen_ids.add(capability_id)
-                protocol, service, token, binder = self._by_id[capability_id]
-                snapshots.append((capability_id, protocol, service, token, binder))
+        snapshots = self._snapshot_requirements(declared)
         bound: dict[type[Any], object] = {}
         for capability_id, protocol, service, token, binder in snapshots:
             value = binder(identity) if binder is not None else service
@@ -248,6 +239,35 @@ class PluginHostCapabilityRegistry(PluginHostCapabilities):
             identity,
             MappingProxyType(bound),
         )
+
+    def _snapshot_requirements(
+        self, declared: tuple[str, ...]
+    ) -> list[
+        tuple[
+            str,
+            type[Any],
+            object,
+            object,
+            Callable[[PluginIdentity], object] | None,
+        ]
+    ]:
+        """Validate and snapshot declared entries in one locked read."""
+        with self._lock:
+            snapshots = []
+            seen_ids: set[str] = set()
+            for capability_id in declared:
+                capability_id = _validate_capability_id(capability_id)
+                if capability_id in seen_ids:
+                    continue
+                seen_ids.add(capability_id)
+                try:
+                    protocol, service, token, binder = self._by_id[capability_id]
+                except KeyError as exc:
+                    raise PluginCapabilityAccessError(
+                        f"missing host capability: {capability_id}"
+                    ) from exc
+                snapshots.append((capability_id, protocol, service, token, binder))
+            return snapshots
 
 
 @dataclass(frozen=True, slots=True)

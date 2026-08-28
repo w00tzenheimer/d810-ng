@@ -258,6 +258,51 @@ def test_unrestricted_lookup_rejects_activation_bound_registration() -> None:
     lease.release()
 
 
+@pytest.mark.parametrize("reregister", [False, True])
+def test_view_for_handles_withdrawal_between_validation_and_snapshot(
+    reregister,
+) -> None:
+    validated = threading.Event()
+    resume = threading.Event()
+
+    class BarrierRegistry(PluginHostCapabilityRegistry):
+        def _snapshot_requirements(self, requirements):
+            snapshots = super()._snapshot_requirements(requirements)
+            validated.set()
+            assert resume.wait(timeout=1)
+            return snapshots
+
+    registry = BarrierRegistry()
+    lease = registry.register(
+        "example.service.v1", ExampleService, ExampleServiceImpl()
+    )
+    identity = PluginIdentity("example", None, None, "test")
+    result = []
+
+    def build_view():
+        try:
+            result.append(registry.view_for(("example.service.v1",), identity))
+        except BaseException as exc:  # pragma: no cover - assertion below
+            result.append(exc)
+
+    thread = threading.Thread(target=build_view)
+    thread.start()
+    assert validated.wait(timeout=1)
+    lease.release()
+    if reregister:
+        replacement = registry.register(
+            "example.service.v1", ExampleService, ExampleServiceImpl()
+        )
+    resume.set()
+    thread.join(timeout=1)
+    if reregister:
+        replacement.release()
+    assert not thread.is_alive()
+    assert len(result) == 1
+    assert isinstance(result[0], PluginCapabilityAccessError)
+    assert "changed during activation view construction" in str(result[0])
+
+
 def test_plugin_view_is_immutable_and_copies_requirements() -> None:
     registry = PluginHostCapabilityRegistry()
     registry.register("example.service.v1", ExampleService, ExampleServiceImpl())
