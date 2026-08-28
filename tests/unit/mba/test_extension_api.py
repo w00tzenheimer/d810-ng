@@ -19,6 +19,7 @@ from d810.mba.extension_api import (
     TypedBvTerm,
     reconstruct_native_provider_result,
     D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,
+    MbaResidualObservationSink,
 )
 from d810.mba.island_profile import profile_typed_term
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
@@ -105,6 +106,11 @@ def test_residual_observation_contract_is_exported() -> None:
     assert "MbaResidualRecord" in extension_api.__all__
     assert "MbaResidualReceipt" in extension_api.__all__
     assert "MbaResidualObservationSink" in extension_api.__all__
+
+
+def test_public_sink_protocol_exposes_only_record() -> None:
+    assert "record" in MbaResidualObservationSink.__dict__
+    assert "close" not in MbaResidualObservationSink.__dict__
 
 
 def test_residual_contract_imports_without_ida_modules() -> None:

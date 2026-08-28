@@ -3274,7 +3274,7 @@ class D810Manager:
             gateway=gateway,
             user_enabled=lambda request: native_patch_function_is_authorized(
                 globally_available=bool(self.config.get("native_patch_enabled", False)),
-            function_tags=self.get_function_tags(request.materialization.function_ea),
+                function_tags=self.get_function_tags(request.materialization.function_ea),
             ),
             execution_journal=self._native_patch_execution_journal,
             parent_attempt_for_request=_parent_attempt,

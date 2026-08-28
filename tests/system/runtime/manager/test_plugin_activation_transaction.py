@@ -496,7 +496,7 @@ def test_real_registry_retains_shared_activation_and_exact_new_implementation(
                 load_manifest=lambda: manifest,
             ),
         ),
-        host_view_factory=lambda _requirements: SimpleNamespace(),
+        host_view_factory=lambda _requirements, _identity: SimpleNamespace(),
         requirement_validator=lambda _requirements: None,
     )
     candidate = registry.require_unique_implementation(
@@ -576,7 +576,7 @@ def test_real_registry_rollback_preserves_shared_prior_activation(monkeypatch):
                 load_manifest=lambda: manifest,
             ),
         ),
-        host_view_factory=lambda _requirements: SimpleNamespace(),
+        host_view_factory=lambda _requirements, _identity: SimpleNamespace(),
         requirement_validator=lambda _requirements: None,
     )
     candidate = registry.require_unique_implementation(

@@ -14,14 +14,23 @@ class _StubBundle:
 class TestAnalysisDbProperty:
     def test_analysis_db_none_before_start(self):
         mgr = D810Manager(log_dir=pathlib.Path(tempfile.gettempdir()))
-        assert mgr.analysis_db is None
+        try:
+            assert mgr.analysis_db is None
+        finally:
+            mgr.stop()
 
     def test_analysis_db_returns_path_when_runtime_set(self):
         mgr = D810Manager(log_dir=pathlib.Path(tempfile.gettempdir()))
-        mgr._analysis_bundle = _StubBundle(pathlib.Path("/tmp/d810_analysis.db"))
-        assert mgr.analysis_db == pathlib.Path("/tmp/d810_analysis.db")
+        try:
+            mgr._analysis_bundle = _StubBundle(pathlib.Path("/tmp/d810_analysis.db"))
+            assert mgr.analysis_db == pathlib.Path("/tmp/d810_analysis.db")
+        finally:
+            mgr.stop()
 
     def test_analysis_db_none_when_runtime_is_none(self):
         mgr = D810Manager(log_dir=pathlib.Path(tempfile.gettempdir()))
-        mgr._analysis_bundle = None
-        assert mgr.analysis_db is None
+        try:
+            mgr._analysis_bundle = None
+            assert mgr.analysis_db is None
+        finally:
+            mgr.stop()

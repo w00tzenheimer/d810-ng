@@ -241,7 +241,9 @@ class _EmptyHostCapabilities:
     def optional(self, capability: type[C]) -> C | None:
         return None
 
-    def view_for(self, requirements: Sequence[str]) -> PluginHostCapabilities:
+    def view_for(
+        self, requirements: Sequence[str], identity: PluginIdentity
+    ) -> PluginHostCapabilities:
         self.validate(requirements)
         return self
 
@@ -809,7 +811,9 @@ class BackendRegistry:
         source: Callable[[], Iterable[BackendSpec]] | None = None,
         host: PluginHostCapabilities | None = None,
         requirement_validator: Callable[[Sequence[str]], None] | None = None,
-        host_view_factory: Callable[[Sequence[str]], PluginHostCapabilities]
+        host_view_factory: Callable[
+            [Sequence[str], PluginIdentity], PluginHostCapabilities
+        ]
         | None = None,
     ) -> None:
         self._builtins = tuple(builtins)
@@ -1041,7 +1045,7 @@ class BackendRegistry:
 
         partial: Any = None
         try:
-            host_view = view_factory(manifest.requires)
+            host_view = view_factory(manifest.requires, identity)
             if host_view is None:
                 raise BackendUnavailable("host view factory returned None")
             context = PluginActivationContext(identity=identity, host=host_view)

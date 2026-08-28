@@ -21,6 +21,7 @@ from d810.core.plugins import (
     PluginActivationContext,
     PluginCapabilityOffer,
     PluginFunctionContext,
+    PluginIdentity,
     format_report,
     has_defects,
     manifest_of,
@@ -263,7 +264,7 @@ def registry_for(plugin, *, requires=(), host=None, name="example"):
     view_factory = getattr(host, "view_for", None) if host is not None else None
     if view_factory is None and host is not None:
 
-        def view_factory(_requirements):
+        def view_factory(_requirements, _identity):
             return host
 
     return BackendRegistry(
@@ -281,6 +282,38 @@ def registry_for(plugin, *, requires=(), host=None, name="example"):
 
 
 class TestActivation(unittest.TestCase):
+    def test_activation_passes_host_created_identity_to_view_factory(self):
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
+        seen = []
+
+        def view_factory(requirements, identity):
+            seen.append((requirements, identity))
+            return FakeHost()
+
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example 1.0",
+                    load_manifest=lambda: {
+                        "name": "example",
+                        "api_version": PLUGIN_API_VERSION,
+                        "provides": lambda: plugin,
+                    },
+                )
+            ],
+            requirement_validator=lambda _requirements: None,
+            host_view_factory=view_factory,
+        )
+
+        reg.activate("example")
+
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], ())
+        self.assertIsInstance(seen[0][1], PluginIdentity)
+        self.assertIs(plugin.activate_calls[0].identity, seen[0][1])
+
     def test_selected_implementation_is_created_by_declared_factory(self):
         activation = FakeActivation()
         plugin = FakePlugin(activation)
@@ -298,7 +331,7 @@ class TestActivation(unittest.TestCase):
                     load_manifest=lambda: manifest,
                 )
             ],
-            host_view_factory=lambda _requirements: FakeHost(),
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
             requirement_validator=lambda _requirements: None,
         )
 
@@ -329,7 +362,7 @@ class TestActivation(unittest.TestCase):
                     load_manifest=lambda: manifest,
                 )
             ],
-            host_view_factory=lambda _requirements: host,
+            host_view_factory=lambda _requirements, _identity: host,
             requirement_validator=lambda _requirements: None,
         )
         candidate = reg.require_unique_implementation(
@@ -360,7 +393,7 @@ class TestActivation(unittest.TestCase):
                     load_manifest=lambda: manifest,
                 )
             ],
-            host_view_factory=lambda _requirements: FakeHost(),
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
             requirement_validator=lambda _requirements: None,
         )
         candidate = reg.require_unique_implementation(
@@ -391,7 +424,7 @@ class TestActivation(unittest.TestCase):
                     load_manifest=lambda: manifest,
                 )
             ],
-            host_view_factory=lambda _requirements: FakeHost(),
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
             requirement_validator=lambda _requirements: None,
         )
         first = reg.require_unique_implementation(
@@ -431,7 +464,7 @@ class TestActivation(unittest.TestCase):
                     load_manifest=lambda: manifest,
                 )
             ],
-            host_view_factory=lambda _requirements: FakeHost(),
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
             requirement_validator=lambda _requirements: None,
         )
         undeclared = PassImplementationCandidate(
@@ -463,7 +496,7 @@ class TestActivation(unittest.TestCase):
                     load_manifest=lambda: manifest,
                 )
             ],
-            host_view_factory=lambda _requirements: FakeHost(),
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
             requirement_validator=lambda _requirements: None,
         )
         retained = reg.activate("example")
@@ -479,7 +512,7 @@ class TestActivation(unittest.TestCase):
         plugin = FakePlugin(FakeActivation())
         host = ProtocolOnlyHost()
 
-        def view_factory(_requirements):
+        def view_factory(_requirements, _identity):
             read_complete = threading.Event()
 
             def read_registry():
@@ -1301,7 +1334,7 @@ class TestPassImplementationRegression(unittest.TestCase):
                     name="cobra", origin="test", load_manifest=lambda: manifest
                 ),
             ),
-            host_view_factory=lambda _requirements: FakeHost(),
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
             requirement_validator=lambda _requirements: None,
         )
         candidate = reg.require_unique_implementation(

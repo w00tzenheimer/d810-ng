@@ -217,8 +217,6 @@ class MbaResidualObservationSink(Protocol):
 
     def record(self, observation: MbaResidualRecord) -> MbaResidualReceipt: ...
 
-    def close(self) -> None: ...
-
 
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
 

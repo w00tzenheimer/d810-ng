@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from d810.capabilities.plugin_host import (
     PluginCapabilityAccessError,
     PluginHostCapabilityRegistry,
 )
+from d810.core.plugins import PluginIdentity
 from d810.core.typing import Protocol, runtime_checkable
 
 
@@ -54,15 +57,39 @@ def test_plugin_view_resolves_required_and_optional_service() -> None:
     service = ExampleServiceImpl()
     registry = PluginHostCapabilityRegistry()
     registry.register("example.service.v1", ExampleService, service)
-    view = registry.view_for(("example.service.v1",))
+    view = registry.view_for(
+        ("example.service.v1",), PluginIdentity("example", None, None, "test")
+    )
 
     assert view.require(ExampleService) is service
     assert view.optional(ExampleService) is service
 
 
+def test_activation_view_binds_services_to_host_identity() -> None:
+    class BoundService:
+        def __init__(self):
+            self.identities = []
+
+        def execute(self, value: int) -> str:
+            return str(value)
+
+        def bind_activation(self, identity):
+            self.identities.append(identity)
+            return (identity, self)
+
+    service = BoundService()
+    registry = PluginHostCapabilityRegistry()
+    registry.register("example.service.v1", ExampleService, service)
+    identity = PluginIdentity("example", "example", "1", "origin")
+    view = registry.view_for(("example.service.v1",), identity)
+
+    assert view.require(ExampleService) == (identity, service)
+    assert service.identities == [identity]
+
+
 def test_plugin_view_returns_none_for_optional_missing_service() -> None:
     registry = PluginHostCapabilityRegistry()
-    view = registry.view_for(())
+    view = registry.view_for((), PluginIdentity("example", None, None, "test"))
 
     assert view.optional(ExampleService) is None
 
@@ -70,7 +97,7 @@ def test_plugin_view_returns_none_for_optional_missing_service() -> None:
 def test_plugin_view_rejects_access_to_undeclared_host_service() -> None:
     registry = PluginHostCapabilityRegistry()
     registry.register("example.service.v1", ExampleService, ExampleServiceImpl())
-    view = registry.view_for(())
+    view = registry.view_for((), PluginIdentity("example", None, None, "test"))
 
     with pytest.raises(PluginCapabilityAccessError, match="not declared"):
         view.require(ExampleService)
@@ -103,11 +130,40 @@ def test_duplicate_live_owner_is_rejected_until_lease_release() -> None:
     lease.release()
 
 
+def test_concurrent_view_reads_and_release_are_safe() -> None:
+    registry = PluginHostCapabilityRegistry()
+    lease = registry.register(
+        "example.service.v1", ExampleService, ExampleServiceImpl()
+    )
+    view = registry.view_for(
+        ("example.service.v1",), PluginIdentity("example", None, None, "test")
+    )
+    failures = []
+
+    def read_view() -> None:
+        try:
+            for _ in range(100):
+                service = view.optional(ExampleService)
+                if service is not None:
+                    service.execute(1)
+        except BaseException as exc:  # pragma: no cover - assertion below
+            failures.append(exc)
+
+    reader = threading.Thread(target=read_view)
+    reader.start()
+    lease.release()
+    reader.join(timeout=1)
+    assert not reader.is_alive()
+    assert failures == []
+
+
 def test_plugin_view_is_immutable_and_copies_requirements() -> None:
     registry = PluginHostCapabilityRegistry()
     registry.register("example.service.v1", ExampleService, ExampleServiceImpl())
     requirements = ["example.service.v1"]
-    view = registry.view_for(requirements)
+    view = registry.view_for(
+        requirements, PluginIdentity("example", None, None, "test")
+    )
     requirements.clear()
 
     assert view.require(ExampleService).execute(7) == "7"

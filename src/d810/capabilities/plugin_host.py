@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import threading
-from d810.core.plugins import BackendUnavailable, PluginHostCapabilities
+from d810.core.plugins import (
+    BackendUnavailable,
+    PluginHostCapabilities,
+    PluginIdentity,
+)
 from d810.core.typing import Any, Sequence, TypeVar
 
 __all__ = [
@@ -170,13 +174,22 @@ class PluginHostCapabilityRegistry(PluginHostCapabilities):
                 return None
             return self._by_id[capability_id][1]  # type: ignore[return-value]
 
-    def view_for(self, requirements: Sequence[str]) -> PluginHostCapabilities:
-        """Return an immutable host view limited to declared requirement IDs."""
+    def view_for(
+        self, requirements: Sequence[str], identity: PluginIdentity
+    ) -> PluginHostCapabilities:
+        """Return an activation-scoped view limited to declared requirements."""
+        if not isinstance(identity, PluginIdentity):
+            raise TypeError("host capability views require a PluginIdentity")
         declared = tuple(requirements)
         self.validate(declared)
-        return _PluginHostCapabilityView(self, declared)
+        return _PluginHostCapabilityView(self, declared, identity)
 
-    def _require_declared(self, capability: type[C], declared: tuple[str, ...]) -> C:
+    def _require_declared(
+        self,
+        capability: type[C],
+        declared: tuple[str, ...],
+        identity: PluginIdentity,
+    ) -> C:
         with self._lock:
             capability_id = self._id_by_protocol.get(capability)
             if capability_id is None:
@@ -188,20 +201,32 @@ class PluginHostCapabilityRegistry(PluginHostCapabilities):
                 raise PluginCapabilityAccessError(
                     f"host capability {capability_id!r} is not declared"
                 )
-            return self.require(capability)
+            service = self._by_id[capability_id][1]
+        return self._bind_activation(service, identity)
+
+    @staticmethod
+    def _bind_activation(service: object, identity: PluginIdentity) -> object:
+        binder = getattr(service, "bind_activation", None)
+        if callable(binder):
+            return binder(identity)
+        return service
 
 
 @dataclass(frozen=True, slots=True)
 class _PluginHostCapabilityView(PluginHostCapabilities):
     _registry: PluginHostCapabilityRegistry
     requirements: tuple[str, ...]
+    _identity: PluginIdentity
 
     def require(self, capability: type[C]) -> C:
-        return self._registry._require_declared(capability, self.requirements)
+        return self._registry._require_declared(
+            capability, self.requirements, self._identity
+        )
 
     def optional(self, capability: type[C]) -> C | None:
         with self._registry._lock:
             capability_id = self._registry._id_by_protocol.get(capability)
             if capability_id is None or capability_id not in self.requirements:
                 return None
-            return self._registry.optional(capability)
+            service = self._registry._by_id[capability_id][1]
+        return self._registry._bind_activation(service, self._identity)  # type: ignore[return-value]
