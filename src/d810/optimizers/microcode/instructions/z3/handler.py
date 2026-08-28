@@ -252,6 +252,7 @@ class Z3Optimizer(InstructionOptimizer):
         contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
+        observation_context_factory=None,
     ):  # type: ignore[override]
         # The opcode pre-filter is now handled by clearing _allowed_root_opcodes
         # when a patternless rule is added, which also disables the base class filter.
@@ -261,4 +262,5 @@ class Z3Optimizer(InstructionOptimizer):
             contextual_anchor_ins=contextual_anchor_ins,
             allowed_rule_names=allowed_rule_names,
             scheduled_rule_names=scheduled_rule_names,
+            observation_context_factory=observation_context_factory,
         )

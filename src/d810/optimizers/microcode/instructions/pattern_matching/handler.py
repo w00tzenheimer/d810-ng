@@ -572,10 +572,13 @@ class PatternOptimizer(InstructionOptimizer):
         contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
+        observation_context_factory=None,
     ) -> ida_hexrays.minsn_t | None:
-        del contextual_anchor_ins
+        if contextual_anchor_ins is None:
+            contextual_anchor_ins = ins
         self.last_matched_rule_name = None
         self._pending_replacement_rule = None
+        self._pending_replacement_context = None
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
         # Optimizer-level maturity gate removed: per-rule maturities are checked in the loop below
@@ -622,6 +625,8 @@ class PatternOptimizer(InstructionOptimizer):
             allowed_rule_names=allowed_rule_names,
             scheduled_rule_names=scheduled_rule_names,
             source_label="direct",
+            observation_context_factory=observation_context_factory,
+            contextual_anchor_ins=contextual_anchor_ins,
         )
         if new_ins is not None:
             return new_ins
@@ -637,6 +642,8 @@ class PatternOptimizer(InstructionOptimizer):
                 allowed_rule_names=allowed_rule_names,
                 scheduled_rule_names=scheduled_rule_names,
                 source_label="tracker",
+                observation_context_factory=observation_context_factory,
+                contextual_anchor_ins=contextual_anchor_ins,
             )
             if new_ins is not None:
                 return new_ins
@@ -845,7 +852,11 @@ class PatternOptimizer(InstructionOptimizer):
         allowed_rule_names: frozenset[str] | None,
         scheduled_rule_names: frozenset[str] | None,
         source_label: str,
+        observation_context_factory=None,
+        contextual_anchor_ins=None,
     ) -> ida_hexrays.minsn_t | None:
+        if contextual_anchor_ins is None:
+            contextual_anchor_ins = ins
         all_matches = self._get_candidates(test_ast)
         match_len = len(all_matches)
         structural_bucket_size = sum(
@@ -1005,7 +1016,12 @@ class PatternOptimizer(InstructionOptimizer):
                             format_minsn_t(new_ins),
                         )
                     self.last_matched_rule_name = str(rule_pattern_info.rule.name)
-                    self._pending_replacement_rule = rule_pattern_info.rule
+                    self._set_pending_replacement(
+                        rule_pattern_info.rule,
+                        blk,
+                        contextual_anchor_ins,
+                        observation_context_factory,
+                    )
                     return new_ins
             except RuntimeError as e:
                 record_attempt_error = getattr(
@@ -1022,6 +1038,24 @@ class PatternOptimizer(InstructionOptimizer):
                     e,
                     exc_info=True,
                 )
+                self._finalize_provider_rule(
+                    rule_pattern_info.rule,
+                    blk,
+                    contextual_anchor_ins,
+                    observation_context_factory,
+                    accepted=False,
+                    reason="provider_exception",
+                )
+            except Exception:
+                self._finalize_provider_rule(
+                    rule_pattern_info.rule,
+                    blk,
+                    contextual_anchor_ins,
+                    observation_context_factory,
+                    accepted=False,
+                    reason="provider_exception",
+                )
+                raise
             finally:
                 if self._run_later_callback is not None:
                     self._run_later_callback(
@@ -1030,6 +1064,18 @@ class PatternOptimizer(InstructionOptimizer):
                     )
                 if clear_match_context is not None:
                     clear_match_context()
+                if (
+                    getattr(self, "_pending_replacement_rule", None)
+                    is not rule_pattern_info.rule
+                ):
+                    self._finalize_provider_rule(
+                        rule_pattern_info.rule,
+                        blk,
+                        contextual_anchor_ins,
+                        observation_context_factory,
+                        accepted=False,
+                        reason="provider_terminal",
+                    )
         return None
 
 

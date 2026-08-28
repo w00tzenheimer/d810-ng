@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
+from dataclasses import replace
+from collections import defaultdict
 from types import SimpleNamespace
 
 import ida_hexrays
+import pytest
 
 from d810.core.function_execution_identity import (
     FunctionExecutionIdentity,
@@ -34,6 +38,8 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizationRule,
     InstructionOptimizer,
 )
+from d810.hexrays.hooks import optinsn_adapter
+from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 
 
 def _context(plugin: PluginIdentity | None = None) -> MbaObservationContext:
@@ -101,18 +107,39 @@ class _Host:
         return self.sink
 
 
+class _FailingSink(_RecordingSink):
+    def record(self, observation):
+        self.records.append(observation)
+        raise RuntimeError("sink unavailable")
+
+
+class _FailingHost(_Host):
+    def require(self, capability):
+        raise RuntimeError("host resolution failed")
+
+
 class _ProviderRule(InstructionOptimizationRule):
     NAME = "Task7Provider"
     maturities = []
 
-    def __init__(self, status=ProviderOutcomeStatus.UNCHANGED, replacement=None):
+    def __init__(
+        self,
+        status=ProviderOutcomeStatus.UNCHANGED,
+        replacement=None,
+        error: BaseException | None = None,
+        reject_error: BaseException | None = None,
+    ):
         super().__init__()
         self.pending = _pending(status)
         self.replacement = replacement
+        self.error = error
+        self.reject_error = reject_error
         self.accepted = 0
         self.rejected: list[str] = []
 
     def check_and_replace(self, _blk, _ins):
+        if self.error is not None:
+            raise self.error
         return self.replacement
 
     def pending_provider_observation(self):
@@ -124,6 +151,13 @@ class _ProviderRule(InstructionOptimizationRule):
 
     def record_mutation_rejected(self, reason):
         self.rejected.append(reason)
+        if self.reject_error is not None:
+            raise self.reject_error
+        if self.pending is not None:
+            self.pending = replace(
+                self.pending,
+                outcome=replace(self.pending.outcome, refusal_reason=reason),
+            )
 
 
 class _Optimizer(InstructionOptimizer):
@@ -134,9 +168,15 @@ class _Optimizer(InstructionOptimizer):
         return True
 
 
-def _runtime_rule(status=ProviderOutcomeStatus.UNCHANGED, replacement=None):
+def _runtime_rule(
+    status=ProviderOutcomeStatus.UNCHANGED,
+    replacement=None,
+    *,
+    error: BaseException | None = None,
+    reject_error: BaseException | None = None,
+):
     sink = _RecordingSink()
-    rule = _ProviderRule(status, replacement)
+    rule = _ProviderRule(status, replacement, error, reject_error)
     rule.bind_plugin_services(
         PluginRuleServices(
             plugin=PluginIdentity("cobra", "d810-cobra", "1.0", "task7-runtime"),
@@ -167,6 +207,37 @@ def _runtime_optimizer(rule):
     )
 
 
+def _manager_for(optimizer, stats):
+    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager.current_maturity = ida_hexrays.MMAT_PREOPTIMIZED
+    manager._active_optimizers = [optimizer]
+    manager._last_optimizer_tried = None
+    manager._rewrite_seen = defaultdict(set)
+    manager._cycle_quarantined_rule_names = defaultdict(set)
+    manager._scheduled_implementation_names = frozenset()
+    manager._resolve_active_instruction_rule_names = lambda _blk: None
+    manager._residual_admission_cache_key = None
+    manager._residual_admission_cache_value = False
+    manager.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)
+    manager.stats = stats
+    manager.generate_z3_code = False
+    manager.mba_observation_context = lambda blk, ins, identity: replace(
+        _context(identity),
+        instruction_ea=ins.ea,
+        block_serial=blk.serial,
+        block_ea=blk.mba.entry_ea,
+    )
+    return manager
+
+
+def _manager_stats():
+    return SimpleNamespace(
+        record_optimizer_match=lambda *_args, **_kwargs: None,
+        record_cycle_detected=lambda *_args, **_kwargs: None,
+        record_expression_bloat_rejected=lambda *_args, **_kwargs: None,
+    )
+
+
 def _context_factory(rule, _blk, _anchor):
     return _context(rule.plugin_services.plugin)
 
@@ -193,6 +264,17 @@ def test_terminal_outcomes_publish_exactly_once_at_outer_boundary():
         assert len(sink.records) == 1
         assert sink.records[0].outcome.status is status
         assert rule.pending is None
+
+
+def test_legacy_or_unbound_rule_is_a_noop_for_the_observation_sink():
+    sink = _RecordingSink()
+    rule = _ProviderRule()
+    optimizer, blk, ins = _runtime_optimizer(rule)
+    # The rule remains unbound, so even a valid pending value cannot resolve a sink.
+    optimizer.get_optimized_instruction(
+        blk, ins, observation_context_factory=lambda *_args: _context()
+    )
+    assert sink.records == []
 
 
 def test_improved_attempt_waits_then_rejection_publishes_once():
@@ -268,6 +350,82 @@ def test_callback_cleanup_drains_pending_state_and_is_idempotent():
     assert len(sink.records) == 1
 
 
+def test_sibling_terminal_publication_cannot_own_later_replacement():
+    sink = _RecordingSink()
+    identity = PluginIdentity("cobra", "d810-cobra", "1.0", "task7-runtime")
+    host = _Host(sink)
+    first = _ProviderRule(ProviderOutcomeStatus.UNCHANGED)
+    second = _ProviderRule(
+        ProviderOutcomeStatus.IMPROVED,
+        SimpleNamespace(opcode=1, ea=0x401002, _print=lambda: "replacement"),
+    )
+    for rule in (first, second):
+        rule.bind_plugin_services(PluginRuleServices(identity, host))
+    optimizer = _Optimizer([ida_hexrays.MMAT_PREOPTIMIZED], stats=None)
+    for rule in (first, second):
+        rule.maturities = [ida_hexrays.MMAT_PREOPTIMIZED]
+        optimizer.add_rule(rule)
+    blk = SimpleNamespace(
+        mba=SimpleNamespace(
+            maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+            entry_ea=0x401000,
+        ),
+        serial=7,
+    )
+    ins = SimpleNamespace(opcode=ida_hexrays.m_mov, ea=0x401002, _print=lambda: "ins")
+    assert (
+        optimizer.get_optimized_instruction(
+            blk,
+            ins,
+            observation_context_factory=lambda rule, *_: _context(
+                rule.plugin_services.plugin
+            ),
+        )
+        is not None
+    )
+    assert [record.outcome.status for record in sink.records] == [
+        ProviderOutcomeStatus.UNCHANGED
+    ]
+    optimizer.record_mutation_rejected("rewrite_cycle")
+    assert len(sink.records) == 2
+    assert sink.records[1].outcome.refusal_reason == "rewrite_cycle"
+
+
+def test_callback_cleanup_drains_every_child_pending_attempt():
+    optimizer = _Optimizer([ida_hexrays.MMAT_PREOPTIMIZED], stats=None)
+    rules = []
+    for _ in range(2):
+        rule, _sink = _runtime_rule()
+        rule.maturities = [ida_hexrays.MMAT_PREOPTIMIZED]
+        optimizer.add_rule(rule)
+        rules.append(rule)
+    # Simulate two providers retaining state when an adapter exits early.
+    optimizer._pending_replacement_rule = None
+    optimizer.clear_pending_provider_observation()
+    for rule in rules:
+        assert rule.pending is None
+
+
+@pytest.mark.parametrize("failure", ("sink", "host"))
+def test_publication_failures_are_isolated_and_still_drain_pending(failure):
+    sink = _FailingSink() if failure == "sink" else _RecordingSink()
+    host = _Host(sink) if failure == "sink" else _FailingHost(sink)
+    rule = _ProviderRule()
+    rule.bind_plugin_services(
+        PluginRuleServices(
+            PluginIdentity("cobra", "d810-cobra", "1.0", "task7-runtime"), host
+        )
+    )
+    optimizer, blk, ins = _runtime_optimizer(rule)
+    assert (
+        optimizer.get_optimized_instruction(
+            blk, ins, observation_context_factory=_context_factory
+        )
+        is None
+    )
+    assert rule.pending is None
+
+
 def test_real_backend_activation_uses_activation_bound_sink_for_publication():
     store = MbaDiscoveryStore(":memory:")
     sink = SqliteMbaResidualObservationSink(store)
@@ -335,3 +493,149 @@ def test_real_backend_activation_uses_activation_bound_sink_for_publication():
     status = store.status_counts()
     assert sum(count for _state, count in status.group_counts) == 1
     store.close()
+
+
+def test_unexpected_provider_exception_drains_attempt_on_cleanup():
+    rule, sink = _runtime_rule(error=ValueError("unexpected provider failure"))
+    optimizer, blk, ins = _runtime_optimizer(rule)
+    with pytest.raises(ValueError, match="unexpected provider failure"):
+        optimizer.get_optimized_instruction(
+            blk, ins, observation_context_factory=_context_factory
+        )
+    optimizer.clear_pending_provider_observation()
+    optimizer.clear_pending_provider_observation()
+    assert rule.pending is None
+    assert len(sink.records) == 1
+
+
+def test_pattern_and_z3_overrides_accept_publication_context_factory():
+    from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+        PatternOptimizer,
+    )
+    from d810.optimizers.microcode.instructions.z3.handler import Z3Optimizer
+
+    for optimizer_type in (PatternOptimizer, Z3Optimizer):
+        parameters = inspect.signature(
+            optimizer_type.get_optimized_instruction
+        ).parameters
+        assert "observation_context_factory" in parameters
+
+
+def test_rejection_hook_error_discards_stale_improved_attempt():
+    rule, sink = _runtime_rule(
+        ProviderOutcomeStatus.IMPROVED,
+        replacement=SimpleNamespace(
+            opcode=1, ea=0x401002, _print=lambda: "task7-replacement"
+        ),
+        reject_error=RuntimeError("reject hook failed"),
+    )
+    optimizer, blk, ins = _runtime_optimizer(rule)
+    assert (
+        optimizer.get_optimized_instruction(
+            blk, ins, observation_context_factory=_context_factory
+        )
+        is not None
+    )
+    optimizer.record_mutation_rejected("rewrite_cycle")
+    assert rule.pending is None
+    assert sink.records == []
+
+
+@pytest.mark.parametrize(
+    ("veto", "reason"),
+    (
+        ("invalid_operand_size", "invalid_operand_size"),
+        ("expression_bloat", "expression_bloat"),
+        ("rewrite_noop", "rewrite_noop"),
+        ("rewrite_cycle", "rewrite_cycle"),
+    ),
+)
+def test_real_manager_outer_veto_updates_and_publishes_provider_outcome(
+    monkeypatch, veto, reason
+):
+    rule, sink = _runtime_rule(
+        ProviderOutcomeStatus.IMPROVED,
+        replacement=SimpleNamespace(
+            opcode=ida_hexrays.m_mov,
+            ea=0x401002,
+            valid=True,
+            _print=lambda: "task7-replacement",
+        ),
+    )
+    optimizer, blk, ins = _runtime_optimizer(rule)
+    optimizer.maturities = [ida_hexrays.MMAT_PREOPTIMIZED]
+    stats = _manager_stats()
+    manager = _manager_for(optimizer, stats)
+
+    original = SimpleNamespace(
+        opcode=ida_hexrays.m_mov,
+        ea=0x401002,
+        valid=True,
+        _print=lambda: "task7-ins",
+        swap=lambda _other: None,
+    )
+    blk.serial = 7
+    if veto == "invalid_operand_size":
+        rule.replacement.valid = False
+        monkeypatch.setattr(
+            optinsn_adapter,
+            "check_ins_mop_size_are_ok",
+            lambda candidate: candidate.valid,
+        )
+    elif veto == "expression_bloat":
+        monkeypatch.setattr(
+            optinsn_adapter,
+            "check_ins_mop_size_are_ok",
+            lambda _candidate: True,
+        )
+        monkeypatch.setattr(
+            optinsn_adapter,
+            "count_minsn_nodes",
+            lambda candidate: 1 if candidate is original else 3,
+        )
+    else:
+        monkeypatch.setattr(
+            optinsn_adapter,
+            "check_ins_mop_size_are_ok",
+            lambda _candidate: True,
+        )
+        hashes = iter((10, 10) if veto == "rewrite_noop" else (10, 20))
+        monkeypatch.setattr(optinsn_adapter, "hash_minsn", lambda *_args: next(hashes))
+        monkeypatch.setattr(
+            optinsn_adapter, "_rewrite_history_key", lambda *_args, **_kwargs: (1, 2, 3)
+        )
+        if veto == "rewrite_cycle":
+            manager._rewrite_seen[(1, 2, 3)].add(20)
+
+    # Use a real manager boundary with the same contextual owner EA.
+    owner = SimpleNamespace(ea=0x401100, opcode=ida_hexrays.m_mov)
+    result = manager.optimize(blk, original, contextual_anchor_ins=owner)
+    assert result is False
+    assert rule.rejected == [reason]
+    assert len(sink.records) == 1
+    assert sink.records[0].outcome.refusal_reason == reason
+    assert sink.records[0].context.instruction_ea == owner.ea
+    assert sink.records[0].context.block_serial == 7
+    assert sink.records[0].context.block_ea == blk.mba.entry_ea
+
+
+def test_real_adapter_entry_and_finally_drain_on_unexpected_exception():
+    rule, _sink = _runtime_rule()
+    optimizer, blk, ins = _runtime_optimizer(rule)
+    manager = _manager_for(optimizer, _manager_stats())
+    manager.instruction_optimizers = [optimizer]
+    manager._decompilation_lifecycle = None
+    manager._capture_callback_nop_sites = lambda _blk: set()
+    manager.log_info_on_input = lambda _blk, _ins: False
+    manager._report_callback_nop_delta = lambda *_args, **_kwargs: None
+
+    def raise_unexpected(*_args, **_kwargs):
+        rule.pending = _pending(ProviderOutcomeStatus.ERROR)
+        raise ValueError("adapter failure")
+
+    manager.optimize = raise_unexpected
+    with pytest.raises(ValueError, match="adapter failure"):
+        manager.func(blk, ins)
+    assert rule.pending is None
+    assert optimizer._pending_replacement_rule is None
+    assert optimizer._pending_replacement_context is None

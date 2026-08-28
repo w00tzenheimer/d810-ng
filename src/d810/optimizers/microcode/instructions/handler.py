@@ -359,6 +359,74 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
 
         self.rules.clear()
 
+    def _observation_context_for_rule(
+        self,
+        rule: InstructionOptimizationRule,
+        blk,
+        contextual_anchor_ins,
+        observation_context_factory,
+    ) -> MbaObservationContext | None:
+        services = getattr(rule, "plugin_services", None)
+        if services is None or not callable(observation_context_factory):
+            return None
+        try:
+            return observation_context_factory(
+                rule,
+                blk,
+                contextual_anchor_ins,
+            )
+        except Exception:
+            optimizer_logger.debug(
+                "failed to construct provider observation context",
+                exc_info=True,
+            )
+            return None
+
+    def _finalize_provider_rule(
+        self,
+        rule: InstructionOptimizationRule,
+        blk,
+        contextual_anchor_ins,
+        observation_context_factory,
+        *,
+        accepted: bool,
+        reason: str,
+        context: MbaObservationContext | None = None,
+    ) -> None:
+        finalizer = getattr(rule, "finalize_provider_observation", None)
+        if not callable(finalizer):
+            return
+        if context is None:
+            context = self._observation_context_for_rule(
+                rule,
+                blk,
+                contextual_anchor_ins,
+                observation_context_factory,
+            )
+        try:
+            finalizer(context, accepted=accepted, reason=reason)
+        except Exception:
+            optimizer_logger.error(
+                "provider observation finalizer failed for %s",
+                getattr(rule, "name", type(rule).__name__),
+                exc_info=True,
+            )
+
+    def _set_pending_replacement(
+        self,
+        rule: InstructionOptimizationRule,
+        blk,
+        contextual_anchor_ins,
+        observation_context_factory,
+    ) -> None:
+        self._pending_replacement_rule = rule
+        self._pending_replacement_context = self._observation_context_for_rule(
+            rule,
+            blk,
+            contextual_anchor_ins,
+            observation_context_factory,
+        )
+
     def get_optimized_instruction(
         self,
         blk: ida_hexrays.mblock_t,
@@ -383,33 +451,17 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         self._pending_replacement_rule = None
         self._pending_replacement_context = None
 
-        def finalize(rule, *, accepted: bool, reason: str) -> None:
+        def finalize(rule, *, accepted: bool, reason: str, context=None) -> None:
             """Drain one rule's provider state without affecting selection."""
-            context = None
-            services = getattr(rule, "plugin_services", None)
-            if services is not None and callable(observation_context_factory):
-                try:
-                    context = observation_context_factory(
-                        rule,
-                        blk,
-                        contextual_anchor_ins,
-                    )
-                except Exception:
-                    optimizer_logger.debug(
-                        "failed to construct provider observation context",
-                        exc_info=True,
-                    )
-            finalizer = getattr(rule, "finalize_provider_observation", None)
-            if not callable(finalizer):
-                return
-            try:
-                finalizer(context, accepted=accepted, reason=reason)
-            except Exception:
-                optimizer_logger.error(
-                    "provider observation finalizer failed for %s",
-                    getattr(rule, "name", type(rule).__name__),
-                    exc_info=True,
-                )
+            self._finalize_provider_rule(
+                rule,
+                blk,
+                contextual_anchor_ins,
+                observation_context_factory,
+                accepted=accepted,
+                reason=reason,
+                context=context,
+            )
 
         try:
             import os
@@ -492,24 +544,12 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     optimizer_logger.info("  orig: %s", format_minsn_t(ins))
                     optimizer_logger.info("  new : %s", format_minsn_t(new_ins))
 
-                    self._pending_replacement_rule = rule
-                    if getattr(rule, "plugin_services", None) is not None and callable(
-                        observation_context_factory
-                    ):
-                        try:
-                            self._pending_replacement_context = (
-                                observation_context_factory(
-                                    rule,
-                                    blk,
-                                    contextual_anchor_ins,
-                                )
-                            )
-                        except Exception:
-                            optimizer_logger.debug(
-                                "failed to construct provider observation context",
-                                exc_info=True,
-                            )
-                            self._pending_replacement_context = None
+                    self._set_pending_replacement(
+                        rule,
+                        blk,
+                        contextual_anchor_ins,
+                        observation_context_factory,
+                    )
                     return new_ins
                 finalize(rule, accepted=False, reason="provider_terminal")
             except RuntimeError as e:
@@ -530,6 +570,12 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     e,
                 )
                 finalize(rule, accepted=False, reason="provider_exception")
+            except Exception:
+                # The attempted rule owns the provider state even when an
+                # unexpected exception escapes the legacy error handlers.
+                # Drain it before preserving the original exception.
+                finalize(rule, accepted=False, reason="provider_exception")
+                raise
         return None
 
     def record_mutation_accepted(self) -> None:
@@ -574,6 +620,16 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         """Finalize stale callback state and always drop local references."""
         try:
             self.record_mutation_rejected("callback_cleanup")
+            for rule in self.rules:
+                if rule is not self._pending_replacement_rule:
+                    self._finalize_provider_rule(
+                        rule,
+                        None,
+                        None,
+                        None,
+                        accepted=False,
+                        reason="callback_cleanup",
+                    )
         finally:
             self._pending_replacement_rule = None
             self._pending_replacement_context = None
@@ -585,26 +641,25 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         context = getattr(self, "_pending_replacement_context", None)
         try:
             if rule is not None:
+                hook_failed = False
                 try:
                     rule.record_mutation_rejected(reason)
                 except Exception:
+                    hook_failed = True
                     optimizer_logger.error(
                         "provider rejected hook failed for %s",
                         getattr(rule, "name", type(rule).__name__),
                         exc_info=True,
                     )
-                try:
-                    rule.finalize_provider_observation(
-                        context,
-                        accepted=False,
-                        reason=reason,
-                    )
-                except Exception:
-                    optimizer_logger.error(
-                        "provider observation finalizer failed for %s",
-                        getattr(rule, "name", type(rule).__name__),
-                        exc_info=True,
-                    )
+                self._finalize_provider_rule(
+                    rule,
+                    None,
+                    None,
+                    None,
+                    accepted=False,
+                    reason=reason,
+                    context=None if hook_failed else context,
+                )
         finally:
             self._pending_replacement_rule = None
             self._pending_replacement_context = None
