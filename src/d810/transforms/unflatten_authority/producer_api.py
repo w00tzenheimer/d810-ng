@@ -940,7 +940,6 @@ def build_source_identity_catalog(
         raise ValueError("source block references must be unique")
 
     witnesses: list[SourceBlockIdentityWitness] = []
-    all_origins: set[int] = set()
     anchor_keys: set[tuple[AuthorityBlockRef, int]] = set()
     for serial in sorted(serials):
         block = source.blocks[serial]
@@ -954,8 +953,6 @@ def build_source_identity_catalog(
         anchor_key = (ref, int(anchor))
         if anchor_key in anchor_keys:
             raise ValueError("source block reference and anchor must be unique")
-        if all_origins.intersection(origins):
-            raise ValueError("source native instruction origins must be unique")
         if type(ref) is NativeBlockRef:
             if ref.identity.native_key != native_key:
                 raise ValueError("native source reference key does not match catalog key")
@@ -971,7 +968,6 @@ def build_source_identity_catalog(
             )
         )
         anchor_keys.add(anchor_key)
-        all_origins.update(origins)
     return SourceIdentityCatalog(native_key=native_key, generation=source_generation, blocks=tuple(witnesses))
 
 

@@ -3250,13 +3250,9 @@ class SourceIdentityCatalog:
                 raise ValueError("native source witness key must match catalog key")
         refs = tuple(block.block_ref for block in blocks)
         ref_anchor_pairs = tuple((block.block_ref, block.anchor_ea) for block in blocks)
-        instruction_eas = tuple(
-            ea for block in blocks for ea in block.native_instruction_eas
-        )
         if (
             len(set(refs)) != len(refs)
             or len(set(ref_anchor_pairs)) != len(ref_anchor_pairs)
-            or len(set(instruction_eas)) != len(instruction_eas)
         ):
             raise ValueError("source catalog block witnesses must be unique")
         by_anchor: dict[int, tuple[SourceBlockIdentityWitness, ...]] = {}

@@ -168,7 +168,9 @@ def test_source_catalog_uses_physical_native_entry_before_instruction_origin() -
     assert catalog.blocks[0].native_instruction_eas == (0x1004,)
 
 
-def test_source_catalog_allows_distinct_native_refs_to_share_physical_anchor() -> None:
+def test_source_catalog_allows_distinct_native_refs_to_share_native_instruction_origin() -> None:
+    from dataclasses import replace
+
     from d810.core.native_preanalysis_key import NativePreanalysisKey
     from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
     from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
@@ -178,7 +180,7 @@ def test_source_catalog_allows_distinct_native_refs_to_share_physical_anchor() -
     source = FlowGraph(
         {
             0: BlockSnapshot(0, 0, (), (), 0, 0x1000, (InsnSnapshot(0, 0x1004, (), kind=InsnKind.NOP),), tail_opcode=0, kind=BlockKind.ZERO_WAY, tail_kind=InsnKind.NOP, raw_tail_opcode=None),
-            1: BlockSnapshot(1, 0, (), (), 0, 0x1000, (InsnSnapshot(0, 0x1014, (), kind=InsnKind.NOP),), tail_opcode=0, kind=BlockKind.ZERO_WAY, tail_kind=InsnKind.NOP, raw_tail_opcode=None),
+            1: BlockSnapshot(1, 0, (), (), 0, 0x1010, (InsnSnapshot(0, 0x1014, (), kind=InsnKind.NOP),), tail_opcode=0, kind=BlockKind.ZERO_WAY, tail_kind=InsnKind.NOP, raw_tail_opcode=None),
         },
         0,
         0x1000,
@@ -190,15 +192,30 @@ def test_source_catalog_allows_distinct_native_refs_to_share_physical_anchor() -
     catalog = producer_module.build_source_identity_catalog(
         source, refs, native_key=key, source_generation=1,
     )
-    assert tuple(item.anchor_ea for item in catalog.blocks) == (0x1000, 0x1000)
+    assert tuple(item.anchor_ea for item in catalog.blocks) == (0x1000, 0x1010)
 
     overlapping = {
         1: NativeBlockRef(StableBlockIdentity.from_intervals((NativeEaInterval(0x1000, 0x1020),), native_key=key, exact_instruction_eas=(0x1004,)))
     }
-    with pytest.raises(ValueError, match="origins"):
-        producer_module.build_source_identity_catalog(
-            source, {0: refs[0], **overlapping}, native_key=key, source_generation=1,
-        )
+    overlapping_source = replace(
+        source,
+        blocks={
+            **source.blocks,
+            1: replace(
+                source.blocks[1],
+                insn_snapshots=(InsnSnapshot(0, 0x1004, (), kind=InsnKind.NOP),),
+            ),
+        },
+    )
+    overlapping_catalog = producer_module.build_source_identity_catalog(
+        overlapping_source,
+        {0: refs[0], **overlapping},
+        native_key=key,
+        source_generation=1,
+    )
+    assert tuple(
+        item.native_instruction_eas for item in overlapping_catalog.blocks
+    ) == ((0x1004,), (0x1004,))
 
 
 def test_equivalent_route_claims_normalize_selected_proofs_without_graph_rebind() -> None:
