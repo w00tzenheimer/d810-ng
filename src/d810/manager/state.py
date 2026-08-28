@@ -223,6 +223,12 @@ class D810State(metaclass=SingletonMeta):
     def is_loaded(self):
         return self._is_loaded
 
+    def _stop_manager_before_reset(self) -> None:
+        """Release the previous manager's process-wide resources before rebuild."""
+        previous_manager = getattr(self, "manager", None)
+        if previous_manager is not None:
+            previous_manager.stop()
+
     @property
     def stats(self) -> OptimizationStatistics:
         """Forward stats access to the manager."""
@@ -231,6 +237,7 @@ class D810State(metaclass=SingletonMeta):
         return OptimizationStatistics()
 
     def reset(self, d810_config: D810Configuration | None = None) -> None:
+        self._stop_manager_before_reset()
         self._initialized: bool = False
         self._diagnostics_capture_observers: set[typing.Callable[[bool], None]] = set()
         self.d810_config: D810Configuration = d810_config or D810Configuration()
