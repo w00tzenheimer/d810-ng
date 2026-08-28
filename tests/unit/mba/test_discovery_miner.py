@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -856,7 +857,7 @@ def test_materialization_refuses_admitted_and_rejected_proposals(
         store.close()
 
 
-def test_materialization_stale_revision_refusal_cleans_only_owned_tree(
+def test_materialization_stale_revision_refusal_preserves_adoptable_tree(
     tmp_path, monkeypatch
 ) -> None:
     from d810.mba.discovery_miner import materialize_proposal
@@ -883,9 +884,67 @@ def test_materialization_stale_revision_refusal_cleans_only_owned_tree(
         assert current is not None
         assert current.proposal.state.value == "proposed"
         assert current.group.revision == snapshot.group.revision + 1
-        assert not output.exists()
+        assert output.is_dir()
+        assert len(tuple(output.iterdir())) == 2
         assert not tuple(tmp_path.glob(".stale-review.*"))
+        monkeypatch.setattr(store, "mark_materialized", original_mark)
+        path, digest = materialize_proposal(store, proposal_id, output)
+        adopted = store.proposal_snapshot(proposal_id)
+        assert adopted is not None
+        assert adopted.proposal.state is ProposalState.MATERIALIZED
+        assert (path, digest) == (
+            adopted.proposal.materialized_path,
+            adopted.proposal.materialized_digest,
+        )
     finally:
+        store.close()
+
+
+def test_stale_revision_refusal_cannot_delete_competitor_adoption(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba.discovery_miner import _tree_digest, materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, "stale-refusal-adoption"
+    )
+    competitor = MbaDiscoveryStore(store.path)
+    output = tmp_path / "stale-refusal-adoption-review"
+    initial = store.proposal_snapshot(proposal_id)
+    assert initial is not None
+    original_mark = store.mark_materialized
+    stale_receipt = None
+    competitor_result: tuple[str, str] | None = None
+
+    def refuse_then_compete(*args, **kwargs):
+        nonlocal stale_receipt, competitor_result
+        store.record_attempt(_attempt(initial.group.raw_terms[0]))
+        stale_receipt = original_mark(*args, **kwargs)
+        assert stale_receipt.status is ReceiptStatus.REFUSED
+        assert stale_receipt.reason == "stale_revision"
+        competitor_result = materialize_proposal(competitor, proposal_id, output)
+        durable = competitor.proposal_snapshot(proposal_id)
+        assert durable is not None
+        assert durable.proposal.state is ProposalState.MATERIALIZED
+        return stale_receipt
+
+    monkeypatch.setattr(store, "mark_materialized", refuse_then_compete)
+    try:
+        with pytest.raises(RuntimeError, match="^stale_revision$"):
+            materialize_proposal(store, proposal_id, output)
+
+        assert stale_receipt is not None
+        assert competitor_result is not None
+        durable = competitor.proposal_snapshot(proposal_id)
+        assert durable is not None
+        assert durable.proposal.state is ProposalState.MATERIALIZED
+        assert durable.proposal.materialized_path == competitor_result[0]
+        assert durable.proposal.materialized_digest == competitor_result[1]
+        assert output.is_dir()
+        assert _tree_digest(output) == competitor_result[1]
+        assert materialize_proposal(competitor, proposal_id, output) == competitor_result
+    finally:
+        competitor.close()
         store.close()
 
 
@@ -1387,6 +1446,113 @@ def test_post_publication_pre_mark_baseexception_is_not_masked_by_cleanup(
         store.close()
 
 
+@pytest.mark.parametrize(
+    ("target", "interrupt_type"),
+    (("stage", KeyboardInterrupt), ("final", SystemExit)),
+)
+def test_post_publication_completed_close_preserves_primary_and_fd_ownership(
+    tmp_path, monkeypatch, target, interrupt_type
+) -> None:
+    from d810.mba import discovery_miner
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, f"close-{target}-{interrupt_type.__name__}"
+    )
+    output = tmp_path / f"close-{target}-{interrupt_type.__name__}-review"
+    original_open_dir = discovery_miner._open_dir
+    original_open_at = discovery_miner._open_at
+    original_publish = discovery_miner._exclusive_rename
+    original_close = discovery_miner.os.close
+    parent_fd: int | None = None
+    target_fds: dict[str, int] = {}
+    close_observations: list[tuple[int, bool]] = []
+    published = False
+    interrupted = False
+    interruption = interrupt_type(f"controlled {target} close interruption")
+
+    def track_parent(path):
+        nonlocal parent_fd
+        fd = original_open_dir(path)
+        if parent_fd is None:
+            parent_fd = fd
+        return fd
+
+    def track_open_at(directory_fd, name, flags):
+        fd = original_open_at(directory_fd, name, flags)
+        if name.startswith(f".{output.name}."):
+            target_fds["stage"] = fd
+        elif published and name == output.name:
+            target_fds["final"] = fd
+        return fd
+
+    def publish(parent, source, destination):
+        nonlocal published
+        result = original_publish(parent, source, destination)
+        published = True
+        return result
+
+    def close_then_interrupt(fd):
+        nonlocal interrupted
+        try:
+            discovery_miner.os.fstat(fd)
+        except OSError as error:
+            was_open = error.errno != errno.EBADF
+        else:
+            was_open = True
+        close_observations.append((fd, was_open))
+        original_close(fd)
+        if fd == target_fds.get(target) and not interrupted:
+            interrupted = True
+            raise interruption
+
+    monkeypatch.setattr(discovery_miner, "_open_dir", track_parent)
+    monkeypatch.setattr(discovery_miner, "_open_at", track_open_at)
+    monkeypatch.setattr(discovery_miner, "_exclusive_rename", publish)
+    monkeypatch.setattr(discovery_miner.os, "close", close_then_interrupt)
+    try:
+        with pytest.raises(interrupt_type) as raised:
+            materialize_proposal(store, proposal_id, output)
+
+        assert raised.value is interruption
+        assert interrupted
+        interrupted_fd = target_fds[target]
+        assert not any(
+            fd == interrupted_fd and not was_open
+            for fd, was_open in close_observations
+        )
+        assert parent_fd is not None
+        for fd in (interrupted_fd, parent_fd):
+            with pytest.raises(OSError) as closed:
+                discovery_miner.os.fstat(fd)
+            assert closed.value.errno == errno.EBADF
+
+        current = store.proposal_snapshot(proposal_id)
+        assert current is not None
+        assert current.proposal.state is ProposalState.PROPOSED
+        assert output.is_dir()
+        assert len(tuple(output.iterdir())) == 2
+        path, digest = materialize_proposal(store, proposal_id, output)
+        adopted = store.proposal_snapshot(proposal_id)
+        assert adopted is not None
+        assert adopted.proposal.state is ProposalState.MATERIALIZED
+        assert (path, digest) == (
+            adopted.proposal.materialized_path,
+            adopted.proposal.materialized_digest,
+        )
+    finally:
+        monkeypatch.setattr(discovery_miner.os, "close", original_close)
+        for fd in {parent_fd, *target_fds.values()} - {None}:
+            try:
+                os.fstat(fd)
+            except OSError:
+                continue
+            original_close(fd)
+        if output.exists():
+            shutil.rmtree(output)
+        store.close()
+
+
 def test_materialization_process_crash_leaves_exact_orphan_adoptable(tmp_path) -> None:
     from d810.mba.discovery_miner import materialize_proposal
 
@@ -1522,7 +1688,7 @@ def test_materialization_cas_refusal_preserves_replacement_owner(tmp_path, monke
 
 
 @pytest.mark.parametrize("mutation", ["extra", "content", "symlink", "directory"])
-def test_materialization_rollback_preserves_same_inode_foreign_changes(
+def test_materialization_refusal_preserves_same_inode_foreign_changes(
     tmp_path, monkeypatch, mutation
 ) -> None:
     from d810.mba.discovery_miner import materialize_proposal
@@ -1550,7 +1716,7 @@ def test_materialization_rollback_preserves_same_inode_foreign_changes(
 
     monkeypatch.setattr(store, "mark_materialized", mutate_then_refuse)
     try:
-        with pytest.raises(RuntimeError, match="recovery conflict"):
+        with pytest.raises(RuntimeError, match="^race$"):
             materialize_proposal(store, proposal_id, output)
         if mutation == "extra":
             assert (output / "other-owner.txt").read_text() == "keep"
@@ -1565,12 +1731,11 @@ def test_materialization_rollback_preserves_same_inode_foreign_changes(
         store.close()
 
 
-def test_materialization_rollback_preserves_private_quarantine_on_restore_race(
+def test_materialization_cleanup_preserves_private_quarantine_on_restore_race(
     tmp_path, monkeypatch
 ) -> None:
     from d810.mba import discovery_miner
     from d810.mba.discovery_miner import materialize_proposal
-    from d810.mba.discovery_models import LifecycleReceipt, ReceiptStatus
 
     store, proposal_id = _published_for_materialization(tmp_path)
     output = tmp_path / "restore-race"
@@ -1579,33 +1744,42 @@ def test_materialization_rollback_preserves_private_quarantine_on_restore_race(
     stem = snapshot.proposal.proposal_fingerprint
     original_rename = discovery_miner._exclusive_rename
     calls = 0
+    interruption = KeyboardInterrupt("controlled pre-mark cleanup race")
 
     def rename_then_race(parent_fd, source, destination):
         nonlocal calls
         calls += 1
         result = original_rename(parent_fd, source, destination)
         if calls == 2:
+            (tmp_path / destination / f"{stem}.rule.py").write_text("foreign")
             output.mkdir()
             (output / "foreign.txt").write_text("keep")
         return result
 
-    def mutate_then_refuse(*args, **kwargs):
-        (output / f"{stem}.rule.py").write_text("foreign")
-        return LifecycleReceipt(ReceiptStatus.REFUSED, reason="race")
+    def interrupt_before_mark(_path, _parent_fd):
+        raise interruption
 
     monkeypatch.setattr(discovery_miner, "_exclusive_rename", rename_then_race)
-    monkeypatch.setattr(store, "mark_materialized", mutate_then_refuse)
+    monkeypatch.setattr(discovery_miner, "_verify_parent_path", interrupt_before_mark)
     try:
-        with pytest.raises(RuntimeError) as raised:
+        with pytest.raises(KeyboardInterrupt) as raised:
             materialize_proposal(store, proposal_id, output)
+        assert raised.value is interruption
         assert (output / "foreign.txt").read_text() == "keep"
         quarantine = tuple(tmp_path.glob(".restore-race.quarantine-*"))
         assert len(quarantine) == 1
-        assert str(raised.value) == (
+        expected_cleanup_error = (
             "materialization recovery conflict: visible destination preserved at "
             f"{output.resolve()}; quarantined owned tree retained at "
             f"{quarantine[0].resolve()}"
         )
+        assert any(
+            "cleanup failed" in note and expected_cleanup_error in note
+            for note in getattr(raised.value, "__notes__", ())
+        )
+        current = store.proposal_snapshot(proposal_id)
+        assert current is not None
+        assert current.proposal.state is ProposalState.PROPOSED
     finally:
         shutil.rmtree(output)
         for item in tmp_path.glob(".restore-race.quarantine-*"):

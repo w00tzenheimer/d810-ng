@@ -615,6 +615,24 @@ def _reconcile_materialization_error(
     )
 
 
+def _close_materialization_fd(
+    descriptor: int,
+    primary_error: BaseException | None,
+    label: str,
+) -> None:
+    """Close one disarmed descriptor without replacing a primary exception."""
+
+    try:
+        os.close(descriptor)
+    except BaseException as close_error:
+        if primary_error is None:
+            raise
+        primary_error.add_note(
+            f"materialization {label} close failed without replacing the original "
+            f"exception: {type(close_error).__name__}: {close_error}"
+        )
+
+
 def materialize_proposal(
     store: MbaDiscoveryStore,
     proposal_id: str,
@@ -664,8 +682,9 @@ def materialize_proposal(
                 info = os.fstat(final_fd)
                 digest, _ = _inspect_tree(final_fd, output_dir, expected, fsync_files=False)
             finally:
-                os.close(final_fd)
+                closing_final_fd = final_fd
                 final_fd = None
+                os.close(closing_final_fd)
             if str(output_dir) == proposal_row.materialized_path and digest == proposal_row.materialized_digest:
                 return str(output_dir), digest
             raise ValueError("proposal_not_proposed")
@@ -683,8 +702,9 @@ def materialize_proposal(
                 os.fsync(parent_fd)
                 _verify_parent_path(output_dir.parent, parent_fd)
             finally:
-                os.close(final_fd)
+                closing_final_fd = final_fd
                 final_fd = None
+                os.close(closing_final_fd)
             receipt = store.mark_materialized(
                 proposal_id,
                 str(output_dir),
@@ -730,8 +750,13 @@ def materialize_proposal(
         published = True
         try:
             stage_path = None
-            os.close(stage_fd)
+            closing_stage_fd = stage_fd
             stage_fd = None
+            try:
+                os.close(closing_stage_fd)
+            except BaseException:
+                cleanup_published = False
+                raise
             final_fd = _open_at(parent_fd, output_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             info = os.fstat(final_fd)
             root_identity = (info.st_dev, info.st_ino)
@@ -743,8 +768,13 @@ def materialize_proposal(
             os.fsync(final_fd)
             os.fsync(parent_fd)
             _verify_parent_path(output_dir.parent, parent_fd)
-            os.close(final_fd)
+            closing_final_fd = final_fd
             final_fd = None
+            try:
+                os.close(closing_final_fd)
+            except BaseException:
+                cleanup_published = False
+                raise
         except BaseException as error:
             mark_error = error
             raise
@@ -767,14 +797,24 @@ def materialize_proposal(
             )
             raise
         if receipt.status not in (ReceiptStatus.MATERIALIZED, ReceiptStatus.DUPLICATE):
-            raise RuntimeError(receipt.reason or receipt.status.value)
+            mark_error = RuntimeError(receipt.reason or receipt.status.value)
+            cleanup_published = False
+            raise mark_error
         committed = True
         return str(output_dir), digest
     finally:
         if final_fd is not None:
-            os.close(final_fd)
+            closing_final_fd = final_fd
+            final_fd = None
+            _close_materialization_fd(
+                closing_final_fd, mark_error, "published-tree descriptor"
+            )
         if stage_fd is not None:
-            os.close(stage_fd)
+            closing_stage_fd = stage_fd
+            stage_fd = None
+            _close_materialization_fd(
+                closing_stage_fd, mark_error, "staging-tree descriptor"
+            )
         if stage_path is not None:
             _remove_private_tree(parent_fd, output_dir.parent, stage_path.name)
         if (
@@ -800,7 +840,11 @@ def materialize_proposal(
                     "exception; artifact tree preserved: "
                     f"{type(cleanup_error).__name__}: {cleanup_error}"
                 )
-        os.close(parent_fd)
+        closing_parent_fd = parent_fd
+        parent_fd = -1
+        _close_materialization_fd(
+            closing_parent_fd, mark_error, "parent descriptor"
+        )
 
 
 __all__ = [
