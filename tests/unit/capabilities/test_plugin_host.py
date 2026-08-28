@@ -258,49 +258,103 @@ def test_unrestricted_lookup_rejects_activation_bound_registration() -> None:
     lease.release()
 
 
-@pytest.mark.parametrize("reregister", [False, True])
-def test_view_for_handles_withdrawal_between_validation_and_snapshot(
-    reregister,
-) -> None:
-    validated = threading.Event()
-    resume = threading.Event()
+def test_view_for_keeps_requirement_snapshot_atomic_during_withdrawal() -> None:
+    withdrawal_requested = threading.Event()
+    withdrawal_complete = threading.Event()
+    binder_entered = threading.Event()
+    view_thread_id: list[int] = []
 
-    class BarrierRegistry(PluginHostCapabilityRegistry):
-        def _snapshot_requirements(self, requirements):
-            snapshots = super()._snapshot_requirements(requirements)
-            validated.set()
-            assert resume.wait(timeout=1)
-            return snapshots
+    class CoordinatedRLock:
+        def __init__(self) -> None:
+            self._lock = threading.RLock()
+            self._view_acquisitions = 0
 
-    registry = BarrierRegistry()
+        def acquire(self, *args, **kwargs):
+            if view_thread_id and threading.get_ident() == view_thread_id[0]:
+                self._view_acquisitions += 1
+                if self._view_acquisitions == 2 and not binder_entered.is_set():
+                    withdrawal_requested.set()
+                    assert withdrawal_complete.wait(timeout=1)
+            return self._lock.acquire(*args, **kwargs)
+
+        def release(self) -> None:
+            self._lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+            self.release()
+
+    def binder(_identity):
+        binder_entered.set()
+        withdrawal_requested.set()
+        assert withdrawal_complete.wait(timeout=1)
+        return ExampleServiceImpl()
+
+    registry = PluginHostCapabilityRegistry()
     lease = registry.register(
-        "example.service.v1", ExampleService, ExampleServiceImpl()
+        "example.service.v1",
+        ExampleService,
+        ExampleServiceImpl(),
+        activation_binder=binder,
     )
+    registry._lock = CoordinatedRLock()
     identity = PluginIdentity("example", None, None, "test")
-    result = []
+    result: list[object] = []
+    withdrawal_failures: list[BaseException] = []
 
-    def build_view():
+    def withdraw() -> None:
+        try:
+            assert withdrawal_requested.wait(timeout=1)
+            lease.release()
+        except BaseException as exc:  # pragma: no cover - assertion below
+            withdrawal_failures.append(exc)
+        finally:
+            withdrawal_complete.set()
+
+    def build_view() -> None:
+        view_thread_id.append(threading.get_ident())
         try:
             result.append(registry.view_for(("example.service.v1",), identity))
         except BaseException as exc:  # pragma: no cover - assertion below
             result.append(exc)
 
-    thread = threading.Thread(target=build_view)
-    thread.start()
-    assert validated.wait(timeout=1)
-    lease.release()
-    if reregister:
-        replacement = registry.register(
-            "example.service.v1", ExampleService, ExampleServiceImpl()
-        )
-    resume.set()
-    thread.join(timeout=1)
-    if reregister:
-        replacement.release()
-    assert not thread.is_alive()
+    withdrawal_thread = threading.Thread(target=withdraw)
+    view_thread = threading.Thread(target=build_view)
+    withdrawal_thread.start()
+    view_thread.start()
+    view_thread.join(timeout=1)
+    withdrawal_thread.join(timeout=1)
+
+    assert not view_thread.is_alive()
+    assert not withdrawal_thread.is_alive()
+    assert withdrawal_failures == []
     assert len(result) == 1
-    assert isinstance(result[0], PluginCapabilityAccessError)
-    assert "changed during activation view construction" in str(result[0])
+    assert isinstance(result[0], PluginCapabilityAccessError), result[0]
+    assert (
+        str(result[0])
+        == "host capability registration changed during activation view construction"
+    )
+    assert binder_entered.is_set()
+
+
+def test_view_for_reports_withdrawal_before_requirement_snapshot() -> None:
+    registry = PluginHostCapabilityRegistry()
+    lease = registry.register(
+        "example.service.v1", ExampleService, ExampleServiceImpl()
+    )
+    lease.release()
+
+    with pytest.raises(
+        PluginCapabilityAccessError,
+        match="^missing host capability: example\\.service\\.v1$",
+    ):
+        registry.view_for(
+            ("example.service.v1",),
+            PluginIdentity("example", None, None, "test"),
+        )
 
 
 def test_plugin_view_is_immutable_and_copies_requirements() -> None:
