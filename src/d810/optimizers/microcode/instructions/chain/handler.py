@@ -104,6 +104,15 @@ class ChainSimplificationRule(InstructionOptimizationRule):
     def _publish_chain_result(self, ins, new_ins, *, opcode: int) -> None:
         """Publish one structural-chain outcome without changing emission order."""
 
+        # A nonmatch has no rule-fired statistics or execution metadata to
+        # publish.  Native corpus capture is the sole consumer of unchanged
+        # provider rows, so avoid constructing and canonicalizing a complete
+        # native MBA view on the normal hot path when capture is inactive.
+        if new_ins is None and not self._provider_outcome_capture_enabled():
+            self._last_provider_outcome = None
+            self._attempt_outcome_index = None
+            return
+
         elapsed_ms = 0.0
         if self._attempt_started is not None:
             elapsed_ms = max(0.0, (time.monotonic() - self._attempt_started) * 1000.0)

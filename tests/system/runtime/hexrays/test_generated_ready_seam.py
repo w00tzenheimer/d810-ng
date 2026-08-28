@@ -186,3 +186,16 @@ def test_generated_publication_requires_every_manager_owned_live_port(
     assert emitter.events == []
     assert not lifecycle.emitted
     assert lifecycle.calls
+
+
+def test_missing_generated_identity_is_receipted_for_the_session() -> None:
+    lifecycle = _GeneratedLifecycle(missing_port="identity_index")
+    emitter = _Emitter(modified=True)
+    manager = _manager(lifecycle, emitter)
+    mba = _mba(ida_hexrays.MMAT_GENERATED)
+
+    assert not _invoke(manager, mba)
+    assert not _invoke(manager, mba)
+
+    assert lifecycle.calls.count(("index", 0x40A560, mba)) == 1
+    assert emitter.events == []

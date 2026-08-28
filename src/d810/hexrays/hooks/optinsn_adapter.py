@@ -267,6 +267,18 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._cycle_quarantined_rule_names: dict[tuple[int, int, int], set[str]] = (
             defaultdict(set)
         )
+        # A cycle proven at one maturity remains useful later in the same
+        # decompilation session when Hex-Rays presents the exact same input at
+        # the same native site.  The optimizer generation prevents a rebuilt
+        # rule catalogue from inheriting stale suppression.
+        self._cycle_receipts: dict[
+            tuple[int, int, str, int | None], dict[int, set[str]]
+        ] = {}
+        # Missing GENERATED identity evidence is stable for the lifetime of a
+        # top-level decompilation session.  Remember the abstention so the
+        # instruction callback does not rebuild the same unavailable index for
+        # every microinstruction in the function.
+        self._generated_identity_abstention_sessions: set[tuple[object, int]] = set()
 
         # Optional event emitter - set by D810Manager after construction to
         # allow emitting DecompilationEvent.MATURITY_CHANGED events.
@@ -639,15 +651,55 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._residual_admission_cache_value = False
 
     def reset_cycle_detection(self) -> None:
-        """Clear the rewrite-cycle seen set.
+        """Clear all rewrite-cycle state for a new decompilation session."""
 
-        Called on session start (via DecompilationEvent.SESSION_STARTED in the
-        manager) and on maturity change (in log_info_on_input).
+        self.reset_maturity_cycle_detection()
+        cycle_receipts = getattr(self, "_cycle_receipts", None)
+        if cycle_receipts is not None:
+            cycle_receipts.clear()
+        generated_abstentions = getattr(
+            self,
+            "_generated_identity_abstention_sessions",
+            None,
+        )
+        if generated_abstentions is not None:
+            generated_abstentions.clear()
+
+    def reset_maturity_cycle_detection(self) -> None:
+        """Clear maturity-local history while preserving session receipts.
+
+        Hex-Rays may renumber or restructure instructions between maturities,
+        so local state-revisit history cannot cross that boundary.  A receipt
+        for an exact native site, input fingerprint, producer, and catalogue
+        generation can cross it safely until the session ends.
         """
         self._rewrite_seen.clear()
         quarantined_by_site = getattr(self, "_cycle_quarantined_rule_names", None)
         if quarantined_by_site is not None:
             quarantined_by_site.clear()
+
+    @staticmethod
+    def _optimizer_cycle_generation(optimizer: object) -> int | None:
+        generation = getattr(optimizer, "_generation", None)
+        try:
+            return None if generation is None else int(generation)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _cycle_receipt_scope_key(
+        cls,
+        *,
+        func_ea: int,
+        ins_ea: int,
+        optimizer: object,
+    ) -> tuple[int, int, str, int | None]:
+        return (
+            int(func_ea),
+            int(ins_ea),
+            str(getattr(optimizer, "name", optimizer.__class__.__name__)),
+            cls._optimizer_cycle_generation(optimizer),
+        )
 
     def reset_run_later_state(self) -> None:
         self._scheduled_stage_identities = frozenset()
@@ -1179,6 +1231,22 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 int(getattr(mba, "entry_ea", 0) or 0),
             )
             return False
+        session_token = getattr(session, "session_id", None)
+        if session_token is None:
+            session_token = getattr(session, "identity_key", None)
+        if session_token is None:
+            session_token = id(session)
+        abstention_key = (session_token, function_ea)
+        generated_abstentions = getattr(
+            self,
+            "_generated_identity_abstention_sessions",
+            None,
+        )
+        if generated_abstentions is None:
+            generated_abstentions = set()
+            self._generated_identity_abstention_sessions = generated_abstentions
+        if abstention_key in generated_abstentions:
+            return False
         was_emitted = getattr(lifecycle, "generated_ready_was_emitted", None)
         if callable(was_emitted) and was_emitted(function_ea=function_ea):
             return False
@@ -1187,6 +1255,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             mba=mba,
         )
         if index is None:
+            generated_abstentions.add(abstention_key)
             optimizer_logger.debug(
                 "instruction GENERATED seam abstain: func=0x%x reason=no_index",
                 function_ea,
@@ -1400,7 +1469,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             # Reset cycle detection on maturity change -- instructions are
             # renumbered / restructured between maturity levels so old hashes
             # are no longer meaningful.
-            self.reset_cycle_detection()
+            self.reset_maturity_cycle_detection()
             self._active_instruction_rule_names_by_maturity.clear()
             self._drain_run_later_for_maturity(mba)
 
@@ -1623,7 +1692,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         except (TypeError, ValueError):
             maturity = int(self.current_maturity or -1)
         site_key = (func_ea, maturity, int(getattr(ins, "ea", 0) or 0))
-        quarantined_rule_names = frozenset(
+        maturity_quarantined_rule_names = frozenset(
             getattr(self, "_cycle_quarantined_rule_names", {}).get(site_key, ())
         )
         residual_admitted = self._has_active_fast_mba_provider(
@@ -1632,6 +1701,22 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         )
         for ins_optimizer in self._active_optimizers:
             self._last_optimizer_tried = ins_optimizer
+            receipt_scope_key = self._cycle_receipt_scope_key(
+                func_ea=func_ea,
+                ins_ea=site_key[2],
+                optimizer=ins_optimizer,
+            )
+            receipt_rule_names = frozenset()
+            receipts_by_input = getattr(self, "_cycle_receipts", {}).get(
+                receipt_scope_key
+            )
+            if receipts_by_input:
+                receipt_rule_names = frozenset(
+                    receipts_by_input.get(hash_minsn(ins, func_ea), ())
+                )
+            quarantined_rule_names = (
+                maturity_quarantined_rule_names | receipt_rule_names
+            )
             set_quarantine = getattr(
                 ins_optimizer,
                 "set_cycle_quarantined_rule_names",
@@ -1754,6 +1839,17 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                                 quarantined_by_site = defaultdict(set)
                                 self._cycle_quarantined_rule_names = quarantined_by_site
                             quarantined_by_site[site_key].add(str(producer_rule_name))
+                            cycle_receipts = getattr(self, "_cycle_receipts", None)
+                            if cycle_receipts is None:
+                                cycle_receipts = {}
+                                self._cycle_receipts = cycle_receipts
+                            receipts_by_input = cycle_receipts.setdefault(
+                                receipt_scope_key,
+                                {},
+                            )
+                            receipts_by_input.setdefault(pre_hash, set()).add(
+                                str(producer_rule_name)
+                            )
                         record_rejected = getattr(
                             ins_optimizer, "record_mutation_rejected", None
                         )
@@ -1761,7 +1857,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             record_rejected("rewrite_cycle")
                         optimizer_logger.warning(
                             "Cycle detected for instruction at %s by %s%s -- "
-                            "quarantining producer for this maturity",
+                            "quarantining producer for this maturity and "
+                            "receipting this exact input for the session",
                             hex(ins_key),
                             ins_optimizer.name,
                             (f"/{producer_rule_name}" if producer_rule_name else ""),

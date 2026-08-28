@@ -195,6 +195,25 @@ def test_capture_runs_in_production_without_diagnostic_snapshot() -> None:
     assert calls == []
 
 
+def test_validated_view_is_reused_until_function_facts_change() -> None:
+    configure_settings(fact_lifecycle=True)
+    runtime = PreanalysisFactRuntime()
+    runtime.register(_Collector())
+    runtime.capture(
+        object(),
+        func_ea=0x401000,
+        provider_phase=_phase(1),
+        phase="pre_d810",
+        snapshot=None,
+    )
+
+    first = runtime.validated_view(0x401000, 1)
+    assert runtime.validated_view(0x401000, 1) is first
+
+    runtime.reset_for_func(0x401000)
+    assert runtime.validated_view(0x401000, 1) is not first
+
+
 def test_diag_attaches_when_snapshot_arrives_after_no_snapshot_event() -> None:
     """Dedup split: the no-snapshot InstructionOptimizerManager event can win
     the (func_ea, maturity, phase) capture race ahead of the snapshot-bearing

@@ -119,6 +119,7 @@ class PreanalysisFactRuntime:
         self._observations_by_func: dict[int, list[FactObservation]] = {}
         self._mappings_by_func: dict[int, list[FactMapping]] = {}
         self._last_observations_by_func: dict[int, dict[str, FactObservation]] = {}
+        self._validated_views: dict[tuple[int, str], ValidatedFactView] = {}
         # Diagnostic-attachment dedup, decoupled from the capture dedup
         # (``_fired``).  Fact capture (in-memory store that feeds production
         # return-leak suppression) runs on the FIRST ``FLOWGRAPH_READY`` event
@@ -154,6 +155,14 @@ class PreanalysisFactRuntime:
         self._observations_by_func.pop(func_ea, None)
         self._mappings_by_func.pop(func_ea, None)
         self._last_observations_by_func.pop(func_ea, None)
+        self._invalidate_validated_views(func_ea)
+
+    def _invalidate_validated_views(self, func_ea: int) -> None:
+        stale = tuple(
+            key for key in self._validated_views if key[0] == int(func_ea)
+        )
+        for key in stale:
+            self._validated_views.pop(key, None)
 
     def register(self, collector: FactCollector) -> None:
         for existing in self._collectors:
@@ -254,6 +263,10 @@ class PreanalysisFactRuntime:
             if isinstance(provider_level, str)
             else self._provider_level_text(provider_level)
         )
+        cache_key = (int(func_ea), provider_level_text)
+        cached = self._validated_views.get(cache_key)
+        if cached is not None:
+            return cached
         rank = self._provider_level_rank(provider_level_text)
         observations = tuple(
             observation
@@ -265,11 +278,13 @@ class PreanalysisFactRuntime:
             for mapping in self._mappings_by_func.get(func_ea, ())
             if self._provider_level_rank(mapping.target_maturity) <= rank
         )
-        return ValidatedFactView(
+        view = ValidatedFactView(
             maturity=provider_level_text,
             observations=observations,
             mappings=mappings,
         )
+        self._validated_views[cache_key] = view
+        return view
 
     @staticmethod
     def _stale_mapping_count(view: ValidatedFactView) -> int:
@@ -1496,6 +1511,8 @@ class PreanalysisFactRuntime:
         if observations or mappings or conflicts:
             self._observations_by_func.setdefault(func_ea, []).extend(observations)
             self._mappings_by_func.setdefault(func_ea, []).extend(mappings)
+            if observations or mappings:
+                self._invalidate_validated_views(func_ea)
             self._update_latest_observations(func_ea, tuple(observations))
             # Retain this key's payload so a later snapshot-bearing event can
             # still persist it to the diag DB.  Diag attachment is decoupled

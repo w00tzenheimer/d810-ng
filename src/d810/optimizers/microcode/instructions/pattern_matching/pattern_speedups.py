@@ -642,6 +642,14 @@ class OpcodeIndexedStorage:
     def __init__(self):
         # Patterns indexed by root opcode. -1 for leaf patterns.
         self._by_opcode: dict[int, list[RulePatternEntry]] = {}
+        # The opcode bucket remains available for compatibility and lifecycle
+        # snapshots, but live lookup uses the complete structural shape.  An
+        # opcode-only bucket can contain thousands of rules and made every
+        # callback repeat compatibility checks that the fingerprint already
+        # proved could be indexed exactly.
+        self._by_shape: dict[
+            tuple[int, int, int, int, int], list[RulePatternEntry]
+        ] = {}
         self._total_patterns: int = 0
 
     def add_pattern(self, pattern: AstBase, rule: object) -> None:
@@ -655,7 +663,10 @@ class OpcodeIndexedStorage:
         if opcode not in self._by_opcode:
             self._by_opcode[opcode] = []
 
-        self._by_opcode[opcode].append(RulePatternEntry(rule, pattern, fp))
+        entry = RulePatternEntry(rule, pattern, fp)
+        self._by_opcode[opcode].append(entry)
+        shape_key = self._fingerprint_shape_key(opcode, fp)
+        self._by_shape.setdefault(shape_key, []).append(entry)
         self._total_patterns += 1
 
     def get_candidates(self, candidate: AstBase) -> list[RulePatternEntry]:
@@ -666,7 +677,13 @@ class OpcodeIndexedStorage:
         compatible with the candidate.
         """
         opcode = self._get_root_opcode(candidate)
-        entries = self._by_opcode.get(opcode)
+        # Compute the fingerprint before selecting the bucket.  All
+        # compatibility fields except the directional constant count form an
+        # exact index key, so unrelated same-opcode shapes are never scanned.
+        candidate_fp = compute_fingerprint(candidate)
+        entries = self._by_shape.get(
+            self._fingerprint_shape_key(opcode, candidate_fp)
+        )
         if _NATIVE_PERF_ENABLED:
             _NATIVE_PERF_COUNTERS["bucket_lookups"] += 1
 
@@ -678,8 +695,8 @@ class OpcodeIndexedStorage:
         if _NATIVE_PERF_ENABLED:
             _NATIVE_PERF_COUNTERS["bucket_hits"] += 1
 
-        # Pre-filter using fingerprints
-        candidate_fp = compute_fingerprint(candidate)
+        # Only the directional constant-count constraint remains after the
+        # exact structural lookup.
         result = []
         for entry in entries:
             if _NATIVE_PERF_ENABLED:
@@ -703,3 +720,15 @@ class OpcodeIndexedStorage:
         if ast.is_node():
             return getattr(ast, "opcode", -1) or -1
         return -1
+
+    @staticmethod
+    def _fingerprint_shape_key(
+        opcode: int, fingerprint: PatternFingerprint
+    ) -> tuple[int, int, int, int, int]:
+        return (
+            opcode,
+            fingerprint.opcode_hash,
+            fingerprint.depth,
+            fingerprint.node_count,
+            fingerprint.leaf_count + fingerprint.const_count,
+        )

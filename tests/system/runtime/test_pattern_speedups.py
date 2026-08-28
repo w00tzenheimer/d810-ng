@@ -820,6 +820,53 @@ class TestOpcodeIndexedStorageReal:
         )
 
     @pytest.mark.ida_required
+    def test_lookup_scans_only_the_exact_structural_shape(self, monkeypatch):
+        """Same-opcode patterns with other shapes never reach compatibility."""
+
+        shallow = AstNode(
+            ida_hexrays.m_add,
+            AstLeaf("x_0"),
+            AstLeaf("y_0"),
+        )
+        storage = OpcodeIndexedStorage()
+
+        class ShapeRule:
+            pass
+
+        expected = ShapeRule()
+        expected.name = "shallow"
+        storage.add_pattern(shallow, expected)
+        for depth in range(2, 18):
+            pattern = AstLeaf(f"x_{depth}")
+            for ordinal in range(depth):
+                pattern = AstNode(
+                    ida_hexrays.m_add,
+                    pattern,
+                    AstLeaf(f"y_{depth}_{ordinal}"),
+                )
+            rule = ShapeRule()
+            rule.name = f"deep_{depth}"
+            storage.add_pattern(pattern, rule)
+
+        original = PatternFingerprint.compatible_with
+        compatibility_calls = 0
+
+        def counting_compatible(pattern_fp, candidate_fp):
+            nonlocal compatibility_calls
+            compatibility_calls += 1
+            return original(pattern_fp, candidate_fp)
+
+        monkeypatch.setattr(
+            PatternFingerprint,
+            "compatible_with",
+            counting_compatible,
+        )
+        results = storage.get_candidates(shallow)
+
+        assert [entry.rule for entry in results] == [expected]
+        assert compatibility_calls == 1
+
+    @pytest.mark.ida_required
     def test_leaf_patterns_real(self, real_asts):
         """Leaf patterns (no root opcode) should be retrievable."""
         # Find a real leaf

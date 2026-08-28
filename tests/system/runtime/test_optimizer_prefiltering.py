@@ -261,6 +261,98 @@ def test_cycle_detection_allows_represented_pre_state_but_quarantines_a_revisit(
     ] == {"CobraSolveRule"}
 
 
+def test_cycle_receipt_skips_only_the_same_input_and_catalogue_generation_later(
+    monkeypatch,
+):
+    """A proven cycle may cross maturities, but its receipt stays fingerprinted."""
+    from d810.hexrays.hooks import optinsn_adapter
+    from d810.optimizers.microcode.instructions import handler as handler_module
+
+    class _SwappableInstruction:
+        def __init__(self, form: str):
+            self.form = form
+            self.ea = 0x7FFB13CB5BDE
+
+        def swap(self, other):
+            self.form, other.form = other.form, self.form
+
+    class _TransitionRule(_StubRule):
+        def check_and_replace(self, _blk, ins):
+            self.calls += 1
+            return _SwappableInstruction(
+                {
+                    "X": "Y",
+                    "Y": "X",
+                    "changed-X": "changed-Y",
+                }[ins.form]
+            )
+
+    monkeypatch.setattr(optinsn_adapter, "check_ins_mop_size_are_ok", lambda _ins: True)
+    monkeypatch.setattr(optinsn_adapter, "count_minsn_nodes", lambda _ins: 1)
+    monkeypatch.setattr(
+        optinsn_adapter,
+        "hash_minsn",
+        lambda ins, _func_ea=0: hash(ins.form),
+    )
+    monkeypatch.setattr(handler_module, "format_minsn_t", lambda ins: ins.form)
+
+    maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
+    rule = _TransitionRule("BnotXor_FactorRule_1", maturities)
+    optimizer = _ConcreteOptimizer(maturities, stats=None)
+    optimizer._generation = 7
+    optimizer.add_rule(rule)
+    manager = _new_instruction_manager()
+    manager._active_optimizers = [optimizer]
+    manager._rewrite_seen = defaultdict(set)
+    manager._cycle_quarantined_rule_names = defaultdict(set)
+    manager._cycle_receipts = {}
+    manager.current_maturity = ida_hexrays.MMAT_LOCOPT
+    manager.stats = None
+    manager.generate_z3_code = False
+    manager.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)
+    manager._resolve_active_instruction_rule_names = lambda _blk: None
+    manager._scheduled_implementation_names = frozenset()
+    manager._invalidate_residual_admission_cache()
+    blk = SimpleNamespace(
+        mba=SimpleNamespace(
+            entry_ea=0x7FFB13CB5960,
+            maturity=ida_hexrays.MMAT_LOCOPT,
+        )
+    )
+
+    cycling = _SwappableInstruction("X")
+    assert manager.optimize(blk, cycling)
+    assert manager.optimize(blk, cycling)
+    assert not manager.optimize(blk, cycling)
+    calls_after_cycle = rule.calls
+
+    manager.reset_maturity_cycle_detection()
+    manager.current_maturity = ida_hexrays.MMAT_CALLS
+    blk.mba.maturity = ida_hexrays.MMAT_CALLS
+
+    same_input = _SwappableInstruction("X")
+    assert not manager.optimize(blk, same_input)
+    assert rule.calls == calls_after_cycle
+
+    changed_input = _SwappableInstruction("changed-X")
+    assert manager.optimize(blk, changed_input)
+    assert changed_input.form == "changed-Y"
+    assert rule.calls == calls_after_cycle + 1
+
+    optimizer._generation = 8
+    generation_changed = _SwappableInstruction("X")
+    assert manager.optimize(blk, generation_changed)
+    assert generation_changed.form == "Y"
+    assert rule.calls == calls_after_cycle + 2
+
+    optimizer._generation = 7
+    manager.reset_cycle_detection()
+    next_session = _SwappableInstruction("X")
+    assert manager.optimize(blk, next_session)
+    assert next_session.form == "Y"
+    assert rule.calls == calls_after_cycle + 3
+
+
 def test_cycle_detection_rejects_a_noop_without_quarantining_its_producer(
     monkeypatch,
 ):

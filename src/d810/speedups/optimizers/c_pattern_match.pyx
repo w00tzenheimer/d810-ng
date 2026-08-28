@@ -447,10 +447,12 @@ cdef class COpcodeIndexedStorage:
     Further filtered by pre-computed fingerprints.
     """
     cdef dict _by_opcode  # dict[int, list[CRulePatternEntry]]
+    cdef dict _by_shape  # dict[shape tuple, list[CRulePatternEntry]]
     cdef int _total_patterns
 
     def __cinit__(self):
         self._by_opcode = {}
+        self._by_shape = {}
         self._total_patterns = 0
 
     def add_pattern(self, pattern, rule) -> None:
@@ -462,6 +464,16 @@ cdef class COpcodeIndexedStorage:
             self._by_opcode[opcode] = []
 
         (<list>self._by_opcode[opcode]).append(entry)
+        cdef tuple shape_key = (
+            opcode,
+            entry.fingerprint.opcode_hash,
+            entry.fingerprint.depth,
+            entry.fingerprint.node_count,
+            entry.fingerprint.leaf_count + entry.fingerprint.const_count,
+        )
+        if shape_key not in self._by_shape:
+            self._by_shape[shape_key] = []
+        (<list>self._by_shape[shape_key]).append(entry)
         self._total_patterns += 1
 
     def get_candidates(self, candidate) -> list:
@@ -470,7 +482,20 @@ cdef class COpcodeIndexedStorage:
         Uses opcode dispatch + fingerprint pre-filtering.
         """
         cdef int opcode = self._get_root_opcode(candidate)
-        cdef list entries = self._by_opcode.get(opcode)
+
+        # Compute the candidate fingerprint once, then index by every exact
+        # compatibility field except the directional constant count.
+        cdef PatternFingerprint cand_fp
+        fingerprint_init(&cand_fp)
+        _compute_fingerprint(candidate, &cand_fp)
+        cdef tuple shape_key = (
+            opcode,
+            cand_fp.opcode_hash,
+            cand_fp.depth,
+            cand_fp.node_count,
+            cand_fp.leaf_count + cand_fp.const_count,
+        )
+        cdef list entries = self._by_shape.get(shape_key)
         if _native_perf_enabled:
             _native_perf_counters.bucket_lookups += 1
         if entries is None:
@@ -481,12 +506,8 @@ cdef class COpcodeIndexedStorage:
         if _native_perf_enabled:
             _native_perf_counters.bucket_hits += 1
 
-        # Compute candidate fingerprint
-        cdef PatternFingerprint cand_fp
-        fingerprint_init(&cand_fp)
-        _compute_fingerprint(candidate, &cand_fp)
-
-        # Filter by fingerprint compatibility
+        # Only the directional constant-count constraint remains after the
+        # exact structural lookup.
         cdef list result = []
         cdef CRulePatternEntry entry
         for entry in entries:

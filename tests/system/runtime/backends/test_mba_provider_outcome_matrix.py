@@ -86,6 +86,33 @@ def test_structural_chain_nonmatch_is_an_explicit_provider_row(monkeypatch) -> N
     assert outcome.metadata["rules_applied"] == 0
 
 
+def test_structural_chain_nonmatch_skips_native_profile_without_capture(
+    monkeypatch,
+) -> None:
+    class Rule(ChainSimplificationRule):
+        def check_and_replace(self, blk, ins):
+            del blk, ins
+            return None
+
+    rule = Rule()
+    instruction = SimpleNamespace(
+        d=SimpleNamespace(size=4),
+        l=SimpleNamespace(t=-1),
+        r=SimpleNamespace(t=-1),
+    )
+    monkeypatch.setattr(
+        rule,
+        "_read_native_chain_profile",
+        lambda _ins: pytest.fail("uncaptured nonmatch must not build a native view"),
+    )
+
+    rule._begin_chain_attempt()
+    rule._publish_chain_result(instruction, None, opcode=ida_hexrays.m_add)
+
+    assert rule.provider_outcomes() == ()
+    assert rule.execution_metadata() == {}
+
+
 def test_structural_chain_observation_reads_the_shared_native_view(monkeypatch) -> None:
     class Rule(ChainSimplificationRule):
         def check_and_replace(self, blk, ins):
