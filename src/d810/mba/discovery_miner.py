@@ -431,23 +431,6 @@ def _inspect_tree(
     return _digest_files(expected), identities
 
 
-def _delete_exact_tree(directory_fd: int, directory_path: Path, expected: Mapping[str, bytes], identities: Mapping[str, tuple[int, int]]) -> None:
-    names = tuple(sorted(os.listdir(directory_fd)))
-    if names != tuple(sorted(expected)):
-        raise RuntimeError("materialization recovery conflict")
-    for name, content in expected.items():
-        fd = _open_at(directory_fd, name, os.O_RDONLY)
-        try:
-            info = os.fstat(fd)
-            if (info.st_dev, info.st_ino) != identities[name] or _read_fd(fd) != content:
-                raise RuntimeError("materialization recovery conflict")
-        finally:
-            os.close(fd)
-    for name in expected:
-        os.unlink(name, dir_fd=directory_fd)
-    os.fsync(directory_fd)
-
-
 def _remove_private_tree(parent_fd: int, parent_path: Path, name: str) -> None:
     try:
         directory_fd = _open_at(parent_fd, name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -469,86 +452,6 @@ def _remove_private_tree(parent_fd: int, parent_path: Path, name: str) -> None:
         os.close(directory_fd)
     os.rmdir(name, dir_fd=parent_fd)
     os.fsync(parent_fd)
-
-
-def _retained_quarantine_error(
-    parent_path: Path, output_name: str, quarantine_name: str
-) -> RuntimeError:
-    visible_path = os.path.normpath(
-        os.path.abspath(os.fspath(parent_path / output_name))
-    )
-    quarantine_path = os.path.normpath(
-        os.path.abspath(os.fspath(parent_path / quarantine_name))
-    )
-    return RuntimeError(
-        "materialization recovery conflict: visible destination preserved at "
-        f"{visible_path}; quarantined owned tree retained at {quarantine_path}"
-    )
-
-
-def _quarantine_owned_tree(
-    parent_fd: int,
-    parent_path: Path,
-    output_name: str,
-    expected: Mapping[str, bytes],
-    root_identity: tuple[int, int],
-    child_identities: Mapping[str, tuple[int, int]],
-) -> None:
-    try:
-        current_fd = _open_at(parent_fd, output_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    except FileNotFoundError:
-        return
-    try:
-        current_info = os.fstat(current_fd)
-        if (current_info.st_dev, current_info.st_ino) != root_identity:
-            return
-    finally:
-        os.close(current_fd)
-    quarantine_name = f".{output_name}.quarantine-{uuid.uuid4().hex}"
-    try:
-        _exclusive_rename(parent_fd, output_name, quarantine_name)
-    except FileNotFoundError:
-        return
-    quarantine_fd = None
-    try:
-        quarantine_fd = _open_at(
-            parent_fd,
-            quarantine_name,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-        )
-        info = os.fstat(quarantine_fd)
-        if (info.st_dev, info.st_ino) != root_identity:
-            raise RuntimeError("materialization recovery conflict")
-        _delete_exact_tree(
-            quarantine_fd, parent_path / quarantine_name, expected, child_identities
-        )
-    except BaseException as exc:
-        # Restore every inspection/open/type/content failure before exposing the
-        # original error.  A racing destination is never replaced; the private
-        # quarantine remains for explicit recovery instead.
-        try:
-            _exclusive_rename(parent_fd, quarantine_name, output_name)
-        except BaseException as restore_exc:
-            raise _retained_quarantine_error(
-                parent_path, output_name, quarantine_name
-            ) from restore_exc
-        os.fsync(parent_fd)
-        raise RuntimeError("materialization recovery conflict") from exc
-    finally:
-        if quarantine_fd is not None:
-            os.close(quarantine_fd)
-    try:
-        os.rmdir(quarantine_name, dir_fd=parent_fd)
-        os.fsync(parent_fd)
-    except BaseException as exc:
-        try:
-            _exclusive_rename(parent_fd, quarantine_name, output_name)
-        except BaseException as restore_exc:
-            raise _retained_quarantine_error(
-                parent_path, output_name, quarantine_name
-            ) from restore_exc
-        os.fsync(parent_fd)
-        raise RuntimeError("materialization recovery conflict") from exc
 
 
 def _reject_symlink_components(path: Path) -> None:
@@ -663,12 +566,7 @@ def materialize_proposal(
     final_fd: int | None = None
     stage_fd: int | None = None
     stage_path: Path | None = None
-    published = False
-    committed = False
-    cleanup_published = True
     mark_error: BaseException | None = None
-    root_identity: tuple[int, int] | None = None
-    child_identities: dict[str, tuple[int, int]] = {}
     try:
         try:
             final_fd = _open_at(parent_fd, output_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -693,9 +591,7 @@ def materialize_proposal(
 
         if final_fd is not None:
             try:
-                info = os.fstat(final_fd)
-                root_identity = (info.st_dev, info.st_ino)
-                digest, child_identities = _inspect_tree(
+                digest, _ = _inspect_tree(
                     final_fd, output_dir, expected, fsync_files=True
                 )
                 os.fsync(final_fd)
@@ -717,7 +613,6 @@ def materialize_proposal(
             )
             if receipt.status not in (ReceiptStatus.MATERIALIZED, ReceiptStatus.DUPLICATE):
                 raise RuntimeError(receipt.reason or receipt.status.value)
-            committed = True
             return str(output_dir), digest
 
         stage_name = _mkdtemp_at(
@@ -746,8 +641,10 @@ def materialize_proposal(
                 os.close(descriptor)
         os.fsync(stage_fd)
         digest = _digest_files(expected)
+        # The no-replace rename may make the complete tree public before Python
+        # observes any return or interruption.  From this boundary onward the
+        # tree is an adoptable orphan and never caller-cleanup-owned.
         _exclusive_rename(parent_fd, stage_name, output_name)
-        published = True
         try:
             stage_path = None
             closing_stage_fd = stage_fd
@@ -755,12 +652,9 @@ def materialize_proposal(
             try:
                 os.close(closing_stage_fd)
             except BaseException:
-                cleanup_published = False
                 raise
             final_fd = _open_at(parent_fd, output_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            info = os.fstat(final_fd)
-            root_identity = (info.st_dev, info.st_ino)
-            inspected_digest, child_identities = _inspect_tree(
+            inspected_digest, _ = _inspect_tree(
                 final_fd, output_dir, expected, fsync_files=True
             )
             if inspected_digest != digest:
@@ -773,12 +667,10 @@ def materialize_proposal(
             try:
                 os.close(closing_final_fd)
             except BaseException:
-                cleanup_published = False
                 raise
         except BaseException as error:
             mark_error = error
             raise
-        cleanup_published = False
         try:
             receipt = store.mark_materialized(
                 proposal_id,
@@ -799,7 +691,6 @@ def materialize_proposal(
         if receipt.status not in (ReceiptStatus.MATERIALIZED, ReceiptStatus.DUPLICATE):
             mark_error = RuntimeError(receipt.reason or receipt.status.value)
             raise mark_error
-        committed = True
         return str(output_dir), digest
     finally:
         if final_fd is not None:
@@ -816,29 +707,6 @@ def materialize_proposal(
             )
         if stage_path is not None:
             _remove_private_tree(parent_fd, output_dir.parent, stage_path.name)
-        if (
-            published
-            and not committed
-            and cleanup_published
-            and root_identity is not None
-        ):
-            try:
-                _quarantine_owned_tree(
-                    parent_fd,
-                    output_dir.parent,
-                    output_name,
-                    expected,
-                    root_identity,
-                    child_identities,
-                )
-            except BaseException as cleanup_error:
-                if mark_error is None:
-                    raise
-                mark_error.add_note(
-                    "materialization cleanup failed without replacing the original "
-                    "exception; artifact tree preserved: "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
-                )
         closing_parent_fd = parent_fd
         parent_fd = -1
         _close_materialization_fd(

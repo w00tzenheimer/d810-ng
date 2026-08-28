@@ -1031,7 +1031,7 @@ def test_materialization_publishes_complete_tree_before_reader_can_observe_it(
 
 def test_materialization_rejects_parent_replacement_before_cas(tmp_path, monkeypatch) -> None:
     from d810.mba import discovery_miner
-    from d810.mba.discovery_miner import materialize_proposal
+    from d810.mba.discovery_miner import _tree_digest, materialize_proposal
 
     store, proposal_id = _published_for_materialization(tmp_path)
     parent = tmp_path / "renamed-parent"
@@ -1057,13 +1057,29 @@ def test_materialization_rejects_parent_replacement_before_cas(tmp_path, monkeyp
         snapshot = store.proposal_snapshot(proposal_id)
         assert snapshot is not None
         assert snapshot.proposal.state.value == "proposed"
-        assert not (tmp_path / "moved-parent" / "review").exists()
-        assert tuple((tmp_path / "moved-parent").iterdir()) == ()
+        orphan = tmp_path / "moved-parent" / "review"
+        assert orphan.is_dir()
+        assert len(tuple(orphan.iterdir())) == 2
+        orphan_digest = _tree_digest(orphan)
+
+        parent.unlink()
+        (tmp_path / "moved-parent").rename(parent)
+        path, digest = materialize_proposal(store, proposal_id, output)
+        materialized = store.proposal_snapshot(proposal_id)
+        assert materialized is not None
+        assert materialized.proposal.state is ProposalState.MATERIALIZED
+        assert (path, digest) == (
+            materialized.proposal.materialized_path,
+            materialized.proposal.materialized_digest,
+        )
+        assert digest == orphan_digest
     finally:
         if parent.is_symlink():
             parent.unlink()
+        if parent.exists():
+            shutil.rmtree(parent)
         if (tmp_path / "moved-parent").exists():
-            (tmp_path / "moved-parent").rmdir()
+            shutil.rmtree(tmp_path / "moved-parent")
         store.close()
 
 
@@ -1403,7 +1419,7 @@ def test_mark_exception_preserves_foreign_content_and_original_baseexception(
         store.close()
 
 
-def test_post_publication_pre_mark_baseexception_is_not_masked_by_cleanup(
+def test_post_publication_pre_mark_baseexception_preserves_foreign_content(
     tmp_path, monkeypatch
 ) -> None:
     from d810.mba import discovery_miner
@@ -1434,10 +1450,8 @@ def test_post_publication_pre_mark_baseexception_is_not_masked_by_cleanup(
         assert raised.value is interruption
         assert verify_calls == 1
         assert rule_path.read_text() == "foreign pre-mark content"
-        assert any(
-            "cleanup failed" in note
-            and "materialization recovery conflict" in note
-            for note in getattr(raised.value, "__notes__", ())
+        assert not any(
+            "cleanup" in note for note in getattr(raised.value, "__notes__", ())
         )
         current = store.proposal_snapshot(proposal_id)
         assert current is not None
@@ -1624,8 +1638,7 @@ def test_successful_materialization_line_interruption_preserves_durable_tree(
             receipt = frame.f_locals.get("receipt")
             assert isinstance(receipt, LifecycleReceipt)
             assert receipt.status is ReceiptStatus.MATERIALIZED
-            assert frame.f_locals["published"] is True
-            assert frame.f_locals["committed"] is False
+            assert output.is_dir()
             trace_hit = True
             raise interruption
         return interrupt_before_receipt_processing
@@ -1656,6 +1669,198 @@ def test_successful_materialization_line_interruption_preserves_durable_tree(
     finally:
         sys.settrace(None)
         external.close()
+        store.close()
+
+
+def test_post_publication_line_interruption_cannot_delete_competitor_adoption(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba import discovery_miner
+    from d810.mba.discovery_miner import _tree_digest, materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, "post-publication-line-interrupt"
+    )
+    output = tmp_path / "post-publication-line-interrupt-review"
+    source, first_line = inspect.getsourcelines(materialize_proposal)
+    post_publication_lines = [
+        first_line + offset
+        for offset, line in enumerate(source)
+        if line.startswith("            stage_path = None")
+    ]
+    assert len(post_publication_lines) == 1
+    post_publication_line = post_publication_lines[0]
+    interruption = KeyboardInterrupt("controlled at cleanup disarm boundary")
+    adoption_started = threading.Event()
+    adoption_finished = threading.Event()
+    competitor_result: tuple[str, str] | None = None
+    competitor_error: BaseException | None = None
+    trace_hit = False
+    original_cleanup = getattr(discovery_miner, "_quarantine_owned_tree", None)
+
+    def adopt_visible_tree() -> None:
+        nonlocal competitor_result, competitor_error
+        adoption_started.wait()
+        competitor = MbaDiscoveryStore(store.path)
+        try:
+            competitor_result = materialize_proposal(
+                competitor, proposal_id, output
+            )
+        except BaseException as error:
+            competitor_error = error
+        finally:
+            competitor.close()
+            adoption_finished.set()
+
+    def cleanup_after_competitor_adoption(*args, **kwargs):
+        assert adoption_finished.wait(timeout=5.0)
+        assert original_cleanup is not None
+        return original_cleanup(*args, **kwargs)
+
+    def interrupt_at_cleanup_disarm(frame, event, _argument):
+        nonlocal trace_hit
+        if (
+            event == "line"
+            and frame.f_code is materialize_proposal.__code__
+            and frame.f_lineno == post_publication_line
+        ):
+            assert output.is_dir()
+            trace_hit = True
+            adoption_started.set()
+            raise interruption
+        return interrupt_at_cleanup_disarm
+
+    competitor_thread = threading.Thread(target=adopt_visible_tree)
+    competitor_thread.start()
+    monkeypatch.setattr(
+        discovery_miner,
+        "_quarantine_owned_tree",
+        cleanup_after_competitor_adoption,
+        raising=False,
+    )
+    try:
+        sys.settrace(interrupt_at_cleanup_disarm)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            materialize_proposal(store, proposal_id, output)
+        sys.settrace(None)
+        competitor_thread.join(timeout=5.0)
+
+        assert raised.value is interruption
+        assert trace_hit
+        assert not competitor_thread.is_alive()
+        assert competitor_error is None
+        assert competitor_result is not None
+        same = store.proposal_snapshot(proposal_id)
+        external = MbaDiscoveryStore(store.path)
+        try:
+            independently_read = external.proposal_snapshot(proposal_id)
+        finally:
+            external.close()
+        assert same is not None
+        assert independently_read is not None
+        assert same.proposal == independently_read.proposal
+        assert same.group == independently_read.group
+        assert same.proposal.state is ProposalState.MATERIALIZED
+        assert competitor_result == (
+            same.proposal.materialized_path,
+            same.proposal.materialized_digest,
+        )
+        assert output.is_dir()
+        assert _tree_digest(output) == competitor_result[1]
+        assert materialize_proposal(store, proposal_id, output) == competitor_result
+    finally:
+        sys.settrace(None)
+        adoption_started.set()
+        competitor_thread.join(timeout=5.0)
+        store.close()
+
+
+def test_pre_cas_verification_failure_cannot_delete_competitor_adoption(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba import discovery_miner
+    from d810.mba.discovery_miner import _tree_digest, materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, "pre-cas-verification-adoption"
+    )
+    output = tmp_path / "pre-cas-verification-adoption-review"
+    interruption = SystemExit("controlled transient parent verification failure")
+    adoption_started = threading.Event()
+    adoption_finished = threading.Event()
+    competitor_result: tuple[str, str] | None = None
+    competitor_error: BaseException | None = None
+    original_verify = discovery_miner._verify_parent_path
+    original_cleanup = getattr(discovery_miner, "_quarantine_owned_tree", None)
+    verify_calls = 0
+
+    def fail_once_then_restore(path, parent_fd):
+        nonlocal verify_calls
+        verify_calls += 1
+        assert output.is_dir()
+        monkeypatch.setattr(discovery_miner, "_verify_parent_path", original_verify)
+        adoption_started.set()
+        raise interruption
+
+    def adopt_visible_tree() -> None:
+        nonlocal competitor_result, competitor_error
+        adoption_started.wait()
+        competitor = MbaDiscoveryStore(store.path)
+        try:
+            competitor_result = materialize_proposal(
+                competitor, proposal_id, output
+            )
+        except BaseException as error:
+            competitor_error = error
+        finally:
+            competitor.close()
+            adoption_finished.set()
+
+    def cleanup_after_competitor_adoption(*args, **kwargs):
+        assert adoption_finished.wait(timeout=5.0)
+        assert original_cleanup is not None
+        return original_cleanup(*args, **kwargs)
+
+    competitor_thread = threading.Thread(target=adopt_visible_tree)
+    competitor_thread.start()
+    monkeypatch.setattr(discovery_miner, "_verify_parent_path", fail_once_then_restore)
+    monkeypatch.setattr(
+        discovery_miner,
+        "_quarantine_owned_tree",
+        cleanup_after_competitor_adoption,
+        raising=False,
+    )
+    try:
+        with pytest.raises(SystemExit) as raised:
+            materialize_proposal(store, proposal_id, output)
+        competitor_thread.join(timeout=5.0)
+
+        assert raised.value is interruption
+        assert verify_calls == 1
+        assert not competitor_thread.is_alive()
+        assert competitor_error is None
+        assert competitor_result is not None
+        same = store.proposal_snapshot(proposal_id)
+        external = MbaDiscoveryStore(store.path)
+        try:
+            independently_read = external.proposal_snapshot(proposal_id)
+        finally:
+            external.close()
+        assert same is not None
+        assert independently_read is not None
+        assert same.proposal == independently_read.proposal
+        assert same.group == independently_read.group
+        assert same.proposal.state is ProposalState.MATERIALIZED
+        assert competitor_result == (
+            same.proposal.materialized_path,
+            same.proposal.materialized_digest,
+        )
+        assert output.is_dir()
+        assert _tree_digest(output) == competitor_result[1]
+        assert materialize_proposal(store, proposal_id, output) == competitor_result
+    finally:
+        adoption_started.set()
+        competitor_thread.join(timeout=5.0)
         store.close()
 
 
@@ -1798,59 +2003,55 @@ def test_materialization_refusal_preserves_same_inode_foreign_changes(
         store.close()
 
 
-def test_materialization_cleanup_preserves_private_quarantine_on_restore_race(
+def test_post_publication_verification_failure_preserves_exact_tree_without_quarantine(
     tmp_path, monkeypatch
 ) -> None:
     from d810.mba import discovery_miner
-    from d810.mba.discovery_miner import materialize_proposal
+    from d810.mba.discovery_miner import _tree_digest, materialize_proposal
 
     store, proposal_id = _published_for_materialization(tmp_path)
     output = tmp_path / "restore-race"
-    snapshot = store.proposal_snapshot(proposal_id)
-    assert snapshot is not None
-    stem = snapshot.proposal.proposal_fingerprint
     original_rename = discovery_miner._exclusive_rename
+    original_verify = discovery_miner._verify_parent_path
     calls = 0
-    interruption = KeyboardInterrupt("controlled pre-mark cleanup race")
+    interruption = KeyboardInterrupt("controlled post-publication verification failure")
 
-    def rename_then_race(parent_fd, source, destination):
+    def track_publish(parent_fd, source, destination):
         nonlocal calls
         calls += 1
-        result = original_rename(parent_fd, source, destination)
-        if calls == 2:
-            (tmp_path / destination / f"{stem}.rule.py").write_text("foreign")
-            output.mkdir()
-            (output / "foreign.txt").write_text("keep")
-        return result
+        return original_rename(parent_fd, source, destination)
 
     def interrupt_before_mark(_path, _parent_fd):
         raise interruption
 
-    monkeypatch.setattr(discovery_miner, "_exclusive_rename", rename_then_race)
+    monkeypatch.setattr(discovery_miner, "_exclusive_rename", track_publish)
     monkeypatch.setattr(discovery_miner, "_verify_parent_path", interrupt_before_mark)
     try:
         with pytest.raises(KeyboardInterrupt) as raised:
             materialize_proposal(store, proposal_id, output)
         assert raised.value is interruption
-        assert (output / "foreign.txt").read_text() == "keep"
-        quarantine = tuple(tmp_path.glob(".restore-race.quarantine-*"))
-        assert len(quarantine) == 1
-        expected_cleanup_error = (
-            "materialization recovery conflict: visible destination preserved at "
-            f"{output.resolve()}; quarantined owned tree retained at "
-            f"{quarantine[0].resolve()}"
-        )
-        assert any(
-            "cleanup failed" in note and expected_cleanup_error in note
-            for note in getattr(raised.value, "__notes__", ())
-        )
+        assert calls == 1
+        assert output.is_dir()
+        assert len(tuple(output.iterdir())) == 2
+        orphan_digest = _tree_digest(output)
+        assert not tuple(tmp_path.glob(".restore-race.quarantine-*"))
         current = store.proposal_snapshot(proposal_id)
         assert current is not None
         assert current.proposal.state is ProposalState.PROPOSED
+
+        monkeypatch.setattr(discovery_miner, "_verify_parent_path", original_verify)
+        path, digest = materialize_proposal(store, proposal_id, output)
+        adopted = store.proposal_snapshot(proposal_id)
+        assert adopted is not None
+        assert adopted.proposal.state is ProposalState.MATERIALIZED
+        assert (path, digest) == (
+            adopted.proposal.materialized_path,
+            adopted.proposal.materialized_digest,
+        )
+        assert digest == orphan_digest
     finally:
-        shutil.rmtree(output)
-        for item in tmp_path.glob(".restore-race.quarantine-*"):
-            shutil.rmtree(item)
+        if output.exists():
+            shutil.rmtree(output)
         store.close()
 
 
