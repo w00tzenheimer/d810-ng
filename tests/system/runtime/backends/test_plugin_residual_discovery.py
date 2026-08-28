@@ -35,6 +35,7 @@ from d810.mba.residual_observation_sink import SqliteMbaResidualObservationSink 
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer  # noqa: E402
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager  # noqa: E402
 from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule  # noqa: E402
+from d810.ir.maturity import IRMaturity  # noqa: E402
 
 
 def test_missing_requirement_is_reported_before_provides_resolution() -> None:
@@ -85,6 +86,26 @@ def _native_instruction():
     return _instruction(_residual_source_ast(), ea=0x401002)
 
 
+def _accepted_native_instruction():
+    """Use Egglog's real semantic acceptance fixture (x + y - 2 * (x & y))."""
+    from tests.system.runtime.backends.test_mba_extension_host import (
+        _constant,
+        _instruction,
+        _leaf,
+        _node,
+    )
+
+    x = _leaf("x", 1)
+    y = _leaf("y", 2)
+    common_sum = _node(ida_hexrays.m_add, x, y)
+    common_and = _node(ida_hexrays.m_and, _leaf("x", 1), _leaf("y", 2))
+    coefficient = _node(ida_hexrays.m_mul, _constant(-2), common_and)
+    return _instruction(
+        _node(ida_hexrays.m_add, common_sum, coefficient),
+        ea=0x401002,
+    )
+
+
 def _context(identity, block, instruction) -> MbaObservationContext:
     function_identity = FunctionExecutionIdentity(
         input_identity="sha256:" + "a" * 64,
@@ -98,9 +119,9 @@ def _context(identity, block, instruction) -> MbaObservationContext:
         decompilation_session_id="12345678-1234-5678-1234-567812345679",
         top_level_epoch=1,
         maturity=(
-            "GLOBAL_OPTIMIZED"
+            IRMaturity.GLOBAL_OPTIMIZED.value
             if block.mba.maturity == ida_hexrays.MMAT_GLBOPT2
-            else "CANONICAL"
+            else IRMaturity.CANONICAL.value
         ),
         evidence_generation=1,
     )
@@ -142,7 +163,11 @@ def _manager(optimizer, maturity):
 
 
 def _activate_real_provider(
-    pass_id: str, store: MbaDiscoveryStore, *, max_leaves: int = 8
+    pass_id: str,
+    store: MbaDiscoveryStore,
+    *,
+    max_leaves: int = 8,
+    time_budget_ms: int = 20,
 ):
     host_registry = _host_capability_registry()
     sink = SqliteMbaResidualObservationSink(store)
@@ -178,7 +203,7 @@ def _activate_real_provider(
                             "max_leaves": max_leaves,
                             "max_operator_nodes": 128,
                             "max_degree": 1,
-                            "time_budget_ms": 20,
+                            "time_budget_ms": time_budget_ms,
                             "families": ["add", "and", "bnot", "mul", "or", "sub", "xor"],
                         }
                     ),
@@ -269,10 +294,10 @@ class TestRealProviderResidualDiscovery:
             assert attempt.context.instruction_ea == 0x401002
             assert attempt.context.block_serial == 7
             assert attempt.context.block_ea == 0x401000
-            assert attempt.context.maturity == (
-                "GLOBAL_OPTIMIZED"
+            assert attempt.context.function_identity.maturity == (
+                IRMaturity.GLOBAL_OPTIMIZED.value
                 if pass_id == "mba-egraph"
-                else "CANONICAL"
+                else IRMaturity.CANONICAL.value
             )
             assert term_fingerprint(attempt.canonical_term) == attempt.outcome.fingerprint
             assert snapshot.group.revision == 1
@@ -294,7 +319,7 @@ class TestRealProviderResidualDiscovery:
     ) -> None:
         store = MbaDiscoveryStore(tmp_path / "accepted.sqlite3")
         backends, rule, lease, sink, schedule = _activate_real_provider(
-            "mba-egraph", store, max_leaves=8
+            "mba-egraph", store, max_leaves=8, time_budget_ms=1000
         )
         assert schedule.instruction_bindings
         runtime_maturity = ida_hexrays.MMAT_GLBOPT2
@@ -306,10 +331,11 @@ class TestRealProviderResidualDiscovery:
             ),
             serial=7,
         )
-        instruction = _native_instruction()
+        instruction = _accepted_native_instruction()
         optimizer = _Optimizer([runtime_maturity], stats=None)
         optimizer.add_rule(rule)
         manager = _manager(optimizer, runtime_maturity)
+        rule.begin_provider_outcome_capture()
 
         try:
             assert manager.optimize(block, instruction) is True
@@ -317,6 +343,7 @@ class TestRealProviderResidualDiscovery:
             assert store.provider_attempt_snapshots() == ()
             assert rule.provider_outcomes()[-1].status.value == "applied"
         finally:
+            rule.end_provider_outcome_capture()
             lease.release()
             sink.close()
             backends.close_activations()
