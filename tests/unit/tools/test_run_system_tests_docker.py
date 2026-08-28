@@ -200,6 +200,10 @@ def test_cobra_extension_mode_mounts_and_installs_from_copied_source(
     assert 'pip install -r "$COBRA_BUILD_DIR/requirements.txt" -q' in command
     assert "tools/build_cobra.py" in command
     assert "export COBRA_ROOT=/opt/d810-cobra-cache" in command
+    assert "COBRA_SOURCE_KEY" in command
+    assert "COBRA_TOOLCHAIN_KEY" in command
+    assert "linux-cobra-core-v2" in command
+    assert '.linux-build-ok' in command
     assert "import d810_cobra._cobra" in command
     assert f"D810_COBRA_ROOT={extension_root}" not in command
 

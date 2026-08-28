@@ -188,57 +188,62 @@ def _activate_real_provider(pass_id: str, store: MbaDiscoveryStore):
     return backends, implementation, lease, sink, schedule
 
 
-@pytest.mark.parametrize("pass_id", ("mba-egraph", "mba-solve"))
-def test_real_provider_attempt_is_attributed_through_outer_optimizer(
-    tmp_path: Path, pass_id: str
-) -> None:
-    db_path = tmp_path / f"{pass_id}.sqlite3"
-    db_path.unlink(missing_ok=True)
-    store = MbaDiscoveryStore(db_path)
-    backends, rule, lease, sink, schedule = _activate_real_provider(pass_id, store)
-    block = SimpleNamespace(
-        mba=SimpleNamespace(
-            maturity=ida_hexrays.MMAT_PREOPTIMIZED,
-            entry_ea=0x401000,
-        ),
-        serial=7,
-    )
-    instruction = _native_instruction()
-    optimizer = _Optimizer([ida_hexrays.MMAT_PREOPTIMIZED], stats=None)
-    optimizer.add_rule(rule)
-    manager = _manager(optimizer)
+@pytest.mark.usefixtures("libobfuscated_setup")
+class TestRealProviderResidualDiscovery:
+    binary_name = "libobfuscated.dll"
 
-    try:
-        manager.optimize(block, instruction)
-        pending = rule.pending_provider_observation()
-        assert pending is None
-        snapshots = store.provider_attempt_snapshots()
-        assert len(snapshots) == 1
-        snapshot = snapshots[0]
-        assert isinstance(snapshot, ProviderAttemptSnapshot)
-        attempt = snapshot.attempt
-        assert attempt.context.plugin_identity.name in {"cobra", "egglog"}
-        assert attempt.context.plugin_identity.distribution in {"d810-cobra", "d810-egglog"}
-        assert attempt.context.plugin_identity.version in {"0.1.4", "0.1.0"}
-        assert attempt.context.plugin_identity.origin
-        assert attempt.context.function_identity.database_uuid == "12345678-1234-5678-1234-567812345678"
-        assert attempt.context.function_identity.function_ea == 0x401000
-        assert attempt.context.function_identity.function_rva == 0x1000
-        assert attempt.context.function_identity.function_fingerprint == "task11-native-function"
-        assert attempt.context.instruction_ea == 0x401002
-        assert attempt.context.block_serial == 7
-        assert attempt.context.block_ea == 0x401000
-        assert attempt.context.maturity == "CANONICAL"
-        assert term_fingerprint(attempt.canonical_term) == attempt.outcome.fingerprint
-        assert snapshot.group.revision == 1
-        assert snapshot.group.state.value in {"eligible", "observed"}
-        assert snapshot.group.raw_terms == (attempt.raw_term,)
-        assert attempt.outcome.status.value != "applied"
-        assert attempt.outcome.input_cost is not None
-        assert attempt.outcome.output_cost is None or attempt.outcome.output_cost < attempt.outcome.input_cost
-        assert attempt.outcome.provider.value in {"egraph", "coefficient_solver"}
-    finally:
-        lease.release()
-        sink.close()
-        backends.close_activations()
-        store.close()
+    @pytest.mark.parametrize("pass_id", ("mba-egraph", "mba-solve"))
+    def test_real_provider_attempt_is_attributed_through_outer_optimizer(
+        self, tmp_path: Path, pass_id: str
+    ) -> None:
+        db_path = tmp_path / f"{pass_id}.sqlite3"
+        db_path.unlink(missing_ok=True)
+        store = MbaDiscoveryStore(db_path)
+        backends, rule, lease, sink, schedule = _activate_real_provider(pass_id, store)
+        assert schedule.instruction_bindings
+        block = SimpleNamespace(
+            mba=SimpleNamespace(
+                maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+                entry_ea=0x401000,
+            ),
+            serial=7,
+        )
+        instruction = _native_instruction()
+        optimizer = _Optimizer([ida_hexrays.MMAT_PREOPTIMIZED], stats=None)
+        optimizer.add_rule(rule)
+        manager = _manager(optimizer)
+
+        try:
+            manager.optimize(block, instruction)
+            pending = rule.pending_provider_observation()
+            assert pending is None
+            snapshots = store.provider_attempt_snapshots()
+            assert len(snapshots) == 1
+            snapshot = snapshots[0]
+            assert isinstance(snapshot, ProviderAttemptSnapshot)
+            attempt = snapshot.attempt
+            assert attempt.context.plugin_identity.name in {"cobra", "egglog"}
+            assert attempt.context.plugin_identity.distribution in {"d810-cobra", "d810-egglog"}
+            assert attempt.context.plugin_identity.version in {"0.1.4", "0.1.0"}
+            assert attempt.context.plugin_identity.origin
+            assert attempt.context.function_identity.database_uuid == "12345678-1234-5678-1234-567812345678"
+            assert attempt.context.function_identity.function_ea == 0x401000
+            assert attempt.context.function_identity.function_rva == 0x1000
+            assert attempt.context.function_identity.function_fingerprint == "task11-native-function"
+            assert attempt.context.instruction_ea == 0x401002
+            assert attempt.context.block_serial == 7
+            assert attempt.context.block_ea == 0x401000
+            assert attempt.context.maturity == "CANONICAL"
+            assert term_fingerprint(attempt.canonical_term) == attempt.outcome.fingerprint
+            assert snapshot.group.revision == 1
+            assert snapshot.group.state.value in {"eligible", "observed"}
+            assert snapshot.group.raw_terms == (attempt.raw_term,)
+            assert attempt.outcome.status.value != "applied"
+            assert attempt.outcome.input_cost is not None
+            assert attempt.outcome.output_cost is None or attempt.outcome.output_cost < attempt.outcome.input_cost
+            assert attempt.outcome.provider.value in {"egraph", "coefficient_solver"}
+        finally:
+            lease.release()
+            sink.close()
+            backends.close_activations()
+            store.close()
