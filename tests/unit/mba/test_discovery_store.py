@@ -236,6 +236,41 @@ def _call_without_domain_mutation(store: MbaDiscoveryStore, call: object) -> obj
         assert _logical_domain_snapshot(store) == before
 
 
+class _ConnectionProxy:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.connection, name)
+
+
+class _BeginImmediateErrorConnection(_ConnectionProxy):
+    def __init__(self, connection: sqlite3.Connection, error_code: int) -> None:
+        super().__init__(connection)
+        self.error_code = error_code
+        self.raised = False
+
+    def execute(self, statement: str, *args: object) -> sqlite3.Cursor:
+        if statement == "BEGIN IMMEDIATE" and not self.raised:
+            self.raised = True
+            error = sqlite3.OperationalError("controlled transaction-entry failure")
+            error.sqlite_errorcode = self.error_code
+            raise error
+        return self.connection.execute(statement, *args)
+
+
+class _CommitInterruptConnection(_ConnectionProxy):
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        super().__init__(connection)
+        self.raised = False
+
+    def commit(self) -> None:
+        if not self.raised:
+            self.raised = True
+            raise SystemExit("controlled commit interruption")
+        self.connection.commit()
+
+
 def test_schema_migration_is_exact_and_reopen_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "discovery.sqlite3"
     store = MbaDiscoveryStore(path)
@@ -2859,6 +2894,256 @@ def test_materialization_commit_guard_observes_staged_owner_and_event_then_rolls
     snapshot = store.proposal_snapshot(proposal_id)
     assert snapshot is not None
     assert snapshot.proposal.state is ProposalState.PROPOSED
+    store.close()
+
+
+def test_transaction_body_baseexception_rolls_back_and_restores_connection(
+    tmp_path: Path,
+) -> None:
+    store, _proposal, published = _published_store(tmp_path, "body-interrupt")
+    assert published.proposal is not None and published.group is not None
+    proposal_id = published.proposal.proposal_id
+    before = _logical_domain_snapshot(store)
+
+    with pytest.raises(KeyboardInterrupt, match="controlled body interruption"):
+        with store._transaction(
+            immediate=True,
+            sqlite_busy_timeout=0.01,
+        ) as connection:
+            connection.execute(
+                "UPDATE proposals SET state=? WHERE proposal_id=?",
+                (ProposalState.MATERIALIZED.value, proposal_id),
+            )
+            store._append_event(
+                connection,
+                group_id=published.group.group_id,
+                event_kind="materialized",
+                group_revision=published.group.revision,
+                source_proposal_state=ProposalState.PROPOSED.value,
+                run_id=published.proposal.run_id,
+                proposal_id=proposal_id,
+                occurred_at=store._now(),
+            )
+            raise KeyboardInterrupt("controlled body interruption")
+
+    assert not store._connection.in_transaction
+    assert store.connection_pragmas()["busy_timeout"] == 5000
+    assert _logical_domain_snapshot(store) == before
+    with sqlite3.connect(store.path) as external:
+        assert external.execute(
+            "SELECT state FROM proposals WHERE proposal_id=?", (proposal_id,)
+        ).fetchone() == (ProposalState.PROPOSED.value,)
+        assert external.execute(
+            "SELECT event_kind FROM residual_group_events WHERE proposal_id=? ORDER BY event_id",
+            (proposal_id,),
+        ).fetchall() == [("proposal_published",)]
+
+    snapshots: list[object] = []
+    worker = threading.Thread(
+        target=lambda: snapshots.append(store.proposal_snapshot(proposal_id))
+    )
+    worker.start()
+    worker.join(timeout=0.5)
+    assert not worker.is_alive()
+    assert snapshots and snapshots[0].proposal.state is ProposalState.PROPOSED
+    store.close()
+
+
+def test_transaction_commit_baseexception_rolls_back_and_restores_connection(
+    tmp_path: Path,
+) -> None:
+    store, _proposal, published = _published_store(tmp_path, "commit-interrupt")
+    assert published.proposal is not None
+    proposal_id = published.proposal.proposal_id
+    before = _logical_domain_snapshot(store)
+    real_connection = store._connection
+    store._connection = _CommitInterruptConnection(real_connection)  # type: ignore[assignment]
+
+    with pytest.raises(SystemExit, match="controlled commit interruption"):
+        with store._transaction(
+            immediate=True,
+            sqlite_busy_timeout=0.01,
+        ) as connection:
+            connection.execute(
+                "UPDATE proposals SET state=? WHERE proposal_id=?",
+                (ProposalState.MATERIALIZED.value, proposal_id),
+            )
+
+    assert not real_connection.in_transaction
+    assert store.connection_pragmas()["busy_timeout"] == 5000
+    assert _logical_domain_snapshot(store) == before
+    snapshot = store.proposal_snapshot(proposal_id)
+    assert snapshot is not None
+    assert snapshot.proposal.state is ProposalState.PROPOSED
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    (
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_BUSY_SNAPSHOT,
+        sqlite3.SQLITE_LOCKED,
+        sqlite3.SQLITE_LOCKED_SHAREDCACHE,
+    ),
+)
+def test_heartbeat_classifies_primary_and_extended_busy_locked_codes(
+    tmp_path: Path, error_code: int
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / f"heartbeat-code-{error_code}.sqlite3")
+    store.record_attempt(_attempt())
+    claim = store.claim_next_group("miner", "budget").claim
+    assert claim is not None
+    real_connection = store._connection
+    store._connection = _BeginImmediateErrorConnection(  # type: ignore[assignment]
+        real_connection, error_code
+    )
+
+    receipt = store.heartbeat(claim.run.run_id, claim.run.claimed_revision)
+
+    assert receipt.status.value == "refused"
+    assert receipt.reason == "storage_busy"
+    assert store.connection_pragmas()["busy_timeout"] == 5000
+    assert store.heartbeat(
+        claim.run.run_id, claim.run.claimed_revision
+    ).status.value == "heartbeated"
+    store.close()
+
+
+def test_heartbeat_rethrows_unrelated_operational_error_and_restores_timeout(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "heartbeat-unrelated-error.sqlite3")
+    store.record_attempt(_attempt())
+    claim = store.claim_next_group("miner", "budget").claim
+    assert claim is not None
+    real_connection = store._connection
+    store._connection = _BeginImmediateErrorConnection(  # type: ignore[assignment]
+        real_connection, sqlite3.SQLITE_IOERR
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="transaction-entry"):
+        store.heartbeat(claim.run.run_id, claim.run.claimed_revision)
+
+    assert store.connection_pragmas()["busy_timeout"] == 5000
+    assert store.heartbeat(
+        claim.run.run_id, claim.run.claimed_revision
+    ).status.value == "heartbeated"
+    store.close()
+
+
+def test_materialization_guard_runs_only_for_transition_and_exact_duplicate(
+    tmp_path: Path,
+) -> None:
+    store, _proposal, published = _published_store(tmp_path, "guard-routing")
+    assert published.proposal is not None and published.group is not None
+    proposal_id = published.proposal.proposal_id
+    revision = published.group.revision
+
+    def controlled_guard_failure() -> None:
+        raise RuntimeError("controlled path guard failure")
+
+    unknown = store.mark_materialized(
+        "00000000-0000-0000-0000-000000000000",
+        "/review",
+        "digest",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=revision,
+        path_commit_guard=controlled_guard_failure,
+    )
+    assert (unknown.status.value, unknown.reason) == ("refused", "unknown_proposal")
+    missing_expectation = store.mark_materialized(
+        proposal_id,
+        "/review",
+        "digest",
+        path_commit_guard=controlled_guard_failure,
+    )
+    assert (missing_expectation.status.value, missing_expectation.reason) == (
+        "refused",
+        "expected_state_required",
+    )
+    stale_revision = store.mark_materialized(
+        proposal_id,
+        "/review",
+        "digest",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=revision + 1,
+        path_commit_guard=controlled_guard_failure,
+    )
+    assert (stale_revision.status.value, stale_revision.reason) == (
+        "refused",
+        "stale_revision",
+    )
+    stale_state = store.mark_materialized(
+        proposal_id,
+        "/review",
+        "digest",
+        expected_state=ProposalState.MATERIALIZED,
+        expected_revision=revision,
+        path_commit_guard=controlled_guard_failure,
+    )
+    assert (stale_state.status.value, stale_state.reason) == ("refused", "stale_state")
+
+    guard_calls: list[str] = []
+    materialized = store.mark_materialized(
+        proposal_id,
+        "/review",
+        "digest",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=revision,
+        path_commit_guard=lambda: guard_calls.append("materialized"),
+    )
+    assert materialized.status.value == "materialized"
+    assert guard_calls == ["materialized"]
+
+    conflict = store.mark_materialized(
+        proposal_id,
+        "/different-review",
+        "different-digest",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=revision,
+        path_commit_guard=controlled_guard_failure,
+    )
+    assert (conflict.status.value, conflict.reason) == (
+        "refused",
+        "materialization_conflict",
+    )
+    duplicate = store.mark_materialized(
+        proposal_id,
+        "/review",
+        "digest",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=revision,
+        path_commit_guard=lambda: guard_calls.append("duplicate"),
+    )
+    assert duplicate.status.value == "duplicate"
+    assert guard_calls == ["materialized", "duplicate"]
+    with pytest.raises(RuntimeError, match="controlled path guard failure"):
+        store.mark_materialized(
+            proposal_id,
+            "/review",
+            "digest",
+            expected_state=ProposalState.PROPOSED,
+            expected_revision=revision,
+            path_commit_guard=controlled_guard_failure,
+        )
+
+    admitted = store.mark_admitted(
+        proposal_id,
+        "rule-id",
+        expected_state=ProposalState.MATERIALIZED,
+        expected_revision=revision,
+    )
+    assert admitted.status.value == "admitted"
+    refused = store.mark_materialized(
+        proposal_id,
+        "/review",
+        "digest",
+        expected_state=ProposalState.PROPOSED,
+        expected_revision=revision,
+        path_commit_guard=controlled_guard_failure,
+    )
+    assert (refused.status.value, refused.reason) == ("refused", "invalid_transition")
     store.close()
 
 

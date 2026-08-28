@@ -1358,7 +1358,7 @@ class MbaDiscoveryStore:
                 if pre_commit_guard is not None:
                     pre_commit_guard()
                 self._connection.commit()
-            except Exception:
+            except BaseException:
                 self._connection.rollback()
                 raise
         finally:
@@ -3125,10 +3125,13 @@ class MbaDiscoveryStore:
                     ),
                 )
         except (_StoreBusy, sqlite3.OperationalError) as exc:
-            if isinstance(exc, sqlite3.OperationalError) and getattr(
-                exc, "sqlite_errorcode", None
-            ) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
-                raise
+            if isinstance(exc, sqlite3.OperationalError):
+                error_code = getattr(exc, "sqlite_errorcode", None)
+                if not isinstance(error_code, int) or error_code & 0xFF not in (
+                    sqlite3.SQLITE_BUSY,
+                    sqlite3.SQLITE_LOCKED,
+                ):
+                    raise
             return HeartbeatReceipt(ReceiptStatus.REFUSED, reason="storage_busy")
 
     def finish_no_proposal(
@@ -3413,8 +3416,20 @@ class MbaDiscoveryStore:
         proposal_id = _canonical_uuid(proposal_id, name="proposal_id")
         _canonical_text(path, name="materialized_path")
         _canonical_text(digest, name="materialized_digest")
+        # Keep filesystem validation at the transaction manager's final
+        # pre-commit boundary, but arm the caller callback only for paths whose
+        # receipt depends on current filesystem authority.
+        path_guard_required = False
+
+        def run_required_path_guard() -> None:
+            if path_guard_required and path_commit_guard is not None:
+                path_commit_guard()
+
         with self._transaction(
-            immediate=True, pre_commit_guard=path_commit_guard
+            immediate=True,
+            pre_commit_guard=(
+                run_required_path_guard if path_commit_guard is not None else None
+            ),
         ) as conn:
             row = conn.execute(
                 "SELECT * FROM proposals WHERE proposal_id=?", (proposal_id,)
@@ -3459,6 +3474,7 @@ class MbaDiscoveryStore:
                     and row["materialized_digest"] == digest
                     and original_retry
                 ):
+                    path_guard_required = True
                     return LifecycleReceipt(
                         ReceiptStatus.DUPLICATE,
                         proposal=self._project_proposal(conn, row),
@@ -3530,6 +3546,7 @@ class MbaDiscoveryStore:
                 proposal_id=proposal_id,
                 occurred_at=now,
             )
+            path_guard_required = True
             return LifecycleReceipt(
                 ReceiptStatus.MATERIALIZED,
                 proposal=self._project_proposal(

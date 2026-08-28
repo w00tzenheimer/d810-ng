@@ -1018,6 +1018,64 @@ def test_materialization_rejects_parent_replacement_at_store_cas_boundary(
         store.close()
 
 
+@pytest.mark.parametrize("interrupt_type", (KeyboardInterrupt, SystemExit))
+def test_materialization_pre_commit_baseexception_restores_store_and_artifacts(
+    tmp_path, monkeypatch, interrupt_type
+) -> None:
+    from d810.mba import discovery_miner
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(
+        tmp_path, f"pre-commit-{interrupt_type.__name__}"
+    )
+    output = tmp_path / f"pre-commit-{interrupt_type.__name__}-review"
+    original_verify = discovery_miner._verify_parent_path
+    verify_calls = 0
+
+    def interrupt_second_verification(path, parent_fd):
+        nonlocal verify_calls
+        verify_calls += 1
+        if verify_calls == 2:
+            raise interrupt_type("controlled pre-commit interruption")
+        return original_verify(path, parent_fd)
+
+    monkeypatch.setattr(
+        discovery_miner, "_verify_parent_path", interrupt_second_verification
+    )
+    before_events = store.count_rows("residual_group_events")
+    try:
+        with pytest.raises(interrupt_type, match="controlled pre-commit interruption"):
+            materialize_proposal(store, proposal_id, output)
+
+        assert verify_calls == 2
+        assert not output.exists()
+        assert not store._connection.in_transaction
+        assert tuple(store._connection.execute(
+            "SELECT state FROM proposals WHERE proposal_id=?", (proposal_id,)
+        ).fetchone()) == ("proposed",)
+        assert [
+            tuple(row)
+            for row in store._connection.execute(
+                "SELECT event_kind FROM residual_group_events WHERE proposal_id=? ORDER BY event_id",
+                (proposal_id,),
+            ).fetchall()
+        ] == [("proposal_published",)]
+        assert store.count_rows("residual_group_events") == before_events
+        with sqlite3.connect(store.path) as external:
+            assert external.execute(
+                "SELECT state FROM proposals WHERE proposal_id=?", (proposal_id,)
+            ).fetchone() == ("proposed",)
+            assert external.execute(
+                "SELECT event_kind FROM residual_group_events WHERE proposal_id=? ORDER BY event_id",
+                (proposal_id,),
+            ).fetchall() == [("proposal_published",)]
+        snapshot = store.proposal_snapshot(proposal_id)
+        assert snapshot is not None
+        assert snapshot.proposal.state.value == "proposed"
+    finally:
+        store.close()
+
+
 def test_materialization_process_crash_leaves_exact_orphan_adoptable(tmp_path) -> None:
     from d810.mba.discovery_miner import materialize_proposal
 
