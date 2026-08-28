@@ -13,6 +13,7 @@ import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
+from uuid import UUID
 
 from d810.core.typing import Protocol
 from d810.core.function_execution_identity import MbaObservationContext
@@ -171,6 +172,66 @@ class MbaResidualRecord:
             raise TypeError("outcome must be an MbaProviderOutcome")
         if type(self.materialized) is not bool:
             raise TypeError("materialized must be a bool")
+        candidate_cost = _residual_cost(self.candidate_cost, field="candidate_cost")
+        replacement_cost = _residual_cost(
+            self.replacement_cost, field="replacement_cost"
+        )
+        if (
+            candidate_cost is not None
+            and self.outcome.input_cost is not None
+            and candidate_cost != self.outcome.input_cost
+        ):
+            raise ValueError("candidate_cost must agree with outcome.input_cost")
+        if (
+            replacement_cost is not None
+            and self.outcome.output_cost is not None
+            and replacement_cost != self.outcome.output_cost
+        ):
+            raise ValueError("replacement_cost must agree with outcome.output_cost")
+        object.__setattr__(self, "candidate_cost", candidate_cost)
+        object.__setattr__(self, "replacement_cost", replacement_cost)
+
+
+@dataclass(frozen=True, slots=True)
+class PendingMbaProviderObservation:
+    """Portable provider attempt awaiting the outer mutation decision.
+
+    Providers own this value until the outer optimizer boundary drains it.
+    It intentionally contains no callback-local/native state and may represent
+    an applied outcome so the finalizer can consume it without recording a
+    residual.
+    """
+
+    attempt_uuid: str
+    raw_term: TypedBvTerm
+    canonical_term: TypedBvTerm
+    outcome: MbaProviderOutcome
+    candidate_cost: tuple[int, int] | None = None
+    replacement_cost: tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.attempt_uuid) is not str:
+            raise TypeError("attempt_uuid must be a canonical UUID string")
+        try:
+            normalized_uuid = str(UUID(self.attempt_uuid))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("attempt_uuid must be a canonical UUID string") from exc
+        if normalized_uuid != self.attempt_uuid:
+            raise ValueError("attempt_uuid must use canonical UUID spelling")
+        if (
+            type(self.raw_term) is not TypedBvTerm
+            or type(self.canonical_term) is not TypedBvTerm
+        ):
+            raise TypeError("raw_term and canonical_term must be TypedBvTerm values")
+        if (
+            self.raw_term.width not in _RESIDUAL_WIDTHS
+            or self.canonical_term.width not in _RESIDUAL_WIDTHS
+        ):
+            raise ValueError("term width must be one of 8, 16, 32, or 64")
+        if self.raw_term.width != self.canonical_term.width:
+            raise ValueError("raw and canonical term widths must match")
+        if not isinstance(self.outcome, MbaProviderOutcome):
+            raise TypeError("outcome must be an MbaProviderOutcome")
         candidate_cost = _residual_cost(self.candidate_cost, field="candidate_cost")
         replacement_cost = _residual_cost(
             self.replacement_cost, field="replacement_cost"
@@ -756,6 +817,7 @@ __all__ = [
     "MbaResidualObservationSink",
     "MbaResidualReceipt",
     "MbaResidualRecord",
+    "PendingMbaProviderObservation",
     "ProviderOutcomeHistory",
     "ProviderOutcomeStatus",
     "EMPTY_MBA_STAGE_TIMINGS",

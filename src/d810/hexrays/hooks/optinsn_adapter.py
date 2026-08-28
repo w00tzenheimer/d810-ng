@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import pathlib
 from collections import defaultdict
 
@@ -427,6 +428,43 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 exc_info=True,
             )
             return None
+
+    def _observation_context_for_rule(
+        self,
+        rule: object,
+        blk: ida_hexrays.mblock_t,
+        contextual_anchor_ins: ida_hexrays.minsn_t,
+    ) -> MbaObservationContext | None:
+        """Construct context lazily for one bound plugin rule."""
+        services = getattr(rule, "plugin_services", None)
+        if services is None:
+            return None
+        identity = getattr(services, "plugin", None)
+        if identity is None:
+            return None
+        return self.mba_observation_context(blk, contextual_anchor_ins, identity)
+
+    def _clear_pending_provider_state(self) -> None:
+        """Finalize and clear any child state left by an interrupted callback."""
+        seen: set[int] = set()
+        children = tuple(getattr(self, "instruction_optimizers", ()))
+        analyzer = getattr(self, "analyzer", None)
+        if analyzer is not None:
+            children += (analyzer,)
+        for optimizer in children:
+            if id(optimizer) in seen:
+                continue
+            seen.add(id(optimizer))
+            clear = getattr(optimizer, "clear_pending_provider_observation", None)
+            if not callable(clear):
+                continue
+            try:
+                clear()
+            except Exception:
+                optimizer_logger.debug(
+                    "failed to clear child provider observation state",
+                    exc_info=True,
+                )
 
     def add_rule(self, rule: InstructionOptimizationRule):
         # optimizer_log.info("Trying to add rule {0}".format(rule))
@@ -986,6 +1024,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         return bound
 
     def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
+        self._clear_pending_provider_state()
         lifecycle = getattr(self, "_decompilation_lifecycle", None)
         mba = getattr(blk, "mba", None)
         function_ea = int(getattr(mba, "entry_ea", 0) or 0)
@@ -1113,6 +1152,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             callback_exception_name = type(error).__name__
             raise
         finally:
+            self._clear_pending_provider_state()
             for binder, previous in reversed(fact_view_binders):
                 try:
                     binder(previous)
@@ -1784,13 +1824,25 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             if callable(set_quarantine):
                 set_quarantine(quarantined_rule_names)
             self._set_residual_admission(ins_optimizer, residual_admitted)
-            new_ins = ins_optimizer.get_optimized_instruction(
-                blk,
-                ins,
-                contextual_anchor_ins=contextual_anchor_ins,
-                allowed_rule_names=allowed_rule_names,
-                scheduled_rule_names=scheduled_rule_names,
+            get_optimized_instruction = ins_optimizer.get_optimized_instruction
+            try:
+                parameters = inspect.signature(get_optimized_instruction).parameters
+            except (TypeError, ValueError):
+                parameters = {"observation_context_factory": None}
+            supports_context = "observation_context_factory" in parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
             )
+            optimizer_kwargs = {
+                "contextual_anchor_ins": contextual_anchor_ins,
+                "allowed_rule_names": allowed_rule_names,
+                "scheduled_rule_names": scheduled_rule_names,
+            }
+            if supports_context:
+                optimizer_kwargs["observation_context_factory"] = (
+                    self._observation_context_for_rule
+                )
+            new_ins = get_optimized_instruction(blk, ins, **optimizer_kwargs)
 
             if new_ins is not None:
                 if not check_ins_mop_size_are_ok(new_ins):

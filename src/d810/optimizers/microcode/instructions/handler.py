@@ -11,6 +11,13 @@ from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t, maturity_to_string
 from d810.ir.maturity import IRMaturity
+from d810.mba.extension_api import (
+    MbaResidualObservationSink,
+    MbaResidualReceipt,
+    MbaResidualRecord,
+    PendingMbaProviderObservation,
+)
+from d810.core.function_execution_identity import MbaObservationContext
 from d810.optimizers.microcode.handler import OptimizationRule
 from d810.passes.scheduler import RunLater
 
@@ -77,6 +84,64 @@ class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
         """Retain a non-applied candidate outcome after an outer safety veto."""
 
         del reason
+
+    def pending_provider_observation(self) -> PendingMbaProviderObservation | None:
+        """Return and clear one provider attempt awaiting outer ownership.
+
+        External providers override this destructive hook.  Keeping the base
+        implementation empty preserves the legacy rule contract.
+        """
+        return None
+
+    def finalize_provider_observation(
+        self,
+        context: MbaObservationContext | None,
+        *,
+        accepted: bool,
+        reason: str,
+    ) -> MbaResidualReceipt | None:
+        """Drain one pending attempt and publish non-applied outcomes safely."""
+        del reason
+        try:
+            pending = self.pending_provider_observation()
+        except Exception:
+            optimizer_logger.error(
+                "provider pending-observation hook failed for %s",
+                self.name,
+                exc_info=True,
+            )
+            return None
+        if pending is None:
+            return None
+        try:
+            if accepted or pending.outcome.status.value == "applied":
+                return None
+            if context is None:
+                return None
+            services = self.plugin_services
+            if services is None or context.plugin_identity != services.plugin:
+                return None
+            sink = services.host.require(MbaResidualObservationSink)
+            if sink is None:
+                return None
+            observation = MbaResidualRecord(
+                context=context,
+                attempt_uuid=pending.attempt_uuid,
+                raw_term=pending.raw_term,
+                canonical_term=pending.canonical_term,
+                outcome=pending.outcome,
+                materialized=False,
+                candidate_cost=pending.candidate_cost,
+                replacement_cost=pending.replacement_cost,
+            )
+            return sink.record(observation)
+        except Exception:
+            optimizer_logger.error(
+                "provider observation finalization failed for %s",
+                self.name,
+                exc_info=True,
+            )
+            return None
 
     @abc.abstractmethod
     def check_and_replace(self, blk, ins):
@@ -254,6 +319,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         self._cycle_quarantined_rule_names: frozenset[str] = frozenset()
         self.last_matched_rule_name: str | None = None
         self._pending_replacement_rule: InstructionOptimizationRule | None = None
+        self._pending_replacement_context: MbaObservationContext | None = None
 
     def set_run_later_callback(self, callback) -> None:
         self._run_later_callback = callback
@@ -301,6 +367,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
+        observation_context_factory=None,
     ) -> ida_hexrays.minsn_t | None:
         if contextual_anchor_ins is None:
             contextual_anchor_ins = ins
@@ -314,6 +381,36 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         # to either (a) IDA's native GLBOPT1 cleanup or (b) d810
         # instruction-level mutations making the chain look dead.
         self._pending_replacement_rule = None
+        self._pending_replacement_context = None
+
+        def finalize(rule, *, accepted: bool, reason: str) -> None:
+            """Drain one rule's provider state without affecting selection."""
+            context = None
+            services = getattr(rule, "plugin_services", None)
+            if services is not None and callable(observation_context_factory):
+                try:
+                    context = observation_context_factory(
+                        rule,
+                        blk,
+                        contextual_anchor_ins,
+                    )
+                except Exception:
+                    optimizer_logger.debug(
+                        "failed to construct provider observation context",
+                        exc_info=True,
+                    )
+            finalizer = getattr(rule, "finalize_provider_observation", None)
+            if not callable(finalizer):
+                return
+            try:
+                finalizer(context, accepted=accepted, reason=reason)
+            except Exception:
+                optimizer_logger.error(
+                    "provider observation finalizer failed for %s",
+                    getattr(rule, "name", type(rule).__name__),
+                    exc_info=True,
+                )
+
         try:
             import os
 
@@ -396,7 +493,25 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     optimizer_logger.info("  new : %s", format_minsn_t(new_ins))
 
                     self._pending_replacement_rule = rule
+                    if getattr(rule, "plugin_services", None) is not None and callable(
+                        observation_context_factory
+                    ):
+                        try:
+                            self._pending_replacement_context = (
+                                observation_context_factory(
+                                    rule,
+                                    blk,
+                                    contextual_anchor_ins,
+                                )
+                            )
+                        except Exception:
+                            optimizer_logger.debug(
+                                "failed to construct provider observation context",
+                                exc_info=True,
+                            )
+                            self._pending_replacement_context = None
                     return new_ins
+                finalize(rule, accepted=False, reason="provider_terminal")
             except RuntimeError as e:
                 optimizer_logger.error(
                     "Runtime error during rule %s in maturity %s for instruction %s: %s",
@@ -405,6 +520,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     format_minsn_t(ins),
                     e,
                 )
+                finalize(rule, accepted=False, reason="provider_exception")
             except D810Exception as e:
                 optimizer_logger.error(
                     "D810Exception during rule %s in maturity %s for instruction %s: %s",
@@ -413,30 +529,85 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     format_minsn_t(ins),
                     e,
                 )
+                finalize(rule, accepted=False, reason="provider_exception")
         return None
 
     def record_mutation_accepted(self) -> None:
         """Publish a rule firing only after the outer owner accepts the swap."""
 
         rule = self._pending_replacement_rule
-        if rule is not None:
-            rule.record_mutation_accepted()
-            if self.stats is not None:
-                self.stats.record_rule_fired(
-                    rule=rule,
-                    optimizer=self.name,
-                    maturity=self.cur_maturity,
-                    **rule.execution_metadata(),
-                )
-        self._pending_replacement_rule = None
+        context = getattr(self, "_pending_replacement_context", None)
+        try:
+            if rule is not None:
+                try:
+                    rule.record_mutation_accepted()
+                except Exception:
+                    optimizer_logger.error(
+                        "provider accepted hook failed for %s",
+                        getattr(rule, "name", type(rule).__name__),
+                        exc_info=True,
+                    )
+                try:
+                    rule.finalize_provider_observation(
+                        context,
+                        accepted=True,
+                        reason="accepted",
+                    )
+                except Exception:
+                    optimizer_logger.error(
+                        "provider observation finalizer failed for %s",
+                        getattr(rule, "name", type(rule).__name__),
+                        exc_info=True,
+                    )
+                if self.stats is not None:
+                    self.stats.record_rule_fired(
+                        rule=rule,
+                        optimizer=self.name,
+                        maturity=self.cur_maturity,
+                        **rule.execution_metadata(),
+                    )
+        finally:
+            self._pending_replacement_rule = None
+            self._pending_replacement_context = None
+
+    def clear_pending_provider_observation(self) -> None:
+        """Finalize stale callback state and always drop local references."""
+        try:
+            self.record_mutation_rejected("callback_cleanup")
+        finally:
+            self._pending_replacement_rule = None
+            self._pending_replacement_context = None
 
     def record_mutation_rejected(self, reason: str) -> None:
         """Preserve a candidate as non-applied when an outer guard vetoes it."""
 
         rule = self._pending_replacement_rule
-        if rule is not None:
-            rule.record_mutation_rejected(reason)
-        self._pending_replacement_rule = None
+        context = getattr(self, "_pending_replacement_context", None)
+        try:
+            if rule is not None:
+                try:
+                    rule.record_mutation_rejected(reason)
+                except Exception:
+                    optimizer_logger.error(
+                        "provider rejected hook failed for %s",
+                        getattr(rule, "name", type(rule).__name__),
+                        exc_info=True,
+                    )
+                try:
+                    rule.finalize_provider_observation(
+                        context,
+                        accepted=False,
+                        reason=reason,
+                    )
+                except Exception:
+                    optimizer_logger.error(
+                        "provider observation finalizer failed for %s",
+                        getattr(rule, "name", type(rule).__name__),
+                        exc_info=True,
+                    )
+        finally:
+            self._pending_replacement_rule = None
+            self._pending_replacement_context = None
 
     @property
     def name(self):
