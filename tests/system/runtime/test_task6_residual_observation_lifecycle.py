@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -63,6 +64,24 @@ def test_full_cleanup_and_activation_release_order(tmp_path: Path) -> None:
         assert order == ["activations", "lease", "sink"]
     finally:
         manager.backend_registry.close_activations = close_activations
+
+
+def test_full_cleanup_finishes_session_before_closing_execution_journal(
+    tmp_path: Path,
+) -> None:
+    manager = D810Manager(log_dir=tmp_path)
+    order: list[str] = []
+    manager.decompilation_lifecycle = SimpleNamespace(
+        finish_hexrays_session=lambda: order.append("finish")
+    )
+    manager._native_patch_execution_journal = SimpleNamespace(
+        close=lambda: order.append("journal")
+    )
+
+    errors = manager.stop(full_cleanup=True)
+
+    assert errors == ()
+    assert order == ["finish", "journal"]
 
 
 def test_partial_construction_unwinds_capability(monkeypatch, tmp_path: Path) -> None:

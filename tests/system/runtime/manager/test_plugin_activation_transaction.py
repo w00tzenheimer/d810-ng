@@ -18,7 +18,10 @@ from d810.core.plugins import (
     PluginRuleServices,
 )
 from d810.manager import state as state_module
+from d810.manager.manager import D810Manager
 from d810.manager.project_runtime import ProjectIdentitySnapshot, ProjectRuntimeSnapshot
+from d810.core.execution_scope import ExecutionPipeline
+from d810.passes.execution_stages import ExecutionStageDescriptor
 from d810.passes.config_v2_hook_runtime import ConfigV2HookBinding, ConfigV2HookSchedule
 from d810.passes.pass_pipeline import PipelineConfigError
 
@@ -83,6 +86,7 @@ class _Manager:
         self.instruction_optimizer_config = {}
         self.block_optimizer_config = {}
         self.config = {}
+        self.external_implementation_bindings = {}
         self.runtime_lane = "old"
         self.fail_at = None
         self.execution_scope_service = SimpleNamespace()
@@ -96,17 +100,26 @@ class _Manager:
         return {
             "config": dict(self.config),
             "runtime_lane": self.runtime_lane,
+            "external_implementation_bindings": dict(
+                self.external_implementation_bindings
+            ),
         }
 
     def restore_project_activation_state(self, snapshot):
         self.config = dict(snapshot["config"])
         self.runtime_lane = snapshot["runtime_lane"]
+        self.external_implementation_bindings = dict(
+            snapshot["external_implementation_bindings"]
+        )
 
     def invalidate_runtime_after_activation_rollback(self):
         return ()
 
     def configure_constant_simplification_schedule(self, _schedule) -> None:
         return None
+
+    def configure_external_implementation_bindings(self, bindings) -> None:
+        self.external_implementation_bindings = dict(bindings)
 
     def configure_instruction_optimizer(self, _rules, **_kwargs) -> None:
         self.runtime_lane = "candidate-ins"
@@ -444,6 +457,10 @@ def test_manager_configuration_failure_restores_manager_and_state_lanes(monkeypa
     state._restore_project_activation_state = (
         state_module.D810State._restore_project_activation_state.__get__(state)
     )
+    prior_rule = object()
+    state.manager.external_implementation_bindings = {
+        ("old-pass", "old-opaque-id", "instruction"): prior_rule
+    }
     state.manager.fail_at = "manager-configure"
     before = state.manager.snapshot_project_activation_state()
     _patch_activation(monkeypatch)
@@ -581,6 +598,13 @@ def test_opaque_external_binding_selects_owned_instance_once(monkeypatch):
     assert external_rule.log_dir_calls == 1
     assert len(external_rule.bound_services) == 1
     assert internal_rule.configure_calls == 0
+    assert state.manager.external_implementation_bindings == {
+        (
+            "external-pass",
+            "opaque-implementation-id",
+            "instruction",
+        ): external_rule
+    }
 
 
 def test_external_instruction_binding_does_not_capture_same_name_block_binding(
@@ -661,6 +685,80 @@ def test_shared_opaque_id_selects_each_configured_pass_owner_once(monkeypatch):
     assert second_rule.configure_calls == 1
     assert len(first_rule.bound_services) == 1
     assert len(second_rule.bound_services) == 1
+    assert state.manager.external_implementation_bindings == {
+        (
+            "external-pass",
+            "shared-implementation-id",
+            "instruction",
+        ): first_rule,
+        (
+            "second-pass",
+            "shared-implementation-id",
+            "instruction",
+        ): second_rule,
+    }
+
+
+def test_execution_scope_prefers_exact_external_binding_over_runtime_name(
+    monkeypatch,
+):
+    first_rule = _OpaqueBindingRule()
+    second_rule = _OpaqueBindingRule()
+    first_rule.name = "shared-implementation-id"
+    second_rule.name = "shared-implementation-id"
+    captured = []
+
+    first_descriptor = ExecutionStageDescriptor(
+        pass_id="external-pass",
+        stage_id="external-stage",
+        pipeline=ExecutionPipeline.INSTRUCTION,
+        implementation_name="shared-implementation-id",
+    )
+    second_descriptor = ExecutionStageDescriptor(
+        pass_id="second-pass",
+        stage_id="second-stage",
+        pipeline=ExecutionPipeline.INSTRUCTION,
+        implementation_name="shared-implementation-id",
+    )
+
+    class _Registry:
+        def stages_for(self, pass_id):
+            return (
+                first_descriptor
+                if pass_id == "external-pass"
+                else second_descriptor,
+            )
+
+    manager = object.__new__(D810Manager)
+    manager.config = {}
+    manager.instruction_optimizer_rules = [first_rule, second_rule]
+    manager.block_optimizer_rules = []
+    manager.ctree_optimizer_rules = []
+    manager._constant_simplification_schedule = None
+    manager._explicitly_suppressed_rule_names = set()
+    manager._external_implementation_bindings = {
+        ("external-pass", "shared-implementation-id", "instruction"): first_rule,
+        ("second-pass", "shared-implementation-id", "instruction"): second_rule,
+    }
+    manager.execution_scope_service = SimpleNamespace(
+        configure=lambda expanded: captured.extend(expanded)
+    )
+
+    monkeypatch.setattr(
+        "d810.manager.manager.operational_config_v2_pass_registry",
+        lambda: _Registry(),
+    )
+    monkeypatch.setattr(
+        "d810.manager.manager.pipeline_configs_from_project_config",
+        lambda _config: (
+            SimpleNamespace(pass_id="external-pass", target=None),
+            SimpleNamespace(pass_id="second-pass", target=None),
+        ),
+    )
+
+    manager._compile_execution_scope()
+
+    assert [stage.implementation for stage in captured] == [first_rule, second_rule]
 
 
 def test_success_publishes_before_closing_superseded_activation(monkeypatch):

@@ -703,6 +703,9 @@ class D810Manager:
     block_optimizer_config: dict = dataclasses.field(default_factory=dict)
     ctree_optimizer_rules: list = dataclasses.field(default_factory=list)
     ctree_optimizer_config: dict = dataclasses.field(default_factory=dict)
+    _external_implementation_bindings: dict[tuple[str, str, str], object] = (
+        dataclasses.field(default_factory=dict, init=False, repr=False)
+    )
     config: dict = dataclasses.field(default_factory=dict)
     _semantic_route_reference_oracle_registry: object | None = dataclasses.field(
         default=None,
@@ -2121,6 +2124,9 @@ class D810Manager:
             "block_config": self.block_optimizer_config,
             "ctree_rules": self.ctree_optimizer_rules,
             "ctree_config": self.ctree_optimizer_config,
+            "external_implementation_bindings": dict(
+                self._external_implementation_bindings
+            ),
             "constant_schedule": self._constant_simplification_schedule,
             "constant_preparation_options": self._constant_preparation_options,
             "global_const_persistence_enabled": (
@@ -2208,6 +2214,11 @@ class D810Manager:
             ("block config", "block_optimizer_config", "block_config"),
             ("ctree rules", "ctree_optimizer_rules", "ctree_rules"),
             ("ctree config", "ctree_optimizer_config", "ctree_config"),
+            (
+                "external implementation bindings",
+                "_external_implementation_bindings",
+                "external_implementation_bindings",
+            ),
             (
                 "constant schedule",
                 "_constant_simplification_schedule",
@@ -3405,15 +3416,34 @@ class D810Manager:
                     if not constant_stage.enabled:
                         continue
                 candidates = implementations[descriptor.pipeline]
-                implementation = next(
+                lane = str(getattr(descriptor.pipeline, "value", descriptor.pipeline))
+                external_binding = self._external_implementation_bindings.get(
                     (
-                        item
-                        for item in candidates
-                        if str(getattr(item, "name", item.__class__.__name__))
-                        == descriptor.implementation_name
-                    ),
-                    None,
+                        str(config.pass_id),
+                        str(descriptor.implementation_name),
+                        lane,
+                    )
                 )
+                if external_binding is not None:
+                    if not any(
+                        candidate is external_binding for candidate in candidates
+                    ):
+                        raise PipelineConfigError(
+                            f"external implementation binding for {config.pass_id!s}/"
+                            f"{descriptor.implementation_name!s} is not registered in "
+                            f"the {lane} lane"
+                        )
+                    implementation = external_binding
+                else:
+                    implementation = next(
+                        (
+                            item
+                            for item in candidates
+                            if str(getattr(item, "name", item.__class__.__name__))
+                            == descriptor.implementation_name
+                        ),
+                        None,
+                    )
                 if (
                     implementation is None
                     and descriptor.implementation_name.lower()
@@ -4496,6 +4526,29 @@ class D810Manager:
         if self.started:
             self._replace_started_instruction_rules(self.instruction_optimizer_rules)
 
+    def configure_external_implementation_bindings(
+        self,
+        bindings: typing.Mapping[tuple[str, str, str], object],
+    ) -> None:
+        """Bind opaque plugin implementation IDs to activated rule instances."""
+
+        normalized: dict[tuple[str, str, str], object] = {}
+        for raw_key, implementation in bindings.items():
+            if not isinstance(raw_key, tuple) or len(raw_key) != 3:
+                raise TypeError(
+                    "external implementation binding keys must be "
+                    "(pass_id, implementation_id, lane) tuples"
+                )
+            key = tuple(str(value) for value in raw_key)
+            if not all(key):
+                raise ValueError(
+                    "external implementation binding identities must be non-empty"
+                )
+            if implementation is None:
+                raise TypeError("external implementation binding cannot be None")
+            normalized[key] = implementation
+        self._external_implementation_bindings = normalized
+
     def configure_preparation_scripts(
         self,
         scripts,
@@ -4794,6 +4847,13 @@ class D810Manager:
             self._idb_preparation_journal = None
         self._idb_preparation_gateway = None
         self.pre_hex_preparation = None
+        lifecycle = getattr(self, "decompilation_lifecycle", None)
+        finish_hexrays_session = getattr(lifecycle, "finish_hexrays_session", None)
+        if callable(finish_hexrays_session):
+            self._safe_lifecycle_step(
+                "decompilation.lifecycle.finish",
+                finish_hexrays_session,
+            )
         native_patch_execution_journal = getattr(
             self, "_native_patch_execution_journal", None
         )
@@ -4813,13 +4873,6 @@ class D810Manager:
             self._analysis_bundle = None
         self._preanalysis_runtime = None
         self._analysis_runtime = None
-        lifecycle = getattr(self, "decompilation_lifecycle", None)
-        finish_hexrays_session = getattr(lifecycle, "finish_hexrays_session", None)
-        if callable(finish_hexrays_session):
-            self._safe_lifecycle_step(
-                "decompilation.lifecycle.finish",
-                finish_hexrays_session,
-            )
         self.decompilation_lifecycle = None
         self._post_d810_runtime = None
         self._recon_phase = None

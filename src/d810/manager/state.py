@@ -816,6 +816,9 @@ class D810State(metaclass=SingletonMeta):
             # The old lists and optimizer objects are restored if any manager
             # or started-optimizer operation fails.
             self.manager.configure_constant_simplification_schedule(constant_schedule)
+            self.manager.configure_external_implementation_bindings(
+                {key: binding.instance for key, binding in external_rules.items()}
+            )
             self.manager.configure_instruction_optimizer(
                 list(candidate_ins_rules),
                 **self.manager.instruction_optimizer_config,
