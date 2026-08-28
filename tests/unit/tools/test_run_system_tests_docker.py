@@ -56,6 +56,7 @@ def _run(
     env.pop("D810_DOCKER_IMAGE", None)
     env.pop("D810_API_TOKEN", None)
     env.pop("D810_EGGLOG_ROOT", None)
+    env.pop("D810_COBRA_ROOT", None)
     env.update(
         {
             "PATH": f"{tmp_path / 'bin'}:{env['PATH']}",
@@ -156,6 +157,78 @@ def test_core_mode_does_not_mount_or_forward_extension_root(
     assert "D810_EGGLOG_ROOT=" not in command
     assert "egglog" not in command
     assert "-p no:cacheprovider" not in command
+
+
+@pytest.mark.parametrize("root", ["relative/cobra", "missing-cobra"])
+def test_invalid_cobra_root_fails_before_docker(
+    tmp_path: Path,
+    root: str,
+) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_COBRA_ROOT": root},
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "D810_COBRA_ROOT" in result.stderr
+
+
+def test_cobra_extension_mode_mounts_and_installs_from_copied_source(
+    tmp_path: Path,
+) -> None:
+    extension_root = tmp_path / "cobra extension"
+    extension_root.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_COBRA_ROOT": str(extension_root)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    mount = f"{extension_root}:/opt/d810-cobra:ro"
+    assert calls.count(f"run-arg {mount}") == 1
+    assert 'cp -a /opt/d810-cobra/. "$COBRA_BUILD_DIR/"' in command
+    assert 'pip install "$COBRA_BUILD_DIR[test]" --no-deps -q' in command
+    assert 'pip install -r "$COBRA_BUILD_DIR/requirements.txt" -q' in command
+    assert "tools/build_cobra.py" in command
+    assert "export COBRA_ROOT=/opt/d810-cobra-cache" in command
+    assert "import d810_cobra._cobra" in command
+    assert f"D810_COBRA_ROOT={extension_root}" not in command
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("system",),
+        ("test",),
+        ("dump",),
+        ("shell",),
+        ("exec", "--", "true"),
+    ],
+)
+def test_cobra_extension_mounts_once_in_every_docker_mode(
+    tmp_path: Path,
+    args: tuple[str, ...],
+) -> None:
+    extension_root = tmp_path / "extension"
+    extension_root.mkdir()
+
+    result, calls = _run(
+        tmp_path,
+        *args,
+        extra_env={"D810_COBRA_ROOT": str(extension_root)},
+    )
+    assert result.returncode == 0, result.stderr
+    mount = f"{extension_root}:/opt/d810-cobra:ro"
+    assert calls.count(f"run-arg {mount}") == 1
 
 
 @pytest.mark.parametrize("root", ["relative/extension", "missing-extension"])

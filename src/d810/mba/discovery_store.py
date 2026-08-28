@@ -38,6 +38,7 @@ from d810.mba.discovery_models import (
     Proposal,
     ProposalReviewSnapshot,
     ProposalState,
+    ProviderAttemptSnapshot,
     ReceiptStatus,
     ResidualGroup,
     ResidualGroupState,
@@ -2950,6 +2951,58 @@ class MbaDiscoveryStore:
             if row is None:
                 return None
             return self._project_group(conn, group_id)
+
+    def provider_attempt_snapshot(
+        self, attempt_uuid: str
+    ) -> ProviderAttemptSnapshot | None:
+        """Return one causally validated immutable provider-attempt projection."""
+
+        attempt_uuid = _canonical_uuid(attempt_uuid, name="attempt_uuid")
+        with self._transaction() as conn:
+            row = conn.execute(
+                _ATTEMPT_AUTHORITY_SELECT + " WHERE pa.attempt_uuid=?",
+                (attempt_uuid,),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._project_provider_attempt(conn, row)
+
+    def provider_attempt_snapshots(self) -> tuple[ProviderAttemptSnapshot, ...]:
+        """Return all causally validated immutable provider-attempt projections."""
+
+        with self._transaction() as conn:
+            rows = conn.execute(
+                _ATTEMPT_AUTHORITY_SELECT + " ORDER BY pa.attempt_id"
+            ).fetchall()
+            return tuple(self._project_provider_attempt(conn, row) for row in rows)
+
+    def _project_provider_attempt(
+        self, conn: sqlite3.Connection, row: sqlite3.Row
+    ) -> ProviderAttemptSnapshot:
+        eligible, outcome, context = self._validate_attempt_row(row)
+        canonical = _decode_term(
+            bytes(row["authority_canonical_term"]), name="canonical term"
+        )
+        raw = _decode_term(bytes(row["authority_raw_term"]), name="raw term")
+        attempt = DiscoveryAttempt(
+            attempt_uuid=row["attempt_uuid"],
+            context=context,
+            raw_term=raw,
+            canonical_term=canonical,
+            outcome=outcome,
+            eligible_for_mining=eligible,
+        )
+        group_row = conn.execute(
+            "SELECT group_id FROM residual_groups WHERE term_id=?",
+            (int(row["term_id"]),),
+        ).fetchone()
+        if group_row is None:
+            raise ValueError("provider attempt residual group is missing")
+        return ProviderAttemptSnapshot(
+            attempt_id=int(row["attempt_id"]),
+            attempt=attempt,
+            group=self._project_group(conn, int(group_row["group_id"])),
+        )
 
     def claim_next_group(
         self,

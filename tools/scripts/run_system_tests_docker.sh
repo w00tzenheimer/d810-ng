@@ -73,6 +73,7 @@
 #   D810_TEST_BINARY       Passed into container (default: libobfuscated.dll)
 #   D810_SYSTEM_BATCH_SIZE  Tests per fresh interpreter in system mode (default: 20).
 #   D810_EGGLOG_ROOT       Optional absolute host path to a d810-egglog checkout
+#   D810_COBRA_ROOT        Optional absolute host path to a d810-cobra checkout
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #
 # Examples:
@@ -255,6 +256,23 @@ if [ -n "${D810_EGGLOG_ROOT+x}" ]; then
   D810_EGGLOG_ROOT="$(cd "$D810_EGGLOG_ROOT" && pwd -P)"
   EGGLOG_EXTENSION_ENABLED=1
 fi
+# The optional CoBRA repository follows the same wrapper-only policy as
+# Egglog.  The source is mounted read-only and copied into a writable build
+# directory inside the container; the host path never becomes runtime
+# environment authority.
+COBRA_EXTENSION_ENABLED=0
+if [ -n "${D810_COBRA_ROOT+x}" ]; then
+  if [ -z "$D810_COBRA_ROOT" ] || [[ "$D810_COBRA_ROOT" != /* ]]; then
+    echo "ERROR: D810_COBRA_ROOT must be an absolute existing directory" >&2
+    exit 1
+  fi
+  if [ ! -d "$D810_COBRA_ROOT" ]; then
+    echo "ERROR: D810_COBRA_ROOT must be an absolute existing directory: $D810_COBRA_ROOT" >&2
+    exit 1
+  fi
+  D810_COBRA_ROOT="$(cd "$D810_COBRA_ROOT" && pwd -P)"
+  COBRA_EXTENSION_ENABLED=1
+fi
 RUNTIME_LABEL_KEY="org.d810.test-runtime"
 RUNTIME_LABEL_VALUE="dev-emulation-z3-v1"
 
@@ -419,6 +437,18 @@ VOL_EGGLOG=()
 if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
   VOL_EGGLOG=(-v "${D810_EGGLOG_ROOT}:/opt/d810-egglog:ro")
 fi
+VOL_COBRA=()
+VOL_COBRA_CACHE=()
+COBRA_CACHE_DIR=""
+if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
+  VOL_COBRA=(-v "${D810_COBRA_ROOT}:/opt/d810-cobra:ro")
+  # Build outputs are Linux-only and belong to this task's ignored artifact
+  # area.  Keeping them outside the source mount makes repeated focused runs
+  # reuse one pinned build without ever linking a Darwin archive.
+  COBRA_CACHE_DIR="${WORK_DIR}/.tmp/task11-cobra-linux"
+  mkdir -p "$COBRA_CACHE_DIR"
+  VOL_COBRA_CACHE=(-v "${COBRA_CACHE_DIR}:/opt/d810-cobra-cache:rw")
+fi
 
 # Plan: print what we're about to do so agents see worktree, output path, and options
 echo "$0 plan:"
@@ -445,6 +475,13 @@ if [ -n "$ENABLE_LLVM_OPT" ]; then
 fi
 if [ -n "$DISABLE_FACT_LIFECYCLE" ]; then
   echo "  facts:    D810_FACT_LIFECYCLE=0"
+fi
+if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
+  echo "  extension: d810-egglog (mount ${D810_EGGLOG_ROOT}:/opt/d810-egglog:ro)"
+fi
+if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
+  echo "  extension: d810-cobra (mount ${D810_COBRA_ROOT}:/opt/d810-cobra:ro)"
+  echo "  cobra cache: $COBRA_CACHE_DIR -> /opt/d810-cobra-cache (Linux artifacts)"
 fi
 case "$CMD" in
   system)
@@ -478,7 +515,7 @@ if [ -n "$ENABLE_LLVM_OPT" ]; then
   ENV_TEST="$ENV_TEST D810_REQUIRE_LLVM_OPT=1"
 fi
 PYTEST_EXTENSION_ARGS=""
-if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
+if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ] || [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
   PYTEST_EXTENSION_ARGS="-p no:cacheprovider"
 fi
 
@@ -490,7 +527,7 @@ fi
 # Forward every set D810_* env var to the container via docker -e flags.
 # Wrapper-only vars (those that only affect this script) are excluded.
 _d810_extra_env_flags() {
-  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE "
+  local _skip=" D810_DOCKER_IMAGE D810_DOCKER_MEMORY D810_EGGLOG_ROOT D810_COBRA_ROOT D810_REPO_ROOT D810_WORKTREE_ROOT D810_MEMORY_LIMIT_BYTES D810_SYSTEM_BATCH_SIZE "
   local _out=""
   local _var _val
   for _var in ${!D810_@}; do
@@ -551,7 +588,18 @@ else
 fi
 EXTENSION_SETUP=""
 if [ "$EGGLOG_EXTENSION_ENABLED" = "1" ]; then
-  EXTENSION_SETUP="EXTENSION_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-egglog/. \"\$EXTENSION_BUILD_DIR/\" && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$EXTENSION_BUILD_DIR/pyproject.toml\" > \"\$EXTENSION_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$EXTENSION_BUILD_DIR[test]\" --no-deps -q && $IDA_VENV_PIP install -r \"\$EXTENSION_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'import d810_egglog, egglog'"
+  EXTENSION_SETUP="EXTENSION_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-egglog/. \"\$EXTENSION_BUILD_DIR/\" && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$EXTENSION_BUILD_DIR/pyproject.toml\" > \"\$EXTENSION_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$EXTENSION_BUILD_DIR[test]\" --no-deps -q --force-reinstall --no-cache-dir && $IDA_VENV_PIP install -r \"\$EXTENSION_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'import d810_egglog, egglog'"
+fi
+if [ "$COBRA_EXTENSION_ENABLED" = "1" ]; then
+  # CoBRA's test extras are not enough to describe its runtime dependencies;
+  # derive the project metadata exactly as for Egglog, while omitting the
+  # mounted D810 package so the tested worktree remains authoritative.
+  COBRA_SETUP="COBRA_BUILD_DIR=\$(mktemp -d) && cp -a /opt/d810-cobra/. \"\$COBRA_BUILD_DIR/\" && export COBRA_ROOT=/opt/d810-cobra-cache && if [ ! -f \"\$COBRA_ROOT/.linux-build-ok\" ]; then if ! command -v cmake >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1 || ! command -v c++ >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends cmake ninja-build build-essential; fi; rm -rf \"\$COBRA_ROOT\"/* \"\$COBRA_ROOT\"/.[!.]* \"\$COBRA_ROOT\"/..?* 2>/dev/null || true; cp -a \"\$COBRA_BUILD_DIR/third_party/cobra/.\" \"\$COBRA_ROOT/\"; $IDA_VENV_PYTHON \"\$COBRA_BUILD_DIR/tools/build_cobra.py\" --root \"\$COBRA_ROOT\" && printf '%s\\n' 'linux-cobra-core-v1' > \"\$COBRA_ROOT/.linux-build-ok\"; fi && $IDA_VENV_PYTHON -c 'import re, sys, tomllib; project=tomllib.load(open(sys.argv[1], \"rb\"))[\"project\"]; deps=project.get(\"dependencies\", []) + project.get(\"optional-dependencies\", {}).get(\"test\", []); print(\"\\n\".join(dep for dep in deps if re.match(r\"[A-Za-z0-9_.-]+\", dep.strip()).group(0).lower().replace(\"_\", \"-\").replace(\".\", \"-\") != \"d810-ng\"))' \"\$COBRA_BUILD_DIR/pyproject.toml\" > \"\$COBRA_BUILD_DIR/requirements.txt\" && $IDA_VENV_PIP install \"\$COBRA_BUILD_DIR[test]\" --no-deps -q --force-reinstall --no-cache-dir && $IDA_VENV_PIP install -r \"\$COBRA_BUILD_DIR/requirements.txt\" -q && $IDA_VENV_PYTHON -c 'from d810_cobra.expr import parse_cobra_output; from d810_cobra.prove import ProofResult, prove_equivalent; from d810_cobra.solve import SolveStatus, binding_available, solve_signature; assert binding_available(); tree=parse_cobra_output(\"(x0 | x1) - (x0 & x1)\", [\"a\", \"b\"]); solved=solve_signature(tree, [\"a\", \"b\"], 32); assert solved.status is SolveStatus.SOLVED and solved.tree is not None; assert prove_equivalent(tree, solved.tree, [\"a\", \"b\"], 32) is ProofResult.PROVED; import d810_cobra._cobra'"
+  if [ -n "$EXTENSION_SETUP" ]; then
+    EXTENSION_SETUP="$EXTENSION_SETUP && $COBRA_SETUP"
+  else
+    EXTENSION_SETUP="$COBRA_SETUP"
+  fi
 fi
 SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON $ENV_GIT && $PROFILE_SETUP${PROFILE_SETUP:+ && }$DEPENDENCY_SETUP"
 if [ -n "$EXTENSION_SETUP" ]; then
@@ -599,6 +647,8 @@ run_bash() {
     $VOL_GIT \
     $VOL_LOGS \
     "${VOL_EGGLOG[@]}" \
+    "${VOL_COBRA[@]}" \
+    "${VOL_COBRA_CACHE[@]}" \
     -w /work \
     --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner"
 }
@@ -615,6 +665,8 @@ run_bash_it() {
     $VOL_GIT \
     $VOL_LOGS \
     "${VOL_EGGLOG[@]}" \
+    "${VOL_COBRA[@]}" \
+    "${VOL_COBRA_CACHE[@]}" \
     -w /work \
     -e "CMD=$CMD" \
     -e "PYTHON=$IDA_VENV_PYTHON" \
@@ -637,6 +689,8 @@ run_bash_exec() {
     $VOL_GIT \
     $VOL_LOGS \
     "${VOL_EGGLOG[@]}" \
+    "${VOL_COBRA[@]}" \
+    "${VOL_COBRA_CACHE[@]}" \
     -w /work \
     -e "CMD=exec" \
     -e "PYTHON=$IDA_VENV_PYTHON" \

@@ -185,6 +185,15 @@ class ResidualGroup:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderAttemptSnapshot:
+    """Immutable public read projection for one stored provider attempt."""
+
+    attempt_id: int
+    attempt: DiscoveryAttempt
+    group: ResidualGroup
+
+
+@dataclass(frozen=True, slots=True)
 class MiningRun:
     run_id: str
     group_id: int
@@ -337,6 +346,7 @@ TransitionReceipt = LifecycleReceipt
 __all__ = [
     "ClaimReceipt",
     "DiscoveryAttempt",
+    "ProviderAttemptSnapshot",
     "DiscoveryReceipt",
     "DiscoveryStatus",
     "GROUP_TRANSITIONS",

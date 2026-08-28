@@ -19,10 +19,12 @@ from d810.core.function_execution_identity import (
 from d810.core.plugins import PluginIdentity
 from d810.mba.discovery_models import (
     DiscoveryAttempt,
+    ProviderAttemptSnapshot,
     MiningRunState,
     ProposalState,
     ResidualGroupState,
 )
+
 from d810.mba.bounded_synthesis import ProofReceipt
 from d810.mba.discovery_store import MbaDiscoveryStore
 from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
@@ -93,6 +95,23 @@ def _attempt(
         outcome=outcome,
         eligible_for_mining=eligible,
     )
+
+
+def test_provider_attempt_snapshot_is_public_and_causally_linked(tmp_path: Path) -> None:
+    store = MbaDiscoveryStore(tmp_path / "attempt-snapshot.sqlite3")
+    attempt = _attempt(eligible=True)
+    receipt = store.record_attempt(attempt)
+
+    snapshot = store.provider_attempt_snapshot(attempt.attempt_uuid)
+
+    assert receipt.status == "stored"
+    assert isinstance(snapshot, ProviderAttemptSnapshot)
+    assert snapshot.attempt == attempt
+    assert snapshot.attempt_id == receipt.attempt_id
+    assert snapshot.group.group_id == receipt.group_id
+    assert snapshot.group.revision == receipt.revision
+    assert snapshot.group.state.value == "eligible"
+    store.close()
 
 
 def _proposal(pattern: TypedBvTerm) -> MbaRuleProposal:
