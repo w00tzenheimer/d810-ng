@@ -162,8 +162,11 @@ _SCHEMA_SQL = """
         materialized_path TEXT,
         materialized_digest TEXT,
         materialized_at TEXT,
+        materialized_source_revision INTEGER,
         admitted_rule_id TEXT,
         admitted_at TEXT,
+        terminal_source_state TEXT,
+        terminal_source_revision INTEGER,
         rejection_reason TEXT
     );
     CREATE INDEX idx_residual_groups_claim
@@ -273,8 +276,11 @@ _TABLES: dict[str, tuple[str, ...]] = {
         "materialized_path",
         "materialized_digest",
         "materialized_at",
+        "materialized_source_revision",
         "admitted_rule_id",
         "admitted_at",
+        "terminal_source_state",
+        "terminal_source_revision",
         "rejection_reason",
     ),
 }
@@ -315,6 +321,8 @@ _TYPE_BY_NAME = {
     "proof_verdict": "INTEGER",
     "eligible_observation_count": "INTEGER",
     "revision": "INTEGER",
+    "materialized_source_revision": "INTEGER",
+    "terminal_source_revision": "INTEGER",
     "external_evidence_allowed": "INTEGER",
     "elapsed_ms": "REAL",
 }
@@ -355,7 +363,10 @@ _NOT_NULL = {
             "failure_reason",
             "materialized_path",
             "materialized_digest",
+            "materialized_source_revision",
             "admitted_rule_id",
+            "terminal_source_state",
+            "terminal_source_revision",
             "rejection_reason",
         }
         for name in columns
@@ -616,65 +627,12 @@ def _proof_payload(proofs: tuple[ProofReceipt, ...]) -> bytes:
     ).encode("utf-8")
 
 
-_LIFECYCLE_KEYS = frozenset({"materialized", "terminal"})
-_TRANSITION_IDENTITY_KEYS = frozenset({"source_state", "source_revision"})
-
-
-def _proof_envelope(
-    proofs: tuple[ProofReceipt, ...],
-    *,
-    materialized: dict[str, object] | None = None,
-    terminal: dict[str, object] | None = None,
-) -> bytes:
-    return _json_bytes(
-        {
-            "schema_version": 1,
-            "proof_receipts": _strict_loads(_proof_payload(proofs)),
-            "lifecycle": {
-                "materialized": materialized,
-                "terminal": terminal,
-            },
-        },
-        name="proof receipt payload",
-    )
-
-
-def _decode_proof_envelope(
-    payload: bytes,
-) -> tuple[tuple[ProofReceipt, ...], dict[str, object]]:
+def _proofs_from_payload(payload: bytes) -> tuple[ProofReceipt, ...]:
     decoded = _strict_loads(payload)
-    if type(decoded) is list:
-        proof_rows = decoded
-        lifecycle: dict[str, object] = {"materialized": None, "terminal": None}
-    elif type(decoded) is dict and set(decoded) == {
-        "schema_version",
-        "proof_receipts",
-        "lifecycle",
-    }:
-        if decoded["schema_version"] != 1:
-            raise ValueError("unsupported proof receipt payload schema")
-        proof_rows = decoded["proof_receipts"]
-        lifecycle_raw = decoded["lifecycle"]
-        if type(lifecycle_raw) is not dict or set(lifecycle_raw) != _LIFECYCLE_KEYS:
-            raise ValueError("proof receipt lifecycle payload has invalid fields")
-        lifecycle = dict(lifecycle_raw)
-        for name, identity in lifecycle.items():
-            if identity is None:
-                continue
-            if (
-                type(identity) is not dict
-                or set(identity) != _TRANSITION_IDENTITY_KEYS
-                or type(identity["source_state"]) is not str
-                or type(identity["source_revision"]) is not int
-                or identity["source_revision"] < 0
-            ):
-                raise ValueError(f"{name} retry identity is invalid")
-    else:
-        raise ValueError("proof receipt payload must be an envelope")
-    if type(proof_rows) is not list:
-        raise ValueError("proof receipt payload must contain a list")
+    if type(decoded) is not list:
+        raise ValueError("proof receipt payload must be a list")
     proofs: list[ProofReceipt] = []
-    for row in proof_rows:
+    for row in decoded:
         if type(row) is not dict or set(row) != _PROOF_FIELDS:
             raise ValueError("proof receipt has invalid fields")
         proofs.append(
@@ -695,45 +653,9 @@ def _decode_proof_envelope(
         raise ValueError("proof receipts must cover exactly 8, 16, 32, and 64 bits")
     if any(not item.certified for item in result):
         raise ValueError("proof receipts must all be certified")
-    if type(decoded) is list and _proof_payload(result) != payload:
+    if _proof_payload(result) != payload:
         raise ValueError("proof receipt payload is not canonical")
-    if (
-        type(decoded) is dict
-        and _proof_envelope(
-            result,
-            materialized=lifecycle["materialized"],  # type: ignore[arg-type]
-            terminal=lifecycle["terminal"],  # type: ignore[arg-type]
-        )
-        != payload
-    ):
-        raise ValueError("proof receipt payload is not canonical")
-    return result, lifecycle
-
-
-def _proofs_from_payload(payload: bytes) -> tuple[ProofReceipt, ...]:
-    return _decode_proof_envelope(payload)[0]
-
-
-def _with_retry_identity(
-    payload: bytes,
-    transition: str,
-    source_state: ProposalState,
-    source_revision: int,
-) -> bytes:
-    proofs, lifecycle = _decode_proof_envelope(payload)
-    if transition not in _LIFECYCLE_KEYS:
-        raise ValueError("unknown lifecycle retry transition")
-    if lifecycle[transition] is not None:
-        raise ValueError("lifecycle retry identity already exists")
-    lifecycle[transition] = {
-        "source_state": source_state.value,
-        "source_revision": source_revision,
-    }
-    return _proof_envelope(
-        proofs,
-        materialized=lifecycle["materialized"],  # type: ignore[arg-type]
-        terminal=lifecycle["terminal"],  # type: ignore[arg-type]
-    )
+    return result
 
 
 def _proposal_from_bytes(payload: bytes) -> MbaRuleProposal:
@@ -862,7 +784,7 @@ def _coerce_proposal_payload(value: object) -> tuple[MbaRuleProposal, bytes]:
 
 def _coerce_proof_payload(value: object, proposal: MbaRuleProposal) -> bytes:
     if value is None:
-        return _proof_envelope(proposal.proof_receipts)
+        return _proof_payload(proposal.proof_receipts)
     if type(value) is bytes:
         proofs = _proofs_from_payload(value)
     elif type(value) in (tuple, list) and all(
@@ -875,7 +797,7 @@ def _coerce_proof_payload(value: object, proposal: MbaRuleProposal) -> bytes:
         )
     if proofs != proposal.proof_receipts:
         raise ValueError("proof receipts do not match proposal")
-    return _proof_envelope(proofs)
+    return _proof_payload(proofs)
 
 
 def _decode_term(payload: bytes, *, name: str) -> TypedBvTerm:
@@ -1067,6 +989,28 @@ def _parse_timestamp(
     return parsed.astimezone(timezone.utc)
 
 
+def _canonical_text(value: object, *, name: str, required: bool = True) -> str | None:
+    if value is None and not required:
+        return None
+    if type(value) is not str or not value or value.strip() != value:
+        raise ValueError(f"{name} must be canonical non-empty text")
+    return value
+
+
+def _canonical_uuid(value: object, *, name: str) -> str:
+    if isinstance(value, UUID):
+        return str(value)
+    if type(value) is not str:
+        raise ValueError(f"{name} must be a canonical UUID")
+    try:
+        result = str(UUID(value))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a canonical UUID") from exc
+    if result != value:
+        raise ValueError(f"{name} must be a canonical UUID")
+    return result
+
+
 def _seconds(value: object) -> float:
     if isinstance(value, timedelta):
         result = value.total_seconds()
@@ -1110,14 +1054,7 @@ class MbaDiscoveryStore:
 
     def _new_uuid(self) -> str:
         value = self._uuid_factory()  # type: ignore[operator]
-        if isinstance(value, UUID):
-            return str(value)
-        if type(value) is str:
-            try:
-                return str(UUID(value))
-            except ValueError as exc:
-                raise ValueError("uuid factory returned an invalid UUID") from exc
-        raise TypeError("uuid factory must return a UUID or string")
+        return _canonical_uuid(value, name="uuid factory result")
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -1160,12 +1097,13 @@ class MbaDiscoveryStore:
                     )
                 else:
                     versions = self._connection.execute(
-                        "SELECT version FROM schema_migrations ORDER BY version"
+                        "SELECT version, applied_at FROM schema_migrations ORDER BY version"
                     ).fetchall()
                     if any(row[0] > SCHEMA_VERSION for row in versions):
                         raise ValueError("unsupported schema version")
-                    if [tuple(row) for row in versions] != [(SCHEMA_VERSION,)]:
+                    if [row[0] for row in versions] != [SCHEMA_VERSION]:
                         raise ValueError("partial schema")
+                    _parse_timestamp(versions[0][1], name="applied_at")
                     self._validate_schema()
             except Exception:
                 self._connection.rollback()
@@ -1905,6 +1843,8 @@ class MbaDiscoveryStore:
         started = _parse_timestamp(row[6], name="started_at")
         heartbeat = _parse_timestamp(row[7], name="heartbeat_at")
         finished = _parse_timestamp(row[8], name="finished_at", required=False)
+        _canonical_text(row[3], name="miner_version")
+        _canonical_text(row[4], name="budget_fingerprint")
         if heartbeat < started or finished is not None and finished < heartbeat:
             raise ValueError("mining run timestamps are out of order")
         if state is MiningRunState.ACTIVE:
@@ -1922,9 +1862,11 @@ class MbaDiscoveryStore:
                 MiningRunState.FAILED,
                 MiningRunState.SUPERSEDED,
             }
-            and not row[9]
+            and row[9] is None
         ):
             raise ValueError("terminal run requires failure_reason")
+        if row[9] is not None:
+            _canonical_text(row[9], name="failure_reason")
         return MiningRun(
             row[0],
             int(row[1]),
@@ -1941,21 +1883,23 @@ class MbaDiscoveryStore:
     def _project_proposal_local(
         self, conn: sqlite3.Connection, row: sqlite3.Row
     ) -> Proposal:
-        replacement = _decode_term(bytes(row[4]), name="replacement term")
-        proposal = _proposal_from_bytes(bytes(row[5]))
-        proofs = _proofs_from_payload(bytes(row[6]))
+        replacement = _decode_term(
+            bytes(row["replacement_term"]), name="replacement term"
+        )
+        proposal = _proposal_from_bytes(bytes(row["proposal_payload"]))
+        proofs = _proofs_from_payload(bytes(row["proof_receipt_payload"]))
         if (
-            row[3] != proposal.fingerprint
+            row["proposal_fingerprint"] != proposal.fingerprint
             or replacement != proposal.replacement
             or replacement.width != proposal.pattern.width
             or proofs != proposal.proof_receipts
         ):
             raise ValueError("proposal identity is corrupt")
         group = conn.execute(
-            "SELECT * FROM residual_groups WHERE group_id=?", (row[1],)
+            "SELECT * FROM residual_groups WHERE group_id=?", (row["group_id"],)
         ).fetchone()
         run = conn.execute(
-            "SELECT * FROM mining_runs WHERE run_id=?", (row[2],)
+            "SELECT * FROM mining_runs WHERE run_id=?", (row["run_id"],)
         ).fetchone()
         if group is None or run is None or run[1] != group[0] or run[2] > group[8]:
             raise ValueError("proposal ownership is corrupt")
@@ -1980,34 +1924,98 @@ class MbaDiscoveryStore:
             group_state = ResidualGroupState(group[2])
         except ValueError as exc:
             raise ValueError("unknown proposal ownership state") from exc
-        created_at = _parse_timestamp(row[8], name="created_at")
+        created_at = _parse_timestamp(row["created_at"], name="created_at")
         materialized_at = _parse_timestamp(
-            row[11], name="materialized_at", required=False
+            row["materialized_at"], name="materialized_at", required=False
         )
-        admitted_at = _parse_timestamp(row[13], name="admitted_at", required=False)
+        admitted_at = _parse_timestamp(
+            row["admitted_at"], name="admitted_at", required=False
+        )
+        materialized_revision = row["materialized_source_revision"]
+        terminal_revision = row["terminal_source_revision"]
+        for name, value in (
+            ("materialized_source_revision", materialized_revision),
+            ("terminal_source_revision", terminal_revision),
+        ):
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"{name} is corrupt")
+        terminal_state_raw = row["terminal_source_state"]
+        try:
+            terminal_state = (
+                None
+                if terminal_state_raw is None
+                else ProposalState(terminal_state_raw)
+            )
+        except ValueError as exc:
+            raise ValueError("terminal_source_state is corrupt") from exc
+        material_fields = (
+            row["materialized_path"],
+            row["materialized_digest"],
+            row["materialized_at"],
+            materialized_revision,
+        )
+        terminal_fields = (terminal_state, terminal_revision)
         if state is ProposalState.PROPOSED:
-            if any(row[index] is not None for index in (9, 10, 11, 12, 13, 14)):
+            if any(
+                value is not None
+                for value in (
+                    *material_fields,
+                    row["admitted_rule_id"],
+                    row["admitted_at"],
+                    *terminal_fields,
+                    row["rejection_reason"],
+                )
+            ):
                 raise ValueError("proposed proposal has terminal fields")
         elif state is ProposalState.MATERIALIZED:
             if (
-                any(row[index] is None for index in (9, 10, 11))
-                or row[12] is not None
-                or row[13] is not None
-                or row[14] is not None
+                any(value is None for value in material_fields)
+                or row["admitted_rule_id"] is not None
+                or row["admitted_at"] is not None
+                or any(value is not None for value in terminal_fields)
+                or row["rejection_reason"] is not None
             ):
                 raise ValueError("materialized proposal fields are inconsistent")
         elif state is ProposalState.ADMITTED:
+            if terminal_state is not ProposalState.MATERIALIZED:
+                raise ValueError("terminal_source_state is corrupt")
             if (
-                any(row[index] is None for index in (9, 10, 11, 12, 13))
-                or row[14] is not None
+                any(value is None for value in material_fields)
+                or row["admitted_rule_id"] is None
+                or row["admitted_at"] is None
+                or terminal_revision is None
+                or row["rejection_reason"] is not None
             ):
                 raise ValueError("admitted proposal fields are inconsistent")
         elif state is ProposalState.REJECTED:
-            if row[14] is None or row[12] is not None or row[13] is not None:
+            if terminal_state not in {
+                ProposalState.PROPOSED,
+                ProposalState.MATERIALIZED,
+            }:
+                raise ValueError("terminal_source_state is corrupt")
+            if (
+                row["rejection_reason"] is None
+                or row["admitted_rule_id"] is not None
+                or row["admitted_at"] is not None
+                or terminal_revision is None
+            ):
                 raise ValueError("rejected proposal fields are inconsistent")
-            if row[9] is None or row[10] is None or row[11] is None:
-                if any(row[index] is not None for index in (9, 10, 11)):
-                    raise ValueError("rejected materialization fields are incomplete")
+            if terminal_state is ProposalState.PROPOSED and any(
+                value is not None for value in material_fields
+            ):
+                raise ValueError("rejected-from-proposed has materialization fields")
+            if terminal_state is ProposalState.MATERIALIZED and any(
+                value is None for value in material_fields
+            ):
+                raise ValueError("rejected materialization fields are incomplete")
+        for name, value in (
+            ("materialized_path", row["materialized_path"]),
+            ("materialized_digest", row["materialized_digest"]),
+            ("admitted_rule_id", row["admitted_rule_id"]),
+            ("rejection_reason", row["rejection_reason"]),
+        ):
+            if value is not None:
+                _canonical_text(value, name=name)
         if materialized_at is not None and materialized_at < created_at:
             raise ValueError("proposal timestamps are out of order")
         if admitted_at is not None and (
@@ -2027,21 +2035,26 @@ class MbaDiscoveryStore:
         ):
             raise ValueError("proposal lifecycle ownership is corrupt")
         return Proposal(
-            row[0],
-            int(row[1]),
-            row[2],
-            row[3],
-            replacement,
-            bytes(row[5]),
-            bytes(row[6]),
-            state,
-            _timestamp(created_at),  # type: ignore[arg-type]
-            row[9],
-            row[10],
-            None if materialized_at is None else _timestamp(materialized_at),
-            row[12],
-            None if admitted_at is None else _timestamp(admitted_at),
-            row[14],
+            proposal_id=row["proposal_id"],
+            group_id=int(row["group_id"]),
+            run_id=row["run_id"],
+            proposal_fingerprint=row["proposal_fingerprint"],
+            replacement_term=replacement,
+            proposal_payload=bytes(row["proposal_payload"]),
+            proof_receipt_payload=bytes(row["proof_receipt_payload"]),
+            state=state,
+            created_at=_timestamp(created_at),  # type: ignore[arg-type]
+            materialized_path=row["materialized_path"],
+            materialized_digest=row["materialized_digest"],
+            materialized_at=(
+                None if materialized_at is None else _timestamp(materialized_at)
+            ),
+            materialized_source_revision=materialized_revision,
+            admitted_rule_id=row["admitted_rule_id"],
+            admitted_at=None if admitted_at is None else _timestamp(admitted_at),
+            terminal_source_state=terminal_state,
+            terminal_source_revision=terminal_revision,
+            rejection_reason=row["rejection_reason"],
         )
 
     def _validate_relational_lifecycle(
@@ -2058,7 +2071,7 @@ class MbaDiscoveryStore:
             raise ValueError("unknown group")
         group = self._project_group_local(conn, group_id)
         run_rows = conn.execute(
-            "SELECT * FROM mining_runs WHERE group_id=? ORDER BY started_at, run_id",
+            "SELECT * FROM mining_runs WHERE group_id=? ORDER BY claimed_revision, started_at, run_id",
             (group_id,),
         ).fetchall()
         proposal_rows = conn.execute(
@@ -2069,7 +2082,9 @@ class MbaDiscoveryStore:
             runs = {row[0]: self._project_run_local(row) for row in run_rows}
         except ValueError as exc:
             if proposal_rows:
-                raise ValueError("proposal lifecycle ownership is corrupt") from exc
+                raise ValueError(
+                    f"proposal lifecycle ownership is corrupt: {exc}"
+                ) from exc
             raise
         proposals = {
             row[0]: self._project_proposal_local(conn, row) for row in proposal_rows
@@ -2092,11 +2107,30 @@ class MbaDiscoveryStore:
         active = [run for run in runs.values() if run.state is MiningRunState.ACTIVE]
         if len(active) > 1:
             raise ValueError("duplicate active mining owners")
+        ordered_runs = list(runs.values())
+        for index, run in enumerate(ordered_runs):
+            if run.claimed_revision < index + 2:
+                raise ValueError("mining run claimed revision precedes evidence")
+            if run.claimed_revision > group.revision:
+                raise ValueError("mining run claimed revision is corrupt")
+            if index:
+                previous = ordered_runs[index - 1]
+                if run.claimed_revision <= previous.claimed_revision:
+                    raise ValueError("mining run claimed revisions are out of order")
+                previous_finished = _parse_timestamp(
+                    previous.finished_at, name="finished_at", required=False
+                )
+                current_started = _parse_timestamp(run.started_at, name="started_at")
+                if previous_finished is None or previous_finished > current_started:
+                    raise ValueError("mining run history is out of order")
+        latest_run = ordered_runs[-1] if ordered_runs else None
         if group.state is ResidualGroupState.MINING:
             if len(active) != 1:
                 raise ValueError("mining group requires exactly one active owner")
             if active[0].claimed_revision > group.revision:
                 raise ValueError("active mining owner revision is corrupt")
+            if latest_run is not active[0]:
+                raise ValueError("active mining owner is not the latest run")
         elif active:
             raise ValueError("active mining owner requires a mining group")
 
@@ -2110,6 +2144,33 @@ class MbaDiscoveryStore:
             raise ValueError("proposal lifecycle requires exactly one proposal")
         if group.state not in proposal_states and proposals:
             raise ValueError("pre-proposal group owns a proposal")
+        proposed_runs = {
+            run.run_id for run in runs.values() if run.state is MiningRunState.PROPOSED
+        }
+        proposal_run_ids = {proposal.run_id for proposal in proposals.values()}
+        if proposed_runs != proposal_run_ids:
+            raise ValueError("proposed run history does not own exactly one proposal")
+        if group.state is ResidualGroupState.OBSERVED and run_rows:
+            raise ValueError("observed group cannot own mining runs")
+        if group.state is ResidualGroupState.NO_PROPOSAL:
+            if latest_run is None or latest_run.state is not MiningRunState.NO_PROPOSAL:
+                raise ValueError(
+                    "no-proposal group requires the latest no-proposal run"
+                )
+            if latest_run.finished_at != group.last_mined_at:
+                raise ValueError("no-proposal completion timestamp is inconsistent")
+        if group.state in proposal_states and (
+            latest_run is None or latest_run.state is not MiningRunState.PROPOSED
+        ):
+            raise ValueError("proposal lifecycle requires the latest proposed run")
+        if group.state is ResidualGroupState.ELIGIBLE and latest_run is not None:
+            if latest_run.state not in {
+                MiningRunState.NO_PROPOSAL,
+                MiningRunState.EXPIRED,
+                MiningRunState.FAILED,
+                MiningRunState.SUPERSEDED,
+            }:
+                raise ValueError("eligible group has an incoherent run history")
 
         raw_runs = {row[0]: row for row in run_rows}
         raw_proposals = {row[0]: row for row in proposal_rows}
@@ -2135,28 +2196,30 @@ class MbaDiscoveryStore:
                 has_materialization = proposal.materialized_at is not None
                 if has_materialization != (group.materialized_at is not None):
                     raise ValueError("rejection source lifecycle is corrupt")
-            if proposal_row[8] != run_row[8]:
+            if proposal_row["created_at"] != run_row["finished_at"]:
                 raise ValueError("proposal publication timestamps are inconsistent")
-            _proofs, lifecycle = _decode_proof_envelope(bytes(proposal_row[6]))
-            materialized_identity = lifecycle["materialized"]
-            terminal_identity = lifecycle["terminal"]
+            materialized_revision = proposal_row["materialized_source_revision"]
+            terminal_state = proposal_row["terminal_source_state"]
+            terminal_revision = proposal_row["terminal_source_revision"]
             if proposal.state is ProposalState.PROPOSED:
-                if materialized_identity is not None or terminal_identity is not None:
+                if (
+                    materialized_revision is not None
+                    or terminal_state is not None
+                    or terminal_revision is not None
+                ):
                     raise ValueError("proposed lifecycle retry identity is corrupt")
             elif proposal.state is ProposalState.MATERIALIZED:
                 if (
-                    materialized_identity is None
-                    or materialized_identity["source_state"]
-                    != ProposalState.PROPOSED.value
-                    or terminal_identity is not None
+                    materialized_revision is None
+                    or terminal_state is not None
+                    or terminal_revision is not None
                 ):
                     raise ValueError("materialized lifecycle retry identity is corrupt")
             elif proposal.state is ProposalState.ADMITTED:
                 if (
-                    materialized_identity is None
-                    or terminal_identity is None
-                    or terminal_identity["source_state"]
-                    != ProposalState.MATERIALIZED.value
+                    materialized_revision is None
+                    or terminal_state != ProposalState.MATERIALIZED.value
+                    or terminal_revision is None
                 ):
                     raise ValueError("admitted lifecycle retry identity is corrupt")
             elif proposal.state is ProposalState.REJECTED:
@@ -2166,19 +2229,23 @@ class MbaDiscoveryStore:
                     else ProposalState.PROPOSED.value
                 )
                 if (
-                    terminal_identity is None
-                    or terminal_identity["source_state"] != expected_source
+                    terminal_state != expected_source
+                    or terminal_revision is None
                     or (proposal.materialized_at is None)
-                    != (materialized_identity is None)
+                    != (materialized_revision is None)
                 ):
                     raise ValueError("rejected lifecycle retry identity is corrupt")
-            for identity in (materialized_identity, terminal_identity):
-                if identity is not None and not (
-                    run.claimed_revision
-                    <= identity["source_revision"]
-                    <= group.revision
+            for revision in (materialized_revision, terminal_revision):
+                if revision is not None and not (
+                    run.claimed_revision <= revision <= group.revision
                 ):
                     raise ValueError("lifecycle retry revision is corrupt")
+            if (
+                materialized_revision is not None
+                and terminal_revision is not None
+                and materialized_revision > terminal_revision
+            ):
+                raise ValueError("lifecycle retry revision chronology is corrupt")
         return group, runs, proposals
 
     def _project_group(self, conn: sqlite3.Connection, group_id: int) -> ResidualGroup:
@@ -2208,18 +2275,8 @@ class MbaDiscoveryStore:
         budget_fingerprint: str,
         lease_timeout: object | None = None,
     ) -> ClaimReceipt:
-        if (
-            type(miner_version) is not str
-            or not miner_version
-            or miner_version.strip() != miner_version
-        ):
-            raise ValueError("miner_version must be canonical")
-        if (
-            type(budget_fingerprint) is not str
-            or not budget_fingerprint
-            or budget_fingerprint.strip() != budget_fingerprint
-        ):
-            raise ValueError("budget_fingerprint must be canonical")
+        _canonical_text(miner_version, name="miner_version")
+        _canonical_text(budget_fingerprint, name="budget_fingerprint")
         timeout = DISCOVERY_LEASE_TIMEOUT_SECONDS
         if lease_timeout is not None and _seconds(lease_timeout) != timeout:
             return ClaimReceipt(
@@ -2328,10 +2385,7 @@ class MbaDiscoveryStore:
             return ClaimReceipt(ReceiptStatus.REFUSED, reason=str(exc))
 
     def heartbeat(self, run_id: str, claimed_revision: int) -> HeartbeatReceipt:
-        try:
-            run_id = str(UUID(run_id))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("run_id must be a UUID") from exc
+        run_id = _canonical_uuid(run_id, name="run_id")
         if type(claimed_revision) is not int or claimed_revision < 0:
             raise ValueError("claimed_revision must be non-negative")
         with self._transaction(immediate=True) as conn:
@@ -2387,14 +2441,10 @@ class MbaDiscoveryStore:
         group_state: ResidualGroupState,
         reason: str,
     ) -> LifecycleReceipt:
-        try:
-            run_id = str(UUID(run_id))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("run_id must be a UUID") from exc
+        run_id = _canonical_uuid(run_id, name="run_id")
         if type(claimed_revision) is not int or claimed_revision < 0:
             raise ValueError("claimed_revision must be non-negative")
-        if type(reason) is not str or not reason or reason.strip() != reason:
-            raise ValueError("reason must be canonical and non-empty")
+        _canonical_text(reason, name="failure_reason")
         with self._transaction(immediate=True) as conn:
             now = self._now()
             run = conn.execute(
@@ -2462,10 +2512,7 @@ class MbaDiscoveryStore:
         proposal_payload: object,
         proof_receipt_payload: object = None,
     ) -> LifecycleReceipt:
-        try:
-            run_id = str(UUID(run_id))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("run_id must be a UUID") from exc
+        run_id = _canonical_uuid(run_id, name="run_id")
         if type(claimed_revision) is not int or claimed_revision < 0:
             raise ValueError("claimed_revision must be non-negative")
         try:
@@ -2550,8 +2597,7 @@ class MbaDiscoveryStore:
                     and existing_run[0] == claimed_revision
                     and bytes(existing[4]) == replacement
                     and bytes(existing[5]) == proposal_bytes
-                    and _proofs_from_payload(bytes(existing[6]))
-                    == _proofs_from_payload(proof_bytes)
+                    and bytes(existing[6]) == proof_bytes
                 )
                 return LifecycleReceipt(
                     ReceiptStatus.DUPLICATE if exact else ReceiptStatus.REFUSED,
@@ -2639,14 +2685,9 @@ class MbaDiscoveryStore:
         expected_state: ProposalState | str | None = None,
         expected_revision: int | None = None,
     ) -> LifecycleReceipt:
-        try:
-            proposal_id = str(UUID(proposal_id))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("proposal_id must be a UUID") from exc
-        if type(path) is not str or not path or path.strip() != path:
-            raise ValueError("materialized path must be canonical")
-        if type(digest) is not str or not digest or digest.strip() != digest:
-            raise ValueError("materialized digest must be canonical")
+        proposal_id = _canonical_uuid(proposal_id, name="proposal_id")
+        _canonical_text(path, name="materialized_path")
+        _canonical_text(digest, name="materialized_digest")
         with self._transaction(immediate=True) as conn:
             row = conn.execute(
                 "SELECT * FROM proposals WHERE proposal_id=?", (proposal_id,)
@@ -2663,7 +2704,7 @@ class MbaDiscoveryStore:
                 raise ValueError("expected_revision must be non-negative")
             try:
                 requested_state = ProposalState(expected_state)
-                current_state = ProposalState(row[7])
+                current_state = ProposalState(row["state"])
             except ValueError as exc:
                 raise ValueError("unknown proposal state") from exc
             group = conn.execute(
@@ -2682,13 +2723,15 @@ class MbaDiscoveryStore:
                     return LifecycleReceipt(
                         ReceiptStatus.REFUSED, reason="invalid_transition"
                     )
-                _proofs, lifecycle = _decode_proof_envelope(bytes(row[6]))
-                identity = lifecycle["materialized"]
-                original_retry = identity == {
-                    "source_state": requested_state.value,
-                    "source_revision": expected_revision,
-                }
-                if row[9] == path and row[10] == digest and original_retry:
+                original_retry = (
+                    requested_state is ProposalState.PROPOSED
+                    and row["materialized_source_revision"] == expected_revision
+                )
+                if (
+                    row["materialized_path"] == path
+                    and row["materialized_digest"] == digest
+                    and original_retry
+                ):
                     return LifecycleReceipt(
                         ReceiptStatus.DUPLICATE,
                         proposal=self._project_proposal(conn, row),
@@ -2718,21 +2761,15 @@ class MbaDiscoveryStore:
                     ReceiptStatus.REFUSED, reason="invalid_transition"
                 )
             now = self._now()
-            proof_payload = _with_retry_identity(
-                bytes(row[6]),
-                "materialized",
-                requested_state,
-                expected_revision,
-            )
             if (
                 conn.execute(
-                    "UPDATE proposals SET state=?, materialized_path=?, materialized_digest=?, materialized_at=?, proof_receipt_payload=? WHERE proposal_id=? AND state=?",
+                    "UPDATE proposals SET state=?, materialized_path=?, materialized_digest=?, materialized_at=?, materialized_source_revision=? WHERE proposal_id=? AND state=?",
                     (
                         ProposalState.MATERIALIZED.value,
                         path,
                         digest,
                         now,
-                        proof_payload,
+                        expected_revision,
                         proposal_id,
                         ProposalState.PROPOSED.value,
                     ),
@@ -2812,13 +2849,16 @@ class MbaDiscoveryStore:
         expected_state: ProposalState | str | None = None,
         expected_revision: int | None = None,
     ) -> LifecycleReceipt:
-        try:
-            proposal_id = str(UUID(proposal_id))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("proposal_id must be a UUID") from exc
+        proposal_id = _canonical_uuid(proposal_id, name="proposal_id")
         value = rule_id if target is ProposalState.ADMITTED else reason
-        if type(value) is not str or not value or value.strip() != value:
-            raise ValueError("lifecycle value must be canonical and non-empty")
+        _canonical_text(
+            value,
+            name=(
+                "admitted_rule_id"
+                if target is ProposalState.ADMITTED
+                else "rejection_reason"
+            ),
+        )
         with self._transaction(immediate=True) as conn:
             row = conn.execute(
                 "SELECT * FROM proposals WHERE proposal_id=?", (proposal_id,)
@@ -2835,7 +2875,7 @@ class MbaDiscoveryStore:
                 raise ValueError("expected_revision must be non-negative")
             try:
                 requested_state = ProposalState(expected_state)
-                current = ProposalState(row[7])
+                current = ProposalState(row["state"])
             except ValueError as exc:
                 raise ValueError("unknown proposal state") from exc
             if requested_state is not current:
@@ -2857,17 +2897,15 @@ class MbaDiscoveryStore:
                     return LifecycleReceipt(
                         ReceiptStatus.REFUSED, reason="invalid_transition"
                     )
-                _proofs, lifecycle = _decode_proof_envelope(bytes(row[6]))
-                identity = lifecycle["terminal"]
-                original_retry = identity == {
-                    "source_state": requested_state.value,
-                    "source_revision": expected_revision,
-                }
+                original_retry = (
+                    row["terminal_source_state"] == requested_state.value
+                    and row["terminal_source_revision"] == expected_revision
+                )
                 if (
                     target is ProposalState.ADMITTED
-                    and row[12] == rule_id
+                    and row["admitted_rule_id"] == rule_id
                     or target is ProposalState.REJECTED
-                    and row[14] == reason
+                    and row["rejection_reason"] == reason
                 ) and original_retry:
                     return LifecycleReceipt(
                         ReceiptStatus.DUPLICATE,
@@ -2896,28 +2934,27 @@ class MbaDiscoveryStore:
                     ReceiptStatus.REFUSED, reason="invalid_transition"
                 )
             now = self._now()
-            proof_payload = _with_retry_identity(
-                bytes(row[6]), "terminal", current, expected_revision
-            )
             if target is ProposalState.ADMITTED:
                 updated = conn.execute(
-                    "UPDATE proposals SET state=?, admitted_rule_id=?, admitted_at=?, proof_receipt_payload=? WHERE proposal_id=? AND state=?",
+                    "UPDATE proposals SET state=?, admitted_rule_id=?, admitted_at=?, terminal_source_state=?, terminal_source_revision=? WHERE proposal_id=? AND state=?",
                     (
                         target.value,
                         rule_id,
                         now,
-                        proof_payload,
+                        current.value,
+                        expected_revision,
                         proposal_id,
                         current.value,
                     ),
                 ).rowcount
             else:
                 updated = conn.execute(
-                    "UPDATE proposals SET state=?, rejection_reason=?, proof_receipt_payload=? WHERE proposal_id=? AND state=?",
+                    "UPDATE proposals SET state=?, rejection_reason=?, terminal_source_state=?, terminal_source_revision=? WHERE proposal_id=? AND state=?",
                     (
                         target.value,
                         reason,
-                        proof_payload,
+                        current.value,
+                        expected_revision,
                         proposal_id,
                         current.value,
                     ),

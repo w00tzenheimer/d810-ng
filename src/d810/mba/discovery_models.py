@@ -30,7 +30,7 @@ def _uuid(value: object, field: str) -> str:
         result = str(UUID(value))
     except ValueError as exc:
         raise ValueError(f"{field} must be a UUID") from exc
-    if result != value.lower():
+    if result != value:
         raise ValueError(f"{field} must use canonical UUID spelling")
     return result
 
@@ -207,6 +207,8 @@ class MiningRun:
         )
         _text(self.miner_version, "miner_version")
         _text(self.budget_fingerprint, "budget_fingerprint")
+        if self.failure_reason is not None:
+            _text(self.failure_reason, "failure_reason")
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,8 +231,11 @@ class Proposal:
     materialized_path: str | None = None
     materialized_digest: str | None = None
     materialized_at: str | None = None
+    materialized_source_revision: int | None = None
     admitted_rule_id: str | None = None
     admitted_at: str | None = None
+    terminal_source_state: ProposalState | None = None
+    terminal_source_revision: int | None = None
     rejection_reason: str | None = None
 
     def __post_init__(self) -> None:
@@ -242,6 +247,24 @@ class Proposal:
             or type(self.proof_receipt_payload) is not bytes
         ):
             raise TypeError("proposal payloads must be bytes")
+        for field, value in (
+            ("materialized_path", self.materialized_path),
+            ("materialized_digest", self.materialized_digest),
+            ("admitted_rule_id", self.admitted_rule_id),
+            ("rejection_reason", self.rejection_reason),
+        ):
+            if value is not None:
+                _text(value, field)
+        for field, value in (
+            ("materialized_source_revision", self.materialized_source_revision),
+            ("terminal_source_revision", self.terminal_source_revision),
+        ):
+            if value is not None:
+                _integer(value, field)
+        if self.terminal_source_state is not None and not isinstance(
+            self.terminal_source_state, ProposalState
+        ):
+            raise TypeError("terminal_source_state must be a ProposalState")
 
 
 @dataclass(frozen=True, slots=True)
