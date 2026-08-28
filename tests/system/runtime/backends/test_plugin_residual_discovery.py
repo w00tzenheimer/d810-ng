@@ -137,7 +137,9 @@ def _manager(optimizer):
     return manager
 
 
-def _activate_real_provider(pass_id: str, store: MbaDiscoveryStore):
+def _activate_real_provider(
+    pass_id: str, store: MbaDiscoveryStore, *, max_leaves: int = 8
+):
     host_registry = _host_capability_registry()
     sink = SqliteMbaResidualObservationSink(store)
     lease = host_registry.register(
@@ -156,12 +158,12 @@ def _activate_real_provider(pass_id: str, store: MbaDiscoveryStore):
                         {
                             "maturities": ["CANONICAL"],
                             "require_proof": True,
-                            "max_leaves": 8,
+                            "max_leaves": max_leaves,
                         }
                         if pass_id == "mba-solve"
                         else {
                             "maturities": ["CANONICAL"],
-                            "max_leaves": 8,
+                            "max_leaves": max_leaves,
                             "max_operator_nodes": 128,
                             "max_degree": 1,
                             "time_budget_ms": 20,
@@ -192,14 +194,30 @@ def _activate_real_provider(pass_id: str, store: MbaDiscoveryStore):
 class TestRealProviderResidualDiscovery:
     binary_name = "libobfuscated.dll"
 
-    @pytest.mark.parametrize("pass_id", ("mba-egraph", "mba-solve"))
+    @pytest.mark.parametrize(
+        ("pass_id", "plugin_name", "distribution", "version", "provider", "status", "reason"),
+        (
+            ("mba-egraph", "egglog", "d810-egglog", "0.1.0", "egraph", "over_budget", "candidate_budget"),
+            ("mba-solve", "cobra", "d810-cobra", "0.1.4", "coefficient_solver", "ineligible", "leaf_budget"),
+        ),
+    )
     def test_real_provider_attempt_is_attributed_through_outer_optimizer(
-        self, tmp_path: Path, pass_id: str
+        self,
+        tmp_path: Path,
+        pass_id: str,
+        plugin_name: str,
+        distribution: str,
+        version: str,
+        provider: str,
+        status: str,
+        reason: str,
     ) -> None:
         db_path = tmp_path / f"{pass_id}.sqlite3"
         db_path.unlink(missing_ok=True)
         store = MbaDiscoveryStore(db_path)
-        backends, rule, lease, sink, schedule = _activate_real_provider(pass_id, store)
+        backends, rule, lease, sink, schedule = _activate_real_provider(
+            pass_id, store, max_leaves=1
+        )
         assert schedule.instruction_bindings
         block = SimpleNamespace(
             mba=SimpleNamespace(
@@ -222,9 +240,9 @@ class TestRealProviderResidualDiscovery:
             snapshot = snapshots[0]
             assert isinstance(snapshot, ProviderAttemptSnapshot)
             attempt = snapshot.attempt
-            assert attempt.context.plugin_identity.name in {"cobra", "egglog"}
-            assert attempt.context.plugin_identity.distribution in {"d810-cobra", "d810-egglog"}
-            assert attempt.context.plugin_identity.version in {"0.1.4", "0.1.0"}
+            assert attempt.context.plugin_identity.name == plugin_name
+            assert attempt.context.plugin_identity.distribution == distribution
+            assert attempt.context.plugin_identity.version == version
             assert attempt.context.plugin_identity.origin
             assert attempt.context.function_identity.database_uuid == "12345678-1234-5678-1234-567812345678"
             assert attempt.context.function_identity.function_ea == 0x401000
@@ -238,10 +256,42 @@ class TestRealProviderResidualDiscovery:
             assert snapshot.group.revision == 1
             assert snapshot.group.state.value in {"eligible", "observed"}
             assert snapshot.group.raw_terms == (attempt.raw_term,)
-            assert attempt.outcome.status.value != "applied"
+            assert attempt.outcome.status.value == status
+            assert attempt.outcome.refusal_reason == reason
             assert attempt.outcome.input_cost is not None
             assert attempt.outcome.output_cost is None or attempt.outcome.output_cost < attempt.outcome.input_cost
-            assert attempt.outcome.provider.value in {"egraph", "coefficient_solver"}
+            assert attempt.outcome.provider.value == provider
+        finally:
+            lease.release()
+            sink.close()
+            backends.close_activations()
+            store.close()
+
+    def test_real_accepted_rewrite_is_applied_without_residual_row(
+        self, tmp_path: Path
+    ) -> None:
+        store = MbaDiscoveryStore(tmp_path / "accepted.sqlite3")
+        backends, rule, lease, sink, schedule = _activate_real_provider(
+            "mba-egraph", store, max_leaves=8
+        )
+        assert schedule.instruction_bindings
+        block = SimpleNamespace(
+            mba=SimpleNamespace(
+                maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+                entry_ea=0x401000,
+            ),
+            serial=7,
+        )
+        instruction = _native_instruction()
+        optimizer = _Optimizer([ida_hexrays.MMAT_PREOPTIMIZED], stats=None)
+        optimizer.add_rule(rule)
+        manager = _manager(optimizer)
+
+        try:
+            assert manager.optimize(block, instruction) is True
+            assert rule.pending_provider_observation() is None
+            assert store.provider_attempt_snapshots() == ()
+            assert rule.provider_outcomes()[-1].status.value == "applied"
         finally:
             lease.release()
             sink.close()
