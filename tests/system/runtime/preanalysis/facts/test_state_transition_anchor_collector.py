@@ -6,6 +6,10 @@ import json
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from tests.system.runtime.preanalysis.facts._diag_provenance_factory import (
+    diag_block as BlockSnapshot,
+    diag_instruction as InstructionSnapshot,
+)
 from d810.ir.flowgraph import (
     BlockSnapshot as CfgBlockSnapshot,
     InsnKind,
@@ -20,27 +24,6 @@ from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 from tests.system.runtime.preanalysis.facts._diag_meta_builder import flat_meta
 
-_OPCODE_ALIASES = {
-    "m_mov": "move",
-}
-
-_OPERAND_TYPE_ALIASES = {
-    "mop_S": "S",
-    "mop_r": "r",
-    "mop_n": "c",
-}
-
-
-def _opcode_name(value: str) -> str:
-    return _OPCODE_ALIASES.get(value, value)
-
-
-def _operand_type(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return _OPERAND_TYPE_ALIASES.get(value, value)
-
-
 def _state_insn(
     *,
     index: int,
@@ -54,10 +37,10 @@ def _state_insn(
         ea=ea,
         opcode=0,
         opcode_name="m_mov",
-        dest_type=_operand_type("mop_S"),
+        dest_type="mop_S",
         dest_stkoff=stkoff,
         dest_size=4,
-        src_l_type=_operand_type("mop_n"),
+        src_l_type="mop_n",
         src_l_stkoff=None,
         src_l_value=state_const,
         src_r_type=None,
@@ -90,10 +73,10 @@ def _register_state_insn(
         ea=ea,
         opcode=0,
         opcode_name="m_mov",
-        dest_type=_operand_type("mop_r"),
+        dest_type="mop_r",
         dest_stkoff=None,
         dest_size=4,
-        src_l_type=_operand_type("mop_n"),
+        src_l_type="mop_n",
         src_l_stkoff=None,
         src_l_value=state_const,
         src_r_type=None,
@@ -127,10 +110,10 @@ def _filler_insn(
         ea=ea,
         opcode=0,
         opcode_name="m_mov",
-        dest_type=_operand_type("mop_S"),
+        dest_type="mop_S",
         dest_stkoff=stkoff,
         dest_size=8,
-        src_l_type=_operand_type("mop_n"),
+        src_l_type="mop_n",
         src_l_stkoff=None,
         src_l_value=0xDEADBEEF,
         src_r_type=None,
@@ -166,6 +149,7 @@ def _block(
         succs=list(succs),
         preds=[],
         instructions=list(insns),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind="unknown",
     )
 
 
@@ -435,10 +419,9 @@ def test_view_accessor_returns_per_source_block() -> None:
 
 # ---------------------------------------------------------------------------
 # llr-3b41 S5: dual-currency port coverage.  The collector now consumes the
-# canonical ``Instruction`` for meta-rich sources (a portable ``FlowGraph``
-# block, or a diag row carrying a parseable ``meta`` operand tree) while
-# meta-less rows (every test above) stay on the byte-identical legacy flat
-# path.  These tests pin the two canonical sources and the two helper edge
+# canonical ``Instruction`` for both portable ``FlowGraph`` blocks and diag
+# rows carrying explicit serializer-shaped ``meta`` operand trees.  These tests
+# pin the two canonical sources and the two helper edge
 # cases the canonical path introduces.
 # ---------------------------------------------------------------------------
 
@@ -456,8 +439,7 @@ def _cfg_mov(
 ) -> InsnSnapshot:
     """A ``mov #const, %var_<stkoff>`` canonical state write."""
     return InsnSnapshot(
-        opcode=-1,
-        raw_opcode=0x1000 + index,
+        opcode=index,
         ea=ea,
         operands=(),
         operand_slots=(
@@ -547,10 +529,10 @@ def _meta_mov(
         ea=ea,
         opcode=0,
         opcode_name="m_mov",
-        dest_type="S",
+        dest_type="mop_S",
         dest_stkoff=None,
         dest_size=4,
-        src_l_type="c",
+        src_l_type="mop_n",
         src_l_stkoff=None,
         src_l_value=None,
         src_r_type=None,
@@ -595,8 +577,7 @@ def test_dest_var_signature_absent_when_dstr_has_no_var() -> None:
 
     def _mov_no_var(*, index: int, state_const: int, ea: int) -> InsnSnapshot:
         return InsnSnapshot(
-            opcode=-1,
-            raw_opcode=0x2000 + index,
+            opcode=index,
             ea=ea,
             operands=(),
             operand_slots=(

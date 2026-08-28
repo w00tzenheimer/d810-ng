@@ -8,6 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from tests.system.runtime.preanalysis.facts._diag_provenance_factory import (
+    diag_block as BlockSnapshot,
+    diag_instruction as InstructionSnapshot,
+)
 from d810.ir.flowgraph import (
     BlockSnapshot as CfgBlockSnapshot,
     FlowGraph,
@@ -21,30 +25,6 @@ from d810.analyses.value_flow.terminal_byte_emitter import (
     TerminalByteEmitterFactCollector,
 )
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
-
-_OPCODE_ALIASES = {
-    "m_stx": "store",
-    "m_mov": "move",
-    "m_add": "add",
-    "m_sub": "sub",
-}
-
-_OPERAND_TYPE_ALIASES = {
-    "mop_S": "S",
-    "mop_n": "c",
-    "mop_r": "r",
-}
-
-
-def _opcode_name(value: str) -> str:
-    return _OPCODE_ALIASES.get(value, value)
-
-
-def _operand_type(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return _OPERAND_TYPE_ALIASES.get(value, value)
-
 
 def _meta(**fields: object) -> str:
     return json.dumps(fields)
@@ -77,14 +57,14 @@ def _insn(
         index=index,
         ea=0x180010000 + index if ea is None else ea,
         opcode=0,
-        opcode_name=_opcode_name(opcode_name),
-        dest_type=_operand_type(dest_type),
+        opcode_name=opcode_name,
+        dest_type=dest_type,
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
-        src_l_type=_operand_type(src_l_type),
+        src_l_type=src_l_type,
         src_l_stkoff=src_l_stkoff,
         src_l_value=src_l_value,
-        src_r_type=_operand_type(src_r_type),
+        src_r_type=src_r_type,
         src_r_stkoff=src_r_stkoff,
         src_r_value=src_r_value,
         dstr=dstr,
@@ -120,6 +100,7 @@ def _target(
                 succs=list(succs),
                 preds=[99],
                 instructions=list(instructions),
+                tail_opcode=0, raw_tail_opcode=0, tail_kind="unknown",
             )
         }
     )
@@ -140,8 +121,13 @@ def test_ignores_source_byte_load_shift_without_store() -> None:
         _target(
             _insn(
                 index=0,
-                opcode_name="op_22",
+                opcode_name="m_shl",
                 dstr="shl xdu.8([ds.2:(%var_190.8+#1.8)].1), (#8.1*%var_358.1), %var_670.8",
+                meta=_meta(
+                    l=_meta_stack(0x190),
+                    r=_meta_const(8),
+                    d=_meta_stack(0x670),
+                ),
             ),
             succs=(102,),
         ),
@@ -165,6 +151,10 @@ def test_ignores_guard_only_zero_edge_without_related_store_counter() -> None:
                 src_l_stkoff=0x7BC,
                 src_r_type="mop_n",
                 src_r_value=0,
+                meta=_meta(
+                    l=_meta_stack(0x7BC, size=4),
+                    d={"type": "mop_b", "type_num": 7, "size": 0, "block_num": 241},
+                ),
                 predicate_kind=PredicateKind.NE,
                 control_transfer=ControlTransferKind.CONDITIONAL_BRANCH,
                 dstr="jnz %var_7BC.4, #0.8, @return",
@@ -188,6 +178,14 @@ def test_ignores_store_without_byte_index_or_guard() -> None:
                 opcode_name="m_stx",
                 src_l_type="mop_S",
                 src_l_stkoff=0x688,
+                src_r_type="mop_r",
+                dest_type="mop_S",
+                dest_stkoff=0x700,
+                meta=_meta(
+                    l=_meta_stack(0x688),
+                    r={"type": "mop_r", "type_num": 1, "size": 8, "register": 0},
+                    d=_meta_stack(0x700),
+                ),
                 dstr="stx %var_tmp.1, ds.1, %var_dst.8",
             ),
             succs=(102,),
@@ -210,6 +208,14 @@ def test_rendered_byte_store_text_does_not_authorize_byte_index() -> None:
                 opcode_name="m_stx",
                 dest_type="mop_S",
                 dest_stkoff=0x700,
+                src_l_type="mop_S",
+                src_l_stkoff=0x688,
+                src_r_type="mop_r",
+                meta=_meta(
+                    l=_meta_stack(0x688),
+                    r={"type": "mop_r", "type_num": 1, "size": 8, "register": 0},
+                    d=_meta_stack(0x700),
+                ),
                 dstr=(
                     "stx ([ds.2:%var_dst.8].8 | "
                     "(xdu.8([ds.2:(%var_src.8+#3.8)].1) <<l #8.1)), "
@@ -228,14 +234,9 @@ def test_rendered_byte_store_text_does_not_authorize_byte_index() -> None:
 
 # --- llr-3b41 S10-pair: terminal_byte_emitter canonical-lift coverage ---------
 #
-# The pre-port tests above all use meta-less ``InstructionSnapshot`` rows (a
-# ``meta`` carrying only attrs such as ``byte_index`` / ``address_const_values``
-# -- no ``l`` / ``r`` / ``d`` operand tree), so ``diag_row_has_operand_tree`` is
-# False and they stay on the byte-identical legacy flat path.  The S10-pair port
-# routes ``_iter_block_views`` through a collector-local dual-currency iterator
-# (canonical ``Instruction`` for meta-rich FlowGraph blocks and operand-tree diag
-# rows; legacy flat path for meta-less rows).  These tests pin the two meta-rich
-# sources.
+# The source rows below carry explicit serializer-shaped operand trees.  The
+# collector therefore exercises the same canonical projection as live
+# FlowGraph blocks; display text and legacy flat fields cannot supply operands.
 
 
 def _cfg_stack(stkoff: int, *, size: int = 8) -> MopSnapshot:
@@ -258,8 +259,7 @@ def _cfg_insn(
     display_text: str = "",
 ) -> InsnSnapshot:
     return InsnSnapshot(
-        opcode=-1,
-        raw_opcode=0x1000 + index,
+        opcode=index,
         ea=0x180014000 + index if ea is None else ea,
         operands=tuple(op for op in (l, r, d) if op is not None),
         operand_slots=tuple(
@@ -385,7 +385,10 @@ def test_operand_tree_diag_row_yields_no_byte_emit_fact() -> None:
                 index=0,
                 opcode_name="m_jcnd",
                 dstr="jcnd %var_54.8 == #2.8, @241",
-                meta=_meta(l=_meta_stack(0x54), r=_meta_const(2)),
+                meta=_meta(
+                    l=_meta_stack(0x54),
+                    d={"type": "mop_b", "type_num": 7, "size": 0, "block_num": 241},
+                ),
             ),
             _insn(
                 index=1,

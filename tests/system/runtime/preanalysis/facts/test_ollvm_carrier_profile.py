@@ -6,6 +6,10 @@ import json
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from tests.system.runtime.preanalysis.facts._diag_provenance_factory import (
+    diag_block as BlockSnapshot,
+    diag_instruction as InstructionSnapshot,
+)
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
     BlockSnapshot as CfgBlockSnapshot,
@@ -24,38 +28,70 @@ from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 from tests.system.runtime.preanalysis.facts._diag_meta_builder import flat_meta
 
 
-_OPCODE_CANONICAL = {
-    "op_4": "m_mov",
-    "op_1": "m_stx",
-    "op_10": "m_call",
-    "op_35": "m_xds",
-    "op_56": "m_add",
-}
+def _meta_stack(stkoff: int, size: int = 8) -> dict[str, object]:
+    return {
+        "type": "mop_S", "type_num": 5, "size": size,
+        "stkoff": stkoff,
+    }
+
+
+def _meta_move(source: int = 0x100, dest: int = 0x200) -> dict[str, object]:
+    return {
+        "l": _meta_stack(source),
+        "d": _meta_stack(dest),
+    }
+
+
+def _meta_store(dest: int = 0x200) -> dict[str, object]:
+    return {
+        "l": {"type": "mop_n", "type_num": 2, "size": 8, "value": 0},
+        "r": {"type": "mop_r", "type_num": 1, "size": 8, "register": 0},
+        "d": _meta_stack(dest),
+    }
+
+
+def _meta_binary(dest: int = 0x200) -> dict[str, object]:
+    return {
+        "l": _meta_stack(0x100),
+        "r": {"type": "mop_n", "type_num": 2, "size": 8, "value": 1},
+        "d": _meta_stack(dest),
+    }
+
+
+def _meta_call() -> dict[str, object]:
+    return {
+        "l": {"type": "mop_v", "type_num": 6, "size": 8,
+              "global_ea": "0x180000000"},
+        "d": {"type": "mop_f", "type_num": 8, "size": 8, "args": []},
+    }
 
 
 def _insn(
     *,
     index: int = 0,
     ea: int = 0x180010000,
-    opcode_name: str = "op_4",
+    opcode_name: str = "m_mov",
     dstr: str,
     dest_stkoff: int | None = None,
+    meta: dict[str, object] | None = None,
 ) -> InstructionSnapshot:
     # llr-3b41 S11: the OLLVM carrier collector is text-driven (regex over
-    # ``dstr``) but also reads canonical ``operation`` (STORE).  The collector
-    # lifts diag rows through ``project_diag_instruction`` (the meta-less flat
-    # path was deleted), so map the numeric opcode to its serializer spelling and
-    # attach a ``meta`` operand tree carrying the dest stack slot.
-    canonical_opcode = _OPCODE_CANONICAL.get(opcode_name, opcode_name)
+    # ``dstr``) but also reads canonical ``operation`` (STORE).  Every row
+    # carries an explicit serializer-shaped operand tree; no opcode or operand
+    # semantics are inferred from display text.
+    canonical_opcode = opcode_name
     dest_type = "mop_S" if dest_stkoff is not None else None
-    meta = flat_meta(
-        opcode_name=canonical_opcode,
-        ea=ea,
-        dstr=dstr,
-        dest_type=dest_type,
-        dest_stkoff=dest_stkoff,
-        dest_size=8,
-    )
+    if meta is None:
+        meta = flat_meta(
+            opcode_name=canonical_opcode,
+            ea=ea,
+            dstr=dstr,
+            dest_type=dest_type,
+            dest_stkoff=dest_stkoff,
+            dest_size=8,
+        )
+    elif isinstance(meta, dict):
+        meta = json.dumps(meta, sort_keys=True, separators=(",", ":"))
     return InstructionSnapshot(
         index=index,
         ea=ea,
@@ -86,6 +122,7 @@ def _block(serial: int, *insns: InstructionSnapshot) -> BlockSnapshot:
         succs=[serial + 1],
         preds=[],
         instructions=list(insns),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind="unknown",
     )
 
 
@@ -103,7 +140,9 @@ def _collect(target: object):
 
 
 def test_requires_ollvm_marker() -> None:
-    facts = _collect(_target(_block(1, _insn(dstr="mov rcx.8, %var_38.8"))))
+    facts = _collect(_target(_block(
+        1, _insn(dstr="mov rcx.8, %var_38.8", meta=_meta_move()),
+    )))
 
     assert facts == ()
 
@@ -113,11 +152,12 @@ def test_records_argument_and_password_call_carriers() -> None:
         _target(
             _block(
                 1,
-                _insn(index=0, dstr="mov    rdx.8{1}, %var_30.8{1}"),
-                _insn(index=1, dstr="mov    rcx.8{2}, %var_38.8{2}"),
+                _insn(index=0, dstr="mov    rdx.8{1}, %var_30.8{1}", meta=_meta_move()),
+                _insn(index=1, dstr="mov    rcx.8{2}, %var_38.8{2}", meta=_meta_move()),
                 _insn(
                     index=2,
-                    opcode_name="op_10",
+                    opcode_name="m_call",
+                    meta=_meta_call(),
                     dstr=(
                         "low call $0x180000000<fast:_QWORD &(%var_98{46}).8,"
                         "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
@@ -126,7 +166,8 @@ def test_records_argument_and_password_call_carriers() -> None:
                 ),
                 _insn(
                     index=3,
-                    opcode_name="op_10",
+                    opcode_name="m_call",
+                    meta=_meta_call(),
                     dstr=(
                         'low call $0x180000000<...:"const char *" &($aS).8,'
                         '"const char *" &(%var_98{46}).8> => __int64 .8, '
@@ -151,7 +192,8 @@ def test_records_native_imagebase_password_compare_carriers() -> None:
                 1,
                 _insn(
                     index=0,
-                    opcode_name="op_56",
+                    opcode_name="m_call",
+                    meta=_meta_call(),
                     dstr=(
                         'call   $printf <...:"const char *const Format" '
                         "&($aPleaseEnterPassword).8> => int .0"
@@ -159,7 +201,8 @@ def test_records_native_imagebase_password_compare_carriers() -> None:
                 ),
                 _insn(
                     index=1,
-                    opcode_name="op_4",
+                    opcode_name="m_mov",
+                    meta=_meta_move(),
                     dstr=(
                         'mov    call $__ImageBase<std:"HINSTANCE hinstDLL" '
                         '&(%var_98{40}).8,"DWORD fdwReason" '
@@ -191,19 +234,23 @@ def test_distinguishes_loop_index_from_accumulator() -> None:
                 _insn(
                     index=0,
                     dstr="mov    &(%var_18{43}).8, %var_378.8",
+                    meta=_meta_move(0x100, 0x378),
                 ),
                 _insn(
                     index=1,
                     dstr="mov    %var_378.8, %var_390.8",
+                    meta=_meta_move(0x378, 0x390),
                 ),
                 _insn(
                     index=2,
-                    opcode_name="op_35",
+                    opcode_name="m_setb",
+                    meta=_meta_binary(0x3A1),
                     dstr="setb [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1",
                 ),
                 _insn(
                     index=3,
-                    opcode_name="op_1",
+                    opcode_name="m_stx",
+                    meta=_meta_store(0x378),
                     dstr=(
                         "stx ((#5.4*[ds.2:%var_378.8].4)+[ds.2:%var_390.8].4), "
                         "ds.2, %var_378.8"
@@ -211,7 +258,8 @@ def test_distinguishes_loop_index_from_accumulator() -> None:
                 ),
                 _insn(
                     index=4,
-                    opcode_name="op_10",
+                    opcode_name="m_call",
+                    meta=_meta_call(),
                     dstr=(
                         "low call $0x180000000<fast:_QWORD &(%var_98).8,"
                         "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
@@ -249,14 +297,17 @@ def test_multiply_add_without_same_base_alias_is_not_proven() -> None:
                 _insn(
                     index=0,
                     dstr="mov    &(%var_18{43}).8, %var_378.8",
+                    meta=_meta_move(0x100, 0x378),
                 ),
                 _insn(
                     index=1,
                     dstr="mov    &(%var_84{44}).8, %var_390.8",
+                    meta=_meta_move(0x100, 0x390),
                 ),
                 _insn(
                     index=2,
-                    opcode_name="op_1",
+                    opcode_name="m_stx",
+                    meta=_meta_store(0x370),
                     dstr=(
                         "stx ((#5.4*[ds.2:%var_378.8].4)+[ds.2:%var_390.8].4), "
                         "ds.2, %var_378.8"
@@ -264,7 +315,8 @@ def test_multiply_add_without_same_base_alias_is_not_proven() -> None:
                 ),
                 _insn(
                     index=3,
-                    opcode_name="op_10",
+                    opcode_name="m_call",
+                    meta=_meta_call(),
                     dstr=(
                         "low call $0x180000000<fast:_QWORD &(%var_98).8,"
                         "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
@@ -288,10 +340,14 @@ def test_records_masked_arg_output_store_candidate() -> None:
         _target(
             _block(
                 20,
-                _insn(index=0, dstr="mov    rdx.8{1}, %var_370.8{1}"),
+                _insn(
+                    index=0, dstr="mov    rdx.8{1}, %var_370.8{1}",
+                    meta=_meta_move(0x100, 0x370),
+                ),
                 _insn(
                     index=1,
-                    opcode_name="op_1",
+                    opcode_name="m_stx",
+                    meta=_meta_store(0x370),
                     dstr=(
                         "stx ((([ds.2:%var_378.8].4 ^ bnot([ds.2:%var_378.8].4)) "
                         "& #0xCD536960.4) ^ #0x259CF55E.4), ds.2, "
@@ -300,7 +356,8 @@ def test_records_masked_arg_output_store_candidate() -> None:
                 ),
                 _insn(
                     index=2,
-                    opcode_name="op_10",
+                    opcode_name="m_call",
+                    meta=_meta_call(),
                     dstr=(
                         "low call $0x180000000<fast:_QWORD &(%var_98).8,"
                         "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
@@ -322,10 +379,14 @@ def test_records_local_working_store_when_target_is_address_of_local() -> None:
         _target(
             _block(
                 20,
-                _insn(index=0, dstr="mov    &(%var_18{43}).8, %var_370.8"),
+                _insn(
+                    index=0, dstr="mov    &(%var_18{43}).8, %var_370.8",
+                    meta=_meta_move(0x100, 0x370),
+                ),
                 _insn(
                     index=1,
-                    opcode_name="op_1",
+                    opcode_name="m_stx",
+                    meta=_meta_store(0x370),
                     dstr=(
                         "stx ((([ds.2:%var_378.8].4 ^ bnot([ds.2:%var_378.8].4)) "
                         "& #0xCD536960.4) ^ #0x259CF55E.4), ds.2, "
@@ -334,7 +395,8 @@ def test_records_local_working_store_when_target_is_address_of_local() -> None:
                 ),
                 _insn(
                     index=2,
-                    opcode_name="op_10",
+                    opcode_name="m_call",
+                    meta=_meta_call(),
                     dstr=(
                         "low call $0x180000000<fast:_QWORD &(%var_98).8,"
                         "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
@@ -359,10 +421,9 @@ def test_records_local_working_store_when_target_is_address_of_local() -> None:
 
 # ---------------------------------------------------------------------------
 # llr-3b41: dual-currency port coverage.  The collector now consumes the
-# canonical ``Instruction`` for meta-rich sources (a portable ``FlowGraph``
-# block, or a diag row carrying a parseable ``meta`` operand tree) while
-# meta-less rows (every test above) stay on the byte-identical legacy flat
-# path.  This collector is purely text-driven (carriers are matched on the
+# canonical ``Instruction`` for both portable ``FlowGraph`` blocks and diag
+# rows carrying explicit ``meta`` operand trees.  This collector is purely
+# text-driven (carriers are matched on the
 # instruction ``dstr``; the only structured read is ``operation`` vs
 # ``ValueOpKind.STORE``), so the two new currencies are pinned by routing the
 # SAME OLLVM carrier text through ``InstructionProjection.from_block`` and
@@ -419,7 +480,7 @@ def test_collects_accumulator_carrier_from_canonical_flowgraph() -> None:
     """A portable ``FlowGraph`` block routes through the canonical projection:
     ``dstr`` comes from ``Instruction.attrs['display_text']`` and the STORE
     check from the canonical ``operation`` (``value_op_kind=STORE``), so the
-    same OLLVM carriers are recovered as on the legacy meta-less path."""
+    same OLLVM carriers are recovered from canonical semantics."""
     facts = _collect(
         _cfg_target(
             _cfg_insn(index=0, display_text=_LOCAL_BASE_TEXT),
@@ -470,6 +531,7 @@ def _accum_store_meta_row() -> InstructionSnapshot:
     insn.meta = json.dumps(
         {
             "l": {"type": "mop_n", "type_num": 2, "size": 4, "dstr": "#5", "value": 5},
+            "r": {"type": "mop_r", "type_num": 1, "size": 8, "dstr": "rax", "register": 0},
             "d": {
                 "type": "mop_S",
                 "type_num": 5,
@@ -491,11 +553,14 @@ def test_collects_accumulator_carrier_from_operand_tree_diag_row() -> None:
         _target(
             _block(
                 10,
-                _insn(index=0, dstr=_LOCAL_BASE_TEXT),
-                _insn(index=1, dstr=_LOCAL_ALIAS_TEXT),
+                _insn(index=0, dstr=_LOCAL_BASE_TEXT, meta=_meta_move(0x100, 0x378)),
+                _insn(index=1, dstr=_LOCAL_ALIAS_TEXT, meta=_meta_move(0x378, 0x390)),
                 # operand-tree diag row -> canonical lift (gate True)
                 _accum_store_meta_row(),
-                _insn(index=3, opcode_name="op_10", dstr=_PASSWORD_CALL_TEXT),
+                _insn(
+                    index=3, opcode_name="m_call", meta=_meta_call(),
+                    dstr=_PASSWORD_CALL_TEXT,
+                ),
             )
         )
     )

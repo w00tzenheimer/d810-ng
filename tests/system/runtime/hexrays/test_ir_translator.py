@@ -105,6 +105,68 @@ from d810.hexrays.mutation.ir_translator import (
     _operand_kind_from_hexrays,
     capture_mop_snapshot,
 )
+
+
+def test_lift_block_preserves_independent_live_tail_provenance(monkeypatch) -> None:
+    """The walked row cannot manufacture block-tail authority."""
+    import d810.hexrays.mutation.ir_translator as translator
+    from d810.transforms.unflatten_authority import producer_api
+
+    walked = InsnSnapshot(
+        opcode=7, ea=0x1000, operands=(), kind=InsnKind.NOP,
+        raw_opcode=70, display_text="walked",
+    )
+
+    class _Block:
+        serial = 0
+        type = ida_hexrays.BLT_1WAY
+        flags = 0
+        start = 0x1000
+        head = SimpleNamespace(ea=0x1000, next=None)
+        tail = None
+
+        @staticmethod
+        def nsucc() -> int:
+            return 0
+
+        @staticmethod
+        def npred() -> int:
+            return 0
+
+        @staticmethod
+        def succ(_index: int) -> int:
+            raise IndexError
+
+        @staticmethod
+        def pred(_index: int) -> int:
+            raise IndexError
+
+    monkeypatch.setattr(translator, "capture_insn_snapshot", lambda *_args, **_kwargs: walked)
+    for opcode, raw_opcode, kind in (
+        (99, 70, InsnKind.NOP),
+        (7, 990, InsnKind.NOP),
+        (7, 70, InsnKind.MOV),
+    ):
+        _Block.tail = SimpleNamespace(
+            opcode=opcode, raw_opcode=raw_opcode, kind=kind,
+        )
+        lifted = translator.lift_block(_Block(), map_fict_ea=lambda ea: ea)
+        assert lifted.insn_snapshots[-1].opcode == 7
+        assert (lifted.tail_opcode, lifted.raw_tail_opcode, lifted.tail_kind) == (
+            opcode, raw_opcode, kind,
+        )
+        with pytest.raises(ValueError, match="tail"):
+            producer_api.observe_inventory_block(
+                lifted, owner_ref=None, owner_anchor_ea=0x1000,
+            )
+
+    _Block.tail = None
+    missing = translator.lift_block(_Block(), map_fict_ea=lambda ea: ea)
+    assert missing.tail_opcode is None
+    with pytest.raises(ValueError, match="tail"):
+        producer_api.observe_inventory_block(
+            missing, owner_ref=None, owner_anchor_ea=0x1000,
+        )
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
 from tests.native_preanalysis import make_native_key
 

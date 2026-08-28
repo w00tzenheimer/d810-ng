@@ -34,6 +34,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from tests.system.runtime.preanalysis.facts._diag_provenance_factory import (
+    diag_block as BlockSnapshot,
+    diag_instruction as InstructionSnapshot,
+)
 from d810.ir.flowgraph import (
     BlockSnapshot as CfgBlockSnapshot,
     FlowGraph,
@@ -103,8 +107,7 @@ def _cfg_insn(
     display_text: str = "",
 ) -> InsnSnapshot:
     return InsnSnapshot(
-        opcode=-1,
-        raw_opcode=0x1000,
+        opcode=0,
         ea=ea,
         operands=tuple(op for op in (l, r, d) if op is not None),
         operand_slots=tuple(
@@ -268,7 +271,9 @@ def _meta_sub(left: dict, right: dict, size: int = 4) -> dict:
         "type_num": 4,
         "size": size,
         "dstr": "(i - #0x64)",
-        "sub_instruction": {"opcode_name": "m_sub", "l": left, "r": right},
+        "sub_instruction": {
+            "opcode": 62, "opcode_name": "m_sub", "l": left, "r": right, "d": left,
+        },
     }
 
 
@@ -297,7 +302,7 @@ def _diag_insn(
         ea=ea,
         opcode=0,
         opcode_name=opcode_name,
-        dest_type="S" if dest_stkoff is not None else None,
+        dest_type="mop_S" if dest_stkoff is not None else None,
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
         src_l_type=src_l_type,
@@ -329,6 +334,7 @@ def _diag_block(
         succs=list(succs),
         preds=list(preds),
         instructions=list(instructions),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind="unknown",
     )
 
 
@@ -397,7 +403,10 @@ def test_diag_operand_tree_nested_buried_subtract_guard_yields_fact_EMBRACE() ->
         dstr="xdu (i - #0x64) -> tmp",
         dest_stkoff=0x200,
         dest_size=8,
-        meta={"l": _meta_sub(_meta_stack(_COUNTER), _meta_const(_BOUND))},
+        meta={
+            "l": _meta_sub(_meta_stack(_COUNTER), _meta_const(_BOUND)),
+            "d": _meta_stack(0x200, size=8),
+        },
     )
 
     facts = _collect(_diag_scenario(guard))
@@ -413,9 +422,8 @@ def test_diag_operand_tree_nested_buried_subtract_guard_yields_fact_EMBRACE() ->
 
 
 def test_diag_meta_less_attrs_only_guard_row_yields_no_fact() -> None:
-    # A meta-less attrs-only guard row (no operand tree) stays on the legacy
-    # flat path.  Its flat fields are empty for the buried-sub host, so no
-    # nested guard is reachable -> zero observations (byte-identical pre-S6).
+    # A canonical xdu row without the nested sub-instruction carries no
+    # recoverable folded guard, so it remains a negative fixture.
     guard = _diag_insn(
         index=0,
         opcode_name="m_xdu",
@@ -423,7 +431,11 @@ def test_diag_meta_less_attrs_only_guard_row_yields_no_fact() -> None:
         dstr="xdu (i - #0x64) -> tmp",
         dest_stkoff=0x200,
         dest_size=8,
-        meta={"byte_index": 1},  # attrs-only, no l/r/d operand tree
+        meta={
+            "l": _meta_stack(_COUNTER, size=8),
+            "d": _meta_stack(0x200, size=8),
+            "byte_index": 1,
+        },
     )
 
     facts = _collect(_diag_scenario(guard))

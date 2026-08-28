@@ -7,6 +7,10 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from tests.system.runtime.preanalysis.facts._diag_provenance_factory import (
+    diag_block as BlockSnapshot,
+    diag_instruction as InstructionSnapshot,
+)
 from d810.ir.flowgraph import (
     BlockSnapshot as CfgBlockSnapshot,
     FlowGraph,
@@ -23,30 +27,6 @@ from d810.analyses.value_flow.zero_blob import ZeroBlobFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 from tests.system.runtime.preanalysis.facts._diag_meta_builder import flat_meta
-
-_OPCODE_ALIASES = {
-    "m_stx": "store",
-    "m_mov": "move",
-    "m_add": "add",
-    "m_sub": "sub",
-}
-
-_OPERAND_TYPE_ALIASES = {
-    "mop_S": "S",
-    "mop_n": "c",
-    "mop_r": "r",
-}
-
-
-def _opcode_name(value: str) -> str:
-    return _OPCODE_ALIASES.get(value, value)
-
-
-def _operand_type(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return _OPERAND_TYPE_ALIASES.get(value, value)
-
 
 def _insn(
     *,
@@ -72,19 +52,11 @@ def _insn(
     # llr-3b41 S11: collectors lift diag rows through the canonical operand-tree
     # projection (the meta-less flat path was deleted), so attach a serializer-
     # shaped ``meta`` operand tree (raw opcode spelling) built from the flat
-    # fields.  ``dict`` ``meta`` (e.g. ``{"byte_index": N}``) is ignored -- those
-    # non-operand attrs were a meta-less-only capability.
+    # fields.  Explicit mappings are preserved verbatim; an attrs-only mapping
+    # is intentionally not repaired or inferred.
     resolved_ea = 0x180010000 + index if ea is None else ea
     if isinstance(meta, Mapping):
-        # An explicit operand-tree dict (carries ``l`` / ``r`` / ``d``) is the
-        # serializer operand tree the test wants -- keep it.  An attrs-only dict
-        # (e.g. ``{"byte_index": 1}``) was a meta-less-only capability that the
-        # canonical projection does not surface, so fall back to a flat-field
-        # operand tree instead.
-        if any(slot in meta for slot in ("l", "r", "d")):
-            meta = json.dumps(dict(meta))
-        else:
-            meta = None
+        meta = json.dumps(dict(meta))
     if meta is None:
         meta = flat_meta(
             opcode_name=opcode_name,
@@ -107,13 +79,13 @@ def _insn(
         ea=resolved_ea,
         opcode=0,
         opcode_name=opcode_name,
-        dest_type=_operand_type(dest_type),
+        dest_type=dest_type,
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
-        src_l_type=_operand_type(src_l_type),
+        src_l_type=src_l_type,
         src_l_stkoff=src_l_stkoff,
         src_l_value=src_l_value,
-        src_r_type=_operand_type(src_r_type),
+        src_r_type=src_r_type,
         src_r_stkoff=src_r_stkoff,
         src_r_value=src_r_value,
         dstr=dstr,
@@ -148,11 +120,26 @@ def _block(
         succs=list(succs),
         preds=list(preds),
         instructions=list(instructions),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind="unknown",
     )
 
 
 def _target(*blocks: BlockSnapshot) -> SimpleNamespace:
     return SimpleNamespace(blocks={block.serial: block for block in blocks})
+
+
+def _canonical_call_meta() -> dict[str, object]:
+    """Return an explicit serializer-shaped direct-call operand tree."""
+    return {
+        "l": {
+            "type": "mop_v", "type_num": 6, "size": 8,
+            "global_ea": "0x180000000",
+        },
+        "d": {
+            "type": "mop_f", "type_num": 8, "size": 8,
+            "args": [],
+        },
+    }
 
 
 def _cfg_global(address: int, *, size: int = 8) -> MopSnapshot:
@@ -187,8 +174,7 @@ def _cfg_insn(
     display_text: str = "",
 ) -> InsnSnapshot:
     return InsnSnapshot(
-        opcode=-1,
-        raw_opcode=0x1000 + index,
+        opcode=index,
         ea=0x180010000 + index if ea is None else ea,
         operands=tuple(op for op in (l, r, d) if op is not None),
         operand_slots=tuple(
@@ -268,7 +254,7 @@ def test_call_anchor_records_call_context() -> None:
     assert "ea=0x180014848" in fact.semantic_key
 
 
-def test_call_anchor_ignores_legacy_opcode_only_call_shape() -> None:
+def test_call_anchor_replays_canonical_call_shape() -> None:
     collector = CallAnchorFactCollector()
 
     facts = collector.collect(
@@ -280,6 +266,7 @@ def test_call_anchor_ignores_legacy_opcode_only_call_shape() -> None:
                     opcode_name="m_call",
                     dstr="call $0x180000000<fast:_QWORD #0x11.8,_QWORD #0x4A.8>",
                     ea=0x180014848,
+                    meta=_canonical_call_meta(),
                 ),
                 succs=(143,),
                 preds=(129,),
@@ -290,7 +277,8 @@ def test_call_anchor_ignores_legacy_opcode_only_call_shape() -> None:
         phase="pre_d810",
     )
 
-    assert facts == ()
+    assert len(facts) == 1
+    assert facts[0].payload["call_kind"] == "direct_call"
 
 
 def test_call_anchor_records_indirect_call_from_register_target() -> None:
@@ -399,24 +387,19 @@ def test_call_anchor_records_unknown_target_for_argless_call() -> None:
 #
 # Following the S3 zero_blob pattern, call_anchor's source iterator is now
 # dual-currency: meta-rich FlowGraph blocks AND operand-tree diag rows route
-# through the SAME canonical projection; meta-less rows stay on the byte-
-# identical legacy ``_InstructionView`` flat path.  call_anchor authorizes an
+# through the SAME canonical projection.  call_anchor authorizes an
 # anchor on ``Instruction.control.call_kind``, which the projection only
 # recovers when the InsnSnapshot carries an explicit ``call_kind`` (the live
 # FlowGraph path, covered above).  The diag projection does NOT yet recover
 # call semantics from a meta operand tree (``m_call`` is absent from
 # ``_OPCODE_NAME_TO_INSN_KIND``; see project_diag_instruction), so an
 # operand-tree diag row currently yields zero call facts -- the same result as
-# the meta-less path.  These tests pin BOTH the operand-tree diag-row source
-# (it routes through the canonical lift and produces zero call facts today) and
-# the meta-less attrs-only row (byte-identical zero observations).
+# canonical call replay and a non-call negative row.
 
 
-def test_call_anchor_diag_operand_tree_row_yields_no_call_fact() -> None:
+def test_call_anchor_diag_operand_tree_row_yields_call_fact() -> None:
     # A diag row carrying a parseable ``meta`` operand tree routes through the
-    # canonical projection.  Call recovery from a meta operand tree is not yet
-    # implemented (m_call is not in the opcode->kind map), so this meta-rich
-    # diag row classifies to "not a call" -> zero observations.
+    # canonical projection, including the closed m_call semantics.
     collector = CallAnchorFactCollector()
 
     facts = collector.collect(
@@ -436,6 +419,10 @@ def test_call_anchor_diag_operand_tree_row_yields_no_call_fact() -> None:
                             "dstr": "g",
                             "global_ea": "0x180000000",
                         },
+                        "d": {
+                            "type": "mop_f", "type_num": 8, "size": 8,
+                            "args": [],
+                        },
                     },
                 ),
                 succs=(143,),
@@ -447,13 +434,13 @@ def test_call_anchor_diag_operand_tree_row_yields_no_call_fact() -> None:
         phase="pre_d810",
     )
 
-    assert facts == ()
+    assert len(facts) == 1
+    assert facts[0].payload["call_kind"] == "direct_call"
 
 
-def test_call_anchor_ignores_meta_less_attrs_only_row() -> None:
-    # A meta-less row whose ``meta`` carries only attrs (no operand tree) stays
-    # on the byte-identical legacy flat path: call_anchor reads only the
-    # canonical call fields the flat path never populates -> zero observations.
+def test_call_anchor_ignores_non_call_canonical_row() -> None:
+    # A valid non-call row with call-like display text does not manufacture a
+    # call fact from presentation text.
     collector = CallAnchorFactCollector()
 
     facts = collector.collect(
@@ -462,10 +449,13 @@ def test_call_anchor_ignores_meta_less_attrs_only_row() -> None:
                 130,
                 _insn(
                     index=0,
-                    opcode_name="m_call",
-                    dstr="call $0x180000000<fast:_QWORD #0x11.8>",
+                    opcode_name="m_mov",
+                    dstr="mov %var_300.8, %var_310.8",
                     ea=0x180014848,
-                    meta={"byte_index": 1},
+                    meta={
+                        "l": _meta_stack(0x300),
+                        "d": _meta_stack(0x310),
+                    },
                 ),
                 succs=(143,),
                 preds=(129,),
@@ -537,14 +527,21 @@ def test_zero_blob_ignores_legacy_text_only_shapes() -> None:
                 40,
                 _insn(
                     index=0,
-                    opcode_name="m_stx",
-                    dstr="stx #0x0.8, ds.2, %var_dst.8",
+                    opcode_name="m_mov",
+                    dstr="mov #0x0.8, %var_dst.8",
+                    meta={
+                        "l": _meta_const(0),
+                        "d": _meta_stack(0x300),
+                    },
                 ),
                 _insn(
                     index=1,
-                    opcode_name="m_call",
-                    dstr="call sub_1800164E0<fast:%var_dst.8,unk_180018E95,#0x10.8>",
-                    src_r_value=0x10,
+                    opcode_name="m_mov",
+                    dstr="mov %var_dst.8, %var_tmp.8",
+                    meta={
+                        "l": _meta_stack(0x300),
+                        "d": _meta_stack(0x310),
+                    },
                 ),
                 succs=(41,),
             )
@@ -560,12 +557,12 @@ def test_zero_blob_ignores_legacy_text_only_shapes() -> None:
 # --- llr-3b41 S3: zero_blob canonical-lift coverage for the diag-row source ---
 #
 # The pre-S3 zero_blob tests covered only the FlowGraph (meta-rich, canonical)
-# and the meta-less legacy ``_target`` flat source.  The S3 port also routes a
+# and the canonical ``_target`` diag source.  The S3 port also routes a
 # production diag row carrying a parseable ``meta`` operand tree through the
 # SAME canonical lift, so its facts become canonical-faithful.  These tests pin
 # that third source (a ``core.diag.snapshot.InstructionSnapshot`` with an
 # ``_instruction_operands_meta``-shaped ``meta`` JSON) AND re-confirm the
-# meta-less attrs-only row stays byte-identical (zero observations).
+# unrelated canonical row stays at zero observations.
 
 
 def _meta_stack(stkoff: int, size: int = 8) -> dict:
@@ -668,9 +665,8 @@ def test_zero_blob_lifts_blob_store_from_diag_meta_operand_tree() -> None:
 
 
 def test_zero_blob_ignores_meta_less_attrs_only_row() -> None:
-    # A meta-less row whose ``meta`` carries only attrs (no operand tree) stays
-    # on the byte-identical legacy flat path: zero_blob reads only canonical
-    # memory/call fields the flat path never populates -> zero observations.
+    # A non-store canonical row cannot manufacture a zero/blob observation from
+    # its display text or unrelated metadata.
     collector = ZeroBlobFactCollector()
 
     facts = collector.collect(
@@ -679,9 +675,13 @@ def test_zero_blob_ignores_meta_less_attrs_only_row() -> None:
                 40,
                 _insn(
                     index=0,
-                    opcode_name="m_stx",
-                    dstr="stx v52[1], ds.1, %var_dst.8",
-                    meta={"byte_index": 1},
+                    opcode_name="m_mov",
+                    dstr="mov %var_src.8, %var_dst.8",
+                    meta={
+                        "l": _meta_stack(0x310),
+                        "d": _meta_stack(0x320),
+                        "byte_index": 1,
+                    },
                 ),
                 succs=(41,),
             )
@@ -784,9 +784,8 @@ def _meta_reg(reg: int, size: int = 8) -> dict:
 def test_return_frontier_recognises_operand_tree_ret_with_successor() -> None:
     # An operand-tree ``m_ret`` row in a block that still has a successor
     # (BLT_1WAY, ``not block.succs`` is False).  Only the recovered canonical
-    # ``control_transfer is RETURN`` can mark it a return block -- the meta-less
-    # flat path never sets ``control_transfer`` for ``m_ret`` and yields zero
-    # (see ``test_return_frontier_ignores_legacy_return_opcode_when_not_terminal``).
+    # ``control_transfer is RETURN`` can mark it a return block even when the
+    # block still has a successor.
     # This is a provable EMBRACE recovery gain, not a regression.
     collector = ReturnFrontierFactCollector()
 
@@ -794,12 +793,7 @@ def test_return_frontier_recognises_operand_tree_ret_with_successor() -> None:
         _target(
             _block(
                 57,
-                _insn(
-                    index=0,
-                    opcode_name="m_ret",
-                    dstr="ret",
-                    meta={"l": _meta_reg(0)},
-                ),
+                _insn(index=0, opcode_name="m_ret", dstr="ret", meta={}),
                 succs=(58,),
                 preds=(50,),
                 type_name="BLT_1WAY",

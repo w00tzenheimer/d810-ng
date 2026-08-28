@@ -15,31 +15,14 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from tests.system.runtime.preanalysis.facts._diag_provenance_factory import (
+    diag_block as BlockSnapshot,
+    diag_instruction as InstructionSnapshot,
+)
 from d810.analyses.value_flow.state_write_anchor import StateWriteAnchorFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 from tests.system.runtime.preanalysis.facts._diag_meta_builder import flat_meta
-
-_OPCODE_ALIASES = {
-    "m_mov": "move",
-}
-
-_OPERAND_TYPE_ALIASES = {
-    "mop_S": "S",
-    "mop_n": "c",
-    "mop_r": "r",
-}
-
-
-def _opcode_name(value: str) -> str:
-    return _OPCODE_ALIASES.get(value, value)
-
-
-def _operand_type(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return _OPERAND_TYPE_ALIASES.get(value, value)
-
 
 def _insn(
     *,
@@ -81,10 +64,10 @@ def _insn(
         # collector re-derives the normalized ``move`` payload off the canonical
         # ``Instruction``.
         opcode_name=opcode_name,
-        dest_type=_operand_type(dest_type),
+        dest_type=dest_type,
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
-        src_l_type=_operand_type(src_l_type),
+        src_l_type=src_l_type,
         src_l_stkoff=src_l_stkoff,
         src_l_value=src_l_value,
         src_r_type=None,
@@ -111,6 +94,7 @@ def _block(
         succs=list(succs),
         preds=[],
         instructions=list(insns),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind="unknown",
     )
 
 
@@ -372,10 +356,9 @@ def test_synthetic_ea_fallback_when_zero() -> None:
 
 # ---------------------------------------------------------------------------
 # llr-3b41 S8: dual-currency port coverage.  The collector now consumes the
-# canonical ``Instruction`` for meta-rich sources (a portable ``FlowGraph``
-# block, or a diag row carrying a parseable ``meta`` operand tree) while
-# meta-less rows (every test above) stay on the byte-identical legacy flat
-# path.  These tests pin the canonical FlowGraph source AND the previously
+# canonical ``Instruction`` for both portable ``FlowGraph`` blocks and diag
+# rows carrying explicit serializer-shaped ``meta`` operand trees.  These tests
+# pin the canonical FlowGraph source AND the previously
 # uncovered operand-tree diag-row source -- the two meta-rich currencies the
 # port routes through ``project_diag_instruction`` /
 # ``InstructionProjection.from_block``.
@@ -385,8 +368,8 @@ def test_synthetic_ea_fallback_when_zero() -> None:
 def test_collects_state_const_write_from_canonical_flowgraph_full_payload() -> None:
     """A portable ``FlowGraph`` block routes through the canonical projection;
     ``dest_stkoff`` / ``dest_size`` are read off ``Instruction.result`` and
-    ``src_l_value`` off the first canonical input, so the anchor fact matches
-    the legacy meta-less result byte-for-byte (full payload pinned)."""
+    ``src_l_value`` off the first canonical input, so the anchor fact is pinned
+    with its full payload."""
     collector = StateWriteAnchorFactCollector()
     facts = collector.collect(
         _cfg_target(
@@ -447,10 +430,10 @@ def _meta_mov(
         ea=ea,
         opcode=0,
         opcode_name="m_mov",
-        dest_type="S",
+        dest_type="mop_S",
         dest_stkoff=None,
         dest_size=4,
-        src_l_type="c",
+        src_l_type="mop_n",
         src_l_stkoff=None,
         src_l_value=None,
         src_r_type=None,

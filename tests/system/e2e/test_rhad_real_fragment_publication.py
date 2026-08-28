@@ -14,11 +14,6 @@ import pytest
 
 idapro = pytest.importorskip("idapro")
 
-# The dedicated Rhadamanthys loader regression work is owned by another branch.
-# Keep this module visible in collection, but do not make its in-progress oracle
-# block cfg-recon-mainline's system suite.
-pytestmark = pytest.mark.skip(reason="Rhadamanthys loader regressions are owned by a separate branch")
-
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 _BINARY = _REPO / "samples" / "bins" / "rhad_loader_unpacked.bin"
 _FUNCTION_EA = 0x40A560
@@ -282,6 +277,7 @@ def _run_worker(
         )
         from d810.analyses.control_flow.semantic_route_evidence import (
             CanonicalSemanticEvidence,
+            canonical_semantic_evidence_from_proofs,
             SemanticRouteDestination,
             SemanticRouteProof,
             SemanticRouteProofKind,
@@ -486,11 +482,10 @@ def _run_worker(
                 ("delivery_kind", "direct_target"),
             ),
         )
-        evidence = CanonicalSemanticEvidence(
+        evidence = canonical_semantic_evidence_from_proofs(
             native_key=native_key,
             generation=1,
-            atomic_group_id=atomic_group_id,
-            route_proofs=(proof,),
+            proofs=(proof,),
         )
         bound = bind_canonical_semantic_evidence(graph, evidence)
         assert bound is not None, _graph_description(graph)

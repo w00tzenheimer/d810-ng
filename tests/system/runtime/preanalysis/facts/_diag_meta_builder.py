@@ -19,14 +19,27 @@ from __future__ import annotations
 
 import json
 
-# mop ``t`` type-num values (subset the collector tests use), matching
-# ``ida_hexrays`` and ``parse_diag_meta_operand``'s ``_TYPE_NUM_TO_OPERAND_KIND``.
+# Canonical Hex-Rays ``mop_*`` type numbers used by the serializer fixtures.
+# These are provenance values only; operand semantics are selected by the
+# canonical ``type`` name in ``instruction_vocabulary``.  In particular,
+# ``mop_d`` is 4 (not the stale value 3 used by the old fixture table).
 _TYPE_NUM = {
+    "mop_z": 0,
     "mop_r": 1,
     "mop_n": 2,
-    "mop_d": 3,
+    "mop_str": 3,
+    "mop_d": 4,
     "mop_S": 5,
+    "mop_v": 6,
+    "mop_b": 7,
+    "mop_f": 8,
+    "mop_l": 9,
     "mop_a": 10,
+    "mop_h": 11,
+    "mop_c": 12,
+    "mop_fn": 13,
+    "mop_p": 14,
+    "mop_sc": 15,
 }
 
 
@@ -43,7 +56,7 @@ def _operand_meta(
         return None
     type_num = _TYPE_NUM.get(type_name)
     if type_num is None:
-        return None
+        raise ValueError(f"fixture has no canonical mop type number: {type_name!r}")
     node: dict[str, object] = {
         "type": type_name,
         "type_num": type_num,

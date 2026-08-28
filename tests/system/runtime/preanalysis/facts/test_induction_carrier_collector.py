@@ -15,6 +15,10 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from tests.system.runtime.preanalysis.facts._diag_provenance_factory import (
+    diag_block as BlockSnapshot,
+    diag_instruction as InstructionSnapshot,
+)
 from d810.analyses.value_flow.induction_carrier import InductionVariableFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
@@ -24,18 +28,20 @@ from tests.system.runtime.preanalysis.facts._diag_meta_builder import flat_meta
 def _insn(
     *,
     index: int = 0,
-    opcode_name: str = "add",
+    opcode_name: str = "m_add",
     dest_stkoff: int | None = 0x680,
     src_l_stkoff: int | None = 0x680,
     src_l_value: int | None = None,
     src_r_stkoff: int | None = None,
     src_r_value: int | None = 0x80,
+    src_r_type: str | None = None,
+    src_r_register: int | None = None,
     dstr: str = "add %var_178.8, #0x80.8, %var_178.8",
     meta: str | None = None,
 ) -> InstructionSnapshot:
     dest_type = "mop_S" if dest_stkoff is not None else None
     src_l_type = "mop_S" if src_l_stkoff is not None else "mop_n"
-    src_r_type = "mop_S" if src_r_stkoff is not None else "mop_n"
+    src_r_type = src_r_type or ("mop_S" if src_r_stkoff is not None else "mop_n")
     # llr-3b41 S11: collectors lift diag rows through the canonical operand-tree
     # projection (the meta-less flat path was deleted).  Build a serializer-shaped
     # ``meta`` from the flat fields when the caller did not supply an explicit one.
@@ -54,6 +60,7 @@ def _insn(
             src_r_type=src_r_type,
             src_r_stkoff=src_r_stkoff,
             src_r_value=src_r_value,
+            src_r_register=src_r_register,
             src_r_size=8,
         )
     return InstructionSnapshot(
@@ -87,6 +94,9 @@ def _target(*instructions: InstructionSnapshot) -> SimpleNamespace:
                 succs=[11],
                 preds=[9],
                 instructions=list(instructions),
+                tail_opcode=0,
+                raw_tail_opcode=0,
+                tail_kind="unknown",
             )
         }
     )
@@ -107,6 +117,9 @@ def _two_block_target(
                 succs=[11],
                 preds=[9],
                 instructions=[first],
+                tail_opcode=0,
+                raw_tail_opcode=0,
+                tail_kind="unknown",
             ),
             11: BlockSnapshot(
                 serial=11,
@@ -117,6 +130,9 @@ def _two_block_target(
                 succs=[12],
                 preds=[10],
                 instructions=[second],
+                tail_opcode=0,
+                raw_tail_opcode=0,
+                tail_kind="unknown",
             ),
         }
     )
@@ -140,7 +156,12 @@ def _cfg_address(*stkoffs: int, size: int = 8) -> MopSnapshot:
 
 
 def _meta_address_refs(*stkoffs: int) -> str:
-    return json.dumps({"address_stack_refs": [int(stkoff) for stkoff in stkoffs]})
+    return json.dumps({
+        "address_stack_refs": [int(stkoff) for stkoff in stkoffs],
+        "l": _meta_stack(stkoffs[0] if stkoffs else 0x680),
+        "r": _meta_const(1),
+        "d": _meta_stack(stkoffs[0] if stkoffs else 0x680),
+    })
 
 
 def _cfg_insn(
@@ -213,7 +234,7 @@ def test_collects_sub_as_negative_step() -> None:
     facts = collector.collect(
         _target(
             _insn(
-                opcode_name="sub",
+                opcode_name="m_sub",
                 src_r_value=1,
                 dstr="sub %var_178.8, #1.8, %var_178.8",
             )
@@ -361,7 +382,7 @@ def test_memory_store_update_requires_structural_address_ref_not_dstr() -> None:
     collector = InductionVariableFactCollector()
     define = _insn(
         index=2,
-        opcode_name="op_12",
+        opcode_name="m_add",
         dest_stkoff=0x688,
         src_l_stkoff=None,
         src_l_value=None,
@@ -371,7 +392,9 @@ def test_memory_store_update_requires_structural_address_ref_not_dstr() -> None:
     )
     store = _insn(
         index=5,
-        opcode_name="op_1",
+        opcode_name="m_stx",
+        src_r_type="mop_r",
+        src_r_register=0,
         dest_stkoff=0x680,
         src_l_stkoff=0x688,
         src_l_value=None,
@@ -394,18 +417,19 @@ def test_memory_store_update_does_not_pair_temp_across_blocks() -> None:
     collector = InductionVariableFactCollector()
     define = _insn(
         index=2,
-        opcode_name="op_12",
+        opcode_name="m_add",
         dest_stkoff=0x688,
         src_l_stkoff=None,
         src_l_value=None,
         src_r_stkoff=None,
         src_r_value=1,
         dstr="add    [ds.2:%var_178.8].8, #1.8, %var_170.8",
-        meta=_meta_address_refs(0x680),
     )
     store = _insn(
         index=0,
-        opcode_name="op_1",
+        opcode_name="m_stx",
+        src_r_type="mop_r",
+        src_r_register=0,
         dest_stkoff=0x680,
         src_l_stkoff=0x688,
         src_l_value=None,
@@ -443,7 +467,7 @@ def test_ignores_ambiguous_sub_const_minus_var() -> None:
     facts = collector.collect(
         _target(
             _insn(
-                opcode_name="sub",
+                opcode_name="m_sub",
                 src_l_stkoff=None,
                 src_l_value=10,
                 src_r_stkoff=0x680,
@@ -576,17 +600,21 @@ def test_collects_sub_induction_from_operand_tree_diag_row() -> None:
 
 
 def test_meta_less_attrs_only_diag_row_yields_no_induction_fact() -> None:
-    """A diag row whose ``meta`` carries only non-operand attrs (no l/r/d tree)
-    stays on the byte-identical legacy flat path; with no induction-shaped flat
-    operands it yields zero observations, matching the pre-S9 behaviour."""
+    """An unrelated canonical add row yields no induction observation."""
     collector = InductionVariableFactCollector()
     insn = _insn(
-        opcode_name="add",
-        dest_stkoff=None,
+        opcode_name="m_add",
+        dest_stkoff=0x700,
         src_l_stkoff=None,
-        src_r_value=None,
+        src_l_value=2,
+        src_r_value=3,
         dstr="add something unrelated",
-        meta=json.dumps({"byte_index": 3}),
+        meta=json.dumps({
+            "l": _meta_const(2),
+            "r": _meta_const(3),
+            "d": _meta_stack(0x700),
+            "byte_index": 3,
+        }),
     )
 
     facts = collector.collect(

@@ -1,15 +1,14 @@
 """llr-2biq: _InductionInsn.src_l_expr / src_r_expr populated from Instruction.input_exprs.
 
-Covers:
-- Production (projection) branch: _induction_insn_from_canonical sets src_l_expr/src_r_expr
-  from the canonical Instruction.input_exprs tuple.
-- Diag (legacy) branch: _iter_induction_carrier_insns with a plain diag-style object yields
-  src_l_expr=None / src_r_expr=None (no canonical Instruction / input_exprs).
+Covers the production projection branch and the strict rejection of the removed
+meta-less diagnostic replay path.
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+
+import pytest
 
 from d810.analyses.value_flow.induction_carrier import (
     _induction_insn_from_canonical,
@@ -149,12 +148,12 @@ def test_flat_operands_produce_const_expr_not_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Diag (legacy) branch — src_l_expr / src_r_expr must default to None
+# Removed legacy diagnostic branch — strict replay rejects unproven rows
 # ---------------------------------------------------------------------------
 
 
-def test_diag_path_leaves_src_l_expr_none() -> None:
-    """The diag/legacy branch yields _InductionInsn with src_l_expr=None."""
+def test_meta_less_diag_path_is_rejected_by_strict_replay() -> None:
+    """A meta-less alias row cannot bypass canonical v12 replay."""
     insn = SimpleNamespace(
         opcode_name="add",
         dest_stkoff=0x20,
@@ -167,9 +166,5 @@ def test_diag_path_leaves_src_l_expr_none() -> None:
     block = SimpleNamespace(serial=1, instructions=[insn])
     target = SimpleNamespace(blocks=[block])
 
-    views = list(_iter_induction_carrier_insns(target))
-    assert views, "expected at least one view from the diag path"
-    view = views[0]
-
-    assert view.src_l_expr is None
-    assert view.src_r_expr is None
+    with pytest.raises(ValueError, match="provenance|operand shape"):
+        list(_iter_induction_carrier_insns(target))

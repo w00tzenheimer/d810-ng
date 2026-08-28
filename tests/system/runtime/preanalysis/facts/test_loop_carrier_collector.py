@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from tests.system.runtime.preanalysis.facts._diag_provenance_factory import (
+    diag_block as BlockSnapshot,
+    diag_instruction as InstructionSnapshot,
+)
 from d810.ir.flowgraph import (
     BlockSnapshot as CfgBlockSnapshot,
     FlowGraph,
@@ -28,6 +33,7 @@ def _insn(
     src_l_stkoff: int | None = None,
     src_r_stkoff: int | None = None,
     dest_size: int | None = 8,
+    meta: str | None = None,
 ) -> InstructionSnapshot:
     return InstructionSnapshot(
         index=index,
@@ -44,6 +50,7 @@ def _insn(
         src_r_stkoff=src_r_stkoff,
         src_r_value=None,
         dstr=dstr,
+        meta=meta,
     )
 
 
@@ -62,6 +69,7 @@ def _block(
         succs=list(succs),
         preds=[],
         instructions=list(insns),
+        tail_opcode=0, raw_tail_opcode=0, tail_kind="unknown",
     )
 
 
@@ -427,6 +435,11 @@ def test_legacy_opcode_only_predicate_is_not_behavioral_proof() -> None:
                     src_l_stkoff=0x450,
                     src_r_stkoff=0x520,
                     dstr="sub %var_3A8.8, %var_520.8, %var_528.8",
+                    meta=json.dumps({
+                        "l": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x450},
+                        "r": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x520},
+                        "d": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x528},
+                    }),
                 ),
                 succs=(81,),
             ),
@@ -439,6 +452,10 @@ def test_legacy_opcode_only_predicate_is_not_behavioral_proof() -> None:
                     dest_stkoff=0x508,
                     src_l_stkoff=0x450,
                     dstr="bnot %var_3A8.8, %var_508.8",
+                    meta=json.dumps({
+                        "l": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x450},
+                        "d": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x508},
+                    }),
                 ),
                 succs=(81,),
             ),
@@ -451,6 +468,10 @@ def test_legacy_opcode_only_predicate_is_not_behavioral_proof() -> None:
                     dest_stkoff=0x450,
                     src_l_stkoff=0x1A0,
                     dstr="mov %var_1A0.8, %var_3A8.8",
+                    meta=json.dumps({
+                        "l": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x1A0},
+                        "d": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x450},
+                    }),
                 ),
                 succs=(52,),
             ),
@@ -463,6 +484,10 @@ def test_legacy_opcode_only_predicate_is_not_behavioral_proof() -> None:
                     dest_stkoff=0x450,
                     src_l_stkoff=0x4E8,
                     dstr="mov %var_4E8.8, %var_3A8.8",
+                    meta=json.dumps({
+                        "l": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x4E8},
+                        "d": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x450},
+                    }),
                 ),
                 succs=(88,),
             ),
@@ -475,6 +500,20 @@ def test_legacy_opcode_only_predicate_is_not_behavioral_proof() -> None:
                     src_l_stkoff=0x528,
                     src_r_stkoff=0x508,
                     dstr="jnz (%var_528.8 + %var_508.8), %var_4F8.8, @83",
+                    meta=json.dumps({
+                        "l": {
+                            "type": "mop_S", "type_num": 5,
+                            "size": 8, "stkoff": 0x999,
+                        },
+                        "r": {
+                            "type": "mop_S", "type_num": 5,
+                            "size": 8, "stkoff": 0x508,
+                        },
+                        "d": {
+                            "type": "mop_b", "type_num": 7,
+                            "size": 0, "block_num": 83,
+                        },
+                    }, sort_keys=True, separators=(",", ":")),
                 ),
                 succs=(82, 83),
             ),
@@ -497,12 +536,7 @@ def _meta_stack(stkoff: int, size: int = 8) -> dict:
 
 
 def test_meta_less_attrs_only_rows_yield_no_fact() -> None:
-    """A meta-less attrs-only graph stays on the byte-identical legacy path.
-
-    The rows carry neither an operand tree nor a ``control_transfer`` attr, so
-    no predicate is detected and no carrier fact is produced -- exactly the
-    pre-S7 behaviour for a meta-less source.
-    """
+    """A canonical predicate-only graph produces no carrier fact."""
     import json
 
     def _attrs_only(index: int, ea: int, opcode_name: str) -> InstructionSnapshot:
@@ -521,7 +555,11 @@ def test_meta_less_attrs_only_rows_yield_no_fact() -> None:
             src_r_stkoff=None,
             src_r_value=None,
             dstr="",
-            meta=json.dumps({"byte_index": 1}),
+            meta=json.dumps({
+                "l": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x528},
+                "r": {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": 0x508},
+                "d": {"type": "mop_b", "type_num": 7, "size": 0, "block_num": 83},
+            }),
         )
 
     facts = _collect(

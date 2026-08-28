@@ -6,6 +6,10 @@ import json
 from types import SimpleNamespace
 
 from d810.core.diag.snapshot import BlockSnapshot, InstructionSnapshot
+from tests.system.runtime.preanalysis.facts._diag_provenance_factory import (
+    diag_block as BlockSnapshot,
+    diag_instruction as InstructionSnapshot,
+)
 from d810.ir.flowgraph import (
     BlockSnapshot as CfgBlockSnapshot,
     FlowGraph,
@@ -18,30 +22,6 @@ from d810.analyses.value_flow.return_carrier import ReturnSlotFactCollector
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 from tests.system.runtime.preanalysis.facts._diag_meta_builder import flat_meta
-
-_OPCODE_ALIASES = {
-    "m_mov": "move",
-    "m_add": "add",
-    "m_sub": "sub",
-}
-
-_OPERAND_TYPE_ALIASES = {
-    "mop_S": "S",
-    "mop_n": "c",
-    "mop_r": "r",
-    "mop_d": "t",
-}
-
-
-def _opcode_name(value: str) -> str:
-    return _OPCODE_ALIASES.get(value, value)
-
-
-def _operand_type(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return _OPERAND_TYPE_ALIASES.get(value, value)
-
 
 def _insn(
     *,
@@ -61,23 +41,24 @@ def _insn(
     src_r_reg: int | None = None,
     dstr: str = "mov %var_178.8, %var_8.8",
     source_stkoffs: tuple[int, ...] = (),
+    meta: str | None = None,
 ) -> InstructionSnapshot:
     insn = InstructionSnapshot(
         index=index,
         ea=0x180010000 + index,
         opcode=0,
         opcode_name=opcode_name,
-        dest_type=_operand_type(dest_type),
+        dest_type=dest_type,
         dest_stkoff=dest_stkoff,
         dest_size=dest_size,
-        src_l_type=_operand_type(src_l_type),
+        src_l_type=src_l_type,
         src_l_stkoff=src_l_stkoff,
         src_l_value=src_l_value,
-        src_r_type=_operand_type(src_r_type),
+        src_r_type=src_r_type,
         src_r_stkoff=src_r_stkoff,
         src_r_value=src_r_value,
         dstr=dstr,
-        meta=flat_meta(
+        meta=meta or flat_meta(
             opcode_name=opcode_name,
             ea=0x180010000 + index,
             dstr=dstr,
@@ -106,6 +87,14 @@ def _insn(
     return insn
 
 
+def _nested_sub_meta(*, dest_stkoff: int) -> str:
+    stack = lambda offset: {"type": "mop_S", "type_num": 5, "size": 8, "stkoff": offset}
+    number = {"type": "mop_n", "type_num": 2, "size": 8, "value": 1}
+    sub = {"opcode": 62, "opcode_name": "m_sub", "l": stack(0x40), "r": number, "d": stack(0x40)}
+    expr = {"type": "mop_d", "type_num": 4, "size": 8, "sub_instruction": sub}
+    return json.dumps({"l": expr, "r": expr, "d": stack(dest_stkoff)}, sort_keys=True)
+
+
 def _target(*instructions: InstructionSnapshot) -> SimpleNamespace:
     return SimpleNamespace(
         blocks={
@@ -118,6 +107,7 @@ def _target(*instructions: InstructionSnapshot) -> SimpleNamespace:
                 succs=[11],
                 preds=[9],
                 instructions=list(instructions),
+                tail_opcode=0, raw_tail_opcode=0, tail_kind="unknown",
             )
         }
     )
@@ -141,8 +131,7 @@ def _cfg_insn(
     display_text: str = "",
 ) -> InsnSnapshot:
     return InsnSnapshot(
-        opcode=-1,
-        raw_opcode=0x1000 + index,
+        opcode=index,
         ea=0x180010000 + index,
         operands=tuple(op for op in (l, r, d) if op is not None),
         operand_slots=tuple(
@@ -427,6 +416,7 @@ def test_records_upstream_mba_for_stack_identity_carrier() -> None:
         src_r_stkoff=None,
         dstr=upstream_dstr,
         source_stkoffs=upstream_source_stkoffs,
+        meta=_nested_sub_meta(dest_stkoff=0x7C8),
     )
     # Identity carrier mov %var_7C8 -> %var_8 at insn 1.
     carrier = _insn(
@@ -475,7 +465,7 @@ def test_records_upstream_mba_for_stack_identity_carrier() -> None:
     }
     assert fact.payload["upstream_writer_ea"] == 0x180010000  # _insn ea pattern
     assert fact.payload["upstream_writer_block_serial"] == 10
-    assert fact.payload["upstream_writer_insn_index"] == 0
+    assert fact.payload["upstream_writer_insn_index"] == 2
     assert fact.payload["upstream_writer_opcode"] == "add"
     assert fact.payload["upstream_writer_dest_stkoff"] == 0x7C8
     assert fact.payload["upstream_writer_dest_storage_key"] == "S1992"
@@ -553,6 +543,7 @@ def _multi_block_target(
             succs=succs,
             preds=preds,
             instructions=list(blocks[serial]),
+            tail_opcode=0, raw_tail_opcode=0, tail_kind="unknown",
         )
     return SimpleNamespace(blocks=block_snapshots)
 
@@ -592,6 +583,7 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
         src_r_stkoff=None,
         dstr=canonical_dstr,
         source_stkoffs=(0x40, 0x228, 0x650, 0x658, 0x660),
+        meta=_nested_sub_meta(dest_stkoff=0x7C8),
     )
     carrier_mov = _insn(
         index=0,
@@ -625,6 +617,7 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
         src_r_stkoff=None,
         dstr=late_unrelated_dstr,
         source_stkoffs=(0x1C8,),
+        meta=_nested_sub_meta(dest_stkoff=0x7C8),
     )
 
     target = _multi_block_target(
@@ -663,12 +656,10 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
 #
 # The collector's own dual-currency iterator
 # (:func:`~d810.analyses.value_flow.return_carrier._iter_return_carrier_insns`)
-# routes the two meta-rich currencies -- a portable ``FlowGraph`` block
-# (covered above by ``_cfg_target``) AND a diag row carrying a parseable ``meta``
-# operand tree -- through the SAME canonical projection, while meta-less rows
-# (every ``_target`` test above) stay on the byte-identical legacy flat path.
+# routes both portable ``FlowGraph`` blocks and diag rows carrying explicit
+# serializer-shaped ``meta`` operand trees through the SAME canonical projection.
 # The tests below pin the previously-uncovered operand-tree diag-row source and
-# the meta-less zero-observation contract.
+# a negative non-return move.
 # ---------------------------------------------------------------------------
 
 
@@ -741,8 +732,8 @@ def test_collects_return_slot_identity_carrier_from_meta_rich_diag_row() -> None
     """A diag row whose ``meta`` carries an operand tree is lifted through the
     SAME canonical projection as the FlowGraph source; the stack-identity
     carrier and the return-register read are recovered from the operand tree
-    (the flat fields are ``None``), yielding the same fact as the FlowGraph /
-    meta-less shapes."""
+    (the flat fields are ``None``), yielding the same fact as the FlowGraph
+    source."""
     collector = ReturnSlotFactCollector()
 
     facts = collector.collect(
@@ -844,11 +835,8 @@ def test_records_upstream_mba_for_stack_identity_carrier_from_meta_rich_diag_row
     )
 
 
-def test_meta_less_attrs_only_row_yields_no_observations() -> None:
-    """A meta-less row -- ``meta`` carrying only attrs with no operand tree --
-    stays on the byte-identical legacy flat path.  With no operand tree and no
-    flat return-register read, the collector yields zero observations, exactly
-    as before the port."""
+def test_non_return_move_row_yields_no_observations() -> None:
+    """A valid move into stack storage does not manufacture a return read."""
     collector = ReturnSlotFactCollector()
 
     carrier = _insn(
@@ -860,18 +848,20 @@ def test_meta_less_attrs_only_row_yields_no_observations() -> None:
         src_l_stkoff=0x7C8,
         dstr="mov %var_7C8.8, %var_8.8",
     )
-    # Return-register read row whose ``meta`` is attrs-only (no l/r/d operand
-    # tree) and whose flat fields omit the register identity -> meta-less path,
-    # so ``_is_return_register_read`` never fires and no slot is resolved.
+    # This is a valid stack-to-stack move, not a return-register read.
     attrs_only = _insn(
         index=1,
-        dest_type="mop_r",
-        dest_stkoff=None,
+        dest_type="mop_S",
+        dest_stkoff=0x10,
         src_l_type="mop_S",
         src_l_stkoff=0x8,
-        dstr="mov %var_8.8, rax.8",
+        dstr="mov %var_8.8, %var_10.8",
     )
-    attrs_only.meta = json.dumps({"byte_index": 1})
+    attrs_only.meta = json.dumps({
+        "l": _meta_stack(0x8),
+        "d": _meta_stack(0x10),
+        "byte_index": 1,
+    })
 
     facts = collector.collect(
         _target(carrier, attrs_only),
