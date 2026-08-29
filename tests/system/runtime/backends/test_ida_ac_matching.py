@@ -958,6 +958,7 @@ def test_structural_selection_fails_closed_when_emission_raises(monkeypatch) -> 
 def _canonical_probe_lowering(adapter, source):
     """Build a minimal callback-local lowering for stage-boundary tests."""
 
+    from d810.mba.island_profile import profile_typed_term
     from d810.mba.semantic_canonicalization import canonicalize_mba_term
 
     typed = TypedBvTerm(
@@ -975,7 +976,7 @@ def _canonical_probe_lowering(adapter, source):
         raw_term=typed,
         native_nodes_by_path={},
         raw_native_nodes_by_path={},
-        profile=SimpleNamespace(fingerprint="stage-boundary"),
+        profile=profile_typed_term(typed),
     )
 
 
@@ -1088,6 +1089,137 @@ def test_structural_candidate_error_is_terminal_and_typed(monkeypatch) -> None:
         adapter.match_structural_and_replace(
             source, bucket_size=1, attempted_rule_count=1, comparison_budget=64
         )
+
+
+@pytest.mark.parametrize(
+    "stage", ["matcher", "constraint", "provenance", "candidate", "emitter", "equivalence"]
+)
+def test_handler_records_truthful_terminal_receipt_for_active_stage_error(
+    monkeypatch, stage: str
+) -> None:
+    """Production handler error recording retains work done before stage failure."""
+
+    from d810.mba import ac_matching, canonical_pattern
+
+    x = Var("x")
+
+    class Rule:
+        name = f"{stage}-failure"
+        maturities = (7,)
+        canonical_fallback_enabled = True
+        pattern = x + Const("zero", 0)
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._canonical_fallback_enabled = True
+    adapter._structural_matching_enabled = True
+    adapter._canonical_fallback_root_shapes = (("add", 32, 2),)
+    adapter._provider_outcome_capture_depth = 1
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    source.dest_size = 4
+    source.ea = 0x401000
+    lowering = _canonical_probe_lowering(adapter, source)
+    if stage in {"provenance", "candidate", "emitter", "equivalence"}:
+        native_x = object()
+        native_zero = object()
+        lowering.native_nodes_by_path = {(0,): native_x, (1,): native_zero}
+        lowering.raw_native_nodes_by_path = {(0,): native_x, (1,): native_zero}
+
+    if stage == "matcher":
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("matcher defect")
+
+        monkeypatch.setattr(ac_matching, "match_canonical_term_pattern", fail)
+    elif stage == "constraint":
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("constraint defect")
+
+        monkeypatch.setattr(canonical_pattern, "evaluate_frozen_constraints", fail)
+    elif stage == "provenance":
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("provenance defect")
+
+        monkeypatch.setattr(canonical_pattern, "resolve_canonical_match_paths", fail)
+    elif stage == "candidate":
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("candidate defect")
+
+        monkeypatch.setattr(adapter, "_check_candidate", fail)
+    elif stage == "emitter":
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("emitter defect")
+
+        monkeypatch.setattr(adapter, "_get_shadow_replacement", fail)
+    else:
+        monkeypatch.setattr(adapter, "_get_shadow_replacement", lambda _candidate: object())
+        monkeypatch.setattr(ida_backend, "minsn_to_ast", lambda _replacement: source)
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("equivalence defect")
+
+        monkeypatch.setattr(ida_backend, "prove_native_ast_equivalence", fail)
+
+    class Instruction:
+        ea = 0x401000
+
+        class d:
+            size = 4
+
+        @staticmethod
+        def _print():
+            return "stage-failure"
+
+    class LaterRule:
+        name = "must-not-run"
+        maturities = (7,)
+        canonical_fallback_enabled = True
+
+        def __init__(self):
+            self.invoked = False
+
+        def match_structural_and_replace(self, *_args, **_kwargs):
+            self.invoked = True
+            return "must-not-mutate"
+
+    later = LaterRule()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._get_candidates = lambda _candidate: []
+    monkeypatch.setattr(
+        optimizer,
+        "_prepare_canonical_fallback",
+        lambda *_args, **_kwargs: (lowering, (adapter, later)),
+    )
+
+    assert (
+        optimizer._try_matches(
+            None,
+            Instruction(),
+            source,
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label=f"{stage}-failure",
+        )
+        is None
+    )
+    assert later.invoked is False
+    outcomes = adapter.provider_outcomes()
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.status is ProviderOutcomeStatus.ERROR
+    assert outcome.fingerprint == lowering.profile.fingerprint
+    assert outcome.metadata["native_profile"]["fingerprint"] == outcome.fingerprint
+    assert outcome.metadata["error_stage"] == stage
+    assert outcome.matcher is not None
+    assert outcome.matcher.fallback_comparisons >= 0
+    if stage != "matcher":
+        assert outcome.matcher.fallback_comparisons > 0
+    assert outcome.matcher.terminal_stop_reason == f"error:{stage}"
 
 
 @pytest.mark.parametrize(

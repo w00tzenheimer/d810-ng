@@ -891,6 +891,7 @@ class IDAPatternAdapter:
         try:
             candidate_ok = self._check_candidate(candidate)
         except Exception as exc:
+            self._canonical_fallback_stop_reason = "error:candidate"
             raise CanonicalFallbackError("candidate", exc) from exc
         if not candidate.ea or not candidate_ok:
             return self._structural_failure()
@@ -901,6 +902,7 @@ class IDAPatternAdapter:
             # legacy replacement pattern.
             replacement = self._get_shadow_replacement(candidate)
         except Exception as exc:
+            self._canonical_fallback_stop_reason = "error:emitter"
             raise CanonicalFallbackError("emitter", exc) from exc
         if replacement is None:
             return self._structural_failure()
@@ -912,6 +914,7 @@ class IDAPatternAdapter:
         try:
             replacement_ast = minsn_to_ast(replacement)
         except Exception as exc:
+            self._canonical_fallback_stop_reason = "error:emitter"
             raise CanonicalFallbackError("emitter", exc) from exc
         if replacement_ast is None:
             return self._structural_failure()
@@ -924,6 +927,7 @@ class IDAPatternAdapter:
                 )
             )
         except Exception as exc:
+            self._canonical_fallback_stop_reason = "error:equivalence"
             raise CanonicalFallbackError("equivalence", exc) from exc
         if not self._shadow_native_equivalence_verdict:
             return self._structural_failure()
@@ -996,6 +1000,11 @@ class IDAPatternAdapter:
                 or lowering.raw_term is None
             ):
                 return None
+            # Persist callback-owned lowering before any later canonical stage
+            # can fail, preserving the exact profile in terminal receipts.
+            self._shadow_lowering = lowering
+            self._shadow_structural_lowering = lowering
+            self._shadow_source_ast = test_ast
             self._prepare_shadow_canonical_templates()
             template = self._shadow_canonical_templates.get(lowering.term.width)
             if template is None:
@@ -1018,6 +1027,14 @@ class IDAPatternAdapter:
                 )
             except Exception as exc:
                 raise CanonicalFallbackError("matcher", exc) from exc
+            comparisons = getattr(report, "comparisons", None)
+            if type(comparisons) is not int or comparisons < 0:
+                raise CanonicalFallbackError(
+                    "matcher",
+                    ValueError("canonical matcher reported invalid comparison count"),
+                )
+            self._canonical_fallback_comparisons = comparisons
+            self._shadow_match_report = report
             if report.stop_reason.value == "comparison_budget":
                 # The matcher may retain matches found before it hit the cap;
                 # those partial results are never candidates for this root.
@@ -1109,9 +1126,6 @@ class IDAPatternAdapter:
                     binding = report.bindings
                     if binding is not None:
                         structural_native_paths = dict(binding.candidate_paths)
-            self._shadow_lowering = lowering
-            self._shadow_structural_lowering = lowering
-            self._shadow_source_ast = test_ast
             self._shadow_match_report = report
             self._shadow_structural_native_paths = structural_native_paths
             self._shadow_native_path_unavailable = native_path_unavailable
@@ -1173,9 +1187,15 @@ class IDAPatternAdapter:
                 terminal_stop_reason=stop_reason,
             )
         terminal_stop_reason = (
-            "native_path_unavailable"
-            if getattr(self, "_shadow_native_path_unavailable", False)
-            else report.stop_reason.value
+            getattr(self, "_canonical_fallback_stop_reason", None)
+            if str(getattr(self, "_canonical_fallback_stop_reason", "")).startswith(
+                "error:"
+            )
+            else (
+                "native_path_unavailable"
+                if getattr(self, "_shadow_native_path_unavailable", False)
+                else report.stop_reason.value
+            )
         )
         return MatcherOutcomeMetadata(
             comparisons=report.comparisons,
@@ -1819,6 +1839,8 @@ class IDAPatternAdapter:
             "error_class": type(exc).__name__,
             "error_message": str(exc),
         }
+        if isinstance(exc, CanonicalFallbackError):
+            metadata["error_stage"] = exc.stage
         if profile is not None:
             metadata.update(self._native_profile_metadata(profile))
         if structural_selection:
