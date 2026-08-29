@@ -154,7 +154,10 @@ def test_conditional_arm_forecast_mints_complete_decision_dag_fact() -> None:
         is_conditional_jump=True,
     )
     graph = FlowGraph({
-        0: _b(0, (1,), (), ()),
+        0: replace(
+            _b(0, (1, 5), (), (replace(branch, ea=0x1000, d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=1)),)),
+            kind=BlockKind.TWO_WAY, tail_kind=InsnKind.COND_JUMP,
+        ),
         1: replace(_b(1, (2,), (0,), (write,)), kind=BlockKind.ONE_WAY, tail_kind=InsnKind.MOV),
         2: replace(_b(2, (3, 4), (1,), (branch,)), kind=BlockKind.TWO_WAY, tail_kind=InsnKind.COND_JUMP),
         3: _b(3, (), (2,), ()),
