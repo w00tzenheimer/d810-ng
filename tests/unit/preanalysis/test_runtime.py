@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import threading
 from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import MagicMock, call, create_autospec, patch
@@ -29,6 +31,36 @@ from tests.unit.core.diag._orm_bind import make_bound_diag_db
 _FUNC_EA = 0x401000
 _MATURITY = 5
 _SENTINEL_TARGET = object()
+
+
+class _CountingConnection:
+    def __init__(self, connection, *, fail_select_once=False):
+        self.connection = connection
+        self.fail_select_once = fail_select_once
+        self.select_count = 0
+
+    def execute(self, sql, params=()):
+        if str(sql).startswith("SELECT 1 FROM fact_consumers"):
+            self.select_count += 1
+            if self.fail_select_once:
+                self.fail_select_once = False
+                raise sqlite3.OperationalError("select")
+        return self.connection.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+
+class _AbsentFactConsumerConnection:
+    """Thread-safe raw-SQL stand-in for a fact-consumer row miss."""
+
+    class _Result:
+        @staticmethod
+        def fetchone():
+            return None
+
+    def execute(self, _sql, _params=()):
+        return self._Result()
 
 
 def _phase(
@@ -445,6 +477,23 @@ def test_record_fact_consumers_deduplicates_only_within_latest_diag_snapshot() -
 
         assert FactConsumer.select().count() == 1
 
+        changed_same_snapshot = FactConsumerRecord(
+            consumer=record.consumer,
+            strategy=record.strategy,
+            fact_id=record.fact_id,
+            maturity=record.maturity,
+            decision=record.decision,
+            reason="changed-reason",
+            payload={"active": 1, "evidence_generation": 2},
+        )
+        with patch(
+            "d810.core.diag.event_handlers.get_diag_conn",
+            return_value=conn,
+        ):
+            rt.record_fact_consumers(_FUNC_EA, (changed_same_snapshot,))
+
+        assert FactConsumer.select().count() == 2
+
         Snapshot.insert(
             id=8,
             label="next-pre",
@@ -479,10 +528,345 @@ def test_record_fact_consumers_deduplicates_only_within_latest_diag_snapshot() -
             for snapshot_id, reason, payload in rows
         ] == [
             (7, "unit-test", {"active": 0}),
+            (7, "changed-reason", {"active": 1, "evidence_generation": 2}),
             (8, "next-generation", {"active": 1}),
         ]
     finally:
         uninstall_diag_event_handlers()
+
+
+def _insert_latest_fact_consumer_snapshot(db, snapshot_id: int) -> None:
+    from d810.core.diag import diag_models_on
+
+    with diag_models_on(db):
+        Snapshot.insert(
+            id=snapshot_id,
+            label="pre",
+            func_ea_hex=f"0x{_FUNC_EA:016x}",
+            func_ea_i64=_FUNC_EA,
+            maturity="MMAT_CALLS",
+            phase="pre_d810",
+            block_count=1,
+            timestamp=0.0,
+        ).execute()
+
+
+def _latest_fact_consumer_event(*records):
+    from d810.core.observability_events import FactConsumersForLatestSnapshot
+
+    return FactConsumersForLatestSnapshot(_FUNC_EA, tuple(records))
+
+
+def _recovery_gate_record(**changes) -> FactConsumerRecord:
+    values = {
+        "consumer": "state_machine_cff_unflattener",
+        "strategy": "recovery_gate",
+        "fact_id": "resolver_session:indirect_dispatcher_materialized",
+        "maturity": "MMAT_CALLS",
+        "decision": "declined",
+        "reason": "maturity_not_registered",
+        "payload": {
+            "evidence_generation": 0,
+            "normalization_published_postvalidated_generation": None,
+            "imported_identity_ready": None,
+            "indirect_dispatcher_materialized": False,
+            "recovery_epoch_phase": 0,
+            "resolver_session_present": False,
+            "rounds_before": 0,
+        },
+    }
+    values.update(changes)
+    return FactConsumerRecord(**values)
+
+
+def test_latest_fact_consumer_handler_keeps_full_recovery_identity() -> None:
+    from d810.core.diag import event_handlers
+
+    db = make_bound_diag_db()
+    conn = db.connection()
+    _insert_latest_fact_consumer_snapshot(db, 31)
+    record = _recovery_gate_record()
+    changed_decision = _recovery_gate_record(decision="accepted")
+    changed_maturity = _recovery_gate_record(maturity="MMAT_GLBOPT1")
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn):
+            event_handlers._handle_fact_consumers_latest(
+                _latest_fact_consumer_event(record, record)
+            )
+            event_handlers._handle_fact_consumers_latest(
+                _latest_fact_consumer_event(changed_decision)
+            )
+            event_handlers._handle_fact_consumers_latest(
+                _latest_fact_consumer_event(changed_maturity)
+            )
+        assert FactConsumer.select().count() == 3
+
+        _insert_latest_fact_consumer_snapshot(db, 32)
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn):
+            event_handlers._handle_fact_consumers_latest(
+                _latest_fact_consumer_event(record)
+            )
+        assert FactConsumer.select().where(FactConsumer.snapshot == 32).count() == 1
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("evidence_generation", 1),
+        ("normalization_published_postvalidated_generation", 1),
+        ("imported_identity_ready", True),
+        ("indirect_dispatcher_materialized", True),
+        ("recovery_epoch_phase", 1),
+        ("resolver_session_present", True),
+        ("rounds_before", 1),
+    ),
+)
+def test_latest_recovery_payload_field_change_is_distinct(field, value) -> None:
+    from d810.core.diag import event_handlers
+
+    db = make_bound_diag_db()
+    conn = db.connection()
+    _insert_latest_fact_consumer_snapshot(db, 41)
+    record = _recovery_gate_record()
+    changed = _recovery_gate_record(payload={**record.payload, field: value})
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn):
+            event_handlers._handle_fact_consumers_latest(
+                _latest_fact_consumer_event(record, changed)
+            )
+        assert FactConsumer.select().count() == 2
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
+
+
+def test_latest_fact_consumer_insert_failure_does_not_warm_cache() -> None:
+    from d810.core.diag import event_handlers
+
+    db = make_bound_diag_db()
+    conn = db.connection()
+    _insert_latest_fact_consumer_snapshot(db, 52)
+    event = _latest_fact_consumer_event(
+        FactConsumerRecord("other", "non_recovery", "fact", "MMAT_CALLS", "declined", "retry", {"v": 1})
+    )
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn), patch.object(
+            event_handlers,
+            "snapshot_fact_consumers",
+            side_effect=sqlite3.OperationalError("insert"),
+        ):
+            with pytest.raises(sqlite3.OperationalError, match="insert"):
+                event_handlers._handle_fact_consumers_latest(event)
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn), patch.object(
+            event_handlers, "snapshot_fact_consumers", wraps=event_handlers.snapshot_fact_consumers
+        ) as writer:
+            event_handlers._handle_fact_consumers_latest(event)
+        assert writer.call_count == 1
+        assert FactConsumer.select().count() == 1
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
+
+
+def test_latest_fact_consumer_cache_is_cold_after_uninstall_and_reinstall() -> None:
+    from d810.core.diag import event_handlers
+
+    db = make_bound_diag_db()
+    conn = _CountingConnection(db.connection())
+    _insert_latest_fact_consumer_snapshot(db, 61)
+    event = _latest_fact_consumer_event(
+        FactConsumerRecord("other", "non_recovery", "fact", "MMAT_CALLS", "declined", "same", {"v": 1})
+    )
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn):
+            event_handlers._handle_fact_consumers_latest(event)
+            event_handlers._handle_fact_consumers_latest(event)
+            assert conn.select_count == 1
+            event_handlers.uninstall_diag_event_handlers()
+            event_handlers.install_diag_event_handlers()
+            event_handlers._handle_fact_consumers_latest(event)
+        assert conn.select_count == 2
+        assert FactConsumer.select().count() == 1
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
+
+
+def test_latest_fact_consumer_select_retry_and_warm_cache_query_count() -> None:
+    from d810.core.diag import event_handlers
+
+    db = make_bound_diag_db()
+    conn = _CountingConnection(db.connection(), fail_select_once=True)
+    _insert_latest_fact_consumer_snapshot(db, 71)
+    event = _latest_fact_consumer_event(
+        FactConsumerRecord("other", "non_recovery", "fact", "MMAT_CALLS", "declined", "retry", {"v": 1})
+    )
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn):
+            with pytest.raises(sqlite3.OperationalError, match="select"):
+                event_handlers._handle_fact_consumers_latest(event)
+            event_handlers._handle_fact_consumers_latest(event)
+            assert conn.select_count == 2
+            event_handlers._handle_fact_consumers_latest(event)
+        assert conn.select_count == 2
+        assert FactConsumer.select().count() == 1
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
+
+
+def test_latest_fact_consumer_cache_does_not_cross_bound_databases(tmp_path) -> None:
+    from d810.core.diag import create_diag_database, diag_models_on, event_handlers
+
+    event = _latest_fact_consumer_event(
+        FactConsumerRecord("other", "non_recovery", "fact", "MMAT_CALLS", "declined", "same", {"v": 1})
+    )
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        for database_path in (tmp_path / "first.sqlite", tmp_path / "second.sqlite"):
+            # create_diag_database resets the active writer database.  Each
+            # path therefore supplies an independent connection and binding.
+            db = create_diag_database(str(database_path))
+            try:
+                _insert_latest_fact_consumer_snapshot(db, 81)
+                conn = db.connection()
+                with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn):
+                    event_handlers._handle_fact_consumers_latest(event)
+                with diag_models_on(db):
+                    assert FactConsumer.select().count() == 1
+            finally:
+                db.close()
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
+
+
+def test_latest_fact_consumer_concurrent_duplicates_write_one_semantic_row() -> None:
+    """A blocked first write keeps an identical concurrent event out of the writer."""
+    from d810.core.diag import event_handlers
+
+    db = make_bound_diag_db()
+    conn = _AbsentFactConsumerConnection()
+    event = _latest_fact_consumer_event(
+        FactConsumerRecord("other", "non_recovery", "fact", "MMAT_CALLS", "declined", "same", {"v": 1})
+    )
+    first_writer = threading.Barrier(2)
+    release_first_writer = threading.Event()
+    second_writer_entered = threading.Event()
+    persisted_rows = []
+    writer_lock = threading.Lock()
+
+    def writer(*_args):
+        with writer_lock:
+            persisted_rows.append(object())
+            is_first = len(persisted_rows) == 1
+        if is_first:
+            first_writer.wait()
+            assert release_first_writer.wait(timeout=1)
+        else:
+            second_writer_entered.set()
+
+    def handle() -> None:
+        event_handlers._handle_fact_consumers_latest(event)
+
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn), patch.object(
+            event_handlers, "_latest_snapshot_id_for_func", return_value=91
+        ), patch.object(event_handlers, "snapshot_fact_consumers", side_effect=writer):
+            first = threading.Thread(target=handle)
+            second = threading.Thread(target=handle)
+            first.start()
+            first_writer.wait()
+            second.start()
+            try:
+                assert not second_writer_entered.wait(timeout=0.1)
+            finally:
+                release_first_writer.set()
+            first.join(timeout=1)
+            second.join(timeout=1)
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert len(persisted_rows) == 1
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
+
+
+def test_latest_fact_consumer_uninstall_waits_for_inflight_write_and_leaves_cache_cold() -> None:
+    """Uninstall cannot finish before an in-flight handler has finished warming."""
+    from d810.core.diag import event_handlers
+
+    db = make_bound_diag_db()
+    conn = _AbsentFactConsumerConnection()
+    event = _latest_fact_consumer_event(
+        FactConsumerRecord("other", "non_recovery", "fact", "MMAT_CALLS", "declined", "same", {"v": 1})
+    )
+    writer_started = threading.Barrier(2)
+    release_writer = threading.Event()
+    uninstall_done = threading.Event()
+    writer_calls = []
+
+    def writer(*_args):
+        writer_calls.append(object())
+        if len(writer_calls) == 1:
+            writer_started.wait()
+            assert release_writer.wait(timeout=1)
+
+    def handle() -> None:
+        event_handlers._handle_fact_consumers_latest(event)
+
+    def uninstall() -> None:
+        event_handlers.uninstall_diag_event_handlers()
+        uninstall_done.set()
+
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn), patch.object(
+            event_handlers, "_latest_snapshot_id_for_func", return_value=92
+        ), patch.object(event_handlers, "snapshot_fact_consumers", side_effect=writer):
+            handler = threading.Thread(target=handle)
+            handler.start()
+            writer_started.wait()
+            uninstaller = threading.Thread(target=uninstall)
+            uninstaller.start()
+            try:
+                assert not uninstall_done.wait(timeout=0.1)
+            finally:
+                release_writer.set()
+            handler.join(timeout=1)
+            uninstaller.join(timeout=1)
+            assert not handler.is_alive()
+            assert not uninstaller.is_alive()
+            assert not event_handlers._LATEST_FACT_CONSUMER_KEYS
+            assert not event_handlers._LATEST_FACT_CONSUMER_SNAPSHOTS
+            event_handlers.install_diag_event_handlers()
+            event_handlers._handle_fact_consumers_latest(event)
+            assert len(writer_calls) == 2
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
+
+
+def test_latest_fact_consumer_prunes_old_snapshot_cache_keys() -> None:
+    from d810.core.diag import event_handlers
+
+    db = make_bound_diag_db()
+    conn = _CountingConnection(db.connection())
+    _insert_latest_fact_consumer_snapshot(db, 101)
+    event = _latest_fact_consumer_event(
+        FactConsumerRecord("other", "non_recovery", "fact", "MMAT_CALLS", "declined", "same", {"v": 1})
+    )
+    event_handlers.uninstall_diag_event_handlers()
+    try:
+        with patch("d810.core.diag.event_handlers.get_diag_conn", return_value=conn):
+            event_handlers._handle_fact_consumers_latest(event)
+            _insert_latest_fact_consumer_snapshot(db, 102)
+            event_handlers._handle_fact_consumers_latest(event)
+        assert {key[2] for key in event_handlers._LATEST_FACT_CONSUMER_KEYS} == {102}
+        assert event_handlers._LATEST_FACT_CONSUMER_SNAPSHOTS[(conn, _FUNC_EA)] == 102
+    finally:
+        event_handlers.uninstall_diag_event_handlers()
 
 
 def test_begin_session_clears_fired_and_store() -> None:

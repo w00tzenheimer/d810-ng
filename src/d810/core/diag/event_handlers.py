@@ -54,6 +54,7 @@ from d810.core.diag.lifecycle import (
 from d810.core.formatting import format_block_id
 from d810.core.diag.snapshot import (
     _dual,
+    _json_text,
     snapshot_branch_witness_decisions,
     snapshot_branch_ownership_proofs,
     snapshot_condition_chain_interval_dispatcher_rows,
@@ -815,6 +816,13 @@ def _handle_fact_consumer(ev: FactConsumersObserved) -> None:
     snapshot_fact_consumers(conn, snap_id, ev.func_ea, ev.consumers)
 
 
+_LATEST_FACT_CONSUMER_KEYS: set[tuple[object, ...]] = set()
+_LATEST_FACT_CONSUMER_SNAPSHOTS: dict[tuple[sqlite3.Connection, int], int] = {}
+# Serializes the latest-snapshot lookup/write/warm lifecycle.  Handlers never
+# acquire _install_lock, while uninstall takes _install_lock before this lock.
+_latest_fact_consumer_lock = threading.Lock()
+
+
 def _handle_fact_consumers_latest(ev: FactConsumersForLatestSnapshot) -> None:
     "Late-binding fact-consumer writer.\n\n    Used by preanalysis-time post-hoc auditing where no specific\n    just-emitted capture exists. The handler finds the latest\n    ``snapshots`` row for ``func_ea`` and writes consumer rows there\n    after deduplicating against existing rows.\n"
     try:
@@ -830,31 +838,57 @@ def _handle_fact_consumers_latest(ev: FactConsumersForLatestSnapshot) -> None:
     db = active_diag_db()
     if db is None:
         return
-    pending = []
-    with diag_models_on(db):
-        for consumer in ev.consumers:
-            exists = (
-                FactConsumer.select(FactConsumer.consumer_index)
-                .where(
-                    (FactConsumer.snapshot == int(snap_id))
-                    & (FactConsumer.func_ea_hex == func_hex)
-                    & (FactConsumer.consumer == getattr(consumer, "consumer", None))
-                    & (FactConsumer.strategy == getattr(consumer, "strategy", None))
-                    & (FactConsumer.fact_id == getattr(consumer, "fact_id", None))
-                    & (FactConsumer.maturity == getattr(consumer, "maturity", None))
-                    & (FactConsumer.decision == getattr(consumer, "decision", None))
+    with _latest_fact_consumer_lock:
+        scope = (conn, int(ev.func_ea))
+        previous_snapshot = _LATEST_FACT_CONSUMER_SNAPSHOTS.get(scope)
+        if previous_snapshot != int(snap_id):
+            _LATEST_FACT_CONSUMER_KEYS.difference_update(
+                tuple(
+                    key
+                    for key in _LATEST_FACT_CONSUMER_KEYS
+                    if key[:3] == (*scope, previous_snapshot)
                 )
-                .exists()
             )
-            if not exists:
-                pending.append(consumer)
-    if pending:
-        snapshot_fact_consumers(
-            conn,
-            snap_id,
-            int(ev.func_ea),
-            tuple(pending),
-        )
+            _LATEST_FACT_CONSUMER_SNAPSHOTS[scope] = int(snap_id)
+
+        pending = []
+        pending_keys = set()
+        for consumer in ev.consumers:
+            payload = _json_text(getattr(consumer, "payload", None), {})
+            key = (
+                conn,
+                int(ev.func_ea),
+                int(snap_id),
+                func_hex,
+                getattr(consumer, "consumer", None),
+                getattr(consumer, "strategy", None),
+                getattr(consumer, "fact_id", None),
+                getattr(consumer, "maturity", None),
+                getattr(consumer, "decision", None),
+                getattr(consumer, "reason", None),
+                payload,
+            )
+            if key in _LATEST_FACT_CONSUMER_KEYS or key in pending_keys:
+                continue
+            exists = conn.execute(
+                "SELECT 1 FROM fact_consumers WHERE snapshot_id = ? AND func_ea_hex = ? "
+                "AND consumer = ? AND strategy = ? AND fact_id = ? AND maturity = ? "
+                "AND decision = ? AND reason IS ? AND payload = ? LIMIT 1",
+                key[2:],
+            ).fetchone()
+            if exists:
+                _LATEST_FACT_CONSUMER_KEYS.add(key)
+            else:
+                pending.append((key, consumer))
+                pending_keys.add(key)
+        if pending:
+            snapshot_fact_consumers(
+                conn,
+                snap_id,
+                int(ev.func_ea),
+                tuple(consumer for _key, consumer in pending),
+            )
+            _LATEST_FACT_CONSUMER_KEYS.update(key for key, _consumer in pending)
 
 
 def _handle_fact_conflict(ev: FactConflictsObserved) -> None:
@@ -1194,6 +1228,9 @@ def _uninstall_locked() -> None:
     for event_type, handler in _HANDLERS:
         unsubscribe(event_type, handler)  # type: ignore[arg-type]
     _installed = False
+    with _latest_fact_consumer_lock:
+        _LATEST_FACT_CONSUMER_KEYS.clear()
+        _LATEST_FACT_CONSUMER_SNAPSHOTS.clear()
     _clear_snapshot_mapping()
     with _provenance_lock:
         _pending_provenance.clear()
