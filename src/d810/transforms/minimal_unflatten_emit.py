@@ -8605,6 +8605,14 @@ def _prepare_final_local_evidence_inputs(
     return local_route_facts, entry_fact
 
 
+def _hold_local_route_facts(
+    route_facts: tuple[SemanticRouteFact | None, ...],
+) -> tuple[SemanticRouteFact, ...]:
+    """Hold every validated non-return fact for the final local evidence join."""
+
+    return tuple(fact for fact in route_facts if fact is not None)
+
+
 def _filter_conditional_arm_pair_for_suppressed_sources(
     arm_modifications: tuple[object, ...],
     forecasts: tuple[ConditionalArmRouteForecast, ...],
@@ -10088,12 +10096,6 @@ def emit_minimal_unflatten(
     route_facts = tuple(
         transition.semantic_route_fact for transition in nonreturn_transitions
     )
-    local_backedge_sources = frozenset(
-        int(source)
-        for source in _dispatcher_entry_preds(
-            flow_graph, int(dispatcher_entry_serial), pre_header_hint=pre_header_serial,
-        )
-    )
     state_identity_for_evidence = (
         StorageIdentity(StorageIdentityKind.STACK, int(_soff))
         if _soff is not None
@@ -10134,14 +10136,7 @@ def emit_minimal_unflatten(
             ),
             entry_serial=int(flow_graph.entry_serial),
         )
-        local_route_facts = tuple(
-            transition.semantic_route_fact
-            for transition in nonreturn_transitions
-            if (
-                transition.semantic_route_fact is not None
-                and int(transition.write_block) not in local_backedge_sources
-            )
-        )
+        local_route_facts = _hold_local_route_facts(route_facts)
     elif not caller_supplied_canonical_evidence and nonreturn_transitions and logger.info_on:
         logger.info(
             "unflat canonical route evidence abstained: reason=%s missing=%d total=%d missing_sources=%s missing_kinds=%s missing_native_routes=%s",
@@ -11161,17 +11156,16 @@ def emit_minimal_unflatten(
         guard_candidates
     )
     if guard_suppressed:
+        filtered_arm_pair = _filter_conditional_arm_pair_for_suppressed_sources(
+            tuple(arm_mods), arm_forecasts,
+            frozenset(int(source) for source in guard_suppressed),
+        )
+        if filtered_arm_pair is None:
+            return compile_with_dispatcher_coverage(())
+        arm_mods, arm_forecasts = filtered_arm_pair
         mods = [
             m
             for m in mods
-            if not (
-                isinstance(m, (RedirectGoto, RedirectBranch))
-                and int(m.from_serial) in guard_suppressed
-            )
-        ]
-        arm_mods = [
-            m
-            for m in arm_mods
             if not (
                 isinstance(m, (RedirectGoto, RedirectBranch))
                 and int(m.from_serial) in guard_suppressed

@@ -128,6 +128,7 @@ from d810.transforms.minimal_unflatten_emit import (
     _complete_local_semantic_route_facts,
     _final_local_semantic_route_facts,
     _prepare_final_local_evidence_inputs,
+    _hold_local_route_facts,
     _filter_conditional_arm_pair_for_suppressed_sources,
 )
 from d810.transforms.unflatten_authority.producer_api import (
@@ -437,6 +438,14 @@ def test_production_final_input_preparation_preserves_same_source_fact_identity(
     assert _final_local_semantic_route_facts(local_facts, entry_fact, ()) == (
         first, second,
     )
+
+
+def test_production_local_fact_hold_keeps_entry_prefix_fact() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    entry_prefix_fact = _forecast_direct_arm(graph, arm, dag).route_fact
+
+    assert _hold_local_route_facts((entry_prefix_fact, None)) == (entry_prefix_fact,)
+
 
 
 def test_production_final_input_preparation_rejects_same_id_anchor_drift() -> None:
@@ -2129,6 +2138,19 @@ def test_typed_entry_native_route_registers_its_canonical_proof(monkeypatch, _se
         "recover_state_write_transitions_via_partitioned_fixpoint",
         lambda *_args, **_kwargs: (StateWriteTransition(0, None, None, True, None),),
     )
+    original_enrich = minimal_unflatten_emit_module.enrich_native_bound_transition_routes
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "enrich_native_bound_transition_routes",
+        lambda transitions, *args, **kwargs: (
+            transitions
+            if any(transition.is_return and transition.next_state is None for transition in transitions)
+            else original_enrich(transitions, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module, "_recover_initial_state", lambda *_args, **_kwargs: state,
+    )
     entry_route = NativeBoundTransitionRoute("entry", 0x1001, 0, state, 20)
     plan = emit_minimal_unflatten(
         fg, _disp({state: 20}, exit_block=99), state_var_stkoff=_STATE,
@@ -2179,6 +2201,19 @@ def _typed_entry_native_route_fixture(monkeypatch):
         minimal_unflatten_emit_module,
         "recover_state_write_transitions_via_partitioned_fixpoint",
         lambda *_args, **_kwargs: (StateWriteTransition(0, None, None, True, None),),
+    )
+    original_enrich = minimal_unflatten_emit_module.enrich_native_bound_transition_routes
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "enrich_native_bound_transition_routes",
+        lambda transitions, *args, **kwargs: (
+            transitions
+            if any(transition.is_return and transition.next_state is None for transition in transitions)
+            else original_enrich(transitions, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module, "_recover_initial_state", lambda *_args, **_kwargs: state,
     )
     return graph, state, entry_route, dict(
         dispatcher=_disp({state: 20, 0x0BADF00D: 20}, exit_block=99),
