@@ -1114,6 +1114,9 @@ def test_partial_coverage_drift_rejects_before_any_mutation() -> None:
     )
     assert len(coverage.covered_corridors) == 1
     assert len(coverage.residual_corridors) == 1
+    removal_forecast = build_dispatcher_removal_forecast(
+        cfg, coverage=coverage, dispatcher_entry_serial=2,
+    )
     plan = _typed_bootstrap_authority_plan(
         cfg,
         template=template,
@@ -1122,6 +1125,7 @@ def test_partial_coverage_drift_rejects_before_any_mutation() -> None:
         authoritative_handler_serials=(3,),
         coverage=coverage,
         route_edge=(1, 3),
+        removal_forecast=removal_forecast,
     )
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(
@@ -1402,6 +1406,9 @@ def test_partial_coverage_without_proof_rejects_before_any_mutation() -> None:
     )
     assert len(coverage.covered_corridors) == 1
     assert len(coverage.residual_corridors) == 1
+    removal_forecast = build_dispatcher_removal_forecast(
+        cfg, coverage=coverage, dispatcher_entry_serial=2,
+    )
     plan = _typed_bootstrap_authority_plan(
         cfg,
         template=template,
@@ -1410,6 +1417,7 @@ def test_partial_coverage_without_proof_rejects_before_any_mutation() -> None:
         authoritative_handler_serials=(3,),
         coverage=coverage,
         route_edge=(1, 3),
+        removal_forecast=removal_forecast,
     )
     translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(
@@ -4916,6 +4924,9 @@ def test_corridor_coverage_drift_is_rejected_by_observed_phase_result():
         modifications=(RedirectGoto(from_serial=1, old_target=2, new_target=3),),
         dispatcher_entry_serial=2,
     )
+    removal_forecast = build_dispatcher_removal_forecast(
+        cfg, coverage=coverage, dispatcher_entry_serial=2,
+    )
     plan = _typed_bootstrap_authority_plan(
         cfg,
         template=template,
@@ -4924,6 +4935,7 @@ def test_corridor_coverage_drift_is_rejected_by_observed_phase_result():
         authoritative_handler_serials=(3,),
         coverage=coverage,
         route_edge=(1, 3),
+        removal_forecast=removal_forecast,
     )
     translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(

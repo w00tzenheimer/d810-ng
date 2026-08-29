@@ -2254,6 +2254,24 @@ def _typed_entry_native_route_fixture(monkeypatch):
     )
 
 
+def test_typed_emitter_forecast_signal_excludes_raw_complete_coverage():
+    """Raw complete coverage is not typed corridor-validation intent."""
+
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherCorridorCoverage,
+    )
+
+    coverage = DispatcherCorridorCoverage(
+        function_ea=0x1000,
+        dispatcher=None,
+        covered_corridors=(),
+        residual_corridors=(),
+        enumeration_complete=True,
+    )
+
+    assert minimal_unflatten_emit_module._has_dispatcher_removal_signal(coverage) is False
+
+
 def test_supplied_canonical_entry_evidence_is_consumed_without_remint(monkeypatch, _seam):
     graph, _state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
     produced = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)

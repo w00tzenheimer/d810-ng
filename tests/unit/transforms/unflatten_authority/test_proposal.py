@@ -523,8 +523,8 @@ def test_incomplete_dispatcher_forecast_mints_no_authority_claims() -> None:
     ) == ()
 
 
-def test_partial_route_attachment_does_not_mint_a_dispatcher_coverage_forecast() -> None:
-    """A residual route plan is not an aggregate dispatcher-retirement plan."""
+def test_explicit_partial_route_forecast_keeps_corridor_validation() -> None:
+    """Explicit producer intent retains corridor validation without retirement."""
 
     from d810.transforms.dispatcher_corridor_coverage import (
         DispatcherBlockAnchor,
@@ -582,7 +582,7 @@ def test_partial_route_attachment_does_not_mint_a_dispatcher_coverage_forecast()
 
     assert attached.unflatten_proposal is not None
     partial = attached.unflatten_proposal
-    assert partial.corridor_coverage_forecast is None
+    assert partial.corridor_coverage_forecast is not None
     assert partial.retirement_candidate_catalog is None
     assert not any(
         type(claim) is model.RetiredDispatcherInfrastructureClaim

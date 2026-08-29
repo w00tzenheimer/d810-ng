@@ -1288,6 +1288,8 @@ def attach_typed_proposal(
             proposal=proposal,
             block_refs_by_serial=source_refs_by_serial,
         )
+        if corridor_coverage is None:
+            raise ValueError("coverage-dependent proposal requires coverage metadata")
         if claims:
             candidate_refs = {
                 member.block_ref
@@ -1321,8 +1323,6 @@ def attach_typed_proposal(
                 coverage_dependent_claim
                 or full_dispatcher_retirement
             )
-            if requires_corridor_forecast and corridor_coverage is None:
-                raise ValueError("coverage-dependent proposal requires coverage metadata")
             proposal = replace(
                 proposal,
                 claims=tuple(sorted(
@@ -1343,6 +1343,15 @@ def attach_typed_proposal(
                         proposal=proposal,
                         block_refs_by_serial=source_refs_by_serial,
                     ) if requires_corridor_forecast else None
+                ),
+            )
+        else:
+            proposal = replace(
+                proposal,
+                corridor_coverage_forecast=corridor_coverage_forecast_from_analysis(
+                    corridor_coverage,
+                    proposal=proposal,
+                    block_refs_by_serial=source_refs_by_serial,
                 ),
             )
     if (

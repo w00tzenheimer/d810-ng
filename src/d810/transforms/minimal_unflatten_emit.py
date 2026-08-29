@@ -212,6 +212,17 @@ logger = logging.getLogger("d810.transforms.minimal_unflatten_emit")
 TERMINAL_CARRIER_CONVERGENCE_METADATA = "terminal_carrier_convergence"
 TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA = "terminal_carrier_convergence_reason"
 
+
+def _has_dispatcher_removal_signal(coverage) -> bool:
+    """Whether a projected forecast carries typed corridor-validation intent."""
+
+    return bool(
+        coverage.retirement_candidates
+        or coverage.cycle_break is not None
+        or coverage.detached_dead_handler_component is not None
+    )
+
+
 __all__ = [
     "ConditionalStateTransitionCandidate",
     "emit_minimal_unflatten",
@@ -9755,7 +9766,7 @@ def emit_minimal_unflatten(
         responsible for the authoritative candidate/source verdict.
         """
         if dispatcher_entry_serial is None:
-            return coverage
+            return None
         projected = project_patch_plan(
             flow_graph,
             plan,
@@ -9791,10 +9802,11 @@ def emit_minimal_unflatten(
             authoritative_handler_serials=authoritative_handlers,
             patch_plan=plan,
         )
-        return replace(
+        forecast = replace(
             forecast,
             detached_dead_handler_component=detached,
         )
+        return forecast if _has_dispatcher_removal_signal(forecast) else None
 
     def log_dispatcher_coverage(coverage) -> None:
         if not logger.info_on:
