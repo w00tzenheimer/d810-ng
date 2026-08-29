@@ -8,15 +8,17 @@ import gc
 import ida_hexrays
 import idaapi
 
-from d810.core.function_execution_identity import MbaObservationContext
-from d810.core.plugins import PluginIdentity
-from d810.manager import D810State
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
 
 
 @contextlib.contextmanager
 def _started_real_state():
     """Start the real D810 manager with a minimal valid runtime project."""
+    # Resolve the class after any opt-in reload-isolation test has completed.
+    # A module-level import would retain the pre-reload class identity and
+    # construct a second manager with colliding capability registrations.
+    from d810.manager import D810State
+
     state = D810State()
     was_loaded = state.is_loaded()
     if not was_loaded:
@@ -41,6 +43,14 @@ def _started_real_state():
             state.unload(gui=False)
 
 
+def _current_identity_types():
+    """Resolve reload-sensitive identity classes at test execution time."""
+    from d810.core.function_execution_identity import MbaObservationContext
+    from d810.core.plugins import PluginIdentity
+
+    return MbaObservationContext, PluginIdentity
+
+
 class TestFunctionExecutionIdentityContext:
     binary_name = "libobfuscated.dll"
 
@@ -52,6 +62,7 @@ class TestFunctionExecutionIdentityContext:
         monkeypatch,
     ) -> None:
         del ida_database, configure_hexrays, setup_libobfuscated_funcs
+        MbaObservationContext, PluginIdentity = _current_identity_types()
         assert idaapi.init_hexrays_plugin()
         function_ea = get_func_ea("test_function_ollvm_fla_bcf_sub")
         assert function_ea != idaapi.BADADDR
@@ -131,6 +142,7 @@ class TestFunctionExecutionIdentityContext:
         setup_libobfuscated_funcs,
     ) -> None:
         del ida_database, configure_hexrays, setup_libobfuscated_funcs
+        _, PluginIdentity = _current_identity_types()
         function_ea = get_func_ea("test_function_ollvm_fla_bcf_sub")
         with _started_real_state() as state:
             manager = state.manager
