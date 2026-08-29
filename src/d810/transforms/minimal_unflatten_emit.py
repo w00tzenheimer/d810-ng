@@ -8596,6 +8596,43 @@ def _final_local_semantic_route_facts(
     )
 
 
+def _prepare_final_local_evidence_inputs(
+    local_route_facts: tuple[SemanticRouteFact, ...],
+    entry_fact: SemanticRouteFact | None,
+) -> tuple[tuple[SemanticRouteFact, ...], SemanticRouteFact | None]:
+    """Preserve held local inputs verbatim until the sole final fact join."""
+
+    return local_route_facts, entry_fact
+
+
+def _filter_conditional_arm_pair_for_suppressed_sources(
+    arm_modifications: tuple[object, ...],
+    forecasts: tuple[ConditionalArmRouteForecast, ...],
+    suppressed_sources: frozenset[int],
+) -> tuple[tuple[object, ...], tuple[ConditionalArmRouteForecast, ...]] | None:
+    """Filter guarded arms and their forecasts as one exact-operation pair."""
+
+    arm_keys = {_redirect_identity(modification) for modification in arm_modifications}
+    if None in arm_keys:
+        return None
+    for forecast in forecasts:
+        key = _redirect_identity(forecast.modification)
+        if key is None or key not in arm_keys:
+            return None
+    return (
+        tuple(
+            modification
+            for modification in arm_modifications
+            if int(modification.from_serial) not in suppressed_sources
+        ),
+        tuple(
+            forecast
+            for forecast in forecasts
+            if int(forecast.modification.from_serial) not in suppressed_sources
+        ),
+    )
+
+
 def _build_conditional_arm_redirects_with_forecasts(
     flow_graph,
     dispatcher,
@@ -10051,6 +10088,12 @@ def emit_minimal_unflatten(
     route_facts = tuple(
         transition.semantic_route_fact for transition in nonreturn_transitions
     )
+    local_backedge_sources = frozenset(
+        int(source)
+        for source in _dispatcher_entry_preds(
+            flow_graph, int(dispatcher_entry_serial), pre_header_hint=pre_header_serial,
+        )
+    )
     state_identity_for_evidence = (
         StorageIdentity(StorageIdentityKind.STACK, int(_soff))
         if _soff is not None
@@ -10091,7 +10134,14 @@ def emit_minimal_unflatten(
             ),
             entry_serial=int(flow_graph.entry_serial),
         )
-        local_route_facts = tuple(fact for fact in route_facts if fact is not None)
+        local_route_facts = tuple(
+            transition.semantic_route_fact
+            for transition in nonreturn_transitions
+            if (
+                transition.semantic_route_fact is not None
+                and int(transition.write_block) not in local_backedge_sources
+            )
+        )
     elif not caller_supplied_canonical_evidence and nonreturn_transitions and logger.info_on:
         logger.info(
             "unflat canonical route evidence abstained: reason=%s missing=%d total=%d missing_sources=%s missing_kinds=%s missing_native_routes=%s",
@@ -10623,17 +10673,6 @@ def emit_minimal_unflatten(
                                 ),
                                 entry_serial=int(flow_graph.entry_serial),
                             )
-                        # The entry-prefix route is not a backedge.  It can be
-                        # present in the recovered transition inventory before
-                        # entry consensus; retain the entry's authoritative fact
-                        # separately so the final join receives each route role
-                        # exactly once.
-                        local_route_facts = tuple(
-                            fact
-                            for fact in local_route_facts
-                            if int(fact.source_serial)
-                            != int(native_route.source_block_serial)
-                        )
                         held_entry_fact = entry_fact
                     else:
                         try:
@@ -11286,6 +11325,12 @@ def emit_minimal_unflatten(
         dispatcher_entry_serial=int(dispatcher_entry_serial),
     )
     if cond_suppressed:
+        filtered_arm_pair = _filter_conditional_arm_pair_for_suppressed_sources(
+            tuple(arm_mods), arm_forecasts, frozenset(int(source) for source in cond_suppressed),
+        )
+        if filtered_arm_pair is None:
+            return compile_with_dispatcher_coverage(())
+        arm_mods, arm_forecasts = filtered_arm_pair
         mods = [
             m
             for m in mods
@@ -11382,9 +11427,12 @@ def emit_minimal_unflatten(
                 entry_serial=int(flow_graph.entry_serial),
             )
         if local_production_context is not None:
+            final_local_route_facts, final_entry_fact = _prepare_final_local_evidence_inputs(
+                local_route_facts, held_entry_fact,
+            )
             final_facts = _final_local_semantic_route_facts(
-                local_route_facts,
-                held_entry_fact,
+                final_local_route_facts,
+                final_entry_fact,
                 surviving_arm_forecasts,
             )
             if final_facts is None or not final_facts:

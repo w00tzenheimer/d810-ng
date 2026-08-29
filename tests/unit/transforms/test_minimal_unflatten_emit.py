@@ -127,6 +127,8 @@ from d810.transforms.minimal_unflatten_emit import (
     _correlate_surviving_conditional_arm_forecasts,
     _complete_local_semantic_route_facts,
     _final_local_semantic_route_facts,
+    _prepare_final_local_evidence_inputs,
+    _filter_conditional_arm_pair_for_suppressed_sources,
 )
 from d810.transforms.unflatten_authority.producer_api import (
     ConditionalEntryBridgeForecast,
@@ -419,6 +421,63 @@ def test_final_emitter_fact_join_does_not_bypass_divergent_entry_comparison() ->
     assert _final_local_semantic_route_facts(
         (backedge,), divergent_entry, (),
     ) is None
+
+
+def test_production_final_input_preparation_preserves_same_source_fact_identity() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    forecast = _forecast_direct_arm(graph, arm, dag)
+    first = replace(forecast.route_fact, fact_id="one")
+    second = replace(first, fact_id="two")
+
+    local_facts, entry_fact = _prepare_final_local_evidence_inputs(
+        (first, second), None,
+    )
+
+    assert (local_facts, entry_fact) == ((first, second), None)
+    assert _final_local_semantic_route_facts(local_facts, entry_fact, ()) == (
+        first, second,
+    )
+
+
+def test_production_final_input_preparation_rejects_same_id_anchor_drift() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    forecast = _forecast_direct_arm(graph, arm, dag)
+    first = replace(forecast.route_fact, fact_id="same")
+    divergent_entry = replace(first, source_instruction_ea=first.source_instruction_ea + 4)
+
+    local_facts, entry_fact = _prepare_final_local_evidence_inputs(
+        (first,), divergent_entry,
+    )
+
+    assert _final_local_semantic_route_facts(local_facts, entry_fact, ()) is None
+
+
+def test_guard_suppression_filters_arm_modifications_and_forecasts_in_lockstep() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    survivor = RedirectGoto(1, 2, 3)
+    suppressed = RedirectGoto(4, 5, 6)
+    forecast = _forecast_direct_arm(graph, arm, dag)
+    suppressed_forecast = replace(
+        forecast,
+        modification=suppressed,
+        target_serial=6,
+        route_fact=replace(
+            forecast.route_fact,
+            owner_serial=4,
+            source_serial=4,
+            target_serial=6,
+            path_serials=(4,),
+        ),
+    )
+
+    filtered = _filter_conditional_arm_pair_for_suppressed_sources(
+        (survivor, suppressed), (forecast, suppressed_forecast), frozenset({4}),
+    )
+
+    assert filtered == ((survivor,), (forecast,))
+    assert _correlate_surviving_conditional_arm_forecasts(
+        filtered[0], filtered[1], (survivor,),
+    ) == (forecast,)
 
 
 def test_conditional_arm_forecast_rejects_absent_intermediate_path_block() -> None:
