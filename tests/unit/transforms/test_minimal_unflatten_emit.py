@@ -2254,22 +2254,126 @@ def _typed_entry_native_route_fixture(monkeypatch):
     )
 
 
-def test_typed_emitter_forecast_signal_excludes_raw_complete_coverage():
-    """Raw complete coverage is not typed corridor-validation intent."""
-
+def _dispatcher_removal_intent_fixture(*, candidate: bool = False):
     from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor,
         DispatcherCorridorCoverage,
+        RetiredDispatcherInfrastructure,
     )
 
-    coverage = DispatcherCorridorCoverage(
+    dispatcher = DispatcherBlockAnchor(2, 0x1200)
+    return DispatcherCorridorCoverage(
         function_ea=0x1000,
-        dispatcher=None,
+        dispatcher=dispatcher,
         covered_corridors=(),
         residual_corridors=(),
         enumeration_complete=True,
+        retirement_candidates=(RetiredDispatcherInfrastructure(
+            role="comparison_dispatcher", anchor=dispatcher,
+        ),) if candidate else (),
     )
 
-    assert minimal_unflatten_emit_module._has_dispatcher_removal_signal(coverage) is False
+
+def test_typed_emitter_ignores_reachable_source_retirement_candidates():
+    """Source-derived candidate rows are not projected removal intent."""
+
+    graph = FlowGraph(
+        blocks={0: _b(0, (2,), ()), 2: _b(2, (), (0,))},
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    status = minimal_unflatten_emit_module._dispatcher_removal_intent(
+        graph, _dispatcher_removal_intent_fixture(candidate=True), 2,
+    )
+
+    assert status.exists is False
+    assert status.reason == "dispatcher_reachable"
+
+
+@pytest.mark.parametrize(
+    ("graph", "dispatcher_entry_serial", "reason"),
+    (
+        (
+            FlowGraph(
+                blocks={
+                    0: _b(0, (1,), ()),
+                    1: _b(1, (), (0,)),
+                    2: _b(2, (), ()),
+                },
+                entry_serial=0,
+                func_ea=0x1000,
+            ),
+            2,
+            "dispatcher_unreachable",
+        ),
+        (
+            FlowGraph(
+                blocks={0: _b(0, (), ())}, entry_serial=0, func_ea=0x1000,
+            ),
+            2,
+            "dispatcher_absent",
+        ),
+    ),
+)
+def test_typed_emitter_retains_unreachable_or_absent_dispatcher_forecast(
+    graph, dispatcher_entry_serial, reason,
+):
+    status = minimal_unflatten_emit_module._dispatcher_removal_intent(
+        graph, _dispatcher_removal_intent_fixture(), dispatcher_entry_serial,
+    )
+
+    assert status.exists is True
+    assert status.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    (
+        ("cycle_break", "terminal_cycle"),
+        ("detached_dead_handler_component", "detached_component"),
+    ),
+)
+def test_typed_emitter_retains_terminal_or_detached_forecast(field, reason):
+    graph = FlowGraph(
+        blocks={0: _b(0, (2,), ()), 2: _b(2, (), (0,))},
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    forecast = replace(_dispatcher_removal_intent_fixture(), **{field: object()})
+
+    status = minimal_unflatten_emit_module._dispatcher_removal_intent(
+        graph, forecast, 2,
+    )
+
+    assert status.exists is True
+    assert status.reason == reason
+
+
+def test_typed_emitter_rejects_malformed_projected_traversal():
+    graph = FlowGraph(
+        blocks={0: _b(0, (99,), ())}, entry_serial=0, func_ea=0x1000,
+    )
+
+    with pytest.raises(ValueError, match="successor"):
+        minimal_unflatten_emit_module._dispatcher_removal_intent(
+            graph, _dispatcher_removal_intent_fixture(), 2,
+        )
+
+
+def test_typed_emitter_abstains_when_projected_traversal_is_unresolvable(
+    monkeypatch, _seam,
+):
+    graph, _state, _entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_dispatcher_removal_intent",
+        lambda *_args: (_ for _ in ()).throw(ValueError("projected traversal failed")),
+    )
+
+    plan = emit_minimal_unflatten(graph, native_key=NATIVE_KEY, **kwargs)
+
+    assert plan.unflatten_proposal is None
 
 
 def test_supplied_canonical_entry_evidence_is_consumed_without_remint(monkeypatch, _seam):

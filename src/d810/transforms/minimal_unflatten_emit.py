@@ -213,14 +213,59 @@ TERMINAL_CARRIER_CONVERGENCE_METADATA = "terminal_carrier_convergence"
 TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA = "terminal_carrier_convergence_reason"
 
 
-def _has_dispatcher_removal_signal(coverage) -> bool:
-    """Whether a projected forecast carries typed corridor-validation intent."""
+@dataclass(frozen=True, slots=True)
+class _DispatcherRemovalIntent:
+    """Producer-owned eligibility for transaction corridor validation."""
 
-    return bool(
-        coverage.retirement_candidates
-        or coverage.cycle_break is not None
-        or coverage.detached_dead_handler_component is not None
-    )
+    exists: bool
+    reason: str
+
+
+def _dispatcher_removal_intent(
+    projected_graph: FlowGraph,
+    coverage,
+    dispatcher_entry_serial: int,
+) -> _DispatcherRemovalIntent:
+    """Classify projected dispatcher-removal intent without source candidates."""
+
+    if type(projected_graph) is not FlowGraph:
+        raise TypeError("projected dispatcher graph must be FlowGraph")
+    if type(dispatcher_entry_serial) is not int:
+        raise TypeError("dispatcher entry serial must be int")
+    entry_serial = projected_graph.entry_serial
+    if type(entry_serial) is not int or entry_serial not in projected_graph.blocks:
+        raise ValueError("projected graph entry is missing or invalid")
+
+    reachable: set[int] = set()
+    pending = [entry_serial]
+    while pending:
+        serial = pending.pop()
+        if serial in reachable:
+            continue
+        block = projected_graph.blocks.get(serial)
+        if block is None:
+            raise ValueError("projected traversal reached missing block")
+        successors = getattr(block, "succs", None)
+        if type(successors) is not tuple:
+            raise ValueError("projected block successors are malformed")
+        reachable.add(serial)
+        for successor in successors:
+            if type(successor) is not int:
+                raise ValueError("projected block successor is malformed")
+            if successor not in projected_graph.blocks:
+                raise ValueError("projected block successor is missing")
+            if successor not in reachable:
+                pending.append(successor)
+
+    if dispatcher_entry_serial not in projected_graph.blocks:
+        return _DispatcherRemovalIntent(True, "dispatcher_absent")
+    if dispatcher_entry_serial not in reachable:
+        return _DispatcherRemovalIntent(True, "dispatcher_unreachable")
+    if coverage.cycle_break is not None:
+        return _DispatcherRemovalIntent(True, "terminal_cycle")
+    if coverage.detached_dead_handler_component is not None:
+        return _DispatcherRemovalIntent(True, "detached_component")
+    return _DispatcherRemovalIntent(False, "dispatcher_reachable")
 
 
 __all__ = [
@@ -9806,7 +9851,12 @@ def emit_minimal_unflatten(
             forecast,
             detached_dead_handler_component=detached,
         )
-        return forecast if _has_dispatcher_removal_signal(forecast) else None
+        intent = _dispatcher_removal_intent(
+            projected.graph,
+            forecast,
+            int(dispatcher_entry_serial),
+        )
+        return forecast if intent.exists else None
 
     def log_dispatcher_coverage(coverage) -> None:
         if not logger.info_on:
