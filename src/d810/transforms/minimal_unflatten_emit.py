@@ -10089,6 +10089,7 @@ def emit_minimal_unflatten(
         dispatcher_region_serials=frozenset(
             int(serial) for serial in dispatcher_region_serials
         ),
+        flow_graph=flow_graph,
     )
     nonreturn_transitions = tuple(
         transition for transition in transitions if not transition.is_return

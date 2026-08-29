@@ -633,6 +633,7 @@ def enrich_native_bound_transition_routes(
     routes: tuple[NativeBoundTransitionRoute, ...],
     *,
     dispatcher_region_serials: frozenset[int] = frozenset(),
+    flow_graph: FlowGraph | None = None,
 ) -> tuple[StateWriteTransition, ...]:
     """Fill or corroborate state-write rows from exact native-bound evidence.
 
@@ -642,7 +643,9 @@ def enrich_native_bound_transition_routes(
     the fact. A completed non-native fact remains authoritative after its
     owner and exact transition coordinates agree. The source EA has already
     been rebound to the current ``write_block``/``via_block`` by the Hex-Rays
-    adapter.
+    adapter. When a current graph is supplied, native facts bind current owner,
+    source, and target blocks and carry their current anchors; missing bindings
+    revoke the fact rather than publishing partial authority.
     """
     if not transitions:
         return transitions
@@ -737,6 +740,32 @@ def enrich_native_bound_transition_routes(
             enriched.append(base_transition)
             continue
         state, target = route_key
+        owner_serial = int(transition.write_block)
+        source_serial = int(route.source_block_serial)
+        owner_anchor_ea = None
+        target_anchor_ea = None
+        if flow_graph is not None:
+            owner_block = flow_graph.get_block(owner_serial)
+            source_block = flow_graph.get_block(source_serial)
+            target_block = flow_graph.get_block(int(target))
+            if owner_block is None or source_block is None or target_block is None:
+                enriched.append(base_transition)
+                continue
+            owner_anchor_ea = getattr(owner_block, "native_start_ea", None)
+            target_anchor_ea = getattr(target_block, "native_start_ea", None)
+            owner_anchor_ea = (
+                getattr(owner_block, "start_ea", None)
+                if owner_anchor_ea is None
+                else owner_anchor_ea
+            )
+            target_anchor_ea = (
+                getattr(target_block, "start_ea", None)
+                if target_anchor_ea is None
+                else target_anchor_ea
+            )
+            if owner_anchor_ea is None or target_anchor_ea is None:
+                enriched.append(base_transition)
+                continue
         enriched.append(
             replace(
                 base_transition,
@@ -754,22 +783,22 @@ def enrich_native_bound_transition_routes(
                 ),
                 semantic_route_fact=SemanticRouteFact(
                     kind=SemanticRouteFactKind.NATIVE_BOUND,
-                    owner_serial=int(transition.write_block),
-                    source_serial=int(route.source_block_serial),
+                    owner_serial=owner_serial,
+                    source_serial=source_serial,
                     source_instruction_ea=int(route.source_instruction_ea),
                     state_constant=state,
                     target_serial=target,
-                    owner_anchor_ea=None,
-                    target_anchor_ea=None,
+                    owner_anchor_ea=owner_anchor_ea,
+                    target_anchor_ea=target_anchor_ea,
                     path_serials=(
-                        (int(transition.write_block),)
-                        if int(route.source_block_serial) == int(transition.write_block)
-                        else (int(transition.write_block), int(route.source_block_serial))
+                        (owner_serial,)
+                        if source_serial == owner_serial
+                        else (owner_serial, source_serial)
                     ),
                     path_edges=(
                         ()
-                        if int(route.source_block_serial) == int(transition.write_block)
-                        else ((int(transition.write_block), int(route.source_block_serial)),)
+                        if source_serial == owner_serial
+                        else ((owner_serial, source_serial),)
                     ),
                     fact_id=route.fact_id,
                 ),
