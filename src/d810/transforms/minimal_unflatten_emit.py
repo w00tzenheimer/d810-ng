@@ -64,6 +64,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     CandidateScopedPrefixAuthority,
     HandlerTransition,
     StateWriteTransition,
+    TransitionArm,
     TransitionProof,
     _source_local_constant_register_write,
     _is_goto_insn,
@@ -139,7 +140,7 @@ from d810.ir.block_identity import (
     block_label,
     snapshot_block_coordinate_from_snapshot,
 )
-from d810.ir.flowgraph import BlockKind, InsnKind, OperandKind
+from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind, OperandKind
 from d810.ir.maturity import MaturityEnvelope
 from d810.ir.insn_projection import operand_kinds, operand_storages
 from d810.ir.semantics import PredicateKind
@@ -188,6 +189,7 @@ from d810.transforms.unflatten_authority.producer_api import (
     BootstrapEntryRouteForecast,
     ConcreteEntryRouteForecast,
     ConditionalEntryBridgeForecast,
+    ConditionalArmRouteForecast,
     adapt_conditional_entry_route,
     adapt_native_bound_transition_route,
     adapt_state_transition_route,
@@ -8369,6 +8371,39 @@ def _normalize_degenerate_branch_redirects(
         current[current.index(old)] = new
         normalized.append(modification)
     return normalized
+
+
+def _conditional_arm_route_forecast(
+    modification: RedirectGoto | RedirectBranch,
+    arm: TransitionArm,
+    route_fact: SemanticRouteFact,
+) -> ConditionalArmRouteForecast | None:
+    """Mint exact producer evidence for one direct conditional-arm redirect.
+
+    This is deliberately pre-selection evidence only.  Slice 6A2 correlates
+    these forecasts with the normalized final modification list and performs
+    canonical proof selection.
+    """
+
+    if (
+        arm.next_state is None
+        or arm.target_handler is None
+        or arm.is_return
+        or arm.write_block is None
+        or int(modification.from_serial) != int(arm.write_block)
+        or int(modification.new_target) != int(arm.target_handler)
+        or not 0 <= int(arm.next_state) <= 0xFFFFFFFF
+    ):
+        return None
+    if (
+        type(route_fact) is not SemanticRouteFact
+        or route_fact.kind is not SemanticRouteFactKind.DECISION_DAG
+        or route_fact.decision_dag_witness is None
+    ):
+        return None
+    return ConditionalArmRouteForecast(
+        modification, int(arm.next_state), int(arm.target_handler), route_fact,
+    )
 
 
 def build_conditional_arm_redirects(

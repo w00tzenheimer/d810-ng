@@ -33,6 +33,7 @@ from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, storage_identity_from_mop_snapshot
 from d810.ir.block_identity import StableBlockIdentity
 from d810.transforms.cfg_transaction import CfgBlockRef, LogicalBlockRef, NativeBlockRef, PlanBlockRef
+from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 from d810.transforms.use_def_redirect_filter import UseDefSeveranceAudit
 
 from .model import (
@@ -205,6 +206,37 @@ class ConditionalEntryBridgeForecast:
     false_target_serial: int
     true_target_serial: int
     true_is_taken: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalArmRouteForecast:
+    """Exact producer evidence for one surviving conditional-arm redirect."""
+
+    modification: RedirectGoto | RedirectBranch
+    state_constant: int
+    target_serial: int
+    route_fact: SemanticRouteFact
+
+    def __post_init__(self) -> None:
+        if type(self.modification) not in (RedirectGoto, RedirectBranch):
+            raise TypeError("conditional arm forecast requires an exact redirect")
+        if not 0 <= int(self.state_constant) <= 0xFFFFFFFF:
+            raise ValueError("conditional arm forecast state must be exact U32")
+        if int(self.target_serial) < 0:
+            raise ValueError("conditional arm forecast target must be non-negative")
+        if type(self.route_fact) is not SemanticRouteFact:
+            raise TypeError("conditional arm forecast requires a semantic route fact")
+        if (
+            self.route_fact.kind is not SemanticRouteFactKind.DECISION_DAG
+            or self.route_fact.decision_dag_witness is None
+            or int(self.route_fact.state_constant) != int(self.state_constant)
+            or int(self.route_fact.target_serial) != int(self.target_serial)
+            or int(self.modification.from_serial) != int(self.route_fact.owner_serial)
+            or int(self.modification.new_target) != int(self.target_serial)
+        ):
+            raise ValueError("conditional arm forecast does not bind one exact decision-DAG redirect")
+        object.__setattr__(self, "state_constant", int(self.state_constant))
+        object.__setattr__(self, "target_serial", int(self.target_serial))
 
 
 def _validate_classifier_operand(operand: object, label: str) -> None:
@@ -1716,6 +1748,121 @@ def adapt_native_bound_transition_route(
         ) from exc
 
 
+def _matches_complete_decision_dag_route(
+    proof: SemanticRouteProof,
+    *,
+    fact: SemanticRouteFact,
+    source: FlowGraph,
+    source_catalog: SourceIdentityCatalog,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+    source_identity: StableBlockIdentity,
+    owner_identity: StableBlockIdentity,
+    target_identity: StableBlockIdentity,
+    state_identity: StorageIdentity,
+) -> bool:
+    """Bind an exact raw decision-DAG fact to its stable canonical proof."""
+
+    raw = fact.decision_dag_witness
+    dag = proof.state_dag
+    if (
+        raw is None or dag is None
+        or proof.proof_kind is not SemanticRouteProofKind.STATE_DAG
+        or proof.source_identity != source_identity
+        or proof.source_anchor_ea != fact.source_instruction_ea
+        or proof.source_owner_identity not in (None, owner_identity)
+        or dag.source_identity != source_identity
+        or dag.source_anchor_ea != fact.source_instruction_ea
+        or dag.target_identity != target_identity
+        or dag.target_anchor_ea != fact.target_anchor_ea
+        or dag.witness.state_identity != state_identity
+        or dag.witness.state_constant != fact.state_constant
+        or dag.witness.entry.identity != _target_identity(source, source_catalog, block_refs_by_serial, raw.entry_serial)
+        or dag.witness.entry.anchor_ea != raw.entry_anchor_ea
+        or proof.state_write is None
+        or proof.state_write.identity != source_identity
+        or proof.state_write.instruction_ea != fact.source_instruction_ea
+        or proof.state_write.state_variable != state_identity
+        or proof.state_write.width != 4
+        or proof.state_write.state_constant != fact.state_constant
+        or len(proof.destinations) != 1
+        or proof.destinations[0].state_constant != fact.state_constant
+        or proof.destinations[0].target_identity != target_identity
+        or proof.destinations[0].target_anchor_ea != fact.target_anchor_ea
+        or len(raw.path_serials) != len(dag.witness.path)
+        or len(raw.comparisons) != len(dag.witness.comparisons)
+    ):
+        return False
+    try:
+        raw_path = tuple(
+            (_target_identity(source, source_catalog, block_refs_by_serial, serial), int(anchor))
+            for serial, anchor in zip(raw.path_serials, raw.path_anchors)
+        )
+        canonical_path = tuple((point.identity, point.anchor_ea) for point in dag.witness.path)
+        raw_comparisons = tuple(
+            (
+                _target_identity(source, source_catalog, block_refs_by_serial, serial),
+                comparison.op,
+                int(comparison.const) & 0xFFFFFFFF,
+                _target_identity(source, source_catalog, block_refs_by_serial, comparison.true_target),
+                _target_identity(source, source_catalog, block_refs_by_serial, comparison.false_target),
+            )
+            for serial, comparison in raw.comparisons
+        )
+        canonical_comparisons = tuple(
+            (
+                comparison.node.identity,
+                comparison.operation,
+                comparison.constant,
+                comparison.true_target.identity,
+                comparison.false_target.identity,
+            )
+            for comparison in dag.witness.comparisons
+        )
+        raw_aliases = tuple(
+            (_target_identity(source, source_catalog, block_refs_by_serial, left),
+             _target_identity(source, source_catalog, block_refs_by_serial, right))
+            for left, right in raw.aliases
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        raw.state_identity == state_identity
+        and raw.state_constant == fact.state_constant
+        and raw_path == canonical_path
+        and raw_comparisons == canonical_comparisons
+        and raw_aliases == tuple((left.identity, right.identity) for left, right in dag.witness.aliases)
+    )
+
+
+def adapt_conditional_arm_route(
+    forecast: ConditionalArmRouteForecast,
+    *,
+    source: FlowGraph,
+    source_catalog: SourceIdentityCatalog,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+    canonical_evidence: CanonicalSemanticEvidence,
+    state_identity: StorageIdentity,
+) -> SemanticRouteProof:
+    """Select the one complete canonical decision-DAG proof for an arm redirect."""
+
+    if type(forecast) is not ConditionalArmRouteForecast:
+        raise TypeError("conditional arm adapter requires an exact forecast")
+    fact = forecast.route_fact
+    source_identity = _target_identity(source, source_catalog, block_refs_by_serial, fact.source_serial)
+    owner_identity = _target_identity(source, source_catalog, block_refs_by_serial, fact.owner_serial)
+    target_identity = _target_identity(source, source_catalog, block_refs_by_serial, forecast.target_serial)
+    return _select_route_proof(
+        canonical_evidence,
+        lambda proof: _matches_complete_decision_dag_route(
+            proof, fact=fact, source=source, source_catalog=source_catalog,
+            block_refs_by_serial=block_refs_by_serial, source_identity=source_identity,
+            owner_identity=owner_identity, target_identity=target_identity,
+            state_identity=state_identity,
+        ),
+        "conditional arm",
+    )
+
+
 def adapt_state_transition_route(
     route: object,
     *,
@@ -1962,10 +2109,16 @@ def adapt_state_transition_route(
                     )
                 )
             if proof.state_dag is not None:
-                return (
-                    transform_fact.kind is SemanticRouteFactKind.DECISION_DAG
-                    and proof.proof_kind is SemanticRouteProofKind.STATE_DAG
-                    and proof.state_dag.witness.state_identity == state_identity
+                return transform_fact.kind is SemanticRouteFactKind.DECISION_DAG and _matches_complete_decision_dag_route(
+                    proof,
+                    fact=transform_fact,
+                    source=source,
+                    source_catalog=source_catalog,
+                    block_refs_by_serial=block_refs_by_serial,
+                    source_identity=source_identity,
+                    owner_identity=owner_identity,
+                    target_identity=target_identity,
+                    state_identity=state_identity,
                 )
             if transform_fact.kind is SemanticRouteFactKind.NATIVE_BOUND:
                 return (
@@ -2272,6 +2425,8 @@ __all__ = [
     "resolve_bootstrap_entry_route",
     "adapt_conditional_entry_route",
     "adapt_native_bound_transition_route",
+    "ConditionalArmRouteForecast",
+    "adapt_conditional_arm_route",
     "adapt_state_transition_route",
     "validate_exact_effect_semantics",
     "validate_exact_effect_claim_semantics",

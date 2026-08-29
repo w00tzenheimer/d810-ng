@@ -15,6 +15,7 @@ from d810.transforms.unflatten_authority.model import (
 from d810.transforms.unflatten_authority.ids import validate_canonical_roundtrip
 from d810.transforms.unflatten_authority.producer_api import (
     BootstrapEntryRouteForecast,
+    ConditionalArmRouteForecast,
     ConcreteEntryRouteForecast,
     ConditionalEntryBridgeForecast,
     classify_block_effects_and_terminals,
@@ -29,6 +30,86 @@ class _ForeignBootstrapEntryRouteForecast(BootstrapEntryRouteForecast):
 
 class _ForeignConditionalEntryBridgeForecast(ConditionalEntryBridgeForecast):
     pass
+
+
+def test_conditional_arm_adapter_requires_the_complete_decision_dag_witness() -> None:
+    """An arm route binds its writer and every canonical DAG coordinate."""
+
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        CanonicalSemanticEvidenceProductionContext,
+        DecisionDagRouteWitness,
+        SemanticRouteFact,
+        SemanticRouteFactKind,
+        build_canonical_semantic_evidence,
+    )
+    from d810.analyses.control_flow.route_predicate import RouteComparison
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.expressions import ValueOpKind
+    from d810.ir.flowgraph import FlowGraph
+    from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+    from d810.transforms.cfg_transaction import NativeBlockRef
+    from d810.transforms.graph_modification import RedirectGoto
+
+    key = NativePreanalysisKey("conditional-arm", "x86", 64, 0, "a" * 64, "b" * 64, "c" * 64)
+    state_identity = StorageIdentity(StorageIdentityKind.STACK, 0x40)
+    write = InsnSnapshot(
+        opcode=0, ea=0x1100, operands=(),
+        l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=0x40),
+        kind=InsnKind.MOV, value_op_kind=ValueOpKind.MOVE,
+    )
+    branch = InsnSnapshot(
+        opcode=0, ea=0x1200, operands=(),
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=0x40),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+        kind=InsnKind.COND_JUMP, branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
+    blocks = {
+        1: BlockSnapshot(1, 1, (2,), (), 0, 0x1100, (write,), 0, BlockKind.ONE_WAY, InsnKind.MOV, 0),
+        2: BlockSnapshot(2, 2, (3, 4), (1,), 0, 0x1200, (branch,), 0, BlockKind.TWO_WAY, InsnKind.COND_JUMP, 0),
+        3: BlockSnapshot(3, 0, (), (2,), 0, 0x1300, (), None, BlockKind.ZERO_WAY, None, None),
+        4: BlockSnapshot(4, 0, (), (2,), 0, 0x1400, (), None, BlockKind.ZERO_WAY, None, None),
+    }
+    source = FlowGraph(blocks, entry_serial=1, func_ea=0x1100)
+    refs = {
+        serial: NativeBlockRef(StableBlockIdentity.from_intervals(
+            (NativeEaInterval(block.start_ea, block.start_ea + 0x10),),
+            native_key=key,
+            exact_instruction_eas=tuple(item.ea for item in block.insn_snapshots),
+        ))
+        for serial, block in blocks.items()
+    }
+    catalog = producer_module.build_source_identity_catalog(source, refs, native_key=key, source_generation=1)
+    raw_dag = DecisionDagRouteWitness(
+        state_identity, 7, 2, 0x1200, (2,), (0x1200,),
+        ((2, RouteComparison(2, "jz", 7, 3, 4)),), (),
+    )
+    fact = SemanticRouteFact(
+        SemanticRouteFactKind.DECISION_DAG, 1, 1, 0x1100, 7, 3,
+        0x1100, 0x1300, (1,), (), decision_dag_witness=raw_dag,
+    )
+    result = build_canonical_semantic_evidence(
+        (fact,),
+        CanonicalSemanticEvidenceProductionContext(
+            key, 1, "conditional-arm", state_identity, tuple(blocks.values()),
+            tuple((serial, ref.identity) for serial, ref in refs.items()), entry_serial=1,
+        ),
+    )
+    assert result.abstention is None and result.evidence is not None
+    forecast = ConditionalArmRouteForecast(RedirectGoto(1, 2, 3), 7, 3, fact)
+    kwargs = dict(source=source, source_catalog=catalog, block_refs_by_serial=refs,
+                  canonical_evidence=result.evidence, state_identity=state_identity)
+    assert producer_module.adapt_conditional_arm_route(forecast, **kwargs) is result.evidence.route_proofs[0]
+
+    for field, value in (("source_instruction_ea", 0x1101), ("target_serial", 4)):
+        with pytest.raises(ValueError):
+            producer_module.adapt_conditional_arm_route(replace(forecast, route_fact=replace(fact, **{field: value})), **kwargs)
+    altered_dag = replace(raw_dag, path_anchors=(0x1201,))
+    with pytest.raises(ValueError):
+        producer_module.adapt_conditional_arm_route(replace(forecast, route_fact=replace(fact, decision_dag_witness=altered_dag)), **kwargs)
 
 
 def _block(*instructions: InsnSnapshot, kind: BlockKind = BlockKind.UNKNOWN, succs: tuple[int, ...] = ()) -> BlockSnapshot:

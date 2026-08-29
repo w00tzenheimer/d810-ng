@@ -123,6 +123,7 @@ from d810.transforms.minimal_unflatten_emit import (
     enrich_native_bound_transition_routes,
     MissingSemanticRouteFactCoordinate,
     _missing_semantic_route_fact_coordinates,
+    _conditional_arm_route_forecast,
 )
 from d810.transforms.unflatten_authority.producer_api import (
     ConditionalEntryBridgeForecast,
@@ -137,6 +138,58 @@ def _assert_no_legacy_plan_metadata(plan) -> None:
     from d810.transforms.unflatten_authority.legacy_keys import LEGACY_UNFLATTEN_KEYS
 
     assert not set(plan.metadata_dict()).intersection(LEGACY_UNFLATTEN_KEYS)
+
+
+def test_conditional_arm_forecast_mints_complete_decision_dag_fact() -> None:
+    """A direct arm carries its exact writer and complete DAG route witness."""
+
+    state = 0x12345678
+    write = _mov_state(0x1040, state)
+    branch = InsnSnapshot(
+        opcode=_OP_MOV, ea=0x1080, operands=(),
+        l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=_STATE),
+        r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=state),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+        kind=InsnKind.COND_JUMP, branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
+    graph = FlowGraph({
+        0: _b(0, (5,), (), ()),
+        1: replace(_b(1, (2,), (), (write,)), kind=BlockKind.ONE_WAY, tail_kind=InsnKind.MOV),
+        2: replace(_b(2, (3, 4), (1,), (branch,)), kind=BlockKind.TWO_WAY, tail_kind=InsnKind.COND_JUMP),
+        3: _b(3, (), (2,), ()),
+        4: _b(4, (), (2,), ()),
+        5: _b(5, (), (0,), ()),
+    }, entry_serial=0, func_ea=0x1000)
+    arm = TransitionArm(state, 3, False, 1, 1, 1, (1,))
+    assert minimal_state_recovery_module._route_state_through_decision_dag(
+        StateWriteTransition(1, state, 3, False, None), graph,
+        DecisionDag(32, {2: RouteComparison(2, "jz", state, 3, 4)}, root=2),
+        state_var_stkoff=_STATE, state_var_reg=None,
+    ) is not None
+    route = minimal_state_recovery_module._route_state_through_decision_dag(
+        StateWriteTransition(1, state, 3, False, None), graph,
+        DecisionDag(32, {2: RouteComparison(2, "jz", state, 3, 4)}, root=2),
+        state_var_stkoff=_STATE, state_var_reg=None,
+    )
+    fact = minimal_state_recovery_module._semantic_route_fact_for_transition(
+        StateWriteTransition(1, state, 3, False, None), route, graph,
+        state_var_stkoff=_STATE, state_var_reg=None,
+    )
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.DECISION_DAG
+    forecast = _conditional_arm_route_forecast(
+        RedirectGoto(1, 2, 3), arm, fact,
+    )
+    assert forecast is not None
+    assert forecast.route_fact.kind is SemanticRouteFactKind.DECISION_DAG
+    assert forecast.route_fact.source_instruction_ea == 0x1040
+    witness = forecast.route_fact.decision_dag_witness
+    assert witness is not None
+    assert witness.path_serials == (2,)
+    assert witness.path_anchors == (0x1080,)
+    assert witness.comparisons == ((2, RouteComparison(2, "jz", state, 3, 4)),)
+    assert witness.aliases == ()
 
 _OP_MOV = 4
 _T_NUM, _T_STK, _T_REG = 2, 4, 1
