@@ -327,6 +327,57 @@ def test_legacy_structural_alias_enables_fallback_when_flag_is_false():
     assert PatternOptimizer._canonical_fallback_enabled_for(rule) is True
 
 
+def test_fallback_extension_exception_fails_closed_without_escape():
+    """An extension-style fallback exception is recorded and does not escape."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._canonical_fallback_rules_by_root_shape = {}
+    errors = []
+
+    class Rule:
+        name = "fallback-extension"
+        maturities = [7]
+        canonical_fallback_enabled = True
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            return None
+
+        def prepare_structural_candidate(self, _candidate, *, destination_size):
+            leaf = TypedBvTerm(None, 32, leaf_key=("mop", "x"))
+            return SimpleNamespace(
+                term=TypedBvTerm("add", 32, children=(leaf, leaf)),
+            )
+
+        def match_structural_and_replace(self, *_args, **_kwargs):
+            raise ValueError("extension contract failed")
+
+        def record_attempt_error(self, error):
+            errors.append(type(error).__name__)
+
+    rule = Rule()
+    optimizer._canonical_fallback_rules_by_root_shape = {
+        ("add", 32, 0): [rule]
+    }
+    optimizer._get_candidates = lambda _ast: []
+    optimizer._canonical_fallback_rules_for = lambda _shape: (rule,)
+
+    assert optimizer._try_matches(
+        None,
+        SimpleNamespace(d=SimpleNamespace(size=4), ea=0x401004, _print=lambda: "extension"),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="extension",
+    ) is None
+    assert errors == ["ValueError"]
+
+
 def test_raw_hit_skips_canonical_lowering_and_fallback(monkeypatch):
     """A clean raw hit must never prepare or invoke the canonical fallback."""
 

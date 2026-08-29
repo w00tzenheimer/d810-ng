@@ -11,6 +11,7 @@ the rule definitions in d810.mba.rules pure and backend-agnostic.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import os
@@ -500,6 +501,7 @@ class IDAPatternAdapter:
         self._attempt_started: float | None = None
         self._attempt_destination_size: int | None = None
         self._attempt_input_ast: AstNode | None = None
+        self._attempt_instruction = None
         self._last_provider_outcome: MbaProviderOutcome | None = None
         self.provider_outcome_history = ProviderOutcomeHistory[MbaProviderOutcome]()
         self._attempt_outcome_index: int | None = None
@@ -545,7 +547,12 @@ class IDAPatternAdapter:
     def _structural_failure(self) -> None:
         """Clear borrowed state before returning a failed structural attempt."""
 
-        self._clear_structural_attempt_state()
+        try:
+            self._record_catalogue_nonmatch()
+        except Exception:
+            logger.debug("Structural failure telemetry publication failed", exc_info=True)
+        finally:
+            self._clear_structural_attempt_state()
         return None
 
     def _reset_attempt_outcome(self, instruction: Any | None = None) -> None:
@@ -564,6 +571,7 @@ class IDAPatternAdapter:
             self._attempt_input_ast = None
         self._last_provider_outcome = None
         self._attempt_outcome_index = None
+        self._attempt_instruction = None
         self._clear_structural_attempt_state()
         self._legacy_binding_paths = None
         self._legacy_match_observed = False
@@ -1315,31 +1323,84 @@ class IDAPatternAdapter:
         return None if profile is None else profile.fingerprint
 
     @staticmethod
+    def _raw_mop_identity(mop: Any) -> dict[str, object] | None:
+        """Describe a raw operand without materializing a canonical island."""
+
+        if mop is None:
+            return None
+        identity: dict[str, object] = {}
+        for name in ("t", "size", "valnum", "r", "reg", "value", "n"):
+            value = getattr(mop, name, None)
+            if type(value) in (bool, int, str) or value is None:
+                identity[name] = value
+        nested = getattr(mop, "d", None)
+        if nested is not None:
+            identity["d"] = {
+                "opcode": getattr(nested, "opcode", None),
+                "size": getattr(nested, "size", None),
+            }
+        return identity
+
+    def _raw_native_fingerprint(self) -> tuple[str, dict[str, object]]:
+        """Build stable raw identity telemetry without invoking Hex-Rays lowering."""
+
+        instruction = getattr(self, "_attempt_instruction", None)
+        payload = {
+            "ea": getattr(instruction, "ea", None),
+            "opcode": getattr(instruction, "opcode", None),
+            "size": getattr(getattr(instruction, "d", None), "size", None),
+            "left": self._raw_mop_identity(getattr(instruction, "l", None)),
+            "right": self._raw_mop_identity(getattr(instruction, "r", None)),
+            "destination": self._raw_mop_identity(getattr(instruction, "d", None)),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return f"raw:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}", payload
+
+    @staticmethod
     def _native_profile_metadata(profile) -> dict[str, object]:
         from d810.mba.native_corpus_capture import native_profile_metadata
 
         return {"native_profile": native_profile_metadata(profile)}
 
-    def _record_catalogue_success(self, input_ast: Any, replacement_ast: Any) -> None:
+    def _record_catalogue_success(
+        self,
+        input_ast: Any,
+        replacement_ast: Any,
+        *,
+        raw_native: bool = False,
+    ) -> None:
         """Publish a successful direct-rule attempt without adding generic Z3."""
 
         canonical_source, aliases = self._catalogue_provenance()
         elapsed_ms = self._attempt_elapsed_ms()
-        profile = self._profile_for_ast(input_ast)
-        fingerprint = (
-            profile.fingerprint
-            if profile is not None
-            else self._profile_fingerprint(input_ast)
+        structural_selection = bool(
+            getattr(self, "_structural_selection_active", False)
         )
+        raw_identity = None
+        if raw_native and getattr(self, "_attempt_instruction", None) is not None:
+            profile = None
+            fingerprint, raw_identity = self._raw_native_fingerprint()
+        elif structural_selection:
+            lowering = getattr(self, "_shadow_lowering", None)
+            profile = getattr(lowering, "profile", None)
+            fingerprint = None if profile is None else profile.fingerprint
+            if fingerprint is None:
+                fingerprint = "profile_unavailable"
+        else:
+            profile = self._profile_for_ast(input_ast)
+            fingerprint = (
+                profile.fingerprint
+                if profile is not None
+                else self._profile_fingerprint(input_ast)
+            )
         metadata = {
             "rule_name": self.name,
             "canonical_source": canonical_source,
         }
+        if raw_identity is not None:
+            metadata["raw_native_identity"] = raw_identity
         if profile is not None:
             metadata.update(self._native_profile_metadata(profile))
-        structural_selection = bool(
-            getattr(self, "_structural_selection_active", False)
-        )
         if structural_selection:
             metadata["structural_dispatch"] = {
                 "bucket_size": self._structural_dispatch_bucket_size,
@@ -1433,17 +1494,25 @@ class IDAPatternAdapter:
             return
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
-        profile = self._profile_for_ast(input_ast)
-        fingerprint = (
-            profile.fingerprint
-            if profile is not None
-            else self._profile_fingerprint(input_ast)
-        )
-        legacy_match = bool(getattr(self, "_legacy_match_observed", False))
         structural_selection = bool(
             getattr(self, "_structural_selection_active", False)
         )
-        metadata: dict[str, object] = {}
+        lowering = getattr(self, "_shadow_lowering", None)
+        profile = (
+            getattr(lowering, "profile", None)
+            if structural_selection
+            else self._profile_for_ast(input_ast)
+        )
+        fingerprint = (
+            profile.fingerprint
+            if profile is not None
+            else (None if structural_selection else self._profile_fingerprint(input_ast))
+        )
+        legacy_match = bool(getattr(self, "_legacy_match_observed", False))
+        metadata: dict[str, object] = {
+            "rule_name": self.name,
+            "canonical_source": canonical_source,
+        }
         if profile is not None:
             metadata.update(self._native_profile_metadata(profile))
         if structural_selection:
@@ -1486,7 +1555,7 @@ class IDAPatternAdapter:
         if not structural_selection and shadow_enabled:
             self._record_shadow_parity(legacy_match=legacy_match)
 
-    def record_attempt_error(self, exc: RuntimeError) -> None:
+    def record_attempt_error(self, exc: Exception) -> None:
         """Finalize a caught pattern-engine failure as an explicit error row."""
 
         if not self._provider_outcome_capture_enabled():
@@ -1494,14 +1563,23 @@ class IDAPatternAdapter:
 
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
-        profile = self._profile_for_ast(input_ast)
+        structural_selection = bool(
+            getattr(self, "_structural_selection_active", False)
+        )
+        lowering = getattr(self, "_shadow_lowering", None)
+        profile = (
+            getattr(lowering, "profile", None)
+            if structural_selection
+            else self._profile_for_ast(input_ast)
+        )
         fingerprint = (
             profile.fingerprint
             if profile is not None
-            else self._profile_fingerprint(input_ast) or "profile_unavailable"
-        )
-        structural_selection = bool(
-            getattr(self, "_structural_selection_active", False)
+            else (
+                "profile_unavailable"
+                if structural_selection
+                else self._profile_fingerprint(input_ast) or "profile_unavailable"
+            )
         )
         metadata: dict[str, object] = {
             "error_class": type(exc).__name__,
@@ -1539,7 +1617,9 @@ class IDAPatternAdapter:
     def record_bound_replacement_outcome(self, replacement_ast: Any) -> None:
         """Publish the nomut path's success using its bound native input AST."""
 
-        self._record_catalogue_success(self._attempt_input_ast, replacement_ast)
+        self._record_catalogue_success(
+            self._attempt_input_ast, replacement_ast, raw_native=True
+        )
 
     def provider_outcomes(self) -> tuple[MbaProviderOutcome, ...]:
         """Return one final outcome for each direct-catalogue attempt."""
@@ -1876,6 +1956,7 @@ class IDAPatternAdapter:
             A new minsn_t if the rule matched, None otherwise.
         """
         self._reset_attempt_outcome(instruction)
+        self._attempt_instruction = instruction
         setattr(self.rule, "_current_blk", blk)
         setattr(self.rule, "_current_ins", instruction)
         try:
@@ -1885,7 +1966,9 @@ class IDAPatternAdapter:
             candidate = valid_candidates[0]
             new_instruction = self.get_replacement(candidate)
             if new_instruction is not None:
-                self._record_catalogue_success(candidate, self.REPLACEMENT_PATTERN)
+                self._record_catalogue_success(
+                    candidate, self.REPLACEMENT_PATTERN, raw_native=True
+                )
             return new_instruction
         finally:
             self._record_catalogue_nonmatch()
@@ -1902,6 +1985,7 @@ class IDAPatternAdapter:
         adapter boundary so the pure rule model remains backend-agnostic.
         """
         self._reset_attempt_outcome(instruction)
+        self._attempt_instruction = instruction
         setattr(self.rule, "_current_blk", blk)
         setattr(self.rule, "_current_ins", instruction)
         setattr(
@@ -1921,6 +2005,7 @@ class IDAPatternAdapter:
         self._attempt_started = None
         self._attempt_destination_size = None
         self._attempt_input_ast = None
+        self._attempt_instruction = None
         self._clear_structural_attempt_state()
 
     @staticmethod
@@ -1961,7 +2046,9 @@ class IDAPatternAdapter:
         # Finally, create the replacement instruction
         new_instruction = self.get_replacement(candidate_pattern)
         if new_instruction is not None:
-            self._record_catalogue_success(test_ast, self.REPLACEMENT_PATTERN)
+            self._record_catalogue_success(
+                test_ast, self.REPLACEMENT_PATTERN, raw_native=True
+            )
         return new_instruction
 
     def execution_metadata(self) -> dict[str, object]:

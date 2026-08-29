@@ -1127,10 +1127,25 @@ class PatternOptimizer(InstructionOptimizer):
                     self.last_matched_rule_name = rule_name
                     self._pending_replacement_rule = rule
                     return new_ins
-            except RuntimeError as e:
+            except Exception as e:
                 record_attempt_error = getattr(rule, "record_attempt_error", None)
                 if record_attempt_error is not None:
-                    record_attempt_error(e)
+                    try:
+                        record_attempt_error(e)
+                    except Exception:
+                        optimizer_logger.debug(
+                            "Canonical fallback error telemetry failed for %s",
+                            rule,
+                            exc_info=True,
+                        )
+                optimizer_logger.error(
+                    "Error during canonical fallback rule %s for instruction %s: %s",
+                    rule,
+                    format_minsn_t(ins),
+                    e,
+                    exc_info=True,
+                )
+                return None
             finally:
                 if self._run_later_callback is not None:
                     self._run_later_callback(rule, self.cur_maturity)

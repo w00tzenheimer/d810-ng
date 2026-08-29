@@ -29,6 +29,7 @@ from d810.mba.certified_catalogue import (  # noqa: E402
 )
 from d810.mba.dsl import Const, Var, Zext  # noqa: E402
 from d810.mba.typed_term import TypedBvTerm  # noqa: E402
+from d810.mba.provider_outcome import ProviderOutcomeStatus  # noqa: E402
 from tools.scripts.mba_structural_matcher_certificate import (  # noqa: E402
     build_certificate,
 )
@@ -1082,6 +1083,108 @@ def test_adapter_clears_structural_attempt_state_on_context_reset() -> None:
     assert adapter._shadow_structural_native_paths is None
     assert adapter._shadow_native_path_unavailable is False
     assert adapter._shadow_structural_refused is False
+
+
+@pytest.mark.parametrize("nomut", (False, True))
+def test_real_adapter_raw_success_telemetry_does_not_lower(monkeypatch, nomut) -> None:
+    """Raw adapter success telemetry uses native identity without canonical lowering."""
+
+    class Rule:
+        name = "raw-success"
+        CANONICAL_NAME = "raw-success"
+        ALIASES = ()
+        replacement = None
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter.begin_provider_outcome_capture()
+    instruction = SimpleNamespace(
+        ea=0x401010,
+        opcode=ida_hexrays.m_add,
+        d=SimpleNamespace(size=4),
+        _print=lambda: "raw-success",
+    )
+    monkeypatch.setattr(
+        "d810.backends.mba.ida.minsn_to_ast",
+        lambda _instruction: SimpleNamespace(is_node=lambda: False),
+    )
+    adapter.bind_match_context(None, instruction)
+
+    def forbidden_lowering(*_args, **_kwargs):
+        raise AssertionError("raw success telemetry must not lower canonical island")
+
+    monkeypatch.setattr(
+        "d810.backends.mba.hexrays_island.lower_hexrays_island",
+        forbidden_lowering,
+    )
+    if nomut:
+        adapter.record_bound_replacement_outcome(SimpleNamespace(is_node=lambda: False))
+    else:
+        candidate = SimpleNamespace(
+            check_pattern_and_copy_mops=lambda _ast: True,
+            ea=instruction.ea,
+            dst_mop=None,
+        )
+        adapter._check_candidate = lambda _candidate: True
+        adapter.get_replacement = lambda _candidate: SimpleNamespace(
+            is_node=lambda: False
+        )
+        adapter.check_pattern_and_replace(candidate, SimpleNamespace(is_node=lambda: False))
+
+    outcome = adapter.provider_outcomes()[0]
+    assert outcome.status is ProviderOutcomeStatus.IMPROVED
+    assert outcome.fingerprint.startswith("raw:")
+
+
+def test_fallback_miss_publishes_dispatch_telemetry_before_clearing_refs() -> None:
+    """Fallback miss retains POD dispatch/matcher telemetry but no borrowed refs."""
+
+    from d810.mba.ac_matching import AcMatchStopReason
+
+    adapter = IDAPatternAdapter(SimpleNamespace(name="fallback-miss", maturities=[7]))
+    adapter._canonical_fallback_enabled = True
+    adapter._structural_matching_enabled = True
+    adapter.begin_provider_outcome_capture()
+    adapter._attempt_destination_size = 4
+    adapter._attempt_input_ast = SimpleNamespace(is_node=lambda: False, ea=0x401020)
+    lowering = SimpleNamespace(
+        profile=SimpleNamespace(fingerprint="fallback-profile"),
+        term=SimpleNamespace(width=32),
+        raw_term=SimpleNamespace(width=32),
+    )
+    report = SimpleNamespace(
+        bindings=object(),
+        comparisons=5,
+        commuted_branches=2,
+        flattened_nodes=3,
+        stop_reason=AcMatchStopReason.MISS,
+    )
+    adapter._shadow_structural_native_paths = {"x": ()}
+    adapter._shadow_lowering = lowering
+    adapter._shadow_match_report = report
+    adapter._native_profile_metadata = lambda _profile: {
+        "native_profile": {"fingerprint": "fallback-profile"}
+    }
+    adapter.observe_structural_match = lambda *_args, **_kwargs: report
+    adapter._check_candidate = lambda _candidate: False
+
+    assert adapter.match_structural_and_replace(
+        SimpleNamespace(ea=0x401020),
+        bucket_size=3,
+        attempted_rule_count=2,
+        lowering=lowering,
+        lowering_provided=True,
+    ) is None
+
+    outcome = adapter.provider_outcomes()[0]
+    assert outcome.metadata["structural_dispatch"] == {
+        "bucket_size": 3,
+        "attempted_rule_count": 2,
+    }
+    assert outcome.metadata["canonical_source"] == "fallback-miss"
+    assert outcome.matcher.stop_reason == "miss"
+    assert adapter._shadow_lowering is None
+    assert adapter._shadow_match_report is None
+    assert adapter._shadow_structural_native_paths is None
 
 
 def test_structural_only_hit_is_proven_without_becoming_a_live_rewrite(monkeypatch) -> None:
