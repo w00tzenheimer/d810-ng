@@ -2890,6 +2890,51 @@ def _validate_route_claim_proof_members(
         raise ValueError("route claim destination identities differ from canonical proof")
 
 
+def _validate_source_logical_dag_endpoints(
+    proposal: model.ProposedUnflattenContract,
+    source_inventory: model.SemanticGraphInventory,
+) -> None:
+    """Close each logical DAG leaf against the captured source reference.
+
+    Native corridor points are closed by the graph-only materialization.  A
+    logical function-exit leaf has no native identity, therefore its exact
+    LogicalBlockRef must be present in the source inventory and agree with the
+    canonical endpoint's session, token, and version.
+    """
+
+    expected: dict[int, route_model.SemanticLogicalDagEndpoint] = {}
+    for proof in proposal.route_evidence.route_proofs:
+        dag = proof.state_dag
+        if dag is None:
+            continue
+        for comparison in dag.witness.comparisons:
+            for endpoint in (comparison.true_target, comparison.false_target):
+                if type(endpoint) is not route_model.SemanticLogicalDagEndpoint:
+                    continue
+                prior = expected.setdefault(int(endpoint.serial), endpoint)
+                if prior != endpoint:
+                    raise ValueError("logical DAG endpoint serial is ambiguous")
+    rows = {int(row.serial): row for row in source_inventory.blocks}
+    for serial, endpoint in expected.items():
+        row = rows.get(serial)
+        ref = None if row is None else row.block_ref
+        if (
+            row is None
+            or type(ref) is not LogicalBlockRef
+            or row.anchor_ea is not None
+            or row.block_kind is not BlockKind.ZERO_WAY
+            or row.graph_start_ea != 0xFFFFFFFFFFFFFFFF
+            or row.native_instruction_eas
+            or row.instruction_observations
+            or row.successor_serials
+            or row.transfer_ea is not None
+            or ref.session_id != endpoint.session_id
+            or ref.proxy_token != endpoint.proxy_token
+            or ref.version != endpoint.version
+        ):
+            raise ValueError("logical DAG endpoint differs from source inventory")
+
+
 def _bind_source_route_authority(*, proposal: model.ProposedUnflattenContract,
                                  source_inventory: model.SemanticGraphInventory,
                                  source_materialization: route_model.CanonicalRouteMaterialization,
@@ -2914,6 +2959,11 @@ def _bind_source_route_authority(*, proposal: model.ProposedUnflattenContract,
             raise ValueError("source generation differs from proposal")
         if source_inventory.graph_fingerprint != source_materialization.graph_fingerprint:
             raise ValueError("source inventory fingerprint differs from materialization")
+        # Canonical route materialization intentionally owns only immutable CFG
+        # snapshots.  A logical DAG leaf additionally carries the live
+        # LogicalBlockRef session/token/version, so bind that identity once
+        # against the transaction-owned source inventory before graph replay.
+        _validate_source_logical_dag_endpoints(proposal, source_inventory)
         claims = _route_claims(proposal)
         result = route_model.bind_canonical_semantic_evidence_result(
             source_materialization, proposal.route_evidence,

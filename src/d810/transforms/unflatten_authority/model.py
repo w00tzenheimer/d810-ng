@@ -1661,6 +1661,27 @@ def _is_unowned_structural_stop_row(row: object) -> bool:
     )
 
 
+def _is_exact_logical_function_exit_row(row: object) -> bool:
+    """Recognize the one owned, anchorless logical function-exit row.
+
+    A function exit is a real source coordinate for a logical decision-DAG
+    endpoint, but it deliberately has no native anchor.  Keep it in the
+    transaction inventory so the source authority can bind its full logical
+    reference identity exactly once.
+    """
+
+    return (
+        type(getattr(row, "block_ref", None)) is LogicalBlockRef
+        and getattr(row, "block_kind", None) is BlockKind.ZERO_WAY
+        and getattr(row, "anchor_ea", object()) is None
+        and not getattr(row, "native_instruction_eas", ())
+        and not getattr(row, "instruction_observations", ())
+        and not getattr(row, "successor_serials", ())
+        and getattr(row, "transfer_ea", object()) is None
+        and getattr(row, "graph_start_ea", _BADADDR) == _BADADDR
+    )
+
+
 def _validate_native_identity_primitives(identity: object, label: str) -> None:
     """Check native identity scalars before any normalizing post-init runs.
 
@@ -4696,12 +4717,16 @@ class SemanticGraphInventory:
         if self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST and any(
             (item.block_ref is None or item.anchor_ea is None)
             and not _is_unowned_structural_stop_row(item)
+            and not _is_exact_logical_function_exit_row(item)
             for item in self.blocks
         ):
             raise ValueError("producer observations require mapped block identities and anchors")
         if self.phase is UnflattenAuthorityPhase.PRODUCER_FORECAST:
             for item in self.blocks:
-                if _is_unowned_structural_stop_row(item):
+                if (
+                    _is_unowned_structural_stop_row(item)
+                    or _is_exact_logical_function_exit_row(item)
+                ):
                     continue
                 if (
                     item.anchor_ea is None

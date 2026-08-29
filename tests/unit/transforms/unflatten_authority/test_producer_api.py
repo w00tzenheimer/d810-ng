@@ -139,6 +139,52 @@ def test_conditional_arm_adapter_requires_the_complete_decision_dag_witness() ->
         )
 
 
+def test_conditional_arm_adapter_binds_exact_logical_function_exit_endpoint() -> None:
+    """The producer selects a native route with a logical exit sibling."""
+
+    from d810.analyses.control_flow.semantic_route_evidence import (
+        CanonicalSemanticEvidenceProductionContext, DecisionDagRouteWitness,
+        SemanticDagEndpointKind, SemanticLogicalDagEndpoint, SemanticRouteFact,
+        SemanticRouteFactKind, build_canonical_semantic_evidence,
+    )
+    from d810.analyses.control_flow.route_predicate import RouteComparison
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+    from d810.ir.flowgraph import FlowGraph
+    from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+    from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
+    from d810.transforms.graph_modification import RedirectGoto
+
+    key = NativePreanalysisKey("logical-arm", "x86", 64, 0, "a" * 64, "b" * 64, "c" * 64)
+    state = StorageIdentity(StorageIdentityKind.STACK, 0x40)
+    write = InsnSnapshot(0, 0x1100, (), l=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=8), d=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=0x40), kind=InsnKind.MOV)
+    branch = InsnSnapshot(0, 0x1200, (), l=MopSnapshot(kind=OperandKind.STACK, size=4, stkoff=0x40), r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7), d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4), kind=InsnKind.COND_JUMP, branch_predicate=PredicateKind.EQ, is_conditional_jump=True)
+    blocks = {
+        1: BlockSnapshot(1, 1, (2,), (), 0, 0x1100, (write,), 0, BlockKind.ONE_WAY, InsnKind.MOV, 0),
+        2: BlockSnapshot(2, 2, (4, 3), (1,), 0, 0x1200, (branch,), 0, BlockKind.TWO_WAY, InsnKind.COND_JUMP, 0),
+        3: BlockSnapshot(3, 0, (), (2,), 0, 0x1300, (), None, BlockKind.ZERO_WAY, None, None),
+        4: BlockSnapshot(4, 0, (), (2,), 0, 0xFFFFFFFFFFFFFFFF, (), None, BlockKind.ZERO_WAY, None, None),
+    }
+    source = FlowGraph(blocks, entry_serial=1, func_ea=0x1100)
+    refs = {
+        serial: NativeBlockRef(StableBlockIdentity.from_intervals((NativeEaInterval(block.start_ea, block.start_ea + 0x10),), native_key=key, exact_instruction_eas=tuple(item.ea for item in block.insn_snapshots)))
+        for serial, block in blocks.items() if serial != 4
+    }
+    refs[4] = LogicalBlockRef("logical-arm", "function-exit", 0)
+    endpoint = SemanticLogicalDagEndpoint(SemanticDagEndpointKind.FUNCTION_EXIT, 4, "logical-arm", "function-exit", 0)
+    context = CanonicalSemanticEvidenceProductionContext(key, 1, "logical-arm", state, tuple(blocks.values()), tuple((serial, ref.identity) for serial, ref in refs.items() if type(ref) is NativeBlockRef), logical_endpoints_by_serial=((4, endpoint),), entry_serial=1)
+    fact = SemanticRouteFact(SemanticRouteFactKind.DECISION_DAG, 1, 1, 0x1100, 8, 3, 0x1100, 0x1300, (1,), (), decision_dag_witness=DecisionDagRouteWitness(state, 8, 2, 0x1200, (2,), (0x1200,), ((2, RouteComparison(2, "jz", 7, 4, 3)),), ()))
+    evidence = build_canonical_semantic_evidence((fact,), context).evidence
+    assert evidence is not None
+    catalog = producer_module.build_source_identity_catalog(source, refs, native_key=key, source_generation=1)
+    forecast = ConditionalArmRouteForecast(RedirectGoto(1, 2, 3), 8, 3, fact)
+    kwargs = dict(source=source, source_catalog=catalog, block_refs_by_serial=refs, canonical_evidence=evidence, state_identity=state)
+    assert producer_module.adapt_conditional_arm_route(forecast, **kwargs) is evidence.route_proofs[0]
+    drifted = {**refs, 4: LogicalBlockRef("logical-arm", "function-exit", 1)}
+    with pytest.raises(ValueError):
+        producer_module.adapt_conditional_arm_route(forecast, **{**kwargs, "block_refs_by_serial": drifted})
+
+
 def _block(*instructions: InsnSnapshot, kind: BlockKind = BlockKind.UNKNOWN, succs: tuple[int, ...] = ()) -> BlockSnapshot:
     instructions = tuple(
         replace(item, raw_opcode=item.opcode)

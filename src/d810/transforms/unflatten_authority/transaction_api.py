@@ -229,7 +229,17 @@ def _catalog_serials(source: FlowGraph, proposal, plan: PatchPlan, *, blocks=Non
             continue
         if not producer_api.is_unowned_structural_logical_stop(block_map[serial], ref):
             raise ValueError("plan source coordinates contain an unowned non-structural reference")
-    return {ref: by_ref[ref] for ref in expected}
+    # Keep only the exact logical function-exit coordinate in addition to the
+    # native source catalog.  It is intentionally anchorless but source route
+    # binding consumes its owned row to compare session/token/version for a
+    # typed DAG leaf.  Ordinary synthetic STOP rows and arbitrary extra plan
+    # coordinates remain unowned structural rows.
+    return {
+        ref: serial
+        for ref, serial in by_ref.items()
+        if ref in expected
+        or producer_api.is_exact_logical_function_exit(block_map[serial], ref)
+    }
 
 
 def _projected_plan_serials(plan: PatchPlan) -> dict[PlanBlockRef, int]:
@@ -656,7 +666,13 @@ def _build_semantic_graph_inventory(
                 owner_anchor = getattr(block, "native_start_ea", None)
             if owner_anchor is None:
                 owner_anchor = getattr(block, "start_ea", None)
-            if owner_anchor is None:
+            if (
+                type(owner_ref) is LogicalBlockRef
+                and type(owner_anchor) is int
+                and owner_anchor == 0xFFFFFFFFFFFFFFFF
+            ):
+                owner_anchor = None
+            if owner_anchor is None and type(owner_ref) is not LogicalBlockRef:
                 raise ValueError("planned block has no exact native anchor")
         observed = producer_api.observe_inventory_block(
             block, owner_ref=owner_ref, owner_anchor_ea=owner_anchor,

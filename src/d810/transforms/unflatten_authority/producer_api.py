@@ -21,6 +21,10 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteFactKind,
     SemanticRouteShape,
     SemanticStateWriteDeliveryKind,
+    SemanticCorridorPoint,
+    SemanticDagEndpoint,
+    SemanticDagEndpointKind,
+    SemanticLogicalDagEndpoint,
 )
 from d810.analyses.control_flow.effect_branch_exclusion import (
     ExactStateBranchEffectExclusion,
@@ -232,10 +236,9 @@ class ConditionalArmRouteForecast:
             or self.route_fact.decision_dag_witness is None
             or int(self.route_fact.state_constant) != int(self.state_constant)
             or int(self.route_fact.target_serial) != int(self.target_serial)
-            or int(self.modification.from_serial) != int(self.route_fact.owner_serial)
             or int(self.modification.new_target) != int(self.target_serial)
         ):
-            raise ValueError("conditional arm forecast does not bind one exact decision-DAG redirect")
+            raise ValueError("conditional arm forecast does not bind one exact decision-DAG route")
         object.__setattr__(self, "state_constant", int(self.state_constant))
         object.__setattr__(self, "target_serial", int(self.target_serial))
 
@@ -876,6 +879,22 @@ def is_unowned_structural_logical_stop(
     )
 
 
+def is_exact_logical_function_exit(
+    block: object,
+    block_ref: object,
+) -> bool:
+    """Recognize the one owned logical endpoint admitted by a decision DAG."""
+
+    return (
+        type(block_ref) is LogicalBlockRef
+        and getattr(block, "kind", None) is BlockKind.ZERO_WAY
+        and not tuple(getattr(block, "insn_snapshots", ()))
+        and not tuple(getattr(block, "succs", ()))
+        and not _valid_ea(getattr(block, "native_start_ea", None))
+        and getattr(block, "start_ea", _BADADDR) == _BADADDR
+    )
+
+
 def _as_serial(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{label} must be a non-negative serial")
@@ -968,7 +987,10 @@ def _catalog_ref_by_serial(
     by_ref = {witness.block_ref: witness for witness in witnesses}
     catalog_refs = {
         ref for serial, ref in zip(sorted(expected), refs)
-        if not is_unowned_structural_logical_stop(source.blocks[serial], ref)
+        if not (
+            is_unowned_structural_logical_stop(source.blocks[serial], ref)
+            or is_exact_logical_function_exit(source.blocks[serial], ref)
+        )
     }
     if len(by_ref) != len(witnesses) or set(by_ref) != catalog_refs:
         raise ValueError("source catalog does not exactly cover block references")
@@ -1022,7 +1044,10 @@ def build_source_identity_catalog(
         if block.serial != serial:
             raise ValueError("source block serial does not match mapping key")
         ref = refs[sorted(serials).index(serial)]
-        if is_unowned_structural_logical_stop(block, ref):
+        if (
+            is_unowned_structural_logical_stop(block, ref)
+            or is_exact_logical_function_exit(block, ref)
+        ):
             continue
         origins = _native_instruction_origins(block)
         anchor = _block_anchor(block, origins, block_ref=ref)
@@ -1749,6 +1774,51 @@ def adapt_native_bound_transition_route(
         ) from exc
 
 
+def _raw_dag_endpoint(
+    source: FlowGraph,
+    source_catalog: SourceIdentityCatalog,
+    block_refs_by_serial: Mapping[int, AuthorityBlockRef],
+    serial: object,
+) -> SemanticDagEndpoint:
+    """Project one raw DAG successor into its exact typed endpoint."""
+
+    serial_int = _as_serial(serial, "decision-DAG endpoint serial")
+    block = source.blocks.get(serial_int)
+    ref = block_refs_by_serial.get(serial_int)
+    if block is None or ref is None:
+        raise ValueError("decision-DAG endpoint is absent from source")
+    if type(ref) is LogicalBlockRef:
+        if not is_exact_logical_function_exit(block, ref):
+            raise ValueError("logical decision-DAG endpoint is not an exact function exit")
+        return SemanticLogicalDagEndpoint(
+            SemanticDagEndpointKind.FUNCTION_EXIT,
+            serial_int,
+            ref.session_id,
+            ref.proxy_token,
+            ref.version,
+        )
+    identity = _target_identity(source, source_catalog, block_refs_by_serial, serial_int)
+    return SemanticCorridorPoint(
+        identity,
+        stable_block_identity_semantic_anchor(identity),
+    )
+
+
+def _dag_endpoint_matches(
+    raw: SemanticDagEndpoint,
+    canonical: SemanticDagEndpoint,
+) -> bool:
+    """Compare native and logical DAG leaves without fabricating an EA."""
+
+    if type(raw) is not type(canonical):
+        return False
+    if type(raw) is SemanticLogicalDagEndpoint:
+        return raw == canonical
+    if type(raw) is SemanticCorridorPoint:
+        return raw.identity == canonical.identity and raw.anchor_ea == canonical.anchor_ea
+    return False
+
+
 def _matches_complete_decision_dag_route(
     proof: SemanticRouteProof,
     *,
@@ -1821,10 +1891,14 @@ def _matches_complete_decision_dag_route(
                 ),
                 comparison.op,
                 int(comparison.const) & 0xFFFFFFFF,
-                _target_identity(source, source_catalog, block_refs_by_serial, comparison.true_target),
-                stable_block_identity_semantic_anchor(_target_identity(source, source_catalog, block_refs_by_serial, comparison.true_target)),
-                _target_identity(source, source_catalog, block_refs_by_serial, comparison.false_target),
-                stable_block_identity_semantic_anchor(_target_identity(source, source_catalog, block_refs_by_serial, comparison.false_target)),
+                _raw_dag_endpoint(
+                    source, source_catalog, block_refs_by_serial,
+                    comparison.true_target,
+                ),
+                _raw_dag_endpoint(
+                    source, source_catalog, block_refs_by_serial,
+                    comparison.false_target,
+                ),
             )
             for serial, comparison in raw.comparisons
         )
@@ -1834,10 +1908,8 @@ def _matches_complete_decision_dag_route(
                 comparison.node.anchor_ea,
                 comparison.operation,
                 comparison.constant,
-                comparison.true_target.identity,
-                comparison.true_target.anchor_ea,
-                comparison.false_target.identity,
-                comparison.false_target.anchor_ea,
+                comparison.true_target,
+                comparison.false_target,
             )
             for comparison in dag.witness.comparisons
         )
@@ -1854,7 +1926,13 @@ def _matches_complete_decision_dag_route(
         raw.state_identity == state_identity
         and raw.state_constant == fact.state_constant
         and raw_path == canonical_path
-        and raw_comparisons == canonical_comparisons
+        and len(raw_comparisons) == len(canonical_comparisons)
+        and all(
+            raw_item[:4] == canonical_item[:4]
+            and _dag_endpoint_matches(raw_item[4], canonical_item[4])
+            and _dag_endpoint_matches(raw_item[5], canonical_item[5])
+            for raw_item, canonical_item in zip(raw_comparisons, canonical_comparisons)
+        )
         and raw_aliases == tuple((left.identity, left.anchor_ea, right.identity, right.anchor_ea) for left, right in dag.witness.aliases)
     )
 
@@ -1876,7 +1954,6 @@ def adapt_conditional_arm_route(
     modification = forecast.modification
     if (
         int(fact.owner_serial) != int(fact.source_serial)
-        or int(fact.owner_serial) != int(modification.from_serial)
         or int(modification.new_target) != int(forecast.target_serial)
     ):
         raise ValueError("conditional arm forecast owner/source or redirect drifted")
@@ -1889,7 +1966,7 @@ def adapt_conditional_arm_route(
             proof, fact=fact, source=source, source_catalog=source_catalog,
             block_refs_by_serial=block_refs_by_serial, source_identity=source_identity,
             owner_identity=owner_identity, target_identity=target_identity,
-            state_identity=state_identity, require_direct_owner=True,
+            state_identity=state_identity,
         ),
         "conditional arm",
     )
