@@ -589,6 +589,26 @@ def _unique_native_bound_receipt(
     return routes[0]
 
 
+def _completed_route_fact_matches_transition(
+    fact: SemanticRouteFact,
+    transition: StateWriteTransition,
+) -> bool:
+    """Whether a completed fact still belongs to its reconciled transition."""
+    if fact.kind is SemanticRouteFactKind.NATIVE_BOUND:
+        return False
+    if transition.next_state is None or transition.target_handler is None:
+        return False
+    source_serials = {int(transition.write_block)}
+    if transition.via_block is not None:
+        source_serials.add(int(transition.via_block))
+    return (
+        int(fact.owner_serial) == int(transition.write_block)
+        and int(fact.source_serial) in source_serials
+        and int(fact.state_constant) == (int(transition.next_state) & 0xFFFFFFFF)
+        and int(fact.target_serial) == int(transition.target_handler)
+    )
+
+
 def enrich_native_bound_transition_routes(
     transitions: tuple[StateWriteTransition, ...],
     routes: tuple[NativeBoundTransitionRoute, ...],
@@ -598,11 +618,12 @@ def enrich_native_bound_transition_routes(
     """Fill or corroborate state-write rows from exact native-bound evidence.
 
     This is the final, revocable join performed after all normal providers and
-    route reconciliation have run.  Existing native-bound facts are rebuilt
+    route reconciliation have run. Existing native-bound facts are rebuilt
     from the current receipts; stale or ambiguous receipts therefore remove
-    the fact.  A richer typed fact remains authoritative when its exact
-    ``(state, target)`` still agrees.  The source EA has already been rebound to
-    the current ``write_block``/``via_block`` by the Hex-Rays adapter.
+    the fact. A completed non-native fact remains authoritative after its
+    owner and exact transition coordinates agree. The source EA has already
+    been rebound to the current ``write_block``/``via_block`` by the Hex-Rays
+    adapter.
     """
     if not transitions:
         return transitions
@@ -660,36 +681,8 @@ def enrich_native_bound_transition_routes(
             existing_fact is not None
             and existing_fact.kind is not SemanticRouteFactKind.NATIVE_BOUND
         ):
-            if (
-                transition.next_state is not None
-                and transition.target_handler is not None
-                and int(existing_fact.state_constant) == (int(transition.next_state) & 0xFFFFFFFF)
-                and int(existing_fact.target_serial) == int(transition.target_handler)
-            ):
-                route_key = (
-                    int(transition.next_state) & 0xFFFFFFFF,
-                    int(transition.target_handler),
-                )
-                # Receipts for another state belong to a different semantic
-                # phase and must not veto an already validated richer fact.
-                # A receipt in the same state, however, is corroborating
-                # evidence for this transition and a different target is a
-                # real contradiction that must revoke the fact.
-                same_state_route_keys = {
-                    key
-                    for key in _matches(transition, respect_transition=False)
-                    if int(key[0]) == int(route_key[0])
-                }
-                if same_state_route_keys and all(
-                    key == route_key for key in same_state_route_keys
-                ):
-                    enriched.append(transition)
-                elif not same_state_route_keys:
-                    enriched.append(transition)
-                else:
-                    enriched.append(
-                        replace(transition, semantic_route_fact=None, proof=None)
-                    )
+            if _completed_route_fact_matches_transition(existing_fact, transition):
+                enriched.append(transition)
             else:
                 enriched.append(
                     replace(transition, semantic_route_fact=None, proof=None)
