@@ -9,6 +9,7 @@ masked-operand rule with unknown ``x`` and ``y`` leaves.
 from __future__ import annotations
 
 import json
+from itertools import count
 from dataclasses import replace
 from pathlib import Path
 
@@ -43,6 +44,7 @@ from d810.mba.typed_term import TypedBvTerm
 
 
 _RECEIPT_MANIFEST = Path(__file__).resolve().parents[2] / "fixtures/mba/certification_receipts.json"
+_FIXTURE_RULE_IDS = count()
 
 
 def _leaf(name: str, width: int = 32) -> NativeMbaTermView:
@@ -76,7 +78,7 @@ def _matcher_only_descriptor_fixture(
 ) -> CompiledMbaRule:
     """Bypass verification for a controlled descriptor used only mechanically."""
     rule_type = type(
-        name,
+        f"_MatcherOnlyFixture_{next(_FIXTURE_RULE_IDS)}_{name}",
         (VerifiableRule,),
         {
             "PATTERN": pattern,
@@ -87,6 +89,19 @@ def _matcher_only_descriptor_fixture(
     return _enroll_admitted_rule(
         CompiledMbaRule(name, (), rule_type, proof_widths, False)
     )
+
+
+def test_matcher_fixture_identity_does_not_replace_production_registry_entry() -> None:
+    """Mechanical descriptors retain source names without shadowing production rules."""
+
+    production = VerifiableRule.registry["add_hackersdelightrule_2"]
+    descriptor = _matcher_only_descriptor_fixture(
+        "Add_HackersDelightRule_2", Var("x") + Var("y")
+    )
+
+    assert descriptor.source_name == "Add_HackersDelightRule_2"
+    assert descriptor.rule_type.__name__ != descriptor.source_name
+    assert VerifiableRule.registry["add_hackersdelightrule_2"] is production
 
 
 def _authoritative_descriptor_fixture(family: str, name: str) -> CompiledMbaRule:
