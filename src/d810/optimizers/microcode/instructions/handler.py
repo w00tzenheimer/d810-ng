@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import builtins
 
 import ida_hexrays
 
@@ -26,6 +27,11 @@ if typing.TYPE_CHECKING:
 
 d810_logger = getLogger("d810")
 optimizer_logger = getLogger("d810.optimizer")
+
+
+def _is_base_exception_group(error: BaseException) -> bool:
+    group_type = getattr(builtins, "BaseExceptionGroup", None)
+    return group_type is not None and isinstance(error, group_type)
 
 
 class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
@@ -104,7 +110,9 @@ class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
         del reason
         try:
             pending = self.pending_provider_observation()
-        except Exception:
+        except BaseException:
+            if self.plugin_services is None:
+                raise
             optimizer_logger.error(
                 "provider pending-observation hook failed for %s",
                 self.name,
@@ -135,7 +143,9 @@ class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
                 replacement_cost=pending.replacement_cost,
             )
             return sink.record(observation)
-        except Exception:
+        except BaseException:
+            if self.plugin_services is None:
+                raise
             optimizer_logger.error(
                 "provider observation finalization failed for %s",
                 self.name,
@@ -377,7 +387,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                 blk,
                 contextual_anchor_ins,
             )
-        except Exception:
+        except BaseException:
             optimizer_logger.debug(
                 "failed to construct provider observation context",
                 exc_info=True,
@@ -407,7 +417,9 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
             )
         try:
             finalizer(context, accepted=accepted, reason=reason)
-        except Exception:
+        except BaseException:
+            if getattr(rule, "plugin_services", None) is None:
+                raise
             optimizer_logger.error(
                 "provider observation finalizer failed for %s",
                 getattr(rule, "name", type(rule).__name__),
@@ -574,12 +586,23 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     e,
                 )
                 finalize(rule, accepted=False, reason="provider_exception")
-            except Exception:
+            except BaseException as exc:
                 # The attempted rule owns the provider state even when an
-                # unexpected exception escapes the legacy error handlers.
-                # Drain it before preserving the original exception.
+                # external plugin escapes a fatal callback exception. Drain it
+                # before containing it at the plugin boundary; internal fatal
+                # exceptions must retain normal Python propagation semantics.
                 finalize(rule, accepted=False, reason="provider_exception")
-                raise
+                if (
+                    getattr(rule, "plugin_services", None) is None
+                    or isinstance(exc, Exception)
+                    and not _is_base_exception_group(exc)
+                ):
+                    raise
+                optimizer_logger.error(
+                    "external provider raised outside the callback contract for %s",
+                    getattr(rule, "name", type(rule).__name__),
+                    exc_info=True,
+                )
         return None
 
     def record_mutation_accepted(self) -> None:

@@ -8,7 +8,7 @@ from d810.capabilities.plugin_host import (
     PluginCapabilityAccessError,
     PluginHostCapabilityRegistry,
 )
-from d810.core.plugins import PluginIdentity
+from d810.core.plugins import PassImplementationCandidate, PluginIdentity
 from d810.core.typing import Protocol, runtime_checkable
 
 
@@ -24,6 +24,10 @@ class ExampleServiceImpl:
 
 class OtherService(Protocol):
     def inspect(self) -> str: ...
+
+
+class ThirdService(Protocol):
+    def inspect_third(self) -> str: ...
 
 
 class IncompleteService:
@@ -63,6 +67,128 @@ def test_plugin_view_resolves_required_and_optional_service() -> None:
 
     assert view.require(ExampleService) is service
     assert view.optional(ExampleService) is service
+
+
+def test_implementation_view_is_immutable_and_carries_exact_candidate() -> None:
+    registry = PluginHostCapabilityRegistry()
+    registry.register("example.service.v1", ExampleService, ExampleServiceImpl())
+    view = registry.view_for(
+        ("example.service.v1",), PluginIdentity("example", None, None, "test")
+    )
+    candidate = PassImplementationCandidate(
+        pass_id="example-pass",
+        backend_name="example",
+        backend_origin="test",
+        rule_modules=(),
+        rule_name="example-rule",
+    )
+
+    assert not hasattr(view, "for_implementation")
+    bound = registry.bind_implementation_view(view, candidate)
+
+    assert bound.require(ExampleService) is view.require(ExampleService)
+    assert bound.provider is candidate
+    with pytest.raises((AttributeError, TypeError)):
+        bound.provider = object()  # type: ignore[misc]
+
+
+def test_implementation_binder_is_host_private_and_receives_selected_candidate() -> None:
+    service = ExampleServiceImpl()
+    seen = []
+
+    def bind_implementation(activation_service, candidate):
+        seen.append((activation_service, candidate))
+        return ExampleServiceImpl()
+
+    registry = PluginHostCapabilityRegistry()
+    registry.register(
+        "example.service.v1",
+        ExampleService,
+        service,
+        implementation_binder=bind_implementation,
+    )
+    view = registry.view_for(
+        ("example.service.v1",), PluginIdentity("example", None, None, "test")
+    )
+    candidate = PassImplementationCandidate(
+        pass_id="example-pass",
+        backend_name="example",
+        backend_origin="test",
+        rule_modules=(),
+        rule_name="example-rule",
+    )
+
+    assert not hasattr(view.require(ExampleService), "bind_implementation")
+    bound = registry.bind_implementation_view(view, candidate)
+
+    assert seen == [(service, candidate)]
+    assert bound.require(ExampleService) is not service
+
+
+def test_implementation_binding_disposes_earlier_unpublished_service_on_failure() -> None:
+    closed: list[str] = []
+
+    class BoundExample(ExampleServiceImpl):
+        def close(self) -> None:
+            closed.append("example")
+
+    class OtherServiceImpl:
+        def inspect(self) -> str:
+            return "other"
+
+    registry = PluginHostCapabilityRegistry()
+    registry.register(
+        "example.service.v1",
+        ExampleService,
+        ExampleServiceImpl(),
+        implementation_binder=lambda _service, _candidate: BoundExample(),
+    )
+    registry.register(
+        "other.service.v1",
+        OtherService,
+        OtherServiceImpl(),
+        implementation_binder=lambda _service, _candidate: (_ for _ in ()).throw(
+            RuntimeError("second binder failed")
+        ),
+    )
+    view = registry.view_for(
+        ("example.service.v1", "other.service.v1"),
+        PluginIdentity("example", None, None, "test"),
+    )
+
+    with pytest.raises(RuntimeError, match="second binder failed"):
+        registry.bind_implementation_view(view, object())
+
+    assert closed == ["example"]
+
+
+def test_implementation_binding_preserves_validation_and_cleanup_failures() -> None:
+    class OtherServiceImpl:
+        def inspect(self) -> str:
+            return "other"
+
+    class InvalidBoundService:
+        def close(self) -> None:
+            raise RuntimeError("invalid service cleanup failed")
+
+    registry = PluginHostCapabilityRegistry()
+    registry.register(
+        "other.service.v1",
+        OtherService,
+        OtherServiceImpl(),
+        implementation_binder=lambda _service, _candidate: InvalidBoundService(),
+    )
+    view = registry.view_for(
+        ("other.service.v1",), PluginIdentity("example", None, None, "test")
+    )
+
+    with pytest.raises(BaseExceptionGroup) as exc_info:
+        registry.bind_implementation_view(view, object())
+
+    assert len(exc_info.value.exceptions) == 2
+    assert isinstance(exc_info.value.exceptions[0], TypeError)
+    assert "does not implement OtherService" in str(exc_info.value.exceptions[0])
+    assert "invalid service cleanup failed" in str(exc_info.value.exceptions[1])
 
 
 def test_activation_view_binds_services_to_host_identity() -> None:
@@ -128,6 +254,42 @@ def test_activation_binder_result_and_failure_are_deterministic() -> None:
     )
     with pytest.raises(RuntimeError, match="binder failed"):
         registry.view_for(("example.service.v1",), identity)
+
+
+def test_activation_binding_disposes_earlier_unpublished_service_on_failure() -> None:
+    closed: list[str] = []
+
+    class BoundExample(ExampleServiceImpl):
+        def close(self) -> None:
+            closed.append("example")
+
+    class OtherServiceImpl:
+        def inspect(self) -> str:
+            return "other"
+
+    registry = PluginHostCapabilityRegistry()
+    registry.register(
+        "example.service.v1",
+        ExampleService,
+        ExampleServiceImpl(),
+        activation_binder=lambda _identity: BoundExample(),
+    )
+    registry.register(
+        "other.service.v1",
+        OtherService,
+        OtherServiceImpl(),
+        activation_binder=lambda _identity: (_ for _ in ()).throw(
+            RuntimeError("second activation binder failed")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="second activation binder failed"):
+        registry.view_for(
+            ("example.service.v1", "other.service.v1"),
+            PluginIdentity("example", None, None, "test"),
+        )
+
+    assert closed == ["example"]
 
 
 def test_plugin_view_returns_none_for_optional_missing_service() -> None:

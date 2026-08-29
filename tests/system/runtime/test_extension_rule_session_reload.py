@@ -37,6 +37,9 @@ class Activation:
     def capability_offers(self):
         return ()
 
+    def release_implementation(self, implementation):
+        del implementation
+
     def close(self):
         self.close_calls += 1
 

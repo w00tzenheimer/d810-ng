@@ -545,10 +545,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 None,
             )
             if not callable(execution_attempt_context):
-                execution_attempt_context = lambda: _lifecycle_execution_attempt_context(
-                    self._decompilation_lifecycle,
-                    function_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                )
+                def execution_attempt_context():
+                    return _lifecycle_execution_attempt_context(
+                        self._decompilation_lifecycle,
+                        function_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                    )
             pipeline_kwargs: dict[str, object] = {
                 "mutation_gateway": mutation_gateway,
                 "maturity": maturity_to_string(int(self.current_maturity)),

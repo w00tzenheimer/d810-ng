@@ -28,11 +28,17 @@ from d810.core.persistence import NetnodeOptimizationStorage
 from d810.mba.extension_api import (
     EgraphPersistenceService,
     NativeMbaCandidate,
+    NativeMbaCandidateExpired,
     NativeMbaHostServices,
     NativeMbaReconstruction,
     NativeMbaUnsupportedCandidate,
     _copy_json_value,
     _freeze_json_value,
+)
+from d810.mba.native_callback_lease import (
+    NativeMbaCallbackLease,
+    active_native_mba_lease,
+    native_mba_callback_scope,
 )
 from d810.mba.island_profile import profile_to_dict
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
@@ -48,6 +54,7 @@ _PERSISTENCE_SCOPE = "egraph-extension"
 class _NativeMbaContext:
     """Callback-local native state kept opaque from portable extensions."""
 
+    lease: NativeMbaCallbackLease
     source_ast: object | None
     source_instruction: object | None
     source_block: object | None
@@ -141,6 +148,7 @@ class _NativeMbaHostServices:
         self._persistence_storage: NetnodeOptimizationStorage | None = None
 
     def capture_instruction(self, instruction: object) -> NativeMbaCandidate | None:
+        lease = active_native_mba_lease()
         destination_size = _instruction_destination_size(instruction)
         if destination_size is None:
             return None
@@ -157,6 +165,7 @@ class _NativeMbaHostServices:
         )
         ast, lowering = _ast_and_lowering(instruction, destination_size)
         context = _NativeMbaContext(
+            lease=lease,
             source_ast=ast,
             source_instruction=instruction,
             source_block=None,
@@ -179,6 +188,7 @@ class _NativeMbaHostServices:
         *,
         destination_size: int,
     ) -> NativeMbaCandidate:
+        lease = active_native_mba_lease()
         lowering = lower_hexrays_island(ast, destination_size=destination_size)
         if lowering.term is None or lowering.raw_term is None:
             blockers = ", ".join(str(blocker) for blocker in lowering.profile.blockers)
@@ -186,6 +196,7 @@ class _NativeMbaHostServices:
                 "native MBA AST is unsupported" + (f": {blockers}" if blockers else "")
             )
         context = _NativeMbaContext(
+            lease=lease,
             source_ast=ast,
             source_instruction=None,
             source_block=None,
@@ -240,6 +251,7 @@ class _NativeMbaHostServices:
         if lowering.term is None or lowering.raw_term is None:
             return candidate
         prepared_context = _NativeMbaContext(
+            lease=context.lease,
             source_ast=context.source_ast,
             source_instruction=instruction,
             source_block=block,
@@ -448,7 +460,14 @@ def _candidate_from_lowering(
 
 def _host_context(candidate: NativeMbaCandidate) -> _NativeMbaContext | None:
     context = candidate.native_context
-    return context if isinstance(context, _NativeMbaContext) else None
+    if not isinstance(context, _NativeMbaContext):
+        return None
+    active = active_native_mba_lease()
+    if context.lease is not active or not context.lease.active:
+        raise NativeMbaCandidateExpired(
+            "native MBA candidate outlived its owning optinsn callback"
+        )
+    return context
 
 
 def _materialize_instruction(
@@ -617,4 +636,4 @@ def _valid_instruction_destination(
         return False
 
 
-__all__ = ["native_mba_host_services"]
+__all__ = ["native_mba_callback_scope", "native_mba_host_services"]

@@ -857,6 +857,7 @@ class D810Manager:
                 MbaResidualObservationSink,
                 sink,
                 activation_binder=sink.bind_activation,
+                implementation_binder=sink.bind_implementation,
             )
         except BaseException:
             sink.close()
@@ -2648,7 +2649,9 @@ class D810Manager:
             pass_scheduler=self.instruction_pass_scheduler,
         )
         self.block_optimizer = BlockOptimizerManager(
-            self.stats, self.log_dir, ctx_cls=FlowMaturityContext
+            self.stats,
+            self.log_dir,
+            ctx_cls=FlowMaturityContext,
         )
         self.block_optimizer.configure(
             **self.block_optimizer_config,
@@ -2795,6 +2798,9 @@ class D810Manager:
             self.event_emitter.emit,
             ctree_optimizer_manager=self.ctree_optimizer,
             block_optimizer=self.block_optimizer,
+            instruction_provider_cycle=(
+                self.instruction_optimizer.run_external_provider_mba_cycle
+            ),
             decompilation_lifecycle=self.decompilation_lifecycle,
             database_identity=idb_key,
         )
@@ -3687,6 +3693,13 @@ class D810Manager:
         )
         if was_active:
             return
+        reset_provider_cycles = getattr(
+            self.instruction_optimizer,
+            "reset_external_provider_cycle_sessions",
+            None,
+        )
+        if callable(reset_provider_cycles):
+            reset_provider_cycles()
         native_perf.configure(get_settings().native_perf)
         if native_perf.enabled():
             self._ensure_native_perf_providers()
@@ -3715,6 +3728,14 @@ class D810Manager:
             # eventual correct finish.
             native_perf.end_session(session_id)
             return
+
+        finish_provider_cycle = getattr(
+            self.instruction_optimizer,
+            "finish_external_provider_cycle_session",
+            None,
+        )
+        if callable(finish_provider_cycle):
+            finish_provider_cycle(session_id)
 
         stack.pop()
         remaining = depth.get(key, 1) - 1

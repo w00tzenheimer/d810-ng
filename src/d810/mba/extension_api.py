@@ -286,6 +286,10 @@ class NativeMbaUnsupportedCandidate(ValueError):
     """The native host cannot lower a candidate into the portable term model."""
 
 
+class NativeMbaCandidateExpired(RuntimeError):
+    """A callback-local native candidate was used outside its owning callback."""
+
+
 class PortableContractReloaded(RuntimeError):
     """A provider module retained a stale class after a portable reload."""
 
@@ -809,6 +813,7 @@ __all__ = [
     "MbaIslandClass",
     "MbaIslandProfile",
     "NativeMbaCandidate",
+    "NativeMbaCandidateExpired",
     "NativeMbaHostServices",
     "NativeMbaReconstruction",
     "NativeMbaUnsupportedCandidate",

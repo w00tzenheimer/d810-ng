@@ -59,7 +59,13 @@ from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 from d810.core.typing import Iterator
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+_LEGACY_SCHEMA_VERSION = 1
+# These explicit values are used only when upgrading the original schema.  A
+# missing plugin identity cannot be reconstructed from plugin_name alone, so
+# the migration records an intentionally non-vendor attribution instead of
+# guessing a distribution or origin.
+_LEGACY_PLUGIN_ATTRIBUTION = "legacy:unknown"
 DISCOVERY_LEASE_TIMEOUT = timedelta(minutes=5)
 DISCOVERY_LEASE_TIMEOUT_SECONDS = DISCOVERY_LEASE_TIMEOUT.total_seconds()
 DISCOVERY_HEARTBEAT_LOCK_TIMEOUT_SECONDS = 0.25
@@ -67,6 +73,20 @@ DISCOVERY_HEARTBEAT_LOCK_TIMEOUT_SECONDS = 0.25
 
 class _StoreBusy(RuntimeError):
     """The store serialization boundary could not be acquired in time."""
+
+
+def _is_sqlite_busy_or_locked(error: BaseException) -> bool:
+    """Return whether an operational error belongs to SQLite's lock family."""
+
+    if isinstance(error, _StoreBusy):
+        return True
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+    error_code = getattr(error, "sqlite_errorcode", None)
+    return isinstance(error_code, int) and error_code & 0xFF in {
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+    }
 
 _SCHEMA_SQL = """
     CREATE TABLE schema_migrations (
@@ -124,7 +144,9 @@ _SCHEMA_SQL = """
         block_ea INTEGER,
         provider TEXT NOT NULL,
         plugin_name TEXT NOT NULL,
+        plugin_distribution TEXT,
         plugin_version TEXT,
+        plugin_origin TEXT NOT NULL,
         status TEXT NOT NULL,
         input_cost_ops INTEGER,
         input_cost_nodes INTEGER,
@@ -327,7 +349,9 @@ _TABLES: dict[str, tuple[str, ...]] = {
         "block_ea",
         "provider",
         "plugin_name",
+        "plugin_distribution",
         "plugin_version",
+        "plugin_origin",
         "status",
         "input_cost_ops",
         "input_cost_nodes",
@@ -473,6 +497,7 @@ _NOT_NULL = {
             "identity_provenance",
             "function_rva",
             "plugin_version",
+            "plugin_distribution",
             "block_serial",
             "block_ea",
             "input_cost_ops",
@@ -513,6 +538,32 @@ _NOT_NULL["residual_group_events"] = (
     False,
     True,
 )
+
+_LEGACY_TABLES = dict(_TABLES)
+_LEGACY_TABLES["provider_attempts"] = tuple(
+    column
+    for column in _TABLES["provider_attempts"]
+    if column not in {"plugin_distribution", "plugin_origin"}
+)
+_LEGACY_COLUMN_TYPES = dict(_COLUMN_TYPES)
+_LEGACY_COLUMN_TYPES["provider_attempts"] = tuple(
+    _TYPE_BY_NAME.get(column, "TEXT")
+    if column not in _BLOB_COLUMNS
+    else "BLOB"
+    for column in _LEGACY_TABLES["provider_attempts"]
+)
+_LEGACY_NOT_NULL = dict(_NOT_NULL)
+_LEGACY_NOT_NULL["provider_attempts"] = tuple(
+    _LEGACY_NOT_NULL_VALUE
+    for _LEGACY_NOT_NULL_VALUE, column in zip(
+        _NOT_NULL["provider_attempts"], _TABLES["provider_attempts"]
+    )
+    if column not in {"plugin_distribution", "plugin_origin"}
+)
+_LEGACY_PRIMARY_KEYS = {
+    table: tuple(name == columns[0] for name in columns)
+    for table, columns in _LEGACY_TABLES.items()
+}
 _PRIMARY_KEYS = {
     table: tuple(name == columns[0] for name in columns)
     for table, columns in _TABLES.items()
@@ -1279,9 +1330,15 @@ class MbaDiscoveryStore:
         self._connection.row_factory = sqlite3.Row
         try:
             self._configure_and_migrate()
-        except Exception:
-            self._connection.close()
+        except BaseException as error:
             self._closed = True
+            try:
+                self._connection.close()
+            except BaseException as cleanup_error:
+                raise BaseExceptionGroup(
+                    "MBA discovery initialization and connection cleanup failed",
+                    [error, cleanup_error],
+                )
             raise
 
     def _now(self) -> str:
@@ -1377,38 +1434,81 @@ class MbaDiscoveryStore:
             if self._connection.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
                 raise ValueError("foreign key enforcement is unavailable")
             self._connection.execute("PRAGMA busy_timeout=5000")
-            self._connection.execute("BEGIN IMMEDIATE")
+            # The v1 provider_attempts table is rebuilt so the new NOT NULL
+            # attribution column has no default in the canonical schema.  A
+            # rebuild requires foreign-key checks to be disabled before the
+            # transaction starts; they are restored on every exit path.
+            self._connection.execute("PRAGMA foreign_keys=OFF")
+            transaction_error: BaseException | None = None
+            cleanup_errors: list[BaseException] = []
             try:
-                migration_exists = self._connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
-                ).fetchone()
-                any_expected = self._connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
-                ).fetchone()
-                if not migration_exists:
-                    if any_expected:
-                        raise ValueError("partial schema")
-                    self._create_schema()
-                    self._connection.execute(
-                        "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                        (SCHEMA_VERSION, self._now()),
+                try:
+                    self._connection.execute("BEGIN IMMEDIATE")
+                    migration_exists = self._connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+                    ).fetchone()
+                    any_expected = self._connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+                    ).fetchone()
+                    if not migration_exists:
+                        if any_expected:
+                            raise ValueError("partial schema")
+                        self._create_schema()
+                        self._connection.execute(
+                            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                            (SCHEMA_VERSION, self._now()),
+                        )
+                    else:
+                        versions = self._connection.execute(
+                            "SELECT version, applied_at FROM schema_migrations ORDER BY version"
+                        ).fetchall()
+                        if any(
+                            row[0] not in {_LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}
+                            for row in versions
+                        ):
+                            raise ValueError("unsupported schema version")
+                        for row in versions:
+                            _parse_timestamp(row[1], name="applied_at")
+                        version_numbers = [row[0] for row in versions]
+                        if version_numbers == [_LEGACY_SCHEMA_VERSION]:
+                            self._validate_schema(legacy=True)
+                            self._migrate_v1_to_v2()
+                        elif version_numbers not in (
+                            [SCHEMA_VERSION],
+                            [_LEGACY_SCHEMA_VERSION, SCHEMA_VERSION],
+                        ):
+                            raise ValueError("partial schema")
+                        else:
+                            self._validate_schema(
+                                allow_renamed_provider=version_numbers
+                                == [_LEGACY_SCHEMA_VERSION, SCHEMA_VERSION]
+                            )
+                    self._validate_causal_domain(self._connection)
+                    self._connection.commit()
+                except BaseException as error:
+                    transaction_error = error
+                    try:
+                        self._connection.rollback()
+                    except BaseException as cleanup_error:
+                        cleanup_errors.append(cleanup_error)
+            finally:
+                try:
+                    self._connection.execute("PRAGMA foreign_keys=ON")
+                except BaseException as cleanup_error:
+                    cleanup_errors.append(cleanup_error)
+            if transaction_error is not None:
+                if cleanup_errors:
+                    raise BaseExceptionGroup(
+                        "MBA discovery migration and cleanup failed",
+                        [transaction_error, *cleanup_errors],
                     )
-                else:
-                    versions = self._connection.execute(
-                        "SELECT version, applied_at FROM schema_migrations ORDER BY version"
-                    ).fetchall()
-                    if any(row[0] > SCHEMA_VERSION for row in versions):
-                        raise ValueError("unsupported schema version")
-                    if [row[0] for row in versions] != [SCHEMA_VERSION]:
-                        raise ValueError("partial schema")
-                    _parse_timestamp(versions[0][1], name="applied_at")
-                    self._validate_schema()
-                self._validate_causal_domain(self._connection)
-            except Exception:
-                self._connection.rollback()
-                raise
-            else:
-                self._connection.commit()
+                raise transaction_error
+            if len(cleanup_errors) == 1:
+                raise cleanup_errors[0]
+            if cleanup_errors:
+                raise BaseExceptionGroup(
+                    "MBA discovery migration cleanup failed", cleanup_errors
+                )
             journal = self._connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
             if self.path != ":memory:" and str(journal).lower() != "wal":
                 raise ValueError("WAL journal mode could not be enabled")
@@ -1426,14 +1526,134 @@ class MbaDiscoveryStore:
             if statement:
                 self._connection.execute(statement)
 
-    def _validate_schema(self) -> None:
+    def _migrate_v1_to_v2(self) -> None:
+        """Upgrade the exact v1 schema while retaining every causal row."""
+
+        provider_statement = next(
+            statement.strip()
+            for statement in _SCHEMA_SQL.split(";")
+            if statement.strip().lower().startswith(
+                "create table provider_attempts"
+            )
+        )
+        self._connection.execute(
+            provider_statement.replace(
+                "CREATE TABLE provider_attempts",
+                "CREATE TABLE provider_attempts_v2",
+                1,
+            )
+        )
+        legacy_columns = _LEGACY_TABLES["provider_attempts"]
+        current_columns = _TABLES["provider_attempts"]
+        legacy_rows = self._connection.execute(
+            "SELECT * FROM provider_attempts ORDER BY attempt_id"
+        ).fetchall()
+        placeholders = ", ".join("?" for _ in current_columns)
+        insert = (
+            "INSERT INTO provider_attempts_v2 ("
+            + ", ".join(f'"{column}"' for column in current_columns)
+            + f") VALUES ({placeholders})"
+        )
+        for row in legacy_rows:
+            values_by_name = dict(zip(legacy_columns, row))
+            distribution, origin, payload = self._legacy_plugin_attribution(
+                values_by_name["plugin_name"],
+                values_by_name["plugin_version"],
+                bytes(values_by_name["outcome_payload"]),
+            )
+            values_by_name.update(
+                {
+                    "plugin_distribution": distribution,
+                    "plugin_origin": origin,
+                    "outcome_payload": payload,
+                }
+            )
+            self._connection.execute(
+                insert, tuple(values_by_name[column] for column in current_columns)
+            )
+        for index_name in (
+            "idx_provider_attempts_term",
+            "idx_provider_attempts_function",
+            "idx_provider_attempts_provider",
+        ):
+            self._connection.execute(f'DROP INDEX "{index_name}"')
+        self._connection.execute("DROP TABLE provider_attempts")
+        self._connection.execute(
+            "ALTER TABLE provider_attempts_v2 RENAME TO provider_attempts"
+        )
+        for index_name in (
+            "idx_provider_attempts_term",
+            "idx_provider_attempts_function",
+            "idx_provider_attempts_provider",
+        ):
+            self._connection.execute(_INDEX_DDL[index_name])
+        for row in self._connection.execute(_ATTEMPT_AUTHORITY_SELECT):
+            self._validate_attempt_row(row)
+        self._connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (SCHEMA_VERSION, self._now()),
+        )
+
+    @staticmethod
+    def _legacy_plugin_attribution(
+        plugin_name: object, plugin_version: object, payload: bytes
+    ) -> tuple[str, str, bytes]:
+        """Recover identity from v1 payloads, with explicit unknown fallback."""
+
+        distribution = _LEGACY_PLUGIN_ATTRIBUTION
+        origin = _LEGACY_PLUGIN_ATTRIBUTION
+        normalized_payload = payload
+        try:
+            decoded = _strict_loads(payload)
+            context = decoded.get("context") if type(decoded) is dict else None
+            plugin = context.get("plugin_identity") if type(context) is dict else None
+            if type(context) is dict and type(plugin_name) is str and plugin_name:
+                normalized_plugin = dict(plugin) if type(plugin) is dict else {}
+                candidate_distribution = normalized_plugin.get("distribution")
+                candidate_origin = normalized_plugin.get("origin")
+                if type(candidate_distribution) is str and candidate_distribution:
+                    distribution = candidate_distribution
+                if type(candidate_origin) is str and candidate_origin:
+                    origin = candidate_origin
+                normalized_context = dict(context)
+                normalized_plugin.update(
+                    {
+                        "name": plugin_name,
+                        "distribution": distribution,
+                        "version": plugin_version,
+                        "origin": origin,
+                    }
+                )
+                normalized_context["plugin_identity"] = normalized_plugin
+                normalized_context["plugin_name"] = plugin_name
+                normalized_context["plugin_version"] = plugin_version
+                normalized = dict(decoded)
+                normalized["context"] = normalized_context
+                normalized_payload = json.dumps(
+                    normalized,
+                    allow_nan=False,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeDecodeError):
+            pass
+        return distribution, origin, normalized_payload
+
+    def _validate_schema(
+        self, *, legacy: bool = False, allow_renamed_provider: bool = False
+    ) -> None:
+        tables = _LEGACY_TABLES if legacy else _TABLES
+        column_types = _LEGACY_COLUMN_TYPES if legacy else _COLUMN_TYPES
+        not_null = _LEGACY_NOT_NULL if legacy else _NOT_NULL
+        primary_keys = _LEGACY_PRIMARY_KEYS if legacy else _PRIMARY_KEYS
         user_objects = {
             (row[0], row[1])
             for row in self._connection.execute(
                 "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
             )
         }
-        expected_tables = {("table", table) for table in _TABLES}
+        expected_tables = {("table", table) for table in tables}
         expected_indexes = {("index", index) for index in _INDEXES}
         if user_objects != expected_tables | expected_indexes:
             raise ValueError("partial schema: unexpected schema objects")
@@ -1442,13 +1662,30 @@ class MbaDiscoveryStore:
             for statement in _SCHEMA_SQL.split(";")
             if statement.strip().lower().startswith("create table")
         }
-        for table, expected in _TABLES.items():
+        if legacy:
+            expected_table_ddl["provider_attempts"] = expected_table_ddl[
+                "provider_attempts"
+            ].replace(" plugin_distribution text,", "").replace(
+                " plugin_origin text not null,", ""
+            )
+        for table, expected in tables.items():
             row = self._connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
             ).fetchone()
             if row is None:
                 raise ValueError("partial schema")
-            if _normalized_ddl(row[0]) != expected_table_ddl[table]:
+            actual_ddl = _normalized_ddl(row[0])
+            # SQLite quotes a table name when it is introduced by ALTER TABLE
+            # RENAME.  This is the same table definition emitted by the
+            # canonical CREATE TABLE statement and is the only migration-
+            # generated spelling variation accepted here.
+            if table == "provider_attempts" and allow_renamed_provider:
+                actual_ddl = actual_ddl.replace(
+                    'create table "provider_attempts"',
+                    "create table provider_attempts",
+                    1,
+                )
+            if actual_ddl != expected_table_ddl[table]:
                 raise ValueError(f"partial schema: {table} definition")
             xinfo = tuple(
                 (item[1], item[2], item[3], item[4], item[5], item[6])
@@ -1459,10 +1696,10 @@ class MbaDiscoveryStore:
             expected_xinfo = tuple(
                 (
                     name,
-                    _COLUMN_TYPES[table][index],
-                    int(_NOT_NULL[table][index]),
+                    column_types[table][index],
+                    int(not_null[table][index]),
                     None,
-                    int(_PRIMARY_KEYS[table][index]),
+                    int(primary_keys[table][index]),
                     0,
                 )
                 for index, name in enumerate(expected)
@@ -1471,7 +1708,7 @@ class MbaDiscoveryStore:
                 raise ValueError(f"partial schema: {table} metadata")
         indexes = {
             row[1]
-            for table in _TABLES
+            for table in tables
             for row in self._connection.execute(f"PRAGMA index_list('{table}')")
             if not row[1].startswith("sqlite_autoindex_")
         }
@@ -1487,7 +1724,7 @@ class MbaDiscoveryStore:
                     "c",
                     int(_NAMED_INDEX_PARTIAL[index_name]),
                     tuple(
-                        (tuple(_TABLES[table]).index(column), column, 0, "BINARY")
+                        (tuple(tables[table]).index(column), column, 0, "BINARY")
                         for column in columns
                     ),
                 )
@@ -1504,7 +1741,7 @@ class MbaDiscoveryStore:
                     else "u",
                     0,
                     tuple(
-                        (tuple(_TABLES[table]).index(column), column, 0, "BINARY")
+                        (tuple(tables[table]).index(column), column, 0, "BINARY")
                         for column in columns
                     ),
                 )
@@ -1513,7 +1750,7 @@ class MbaDiscoveryStore:
         actual_index_signatures: set[
             tuple[int, str, int, tuple[tuple[int, str | None, int, str], ...]]
         ] = set()
-        for table in _TABLES:
+        for table in tables:
             for index_row in self._connection.execute(f"PRAGMA index_list('{table}')"):
                 index_name = index_row[1]
                 xinfo = tuple(
@@ -1535,7 +1772,7 @@ class MbaDiscoveryStore:
             ).fetchone()
             if ddl_row is None or _normalized_ddl(ddl_row[0]) != expected_ddl:
                 raise ValueError("partial schema: index definition")
-        for table in _TABLES:
+        for table in tables:
             ddl = self._connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
             ).fetchone()[0]
@@ -1819,7 +2056,9 @@ class MbaDiscoveryStore:
             "block_ea": context.block_ea,
             "provider": outcome.provider.value,
             "plugin_name": context.plugin_identity.name,
+            "plugin_distribution": context.plugin_identity.distribution,
             "plugin_version": context.plugin_identity.version,
+            "plugin_origin": context.plugin_identity.origin,
             "status": outcome.status.value,
             "input_cost_ops": input_cost[0],
             "input_cost_nodes": input_cost[1],
@@ -1881,18 +2120,24 @@ class MbaDiscoveryStore:
                 if existing is not None:
                     self._validate_attempt_row(existing)
                     stored_canonical = _decode_term(
-                        bytes(existing[37]), name="canonical term"
+                        bytes(existing["authority_canonical_term"]), name="canonical term"
                     )
-                    stored_raw = _decode_term(bytes(existing[39]), name="raw term")
+                    stored_raw = _decode_term(
+                        bytes(existing["authority_raw_term"]), name="raw term"
+                    )
                     if (
-                        existing[35] != existing[3]
+                        existing["raw_owner_term_id"] != existing["term_id"]
                         or stored_canonical != attempt.canonical_term
                         or stored_raw != attempt.raw_term
-                        or existing[33] != term_fingerprint(stored_canonical)
-                        or existing[34] != term_fingerprint(stored_raw)
-                        or existing[36] != stored_canonical.width
-                        or existing[38] != TERM_WIRE_SCHEMA_VERSION
-                        or existing[40] != TERM_WIRE_SCHEMA_VERSION
+                        or existing["authority_canonical_fingerprint"]
+                        != term_fingerprint(stored_canonical)
+                        or existing["authority_raw_fingerprint"]
+                        != term_fingerprint(stored_raw)
+                        or existing["authority_width"] != stored_canonical.width
+                        or existing["authority_canonical_codec_version"]
+                        != TERM_WIRE_SCHEMA_VERSION
+                        or existing["authority_raw_codec_version"]
+                        != TERM_WIRE_SCHEMA_VERSION
                     ):
                         raise ValueError("stored term identity is corrupt")
                     identity = attempt.context.function_identity
@@ -1901,48 +2146,59 @@ class MbaDiscoveryStore:
                     input_cost = outcome.input_cost or (None, None)
                     output_cost = outcome.output_cost or (None, None)
                     exact = (
-                        existing[25] == identity.function_ea
-                        and existing[26] == identity.function_rva
-                        and existing[27] == identity.function_fingerprint
-                        and existing[28] == identity.database_uuid
-                        and existing[29] == identity.database_identity
-                        and existing[30] == identity.input_identity
-                        and existing[31] == identity.input_identity_provenance
-                        and existing[32] == int(identity.external_evidence_allowed)
-                        and existing[33] == term_fingerprint(attempt.canonical_term)
-                        and existing[34] == term_fingerprint(attempt.raw_term)
-                        and existing[36] == attempt.canonical_term.width
-                        and existing[37] == canonical
-                        and existing[38] == TERM_WIRE_SCHEMA_VERSION
-                        and existing[39] == raw
-                        and existing[40] == TERM_WIRE_SCHEMA_VERSION
-                        and existing[5] == identity.decompilation_session_id
-                        and existing[6] == identity.top_level_epoch
-                        and existing[7] == identity.evidence_generation
-                        and existing[8] == identity.maturity
-                        and existing[9] == context.instruction_ea
-                        and existing[10] == context.block_serial
-                        and existing[11] == context.block_ea
-                        and existing[12] == outcome.provider.value
-                        and existing[13] == context.plugin_identity.name
-                        and existing[14] == context.plugin_identity.version
-                        and existing[15] == outcome.status.value
-                        and existing[16] == input_cost[0]
-                        and existing[17] == input_cost[1]
-                        and existing[18] == output_cost[0]
-                        and existing[19] == output_cost[1]
-                        and existing[20]
+                        existing["authority_function_ea"] == identity.function_ea
+                        and existing["authority_function_rva"] == identity.function_rva
+                        and existing["authority_function_fingerprint"]
+                        == identity.function_fingerprint
+                        and existing["authority_database_uuid"] == identity.database_uuid
+                        and existing["authority_database_identity"]
+                        == identity.database_identity
+                        and existing["authority_input_identity"] == identity.input_identity
+                        and existing["authority_identity_provenance"]
+                        == identity.input_identity_provenance
+                        and existing["authority_external_evidence_allowed"]
+                        == int(identity.external_evidence_allowed)
+                        and existing["authority_canonical_fingerprint"]
+                        == term_fingerprint(attempt.canonical_term)
+                        and existing["authority_raw_fingerprint"]
+                        == term_fingerprint(attempt.raw_term)
+                        and existing["authority_width"] == attempt.canonical_term.width
+                        and existing["authority_canonical_term"] == canonical
+                        and existing["authority_canonical_codec_version"]
+                        == TERM_WIRE_SCHEMA_VERSION
+                        and existing["authority_raw_term"] == raw
+                        and existing["authority_raw_codec_version"]
+                        == TERM_WIRE_SCHEMA_VERSION
+                        and existing["session_id"] == identity.decompilation_session_id
+                        and existing["top_level_epoch"] == identity.top_level_epoch
+                        and existing["evidence_generation"] == identity.evidence_generation
+                        and existing["maturity"] == identity.maturity
+                        and existing["instruction_ea"] == context.instruction_ea
+                        and existing["block_serial"] == context.block_serial
+                        and existing["block_ea"] == context.block_ea
+                        and existing["provider"] == outcome.provider.value
+                        and existing["plugin_name"] == context.plugin_identity.name
+                        and existing["plugin_distribution"]
+                        == context.plugin_identity.distribution
+                        and existing["plugin_version"] == context.plugin_identity.version
+                        and existing["plugin_origin"] == context.plugin_identity.origin
+                        and existing["status"] == outcome.status.value
+                        and existing["input_cost_ops"] == input_cost[0]
+                        and existing["input_cost_nodes"] == input_cost[1]
+                        and existing["output_cost_ops"] == output_cost[0]
+                        and existing["output_cost_nodes"] == output_cost[1]
+                        and existing["proof_verdict"]
                         == (
                             None
                             if outcome.proof_verdict is None
                             else int(outcome.proof_verdict)
                         )
-                        and existing[21] == outcome.elapsed_ms
-                        and existing[22] == outcome.refusal_reason
-                        and bytes(existing[23]) == outcome_payload
+                        and existing["elapsed_ms"] == outcome.elapsed_ms
+                        and existing["refusal_reason"] == outcome.refusal_reason
+                        and bytes(existing["outcome_payload"]) == outcome_payload
                     )
                     _stored_eligible, _stored_outcome, _stored_context = (
-                        _validate_attempt_payload(bytes(existing[23]))
+                        _validate_attempt_payload(bytes(existing["outcome_payload"]))
                     )
                     if _stored_outcome.fingerprint != term_fingerprint(
                         attempt.canonical_term
@@ -1956,12 +2212,12 @@ class MbaDiscoveryStore:
                     if exact and group is not None:
                         return DiscoveryReceipt(
                             ReceiptStatus.DUPLICATE,
-                            attempt_id=int(existing[0]),
-                            group_id=int(group[0]),
-                            term_id=int(existing[3]),
-                            raw_term_id=int(existing[4]),
-                            revision=int(group[8]),
-                            state=ResidualGroupState(group[2]),
+                            attempt_id=int(existing["attempt_id"]),
+                            group_id=int(group["group_id"]),
+                            term_id=int(existing["term_id"]),
+                            raw_term_id=int(existing["raw_term_id"]),
+                            revision=int(group["revision"]),
+                            state=ResidualGroupState(group["state"]),
                         )
                     return DiscoveryReceipt(
                         ReceiptStatus.REFUSED, reason="attempt_uuid_conflict"
@@ -1983,7 +2239,7 @@ class MbaDiscoveryStore:
                 now = self._now()
                 attempt_id = int(
                     conn.execute(
-                        "INSERT INTO provider_attempts(attempt_uuid,function_id,term_id,raw_term_id,session_id,top_level_epoch,evidence_generation,maturity,instruction_ea,block_serial,block_ea,provider,plugin_name,plugin_version,status,input_cost_ops,input_cost_nodes,output_cost_ops,output_cost_nodes,proof_verdict,elapsed_ms,refusal_reason,outcome_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO provider_attempts(attempt_uuid,function_id,term_id,raw_term_id,session_id,top_level_epoch,evidence_generation,maturity,instruction_ea,block_serial,block_ea,provider,plugin_name,plugin_distribution,plugin_version,plugin_origin,status,input_cost_ops,input_cost_nodes,output_cost_ops,output_cost_nodes,proof_verdict,elapsed_ms,refusal_reason,outcome_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             attempt.attempt_uuid,
                             function_id,
@@ -1998,7 +2254,9 @@ class MbaDiscoveryStore:
                             context.block_ea,
                             outcome.provider.value,
                             context.plugin_identity.name,
+                            context.plugin_identity.distribution,
                             context.plugin_identity.version,
+                            context.plugin_identity.origin,
                             outcome.status.value,
                             input_cost[0],
                             input_cost[1],
@@ -2035,13 +2293,14 @@ class MbaDiscoveryStore:
                     revision=revision,
                     state=state,
                 )
-        except (sqlite3.IntegrityError, sqlite3.OperationalError, ValueError) as exc:
-            reason = (
-                "storage_busy"
-                if isinstance(exc, sqlite3.OperationalError)
-                else str(exc)
-            )
-            return DiscoveryReceipt(ReceiptStatus.REFUSED, reason=reason)
+        except _StoreBusy:
+            return DiscoveryReceipt(ReceiptStatus.REFUSED, reason="storage_busy")
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_busy_or_locked(exc):
+                raise
+            return DiscoveryReceipt(ReceiptStatus.REFUSED, reason="storage_busy")
+        except (sqlite3.IntegrityError, ValueError) as exc:
+            return DiscoveryReceipt(ReceiptStatus.REFUSED, reason=str(exc))
 
     def _project_group_local(
         self, conn: sqlite3.Connection, group_id: int
@@ -3178,14 +3437,22 @@ class MbaDiscoveryStore:
                     ),
                 )
         except (_StoreBusy, sqlite3.OperationalError) as exc:
-            if isinstance(exc, sqlite3.OperationalError):
-                error_code = getattr(exc, "sqlite_errorcode", None)
-                if not isinstance(error_code, int) or error_code & 0xFF not in (
-                    sqlite3.SQLITE_BUSY,
-                    sqlite3.SQLITE_LOCKED,
-                ):
-                    raise
+            if not _is_sqlite_busy_or_locked(exc):
+                raise
             return HeartbeatReceipt(ReceiptStatus.REFUSED, reason="storage_busy")
+
+    def finish_failed(
+        self, run_id: str, claimed_revision: int, reason: str
+    ) -> LifecycleReceipt:
+        """Atomically finish a failed owner and make its group retryable."""
+
+        return self._finish_run(
+            run_id,
+            claimed_revision,
+            MiningRunState.FAILED,
+            ResidualGroupState.ELIGIBLE,
+            reason,
+        )
 
     def finish_no_proposal(
         self, run_id: str, claimed_revision: int, reason: str = "no_proposal"
@@ -3249,7 +3516,7 @@ class MbaDiscoveryStore:
                 "UPDATE residual_groups SET state=?, last_mined_at=? WHERE group_id=? AND state=? AND revision=?",
                 (
                     group_state.value,
-                    now,
+                    now if group_state is ResidualGroupState.NO_PROPOSAL else None,
                     run[1],
                     ResidualGroupState.MINING.value,
                     claimed_revision,

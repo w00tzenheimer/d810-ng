@@ -66,6 +66,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         callback: typing.Callable,
         ctree_optimizer_manager: CtreeOptimizerManager | None = None,
         block_optimizer: BlockOptimizerManager | None = None,
+        instruction_provider_cycle: typing.Callable[[object], bool] | None = None,
         decompilation_lifecycle: typing.Any | None = None,
         database_identity: str = "",
     ):
@@ -73,6 +74,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         self.callback = callback
         self.ctree_optimizer_manager = ctree_optimizer_manager
         self._block_optimizer = block_optimizer
+        self._instruction_provider_cycle = instruction_provider_cycle
         self._decompilation_lifecycle = decompilation_lifecycle
         self._database_identity = str(database_identity)
 
@@ -507,6 +509,20 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             )
             return 0
         HexraysDecompilationHook._refine_decision_terminal_return_type(decision, mba)
+        provider_cycle_changed = False
+        provider_cycle = getattr(self, "_instruction_provider_cycle", None)
+        if callable(provider_cycle):
+            provider_cycle_changed = bool(provider_cycle(mba))
+        if provider_cycle_changed:
+            # The provider mutated this MBA snapshot. Do not consume resolver
+            # evidence or run cleanup derived before that mutation; Hex-Rays
+            # will rebuild and re-enter this boundary with current authority.
+            main_logger.debug(
+                "glbopt provider cycle changed function at %s; requesting loop",
+                hex(function_ea),
+            )
+            main_logger.reset_maturity()
+            return ida_hexrays.MERR_LOOP
         session = decision.get("session")
         resolver_evidence = getattr(
             getattr(session, "native_preanalysis", None),

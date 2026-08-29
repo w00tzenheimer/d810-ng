@@ -198,7 +198,7 @@ def test_exact_publication_retry_is_duplicate_without_new_proposal(tmp_path) -> 
     store.close()
 
 
-def test_synthesis_exception_leaves_claim_active(tmp_path) -> None:
+def test_synthesis_exception_finishes_claim_as_retryable_failure(tmp_path) -> None:
     from d810.mba.discovery_miner import DiscoveryMiner
 
     term = TypedBvTerm(None, 32, leaf_key=("register", "x"))
@@ -214,8 +214,8 @@ def test_synthesis_exception_leaves_claim_active(tmp_path) -> None:
     outcome = miner.mine_claim(claim)
     assert outcome.status == "error"
     assert "bounded synthesis infrastructure failed" in (outcome.reason or "")
-    assert store.status_counts().run_counts[0][1] == 1
-    assert store.status_counts().group_counts[2][1] == 1
+    assert store.status_counts().run_counts[5][1] == 1
+    assert store.status_counts().group_counts[1][1] == 1
     store.close()
 
 
@@ -473,7 +473,7 @@ def test_provider_test_provenance_cannot_bypass_public_source_validation(tmp_pat
     store.close()
 
 
-def test_heartbeat_exception_leaves_claim_active(tmp_path, monkeypatch) -> None:
+def test_heartbeat_exception_finishes_claim_as_retryable_failure(tmp_path, monkeypatch) -> None:
     from d810.mba.discovery_miner import DiscoveryMiner
 
     term = TypedBvTerm(None, 32, leaf_key=("register", "x"))
@@ -501,7 +501,8 @@ def test_heartbeat_exception_leaves_claim_active(tmp_path, monkeypatch) -> None:
     assert claim is not None
     outcome = miner.mine_claim(claim)
     assert outcome.status == "error"
-    assert store.status_counts().run_counts[0][1] == 1
+    assert store.status_counts().run_counts[5][1] == 1
+    assert store.status_counts().group_counts[1][1] == 1
     store.close()
 
 
@@ -979,6 +980,60 @@ def test_materialization_rejects_artifact_symlink(tmp_path) -> None:
         with pytest.raises(FileExistsError):
             materialize_proposal(store, proposal_id, output)
     finally:
+        store.close()
+
+
+def test_existing_tree_conflict_survives_nested_systemexit_close_fault(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba import discovery_miner
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    output = tmp_path / "existing-tree-conflict"
+    output.mkdir()
+    snapshot = store.proposal_snapshot(proposal_id)
+    assert snapshot is not None
+    stem = snapshot.proposal.proposal_fingerprint
+    (output / f"{stem}.rule.py").write_text("conflicting rule")
+    (output / f"{stem}.fixture.json").write_text("conflicting fixture")
+    original_open_at = discovery_miner._open_at
+    original_close = discovery_miner.os.close
+    artifact_fd: int | None = None
+    interrupted = False
+    interruption = SystemExit("controlled nested artifact close fault")
+
+    def track_open_at(directory_fd, name, flags):
+        nonlocal artifact_fd
+        fd = original_open_at(directory_fd, name, flags)
+        if name == f"{stem}.rule.py":
+            artifact_fd = fd
+        return fd
+
+    def close_then_interrupt(fd):
+        nonlocal interrupted
+        original_close(fd)
+        if fd == artifact_fd and not interrupted:
+            interrupted = True
+            raise interruption
+
+    monkeypatch.setattr(discovery_miner, "_open_at", track_open_at)
+    monkeypatch.setattr(discovery_miner.os, "close", close_then_interrupt)
+    try:
+        with pytest.raises(
+            FileExistsError, match="output tree conflicts with existing artifacts"
+        ) as raised:
+            materialize_proposal(store, proposal_id, output)
+
+        assert interrupted
+        assert any(
+            "SystemExit: controlled nested artifact close fault" in note
+            and "without replacing the original" in note
+            for note in getattr(raised.value, "__notes__", ())
+        )
+    finally:
+        monkeypatch.setattr(discovery_miner.os, "close", original_close)
+        shutil.rmtree(output)
         store.close()
 
 
@@ -1892,6 +1947,47 @@ def test_materialization_write_failure_leaves_proposed_and_cleans_stage(
         assert not output.exists()
         assert not tuple(tmp_path.glob(".write-failure.*"))
     finally:
+        store.close()
+
+
+def test_materialization_cleanup_failure_is_attached_to_primary_error(
+    tmp_path, monkeypatch
+) -> None:
+    from d810.mba import discovery_miner
+    from d810.mba.discovery_miner import materialize_proposal
+
+    store, proposal_id = _published_for_materialization(tmp_path)
+    output = tmp_path / "cleanup-failure"
+    original_write = discovery_miner.os.write
+    writes = 0
+
+    def fail_fixture_write(fd, content):
+        nonlocal writes
+        writes += 1
+        if writes > 1:
+            raise OSError("fixture write failed")
+        return original_write(fd, content)
+
+    def fail_private_cleanup(*_args, **_kwargs):
+        raise OSError("private-stage cleanup failed")
+
+    monkeypatch.setattr(discovery_miner.os, "write", fail_fixture_write)
+    monkeypatch.setattr(
+        discovery_miner, "_remove_private_tree", fail_private_cleanup
+    )
+    try:
+        with pytest.raises(OSError, match="fixture write failed") as raised:
+            materialize_proposal(store, proposal_id, output)
+        assert any(
+            "private-stage cleanup failed" in note
+            and "without replacing the original" in note
+            for note in getattr(raised.value, "__notes__", ())
+        )
+        assert not output.exists()
+        assert tuple(tmp_path.glob(".cleanup-failure.*"))
+    finally:
+        for stage in tmp_path.glob(".cleanup-failure.*"):
+            shutil.rmtree(stage)
         store.close()
 
 

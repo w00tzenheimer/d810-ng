@@ -9,7 +9,10 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.backends.mba import extension_host  # noqa: E402
-from d810.backends.mba.extension_host import native_mba_host_services  # noqa: E402
+from d810.backends.mba.extension_host import (  # noqa: E402
+    native_mba_callback_scope,
+    native_mba_host_services,
+)
 from d810.backends.mba.cross_block_preparation import (  # noqa: E402
     PreparedCrossBlockAst,
 )
@@ -17,6 +20,7 @@ from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint  # noqa: E402
 from d810.mba.extension_api import (  # noqa: E402
+    NativeMbaCandidateExpired,
     atomize_native_candidate,
     reconstruct_native_provider_result,
 )
@@ -175,9 +179,24 @@ def _instruction_shape(instruction):
     )
 
 
+def test_capture_without_callback_lease_rejects_before_native_access():
+    class PoisonInstruction:
+        def __getattribute__(self, _name):
+            raise AssertionError("native instruction was touched without a lease")
+
+    host = native_mba_host_services()
+    with pytest.raises(NativeMbaCandidateExpired):
+        host.capture_instruction(PoisonInstruction())
+
+
 @pytest.mark.usefixtures("libobfuscated_setup")
 class TestNativeMbaExtensionHost:
     binary_name = "libobfuscated.dll"
+
+    @pytest.fixture(autouse=True)
+    def _native_callback_lease(self):
+        with native_mba_callback_scope():
+            yield
 
     def test_maturity_adapter_resolves_global_optimized(self):
         host = native_mba_host_services()
@@ -206,6 +225,33 @@ class TestNativeMbaExtensionHost:
         assert candidate.raw_term is not None
         assert candidate.profile.width_bits == 32
         assert candidate.native_context is not None
+
+    def test_candidate_from_completed_nested_callback_is_rejected(self, monkeypatch):
+        host = native_mba_host_services()
+        source = _node(ida_hexrays.m_xor, _leaf("x", 1), _constant(0))
+        with native_mba_callback_scope():
+            candidate = host.capture_instruction(_instruction(source))
+            assert candidate is not None
+
+        touched = False
+
+        def fail_if_native_context_is_used(*_args, **_kwargs):
+            nonlocal touched
+            touched = True
+            raise AssertionError("expired native context was dereferenced")
+
+        monkeypatch.setattr(
+            extension_host,
+            "rebuild_hexrays_island",
+            fail_if_native_context_is_used,
+        )
+        leaf = next(
+            node for node in candidate.raw_term.children if node.leaf_key is not None
+        )
+
+        with pytest.raises(NativeMbaCandidateExpired):
+            host.rebuild(candidate, leaf)
+        assert touched is False
 
     def test_fixed_shift_capture_keeps_literal_count(self):
         host = native_mba_host_services()

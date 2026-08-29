@@ -6,8 +6,9 @@ import threading
 from collections.abc import Mapping
 from dataclasses import replace
 
+from d810.core.function_execution_identity import MbaObservationContext
 from d810.core.logging import getLogger
-from d810.core.plugins import PluginIdentity
+from d810.core.plugins import PassImplementationCandidate, PluginIdentity
 from d810.mba.discovery_models import DiscoveryAttempt
 from d810.mba.discovery_store import MbaDiscoveryStore
 from d810.mba.extension_api import (
@@ -22,23 +23,27 @@ from d810.mba.typed_term import term_fingerprint
 
 logger = getLogger(__name__)
 
-# This is deliberately the only provider identity policy used by the sink.
-# The activation layer controls PluginIdentity; persistence only consumes the
-# resulting policy decision.
-_PLUGIN_PROVIDER_KINDS: Mapping[str, MbaProviderKind] = {
-    "cobra": MbaProviderKind.COEFFICIENT_SOLVER,
-    "d810-cobra": MbaProviderKind.COEFFICIENT_SOLVER,
-    "egglog": MbaProviderKind.EGRAPH,
-    "d810-egglog": MbaProviderKind.EGRAPH,
+# This is deliberately the only provider authorization policy used by the
+# sink. It consumes the exact selected manifest implementation, never a plugin
+# display name that another distribution could reuse.
+_IMPLEMENTATION_PROVIDER_KINDS: Mapping[
+    tuple[str, str, str], MbaProviderKind
+] = {
+    ("mba-solve", "cobra", "cobra-solve"): MbaProviderKind.COEFFICIENT_SOLVER,
+    ("mba-egraph", "egglog", "egglog-optimizer"): MbaProviderKind.EGRAPH,
 }
 
 
-def provider_kind_for_plugin(identity: PluginIdentity) -> MbaProviderKind | None:
-    """Return the host-authorized provider family for an activated plugin."""
+def provider_kind_for_implementation(
+    candidate: PassImplementationCandidate,
+) -> MbaProviderKind | None:
+    """Return the provider family authorized by one exact manifest row."""
 
-    if not isinstance(identity, PluginIdentity):
+    if not isinstance(candidate, PassImplementationCandidate):
         return None
-    return _PLUGIN_PROVIDER_KINDS.get(identity.name)
+    return _IMPLEMENTATION_PROVIDER_KINDS.get(
+        (candidate.pass_id, candidate.backend_name, candidate.rule_name)
+    )
 
 
 class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
@@ -71,23 +76,27 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
             plugin_identity = getattr(context, "plugin_identity", None)
             plugin = getattr(plugin_identity, "name", "<unknown>")
             instruction_ea = getattr(context, "instruction_ea", None)
-            block = getattr(context, "block_identity", None)
             anchor = (
                 f"0x{instruction_ea:X}"
                 if isinstance(instruction_ea, int)
                 else repr(instruction_ea)
             )
-            block_text = f" block={block}" if block is not None else ""
+            block_text = ""
+            if isinstance(context, MbaObservationContext):
+                block_serial = context.block_serial
+                block_ea = context.block_ea
+                if isinstance(block_serial, int) and isinstance(block_ea, int):
+                    block_text = f" block=blk{block_serial}@0x{block_ea:X}"
             logger.exception(
                 "MBA residual observation callback failed plugin=%s instruction_ea=%s%s",
                 plugin,
                 anchor,
                 block_text,
             )
-        except Exception:
+        except BaseException:
             try:
                 logger.exception("MBA residual observation callback failed")
-            except Exception:
+            except BaseException:
                 pass
 
     def bind_activation(self, identity: PluginIdentity) -> MbaResidualObservationSink:
@@ -96,10 +105,24 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
             raise TypeError("activation binding requires a PluginIdentity")
         return _ActivationScopedResidualSink(self, identity)
 
+    def bind_implementation(
+        self,
+        activation_view: object,
+        candidate: PassImplementationCandidate,
+    ) -> MbaResidualObservationSink:
+        """Bind exact registry-selected authority without exposing a plugin API."""
+        if (
+            not isinstance(activation_view, _ActivationScopedResidualSink)
+            or activation_view._sink is not self
+        ):
+            raise TypeError("implementation binding requires an owned activation view")
+        return activation_view._bind_selected_implementation(candidate)
+
     def _validate(
         self,
         observation: MbaResidualRecord,
         activation_identity: PluginIdentity | None = None,
+        expected_provider: MbaProviderKind | None = None,
     ) -> DiscoveryAttempt:
         if not isinstance(observation, MbaResidualRecord):
             raise TypeError("observation must be an MbaResidualRecord")
@@ -119,9 +142,8 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
             raise ValueError("applied_not_residual")
         if observation.materialized:
             raise ValueError("materialized_not_residual")
-        expected_provider = provider_kind_for_plugin(activation_identity or identity)
         if expected_provider is None:
-            raise ValueError("unknown_plugin_identity")
+            raise ValueError("implementation_authority_missing")
         if observation.outcome.provider is not expected_provider:
             raise ValueError("provider_plugin_mismatch")
         if (
@@ -156,12 +178,17 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
         self,
         observation: MbaResidualRecord,
         activation_identity: PluginIdentity | None,
+        expected_provider: MbaProviderKind | None = None,
     ) -> MbaResidualReceipt:
         with self._lock:
             try:
                 if self._closed:
                     return self._rejected("closed")
-                attempt = self._validate(observation, activation_identity)
+                attempt = self._validate(
+                    observation,
+                    activation_identity,
+                    expected_provider,
+                )
                 receipt = self._store.record_attempt(attempt)
                 status = getattr(receipt, "status", None)
                 status_value = getattr(status, "value", status)
@@ -174,7 +201,7 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
             except (TypeError, ValueError) as exc:
                 reason = str(exc) or "invalid_observation"
                 return self._rejected(reason)
-            except Exception as exc:
+            except BaseException as exc:
                 self._safe_log(observation, exc)
                 return self._rejected("storage_error")
 
@@ -194,7 +221,7 @@ class SqliteMbaResidualObservationSink(MbaResidualObservationSink):
 
 __all__ = [
     "SqliteMbaResidualObservationSink",
-    "provider_kind_for_plugin",
+    "provider_kind_for_implementation",
 ]
 
 
@@ -211,3 +238,47 @@ class _ActivationScopedResidualSink:
 
     def record(self, observation: MbaResidualRecord) -> MbaResidualReceipt:
         return self._sink._record(observation, self._identity)
+
+    def _bind_selected_implementation(
+        self, candidate: PassImplementationCandidate
+    ) -> MbaResidualObservationSink:
+        if not isinstance(candidate, PassImplementationCandidate):
+            raise TypeError(
+                "implementation binding requires a PassImplementationCandidate"
+            )
+        if (
+            candidate.backend_name != self._identity.name
+            or candidate.backend_origin != self._identity.origin
+        ):
+            raise ValueError("implementation_activation_mismatch")
+        provider = provider_kind_for_implementation(candidate)
+        if provider is None:
+            raise ValueError("unknown_provider_implementation")
+        return _ImplementationScopedResidualSink(
+            self._sink,
+            self._identity,
+            provider,
+        )
+
+
+class _ImplementationScopedResidualSink:
+    """Record-only facade carrying exact selected implementation authority."""
+
+    __slots__ = ("_sink", "_identity", "_provider")
+
+    def __init__(
+        self,
+        sink: SqliteMbaResidualObservationSink,
+        identity: PluginIdentity,
+        provider: MbaProviderKind,
+    ) -> None:
+        self._sink = sink
+        self._identity = identity
+        self._provider = provider
+
+    def record(self, observation: MbaResidualRecord) -> MbaResidualReceipt:
+        return self._sink._record(
+            observation,
+            self._identity,
+            self._provider,
+        )

@@ -230,6 +230,19 @@ class DiscoveryMiner:
         )
         coordinator.start()
         stopped_cleanly = False
+
+        def finish_failure(reason: str) -> MineOutcome:
+            finished = self.store.finish_failed(
+                claim.run.run_id, claim.run.claimed_revision, reason
+            )
+            if finished.status is ReceiptStatus.FINISHED:
+                return MineOutcome("error", reason)
+            return MineOutcome(
+                "error",
+                f"{reason}; failure finalization refused: "
+                f"{finished.reason or finished.status.value}",
+            )
+
         try:
             atomized = self.atomizer(
                 claim.group.raw_terms[0], max_atoms=selected_budget.max_atoms
@@ -237,9 +250,11 @@ class DiscoveryMiner:
             result = self.synthesizer(atomized, budget=selected_budget)
             refusal, error, stopped_cleanly = coordinator.stop()
             if not stopped_cleanly:
-                return MineOutcome("error", "heartbeat_worker_did_not_stop")
+                return finish_failure("heartbeat_worker_did_not_stop")
             if error is not None:
-                return MineOutcome("error", f"heartbeat_error: {type(error).__name__}: {error}")
+                return finish_failure(
+                    f"heartbeat_error: {type(error).__name__}: {error}"
+                )
             if refusal is not None:
                 return MineOutcome("refused", refusal)
             if result.certified:
@@ -271,7 +286,19 @@ class DiscoveryMiner:
                 return MineOutcome("no_proposal", reason)
             return MineOutcome("refused", finished.reason or finished.status.value)
         except Exception as exc:
-            return MineOutcome("error", f"{type(exc).__name__}: {exc}")
+            if not stopped_cleanly:
+                refusal, heartbeat_error, stopped_cleanly = coordinator.stop()
+                if heartbeat_error is not None:
+                    return finish_failure(
+                        f"heartbeat_error: {type(heartbeat_error).__name__}: "
+                        f"{heartbeat_error}; synthesis_error: {type(exc).__name__}: {exc}"
+                    )
+                if refusal is not None:
+                    return MineOutcome(
+                        "refused",
+                        f"{refusal}; synthesis_error: {type(exc).__name__}: {exc}",
+                    )
+            return finish_failure(f"{type(exc).__name__}: {exc}")
         finally:
             if not stopped_cleanly:
                 _refusal, _error, stopped_cleanly = coordinator.stop()
@@ -299,6 +326,26 @@ def _read_fd(fd: int) -> bytes:
         chunks.append(chunk)
 
 
+def _close_materialization_fd(
+    descriptor: int,
+    primary_error: BaseException | None,
+    label: str,
+) -> BaseException | None:
+    """Close one disarmed descriptor without replacing a primary exception."""
+
+    try:
+        os.close(descriptor)
+    except BaseException as close_error:
+        if primary_error is not None:
+            primary_error.add_note(
+                f"materialization {label} close failed without replacing the original "
+                f"exception: {type(close_error).__name__}: {close_error}"
+            )
+            return None
+        return close_error
+    return None
+
+
 def _tree_digest(root: Path) -> str:
     """Digest a tree through no-follow descriptors, never symlink targets."""
 
@@ -314,10 +361,18 @@ def _tree_digest(root: Path) -> str:
                     raise ValueError("materialization tree contains a non-regular entry")
                 files[name] = _read_fd(fd)
             finally:
-                os.close(fd)
+                close_error = _close_materialization_fd(
+                    fd, sys.exc_info()[1], "digest artifact descriptor"
+                )
+                if close_error is not None:
+                    raise close_error
         return _digest_files(files)
     finally:
-        os.close(root_fd)
+        close_error = _close_materialization_fd(
+            root_fd, sys.exc_info()[1], "digest root descriptor"
+        )
+        if close_error is not None:
+            raise close_error
 
 
 def _open_dir(path: Path) -> int:
@@ -330,11 +385,16 @@ def _open_dir(path: Path) -> int:
         parts = path.parts[1:] if path.anchor else path.parts
         for component in parts:
             next_fd = os.open(component, flags, dir_fd=fd)
-            os.close(fd)
+            previous_fd = fd
             fd = next_fd
+            close_error = _close_materialization_fd(
+                previous_fd, None, "path traversal descriptor"
+            )
+            if close_error is not None:
+                raise close_error
         return fd
-    except BaseException:
-        os.close(fd)
+    except BaseException as error:
+        _close_materialization_fd(fd, error, "path traversal descriptor")
         raise
 
 
@@ -352,7 +412,11 @@ def _verify_parent_path(path: Path, parent_fd: int) -> None:
         if (current.st_dev, current.st_ino) != (expected.st_dev, expected.st_ino):
             raise FileExistsError("materialization parent path was replaced")
     finally:
-        os.close(current_fd)
+        close_error = _close_materialization_fd(
+            current_fd, sys.exc_info()[1], "parent verification descriptor"
+        )
+        if close_error is not None:
+            raise close_error
 
 
 def _mkdtemp_at(parent_fd: int, prefix: str) -> str:
@@ -427,7 +491,11 @@ def _inspect_tree(
                 os.fsync(fd)
             identities[name] = (info.st_dev, info.st_ino)
         finally:
-            os.close(fd)
+            close_error = _close_materialization_fd(
+                fd, sys.exc_info()[1], "inspected artifact descriptor"
+            )
+            if close_error is not None:
+                raise close_error
     return _digest_files(expected), identities
 
 
@@ -446,10 +514,20 @@ def _remove_private_tree(parent_fd: int, parent_path: Path, name: str) -> None:
             try:
                 _remove_private_tree(directory_fd, parent_path / name, child_name)
             finally:
-                os.close(child_fd)
+                close_error = _close_materialization_fd(
+                    child_fd,
+                    sys.exc_info()[1],
+                    "private child directory descriptor",
+                )
+                if close_error is not None:
+                    raise close_error
         os.fsync(directory_fd)
     finally:
-        os.close(directory_fd)
+        close_error = _close_materialization_fd(
+            directory_fd, sys.exc_info()[1], "private tree descriptor"
+        )
+        if close_error is not None:
+            raise close_error
     os.rmdir(name, dir_fd=parent_fd)
     os.fsync(parent_fd)
 
@@ -518,24 +596,6 @@ def _reconcile_materialization_error(
     )
 
 
-def _close_materialization_fd(
-    descriptor: int,
-    primary_error: BaseException | None,
-    label: str,
-) -> None:
-    """Close one disarmed descriptor without replacing a primary exception."""
-
-    try:
-        os.close(descriptor)
-    except BaseException as close_error:
-        if primary_error is None:
-            raise
-        primary_error.add_note(
-            f"materialization {label} close failed without replacing the original "
-            f"exception: {type(close_error).__name__}: {close_error}"
-        )
-
-
 def materialize_proposal(
     store: MbaDiscoveryStore,
     proposal_id: str,
@@ -561,8 +621,9 @@ def materialize_proposal(
     expected = {name: value.encode("utf-8") for name, value in names.items()}
     output_name = output_dir.name
     if not output_name:
-        os.close(parent_fd)
-        raise ValueError("output directory name must be non-empty")
+        error = ValueError("output directory name must be non-empty")
+        _close_materialization_fd(parent_fd, error, "parent descriptor")
+        raise error
     final_fd: int | None = None
     stage_fd: int | None = None
     stage_path: Path | None = None
@@ -582,7 +643,13 @@ def materialize_proposal(
             finally:
                 closing_final_fd = final_fd
                 final_fd = None
-                os.close(closing_final_fd)
+                close_error = _close_materialization_fd(
+                    closing_final_fd,
+                    sys.exc_info()[1],
+                    "existing-tree descriptor",
+                )
+                if close_error is not None:
+                    raise close_error
             if str(output_dir) == proposal_row.materialized_path and digest == proposal_row.materialized_digest:
                 return str(output_dir), digest
             raise ValueError("proposal_not_proposed")
@@ -600,7 +667,13 @@ def materialize_proposal(
             finally:
                 closing_final_fd = final_fd
                 final_fd = None
-                os.close(closing_final_fd)
+                close_error = _close_materialization_fd(
+                    closing_final_fd,
+                    sys.exc_info()[1],
+                    "existing-tree descriptor",
+                )
+                if close_error is not None:
+                    raise close_error
             receipt = store.mark_materialized(
                 proposal_id,
                 str(output_dir),
@@ -638,7 +711,13 @@ def materialize_proposal(
                 if not stat.S_ISREG(info.st_mode) or _read_fd(descriptor) != content:
                     raise OSError(errno.EIO, "staged artifact verification failed")
             finally:
-                os.close(descriptor)
+                close_error = _close_materialization_fd(
+                    descriptor,
+                    sys.exc_info()[1],
+                    "staged-artifact descriptor",
+                )
+                if close_error is not None:
+                    raise close_error
         os.fsync(stage_fd)
         digest = _digest_files(expected)
         # The no-replace rename may make the complete tree public before Python
@@ -649,10 +728,13 @@ def materialize_proposal(
             stage_path = None
             closing_stage_fd = stage_fd
             stage_fd = None
-            try:
-                os.close(closing_stage_fd)
-            except BaseException:
-                raise
+            close_error = _close_materialization_fd(
+                closing_stage_fd,
+                sys.exc_info()[1],
+                "staging-tree descriptor",
+            )
+            if close_error is not None:
+                raise close_error
             final_fd = _open_at(parent_fd, output_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             inspected_digest, _ = _inspect_tree(
                 final_fd, output_dir, expected, fsync_files=True
@@ -664,10 +746,13 @@ def materialize_proposal(
             _verify_parent_path(output_dir.parent, parent_fd)
             closing_final_fd = final_fd
             final_fd = None
-            try:
-                os.close(closing_final_fd)
-            except BaseException:
-                raise
+            close_error = _close_materialization_fd(
+                closing_final_fd,
+                sys.exc_info()[1],
+                "published-tree descriptor",
+            )
+            if close_error is not None:
+                raise close_error
         except BaseException as error:
             mark_error = error
             raise
@@ -693,25 +778,50 @@ def materialize_proposal(
             raise mark_error
         return str(output_dir), digest
     finally:
+        primary_error = mark_error or sys.exc_info()[1]
+        cleanup_errors: list[BaseException] = []
         if final_fd is not None:
             closing_final_fd = final_fd
             final_fd = None
-            _close_materialization_fd(
-                closing_final_fd, mark_error, "published-tree descriptor"
+            close_error = _close_materialization_fd(
+                closing_final_fd, primary_error, "published-tree descriptor"
             )
+            if close_error is not None:
+                cleanup_errors.append(close_error)
         if stage_fd is not None:
             closing_stage_fd = stage_fd
             stage_fd = None
-            _close_materialization_fd(
-                closing_stage_fd, mark_error, "staging-tree descriptor"
+            close_error = _close_materialization_fd(
+                closing_stage_fd, primary_error, "staging-tree descriptor"
             )
+            if close_error is not None:
+                cleanup_errors.append(close_error)
         if stage_path is not None:
-            _remove_private_tree(parent_fd, output_dir.parent, stage_path.name)
+            try:
+                _remove_private_tree(parent_fd, output_dir.parent, stage_path.name)
+            except BaseException as cleanup_error:
+                if primary_error is not None:
+                    primary_error.add_note(
+                        "materialization private-stage cleanup failed without "
+                        "replacing the original exception: "
+                        f"{type(cleanup_error).__name__}: {cleanup_error}"
+                    )
+                else:
+                    cleanup_errors.append(cleanup_error)
         closing_parent_fd = parent_fd
         parent_fd = -1
-        _close_materialization_fd(
-            closing_parent_fd, mark_error, "parent descriptor"
+        close_error = _close_materialization_fd(
+            closing_parent_fd, primary_error, "parent descriptor"
         )
+        if close_error is not None:
+            cleanup_errors.append(close_error)
+        if primary_error is None and cleanup_errors:
+            if len(cleanup_errors) == 1:
+                raise cleanup_errors[0]
+            raise BaseExceptionGroup(
+                "multiple materialization cleanup failures",
+                cleanup_errors,
+            )
 
 
 __all__ = [

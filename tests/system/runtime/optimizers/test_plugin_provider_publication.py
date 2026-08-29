@@ -600,6 +600,85 @@ def test_pending_hook_error_is_contained_after_destructive_clear():
     assert rule.pending_calls == 1
 
 
+@pytest.mark.parametrize(
+    "error",
+    (
+        KeyboardInterrupt("pending interrupted"),
+        SystemExit("pending exited"),
+        BaseExceptionGroup("pending grouped", [RuntimeError("child")]),
+    ),
+)
+def test_pending_hook_baseexception_is_contained_after_destructive_clear(error):
+    rule, sink = _runtime_rule(pending_error=error)
+    optimizer, blk, ins = _runtime_optimizer(rule)
+
+    assert (
+        optimizer.get_optimized_instruction(
+            blk, ins, observation_context_factory=_context_factory
+        )
+        is None
+    )
+    assert rule.pending is None
+    assert sink.records == []
+    assert rule.pending_calls == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        KeyboardInterrupt("provider interrupted"),
+        SystemExit("provider exited"),
+        BaseExceptionGroup("provider grouped", [RuntimeError("child")]),
+    ),
+)
+def test_external_provider_baseexception_is_contained_and_drained(error):
+    rule, sink = _runtime_rule(error=error)
+    optimizer, blk, ins = _runtime_optimizer(rule)
+
+    assert (
+        optimizer.get_optimized_instruction(
+            blk, ins, observation_context_factory=_context_factory
+        )
+        is None
+    )
+    assert rule.pending is None
+    assert len(sink.records) == 1
+    assert rule.pending_calls == 1
+    assert rule.finalizer_reasons == ["provider_exception"]
+
+
+@pytest.mark.parametrize(
+    ("field", "error"),
+    (
+        ("pending_error", KeyboardInterrupt("internal pending interrupted")),
+        ("finalizer_error", SystemExit("internal finalizer exited")),
+    ),
+)
+def test_internal_rule_fatal_provider_hooks_are_not_contained(field, error):
+    rule = _ProviderRule(**{field: error})
+    optimizer, blk, ins = _runtime_optimizer(rule)
+
+    with pytest.raises(type(error), match="internal"):
+        optimizer.get_optimized_instruction(
+            blk, ins, observation_context_factory=_context_factory
+        )
+
+
+def test_internal_child_fatal_cleanup_is_not_contained():
+    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+
+    def fatal_cleanup():
+        raise KeyboardInterrupt("internal child interrupted")
+
+    manager.instruction_optimizers = [
+        SimpleNamespace(clear_pending_provider_observation=fatal_cleanup)
+    ]
+    manager.analyzer = None
+
+    with pytest.raises(KeyboardInterrupt, match="internal child"):
+        manager._clear_pending_provider_state()
+
+
 def test_acceptance_hook_error_preserves_mutation_and_statistics():
     stats = _manager_stats()
     rule, sink = _runtime_rule(
@@ -645,6 +724,7 @@ def test_real_backend_activation_uses_activation_bound_sink_for_publication():
         MbaResidualObservationSink,
         sink,
         activation_binder=sink.bind_activation,
+        implementation_binder=sink.bind_implementation,
     )
     activated: list[tuple[PluginIdentity, object, object]] = []
 
@@ -659,6 +739,7 @@ def test_real_backend_activation_uses_activation_bound_sink_for_publication():
             )
             return SimpleNamespace(
                 create_implementation=lambda _implementation_id: object(),
+                release_implementation=lambda _implementation: None,
                 capability_offers=lambda: (),
                 close=lambda: None,
             )
@@ -668,6 +749,7 @@ def test_real_backend_activation_uses_activation_bound_sink_for_publication():
         "api_version": PLUGIN_API_VERSION,
         "provides": lambda: Plugin(),
         "requires": (D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,),
+        "implements": {"mba-solve": "cobra-solve"},
     }
     registry = BackendRegistry(
         source=lambda: [
@@ -680,19 +762,23 @@ def test_real_backend_activation_uses_activation_bound_sink_for_publication():
         host=host,
         requirement_validator=host.validate,
         host_view_factory=host.view_for,
+        implementation_host_view_factory=host.bind_implementation_view,
     )
     activation = registry.activate("cobra")
     assert activation is not None
     identity, activation_host, bound_sink = activated[0]
     assert bound_sink is not sink
+    candidate = registry.require_unique_implementation(
+        "mba-solve", install_hint="d810-cobra"
+    )
+    registry.activate_implementation(candidate)
+    services = registry.plugin_rule_services(candidate)
+    assert services.plugin == identity
+    assert services.provider == candidate
+    assert services.host is not activation_host
 
     rule = _ProviderRule()
-    rule.bind_plugin_services(
-        PluginRuleServices(
-            identity,
-            activation_host,
-        )
-    )
+    rule.bind_plugin_services(services)
     optimizer, blk, ins = _runtime_optimizer(rule)
     assert (
         optimizer.get_optimized_instruction(

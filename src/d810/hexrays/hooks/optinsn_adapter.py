@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import inspect
 import pathlib
 from collections import defaultdict
@@ -11,6 +12,7 @@ import ida_hexrays
 from d810.hexrays.hooks.optimization_suppression import (
     d810_optimization_is_suppressed,
 )
+from d810.mba.native_callback_lease import native_mba_callback_scope
 
 from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
@@ -108,6 +110,86 @@ def _block_ea_anchor(blk: object, ins: object) -> int | None:
     if instruction_ea is not None and (block_ea is None or instruction_ea != block_ea):
         return instruction_ea
     return block_ea
+
+
+def _external_provider_block_body(blk: object) -> tuple[object, ...] | None:
+    instructions: list[tuple[int, int, str]] = []
+    instruction = getattr(blk, "head", None)
+    visited: set[int] = set()
+    try:
+        while instruction is not None:
+            object_id = id(instruction)
+            if object_id in visited:
+                return None
+            visited.add(object_id)
+            printer = getattr(instruction, "_print", None)
+            if not callable(printer):
+                return None
+            instructions.append(
+                (
+                    int(getattr(instruction, "ea", 0) or 0),
+                    int(getattr(instruction, "opcode", -1)),
+                    str(printer()),
+                )
+            )
+            instruction = getattr(instruction, "next", None)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+    return tuple(instructions)
+
+
+def _external_provider_graph_fingerprint(
+    mba: object,
+) -> tuple[bytes, tuple[tuple[bytes, int], ...]] | None:
+    """Hash one provider-visible MBA generation and each block occurrence."""
+
+    get_mblock = getattr(mba, "get_mblock", None)
+    try:
+        quantity = int(getattr(mba, "qty"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not callable(get_mblock) or quantity < 0:
+        return None
+    block_digests: list[bytes] = []
+    for serial in range(quantity):
+        candidate = get_mblock(serial)
+        body = _external_provider_block_body(candidate)
+        if body is None:
+            return None
+        try:
+            # Successor order is semantic for conditional blocks. Predecessor
+            # order is not, so normalize it to avoid proxy/container churn.
+            successors = tuple(int(value) for value in getattr(candidate, "succset", ()))
+            predecessors = tuple(
+                sorted(int(value) for value in getattr(candidate, "predset", ()))
+            )
+            block_type = int(getattr(candidate, "type", -1))
+            block_start = int(getattr(candidate, "start", 0) or 0)
+            block_end = int(getattr(candidate, "end", 0) or 0)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return None
+        provider_semantics = (
+            body,
+            block_type,
+            block_start,
+            block_end,
+            successors,
+            predecessors,
+        )
+        block_digests.append(
+            hashlib.sha256(repr(provider_semantics).encode("utf-8")).digest()
+        )
+    graph_hasher = hashlib.sha256()
+    graph_hasher.update(quantity.to_bytes(8, "big", signed=False))
+    for block_digest in block_digests:
+        graph_hasher.update(block_digest)
+    occurrences: dict[bytes, int] = {}
+    block_keys: list[tuple[bytes, int]] = []
+    for block_digest in block_digests:
+        occurrence = occurrences.get(block_digest, 0)
+        block_keys.append((block_digest, occurrence))
+        occurrences[block_digest] = occurrence + 1
+    return graph_hasher.digest(), tuple(block_keys)
 
 
 def _rewrite_history_key(
@@ -270,6 +352,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 int,
                 frozenset[str] | None,
                 frozenset[str],
+                tuple[int, ...],
             ]
             | None
         ) = None
@@ -279,6 +362,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             frozenset()
         )
         self._scheduled_implementation_names: frozenset[str] = frozenset()
+        # Transient block-snapshot keys are deliberately not part of runtime
+        # snapshots. They are scoped to live lifecycle sessions and pruned by
+        # explicit session start/finish ownership rather than mutable serials.
+        self._external_provider_block_cycles: dict[
+            tuple[str, int, int], dict[bytes, set[tuple[bytes, int]]]
+        ] = {}
 
         # Cycle detection records installed states per production native site,
         # while unpositioned adapter/test objects retain independent histories.
@@ -386,6 +475,212 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             set_run_later_callback(self._record_run_later_requests)
         self.instruction_optimizers.append(optimizer)
         self._invalidate_residual_admission_cache()
+
+    def run_external_provider_block_cycle(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        graph_fingerprint: bytes | None = None,
+        block_occurrence: tuple[bytes, int] | None = None,
+        provider_rule_names: frozenset[str] | None = None,
+    ) -> bool:
+        """Ask Hex-Rays to run optinsn once over one provider-visible block."""
+
+        mba = getattr(blk, "mba", None)
+        maturity = int(getattr(mba, "maturity", -1))
+        if maturity != int(ida_hexrays.MMAT_GLBOPT2):
+            return False
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        if lifecycle is None:
+            return False
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        try:
+            session = lifecycle.current_session(function_ea)
+        except Exception:
+            return False
+        session_id = str(getattr(session, "session_id", "") or "")
+        if not session_id:
+            return False
+        external_provider_block_cycles = getattr(
+            self, "_external_provider_block_cycles", None
+        )
+        if external_provider_block_cycles is None:
+            external_provider_block_cycles = {}
+            self._external_provider_block_cycles = external_provider_block_cycles
+        if not isinstance(external_provider_block_cycles, dict):
+            return False
+        if provider_rule_names is None:
+            provider_rule_names = self._active_external_provider_rule_names(blk)
+        if not provider_rule_names:
+            return False
+        if graph_fingerprint is None or block_occurrence is None:
+            graph = _external_provider_graph_fingerprint(mba)
+            try:
+                block_serial = int(getattr(blk, "serial"))
+            except (AttributeError, TypeError, ValueError):
+                return False
+            if graph is None or not 0 <= block_serial < len(graph[1]):
+                return False
+            graph_fingerprint, block_occurrence = graph[0], graph[1][block_serial]
+        scope = (session_id, maturity, function_ea)
+        graph_cycles = external_provider_block_cycles.setdefault(scope, {})
+        seen_blocks = graph_cycles.setdefault(graph_fingerprint, set())
+        if block_occurrence in seen_blocks:
+            return False
+        seen_blocks.add(block_occurrence)
+        instruction = getattr(blk, "head", None)
+        while instruction is not None:
+            next_instruction = getattr(instruction, "next", None)
+            if self._run_external_provider_instruction(
+                blk, instruction, provider_rule_names
+            ):
+                return True
+            instruction = next_instruction
+        return False
+
+    def _active_external_provider_rule_names(
+        self, blk: ida_hexrays.mblock_t
+    ) -> frozenset[str]:
+        """Resolve plugin-backed rules admitted by the live execution scope."""
+
+        mba = getattr(blk, "mba", None)
+        maturity = int(getattr(mba, "maturity", -1))
+        allowed_rule_names = self._resolve_active_instruction_rule_names(
+            blk, maturity_override=maturity
+        )
+        scheduled_rule_names = self._scheduled_implementation_names
+        names: set[str] = set()
+        for optimizer in self.instruction_optimizers:
+            if (
+                maturity not in tuple(getattr(optimizer, "maturities", ()) or ())
+                and not self._optimizer_has_scheduled_rule(optimizer)
+            ):
+                continue
+            for rule in tuple(getattr(optimizer, "rules", ()) or ()):
+                if getattr(rule, "plugin_services", None) is None:
+                    continue
+                name = self._rule_name(rule)
+                if name not in allowed_rule_names and name not in scheduled_rule_names:
+                    continue
+                if (
+                    maturity not in tuple(getattr(rule, "maturities", ()) or ())
+                    and name not in scheduled_rule_names
+                ):
+                    continue
+                names.add(name)
+        return frozenset(names)
+
+    def _run_external_provider_instruction(
+        self,
+        blk: ida_hexrays.mblock_t,
+        ins: ida_hexrays.minsn_t,
+        provider_rule_names: frozenset[str],
+    ) -> bool:
+        """Run only scope-authorized plugin rules from the GLBOPT bridge."""
+
+        scheduled_rule_names = (
+            self._scheduled_implementation_names & provider_rule_names
+        )
+        maturity = int(getattr(getattr(blk, "mba", None), "maturity", -1))
+        provider_optimizers = tuple(
+            optimizer
+            for optimizer in self.instruction_optimizers
+            if (
+                maturity in tuple(getattr(optimizer, "maturities", ()) or ())
+                or self._optimizer_has_scheduled_rule(optimizer)
+            )
+            and any(
+                getattr(rule, "plugin_services", None) is not None
+                and self._rule_name(rule) in provider_rule_names
+                for rule in tuple(getattr(optimizer, "rules", ()) or ())
+            )
+        )
+        fact_view_binders: list[object] = []
+        self._clear_pending_provider_state()
+        try:
+            with native_mba_callback_scope():
+                fact_view_binders = self._bind_validated_fact_view_for_callback(blk)
+                optimization_performed = self.optimize(
+                    blk,
+                    ins,
+                    contextual_anchor_ins=ins,
+                    allowed_rule_names_override=provider_rule_names,
+                    scheduled_rule_names_override=scheduled_rule_names,
+                    optimizers_override=provider_optimizers,
+                    maturity_override=maturity,
+                    analyze_on_abstain=False,
+                )
+                if not optimization_performed:
+                    visitor = self.instruction_visitor
+                    visitor.blk = blk
+                    attributes = {
+                        "_contextual_anchor_ins": ins,
+                        "_allowed_rule_names_override": provider_rule_names,
+                        "_scheduled_rule_names_override": scheduled_rule_names,
+                        "_optimizers_override": provider_optimizers,
+                        "_maturity_override": maturity,
+                        "_analyze_on_abstain": False,
+                    }
+                    previous = {
+                        name: (hasattr(visitor, name), getattr(visitor, name, None))
+                        for name in attributes
+                    }
+                    for name, value in attributes.items():
+                        setattr(visitor, name, value)
+                    try:
+                        optimization_performed = bool(ins.for_all_insns(visitor))
+                    finally:
+                        for name, (existed, value) in previous.items():
+                            if existed:
+                                setattr(visitor, name, value)
+                            else:
+                                delattr(visitor, name)
+                if optimization_performed:
+                    ins.optimize_solo()
+                    blk.mark_lists_dirty()
+                    safe_verify(blk.mba, "rewriting", logger_func=optimizer_logger.error)
+                return bool(optimization_performed)
+        finally:
+            self._clear_pending_provider_state()
+            for binder, previous in reversed(fact_view_binders):
+                try:
+                    binder(previous)
+                except Exception:
+                    optimizer_logger.debug(
+                        "failed to clear validated fact view after provider bridge",
+                        exc_info=True,
+                    )
+
+    def run_external_provider_mba_cycle(
+        self, mba: ida_hexrays.mbl_array_t
+    ) -> bool:
+        """Bridge a GLBOPT boundary into block-scoped installed callbacks."""
+
+        if int(getattr(mba, "maturity", -1)) != int(ida_hexrays.MMAT_GLBOPT2):
+            return False
+        quantity = int(getattr(mba, "qty", 0) or 0)
+        if quantity <= 0:
+            return False
+        first_block = mba.get_mblock(0)
+        if first_block is None:
+            return False
+        provider_rule_names = self._active_external_provider_rule_names(first_block)
+        if not provider_rule_names:
+            return False
+        graph = _external_provider_graph_fingerprint(mba)
+        if graph is None:
+            return False
+        graph_fingerprint, block_occurrences = graph
+        for serial in range(quantity):
+            block = mba.get_mblock(serial)
+            if block is not None and self.run_external_provider_block_cycle(
+                block,
+                graph_fingerprint=graph_fingerprint,
+                block_occurrence=block_occurrences[serial],
+                provider_rule_names=provider_rule_names,
+            ):
+                return True
+        return False
 
     def configure_validated_fact_view_provider(self, provider) -> None:
         """Install the callback-local validated fact-view provider."""
@@ -574,7 +869,6 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             raise TypeError("instruction adapter optimizer worklist is not a list")
         if not isinstance(active_optimizers_store, list):
             raise TypeError("instruction adapter active worklist is not a list")
-
         children: list[_InstructionChildRuntimeState] = []
         seen: set[int] = set()
         for optimizer in (*instruction_optimizers_store, self.analyzer):
@@ -736,6 +1030,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._residual_admission_cache_value = snapshot.residual_admission_cache_value
         self._scheduled_stage_identities = snapshot.scheduled_stage_identities
         self._scheduled_implementation_names = snapshot.scheduled_implementation_names
+        # Native block wrappers belong to the live callback graph and must not
+        # cross project/runtime restoration boundaries.
+        self._external_provider_block_cycles = {}
         for child in snapshot.children:
             self._restore_child_runtime_state(child)
 
@@ -795,6 +1092,23 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             str(getattr(optimizer, "name", optimizer.__class__.__name__)),
             cls._optimizer_cycle_generation(optimizer),
         )
+
+    def reset_external_provider_cycle_sessions(self) -> None:
+        """Drop transient provider snapshots at a new top-level owner boundary."""
+
+        self._external_provider_block_cycles = {}
+
+    def finish_external_provider_cycle_session(self, session_id: str) -> None:
+        """Prune one completed session while preserving active outer sessions."""
+
+        session_id = str(session_id)
+        cycles = getattr(self, "_external_provider_block_cycles", None)
+        if not isinstance(cycles, dict):
+            self._external_provider_block_cycles = {}
+            return
+        for scope in tuple(cycles):
+            if scope[0] == session_id:
+                del cycles[scope]
 
     def reset_run_later_state(self) -> None:
         self._scheduled_stage_identities = frozenset()
@@ -1024,6 +1338,14 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         return bound
 
     def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
+        with native_mba_callback_scope():
+            return self._func_with_native_mba_lease(blk, ins)
+
+    def _func_with_native_mba_lease(
+        self,
+        blk: ida_hexrays.mblock_t,
+        ins: ida_hexrays.minsn_t,
+    ) -> bool:
         self._clear_pending_provider_state()
         lifecycle = getattr(self, "_decompilation_lifecycle", None)
         mba = getattr(blk, "mba", None)
@@ -1677,6 +1999,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     def _resolve_active_instruction_rule_names(
         self,
         blk: ida_hexrays.mblock_t,
+        *,
+        maturity_override: int | None = None,
     ) -> frozenset[str]:
         if self._execution_scope_service is None:
             # FAIL CLOSED: If execution scope service not initialized, run NO rules
@@ -1689,10 +2013,14 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             return frozenset()
         if blk is None or blk.mba is None or blk.mba.entry_ea is None:
             return frozenset()
-        if self.current_maturity is None:
+        if maturity_override is None and self.current_maturity is None:
             return frozenset()
         func_ea = int(blk.mba.entry_ea)
-        maturity = int(self.current_maturity)
+        maturity = int(
+            self.current_maturity
+            if maturity_override is None
+            else maturity_override
+        )
         if func_ea != self._execution_scope_func_ea:
             self._execution_scope_func_ea = func_ea
             self._active_instruction_rule_names_by_maturity.clear()
@@ -1718,6 +2046,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         *,
         allowed_rule_names: frozenset[str] | None,
         scheduled_rule_names: frozenset[str],
+        optimizers: tuple[object, ...] | None = None,
+        maturity: int | None = None,
     ) -> bool:
         """Whether this callback gave a configured fast MBA tier first refusal.
 
@@ -1729,15 +2059,23 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         when a profile forgot to configure its fast tier.
         """
 
+        effective_maturity = (
+            -1 if maturity is None and self.current_maturity is None
+            else int(self.current_maturity if maturity is None else maturity)
+        )
+        selected_optimizers = (
+            tuple(self._active_optimizers) if optimizers is None else optimizers
+        )
         cache_key = (
-            -1 if self.current_maturity is None else int(self.current_maturity),
+            effective_maturity,
             allowed_rule_names,
             scheduled_rule_names,
+            tuple(id(optimizer) for optimizer in selected_optimizers),
         )
         if cache_key == self._residual_admission_cache_key:
             return self._residual_admission_cache_value
 
-        for optimizer in self._active_optimizers:
+        for optimizer in selected_optimizers:
             for rule in getattr(optimizer, "rules", ()) or ():
                 if getattr(rule, "PORTFOLIO_TIER", None) != "fast":
                     continue
@@ -1746,7 +2084,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     continue
                 maturities = getattr(rule, "maturities", ())
                 if (
-                    self.current_maturity not in maturities
+                    effective_maturity not in maturities
                     and name not in scheduled_rule_names
                 ):
                     continue
@@ -1772,21 +2110,38 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         ins: ida_hexrays.minsn_t,
         *,
         contextual_anchor_ins: ida_hexrays.minsn_t | None = None,
+        allowed_rule_names_override: frozenset[str] | None = None,
+        scheduled_rule_names_override: frozenset[str] | None = None,
+        optimizers_override: tuple[object, ...] | None = None,
+        maturity_override: int | None = None,
+        analyze_on_abstain: bool = True,
     ) -> bool:
         if d810_optimization_is_suppressed():
             return False
         if contextual_anchor_ins is None:
             contextual_anchor_ins = ins
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
-        allowed_rule_names = self._resolve_active_instruction_rule_names(blk)
-        scheduled_rule_names = self._scheduled_implementation_names
+        allowed_rule_names = (
+            self._resolve_active_instruction_rule_names(blk)
+            if allowed_rule_names_override is None
+            else allowed_rule_names_override
+        )
+        scheduled_rule_names = (
+            self._scheduled_implementation_names
+            if scheduled_rule_names_override is None
+            else scheduled_rule_names_override
+        )
         try:
             func_ea = int(getattr(getattr(blk, "mba", None), "entry_ea", 0) or 0)
         except Exception:
             func_ea = 0
         try:
             maturity = int(
-                getattr(getattr(blk, "mba", None), "maturity", self.current_maturity)
+                maturity_override
+                if maturity_override is not None
+                else getattr(
+                    getattr(blk, "mba", None), "maturity", self.current_maturity
+                )
             )
         except (TypeError, ValueError):
             maturity = int(self.current_maturity or -1)
@@ -1797,8 +2152,15 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         residual_admitted = self._has_active_fast_mba_provider(
             allowed_rule_names=allowed_rule_names,
             scheduled_rule_names=scheduled_rule_names,
+            optimizers=optimizers_override,
+            maturity=maturity_override,
         )
-        for ins_optimizer in self._active_optimizers:
+        selected_optimizers = (
+            self._active_optimizers
+            if optimizers_override is None
+            else optimizers_override
+        )
+        for ins_optimizer in selected_optimizers:
             self._last_optimizer_tried = ins_optimizer
             receipt_scope_key = self._cycle_receipt_scope_key(
                 func_ea=func_ea,
@@ -1855,7 +2217,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                         main_logger.error(
                             "Invalid optimized instruction (%s) for maturity %s:\n\toptimized: %s\n\toriginal: %s",
                             ins_optimizer.name,
-                            maturity_to_string(self.current_maturity),  # type: ignore
+                            maturity_to_string(maturity),
                             format_minsn_t(new_ins),
                             format_minsn_t(ins),
                         )
@@ -1863,7 +2225,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                         main_logger.error(
                             "Invalid original instruction (%s) for maturity %s:\n\toptimized: %s\n\toriginal: %s",
                             ins_optimizer.name,
-                            maturity_to_string(self.current_maturity),  # type: ignore
+                            maturity_to_string(maturity),
                             format_minsn_t(new_ins),
                             format_minsn_t(ins),
                         )
@@ -2002,7 +2364,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             pass
                     return True
 
-        self.analyzer.analyze(blk, ins)
+        if analyze_on_abstain:
+            self.analyzer.analyze(blk, ins)
         return False
 
 
@@ -2023,4 +2386,13 @@ class InstructionVisitorManager(ida_hexrays.minsn_visitor_t):
             self.blk,
             candidate_ins,
             contextual_anchor_ins=owner_ins,
+            allowed_rule_names_override=getattr(
+                self, "_allowed_rule_names_override", None
+            ),
+            scheduled_rule_names_override=getattr(
+                self, "_scheduled_rule_names_override", None
+            ),
+            optimizers_override=getattr(self, "_optimizers_override", None),
+            maturity_override=getattr(self, "_maturity_override", None),
+            analyze_on_abstain=getattr(self, "_analyze_on_abstain", True),
         )

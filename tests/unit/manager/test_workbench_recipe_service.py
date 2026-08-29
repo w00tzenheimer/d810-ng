@@ -75,6 +75,9 @@ class _FactoryActivation:
     def capability_offers(self):
         return ()
 
+    def release_implementation(self, implementation):
+        del implementation
+
     def close(self):
         return None
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -15,6 +16,7 @@ from d810.capabilities.plugin_host import PluginHostCapabilityRegistry
 from d810.core.plugins import (
     BackendRegistry,
     BackendSpec,
+    PassImplementationCandidate,
     PLUGIN_API_VERSION,
     PluginIdentity,
 )
@@ -99,20 +101,44 @@ def _record(
     )
 
 
+def _bound_sink(
+    sink: SqliteMbaResidualObservationSink,
+    *,
+    context: MbaObservationContext | None = None,
+    provider: MbaProviderKind = MbaProviderKind.COEFFICIENT_SOLVER,
+):
+    context = context or _context()
+    if provider is MbaProviderKind.COEFFICIENT_SOLVER:
+        pass_id, implementation_id = "mba-solve", "cobra-solve"
+    else:
+        pass_id, implementation_id = "mba-egraph", "egglog-optimizer"
+    candidate = PassImplementationCandidate(
+        pass_id=pass_id,
+        backend_name=context.plugin_identity.name,
+        backend_origin=context.plugin_identity.origin,
+        rule_modules=(),
+        rule_name=implementation_id,
+    )
+    activation = sink.bind_activation(context.plugin_identity)
+    return sink.bind_implementation(activation, candidate)
+
+
 def test_record_rejects_applied_and_materialized_residuals() -> None:
     sink = SqliteMbaResidualObservationSink(MbaDiscoveryStore(":memory:"))
+    bound = _bound_sink(sink)
     assert (
-        sink.record(_record(status=ProviderOutcomeStatus.APPLIED)).status == "rejected"
+        bound.record(_record(status=ProviderOutcomeStatus.APPLIED)).status == "rejected"
     )
-    assert sink.record(_record(materialized=True)).status == "rejected"
+    assert bound.record(_record(materialized=True)).status == "rejected"
 
 
 def test_record_stores_then_reports_duplicate() -> None:
     store = MbaDiscoveryStore(":memory:")
     sink = SqliteMbaResidualObservationSink(store)
+    bound = _bound_sink(sink)
     observation = _record()
-    first = sink.record(observation)
-    second = sink.record(observation)
+    first = bound.record(observation)
+    second = bound.record(observation)
     assert first.status == "stored"
     assert second.status == "duplicate"
 
@@ -138,10 +164,10 @@ def test_provider_identity_policy_accepts_egglog_and_preserves_local_ineligibili
         block_serial=context.block_serial,
         block_ea=context.block_ea,
     )
-    assert (
-        sink.record(_record(provider=MbaProviderKind.EGRAPH, context=context)).status
-        == "stored"
-    )
+    bound = _bound_sink(sink, context=context, provider=MbaProviderKind.EGRAPH)
+    assert bound.record(
+        _record(provider=MbaProviderKind.EGRAPH, context=context)
+    ).status == "stored"
     assert store.attempt is not None
     assert store.attempt.eligible_for_mining is False
 
@@ -154,7 +180,7 @@ def test_store_refusal_maps_to_stable_rejected_receipt() -> None:
             )()
 
     sink = SqliteMbaResidualObservationSink(RefusingStore())
-    assert sink.record(_record()) == MbaResidualReceipt(
+    assert _bound_sink(sink).record(_record()) == MbaResidualReceipt(
         "rejected", "duplicate identity"
     )
 
@@ -167,7 +193,8 @@ def test_record_validates_canonical_term_and_fingerprint() -> None:
         children=(TypedBvTerm(None, 32, value=1), TypedBvTerm(None, 32, value=2)),
     )
     alternate = TypedBvTerm(None, 32, value=9)
-    assert sink.record(_record(raw=raw, canonical=alternate)).status == "rejected"
+    bound = _bound_sink(sink)
+    assert bound.record(_record(raw=raw, canonical=alternate)).status == "rejected"
     bad = MbaResidualRecord(
         context=_context(),
         attempt_uuid=str(uuid4()),
@@ -177,7 +204,7 @@ def test_record_validates_canonical_term_and_fingerprint() -> None:
             MbaProviderKind.COEFFICIENT_SOLVER, ProviderOutcomeStatus.UNCHANGED, "wrong"
         ),
     )
-    assert sink.record(bad).status == "rejected"
+    assert bound.record(bad).status == "rejected"
 
 
 def test_record_never_raises_storage_errors(caplog: pytest.LogCaptureFixture) -> None:
@@ -187,10 +214,51 @@ def test_record_never_raises_storage_errors(caplog: pytest.LogCaptureFixture) ->
 
     sink = SqliteMbaResidualObservationSink(BrokenStore())
     with caplog.at_level(logging.ERROR):
-        receipt = sink.record(_record())
+        receipt = _bound_sink(sink).record(_record())
     assert receipt == MbaResidualReceipt("rejected", "storage_error")
     assert "locked" in caplog.text
     assert "blk3@0x401000" in caplog.text
+
+
+def test_malformed_context_does_not_log_a_bare_block_serial(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    malformed = SimpleNamespace(
+        context=SimpleNamespace(
+            plugin_identity=SimpleNamespace(name="hostile"),
+            instruction_ea=0x401020,
+            block_identity="blk3",
+        )
+    )
+
+    with caplog.at_level(logging.ERROR):
+        try:
+            raise RuntimeError("malformed callback")
+        except RuntimeError as error:
+            SqliteMbaResidualObservationSink._safe_log(malformed, error)
+
+    assert "instruction_ea=0x401020" in caplog.text
+    assert "block=" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        KeyboardInterrupt("storage interrupted"),
+        SystemExit("storage exited"),
+        BaseExceptionGroup("storage grouped", [RuntimeError("child")]),
+    ),
+)
+def test_record_never_leaks_baseexception_through_callback(error) -> None:
+    class BrokenStore:
+        def record_attempt(self, attempt):
+            raise error
+
+    sink = SqliteMbaResidualObservationSink(BrokenStore())
+
+    assert _bound_sink(sink).record(_record()) == MbaResidualReceipt(
+        "rejected", "storage_error"
+    )
 
 
 def test_provider_identity_unknown_and_mismatched_are_rejected() -> None:
@@ -203,11 +271,62 @@ def test_provider_identity_unknown_and_mismatched_are_rejected() -> None:
         block_serial=context.block_serial,
         block_ea=context.block_ea,
     )
-    assert sink.record(_record(context=unknown)).reason == "unknown_plugin_identity"
     assert (
-        sink.record(_record(provider=MbaProviderKind.EGRAPH, context=context)).reason
+        sink.record(_record(context=unknown)).reason
+        == "implementation_authority_missing"
+    )
+    assert (
+        _bound_sink(sink, context=context)
+        .record(_record(provider=MbaProviderKind.EGRAPH, context=context))
+        .reason
         == "provider_plugin_mismatch"
     )
+
+
+@pytest.mark.parametrize(
+    ("candidate", "reason"),
+    (
+        (
+            PassImplementationCandidate(
+                pass_id="mba-solve",
+                backend_name="cobra",
+                backend_origin="spoofed-wheel",
+                rule_modules=(),
+                rule_name="cobra-solve",
+            ),
+            "implementation_activation_mismatch",
+        ),
+        (
+            PassImplementationCandidate(
+                pass_id="mba-solve",
+                backend_name="lookalike",
+                backend_origin="test",
+                rule_modules=(),
+                rule_name="cobra-solve",
+            ),
+            "implementation_activation_mismatch",
+        ),
+        (
+            PassImplementationCandidate(
+                pass_id="mba-egraph",
+                backend_name="cobra",
+                backend_origin="test",
+                rule_modules=(),
+                rule_name="cobra-solve",
+            ),
+            "unknown_provider_implementation",
+        ),
+    ),
+)
+def test_implementation_authority_rejects_spoofed_candidate_identity(
+    candidate, reason
+) -> None:
+    sink = SqliteMbaResidualObservationSink(MbaDiscoveryStore(":memory:"))
+    activation = sink.bind_activation(_context().plugin_identity)
+    assert not hasattr(activation, "bind_implementation")
+
+    with pytest.raises(ValueError, match=reason):
+        sink.bind_implementation(activation, candidate)
 
 
 def test_close_is_idempotent_and_post_close_does_not_touch_store() -> None:
@@ -253,7 +372,7 @@ def test_record_projects_record_only_costs_before_task5_translation() -> None:
     store = CapturingStore()
     sink = SqliteMbaResidualObservationSink(store)
     assert (
-        sink.record(
+        _bound_sink(sink).record(
             _record(
                 candidate_cost=(3, 4),
                 replacement_cost=(5, 6),
@@ -280,7 +399,7 @@ def test_record_catches_unexpected_validation_and_receipt_failures(
             ),
         )
         with caplog.at_level(logging.ERROR):
-            receipt = sink.record(_record())
+            receipt = _bound_sink(sink).record(_record())
     assert receipt == MbaResidualReceipt("rejected", "storage_error")
     assert "validation boundary exploded" in caplog.text
 
@@ -295,7 +414,7 @@ def test_record_catches_unexpected_validation_and_receipt_failures(
 
     sink = SqliteMbaResidualObservationSink(BadReceiptStore())
     with caplog.at_level(logging.ERROR):
-        receipt = sink.record(_record())
+        receipt = _bound_sink(sink).record(_record())
     assert receipt == MbaResidualReceipt("rejected", "storage_error")
     assert "receipt accessor exploded" in caplog.text
 
@@ -334,10 +453,11 @@ def test_verified_sha_eligibility_excludes_error_status() -> None:
 
     store = CapturingStore()
     sink = SqliteMbaResidualObservationSink(store)
-    assert sink.record(_record(context=context)).status == "stored"
+    bound = _bound_sink(sink, context=context)
+    assert bound.record(_record(context=context)).status == "stored"
     assert store.attempts[-1].eligible_for_mining is True
     for status in ProviderOutcomeStatus:
-        receipt = sink.record(_record(status=status, context=context))
+        receipt = bound.record(_record(status=status, context=context))
         if status is ProviderOutcomeStatus.APPLIED:
             assert receipt.reason == "applied_not_residual"
         else:
@@ -356,6 +476,7 @@ def test_real_backend_activation_binds_sink_identity_and_rejects_forgery() -> No
         MbaResidualObservationSink,
         sink,
         activation_binder=sink.bind_activation,
+        implementation_binder=sink.bind_implementation,
     )
     seen = []
 
@@ -365,10 +486,11 @@ def test_real_backend_activation_binds_sink_identity_and_rejects_forgery() -> No
             return type(
                 "Activation",
                 (),
-                {
-                    "create_implementation": lambda self, _id: object(),
-                    "capability_offers": lambda self: (),
-                    "close": lambda self: None,
+                    {
+                        "create_implementation": lambda self, _id: object(),
+                        "capability_offers": lambda self: (),
+                        "release_implementation": lambda self, _implementation: None,
+                        "close": lambda self: None,
                 },
             )()
 
@@ -377,6 +499,7 @@ def test_real_backend_activation_binds_sink_identity_and_rejects_forgery() -> No
         "api_version": PLUGIN_API_VERSION,
         "provides": lambda: Plugin(),
         "requires": (D810_MBA_RESIDUAL_OBSERVATION_CAPABILITY,),
+        "implements": {"mba-solve": "cobra-solve"},
     }
     registry = BackendRegistry(
         source=lambda: [
@@ -389,8 +512,15 @@ def test_real_backend_activation_binds_sink_identity_and_rejects_forgery() -> No
         host=host,
         requirement_validator=host.validate,
         host_view_factory=host.view_for,
+        implementation_host_view_factory=host.bind_implementation_view,
     )
-    registry.activate("cobra")
+    candidate = registry.require_unique_implementation(
+        "mba-solve", install_hint="d810-cobra"
+    )
+    registry.activate_implementation(candidate)
+    bound = registry.plugin_rule_services(candidate).host.require(
+        MbaResidualObservationSink
+    )
 
     assert len(seen) == 1
     assert seen[0] is not sink
@@ -403,7 +533,11 @@ def test_real_backend_activation_binds_sink_identity_and_rejects_forgery() -> No
         block_serial=activated.block_serial,
         block_ea=activated.block_ea,
     )
-    assert seen[0].record(_record(context=activated)).status == "stored"
+    assert (
+        seen[0].record(_record(context=activated)).reason
+        == "implementation_authority_missing"
+    )
+    assert bound.record(_record(context=activated)).status == "stored"
     forged = _context()
     forged = MbaObservationContext(
         function_identity=forged.function_identity,
@@ -412,4 +546,4 @@ def test_real_backend_activation_binds_sink_identity_and_rejects_forgery() -> No
         block_serial=forged.block_serial,
         block_ea=forged.block_ea,
     )
-    assert seen[0].record(_record(context=forged)).reason == "plugin_identity_mismatch"
+    assert bound.record(_record(context=forged)).reason == "plugin_identity_mismatch"

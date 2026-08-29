@@ -35,6 +35,25 @@ class _Activation:
         self.close_calls += 1
 
 
+class _Host:
+    def for_implementation(self, candidate):
+        return _BoundHost(candidate)
+
+
+class _BoundHost:
+    def __init__(self, provider):
+        self.provider = provider
+
+    def require(self, capability):
+        return capability
+
+    def optional(self, capability):
+        return None
+
+    def for_implementation(self, candidate):
+        return _BoundHost(candidate)
+
+
 class _Rule(state_module.InstructionOptimizationRule):
     name = "ExternalRule"
 
@@ -212,6 +231,22 @@ class _Registry:
 
     def discard_implementation_instances(self, staged):
         self.discarded.append(tuple(staged))
+
+
+class _ReleaseFailRegistry(_Registry):
+    def __init__(self, implementation, release_error):
+        super().__init__(implementation)
+        self.release_error = release_error
+
+    def release_implementation_instances(self, staged):
+        self.discarded.append(tuple(staged))
+        raise self.release_error
+
+
+class _RetirementFailRegistry(_Registry):
+    def release_implementation_instances(self, staged):
+        self.discarded.append(tuple(staged))
+        raise RuntimeError("previous implementation release failed")
 
 
 class _SharedImplementationIdRegistry(_Registry):
@@ -468,6 +503,35 @@ def test_manager_configuration_failure_restores_manager_and_state_lanes(monkeypa
     with pytest.raises(RuntimeError, match="manager configure failed"):
         state._activate_project(project_index=1, project=_project("new.json"))
 
+    assert state.current_project is old_project
+    assert state.current_project_runtime_snapshot is old_snapshot
+    assert state.manager.snapshot_project_activation_state() == before
+    assert registry.new_activation.close_calls == 1
+
+
+def test_release_failure_during_rollback_still_restores_state_and_closes(monkeypatch):
+    registry = _ReleaseFailRegistry(_Rule(), RuntimeError("release failed"))
+    old_activation = _Activation("old")
+    old_project = _project("old.json")
+    old_snapshot = _snapshot(old_project, old_activation, "old-ins")
+    registry.old_activation = old_activation
+    state = _state(registry, old_project, old_snapshot)
+    state._capture_project_activation_state = (
+        state_module.D810State._capture_project_activation_state.__get__(state)
+    )
+    state._restore_project_activation_state = (
+        state_module.D810State._restore_project_activation_state.__get__(state)
+    )
+    state.manager.fail_at = "manager-configure"
+    before = state.manager.snapshot_project_activation_state()
+    _patch_activation(monkeypatch)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        state._activate_project(project_index=1, project=_project("new.json"))
+
+    assert isinstance(raised.value.exceptions[0], RuntimeError)
+    assert str(raised.value.exceptions[0]) == "manager configure failed"
+    assert any(str(error) == "release failed" for error in raised.value.exceptions[1:])
     assert state.current_project is old_project
     assert state.current_project_runtime_snapshot is old_snapshot
     assert state.manager.snapshot_project_activation_state() == before
@@ -789,6 +853,37 @@ def test_success_publishes_before_closing_superseded_activation(monkeypatch):
     assert registry.new_activation.close_calls == 0
 
 
+def test_post_publication_retirement_failure_does_not_unpublish_new_project(monkeypatch):
+    rule = _Rule()
+    registry = _RetirementFailRegistry(rule)
+    old_activation = _Activation("old")
+    old_project = _project("old.json")
+    old_snapshot = _snapshot(old_project, old_activation, "old-ins")
+    registry.old_activation = old_activation
+    state = _state(registry, old_project, old_snapshot)
+    _patch_activation(monkeypatch)
+    new_project = _project("new.json")
+    new_snapshot = _snapshot(new_project, registry.new_activation, rule)
+    registry.expected_snapshot = new_snapshot
+
+    monkeypatch.setattr(
+        state_module, "build_project_runtime_snapshot", lambda **_kwargs: new_snapshot
+    )
+
+    state._activate_project(project_index=1, project=new_project)
+
+    assert state.current_project is new_project
+    assert state.current_project_runtime_snapshot is new_snapshot
+    assert registry.discarded
+    assert [label for label, _error in state.last_project_retirement_failures] == [
+        "implementation",
+    ]
+    assert all(
+        isinstance(error, RuntimeError)
+        for _label, error in state.last_project_retirement_failures
+    )
+
+
 def test_real_registry_retains_shared_activation_and_exact_new_implementation(
     monkeypatch,
 ):
@@ -806,6 +901,9 @@ def test_real_registry_retains_shared_activation_and_exact_new_implementation(
 
         def capability_offers(self):
             return ()
+
+        def release_implementation(self, implementation):
+            del implementation
 
         def close(self):
             self.close_calls += 1
@@ -826,7 +924,7 @@ def test_real_registry_retains_shared_activation_and_exact_new_implementation(
                 load_manifest=lambda: manifest,
             ),
         ),
-        host_view_factory=lambda _requirements, _identity: SimpleNamespace(),
+        host_view_factory=lambda _requirements, _identity: _Host(),
         requirement_validator=lambda _requirements: None,
     )
     candidate = registry.require_unique_implementation(
@@ -887,6 +985,9 @@ def test_real_registry_rollback_preserves_shared_prior_activation(monkeypatch):
         def capability_offers(self):
             return ()
 
+        def release_implementation(self, implementation):
+            del implementation
+
         def close(self):
             self.close_calls += 1
 
@@ -906,7 +1007,7 @@ def test_real_registry_rollback_preserves_shared_prior_activation(monkeypatch):
                 load_manifest=lambda: manifest,
             ),
         ),
-        host_view_factory=lambda _requirements, _identity: SimpleNamespace(),
+        host_view_factory=lambda _requirements, _identity: _Host(),
         requirement_validator=lambda _requirements: None,
     )
     candidate = registry.require_unique_implementation(

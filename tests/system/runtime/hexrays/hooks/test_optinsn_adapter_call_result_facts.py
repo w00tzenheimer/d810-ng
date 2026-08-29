@@ -43,6 +43,7 @@ def _snapshot_manager(provider=None):
     manager._residual_admission_cache_value = False
     manager._scheduled_stage_identities = frozenset()
     manager._scheduled_implementation_names = frozenset()
+    manager._external_provider_block_cycles = {}
     manager.instruction_optimizers = []
     manager._active_optimizers = []
     manager.analyzer = object()
@@ -75,6 +76,350 @@ def _instruction(ea=0x401010):
     return SimpleNamespace(ea=ea, _print=lambda: "instruction", optimize_solo=lambda: None)
 
 
+class _BridgeRule:
+    def __init__(self, *, services=None, maturities=None):
+        self.name = "ExternalProviderRule"
+        self.plugin_services = services
+        self.maturities = (
+            (ida_hexrays.MMAT_GLBOPT2,)
+            if maturities is None
+            else tuple(maturities)
+        )
+
+
+class _BridgeOptimizer:
+    def __init__(self, rules, *, maturities=None):
+        self.rules = tuple(rules)
+        self.maturities = (
+            (ida_hexrays.MMAT_GLBOPT2,)
+            if maturities is None
+            else tuple(maturities)
+        )
+
+
+class _BridgeLifecycle:
+    def __init__(self, session_id):
+        self.session_id = session_id
+
+    def current_session(self, _function_ea):
+        return SimpleNamespace(session_id=self.session_id)
+
+
+def _bridge_manager(*, provider=True, maturity=ida_hexrays.MMAT_GLBOPT2):
+    manager = object.__new__(InstructionOptimizerManager)
+    manager.instruction_optimizers = [
+        _BridgeOptimizer(
+            [
+                _BridgeRule(
+                    services=object() if provider else None,
+                    maturities=(ida_hexrays.MMAT_GLBOPT2,),
+                )
+            ],
+            maturities=(ida_hexrays.MMAT_GLBOPT2,),
+        )
+    ]
+    manager._active_optimizers = list(manager.instruction_optimizers)
+    manager._scheduled_implementation_names = frozenset()
+    manager.current_maturity = maturity
+    manager._resolve_active_instruction_rule_names = (
+        lambda _blk, **_kwargs: frozenset(
+            {"ExternalProviderRule"} if provider else ()
+        )
+    )
+    manager._decompilation_lifecycle = _BridgeLifecycle("session-1")
+    manager._external_provider_block_cycles = {}
+    manager._rewrite_seen = {}
+    manager._cycle_quarantined_rule_names = {}
+    mba = SimpleNamespace(
+        entry_ea=0x401000,
+        maturity=maturity,
+    )
+    block = SimpleNamespace(
+        mba=mba,
+        serial=0,
+        head=SimpleNamespace(
+            next=None,
+            ea=0x401010,
+            opcode=1,
+            _print=lambda: "first",
+        ),
+    )
+    mba.qty = 1
+    mba.get_mblock = lambda serial: [block][serial]
+    return manager, mba, block
+
+
+def test_external_provider_block_cycle_requires_glbopt2_and_provider():
+    manager, _mba, block = _bridge_manager(provider=False)
+    calls = []
+    manager._run_external_provider_instruction = (
+        lambda _block, instruction, _names: calls.append(instruction) or False
+    )
+
+    assert not manager.run_external_provider_block_cycle(block)
+    assert calls == []
+
+    manager, _mba, block = _bridge_manager(
+        provider=True,
+        maturity=ida_hexrays.MMAT_LOCOPT,
+    )
+    manager._run_external_provider_instruction = (
+        lambda _block, instruction, _names: calls.append(instruction) or False
+    )
+
+    assert not manager.run_external_provider_block_cycle(block)
+    assert calls == []
+
+
+def test_external_provider_mba_cycle_does_not_fingerprint_without_active_provider():
+    manager, mba, block = _bridge_manager(provider=False)
+    print_calls = []
+    block.head._print = lambda: print_calls.append(True) or "first"
+
+    assert not manager.run_external_provider_mba_cycle(mba)
+
+    assert print_calls == []
+
+
+def test_external_provider_instruction_dispatch_excludes_internal_rules():
+    calls = []
+
+    class Rule:
+        def __init__(self, name, plugin_services):
+            self.name = name
+            self.plugin_services = plugin_services
+            self.maturities = (ida_hexrays.MMAT_GLBOPT2,)
+
+    class Optimizer:
+        def __init__(self):
+            self.maturities = (ida_hexrays.MMAT_GLBOPT2,)
+            self.rules = (
+                Rule("InternalRule", None),
+                Rule("ExternalRule", object()),
+            )
+
+        def get_optimized_instruction(
+            self,
+            _blk,
+            _ins,
+            *,
+            allowed_rule_names,
+            **_kwargs,
+        ):
+            calls.extend(
+                rule.name
+                for rule in self.rules
+                if rule.name in allowed_rule_names
+            )
+            return None
+
+    manager = _snapshot_manager()
+    optimizer = Optimizer()
+    manager.instruction_optimizers = [optimizer]
+    manager._active_optimizers = [optimizer]
+    manager.instruction_visitor = SimpleNamespace()
+    manager._cycle_quarantined_rule_names = {}
+    manager._rewrite_seen = {}
+    manager._last_optimizer_tried = None
+    manager.current_maturity = ida_hexrays.MMAT_LOCOPT
+    manager._resolve_active_instruction_rule_names = (
+        lambda _blk, **_kwargs: frozenset({"InternalRule", "ExternalRule"})
+    )
+    mba = SimpleNamespace(
+        entry_ea=0x401000,
+        maturity=ida_hexrays.MMAT_GLBOPT2,
+    )
+    block = SimpleNamespace(mba=mba, serial=0)
+    instruction = SimpleNamespace(
+        ea=0x401010,
+        for_all_insns=lambda _visitor: False,
+    )
+
+    provider_names = manager._active_external_provider_rule_names(block)
+    assert provider_names == frozenset({"ExternalRule"})
+    assert manager.current_maturity == ida_hexrays.MMAT_LOCOPT
+    assert not manager._run_external_provider_instruction(
+        block, instruction, provider_names
+    )
+    assert calls == ["ExternalRule"]
+    assert manager.current_maturity == ida_hexrays.MMAT_LOCOPT
+
+def test_external_provider_block_cycle_runs_once_per_session_maturity_and_block():
+    manager, _mba, block = _bridge_manager()
+    calls = []
+    manager._run_external_provider_instruction = (
+        lambda _block, instruction, _names: calls.append(instruction) or False
+    )
+
+    assert not manager.run_external_provider_block_cycle(block)
+    assert not manager.run_external_provider_block_cycle(block)
+    assert len(calls) == 1
+
+    manager._decompilation_lifecycle.session_id = "session-2"
+    assert not manager.run_external_provider_block_cycle(block)
+    assert len(calls) == 2
+    assert {
+        session_id
+        for session_id, _maturity, _function_ea in manager._external_provider_block_cycles
+    } == {"session-1", "session-2"}
+
+
+def test_external_provider_mba_cycle_stops_after_mutation():
+    manager, mba, first_block = _bridge_manager()
+    second_block = SimpleNamespace(
+        mba=mba,
+        serial=1,
+        head=SimpleNamespace(
+            next=SimpleNamespace(
+                next=None,
+                ea=0x401030,
+                opcode=3,
+                _print=lambda: "third",
+            ),
+            ea=0x401020,
+            opcode=2,
+            _print=lambda: "second",
+        ),
+    )
+    third_block = SimpleNamespace(
+        mba=mba,
+        serial=2,
+        head=SimpleNamespace(
+            next=None,
+            ea=0x401040,
+            opcode=4,
+            _print=lambda: "fourth",
+        ),
+    )
+    blocks = [first_block, second_block, third_block]
+    mba.qty = len(blocks)
+    mba.get_mblock = blocks.__getitem__
+    calls = []
+
+    def callback(block, instruction):
+        calls.append((block.serial, instruction.ea))
+        return block.serial == 1 and instruction.ea == 0x401020
+
+    manager._run_external_provider_instruction = (
+        lambda block, instruction, _names: callback(block, instruction)
+    )
+
+    assert manager.run_external_provider_mba_cycle(mba)
+    assert calls == [(0, 0x401010), (1, 0x401020)]
+    scope = ("session-1", ida_hexrays.MMAT_GLBOPT2, 0x401000)
+    graph_cycles = manager._external_provider_block_cycles[scope]
+    assert len(graph_cycles) == 1
+    assert len(next(iter(graph_cycles.values()))) == 2
+
+
+def test_external_provider_gate_uses_structural_snapshot_not_proxy_or_serial():
+    manager, mba, block = _bridge_manager()
+    calls = []
+    manager._run_external_provider_instruction = (
+        lambda current, _instruction, _names: calls.append(current) or False
+    )
+
+    assert not manager.run_external_provider_block_cycle(block)
+    block.serial = 0
+    assert not manager.run_external_provider_block_cycle(block)
+
+    rebuilt = SimpleNamespace(mba=mba, serial=0, head=block.head)
+    mba.get_mblock = lambda _serial: rebuilt
+    assert not manager.run_external_provider_block_cycle(rebuilt)
+    rebuilt_changed = SimpleNamespace(
+        mba=mba,
+        serial=0,
+        head=SimpleNamespace(
+            next=None,
+            ea=0x401010,
+            opcode=1,
+            _print=lambda: "changed-first",
+        ),
+    )
+    mba.get_mblock = lambda _serial: rebuilt_changed
+    assert not manager.run_external_provider_block_cycle(rebuilt_changed)
+    assert calls == [block, rebuilt_changed]
+
+
+def test_external_provider_gate_reruns_when_only_cfg_topology_changes():
+    manager, mba, block = _bridge_manager()
+    block.type = ida_hexrays.BLT_1WAY
+    block.succset = [0]
+    block.predset = [0]
+    calls = []
+    manager._run_external_provider_instruction = (
+        lambda current, _instruction, _names: calls.append(current) or False
+    )
+
+    assert not manager.run_external_provider_block_cycle(block)
+
+    rebuilt = SimpleNamespace(
+        mba=mba,
+        serial=0,
+        head=block.head,
+        type=ida_hexrays.BLT_0WAY,
+        succset=[],
+        predset=[],
+    )
+    mba.get_mblock = lambda _serial: rebuilt
+    assert not manager.run_external_provider_block_cycle(rebuilt)
+
+    assert calls == [block, rebuilt]
+
+
+def test_external_provider_gate_distinguishes_identical_blocks_in_same_graph():
+    manager, mba, first = _bridge_manager()
+    second = SimpleNamespace(
+        mba=mba,
+        serial=1,
+        head=SimpleNamespace(
+            next=None,
+            ea=0x401010,
+            opcode=1,
+            _print=lambda: "first",
+        ),
+    )
+    blocks = [first, second]
+    mba.qty = 2
+    mba.get_mblock = blocks.__getitem__
+    calls = []
+    manager._run_external_provider_instruction = (
+        lambda block, _instruction, _names: calls.append(block.serial) or False
+    )
+
+    assert not manager.run_external_provider_block_cycle(first)
+    assert not manager.run_external_provider_block_cycle(second)
+    assert calls == [0, 1]
+
+
+def test_external_provider_gate_survives_reloop_and_prunes_only_finished_session():
+    manager, _mba, block = _bridge_manager()
+    calls = []
+    manager._run_external_provider_instruction = (
+        lambda _block, _instruction, _names: calls.append(
+            manager._decompilation_lifecycle.session_id
+        )
+        or False
+    )
+
+    assert not manager.run_external_provider_block_cycle(block)
+    manager.reset_cycle_detection()
+    assert not manager.run_external_provider_block_cycle(block)
+    manager._decompilation_lifecycle.session_id = "nested-session"
+    assert not manager.run_external_provider_block_cycle(block)
+    manager.reset_cycle_detection()
+    manager._decompilation_lifecycle.session_id = "session-1"
+    assert not manager.run_external_provider_block_cycle(block)
+    assert calls == ["session-1", "nested-session"]
+
+    manager.finish_external_provider_cycle_session("nested-session")
+    assert {scope[0] for scope in manager._external_provider_block_cycles} == {
+        "session-1"
+    }
+    manager.finish_external_provider_cycle_session("session-1")
+    assert manager._external_provider_block_cycles == {}
+
+
 def test_provider_is_snapshotted_and_restored():
     def original(*_args):
         return None
@@ -83,12 +428,22 @@ def test_provider_is_snapshotted_and_restored():
         return None
 
     manager = _snapshot_manager(original)
+    manager._external_provider_block_cycles = {
+        ("session-1", ida_hexrays.MMAT_GLBOPT2, 0x401000): {
+            b"graph": {(b"block", 0)}
+        }
+    }
     snapshot = manager.capture_runtime_state()
     manager._validated_fact_view_provider = replacement
+    manager._external_provider_block_cycles[
+        ("session-2", ida_hexrays.MMAT_GLBOPT2, 0x401000)
+    ] = {b"replacement-graph": {(b"replacement-block", 0)}}
     manager.restore_runtime_state(snapshot)
 
     assert manager._validated_fact_view_provider is original
     assert snapshot.validated_fact_view_provider is original
+    assert manager._external_provider_block_cycles == {}
+    assert not hasattr(snapshot, "external_provider_block_cycles")
 
 
 def test_manager_requests_view_for_exact_function_and_maturity():

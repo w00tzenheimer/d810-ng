@@ -1,7 +1,9 @@
 """Unit tests for the API 1 plugin manifest and activation contract."""
 
+import dataclasses
 import unittest
 import threading
+from unittest import mock
 
 from d810.capabilities import PluginCapabilityAccessError, PluginHostCapabilityRegistry
 from d810.core.plugins import (
@@ -13,11 +15,13 @@ from d810.core.plugins import (
     BackendStatus,
     BackendUnavailable,
     ENTRY_POINT_GROUP,
+    ImplementationOwnership,
     ManifestError,
     PassImplementationAmbiguous,
     PassImplementationCandidate,
     PassImplementationMisdeclared,
     PassImplementationMissing,
+    PassImplementationUnavailable,
     PluginActivationContext,
     PluginCapabilityOffer,
     PluginFunctionContext,
@@ -177,6 +181,416 @@ class TestOffer(unittest.TestCase):
             factory.factory(PluginFunctionContext(None, None, object())), Thing
         )
 
+    def test_registry_resolves_offer_with_fresh_function_context(self):
+        class Thing:
+            pass
+
+        contexts = []
+
+        def factory(context: PluginFunctionContext):
+            contexts.append(context)
+            return Thing()
+
+        activation = FakeActivation(offers=(PluginCapabilityOffer(Thing, factory),))
+        plugin = FakePlugin(activation)
+        reg = registry_for(plugin)
+        reg.activate("example")
+        first_source = object()
+        second_source = object()
+        first_identity = object()
+        second_identity = object()
+
+        first = reg.resolve_capability(
+            Thing, source=first_source, identity=first_identity
+        )
+        second = reg.resolve_capability(
+            Thing, source=second_source, identity=second_identity
+        )
+
+        self.assertIsInstance(first, Thing)
+        self.assertIsInstance(second, Thing)
+        self.assertEqual(
+            [(context.source, context.identity) for context in contexts],
+            [(first_source, first_identity), (second_source, second_identity)],
+        )
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            contexts[0].source = object()
+
+    def test_capability_resolution_rejects_concurrently_activated_duplicate(self):
+        class Thing:
+            pass
+
+        offers_entered = threading.Event()
+        release_offers = threading.Event()
+        factory_calls = []
+
+        class BlockingOffersActivation(FakeActivation):
+            offer_calls = 0
+
+            def capability_offers(self):
+                self.offer_calls += 1
+                if self.offer_calls > 1:
+                    offers_entered.set()
+                    assert release_offers.wait(timeout=1)
+                return self.offers
+
+        first_activation = BlockingOffersActivation(
+            offers=(
+                PluginCapabilityOffer(
+                    Thing,
+                    lambda _context: factory_calls.append("first") or Thing(),
+                ),
+            )
+        )
+        second_activation = FakeActivation(
+            offers=(PluginCapabilityOffer(Thing, lambda _context: Thing()),)
+        )
+        specs = []
+        for name, activation in (
+            ("first", first_activation),
+            ("second", second_activation),
+        ):
+            plugin = FakePlugin(activation)
+            manifest = BackendManifest(
+                name=name,
+                api_version=PLUGIN_API_VERSION,
+                provides=lambda plugin=plugin: plugin,
+            )
+            specs.append(
+                BackendSpec(
+                    name=name,
+                    origin=f"{name}-wheel",
+                    load_manifest=lambda manifest=manifest: manifest,
+                )
+            )
+        reg = BackendRegistry(
+            source=lambda: specs,
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
+            requirement_validator=lambda _requirements: None,
+        )
+        reg.activate("first")
+        results = []
+        resolver = threading.Thread(
+            target=lambda: TestOffer._capture_error(
+                results,
+                lambda: reg.resolve_capability(
+                    Thing, source=object(), identity=object()
+                ),
+            )
+        )
+
+        resolver.start()
+        self.assertTrue(offers_entered.wait(timeout=1))
+        reg.activate("second")
+        release_offers.set()
+        resolver.join(timeout=1)
+
+        self.assertFalse(resolver.is_alive())
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], BackendUnavailable)
+        self.assertIn("provider changed", str(results[0]))
+        self.assertEqual(factory_calls, [])
+
+    def test_capability_absence_rejects_concurrently_activated_provider(self):
+        class Thing:
+            pass
+
+        class OtherThing:
+            pass
+
+        offers_entered = threading.Event()
+        release_offers = threading.Event()
+
+        class BlockingOffersActivation(FakeActivation):
+            offer_calls = 0
+
+            def capability_offers(self):
+                self.offer_calls += 1
+                if self.offer_calls > 1:
+                    offers_entered.set()
+                    assert release_offers.wait(timeout=1)
+                return self.offers
+
+        first_plugin = FakePlugin(
+            BlockingOffersActivation(
+                offers=(
+                    PluginCapabilityOffer(OtherThing, lambda _context: OtherThing()),
+                )
+            )
+        )
+        second_plugin = FakePlugin(
+            FakeActivation(
+                offers=(PluginCapabilityOffer(Thing, lambda _context: Thing()),)
+            )
+        )
+        specs = tuple(
+            BackendSpec(
+                name=name,
+                origin=f"{name}-wheel",
+                load_manifest=lambda name=name, plugin=plugin: BackendManifest(
+                    name=name,
+                    api_version=PLUGIN_API_VERSION,
+                    provides=lambda: plugin,
+                ),
+            )
+            for name, plugin in (("first", first_plugin), ("second", second_plugin))
+        )
+        reg = BackendRegistry(
+            source=lambda: specs,
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
+            requirement_validator=lambda _requirements: None,
+        )
+        reg.activate("first")
+        results = []
+        resolver = threading.Thread(
+            target=lambda: TestOffer._capture_error(
+                results,
+                lambda: reg.resolve_capability(
+                    Thing, source=object(), identity=object()
+                ),
+            )
+        )
+
+        resolver.start()
+        self.assertTrue(offers_entered.wait(timeout=1))
+        reg.activate("second")
+        release_offers.set()
+        resolver.join(timeout=1)
+
+        self.assertFalse(resolver.is_alive())
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], BackendUnavailable)
+        self.assertIn("provider changed", str(results[0]))
+
+    def test_capability_factory_wrong_runtime_type_is_disposed_and_rejected(self):
+        class Thing:
+            pass
+
+        class WrongThing:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        wrong = WrongThing()
+        activation = FakeActivation(
+            offers=(PluginCapabilityOffer(Thing, lambda _context: wrong),)
+        )
+        reg = registry_for(FakePlugin(activation))
+        reg.activate("example")
+
+        with self.assertRaisesRegex(BackendUnavailable, "does not implement Thing"):
+            reg.resolve_capability(Thing, source=object(), identity=object())
+
+        self.assertTrue(wrong.closed)
+
+    def test_invalid_capability_preserves_hostile_disposal_lookup(self):
+        class Thing:
+            pass
+
+        class HostileWrongThing:
+            def __getattribute__(self, name):
+                if name == "close":
+                    raise RuntimeError("close lookup failed")
+                return super().__getattribute__(name)
+
+        activation = FakeActivation(
+            offers=(
+                PluginCapabilityOffer(
+                    Thing, lambda _context: HostileWrongThing()
+                ),
+            )
+        )
+        reg = registry_for(FakePlugin(activation))
+        reg.activate("example")
+
+        with self.assertRaises(BaseExceptionGroup) as raised:
+            reg.resolve_capability(Thing, source=object(), identity=object())
+
+        self.assertIsInstance(raised.exception.exceptions[0], BackendUnavailable)
+        self.assertIn("close lookup failed", str(raised.exception.exceptions[1]))
+
+    def test_non_runtime_protocol_requires_property_and_data_members(self):
+        class RichCapability(Protocol):
+            label: str
+
+            @property
+            def version(self) -> int: ...
+
+            def run(self) -> None: ...
+
+        class Incomplete:
+            def __init__(self):
+                self.closed = False
+
+            def run(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+        incomplete = Incomplete()
+        activation = FakeActivation(
+            offers=(
+                PluginCapabilityOffer(
+                    RichCapability,
+                    lambda _context: incomplete,
+                ),
+            )
+        )
+        reg = registry_for(FakePlugin(activation))
+        reg.activate("example")
+
+        with self.assertRaisesRegex(BackendUnavailable, "RichCapability"):
+            reg.resolve_capability(
+                RichCapability,
+                source=object(),
+                identity=object(),
+            )
+
+        self.assertTrue(incomplete.closed)
+
+    def test_capability_factory_cannot_force_rediscovery_reentrantly(self):
+        class Thing:
+            pass
+
+        errors = []
+
+        def factory(_context):
+            try:
+                reg.discover(force=True)
+            except BaseException as exc:
+                errors.append(exc)
+            return Thing()
+
+        activation = FakeActivation(offers=(PluginCapabilityOffer(Thing, factory),))
+        reg = registry_for(FakePlugin(activation))
+        reg.activate("example")
+
+        result = reg.resolve_capability(Thing, source=object(), identity=object())
+
+        self.assertIsInstance(result, Thing)
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], BackendUnavailable)
+
+    def test_capability_built_during_close_is_disposed_and_rejected(self):
+        factory_entered = threading.Event()
+        release_factory = threading.Event()
+        close_entered = threading.Event()
+        release_close = threading.Event()
+        reentrant_errors = []
+
+        class Thing:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        built = []
+
+        def factory(_context):
+            factory_entered.set()
+            self.assertTrue(release_factory.wait(timeout=1))
+            try:
+                reg.activate("example")
+            except BaseException as exc:
+                reentrant_errors.append(exc)
+            result = Thing()
+            built.append(result)
+            return result
+
+        class BlockingCloseActivation(FakeActivation):
+            def close(self):
+                close_entered.set()
+                assert release_close.wait(timeout=1)
+                super().close()
+
+        activation = BlockingCloseActivation(
+            offers=(PluginCapabilityOffer(Thing, factory),)
+        )
+        reg = registry_for(FakePlugin(activation))
+        reg.activate("example")
+        results = []
+
+        resolver = threading.Thread(
+            target=lambda: self._capture_error(
+                results,
+                lambda: reg.resolve_capability(Thing, source=object(), identity=object()),
+            )
+        )
+        closer = threading.Thread(target=reg.close_activations)
+        resolver.start()
+        self.assertTrue(factory_entered.wait(timeout=1))
+        closer.start()
+        self.assertFalse(close_entered.wait(timeout=0.05))
+        release_factory.set()
+        resolver.join(timeout=1)
+        self.assertTrue(close_entered.wait(timeout=1))
+        release_close.set()
+        closer.join(timeout=1)
+
+        self.assertFalse(resolver.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], BackendUnavailable)
+        self.assertEqual(len(built), 1)
+        self.assertTrue(built[0].closed)
+        self.assertEqual(len(reentrant_errors), 1)
+        self.assertIsInstance(reentrant_errors[0], BackendUnavailable)
+
+    def test_close_waits_for_capability_offer_enumeration(self):
+        offers_entered = threading.Event()
+        release_offers = threading.Event()
+        offers_completed = threading.Event()
+        close_entered = threading.Event()
+
+        class BlockingOffersActivation(FakeActivation):
+            blocking = False
+
+            def capability_offers(self):
+                if self.blocking:
+                    offers_entered.set()
+                    assert release_offers.wait(timeout=1)
+                    offers_completed.set()
+                return super().capability_offers()
+
+            def close(self):
+                close_entered.set()
+                assert offers_completed.is_set()
+                super().close()
+
+        activation = BlockingOffersActivation()
+        reg = registry_for(FakePlugin(activation))
+        reg.activate("example")
+        activation.blocking = True
+        results = []
+        enumerator = threading.Thread(
+            target=lambda: results.append(reg.capability_offers())
+        )
+        closer = threading.Thread(target=reg.close_activations)
+
+        enumerator.start()
+        self.assertTrue(offers_entered.wait(timeout=1))
+        closer.start()
+        self.assertFalse(close_entered.wait(timeout=0.05))
+        release_offers.set()
+        enumerator.join(timeout=1)
+        closer.join(timeout=1)
+
+        self.assertFalse(enumerator.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(results, [()])
+        self.assertTrue(close_entered.is_set())
+
+    @staticmethod
+    def _capture_error(results, callback):
+        try:
+            results.append(callback())
+        except BaseException as exc:
+            results.append(exc)
+
 
 class FakeHost:
     def __init__(self, available=()):
@@ -192,6 +606,24 @@ class FakeHost:
         for requirement in requirements:
             if requirement not in self.available:
                 raise BackendUnavailable(f"missing host capability: {requirement}")
+
+    def for_implementation(self, candidate):
+        return _BoundFakeHost(self, candidate)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _BoundFakeHost:
+    base: FakeHost
+    provider: object
+
+    def require(self, capability):
+        return self.base.require(capability)
+
+    def optional(self, capability):
+        return self.base.optional(capability)
+
+    def for_implementation(self, candidate):
+        return _BoundFakeHost(self.base, candidate)
 
 
 class ProtocolOnlyHost:
@@ -217,10 +649,34 @@ class FakeActivation:
     def capability_offers(self):
         return self.offers
 
+    def release_implementation(self, implementation):
+        del implementation
+
     def close(self):
         self.close_calls += 1
         if self.close_error is not None:
             raise self.close_error
+
+
+class ReleasingActivation(FakeActivation):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.release_calls = []
+
+    def release_implementation(self, implementation):
+        self.release_calls.append(implementation)
+
+
+class ReentrantReleasingActivation(ReleasingActivation):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.on_release = None
+
+    def release_implementation(self, implementation):
+        super().release_implementation(implementation)
+        if self.on_release is not None:
+            callback, self.on_release = self.on_release, None
+            callback()
 
 
 class FakePlugin:
@@ -282,6 +738,26 @@ def registry_for(plugin, *, requires=(), host=None, name="example"):
 
 
 class TestActivation(unittest.TestCase):
+    def test_plugin_activation_cannot_force_rediscovery_reentrantly(self):
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
+        errors = []
+        original_activate = plugin.activate
+
+        def activate(context):
+            try:
+                reg.discover(force=True)
+            except BaseException as exc:
+                errors.append(exc)
+            return original_activate(context)
+
+        plugin.activate = activate
+        reg = registry_for(plugin)
+
+        self.assertIs(reg.activate("example"), activation)
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], BackendUnavailable)
+
     def test_activation_passes_host_created_identity_to_view_factory(self):
         activation = FakeActivation()
         plugin = FakePlugin(activation)
@@ -374,7 +850,271 @@ class TestActivation(unittest.TestCase):
 
         self.assertEqual(services.plugin.name, "example")
         self.assertEqual(services.plugin.origin, "example-wheel")
-        self.assertIs(services.host, host)
+        self.assertIsNot(services.host, host)
+        self.assertIs(services.host.provider, candidate)
+        self.assertIs(services.provider, candidate)
+
+    def test_plugin_rule_services_reject_unselected_fabricated_candidate(self):
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
+        reg = registry_for(plugin)
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="example-package"
+        )
+        reg.activate(candidate.backend_name)
+
+        with self.assertRaisesRegex(
+            PassImplementationUnavailable,
+            "implementation is not active",
+        ):
+            reg.plugin_rule_services(candidate)
+
+    def test_close_waits_for_implementation_host_binding_and_rejects_stale_view(self):
+        binder_entered = threading.Event()
+        release_binder = threading.Event()
+
+        class BoundHost(FakeHost):
+            def __init__(self):
+                super().__init__()
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        bound_host = BoundHost()
+
+        def bind_host(_view, _candidate):
+            binder_entered.set()
+            assert release_binder.wait(timeout=1)
+            return bound_host
+
+        activation = FakeActivation()
+        plugin = FakePlugin(activation)
+        manifest = BackendManifest(
+            name="example",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: plugin,
+            implements={"example-pass": "example-implementation"},
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example-wheel",
+                    load_manifest=lambda: manifest,
+                )
+            ],
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
+            implementation_host_view_factory=bind_host,
+            requirement_validator=lambda _requirements: None,
+        )
+        candidate = reg.require_unique_implementation(
+            "example-pass", install_hint="example-package"
+        )
+        reg.activate_implementation(candidate)
+        results = []
+        binder = threading.Thread(
+            target=lambda: TestOffer._capture_error(
+                results, lambda: reg.plugin_rule_services(candidate)
+            )
+        )
+        closer = threading.Thread(target=reg.close_activations)
+
+        binder.start()
+        self.assertTrue(binder_entered.wait(timeout=1))
+        closer.start()
+        self.assertEqual(activation.close_calls, 0)
+        release_binder.set()
+        binder.join(timeout=1)
+        closer.join(timeout=1)
+
+        self.assertFalse(binder.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], PassImplementationUnavailable)
+        self.assertTrue(bound_host.closed)
+        self.assertEqual(activation.close_calls, 1)
+
+    def test_host_binding_cannot_start_after_close_has_passed_callback_drain(self):
+        close_entered = threading.Event()
+        finish_close = threading.Event()
+        activation_resolved = threading.Event()
+        resume_binding = threading.Event()
+        binder_calls = []
+
+        class BlockingCloseActivation(ReleasingActivation):
+            def close(self):
+                close_entered.set()
+                assert finish_close.wait(timeout=1)
+                super().close()
+
+        activation = BlockingCloseActivation()
+        reg = registry_for(FakePlugin(activation))
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="example-package"
+        )
+        reg.activate_implementation(candidate)
+        original_activation_for_candidate = reg.activation_for_candidate
+
+        def delayed_activation_for_candidate(current_candidate):
+            result = original_activation_for_candidate(current_candidate)
+            activation_resolved.set()
+            assert resume_binding.wait(timeout=1)
+            return result
+
+        reg._implementation_host_view_factory = (
+            lambda _view, _candidate: binder_calls.append(_candidate) or FakeHost()
+        )
+        results = []
+        with mock.patch.object(
+            reg,
+            "activation_for_candidate",
+            side_effect=delayed_activation_for_candidate,
+        ):
+            binder = threading.Thread(
+                target=lambda: TestOffer._capture_error(
+                    results, lambda: reg.plugin_rule_services(candidate)
+                )
+            )
+            closer = threading.Thread(target=reg.close_activations)
+            binder.start()
+            self.assertTrue(activation_resolved.wait(timeout=1))
+            closer.start()
+            self.assertTrue(close_entered.wait(timeout=1))
+            resume_binding.set()
+            binder.join(timeout=1)
+            finish_close.set()
+            closer.join(timeout=1)
+
+        self.assertFalse(binder.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], PassImplementationUnavailable)
+        self.assertEqual(binder_calls, [])
+
+    def test_close_during_implementation_factory_releases_stale_exact_instance(self):
+        factory_entered = threading.Event()
+        release_factory = threading.Event()
+
+        class BlockingFactoryActivation(ReleasingActivation):
+            def create_implementation(self, implementation_id):
+                self.implementation_ids.append(implementation_id)
+                factory_entered.set()
+                assert release_factory.wait(timeout=1)
+                return self.implementation
+
+        activation = BlockingFactoryActivation()
+        reg = registry_for(FakePlugin(activation))
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="example-package"
+        )
+        results = []
+        constructor = threading.Thread(
+            target=lambda: TestOffer._capture_error(
+                results,
+                lambda: reg.activate_implementation(candidate),
+            )
+        )
+        closer = threading.Thread(target=reg.close_activations)
+        constructor.start()
+        self.assertTrue(factory_entered.wait(timeout=1))
+        closer.start()
+        release_factory.set()
+        constructor.join(timeout=1)
+        closer.join(timeout=1)
+
+        self.assertFalse(constructor.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(len(results), 1)
+        self.assertIsInstance(results[0], PassImplementationUnavailable)
+        self.assertEqual(activation.release_calls, [activation.implementation])
+        self.assertNotIn(candidate, reg._implementation_instances)
+        self.assertNotIn(candidate, reg._active_implementations)
+
+    def test_close_waits_for_in_flight_exact_release_callback(self):
+        release_entered = threading.Event()
+        finish_release = threading.Event()
+        release_completed = threading.Event()
+        close_entered = threading.Event()
+        reentrant_errors = []
+
+        class BlockingReleaseActivation(ReleasingActivation):
+            def release_implementation(self, implementation):
+                release_entered.set()
+                assert finish_release.wait(timeout=1)
+                try:
+                    reg.activate("example")
+                except BaseException as exc:
+                    reentrant_errors.append(exc)
+                super().release_implementation(implementation)
+                release_completed.set()
+
+            def close(self):
+                close_entered.set()
+                assert release_completed.is_set()
+                super().close()
+
+        activation = BlockingReleaseActivation()
+        reg = registry_for(FakePlugin(activation))
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="example-package"
+        )
+        instance = reg.activate_implementation(candidate)
+        owner = ImplementationOwnership(candidate, instance)
+        releaser = threading.Thread(
+            target=lambda: reg.release_implementation_instances((owner,))
+        )
+        closer = threading.Thread(target=reg.close_activations)
+
+        releaser.start()
+        self.assertTrue(release_entered.wait(timeout=1))
+        closer.start()
+        self.assertFalse(close_entered.wait(timeout=0.05))
+        finish_release.set()
+        releaser.join(timeout=1)
+        closer.join(timeout=1)
+
+        self.assertFalse(releaser.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertTrue(close_entered.is_set())
+        self.assertEqual(activation.release_calls, [instance])
+        self.assertEqual(len(reentrant_errors), 1)
+        self.assertIsInstance(reentrant_errors[0], BackendUnavailable)
+
+    def test_exact_release_cannot_start_after_close_has_passed_callback_drain(self):
+        close_entered = threading.Event()
+        finish_close = threading.Event()
+
+        class BlockingCloseActivation(ReleasingActivation):
+            def close(self):
+                close_entered.set()
+                assert finish_close.wait(timeout=1)
+                super().close()
+
+        activation = BlockingCloseActivation()
+        reg = registry_for(FakePlugin(activation))
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="example-package"
+        )
+        instance = reg.activate_implementation(candidate)
+        owner = ImplementationOwnership(candidate, instance)
+        closer = threading.Thread(target=reg.close_activations)
+        releaser = threading.Thread(
+            target=lambda: reg.release_implementation_instances((owner,))
+        )
+
+        closer.start()
+        self.assertTrue(close_entered.wait(timeout=1))
+        releaser.start()
+        releaser.join(timeout=0.05)
+        self.assertTrue(releaser.is_alive())
+        finish_close.set()
+        closer.join(timeout=1)
+        releaser.join(timeout=1)
+
+        self.assertFalse(closer.is_alive())
+        self.assertFalse(releaser.is_alive())
+        self.assertEqual(activation.release_calls, [instance])
 
     def test_declared_factory_must_not_reuse_an_implementation_instance(self):
         activation = FakeActivation()
@@ -627,6 +1367,62 @@ class TestActivation(unittest.TestCase):
             reg.activate("example")
         self.assertEqual(partial.close_calls, 1)
 
+    def test_invalid_activation_and_rollback_failures_are_aggregated(self):
+        cleanup_error = RuntimeError("rollback close failed")
+        partial = FakeActivation(offers=("not-an-offer",), close_error=cleanup_error)
+        reg = registry_for(FakePlugin(partial))
+
+        with self.assertRaises(BaseExceptionGroup) as raised:
+            reg.activate("example")
+
+        self.assertIsInstance(raised.exception.exceptions[0], ManifestError)
+        self.assertIs(raised.exception.exceptions[1], cleanup_error)
+        self.assertEqual(partial.close_calls, 1)
+
+    def test_invalid_activation_hostile_close_lookup_releases_activation_record(self):
+        class HostilePartial(FakeActivation):
+            close_lookups = 0
+
+            def __getattribute__(self, name):
+                if name == "close":
+                    self.close_lookups += 1
+                    if self.close_lookups > 1:
+                        raise RuntimeError("activation close lookup failed")
+                return super().__getattribute__(name)
+
+        partial = HostilePartial(offers=("not-an-offer",))
+        reg = registry_for(FakePlugin(partial))
+
+        with self.assertRaises(BaseExceptionGroup) as raised:
+            reg.activate("example")
+
+        self.assertIsInstance(raised.exception.exceptions[0], ManifestError)
+        self.assertIn(
+            "activation close lookup failed", str(raised.exception.exceptions[1])
+        )
+        self.assertEqual(reg._activation_records, {})
+
+    def test_activation_without_release_implementation_is_rejected(self):
+        class IncompleteActivation:
+            def create_implementation(self, implementation_id):
+                del implementation_id
+                return object()
+
+            def capability_offers(self):
+                return ()
+
+            def close(self):
+                pass
+
+        partial = IncompleteActivation()
+        reg = registry_for(FakePlugin(partial))
+
+        with self.assertRaisesRegex(
+            ManifestError,
+            r"missing callable release_implementation\(\)",
+        ):
+            reg.activate("example")
+
     def test_close_activations_is_idempotent_and_continues_after_error(self):
         first = FakeActivation(close_error=RuntimeError("first close failed"))
         second = FakeActivation()
@@ -638,10 +1434,150 @@ class TestActivation(unittest.TestCase):
         reg2.activate("second")
         reg._activated.update(reg2._activated)
 
-        reg.close_activations()
+        with self.assertRaisesRegex(RuntimeError, "first close failed"):
+            reg.close_activations()
         reg.close_activations()
         self.assertEqual(first.close_calls, 1)
         self.assertEqual(second.close_calls, 1)
+
+    def test_close_activations_aggregates_all_activation_failures(self):
+        first_error = RuntimeError("first close failed")
+        second_error = KeyboardInterrupt("second close failed")
+        first = FakeActivation(close_error=first_error)
+        second = FakeActivation(close_error=second_error)
+        reg = registry_for(FakePlugin(first), name="first")
+        reg2 = registry_for(FakePlugin(second), name="second")
+        reg.activate("first")
+        reg2.activate("second")
+        reg._activated.update(reg2._activated)
+
+        with mock.patch.object(
+            __import__("d810.core.plugins", fromlist=["logger"]).logger,
+            "exception",
+            side_effect=SystemExit("logger failed"),
+        ):
+            with self.assertRaises(BaseExceptionGroup) as raised:
+                reg.close_activations()
+
+        self.assertEqual(raised.exception.exceptions, (first_error, second_error))
+
+    def test_close_base_exception_leaves_registry_usable_and_notifies_waiters(self):
+        first = FakeActivation(close_error=KeyboardInterrupt("stop"))
+        plugin = FakePlugin(first)
+        reg = registry_for(plugin)
+        reg.activate("example")
+
+        with self.assertRaisesRegex(KeyboardInterrupt, "stop"):
+            reg.close_activations()
+
+        self.assertFalse(reg._closing)
+        self.assertIs(reg.activate("example"), first)
+
+    def test_releasing_exact_implementation_is_idempotent_before_bookkeeping_discard(self):
+        activation = ReleasingActivation()
+        plugin = FakePlugin(activation)
+        manifest = BackendManifest(
+            name="example",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: plugin,
+            implements={"example-pass": "example-implementation"},
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example-wheel",
+                    load_manifest=lambda: manifest,
+                )
+            ],
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
+            requirement_validator=lambda _requirements: None,
+        )
+        candidate = reg.require_unique_implementation(
+            "example-pass", install_hint="example-package"
+        )
+        implementation = reg.activate_implementation(candidate)
+        owner = ImplementationOwnership(candidate, implementation)
+
+        reg.release_implementation_instances((owner,))
+        reg.release_implementation_instances((owner,))
+
+        self.assertEqual(activation.release_calls, [implementation])
+        self.assertNotIn(candidate, reg._implementation_instances)
+
+    def test_concurrent_factories_cannot_publish_same_singleton_twice(self):
+        construction_barrier = threading.Barrier(2)
+
+        class SingletonActivation(ReleasingActivation):
+            def create_implementation(self, implementation_id):
+                self.implementation_ids.append(implementation_id)
+                construction_barrier.wait(timeout=1)
+                return self.implementation
+
+        activation = SingletonActivation()
+        reg = registry_for(FakePlugin(activation))
+        candidate = reg.require_unique_implementation(
+            "mba-solve", install_hint="example-package"
+        )
+        results = []
+        threads = [
+            threading.Thread(
+                target=lambda: TestOffer._capture_error(
+                    results, lambda: reg.activate_implementation(candidate)
+                )
+            )
+            for _ in range(2)
+        ]
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=1)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(
+            sum(result is activation.implementation for result in results), 1
+        )
+        self.assertEqual(
+            sum(isinstance(result, PassImplementationMisdeclared) for result in results),
+            1,
+        )
+        self.assertEqual(
+            reg._implementation_instances[candidate], [activation.implementation]
+        )
+        self.assertEqual(activation.release_calls, [])
+
+    def test_reentrant_exact_implementation_release_is_idempotent_without_id_cache(self):
+        activation = ReentrantReleasingActivation()
+        plugin = FakePlugin(activation)
+        manifest = BackendManifest(
+            name="example",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: plugin,
+            implements={"example-pass": "example-implementation"},
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(
+                    name="example",
+                    origin="example-wheel",
+                    load_manifest=lambda: manifest,
+                )
+            ],
+            host_view_factory=lambda _requirements, _identity: FakeHost(),
+            requirement_validator=lambda _requirements: None,
+        )
+        candidate = reg.require_unique_implementation(
+            "example-pass", install_hint="example-package"
+        )
+        implementation = reg.activate_implementation(candidate)
+        owner = ImplementationOwnership(candidate, implementation)
+        activation.on_release = lambda: reg.release_implementation_instances((owner,))
+
+        reg.release_implementation_instances((owner,))
+
+        self.assertEqual(activation.release_calls, [implementation])
+        self.assertNotIn(candidate, reg._implementation_instances)
 
     def test_activation_uses_the_settled_fallback_manifest_and_plugin(self):
         preferred_plugin = FakePlugin(FakeActivation())
@@ -851,6 +1787,66 @@ class TestActivation(unittest.TestCase):
         reg.close_activations()
         self.assertEqual(close_errors, [])
         self.assertEqual(plugin.activation.close_calls, 1)
+
+    def test_activation_close_reentrant_activate_fails_without_deadlock(self):
+        errors = []
+
+        class ReentrantCloseActivation(FakeActivation):
+            def close(self):
+                try:
+                    reg.activate("example")
+                except BaseException as exc:
+                    errors.append(exc)
+                super().close()
+
+        activation = ReentrantCloseActivation()
+        reg = registry_for(FakePlugin(activation))
+        reg.activate("example")
+
+        reg.close_activations()
+
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], BackendUnavailable)
+        self.assertEqual(activation.close_calls, 1)
+
+    def test_plugin_activate_reentry_during_external_close_fails_without_deadlock(self):
+        activate_entered = threading.Event()
+        release_activate = threading.Event()
+        reentrant_errors = []
+        activation = FakeActivation()
+
+        class BlockingPlugin(FakePlugin):
+            def activate(self, context):
+                activate_entered.set()
+                assert release_activate.wait(timeout=1)
+                try:
+                    reg.implementation_declarations_for("mba-solve")
+                except BaseException as exc:
+                    reentrant_errors.append(exc)
+                return super().activate(context)
+
+        reg = registry_for(BlockingPlugin(activation))
+        activation_errors = []
+        activator = threading.Thread(
+            target=lambda: TestOffer._capture_error(
+                activation_errors, lambda: reg.activate("example")
+            )
+        )
+        closer = threading.Thread(target=reg.close_activations)
+
+        activator.start()
+        self.assertTrue(activate_entered.wait(timeout=1))
+        closer.start()
+        release_activate.set()
+        activator.join(timeout=1)
+        closer.join(timeout=1)
+
+        self.assertFalse(activator.is_alive())
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(reentrant_errors.__len__(), 1)
+        self.assertIsInstance(reentrant_errors[0], BackendUnavailable)
+        self.assertEqual(activation_errors, [activation])
+        self.assertEqual(activation.close_calls, 1)
 
     def test_forced_rediscovery_closes_live_activation_before_reset(self):
         plugin = FakePlugin(FakeActivation())

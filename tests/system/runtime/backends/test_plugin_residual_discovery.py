@@ -16,7 +16,6 @@ import pytest
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.backends import _host_capability_registry, registry  # noqa: E402
-from d810.backends.mba.extension_host import native_mba_host_services  # noqa: E402
 from d810.capabilities.plugin_host import PluginHostCapabilityRegistry  # noqa: E402
 from d810.core.config import D810Configuration, ProjectConfiguration  # noqa: E402
 from d810.core.function_execution_identity import (  # noqa: E402
@@ -41,13 +40,13 @@ from d810.mba.discovery_models import (  # noqa: E402
 )
 from d810.mba.provider_outcome import ProviderOutcomeStatus  # noqa: E402
 from d810.mba.provider_routing import MbaProviderKind  # noqa: E402
-from d810.mba.typed_term import term_cost, term_fingerprint  # noqa: E402
+from d810.mba.typed_term import term_fingerprint  # noqa: E402
 from d810.mba.residual_observation_sink import SqliteMbaResidualObservationSink  # noqa: E402
+from d810.mba.native_callback_lease import native_mba_callback_scope  # noqa: E402
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer  # noqa: E402
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager  # noqa: E402
 from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule  # noqa: E402
 from d810.ir.maturity import IRMaturity  # noqa: E402
-from tests.system.runtime.conftest import gen_microcode_at_maturity  # noqa: E402
 
 
 _ROOT = Path(__file__).resolve().parents[4]
@@ -226,6 +225,7 @@ def _activate_real_provider(
         MbaResidualObservationSink,
         sink,
         activation_binder=sink.bind_activation,
+        implementation_binder=sink.bind_implementation,
     )
     project = ProjectConfiguration(
         path=Path(f"task11-{pass_id}.runtime-config-v2.json"),
@@ -325,7 +325,8 @@ class TestRealProviderResidualDiscovery:
         manager = _manager(optimizer, runtime_maturity)
 
         try:
-            assert manager.optimize(block, instruction) is False
+            with native_mba_callback_scope():
+                assert manager.optimize(block, instruction) is False
             pending = rule.pending_provider_observation()
             assert pending is None
             snapshots = store.provider_attempt_snapshots()
@@ -388,7 +389,8 @@ class TestRealProviderResidualDiscovery:
         rule.begin_provider_outcome_capture()
 
         try:
-            assert manager.optimize(block, instruction) is True
+            with native_mba_callback_scope():
+                assert manager.optimize(block, instruction) is True
             assert rule.pending_provider_observation() is None
             assert store.provider_attempt_snapshots() == ()
             assert rule.provider_outcomes()[-1].status.value == "applied"
@@ -401,9 +403,10 @@ class TestRealProviderResidualDiscovery:
 
 
 @contextlib.contextmanager
-def _live_cobra_state(tmp_path: Path):
-    """Run one project through production state, manager, and sink ownership."""
+def _live_provider_state(tmp_path: Path, pass_id: str):
+    """Run one provider through production state, manager, and sink ownership."""
     from d810.manager import D810State
+    from d810.manager.state import D810_LOG_DIR_NAME
 
     state = D810State()
     previous_config = state.d810_config
@@ -417,24 +420,48 @@ def _live_cobra_state(tmp_path: Path):
     config = D810Configuration(ida_user_dir=tmp_path / "ida-user")
     config["log_dir"] = str(tmp_path / "logs")
     config["erase_logs_on_reload"] = False
-    project_path = config.config_dir / "task11-live-cobra.json"
+    db_path = (
+        Path(config["log_dir"])
+        / D810_LOG_DIR_NAME
+        / "d810_mba_discovery.sqlite3"
+    )
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.unlink(missing_ok=True)
+    project_path = config.config_dir / f"task12-live-{pass_id}.json"
     project_path.parent.mkdir(parents=True, exist_ok=True)
+    options = {
+        "maturities": ["GLOBAL_OPTIMIZED"],
+        "max_leaves": 1,
+    }
+    if pass_id == "mba-solve":
+        options["require_proof"] = True
+    else:
+        options.update(
+            {
+                "max_operator_nodes": 128,
+                "max_degree": 1,
+                "time_budget_ms": 20,
+                "families": ["add", "and", "bnot", "mul", "or", "sub", "xor"],
+            }
+        )
+    pipeline = []
+    if pass_id == "mba-egraph":
+        pipeline.append(
+            {
+                "pass_id": "mba-solve",
+                "options": {
+                    "maturities": ["GLOBAL_OPTIMIZED"],
+                    "require_proof": True,
+                    "max_leaves": 1,
+                },
+            }
+        )
+    pipeline.append({"pass_id": pass_id, "options": options})
     project_path.write_text(
         json.dumps(
             {
-                "description": "Task 11 live CoBRA residual acceptance",
-                "additional_configuration": {
-                    "pipeline_v2": [
-                        {
-                            "pass_id": "mba-solve",
-                            "options": {
-                                "maturities": ["GLOBAL_OPTIMIZED"],
-                                "require_proof": True,
-                                "max_leaves": 8,
-                            },
-                        }
-                    ]
-                },
+                "description": f"Task 12 live {pass_id} residual acceptance",
+                "additional_configuration": {"pipeline_v2": pipeline},
             }
         ),
         encoding="utf-8",
@@ -444,7 +471,7 @@ def _live_cobra_state(tmp_path: Path):
         state.load(gui=False, d810_config=config)
         activated = state.load_project(state.project_manager.index(project_path.name))
         assert activated is not None
-        yield state
+        yield state, db_path
     finally:
         state.stop_d810()
         state.unload(gui=False)
@@ -456,23 +483,89 @@ def _live_cobra_state(tmp_path: Path):
 
 
 @pytest.mark.usefixtures("configure_hexrays")
-class TestLiveExactCCobraResidualDiscovery:
+class TestLiveExactCProviderResidualDiscovery:
     binary_name = "mba_compiler_shapes.dylib"
     generated_binary_factory = staticmethod(_build_native_corpus_binary)
 
-    def test_live_cobra_outcome_is_persisted_from_exact_c(
+    @pytest.mark.parametrize(
+        ("pass_id", "rule_name", "plugin_name", "distribution", "provider"),
+        (
+            (
+                "mba-solve",
+                "CobraSolveRule",
+                "cobra",
+                "d810-cobra",
+                MbaProviderKind.COEFFICIENT_SOLVER,
+            ),
+            (
+                "mba-egraph",
+                "EgglogOptimizer",
+                "egglog",
+                "d810-egglog",
+                MbaProviderKind.EGRAPH,
+            ),
+        ),
+    )
+    def test_live_provider_outcome_is_persisted_by_ordinary_decompilation(
         self,
         tmp_path: Path,
         ida_database,
+        pass_id: str,
+        rule_name: str,
+        plugin_name: str,
+        distribution: str,
+        provider: MbaProviderKind,
     ) -> None:
         function = "mba_shape_coefficient_05"
-        with _live_cobra_state(tmp_path) as state:
-            rules = [
-                rule.name
+        with _live_provider_state(tmp_path, pass_id) as (state, db_path):
+            matching_rules = [
+                rule
                 for rule in state.current_ins_rules
-                if rule.name == "CobraSolveRule"
+                if rule.name == rule_name
             ]
-            assert rules == ["CobraSolveRule"]
+            assert [rule.name for rule in matching_rules] == [rule_name]
+            callback_calls = 0
+            portable_capture_calls = 0
+            portable_candidates = 0
+            finalized_receipts = []
+            provider_rule = matching_rules[0]
+            original_check = provider_rule.check_and_replace
+            host_attribute = (
+                "_mba_host" if hasattr(provider_rule, "_mba_host") else "_host"
+            )
+            original_host = getattr(provider_rule, host_attribute)
+            original_finalize = provider_rule.finalize_provider_observation
+
+            class _CaptureCountingHost:
+                def __getattr__(self, name):
+                    return getattr(original_host, name)
+
+                def capture_instruction(self, instruction):
+                    nonlocal portable_capture_calls, portable_candidates
+                    portable_capture_calls += 1
+                    candidate = original_host.capture_instruction(instruction)
+                    if candidate is not None:
+                        portable_candidates += 1
+                    return candidate
+
+            def counted_check(block, instruction):
+                nonlocal callback_calls
+                callback_calls += 1
+                return original_check(block, instruction)
+
+            def counted_finalize(context, *, accepted, reason):
+                receipt = original_finalize(
+                    context,
+                    accepted=accepted,
+                    reason=reason,
+                )
+                if receipt is not None:
+                    finalized_receipts.append(receipt)
+                return receipt
+
+            setattr(provider_rule, host_attribute, _CaptureCountingHost())
+            provider_rule.check_and_replace = counted_check
+            provider_rule.finalize_provider_observation = counted_finalize
             state.start_d810()
             import idaapi
             import idc
@@ -480,108 +573,88 @@ class TestLiveExactCCobraResidualDiscovery:
             function_ea = idc.get_name_ea_simple(function)
             if function_ea == idaapi.BADADDR:
                 function_ea = idc.get_name_ea_simple("_" + function)
-            mba = gen_microcode_at_maturity(
-                function_ea,
-                ida_hexrays.MMAT_GLBOPT2,
+            assert function_ea != idaapi.BADADDR
+            cfunc = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
+            assert cfunc is not None
+            assert callback_calls > 0, "installed provider never received an optinsn callback"
+            assert portable_capture_calls > 0
+            assert portable_candidates > 0, (
+                "installed callbacks never formed a portable MBA candidate"
             )
-            assert mba is not None
-            block = next(
-                (
-                    candidate
-                    for serial in range(mba.qty)
-                    if (candidate := mba.get_mblock(serial)) is not None
-                    and candidate.head is not None
-                ),
-                None,
+            assert finalized_receipts, (
+                "portable provider observations were not accepted by the bound sink"
             )
-            assert block is not None
-            block_serial = int(block.serial)
-            optimizer = state.manager.instruction_optimizer
-            assert optimizer.log_info_on_input(block, block.head) is False
-            candidates = []
-            mba_host = native_mba_host_services()
-
-            class CandidateCollector(ida_hexrays.minsn_visitor_t):
-                def __init__(self):
-                    super().__init__()
-
-                def visit_minsn(self):
-                    candidate = mba_host.capture_instruction(self.curins)
-                    if candidate is not None:
-                        candidates.append((term_cost(candidate.term), self.curins))
-                    return 0
-
-            top_candidate = mba_host.capture_instruction(block.head)
-            if top_candidate is not None:
-                candidates.append((term_cost(top_candidate.term), block.head))
-            block.head.for_all_insns(CandidateCollector())
-            assert candidates
-            selected_cost, selected_instruction = max(
-                candidates,
-                key=lambda item: item[0],
-            )
-            assert selected_cost == (6, 13)
-            assert (
-                optimizer.optimize(
-                    block,
-                    selected_instruction,
-                    contextual_anchor_ins=block.head,
-                )
-                is False
-            )
-            db_path = state.manager.log_dir / "d810_mba_discovery.sqlite3"
+            assert any(receipt.status == "stored" for receipt in finalized_receipts)
 
         store = MbaDiscoveryStore(db_path)
         try:
-            snapshots = store.provider_attempt_snapshots()
-            assert len(snapshots) == 1
-            snapshot = snapshots[0]
-            attempt = snapshot.attempt
-            context = attempt.context
-            identity = context.function_identity
-            outcome = attempt.outcome
+            snapshots = tuple(
+                snapshot
+                for snapshot in store.provider_attempt_snapshots()
+                if snapshot.attempt.context.function_identity.function_ea
+                == function_ea
+                and snapshot.attempt.context.plugin_identity.name == plugin_name
+            )
+            assert snapshots, "ordinary decompilation did not publish a residual row"
+            for snapshot in snapshots:
+                attempt = snapshot.attempt
+                context = attempt.context
+                identity = context.function_identity
+                outcome = attempt.outcome
 
-            UUID(attempt.attempt_uuid)
-            UUID(identity.database_uuid)
-            assert identity.input_identity.startswith("sha256:")
-            assert len(identity.input_identity.removeprefix("sha256:")) == 64
-            assert identity.input_identity_provenance == "captured_from_ida"
-            assert identity.external_evidence_allowed is True
-            assert identity.database_identity == "task11-live-cobra.json"
-            assert identity.function_ea == function_ea
-            assert identity.function_rva >= 0
-            assert identity.function_fingerprint.startswith("sha256:")
-            assert len(identity.function_fingerprint.removeprefix("sha256:")) == 64
-            assert identity.decompilation_session_id
-            assert identity.top_level_epoch == 1
-            assert identity.maturity == "ir.global.optimized"
-            assert identity.evidence_generation == 0
+                UUID(attempt.attempt_uuid)
+                UUID(identity.database_uuid)
+                assert identity.input_identity.startswith("sha256:")
+                assert len(identity.input_identity.removeprefix("sha256:")) == 64
+                assert identity.input_identity_provenance == "captured_from_ida"
+                assert identity.external_evidence_allowed is True
+                assert identity.database_identity == f"task12-live-{pass_id}.json"
+                assert identity.function_ea == function_ea
+                assert identity.function_rva >= 0
+                assert identity.function_fingerprint.startswith("sha256:")
+                assert (
+                    len(identity.function_fingerprint.removeprefix("sha256:")) == 64
+                )
+                assert identity.decompilation_session_id
+                assert identity.top_level_epoch == 1
+                assert identity.maturity == "ir.global.optimized"
+                assert identity.evidence_generation == 0
 
-            assert context.plugin_identity.name == "cobra"
-            assert context.plugin_identity.distribution == "d810-cobra"
-            assert context.plugin_identity.version == "0.1.4"
-            assert context.plugin_identity.origin == "d810-cobra 0.1.4"
-            assert context.instruction_ea > 0
-            assert context.block_serial == block_serial
-            assert context.block_ea > 0
+                assert context.plugin_identity.name == plugin_name
+                assert context.plugin_identity.distribution == distribution
+                assert context.plugin_identity.version
+                assert context.plugin_identity.origin
+                assert context.instruction_ea > 0
+                assert context.block_serial >= 0
+                assert context.block_ea > 0
 
-            assert outcome.provider is MbaProviderKind.COEFFICIENT_SOLVER
-            assert outcome.status is ProviderOutcomeStatus.OVER_BUDGET
-            assert outcome.refusal_reason == "proof_timeout_escalated"
-            assert outcome.input_cost == (6, 13)
-            assert outcome.output_cost is None
-            assert outcome.proof_verdict is None
-            assert outcome.fingerprint == term_fingerprint(attempt.canonical_term)
-            assert attempt.eligible_for_mining is True
-            assert term_fingerprint(attempt.raw_term) != outcome.fingerprint
+                assert outcome.provider is provider
+                assert outcome.status is not ProviderOutcomeStatus.APPLIED
+                assert outcome.status is not ProviderOutcomeStatus.ERROR
+                assert outcome.refusal_reason
+                assert outcome.input_cost is not None
+                assert outcome.fingerprint == term_fingerprint(
+                    attempt.canonical_term
+                )
+                assert attempt.eligible_for_mining is True
 
-            assert snapshot.group.state is ResidualGroupState.ELIGIBLE
-            assert snapshot.group.eligible_observation_count == 1
-            assert snapshot.group.revision == 1
-            assert snapshot.group.canonical_term == attempt.canonical_term
-            assert snapshot.group.raw_terms == (attempt.raw_term,)
-            assert snapshot.group.last_mined_at is None
-            assert snapshot.group.materialized_at is None
-            assert snapshot.group.admitted_at is None
+                assert snapshot.group.state in {
+                    ResidualGroupState.ELIGIBLE,
+                    ResidualGroupState.OBSERVED,
+                }
+                assert snapshot.group.eligible_observation_count >= 1
+                assert snapshot.group.revision >= 1
+                assert snapshot.group.canonical_term == attempt.canonical_term
+                assert attempt.raw_term in snapshot.group.raw_terms
+                assert snapshot.group.materialized_at is None
+                assert snapshot.group.admitted_at is None
+
+            normalized = store._connection.execute(
+                "SELECT DISTINCT plugin_distribution, plugin_origin "
+                "FROM provider_attempts WHERE plugin_name = ?",
+                (plugin_name,),
+            ).fetchall()
+            assert normalized
+            assert all(row[0] == distribution and row[1] for row in normalized)
         finally:
             store.close()

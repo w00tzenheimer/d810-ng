@@ -23,6 +23,7 @@ from d810.mba.discovery_models import (
     MiningRunState,
     ProposalState,
     ResidualGroupState,
+    ReceiptStatus,
 )
 
 from d810.mba.bounded_synthesis import ProofReceipt
@@ -97,6 +98,47 @@ def _attempt(
     )
 
 
+def _make_version_one_database(path: Path, attempts: tuple[DiscoveryAttempt, ...]) -> None:
+    """Build an exact v1 database by projecting data from a current store."""
+
+    source = path.with_name(f"{path.stem}-source.sqlite3")
+    source_store = MbaDiscoveryStore(source)
+    for attempt in attempts:
+        source_store.record_attempt(attempt)
+    source_store.close()
+
+    legacy_sql = discovery_store_module._SCHEMA_SQL.replace(
+        "        plugin_distribution TEXT,\n        plugin_version TEXT,\n        plugin_origin TEXT NOT NULL,\n",
+        "        plugin_version TEXT,\n",
+    )
+    legacy_columns = tuple(
+        column
+        for column in discovery_store_module._TABLES["provider_attempts"]
+        if column not in {"plugin_distribution", "plugin_origin"}
+    )
+    with sqlite3.connect(path) as connection:
+        connection.executescript(legacy_sql)
+        connection.execute("ATTACH DATABASE ? AS source", (str(source),))
+        for table in _CAUSAL_DOMAIN_TABLES:
+            columns = discovery_store_module._TABLES[table]
+            if table == "provider_attempts":
+                columns = legacy_columns
+            names = ", ".join(f'"{column}"' for column in columns)
+            connection.execute(
+                f'INSERT INTO "{table}" ({names}) SELECT {names} FROM source."{table}"'
+            )
+        source_migration = connection.execute(
+            "SELECT applied_at FROM source.schema_migrations ORDER BY version LIMIT 1"
+        ).fetchone()
+        assert source_migration is not None
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)",
+            (source_migration[0],),
+        )
+        connection.commit()
+        connection.execute("DETACH DATABASE source")
+
+
 def test_provider_attempt_snapshot_is_public_and_causally_linked(tmp_path: Path) -> None:
     store = MbaDiscoveryStore(tmp_path / "attempt-snapshot.sqlite3")
     attempt = _attempt(eligible=True)
@@ -111,6 +153,12 @@ def test_provider_attempt_snapshot_is_public_and_causally_linked(tmp_path: Path)
     assert snapshot.group.group_id == receipt.group_id
     assert snapshot.group.revision == receipt.revision
     assert snapshot.group.state.value == "eligible"
+    normalized = store._connection.execute(
+        "SELECT plugin_name, plugin_distribution, plugin_version, plugin_origin "
+        "FROM provider_attempts WHERE attempt_id=?",
+        (receipt.attempt_id,),
+    ).fetchone()
+    assert tuple(normalized) == ("plugin", "plugin-dist", "1.0", "test")
     store.close()
 
 
@@ -290,6 +338,64 @@ class _CommitInterruptConnection(_ConnectionProxy):
         self.connection.commit()
 
 
+class _MigrationFaultConnection(_ConnectionProxy):
+    def __init__(
+        self,
+        connection: sqlite3.Connection | None,
+        *,
+        rollback_error: BaseException | None = None,
+        restore_error: BaseException | None = None,
+        close_error: BaseException | None = None,
+    ) -> None:
+        super().__init__(connection)
+        self.rollback_error = rollback_error
+        self.restore_error = restore_error
+        self.close_error = close_error
+        self.rollback_called = False
+        self.restore_attempts = 0
+        self.close_called = False
+
+    @property
+    def row_factory(self) -> object:
+        return self.connection.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value: object) -> None:
+        self.connection.row_factory = value  # type: ignore[assignment]
+
+    def execute(self, statement: str, *args: object) -> sqlite3.Cursor:
+        if statement == "PRAGMA foreign_keys=ON":
+            self.restore_attempts += 1
+            if self.restore_attempts > 1 and self.restore_error is not None:
+                raise self.restore_error
+        return self.connection.execute(statement, *args)
+
+    def rollback(self) -> None:
+        self.rollback_called = True
+        if self.rollback_error is not None:
+            raise self.rollback_error
+        self.connection.rollback()
+
+    def close(self) -> None:
+        self.close_called = True
+        if self.close_error is not None:
+            raise self.close_error
+        self.connection.close()
+
+
+def _patch_sqlite_connect(
+    monkeypatch: pytest.MonkeyPatch, fault: _MigrationFaultConnection
+) -> None:
+    real_connect = sqlite3.connect
+
+    def connect(*args: object, **kwargs: object) -> _MigrationFaultConnection:
+        connection = real_connect(*args, **kwargs)
+        fault.connection = connection
+        return fault
+
+    monkeypatch.setattr(discovery_store_module.sqlite3, "connect", connect)
+
+
 def test_schema_migration_is_exact_and_reopen_is_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "discovery.sqlite3"
     store = MbaDiscoveryStore(path)
@@ -309,7 +415,7 @@ def test_schema_migration_is_exact_and_reopen_is_idempotent(tmp_path: Path) -> N
         "proposals",
         "residual_group_events",
     }
-    assert store.schema_version() == 1
+    assert store.schema_version() == 2
     assert store.table_columns()["proposals"] == (
         "proposal_id",
         "group_id",
@@ -357,8 +463,213 @@ def test_schema_migration_is_exact_and_reopen_is_idempotent(tmp_path: Path) -> N
     connection.close()
     store.close()
     reopened = MbaDiscoveryStore(path)
-    assert reopened.schema_version() == 1
+    assert reopened.schema_version() == 2
     reopened.close()
+
+
+def test_version_one_migration_preserves_rows_events_and_attribution(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "version-one.sqlite3"
+    fallback = _attempt(attempt_uuid="bbbbbbbb-bbbb-4bbb-8bbb-000000000001", value=2)
+    fallback = replace(
+        fallback,
+        context=replace(
+            fallback.context,
+            plugin_identity=PluginIdentity(
+                name="legacy-plugin", distribution=None, version="2.0", origin="test"
+            ),
+        ),
+    )
+    source_attempt = _attempt(attempt_uuid="bbbbbbbb-bbbb-4bbb-8bbb-000000000002")
+    _make_version_one_database(path, (source_attempt, fallback))
+
+    with sqlite3.connect(path) as connection:
+        before = {
+            table: connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            for table in _CAUSAL_DOMAIN_TABLES
+        }
+        assert connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1,)]
+
+    store = MbaDiscoveryStore(path)
+    assert store.schema_version() == 2
+    assert store.table_columns()["provider_attempts"][13:18] == (
+        "plugin_name",
+        "plugin_distribution",
+        "plugin_version",
+        "plugin_origin",
+        "status",
+    )
+    with sqlite3.connect(path) as connection:
+        assert {
+            table: connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            for table in _CAUSAL_DOMAIN_TABLES
+        } == before
+        assert connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1,), (2,)]
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        attribution = connection.execute(
+            "SELECT plugin_name, plugin_distribution, plugin_version, plugin_origin "
+            "FROM provider_attempts ORDER BY attempt_id"
+        ).fetchall()
+    assert tuple(attribution[0]) == ("plugin", "plugin-dist", "1.0", "test")
+    assert tuple(attribution[1]) == (
+        "legacy-plugin",
+        "legacy:unknown",
+        "2.0",
+        "test",
+    )
+    store.close()
+
+    reopened = MbaDiscoveryStore(path)
+    assert reopened.schema_version() == 2
+    reopened.close()
+
+
+def test_version_one_migration_rejects_exact_shape_drift_without_mutation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "version-one-drift.sqlite3"
+    _make_version_one_database(path, (_attempt(),))
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE provider_attempts ADD COLUMN surprise TEXT")
+        connection.commit()
+        before = connection.serialize()
+
+    with pytest.raises(ValueError, match="partial schema"):
+        MbaDiscoveryStore(path)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.serialize() == before
+        assert connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1,)]
+
+
+def test_version_one_migration_rolls_back_schema_and_rows_on_failure(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "version-one-rollback.sqlite3"
+    _make_version_one_database(path, (_attempt(),))
+    with sqlite3.connect(path) as connection:
+        before = connection.serialize()
+
+    with pytest.raises(ValueError, match="timestamp"):
+        MbaDiscoveryStore(path, clock=lambda: "not-a-timestamp")
+
+    with sqlite3.connect(path) as connection:
+        assert connection.serialize() == before
+        assert connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1,)]
+        assert "plugin_distribution" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(provider_attempts)")
+        }
+
+
+def test_version_one_fatal_migration_rolls_back_restores_and_closes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "version-one-fatal.sqlite3"
+    _make_version_one_database(path, (_attempt(),))
+    with sqlite3.connect(path) as connection:
+        before = connection.serialize()
+    interrupted = []
+
+    def interrupt_migration(store):
+        interrupted.append(store)
+        store._connection.execute("DELETE FROM provider_attempts")
+        raise KeyboardInterrupt("fatal migration interruption")
+
+    monkeypatch.setattr(
+        MbaDiscoveryStore,
+        "_migrate_v1_to_v2",
+        interrupt_migration,
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="fatal migration interruption"):
+        MbaDiscoveryStore(path)
+
+    assert len(interrupted) == 1
+    assert interrupted[0]._closed is True
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        interrupted[0]._connection.execute("SELECT 1")
+    with sqlite3.connect(path) as connection:
+        assert connection.serialize() == before
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        connection.execute("BEGIN IMMEDIATE")
+        connection.rollback()
+
+
+def test_version_one_migration_preserves_primary_error_when_rollback_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "version-one-rollback-failure.sqlite3"
+    _make_version_one_database(path, (_attempt(),))
+    primary = RuntimeError("primary migration failure")
+    rollback = OSError("rollback failure")
+    fault = _MigrationFaultConnection(None, rollback_error=rollback)
+    _patch_sqlite_connect(monkeypatch, fault)
+
+    def fail_migration(store: MbaDiscoveryStore) -> None:
+        raise primary
+
+    monkeypatch.setattr(MbaDiscoveryStore, "_migrate_v1_to_v2", fail_migration)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        MbaDiscoveryStore(path)
+
+    assert raised.value.exceptions == (primary, rollback)
+    assert fault.rollback_called
+    assert fault.close_called
+
+
+def test_version_one_migration_surfaces_foreign_key_restore_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "version-one-foreign-key-restore-failure.sqlite3"
+    _make_version_one_database(path, (_attempt(),))
+    restore = OSError("foreign key restore failure")
+    fault = _MigrationFaultConnection(None, restore_error=restore)
+    real_connect = sqlite3.connect
+    _patch_sqlite_connect(monkeypatch, fault)
+
+    with pytest.raises(OSError, match="foreign key restore failure"):
+        MbaDiscoveryStore(path)
+
+    assert fault.restore_attempts == 2
+    assert fault.close_called
+    with real_connect(path) as connection:
+        assert connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(1,), (2,)]
+
+
+def test_version_one_migration_preserves_primary_error_when_connection_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "version-one-close-failure.sqlite3"
+    _make_version_one_database(path, (_attempt(),))
+    primary = RuntimeError("primary migration failure")
+    close = OSError("connection close failure")
+    fault = _MigrationFaultConnection(None, close_error=close)
+    _patch_sqlite_connect(monkeypatch, fault)
+
+    def fail_migration(store: MbaDiscoveryStore) -> None:
+        raise primary
+
+    monkeypatch.setattr(MbaDiscoveryStore, "_migrate_v1_to_v2", fail_migration)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        MbaDiscoveryStore(path)
+
+    assert raised.value.exceptions == (primary, close)
+    assert fault.close_called
+    assert fault.connection is not None
+    fault.connection.close()
 
 
 def test_causal_event_schema_and_owner_shape_checks_are_exact(
@@ -527,6 +838,73 @@ def test_causal_events_order_equal_timestamps_and_reject_stale_claim(
         ("claimed", 2),
         ("observed", 3),
     ]
+    store.close()
+
+
+def test_finish_failed_releases_claim_and_rejects_stale_owner_without_mutation(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "failed-run.sqlite3")
+    store.record_attempt(_attempt())
+    claim = store.claim_next_group("miner", "budget").claim
+    assert claim is not None
+
+    finished = store.finish_failed(
+        claim.run.run_id,
+        claim.run.claimed_revision,
+        "bounded synthesis infrastructure failed",
+    )
+
+    assert finished.status is ReceiptStatus.FINISHED
+    assert finished.run is not None and finished.run.state is MiningRunState.FAILED
+    assert finished.run.failure_reason == "bounded synthesis infrastructure failed"
+    assert finished.group is not None and finished.group.state is ResidualGroupState.ELIGIBLE
+    event = store._connection.execute(
+        "SELECT event_kind FROM residual_group_events WHERE run_id=? "
+        "AND event_kind='run_failed'",
+        (claim.run.run_id,),
+    ).fetchone()
+    assert event[0] == "run_failed"
+
+    before = _logical_domain_snapshot(store)
+    stale = store.finish_failed(
+        claim.run.run_id, claim.run.claimed_revision, "stale retry"
+    )
+    assert stale.status is ReceiptStatus.REFUSED
+    assert stale.reason in {"not_active", "stale_revision"}
+    assert _logical_domain_snapshot(store) == before
+    store.close()
+
+
+@pytest.mark.parametrize("error_code", (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
+def test_record_attempt_classifies_only_busy_locked_operational_errors(
+    tmp_path: Path, error_code: int
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / f"record-busy-{error_code}.sqlite3")
+    real_connection = store._connection
+    store._connection = _BeginImmediateErrorConnection(  # type: ignore[assignment]
+        real_connection, error_code
+    )
+
+    receipt = store.record_attempt(_attempt())
+
+    assert receipt.status is ReceiptStatus.REFUSED
+    assert receipt.reason == "storage_busy"
+    store.close()
+
+
+def test_record_attempt_rethrows_unrelated_operational_error(
+    tmp_path: Path,
+) -> None:
+    store = MbaDiscoveryStore(tmp_path / "record-ioerr.sqlite3")
+    real_connection = store._connection
+    store._connection = _BeginImmediateErrorConnection(  # type: ignore[assignment]
+        real_connection, sqlite3.SQLITE_IOERR
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="transaction-entry"):
+        store.record_attempt(_attempt())
+
     store.close()
 
 
@@ -2286,6 +2664,19 @@ def test_future_or_partial_schema_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unsupported schema version"):
         MbaDiscoveryStore(future)
 
+    unknown = tmp_path / "unknown.sqlite3"
+    connection = sqlite3.connect(unknown)
+    connection.execute(
+        "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO schema_migrations VALUES (0, '2026-01-01T00:00:00.000000Z')"
+    )
+    connection.commit()
+    connection.close()
+    with pytest.raises(ValueError, match="unsupported schema version"):
+        MbaDiscoveryStore(unknown)
+
     partial = tmp_path / "partial.sqlite3"
     connection = sqlite3.connect(partial)
     connection.execute("CREATE TABLE inputs(input_id INTEGER PRIMARY KEY)")
@@ -3661,7 +4052,9 @@ def test_terminal_exact_original_retry_survives_later_evidence(
         ("block_ea", 9),
         ("provider", "unknown"),
         ("plugin_name", "different"),
+        ("plugin_distribution", "different-dist"),
         ("plugin_version", "2.0"),
+        ("plugin_origin", "different-origin"),
         ("status", "error"),
         ("input_cost_ops", 99),
         ("input_cost_nodes", 99),

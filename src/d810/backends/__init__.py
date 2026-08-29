@@ -90,5 +90,8 @@ registry = make_singleton(
         host=_host_capability_registry(),
         requirement_validator=_host_capability_registry().validate,
         host_view_factory=_host_capability_registry().view_for,
+        implementation_host_view_factory=(
+            _host_capability_registry().bind_implementation_view
+        ),
     )
 )

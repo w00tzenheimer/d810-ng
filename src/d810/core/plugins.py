@@ -211,6 +211,12 @@ class PluginRuleServices:
 
     plugin: PluginIdentity
     host: PluginHostCapabilities
+    #: Exact manifest declaration that authorized this implementation.
+    #:
+    #: Kept as an immutable identity rather than inferred from the plugin name;
+    #: callers can therefore attribute provider work even when several
+    #: backends share a display name or implementation ID.
+    provider: PassImplementationCandidate | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,12 +226,27 @@ class PluginFunctionContext:
     host: PluginHostCapabilities
 
 
+@dataclass(frozen=True, slots=True)
+class _ImplementationHostView(PluginHostCapabilities):
+    """Immutable host view carrying exact manifest provider authority."""
+
+    _base: PluginHostCapabilities
+    provider: PassImplementationCandidate
+
+    def require(self, capability: type[C]) -> C:
+        return self._base.require(capability)
+
+    def optional(self, capability: type[C]) -> C | None:
+        return self._base.optional(capability)
+
 class PluginActivation(Protocol):
     def create_implementation(self, implementation_id: str) -> object: ...
 
     def capability_offers(self) -> tuple[PluginCapabilityOffer[object], ...]: ...
 
     def close(self) -> None: ...
+
+    def release_implementation(self, implementation: object) -> None: ...
 
 
 class BackendPlugin(Protocol):
@@ -250,6 +271,71 @@ class _EmptyHostCapabilities:
     def validate(self, requirements: Sequence[str]) -> None:
         if requirements:
             raise BackendUnavailable(f"missing host capability: {requirements[0]}")
+
+
+def _log_plugin_exception_safely(message: str, *args: object) -> None:
+    try:
+        logger.exception(message, *args)
+    except BaseException:
+        pass
+
+
+def _dispose_capability(value: object) -> BaseException | None:
+    """Best-effort disposal for a capability built across an activation race."""
+    errors: list[BaseException] = []
+    for method_name in ("close", "dispose", "release"):
+        try:
+            method = getattr(value, method_name, None)
+        except BaseException as exc:
+            errors.append(exc)
+            _log_plugin_exception_safely(
+                "capability disposal lookup failed after activation change"
+            )
+            continue
+        if callable(method):
+            try:
+                method()
+            except BaseException as exc:
+                errors.append(exc)
+                _log_plugin_exception_safely(
+                    "capability disposal failed after activation change"
+                )
+            break
+    if len(errors) == 1:
+        return errors[0]
+    if errors:
+        return BaseExceptionGroup("capability disposal failed", errors)
+    return None
+
+
+def _capability_matches(capability: type[object], value: object) -> bool:
+    """Validate a factory result, including non-runtime-checkable Protocols."""
+    try:
+        return isinstance(value, capability)
+    except TypeError:
+        if not getattr(capability, "_is_protocol", False):
+            return False
+        required: dict[str, bool] = {}
+        for base in reversed(getattr(capability, "__mro__", (capability,))):
+            for name in getattr(base, "__annotations__", {}):
+                if not name.startswith("_"):
+                    required.setdefault(name, False)
+            for name, member in vars(base).items():
+                if name.startswith("_"):
+                    continue
+                if isinstance(member, property):
+                    required.setdefault(name, False)
+                elif callable(member):
+                    required[name] = True
+        try:
+            return all(
+                callable(getattr(value, name))
+                if must_be_callable
+                else hasattr(value, name)
+                for name, must_be_callable in required.items()
+            )
+        except BaseException:
+            return False
 
 
 @dataclass(frozen=True)
@@ -815,6 +901,11 @@ class BackendRegistry:
             [Sequence[str], PluginIdentity], PluginHostCapabilities
         ]
         | None = None,
+        implementation_host_view_factory: Callable[
+            [PluginHostCapabilities, PassImplementationCandidate],
+            PluginHostCapabilities,
+        ]
+        | None = None,
     ) -> None:
         self._builtins = tuple(builtins)
         self._source = source if source is not None else entry_point_source
@@ -846,12 +937,82 @@ class BackendRegistry:
             if host is None and host_view_factory is None
             else host_view_factory
         )
+        self._implementation_host_view_factory = implementation_host_view_factory
         self._activated: dict[str, PluginActivation] = {}
         self._activation_contexts: dict[str, PluginActivationContext] = {}
         self._activation_records: dict[str, _ActivationRecord] = {}
         self._implementation_instances: dict[
             PassImplementationCandidate, list[object]
         ] = {}
+        self._activation_callbacks_in_flight: dict[int, int] = {}
+        self._plugin_callback_threads: dict[int, int] = {}
+
+    def _begin_plugin_callback_locked(self, activation: PluginActivation) -> None:
+        """Lease one activation while invoking plugin-owned code without the lock."""
+        activation_id = id(activation)
+        thread_id = threading.get_ident()
+        self._activation_callbacks_in_flight[activation_id] = (
+            self._activation_callbacks_in_flight.get(activation_id, 0) + 1
+        )
+        self._plugin_callback_threads[thread_id] = (
+            self._plugin_callback_threads.get(thread_id, 0) + 1
+        )
+
+    def _end_plugin_callback(self, activation: PluginActivation) -> None:
+        with self._lock:
+            activation_id = id(activation)
+            thread_id = threading.get_ident()
+            remaining = self._activation_callbacks_in_flight[activation_id] - 1
+            if remaining:
+                self._activation_callbacks_in_flight[activation_id] = remaining
+            else:
+                self._activation_callbacks_in_flight.pop(activation_id, None)
+            thread_remaining = self._plugin_callback_threads[thread_id] - 1
+            if thread_remaining:
+                self._plugin_callback_threads[thread_id] = thread_remaining
+            else:
+                self._plugin_callback_threads.pop(thread_id, None)
+            self._lifecycle.notify_all()
+
+    def _offers_from_active(
+        self, name: str, activation: PluginActivation
+    ) -> tuple[PluginCapabilityOffer[Any], ...]:
+        """Copy one activation's offers while holding an activation callback lease."""
+
+        with self._lock:
+            if (
+                self._closing
+                or self._rediscovering
+                or self._activated.get(name) is not activation
+            ):
+                return ()
+            self._begin_plugin_callback_locked(activation)
+        try:
+            offers = activation.capability_offers()
+            if not isinstance(offers, tuple) or not all(
+                isinstance(offer, PluginCapabilityOffer) for offer in offers
+            ):
+                raise ManifestError(
+                    "activation capability_offers() must return capability offers"
+                )
+            return offers
+        finally:
+            self._end_plugin_callback(activation)
+
+    def _wait_for_lifecycle_locked(self) -> None:
+        """Wait for registry lifecycle ownership without callback self-deadlock."""
+
+        while self._rediscovering or self._closing:
+            current_thread = threading.get_ident()
+            owns_activation = any(
+                record.in_progress and record.owner_thread == current_thread
+                for record in self._activation_records.values()
+            )
+            if self._plugin_callback_threads.get(current_thread, 0) or owns_activation:
+                raise BackendUnavailable(
+                    "plugin callback cannot wait for registry lifecycle teardown"
+                )
+            self._lifecycle.wait()
 
     # -- discovery ---------------------------------------------------------
 
@@ -862,8 +1023,19 @@ class BackendRegistry:
             if self._discovered and not force:
                 return
             if self._discovered and force:
-                while self._rediscovering or self._closing:
-                    self._lifecycle.wait()
+                current_thread = threading.get_ident()
+                if self._plugin_callback_threads.get(current_thread, 0):
+                    raise BackendUnavailable(
+                        "plugin callback cannot force backend rediscovery reentrantly"
+                    )
+                if any(
+                    record.in_progress and record.owner_thread == current_thread
+                    for record in self._activation_records.values()
+                ):
+                    raise BackendUnavailable(
+                        "plugin activation cannot force backend rediscovery reentrantly"
+                    )
+                self._wait_for_lifecycle_locked()
                 self._rediscovering = True
                 self._generation += 1
                 force_cycle = True
@@ -924,6 +1096,8 @@ class BackendRegistry:
             self._activated = {}
             self._activation_contexts = {}
             self._implementation_instances = {}
+            self._activation_callbacks_in_flight = {}
+            self._plugin_callback_threads = {}
             self._discovered = True
             if force_cycle:
                 self._rediscovering = False
@@ -980,17 +1154,145 @@ class BackendRegistry:
         """Offers from currently activated plugins."""
         offers: list[PluginCapabilityOffer[Any]] = []
         with self._lock:
-            activations = tuple(self._activated.values())
-        for activation in activations:
-            offers.extend(activation.capability_offers())
+            activations = tuple(self._activated.items())
+        for name, activation in activations:
+            offers.extend(self._offers_from_active(name, activation))
         return tuple(offers)
+
+    def resolve_capability(
+        self,
+        capability: type[C],
+        *,
+        source: Any,
+        identity: Any,
+    ) -> C | None:
+        """Build one capability for the current function/session context.
+
+        Capability factories are deliberately invoked by the host, never by a
+        plugin activation.  ``source`` and ``identity`` are supplied by the
+        current Hex-Rays callback and are not retained by this registry, so a
+        reload or a later function cannot accidentally reuse a stale object.
+        The activation host view is retained only long enough to construct the
+        immutable callback-local context.
+        """
+        if not isinstance(capability, type):
+            raise TypeError("capability must be a type")
+        self.discover()
+        with self._lock:
+            generation = self._generation
+            matches: list[
+                tuple[
+                    str,
+                    PluginActivation,
+                    PluginActivationContext,
+                    PluginCapabilityOffer[C],
+                ]
+            ] = []
+            activations = tuple(
+                (name, activation, self._activation_contexts.get(name))
+                for name, activation in self._activated.items()
+            )
+
+        def activation_set_changed() -> bool:
+            current = tuple(
+                (name, activation, self._activation_contexts.get(name))
+                for name, activation in self._activated.items()
+            )
+            return len(current) != len(activations) or any(
+                current_name != snapshot_name
+                or current_activation is not snapshot_activation
+                or current_context is not snapshot_context
+                for (
+                    current_name,
+                    current_activation,
+                    current_context,
+                ), (
+                    snapshot_name,
+                    snapshot_activation,
+                    snapshot_context,
+                ) in zip(current, activations)
+            )
+
+        for name, activation, context in activations:
+            if context is None:
+                continue
+            for offer in self._offers_from_active(name, activation):
+                if offer.capability is capability:
+                    matches.append((name, activation, context, offer))
+        with self._lock:
+            if (
+                generation != self._generation
+                or self._closing
+                or self._rediscovering
+                or activation_set_changed()
+            ):
+                raise BackendUnavailable(
+                    "capability provider changed while resolving function context"
+                )
+            if len(matches) > 1:
+                names = ", ".join(name for name, _activation, _context, _offer in matches)
+                raise BackendUnavailable(
+                    f"capability {capability!r} has multiple providers: {names}"
+                )
+            if not matches:
+                return None
+            name, activation, context, offer = matches[0]
+            if (
+                self._activated.get(name) is not activation
+                or self._activation_contexts.get(name) is not context
+            ):
+                raise BackendUnavailable(
+                    "capability provider changed before constructing function context"
+                )
+            self._begin_plugin_callback_locked(activation)
+
+        try:
+            function_context = PluginFunctionContext(
+                source=source,
+                identity=identity,
+                host=context.host,
+            )
+            result = offer.factory(function_context)
+            if not _capability_matches(capability, result):
+                name_text = getattr(capability, "__name__", repr(capability))
+                error = BackendUnavailable(
+                    f"capability factory for {name!r} returned a value that does not "
+                    f"implement {name_text}"
+                )
+                cleanup_error = _dispose_capability(result)
+                if cleanup_error is not None:
+                    raise BaseExceptionGroup(
+                        "invalid capability disposal failed", [error, cleanup_error]
+                    )
+                raise error
+            with self._lock:
+                provider_changed = (
+                    generation != self._generation
+                    or self._closing
+                    or self._rediscovering
+                    or activation_set_changed()
+                    or self._activated.get(name) is not activation
+                    or self._activation_contexts.get(name) is not context
+                )
+            if provider_changed:
+                error = BackendUnavailable(
+                    "capability provider changed while constructing function context"
+                )
+                cleanup_error = _dispose_capability(result)
+                if cleanup_error is not None:
+                    raise BaseExceptionGroup(
+                        "stale capability disposal failed", [error, cleanup_error]
+                    )
+                raise error
+            return result
+        finally:
+            self._end_plugin_callback(activation)
 
     def activate(self, name: str) -> PluginActivation:
         """Validate and activate one resolved plugin transactionally."""
         self.discover()
         with self._lock:
-            while self._rediscovering or self._closing:
-                self._lifecycle.wait()
+            self._wait_for_lifecycle_locked()
             if name not in self._candidates:
                 raise BackendUnavailable(f"no backend named {name!r}")
             existing = self._activated.get(name)
@@ -998,6 +1300,10 @@ class BackendRegistry:
                 return existing
             record = self._activation_records.get(name)
             if record is not None:
+                if record.in_progress and record.owner_thread == threading.get_ident():
+                    raise BackendUnavailable(
+                        "plugin activation cannot activate itself reentrantly"
+                    )
                 while record.in_progress:
                     record.condition.wait()
                 existing = self._activated.get(name)
@@ -1007,8 +1313,7 @@ class BackendRegistry:
                     return record.activation
                 if record.error is not None:
                     raise record.error
-                while self._rediscovering or self._closing:
-                    self._lifecycle.wait()
+                self._wait_for_lifecycle_locked()
                 existing = self._activated.get(name)
                 if existing is not None:
                     return existing
@@ -1051,25 +1356,38 @@ class BackendRegistry:
             context = PluginActivationContext(identity=identity, host=host_view)
             partial = activate(context)
             self._validate_activation(partial)
-        except Exception as exc:
-            if partial is not None:
-                close = getattr(partial, "close", None)
-                if callable(close):
+        except BaseException as exc:
+            rollback_error: BaseException | None = None
+            try:
+                if partial is not None:
                     try:
-                        close()
-                    except Exception:
-                        logger.exception("plugin %r failed while rolling back", name)
-            with self._lock:
-                record.error = exc
-                record.in_progress = False
-                if (
-                    self._activation_records.get(name) is record
-                    and not self._closing
-                    and not self._rediscovering
-                ):
-                    del self._activation_records[name]
-                record.condition.notify_all()
-            raise
+                        close = getattr(partial, "close", None)
+                        if callable(close):
+                            close()
+                    except BaseException as cleanup_error:
+                        rollback_error = cleanup_error
+                        _log_plugin_exception_safely(
+                            "plugin %r failed while rolling back", name
+                        )
+            finally:
+                reported_error: BaseException = (
+                    exc
+                    if rollback_error is None
+                    else BaseExceptionGroup(
+                        "plugin activation and rollback failed", [exc, rollback_error]
+                    )
+                )
+                with self._lock:
+                    record.error = reported_error
+                    record.in_progress = False
+                    if (
+                        self._activation_records.get(name) is record
+                        and not self._closing
+                        and not self._rediscovering
+                    ):
+                        del self._activation_records[name]
+                    record.condition.notify_all()
+            raise reported_error
 
         with self._lock:
             record.in_progress = False
@@ -1101,6 +1419,18 @@ class BackendRegistry:
     def _close_selected_activations(self, keep: Sequence[PluginActivation]) -> None:
         keep_ids = {id(activation) for activation in keep}
         with self._lock:
+            current_thread = threading.get_ident()
+            if self._plugin_callback_threads.get(current_thread, 0):
+                raise BackendUnavailable(
+                    "plugin callbacks cannot close activations reentrantly"
+                )
+            if any(
+                record.in_progress and record.owner_thread == current_thread
+                for record in self._activation_records.values()
+            ):
+                raise BackendUnavailable(
+                    "plugin activation cannot close the registry reentrantly"
+                )
             while self._rediscovering or self._closing:
                 self._lifecycle.wait()
             self._closing = True
@@ -1108,56 +1438,82 @@ class BackendRegistry:
 
     def _close_activations_impl(self, *, keep_ids: set[int] | None = None) -> None:
         keep_ids = set() if keep_ids is None else set(keep_ids)
-        with self._lock:
-            records = tuple(self._activation_records.items())
-            activations = {
-                name: activation
-                for name, activation in self._activated.items()
-                if id(activation) not in keep_ids
-            }
-            retained = {
-                name: activation
-                for name, activation in self._activated.items()
-                if id(activation) in keep_ids
-            }
-            self._activated = retained
-            self._activation_contexts = {
-                name: context
-                for name, context in self._activation_contexts.items()
-                if name in retained
-            }
-            retained_names = set(retained)
-            self._active_implementations = {
-                candidate
-                for candidate in self._active_implementations
-                if candidate.backend_name in retained_names
-            }
-            self._implementation_instances = {
-                candidate: instances
-                for candidate, instances in self._implementation_instances.items()
-                if candidate.backend_name in retained_names
-            }
-
-        for name, record in records:
+        cleanup_errors: list[BaseException] = []
+        try:
             with self._lock:
-                while record.in_progress:
-                    record.condition.wait()
-                if record.activation is not None:
-                    if id(record.activation) not in keep_ids:
-                        activations[name] = record.activation
+                while any(self._activation_callbacks_in_flight.values()):
+                    self._lifecycle.wait()
+                records = tuple(self._activation_records.items())
+                activations = {
+                    name: activation
+                    for name, activation in self._activated.items()
+                    if id(activation) not in keep_ids
+                }
+                retained = {
+                    name: activation
+                    for name, activation in self._activated.items()
+                    if id(activation) in keep_ids
+                }
+                retained_names = set(retained)
 
-        for name, activation in activations.items():
-            try:
-                activation.close()
-            except Exception:
-                logger.exception("plugin %r failed while closing", name)
-
-        with self._lock:
             for name, record in records:
-                if self._activation_records.get(name) is record:
-                    del self._activation_records[name]
-            self._closing = False
-            self._lifecycle.notify_all()
+                with self._lock:
+                    while record.in_progress:
+                        record.condition.wait()
+                    if record.activation is not None:
+                        if id(record.activation) not in keep_ids:
+                            activations[name] = record.activation
+
+            with self._lock:
+                retired = tuple(
+                    ImplementationOwnership(candidate, instance)
+                    for candidate, instances in self._implementation_instances.items()
+                    if candidate.backend_name not in retained_names
+                    for instance in instances
+                )
+
+            try:
+                self._release_implementation_instances(
+                    retired,
+                    activation_only=True,
+                    teardown_owned=True,
+                )
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+
+            for name, activation in activations.items():
+                with self._lock:
+                    self._begin_plugin_callback_locked(activation)
+                try:
+                    activation.close()
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+                    _log_plugin_exception_safely(
+                        "plugin %r failed while closing", name
+                    )
+                finally:
+                    self._end_plugin_callback(activation)
+        finally:
+            with self._lock:
+                if "retained" in locals():
+                    self._activated = retained
+                    self._activation_contexts = {
+                        name: context
+                        for name, context in self._activation_contexts.items()
+                        if name in retained
+                    }
+                for name, record in locals().get("records", ()):
+                    if self._activation_records.get(name) is record:
+                        del self._activation_records[name]
+                self._closing = False
+                self._lifecycle.notify_all()
+        if len(cleanup_errors) == 1:
+            raise cleanup_errors[0]
+        if cleanup_errors:
+            raise BaseExceptionGroup(
+                "multiple plugin activation cleanup failures",
+                cleanup_errors,
+            )
 
     def _validate_requirements(self, requirements: Sequence[str]) -> None:
         if not requirements:
@@ -1173,7 +1529,12 @@ class BackendRegistry:
     def _validate_activation(activation: Any) -> None:
         if activation is None:
             raise ManifestError("plugin.activate(context) returned None")
-        for method in ("create_implementation", "capability_offers", "close"):
+        for method in (
+            "create_implementation",
+            "release_implementation",
+            "capability_offers",
+            "close",
+        ):
             if not callable(getattr(activation, method, None)):
                 raise ManifestError(f"activation is missing callable {method}()")
         offers = activation.capability_offers()
@@ -1248,8 +1609,7 @@ class BackendRegistry:
         while True:
             self.discover()
             with self._lock:
-                while self._rediscovering or self._closing:
-                    self._lifecycle.wait()
+                self._wait_for_lifecycle_locked()
                 generation = self._generation
                 specs = tuple(
                     spec
@@ -1439,7 +1799,7 @@ class BackendRegistry:
                     self._implementation_failures.pop(candidate, None)
         try:
             implementation = self._activate_implementation_once(candidate)
-        except Exception as exc:
+        except BaseException as exc:
             with self._lock:
                 if was_active:
                     self._active_implementations.add(candidate)
@@ -1485,27 +1845,60 @@ class BackendRegistry:
                 reason="implementation ID is not declared by the manifest",
             )
         activation = self.activate(candidate.backend_name)
-        try:
-            implementation = activation.create_implementation(candidate.rule_name)
-        except Exception as exc:
-            raise PassImplementationUnavailable(
-                candidate,
-                f"implementation factory raised {type(exc).__name__}: {exc}",
-            ) from exc
-        if implementation is None:
-            raise PassImplementationMisdeclared(
-                candidate.pass_id,
-                backend_name=candidate.backend_name,
-                backend_origin=candidate.backend_origin,
-                candidate=candidate,
-                reason="implementation factory returned None",
-            )
         with self._lock:
-            if any(
-                existing is implementation
-                for instances in self._implementation_instances.values()
-                for existing in instances
+            generation = self._generation
+            if (
+                self._closing
+                or self._rediscovering
+                or self._activated.get(candidate.backend_name) is not activation
             ):
+                raise PassImplementationUnavailable(
+                    candidate,
+                    "plugin activation changed before implementation construction",
+                )
+            self._begin_plugin_callback_locked(activation)
+        try:
+            try:
+                implementation = activation.create_implementation(candidate.rule_name)
+            except BaseException as exc:
+                raise PassImplementationUnavailable(
+                    candidate,
+                    f"implementation factory raised {type(exc).__name__}: {exc}",
+                ) from exc
+            if implementation is None:
+                raise PassImplementationMisdeclared(
+                    candidate.pass_id,
+                    backend_name=candidate.backend_name,
+                    backend_origin=candidate.backend_origin,
+                    candidate=candidate,
+                    reason="implementation factory returned None",
+                )
+            with self._lock:
+                stale = (
+                    generation != self._generation
+                    or self._closing
+                    or self._rediscovering
+                    or self._activated.get(candidate.backend_name) is not activation
+                )
+                reused = any(
+                    existing is implementation
+                    for instances in self._implementation_instances.values()
+                    for existing in instances
+                )
+                published = not stale and not reused
+                if published:
+                    self._implementation_instances.setdefault(candidate, []).append(
+                        implementation
+                    )
+                    self._active_implementations.add(candidate)
+                    failures = self._implementation_failures.get(candidate)
+                    if failures is not None:
+                        failures.pop("registration", None)
+                        if not failures:
+                            self._implementation_failures.pop(candidate, None)
+            if reused:
+                # Another exact owner already owns this object. Releasing it
+                # here would destroy that owner's live implementation.
                 raise PassImplementationMisdeclared(
                     candidate.pass_id,
                     backend_name=candidate.backend_name,
@@ -1513,29 +1906,62 @@ class BackendRegistry:
                     candidate=candidate,
                     reason="implementation factory reused an instance",
                 )
-            self._implementation_instances.setdefault(candidate, []).append(
-                implementation
-            )
-        with self._lock:
-            self._active_implementations.add(candidate)
-            failures = self._implementation_failures.get(candidate)
-            if failures is not None:
-                failures.pop("registration", None)
-                if not failures:
-                    self._implementation_failures.pop(candidate, None)
-        return implementation
+            if stale:
+                error = PassImplementationUnavailable(
+                    candidate,
+                    "plugin activation changed during implementation construction",
+                )
+                try:
+                    activation.release_implementation(implementation)
+                except BaseException as cleanup_error:
+                    raise BaseExceptionGroup(
+                        "stale plugin implementation cleanup failed",
+                        [error, cleanup_error],
+                    )
+                raise error
+            if not published:
+                raise AssertionError("implementation publication decision was incomplete")
+            return implementation
+        finally:
+            self._end_plugin_callback(activation)
 
-    def discard_implementation_instances(
-        self, ownership: Sequence[ImplementationOwnership]
+    def release_implementation_instances(
+        self,
+        ownership: Sequence[ImplementationOwnership],
     ) -> None:
-        """Discard only exact candidate/object ownership from registry truth."""
+        """Release and discard exact candidate/object ownership once.
+
+        External release cannot start after registry teardown has begun. A
+        release already holding a callback lease is drained before teardown.
+        """
+        self._release_implementation_instances(
+            ownership,
+            activation_only=False,
+            teardown_owned=False,
+        )
+
+    def _release_implementation_instances(
+        self,
+        ownership: Sequence[ImplementationOwnership],
+        *,
+        activation_only: bool,
+        teardown_owned: bool,
+    ) -> None:
+        """Release exact ownership, with an internal whole-close lane."""
         if not ownership:
             return
-        with self._lock:
-            for owner in ownership:
+        errors: list[BaseException] = []
+        for owner in ownership:
+            leased_activation: PluginActivation | None = None
+            with self._lock:
+                if not teardown_owned:
+                    self._wait_for_lifecycle_locked()
                 owned = self._implementation_instances.get(owner.candidate)
-                if not owned:
+                if not owned or not any(
+                    instance is owner.instance for instance in owned
+                ):
                     continue
+                activation = self._activated.get(owner.candidate.backend_name)
                 remaining = [
                     instance for instance in owned if instance is not owner.instance
                 ]
@@ -1544,6 +1970,39 @@ class BackendRegistry:
                 else:
                     self._implementation_instances.pop(owner.candidate, None)
                     self._active_implementations.discard(owner.candidate)
+                if activation is not None:
+                    self._begin_plugin_callback_locked(activation)
+                    leased_activation = activation
+            try:
+                if activation is not None:
+                    release = getattr(activation, "release_implementation", None)
+                    if callable(release):
+                        release(owner.instance)
+                    elif not activation_only:
+                        for method_name in ("close", "dispose", "release"):
+                            method = getattr(owner.instance, method_name, None)
+                            if callable(method):
+                                method()
+                                break
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                if leased_activation is not None:
+                    self._end_plugin_callback(leased_activation)
+        if errors:
+            if len(errors) == 1:
+                raise errors[0]
+            raise BaseExceptionGroup("plugin implementation release failed", errors)
+
+    def discard_implementation_instances(
+        self, ownership: Sequence[ImplementationOwnership]
+    ) -> None:
+        """Release and discard exact candidate/object ownership.
+
+        Kept as the compatibility spelling used by the project activation
+        transaction; new callers may use the explicit release name.
+        """
+        self.release_implementation_instances(ownership)
 
     def activation_for_candidate(
         self, candidate: PassImplementationCandidate
@@ -1563,12 +2022,85 @@ class BackendRegistry:
         self, candidate: PassImplementationCandidate
     ) -> PluginRuleServices:
         """Return immutable services for rules created by *candidate*."""
-        self.activation_for_candidate(candidate)
+        activation = self.activation_for_candidate(candidate)
         with self._lock:
+            if (
+                self._closing
+                or self._rediscovering
+                or self._activated.get(candidate.backend_name) is not activation
+            ):
+                raise PassImplementationUnavailable(
+                    candidate,
+                    "activation lifecycle changed before binding host services",
+                )
+            generation = self._generation
             context = self._activation_contexts.get(candidate.backend_name)
-        if context is None:
-            raise PassImplementationUnavailable(candidate, "activation context missing")
-        return PluginRuleServices(plugin=context.identity, host=context.host)
+            owned = self._implementation_instances.get(candidate, ())
+            active = candidate in self._active_implementations and bool(owned)
+            if context is None:
+                raise PassImplementationUnavailable(
+                    candidate, "activation context missing"
+                )
+            if not active:
+                raise PassImplementationUnavailable(
+                    candidate,
+                    "implementation is not active under the selected manifest",
+                )
+            owned_snapshot = tuple(owned)
+            self._begin_plugin_callback_locked(activation)
+        try:
+            host_view_factory = self._implementation_host_view_factory
+            host = (
+                _ImplementationHostView(context.host, candidate)
+                if host_view_factory is None
+                else host_view_factory(context.host, candidate)
+            )
+            if not _capability_matches(PluginHostCapabilities, host):
+                error = PassImplementationUnavailable(
+                    candidate,
+                    "implementation host binder returned an invalid host view",
+                )
+                cleanup_error = _dispose_capability(host)
+                if cleanup_error is not None:
+                    raise BaseExceptionGroup(
+                        "invalid implementation host disposal failed",
+                        [error, cleanup_error],
+                    )
+                raise error
+            with self._lock:
+                current_owned = self._implementation_instances.get(candidate, ())
+                stale = (
+                    generation != self._generation
+                    or self._closing
+                    or self._rediscovering
+                    or self._activated.get(candidate.backend_name) is not activation
+                    or self._activation_contexts.get(candidate.backend_name) is not context
+                    or candidate not in self._active_implementations
+                    or len(current_owned) != len(owned_snapshot)
+                    or any(
+                        current is not expected
+                        for current, expected in zip(current_owned, owned_snapshot)
+                    )
+                )
+            if stale:
+                error = PassImplementationUnavailable(
+                    candidate,
+                    "implementation ownership changed while binding host services",
+                )
+                cleanup_error = _dispose_capability(host)
+                if cleanup_error is not None:
+                    raise BaseExceptionGroup(
+                        "stale implementation host disposal failed",
+                        [error, cleanup_error],
+                    )
+                raise error
+            return PluginRuleServices(
+                plugin=context.identity,
+                host=host,
+                provider=candidate,
+            )
+        finally:
+            self._end_plugin_callback(activation)
 
     def load(self, name: str) -> Any:
         """Return the backend object, or raise :class:`BackendUnavailable`."""

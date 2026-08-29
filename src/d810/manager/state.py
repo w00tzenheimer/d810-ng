@@ -149,6 +149,24 @@ def _external_binding_for_schedule(
     )
 
 
+def _release_implementation_instances(
+    registry: object, ownership: tuple[ImplementationOwnership, ...]
+) -> None:
+    """Retire exact provider instances before dropping transaction state."""
+    if not ownership:
+        return
+    release = getattr(registry, "release_implementation_instances", None)
+    if callable(release):
+        release(ownership)
+        return
+    # Narrow compatibility path for transaction-test registries and old API-1
+    # adapters that only expose the bookkeeping spelling.
+    discard = getattr(registry, "discard_implementation_instances", None)
+    if not callable(discard):
+        raise TypeError("backend registry cannot retire implementation instances")
+    discard(ownership)
+
+
 def _require_registered_schedule_bindings(
     schedule: ConfigV2HookSchedule,
     known_ins_rules: list,
@@ -257,6 +275,9 @@ class D810State(metaclass=SingletonMeta):
         #: project at all (ticket lpccp-8c87).
         self.invalid_projects: dict[str, str] = {}
         self.current_project_runtime_snapshot: ProjectRuntimeSnapshot | None = None
+        self.last_project_retirement_failures: tuple[
+            tuple[str, BaseException], ...
+        ] = ()
         self._is_loaded: bool = False
         self.gui = None
         self.log_dir = self.d810_config.log_dir / D810_LOG_DIR_NAME
@@ -527,16 +548,32 @@ class D810State(metaclass=SingletonMeta):
             if rolled_back:
                 return
             rolled_back = True
+            rollback_failures: list[BaseException] = []
             try:
-                backend_registry.discard_implementation_instances(
-                    tuple(staged_implementations)
+                _release_implementation_instances(
+                    backend_registry, tuple(staged_implementations)
                 )
+            except BaseException as cleanup_error:
+                rollback_failures.append(cleanup_error)
+            try:
                 self._restore_project_activation_state(
                     activation_snapshot,
                     activation_error,
                 )
-            finally:
+            except BaseException as restore_error:
+                rollback_failures.append(restore_error)
+            try:
                 backend_registry.close_activations_except(previous_activations)
+            except BaseException as activation_cleanup_error:
+                rollback_failures.append(activation_cleanup_error)
+            if rollback_failures:
+                # Keep the triggering activation error as the first member so
+                # callers can reliably identify the primary failure while all
+                # independent cleanup/restore failures remain observable.
+                raise BaseExceptionGroup(
+                    "project activation failed during rollback",
+                    (activation_error, *rollback_failures),
+                )
 
         def _stage_call(callable_, *args, **kwargs):
             try:
@@ -876,8 +913,28 @@ class D810State(metaclass=SingletonMeta):
         )
 
         # Publication is complete before retiring the prior plugin ownership.
-        backend_registry.close_activations_except(snapshot.activated_plugins)
-        backend_registry.discard_implementation_instances(previous_implementations)
+        # The new project is already fully published.  Retirement of the old
+        # provider instances is therefore best-effort: a failing old close or
+        # release must be reported and retained for diagnostics, but must not
+        # make a valid new project look like a failed activation.
+        retirement_failures: list[tuple[str, BaseException]] = []
+        try:
+            backend_registry.close_activations_except(snapshot.activated_plugins)
+        except BaseException as exc:
+            retirement_failures.append(("plugin_activation", exc))
+            try:
+                logger.exception("previous project plugin activation cleanup failed")
+            except BaseException:
+                pass
+        try:
+            _release_implementation_instances(backend_registry, previous_implementations)
+        except BaseException as exc:
+            retirement_failures.append(("implementation", exc))
+            try:
+                logger.exception("previous project implementation cleanup failed")
+            except BaseException:
+                pass
+        self.last_project_retirement_failures = tuple(retirement_failures)
 
         emit_project_reloading(
             old_project_name=old_project_name,

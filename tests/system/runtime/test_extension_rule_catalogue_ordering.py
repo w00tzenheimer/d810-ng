@@ -7,12 +7,15 @@ from d810.core.plugins import (
     BackendManifest,
     BackendRegistry,
     BackendSpec,
+    PluginCapabilityOffer,
+    PluginFunctionContext,
 )
 
 
 class _Activation:
-    def __init__(self, factory):
+    def __init__(self, factory, offers=()):
         self.factory = factory
+        self.offers = tuple(offers)
         self.factory_calls: list[str] = []
         self.close_calls = 0
 
@@ -21,7 +24,10 @@ class _Activation:
         return self.factory()
 
     def capability_offers(self):
-        return ()
+        return self.offers
+
+    def release_implementation(self, implementation):
+        del implementation
 
     def close(self):
         self.close_calls += 1
@@ -77,3 +83,40 @@ def test_only_explicitly_selected_candidate_calls_its_factory():
 
     assert implementation is not None
     assert activation.factory_calls == ["ExternalRule"]
+
+
+def test_host_resolves_fake_offer_with_fresh_callback_context():
+    class Capability:
+        pass
+
+    contexts: list[PluginFunctionContext] = []
+
+    def make_capability(context: PluginFunctionContext):
+        contexts.append(context)
+        return Capability()
+
+    activation = _Activation(
+        object,
+        offers=(PluginCapabilityOffer(Capability, make_capability),),
+    )
+    registry = _registry(activation)
+    registry.activate("external")
+    first_source = object()
+    second_source = object()
+
+    assert isinstance(
+        registry.resolve_capability(
+            Capability, source=first_source, identity="first-session"
+        ),
+        Capability,
+    )
+    assert isinstance(
+        registry.resolve_capability(
+            Capability, source=second_source, identity="second-session"
+        ),
+        Capability,
+    )
+    assert [(context.source, context.identity) for context in contexts] == [
+        (first_source, "first-session"),
+        (second_source, "second-session"),
+    ]
