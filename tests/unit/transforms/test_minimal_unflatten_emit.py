@@ -292,7 +292,16 @@ def test_conditional_arm_forecast_rejects_disconnected_path_edge() -> None:
     graph = FlowGraph(
         {
             **graph.blocks,
-            0: replace(graph.blocks[0], succs=(6, 5)),
+            0: replace(
+                graph.blocks[0],
+                succs=(6, 5),
+                insn_snapshots=(
+                    replace(
+                        graph.blocks[0].tail,
+                        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=6),
+                    ),
+                ),
+            ),
             1: replace(graph.blocks[1], preds=()),
             5: replace(graph.blocks[5], preds=(0, 6)),
             6: detached,
