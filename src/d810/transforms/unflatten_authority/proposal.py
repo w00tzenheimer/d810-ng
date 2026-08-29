@@ -1311,18 +1311,6 @@ def attach_typed_proposal(
                     if type(claim) is not RetiredDispatcherInfrastructureClaim
                 )
             )
-            coverage_dependent_claim = any(
-                type(claim) in (
-                    RetiredDispatcherInfrastructureClaim,
-                    DetachedDeadHandlerComponentClaim,
-                    TerminalCycleBreakClaim,
-                )
-                for claim in attached_claims
-            )
-            requires_corridor_forecast = (
-                coverage_dependent_claim
-                or full_dispatcher_retirement
-            )
             proposal = replace(
                 proposal,
                 claims=tuple(sorted(
@@ -1342,7 +1330,7 @@ def attach_typed_proposal(
                         corridor_coverage,
                         proposal=proposal,
                         block_refs_by_serial=source_refs_by_serial,
-                    ) if requires_corridor_forecast else None
+                    )
                 ),
             )
         else:

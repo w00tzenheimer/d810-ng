@@ -590,6 +590,75 @@ def test_explicit_partial_route_forecast_keeps_corridor_validation() -> None:
     )
 
 
+def test_partial_retirement_forecast_keeps_corridor_validation_after_normalization() -> None:
+    """A non-full retirement forecast remains transaction-owned authority."""
+
+    from d810.transforms.dispatcher_corridor_coverage import (
+        DispatcherBlockAnchor,
+        DispatcherCorridor,
+        DispatcherCorridorCoverage,
+        RetiredDispatcherInfrastructure,
+    )
+    from d810.transforms.plan import PatchRedirectGoto
+    from d810.transforms.unflatten_authority import model
+    from d810.transforms.unflatten_authority.proposal import (
+        attach_typed_proposal,
+        canonical_redirect_manifest,
+    )
+    from .helpers import exact_fixture
+
+    source, proposal, _exclusion, refs = exact_fixture()
+    template = PatchPlan(
+        plan_id=proposal.plan_id,
+        snapshot_id="partial-retirement-corridor-attachment",
+        source_generation=proposal.source_identity_catalog.generation,
+        steps=(PatchRedirectGoto(refs[0], refs[1], refs[2]),),
+    )
+    manifest = canonical_redirect_manifest(template)
+    dispatcher = DispatcherBlockAnchor(1, source.blocks[1].start_ea)
+    coverage = DispatcherCorridorCoverage(
+        function_ea=source.func_ea,
+        dispatcher=dispatcher,
+        covered_corridors=(DispatcherCorridor((
+            DispatcherBlockAnchor(0, source.blocks[0].start_ea), dispatcher,
+        )),),
+        residual_corridors=(),
+        enumeration_complete=True,
+        retirement_candidates=(RetiredDispatcherInfrastructure(
+            role="comparison_dispatcher", anchor=dispatcher,
+        ),),
+    )
+
+    attached = attach_typed_proposal(
+        template,
+        source=source,
+        block_refs_by_serial=refs,
+        canonical_route_evidence=proposal.route_evidence,
+        selected_route_proof_ids=(proposal.route_evidence.route_proofs[0].proof_id,),
+        exact_state_effect_exclusions=(),
+        dispatcher_entry_serial=1,
+        dispatcher_member_serials=(0, 1),
+        authoritative_handler_serials=(2,),
+        state_identity=proposal.plan_inputs.state_identity,
+        use_def_witness=replace(
+            proposal.use_def_witness,
+            redirect_owner_refs=manifest.owner_refs,
+            redirect_digest=manifest.digest,
+        ),
+        corridor_coverage=coverage,
+        dispatcher_removal_forecast=coverage,
+    )
+
+    attached_proposal = attached.unflatten_proposal
+    assert attached_proposal is not None
+    assert attached_proposal.plan_inputs.shape is model.UnflattenPlanShape.PARTIAL_REWRITE
+    assert attached_proposal.corridor_coverage_forecast is not None
+    assert attached_proposal.retirement_candidate_catalog is None
+    assert {claim.kind for claim in attached_proposal.claims} == {
+        model.UnflattenClaimKind.EQUIVALENT_SEMANTIC_ROUTE,
+    }
+
+
 def test_complete_route_only_attachment_does_not_mint_a_corridor_forecast() -> None:
     """Complete coverage does not widen a route-only partial rewrite."""
 
