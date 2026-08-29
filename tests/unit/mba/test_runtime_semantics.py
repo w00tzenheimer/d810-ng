@@ -216,6 +216,7 @@ def test_production_manifest_declares_all_matcher_semantics_sources() -> None:
         "mba/semantic_canonicalization.py",
         "mba/typed_term.py",
         "mba/certified_rule_compiler.py",
+        "optimizers/microcode/instructions/pattern_matching/handler.py",
     }
 
     assert required <= declared

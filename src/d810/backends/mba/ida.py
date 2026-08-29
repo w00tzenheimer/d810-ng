@@ -506,6 +506,7 @@ class IDAPatternAdapter:
         self._provider_outcome_capture_depth = 0
         self._shadow_match_report = None
         self._shadow_lowering = None
+        self._shadow_structural_lowering = None
         self._shadow_source_ast = None
         self._shadow_structural_native_paths: dict[str, tuple[int, ...]] | None = None
         self._shadow_native_path_unavailable = False
@@ -527,6 +528,26 @@ class IDAPatternAdapter:
         self._structural_dispatch_attempt_count = 0
         self._generate_commutative_permutations = True
 
+    def _clear_structural_attempt_state(self) -> None:
+        """Drop borrowed AST/provenance/native references after every attempt."""
+
+        self._shadow_match_report = None
+        self._shadow_lowering = None
+        self._shadow_structural_lowering = None
+        self._shadow_source_ast = None
+        self._shadow_structural_native_paths = None
+        self._shadow_native_path_unavailable = False
+        self._shadow_structural_refused = False
+        self._structural_selection_active = False
+        self._structural_dispatch_bucket_size = 0
+        self._structural_dispatch_attempt_count = 0
+
+    def _structural_failure(self) -> None:
+        """Clear borrowed state before returning a failed structural attempt."""
+
+        self._clear_structural_attempt_state()
+        return None
+
     def _reset_attempt_outcome(self, instruction: Any | None = None) -> None:
         """Discard telemetry from the previous live pattern attempt."""
 
@@ -543,11 +564,7 @@ class IDAPatternAdapter:
             self._attempt_input_ast = None
         self._last_provider_outcome = None
         self._attempt_outcome_index = None
-        self._shadow_match_report = None
-        self._shadow_lowering = None
-        self._shadow_source_ast = None
-        self._shadow_structural_native_paths = None
-        self._shadow_native_path_unavailable = False
+        self._clear_structural_attempt_state()
         self._legacy_binding_paths = None
         self._legacy_match_observed = False
         self._shadow_parity_recorded = False
@@ -672,6 +689,7 @@ class IDAPatternAdapter:
             self._shadow_canonical_templates = {}
             self._pattern_candidates_cache = None
             self._replacement_pattern_cache = None
+            self._clear_structural_attempt_state()
         self._certified_catalogue_snapshot = snapshot
         self._certified_catalogue_rule_id = rule_id
         self._shadow_parity_ledger = ledger
@@ -728,6 +746,13 @@ class IDAPatternAdapter:
         return tuple(getattr(self, "_canonical_fallback_root_shapes", ()))
 
     @property
+    def canonical_fallback_declaration_index(self) -> int | None:
+        """Frozen catalogue position used to order certified fallback buckets."""
+
+        value = getattr(self, "_certified_catalogue_rule_id", None)
+        return value if type(value) is int and value >= 0 else None
+
+    @property
     def uses_structural_matching(self) -> bool:
         """Deprecated alias for :attr:`canonical_fallback_enabled`."""
 
@@ -755,7 +780,7 @@ class IDAPatternAdapter:
         if not self.canonical_fallback_enabled and not getattr(
             self, "_structural_matching_enabled", False
         ):
-            return None
+            return self._structural_failure()
         self._structural_selection_active = True
         self._structural_dispatch_bucket_size = max(0, int(bucket_size))
         self._structural_dispatch_attempt_count = max(0, int(attempted_rule_count))
@@ -766,41 +791,41 @@ class IDAPatternAdapter:
         )
         paths = getattr(self, "_shadow_structural_native_paths", None)
         if report is None or report.bindings is None or not paths:
-            return None
+            return self._structural_failure()
         leafs_by_name: dict[str, Any] = {}
         for name, path in paths.items():
             native = self._native_node_at_path(test_ast, path)
             if native is None:
-                return None
+                return self._structural_failure()
             leafs_by_name[name] = native
         try:
             candidate = _ShadowBindingCandidate(leafs_by_name, test_ast)
             if not candidate.ea or not self._check_candidate(candidate):
-                return None
+                return self._structural_failure()
             # Structural bindings are a read-only projection of the source AST.
             # Reuse the clone-based emitter so its active-runtime binding carrier
             # preserves the original live mops instead of mutating the cached
             # legacy replacement pattern.
             replacement = self._get_shadow_replacement(candidate)
         except Exception:
-            return None
+            return self._structural_failure()
         if replacement is None:
-            return None
+            return self._structural_failure()
         destination_size = self._attempt_destination_size
         if type(destination_size) is not int or destination_size <= 0:
             destination_size = getattr(test_ast, "dest_size", None)
         if type(destination_size) is not int or destination_size <= 0:
-            return None
+            return self._structural_failure()
         try:
             replacement_ast = minsn_to_ast(replacement)
         except Exception:
-            return None
+            return self._structural_failure()
         if replacement_ast is None or not prove_native_ast_equivalence(
             test_ast,
             replacement_ast,
             width=destination_size * 8,
         ):
-            return None
+            return self._structural_failure()
         self._record_catalogue_success(
             test_ast,
             self.REPLACEMENT_PATTERN,
@@ -845,7 +870,10 @@ class IDAPatternAdapter:
         lowerer's original native objects through exact raw-path provenance.
         """
 
-        self._shadow_native_path_unavailable = False
+        if not getattr(self, "_structural_selection_active", False):
+            self._clear_structural_attempt_state()
+        else:
+            self._shadow_native_path_unavailable = False
         try:
             from d810.mba.ac_matching import match_canonical_term_pattern
             from d810.mba.canonical_pattern import (
@@ -965,6 +993,7 @@ class IDAPatternAdapter:
                     if binding is not None:
                         structural_native_paths = dict(binding.candidate_paths)
             self._shadow_lowering = lowering
+            self._shadow_structural_lowering = lowering
             self._shadow_source_ast = test_ast
             self._shadow_match_report = report
             self._shadow_structural_native_paths = structural_native_paths
@@ -1892,6 +1921,7 @@ class IDAPatternAdapter:
         self._attempt_started = None
         self._attempt_destination_size = None
         self._attempt_input_ast = None
+        self._clear_structural_attempt_state()
 
     @staticmethod
     def _eval_runtime_constant(mop, bits: int, blk, instruction) -> int | None:

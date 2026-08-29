@@ -14,6 +14,7 @@
     "mba/ac_matching.py",
     "mba/canonical_pattern.py",
     "mba/certified_rule_compiler.py",
+    "optimizers/microcode/instructions/pattern_matching/handler.py",
     "mba/semantic_canonicalization.py",
     "mba/typed_term.py"
   ]

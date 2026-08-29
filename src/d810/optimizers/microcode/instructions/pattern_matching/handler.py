@@ -508,6 +508,7 @@ class PatternOptimizer(InstructionOptimizer):
                 )
                 if rule not in bucket:
                     bucket.append(rule)
+                    bucket.sort(key=self._canonical_fallback_sort_key)
 
         # Invalidate compiled view after adding rule (PR3)
         self._generation += 1
@@ -559,6 +560,7 @@ class PatternOptimizer(InstructionOptimizer):
                 )
                 if rule not in bucket:
                     bucket.append(rule)
+                    bucket.sort(key=self._canonical_fallback_sort_key)
 
         # Invalidate compiled view after adding rule (PR3)
         self._generation += 1
@@ -596,7 +598,10 @@ class PatternOptimizer(InstructionOptimizer):
         # by any registered rule, there is no point in attempting an AST build.
         # This shortcut has a substantial impact on hot paths.
         try:
-            if ins.opcode not in self._allowed_root_opcodes:
+            if (
+                ins.opcode not in self._allowed_root_opcodes
+                and not self._canonical_fallback_rules_by_root_shape
+            ):
                 return None
         except Exception:
             # If anything goes wrong while reading opcode, fall through to safe path
@@ -817,9 +822,43 @@ class PatternOptimizer(InstructionOptimizer):
     def _canonical_fallback_enabled_for(rule: object) -> bool:
         """Read the explicit fallback flag, with a deprecated compatibility alias."""
 
-        if hasattr(rule, "canonical_fallback_enabled"):
-            return bool(getattr(rule, "canonical_fallback_enabled"))
-        return bool(getattr(rule, "uses_structural_matching", False))
+        return bool(
+            getattr(rule, "canonical_fallback_enabled", False)
+            or getattr(rule, "uses_structural_matching", False)
+        )
+
+    @staticmethod
+    def _canonical_fallback_sort_key(rule: object) -> tuple[int, object]:
+        """Keep certified declaration order ahead of deterministic extensions."""
+
+        declaration_index = getattr(rule, "canonical_fallback_declaration_index", None)
+        if declaration_index is None:
+            declaration_index = getattr(rule, "_certified_catalogue_rule_id", None)
+        if type(declaration_index) is int and declaration_index >= 0:
+            return (0, declaration_index)
+        return (1, str(getattr(rule, "name", type(rule).__name__)))
+
+    def _rule_is_eligible(
+        self,
+        rule: object,
+        *,
+        maturity: object,
+        allowed_rule_names: frozenset[str] | None,
+        scheduled_rule_names: frozenset[str],
+    ) -> bool:
+        rule_name = str(getattr(rule, "name", ""))
+        if rule_name in getattr(
+            self,
+            "_cycle_quarantined_rule_names",
+            frozenset(),
+        ):
+            return False
+        if allowed_rule_names is not None and rule_name not in allowed_rule_names:
+            return False
+        return bool(
+            maturity in getattr(rule, "maturities", ())
+            or rule_name in scheduled_rule_names
+        )
 
     @staticmethod
     def _raw_attempt_abstains(rule: object) -> bool:
@@ -848,6 +887,9 @@ class PatternOptimizer(InstructionOptimizer):
         self,
         test_ast: AstBase,
         ins: ida_hexrays.minsn_t,
+        *,
+        allowed_rule_names: frozenset[str] | None,
+        scheduled_rule_names: frozenset[str],
     ) -> tuple[object | None, tuple[InstructionOptimizationRule, ...]]:
         """Lower one root and select its certified canonical declaration bucket."""
 
@@ -857,6 +899,16 @@ class PatternOptimizer(InstructionOptimizer):
             rule
             for bucket in self._canonical_fallback_rules_by_root_shape.values()
             for rule in bucket
+        )
+        rules = tuple(
+            rule
+            for rule in rules
+            if self._rule_is_eligible(
+                rule,
+                maturity=self.cur_maturity,
+                allowed_rule_names=allowed_rule_names,
+                scheduled_rule_names=scheduled_rule_names,
+            )
         )
         if not rules:
             return None, ()
@@ -870,7 +922,17 @@ class PatternOptimizer(InstructionOptimizer):
             return lowering, ()
         from d810.mba.certified_catalogue import root_shape_for_term
 
-        return lowering, self._canonical_fallback_rules_for(root_shape_for_term(term))
+        selected = tuple(
+            rule
+            for rule in self._canonical_fallback_rules_for(root_shape_for_term(term))
+            if self._rule_is_eligible(
+                rule,
+                maturity=self.cur_maturity,
+                allowed_rule_names=allowed_rule_names,
+                scheduled_rule_names=scheduled_rule_names,
+            )
+        )
+        return lowering, selected
 
     def _get_candidates(self, ast: AstBase) -> list[RulePatternInfo]:
         if self._use_legacy_storage:
@@ -899,22 +961,14 @@ class PatternOptimizer(InstructionOptimizer):
     ) -> ida_hexrays.minsn_t | None:
         all_matches = self._get_candidates(test_ast)
         match_len = len(all_matches)
-        raw_match_error = False
         scheduled_rule_names = scheduled_rule_names or frozenset()
         for i, rule_pattern_info in enumerate(all_matches):
             rule_name = str(rule_pattern_info.rule.name)
-            if rule_name in getattr(
-                self,
-                "_cycle_quarantined_rule_names",
-                frozenset(),
-            ):
-                continue
-            if allowed_rule_names is not None and rule_name not in allowed_rule_names:
-                continue
-            # Per-rule maturity check (Gate 2)
-            if (
-                self.cur_maturity not in rule_pattern_info.rule.maturities
-                and rule_name not in scheduled_rule_names
+            if not self._rule_is_eligible(
+                rule_pattern_info.rule,
+                maturity=self.cur_maturity,
+                allowed_rule_names=allowed_rule_names,
+                scheduled_rule_names=scheduled_rule_names,
             ):
                 continue
             if optimizer_logger.debug_on:
@@ -939,11 +993,6 @@ class PatternOptimizer(InstructionOptimizer):
                 if bind_match_context is not None:
                     bind_match_context(blk, ins)
 
-                match_structural_and_replace = getattr(
-                    rule_pattern_info.rule,
-                    "match_structural_and_replace",
-                    None,
-                )
                 # Task 7 shadow mode remains in force for legacy rules.
                 observe_structural_match = getattr(
                     rule_pattern_info.rule,
@@ -952,6 +1001,9 @@ class PatternOptimizer(InstructionOptimizer):
                 )
                 if (
                     observe_structural_match is not None
+                    and not self._canonical_fallback_enabled_for(
+                        rule_pattern_info.rule
+                    )
                     and os.environ.get("D810_SHADOW_DSL_MATCHING", "0") == "1"
                 ):
                     observe_structural_match(test_ast)
@@ -962,9 +1014,13 @@ class PatternOptimizer(InstructionOptimizer):
                     if not _match_nomut(
                         rule_pattern_info.pattern, test_ast, self._match_bindings
                     ):
+                        if self._raw_attempt_abstains(rule_pattern_info.rule):
+                            return None
                         continue
                     proxy = BindingsProxy(self._match_bindings)
                     if not rule_pattern_info.rule.check_candidate(proxy):
+                        if self._raw_attempt_abstains(rule_pattern_info.rule):
+                            return None
                         continue
                     record_legacy_match_bindings = getattr(
                         rule_pattern_info.rule,
@@ -993,7 +1049,7 @@ class PatternOptimizer(InstructionOptimizer):
                         rule_pattern_info.pattern, test_ast
                     )
                 if self._raw_attempt_abstains(rule_pattern_info.rule):
-                    raw_match_error = True
+                    return None
 
                 if new_ins is not None:
                     if optimizer_logger.info_on:
@@ -1010,8 +1066,7 @@ class PatternOptimizer(InstructionOptimizer):
                     self.last_matched_rule_name = str(rule_pattern_info.rule.name)
                     self._pending_replacement_rule = rule_pattern_info.rule
                     return new_ins
-            except RuntimeError as e:
-                raw_match_error = True
+            except Exception as e:
                 record_attempt_error = getattr(
                     rule_pattern_info.rule,
                     "record_attempt_error",
@@ -1026,6 +1081,7 @@ class PatternOptimizer(InstructionOptimizer):
                     e,
                     exc_info=True,
                 )
+                return None
             finally:
                 if self._run_later_callback is not None:
                     self._run_later_callback(
@@ -1037,10 +1093,11 @@ class PatternOptimizer(InstructionOptimizer):
 
         # Canonical matching is a fallback only: prepare the native island
         # after all eligible raw candidates have cleanly missed.
-        if raw_match_error:
-            return None
         structural_lowering, fallback_rules = self._prepare_canonical_fallback(
-            test_ast, ins
+            test_ast,
+            ins,
+            allowed_rule_names=allowed_rule_names,
+            scheduled_rule_names=scheduled_rule_names,
         )
         if not fallback_rules or structural_lowering is None:
             return None
@@ -1048,15 +1105,6 @@ class PatternOptimizer(InstructionOptimizer):
         fallback_attempt_count = 0
         for rule in fallback_rules:
             rule_name = str(rule.name)
-            if rule_name in getattr(self, "_cycle_quarantined_rule_names", frozenset()):
-                continue
-            if allowed_rule_names is not None and rule_name not in allowed_rule_names:
-                continue
-            if (
-                self.cur_maturity not in rule.maturities
-                and rule_name not in scheduled_rule_names
-            ):
-                continue
             bind_match_context = getattr(rule, "bind_match_context", None)
             clear_match_context = getattr(rule, "clear_match_context", None)
             try:

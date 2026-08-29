@@ -1035,6 +1035,55 @@ def test_canonical_fallback_registration_keeps_declared_raw_base_shape() -> None
     ]
 
 
+def test_canonical_fallback_registration_sorts_certified_declaration_order() -> None:
+    """Registration order cannot override the frozen catalogue declaration order."""
+
+    optimizer = PatternOptimizer(maturities=[7], stats=None, log_dir=None)
+    adapters = []
+    for rule_id in (1, 0):
+        adapter = object.__new__(IDAPatternAdapter)
+        adapter.rule = SimpleNamespace(
+            name=f"rule-{rule_id}", pattern=None, maturities=[7]
+        )
+        adapter._canonical_fallback_enabled = True
+        adapter._structural_matching_enabled = True
+        adapter._canonical_fallback_root_shapes = (("add", 32, 2),)
+        adapter._certified_catalogue_rule_id = rule_id
+        adapter._pattern_candidates_cache = []
+        adapters.append(adapter)
+
+    for adapter in adapters:
+        optimizer._add_rule_internal(adapter)
+
+    assert optimizer._canonical_fallback_rules_by_root_shape[("add", 32, 2)] == [
+        adapters[1],
+        adapters[0],
+    ]
+
+
+def test_adapter_clears_structural_attempt_state_on_context_reset() -> None:
+    """A failed/reloaded adapter cannot retain AST, report, path, or native refs."""
+
+    adapter = IDAPatternAdapter(SimpleNamespace(name="cleanup", maturities=[7]))
+    stale = object()
+    adapter._shadow_structural_lowering = stale
+    adapter._shadow_lowering = stale
+    adapter._shadow_source_ast = stale
+    adapter._shadow_match_report = stale
+    adapter._shadow_structural_native_paths = {"x": (0,)}
+    adapter._shadow_native_path_unavailable = True
+    adapter._shadow_structural_refused = True
+    adapter.clear_match_context()
+
+    assert adapter._shadow_structural_lowering is None
+    assert adapter._shadow_lowering is None
+    assert adapter._shadow_source_ast is None
+    assert adapter._shadow_match_report is None
+    assert adapter._shadow_structural_native_paths is None
+    assert adapter._shadow_native_path_unavailable is False
+    assert adapter._shadow_structural_refused is False
+
+
 def test_structural_only_hit_is_proven_without_becoming_a_live_rewrite(monkeypatch) -> None:
     x = Var("x")
 

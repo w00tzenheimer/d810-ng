@@ -178,6 +178,155 @@ def test_direct_locopt_match_preempts_tracker_provenance_gate(monkeypatch):
     assert labels == ["direct"]
 
 
+def test_canonical_inventory_bypasses_outer_opcode_gate(monkeypatch):
+    """A root-opcode miss still enters matching when fallback inventory exists."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.rules = [object()]
+    optimizer._allowed_root_opcodes = {ida_hexrays.m_add}
+    optimizer._canonical_fallback_rules_by_root_shape = {
+        ("add", 32, 2): [object()]
+    }
+    optimizer._use_tracker_resolution_fallback = False
+    optimizer._pending_replacement_rule = None
+    optimizer._try_matches = lambda *_args, **_kwargs: "fallback-entry"
+    monkeypatch.setattr(pattern_handler, "minsn_to_ast", lambda _ins: object())
+    blk = SimpleNamespace(mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT))
+    ins = SimpleNamespace(opcode=ida_hexrays.m_sub)
+
+    assert optimizer.get_optimized_instruction(blk, ins) == "fallback-entry"
+
+
+def test_terminal_raw_abstention_stops_later_raw_candidates():
+    """An ordinary raw exception cannot be bypassed by a later raw hit."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._canonical_fallback_rules_by_root_shape = {}
+    calls = []
+
+    class Rule:
+        canonical_fallback_enabled = False
+        maturities = [7]
+
+        def __init__(self, name, result=None, error=None):
+            self.name = name
+            self.result = result
+            self.error = error
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            calls.append(self.name)
+            if self.error is not None:
+                raise ValueError(self.error)
+            return self.result
+
+    first = Rule("terminal", error="provider failed")
+    later = Rule("later", result="must-not-hit")
+    optimizer._get_candidates = lambda _ast: [
+        RulePatternInfo(first, object()),
+        RulePatternInfo(later, object()),
+    ]
+
+    assert optimizer._try_matches(
+        None,
+        SimpleNamespace(ea=0x401001, _print=lambda: "terminal"),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="terminal",
+    ) is None
+    assert calls == ["terminal"]
+
+
+def test_shadow_observation_skips_fallback_enabled_raw_candidate(monkeypatch):
+    """Shadow DSL observation is deferred until the canonical fallback phase."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._canonical_fallback_rules_by_root_shape = {}
+    monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
+    monkeypatch.setattr(pattern_handler, "format_minsn_t", lambda _value: "formatted")
+    calls = []
+
+    class Rule:
+        name = "fallback-raw"
+        maturities = [7]
+        canonical_fallback_enabled = True
+
+        def check_pattern_and_replace(self, _pattern, _candidate):
+            return "raw-hit"
+
+        def observe_structural_match(self, _candidate):
+            calls.append("observed")
+
+    rule = Rule()
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(rule, object())]
+
+    assert optimizer._try_matches(
+        None,
+        SimpleNamespace(ea=0x401002, _print=lambda: "shadow"),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="shadow",
+    ) == "raw-hit"
+    assert calls == []
+
+
+def test_ineligible_fallback_inventory_does_not_lower():
+    """Maturity filtering happens before canonical lowering."""
+
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.cur_maturity = 7
+    optimizer.stats = None
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    lowering_calls = []
+
+    class Rule:
+        name = "future-fallback"
+        maturities = [8]
+        canonical_fallback_enabled = True
+
+        def prepare_structural_candidate(self, *_args, **_kwargs):
+            lowering_calls.append(True)
+            raise AssertionError("ineligible fallback must not lower")
+
+    optimizer._canonical_fallback_rules_by_root_shape = {
+        ("add", 32, 2): [Rule()]
+    }
+    optimizer._get_candidates = lambda _ast: []
+
+    assert optimizer._try_matches(
+        None,
+        SimpleNamespace(ea=0x401003, d=SimpleNamespace(size=4), _print=lambda: "future"),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="eligibility",
+    ) is None
+    assert lowering_calls == []
+
+
+def test_legacy_structural_alias_enables_fallback_when_flag_is_false():
+    """Legacy opt-ins remain active when a mixed-version adapter exposes both flags."""
+
+    rule = SimpleNamespace(canonical_fallback_enabled=False, uses_structural_matching=True)
+    assert PatternOptimizer._canonical_fallback_enabled_for(rule) is True
+
+
 def test_raw_hit_skips_canonical_lowering_and_fallback(monkeypatch):
     """A clean raw hit must never prepare or invoke the canonical fallback."""
 

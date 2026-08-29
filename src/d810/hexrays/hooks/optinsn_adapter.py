@@ -182,6 +182,8 @@ class _InstructionChildRuntimeState:
     has_patternless_rule: bool | None
     compiled_view: object
     generation: int | None
+    canonical_fallback_rules_store: object = None
+    canonical_fallback_rules: tuple[tuple[object, tuple[object, ...]], ...] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -434,6 +436,21 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 (int(opcode), tuple(rules))
                 for opcode, rules in structural_rules_store.items()
             )
+        canonical_fallback_rules_store = getattr(
+            optimizer, "_canonical_fallback_rules_by_root_shape", None
+        )
+        if canonical_fallback_rules_store is not None and not isinstance(
+            canonical_fallback_rules_store, dict
+        ):
+            raise TypeError(
+                "instruction optimizer canonical fallback store has an unsupported type"
+            )
+        canonical_fallback_rules = None
+        if canonical_fallback_rules_store is not None:
+            canonical_fallback_rules = tuple(
+                (shape, tuple(rules))
+                for shape, rules in canonical_fallback_rules_store.items()
+            )
         has_patternless_rule = getattr(optimizer, "_has_patternless_rule", None)
         if has_patternless_rule is not None and not isinstance(
             has_patternless_rule, bool
@@ -463,6 +480,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             has_patternless_rule=has_patternless_rule,
             compiled_view=getattr(optimizer, "_compiled_view", None),
             generation=generation,
+            canonical_fallback_rules_store=canonical_fallback_rules_store,
+            canonical_fallback_rules=canonical_fallback_rules,
         )
 
     def capture_runtime_state(self) -> InstructionOptimizerRuntimeState:
@@ -567,6 +586,18 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 {
                     opcode: list(rules)
                     for opcode, rules in (snapshot.structural_rules or ())
+                }
+            )
+        canonical_store = getattr(snapshot, "canonical_fallback_rules_store", None)
+        if canonical_store is not None:
+            optimizer._canonical_fallback_rules_by_root_shape = canonical_store
+            canonical_store.clear()
+            canonical_store.update(
+                {
+                    shape: list(rules)
+                    for shape, rules in (
+                        getattr(snapshot, "canonical_fallback_rules", None) or ()
+                    )
                 }
             )
         if snapshot.has_patternless_rule is not None:
