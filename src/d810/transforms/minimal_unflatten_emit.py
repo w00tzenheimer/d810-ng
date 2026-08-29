@@ -193,6 +193,7 @@ from d810.transforms.unflatten_authority.producer_api import (
     ConditionalEntryBridgeForecast,
     ConditionalArmRouteForecast,
     adapt_conditional_entry_route,
+    adapt_conditional_arm_route,
     adapt_native_bound_transition_route,
     adapt_state_transition_route,
     build_source_identity_catalog,
@@ -8498,7 +8499,76 @@ def _conditional_arm_route_forecast(
     )
 
 
-def build_conditional_arm_redirects(
+def _redirect_identity(modification: object) -> tuple[type, int, int, int] | None:
+    if type(modification) not in (RedirectGoto, RedirectBranch):
+        return None
+    return (
+        type(modification), int(modification.from_serial),
+        int(modification.old_target), int(modification.new_target),
+    )
+
+
+def _correlate_surviving_conditional_arm_forecasts(
+    arm_modifications: tuple[object, ...],
+    forecasts: tuple[ConditionalArmRouteForecast, ...],
+    final_modifications: tuple[object, ...],
+) -> tuple[ConditionalArmRouteForecast, ...] | None:
+    """Retain only exact arm operations surviving every later rewrite pass."""
+
+    arm_keys = tuple(key for mod in arm_modifications if (key := _redirect_identity(mod)) is not None)
+    final_keys = {key for mod in final_modifications if (key := _redirect_identity(mod)) is not None}
+    surviving_keys = tuple(key for key in arm_keys if key in final_keys)
+    # A final operation at the same source but a different typed identity is a
+    # normalization/replacement drift, not a suppressed arm.
+    final_sources = {
+        int(mod.block_serial) if type(mod) is ConvertToGoto else int(mod.from_serial)
+        for mod in final_modifications
+        if type(mod) is ConvertToGoto or type(mod) in (RedirectGoto, RedirectBranch)
+    }
+    for key in arm_keys:
+        if key not in final_keys and key[1] in final_sources:
+            return None
+    by_key: dict[tuple[type, int, int, int], list[ConditionalArmRouteForecast]] = {}
+    for forecast in forecasts:
+        key = _redirect_identity(forecast.modification)
+        if key is not None:
+            by_key.setdefault(key, []).append(forecast)
+    selected: list[ConditionalArmRouteForecast] = []
+    for key in surviving_keys:
+        candidates = by_key.get(key, [])
+        if len(candidates) != 1:
+            return None
+        selected.append(candidates[0])
+    if len({_redirect_identity(item.modification) for item in selected}) != len(selected):
+        return None
+    return tuple(selected)
+
+
+def _complete_local_semantic_route_facts(
+    backedge_facts: tuple[SemanticRouteFact, ...],
+    entry_fact: SemanticRouteFact | None,
+    arm_facts: tuple[SemanticRouteFact, ...],
+) -> tuple[SemanticRouteFact, ...] | None:
+    """Join final local facts, deduplicating only byte-for-byte equal facts."""
+
+    by_id: dict[str, SemanticRouteFact] = {}
+    ordered: list[SemanticRouteFact] = []
+    for fact in (*backedge_facts, *((entry_fact,) if entry_fact is not None else ()), *arm_facts):
+        if fact.fact_id is None:
+            if fact not in ordered:
+                ordered.append(fact)
+            continue
+        existing = by_id.get(fact.fact_id)
+        if existing is not None:
+            if existing != fact:
+                return None
+            continue
+        by_id[fact.fact_id] = fact
+        ordered.append(fact)
+    return tuple(ordered)
+
+
+def _build_conditional_arm_redirects_with_forecasts(
     flow_graph,
     dispatcher,
     handler_transitions: tuple[HandlerTransition, ...],
@@ -8511,7 +8581,8 @@ def build_conditional_arm_redirects(
     infer_unmatched_returns: bool = True,
     state_var_stkoff: int | None = None,
     state_var_reg: int | None = None,
-) -> list[object]:
+    decision_dag: DecisionDag | None = None,
+) -> tuple[list[object], tuple[ConditionalArmRouteForecast, ...]]:
     """Emit per-arm redirects for conditional handlers, anchored on the branch.
 
     The back-edge model (:func:`build_state_write_redirects`) anchors on the
@@ -8569,7 +8640,7 @@ def build_conditional_arm_redirects(
     """
     disp = int(dispatcher_entry_serial) if dispatcher_entry_serial is not None else None
     if disp is None:
-        return []
+        return [], ()
     dispatcher_block = flow_graph.get_block(disp)
     dispatcher_children = (
         {int(successor) for successor in dispatcher_block.succs}
@@ -8583,6 +8654,7 @@ def build_conditional_arm_redirects(
     candidate_order: list[tuple[str, int, int]] = []
     candidate_new_targets: dict[tuple[str, int, int], set[int]] = {}
     candidate_mods: dict[tuple[str, int, int], object] = {}
+    candidate_arms: dict[tuple[str, int, int], list[TransitionArm]] = {}
 
     def _succ_reaches_carrier(succ: int) -> bool:
         """``True`` if the arm successor is a 1-way feeder into a carrier via_block.
@@ -8603,7 +8675,7 @@ def build_conditional_arm_redirects(
         s_succs = tuple(int(x) for x in s_block.succs)
         return s_block.nsucc == 1 and s_succs and int(s_succs[0]) in carriers
 
-    def _add(src: int, old: int, new: int | None) -> None:
+    def _add(src: int, old: int, new: int | None, arm: TransitionArm) -> None:
         if new is None or int(old) == int(new):
             return
         if (int(src), int(old)) in existing:
@@ -8628,6 +8700,7 @@ def build_conditional_arm_redirects(
                 from_serial=int(src), old_target=int(old), new_target=int(new)
             )
         candidate_mods[edge_key] = mod
+        candidate_arms.setdefault(edge_key, []).append(arm)
 
     for handler in handler_transitions:
         if not handler.is_conditional:
@@ -8672,7 +8745,7 @@ def build_conditional_arm_redirects(
                         # supplies a non-stable arm sequence.
                         continue
                     new = default_target if arm.is_return else arm.target_handler
-                    _add(cut_source, cut_target, new)
+                    _add(cut_source, cut_target, new, arm)
                     continue
                 # Both arms reach the dispatcher through one *shared exit* block
                 # (``arm.write_block`` is the scan boundary, not the state-write
@@ -8715,7 +8788,7 @@ def build_conditional_arm_redirects(
                 ):
                     continue
                 if old is not None:
-                    _add(int(arm.branch_block), int(old), new)
+                    _add(int(arm.branch_block), int(old), new, arm)
                 continue
             # Distinct write blocks per arm: each is its own dispatcher
             # predecessor; only fill in arms the back-edge model left unredirected.
@@ -8738,7 +8811,7 @@ def build_conditional_arm_redirects(
                         and arm_succs[0] in dispatcher_children
                         and arm_preds == (int(arm.branch_block),)
                     ):
-                        _add(int(arm_successor), arm_succs[0], new)
+                        _add(int(arm_successor), arm_succs[0], new, arm)
                         continue
             wb = arm.write_block
             if wb is None:
@@ -8746,7 +8819,8 @@ def build_conditional_arm_redirects(
             wb_block = flow_graph.get_block(int(wb))
             if wb_block is None or disp not in tuple(int(s) for s in wb_block.succs):
                 continue
-            _add(int(wb), disp, new)
+            _add(int(wb), disp, new, arm)
+    forecasts: list[ConditionalArmRouteForecast] = []
     for edge_key in candidate_order:
         targets = candidate_new_targets.get(edge_key, set())
         if len(targets) != 1:
@@ -8762,7 +8836,28 @@ def build_conditional_arm_redirects(
         mod = candidate_mods.get(edge_key)
         if mod is not None:
             mods.append(mod)
-    return mods
+            arms = candidate_arms.get(edge_key, ())
+            if len(arms) == 1 and decision_dag is not None:
+                forecast = _conditional_arm_route_forecast(
+                    mod, arms[0], flow_graph, decision_dag,
+                    state_var_stkoff=state_var_stkoff, state_var_reg=state_var_reg,
+                )
+                if forecast is not None:
+                    forecasts.append(forecast)
+    return mods, tuple(forecasts)
+
+
+def build_conditional_arm_redirects(
+    flow_graph,
+    dispatcher,
+    handler_transitions: tuple[HandlerTransition, ...],
+    **kwargs,
+) -> list[object]:
+    """Compatibility projection of conditional-arm modifications only."""
+    modifications, _forecasts = _build_conditional_arm_redirects_with_forecasts(
+        flow_graph, dispatcher, handler_transitions, **kwargs,
+    )
+    return modifications
 
 
 def _recover_initial_state(
@@ -9516,12 +9611,18 @@ def emit_minimal_unflatten(
         "non_state_use_def_severances_zero": False,
     }
     dispatcher_state_plumbing_serials: frozenset[int] = frozenset()
+    caller_supplied_canonical_evidence = canonical_route_evidence is not None
+    local_route_facts: tuple[SemanticRouteFact, ...] = ()
+    local_production_context: CanonicalSemanticEvidenceProductionContext | None = None
+    held_entry_fact: SemanticRouteFact | None = None
     concrete_entry_route_forecasts: tuple[ConcreteEntryRouteForecast, ...] = ()
     concrete_entry_native_routes: tuple[NativeBoundTransitionRoute, ...] = ()
     exact_state_effect_exclusions: tuple[
         ExactStateBranchEffectExclusion, ...
     ] = ()
     entry_route_resolution: _EntryStateRouteResolution | None = None
+    arm_forecasts: tuple[ConditionalArmRouteForecast, ...] = ()
+    surviving_arm_forecasts: tuple[ConditionalArmRouteForecast, ...] = ()
 
     def compile_modifications(modifications) -> PatchPlan:
         authority_plan_id = None
@@ -9912,7 +10013,7 @@ def emit_minimal_unflatten(
         else None
     )
     if (
-        canonical_route_evidence is None
+        not caller_supplied_canonical_evidence
         and nonreturn_transitions
         and native_key is not None
         and state_identity_for_evidence is not None
@@ -9931,7 +10032,7 @@ def emit_minimal_unflatten(
             return compile_with_dispatcher_coverage(())
         generation = 0 if source_generation is None else int(source_generation)
         group_token = snapshot_id or f"{int(flow_graph.func_ea):X}"
-        production_context = CanonicalSemanticEvidenceProductionContext(
+        local_production_context = CanonicalSemanticEvidenceProductionContext(
             native_key=native_key,
             generation=generation,
             atomic_group_id=f"minimal-state-routes:{group_token}",
@@ -9944,30 +10045,8 @@ def emit_minimal_unflatten(
             ),
             entry_serial=int(flow_graph.entry_serial),
         )
-        production_result = build_canonical_semantic_evidence(
-            tuple(fact for fact in route_facts if fact is not None),
-            production_context,
-        )
-        if production_result.abstention is not None:
-            abstention = production_result.abstention
-            coordinate = abstention.coordinate
-            if logger.info_on:
-                logger.info(
-                    "unflat canonical route evidence abstained: reason=%s stage=%s "
-                    "fact_kind=%s owner_serial=%s source_serial=%s "
-                    "source_instruction_ea=%s target_serial=%s state_constant=%s",
-                    abstention.reason.value,
-                    abstention.stage.value,
-                    None if coordinate is None else coordinate.fact_kind.value,
-                    None if coordinate is None else coordinate.owner_serial,
-                    None if coordinate is None else coordinate.source_serial,
-                    None if coordinate is None else f"0x{coordinate.source_instruction_ea:X}",
-                    None if coordinate is None else coordinate.target_serial,
-                    None if coordinate is None else coordinate.state_constant,
-                )
-            return compile_with_dispatcher_coverage(())
-        canonical_route_evidence = production_result.evidence
-    elif canonical_route_evidence is None and nonreturn_transitions and logger.info_on:
+        local_route_facts = tuple(fact for fact in route_facts if fact is not None)
+    elif not caller_supplied_canonical_evidence and nonreturn_transitions and logger.info_on:
         logger.info(
             "unflat canonical route evidence abstained: reason=%s missing=%d total=%d missing_sources=%s missing_kinds=%s missing_native_routes=%s",
             "missing_route_fact",
@@ -10481,12 +10560,11 @@ def emit_minimal_unflatten(
                         or same_fact[0].target_serial != entry_fact.target_serial
                     ):
                         return compile_with_dispatcher_coverage(())
-                    if canonical_route_evidence is None:
+                    if not caller_supplied_canonical_evidence:
                         generation = 0 if source_generation is None else int(source_generation)
                         group_token = snapshot_id or f"{int(flow_graph.func_ea):X}"
-                        production_result = build_canonical_semantic_evidence(
-                            route_facts if same_fact else tuple((*route_facts, entry_fact)),
-                            CanonicalSemanticEvidenceProductionContext(
+                        if local_production_context is None:
+                            local_production_context = CanonicalSemanticEvidenceProductionContext(
                                 native_key=native_key,
                                 generation=generation,
                                 atomic_group_id=f"minimal-state-routes:{group_token}",
@@ -10498,55 +10576,53 @@ def emit_minimal_unflatten(
                                     if isinstance(ref, NativeBlockRef)
                                 ),
                                 entry_serial=int(flow_graph.entry_serial),
-                            ),
-                        )
-                        if production_result.evidence is None:
-                            return compile_with_dispatcher_coverage(())
-                        canonical_route_evidence = production_result.evidence
-                    try:
-                        entry_catalog = build_source_identity_catalog(
-                            flow_graph, block_refs_by_serial,
-                            source_generation=(
-                                int(source_generation) if source_generation is not None
-                                else int(canonical_route_evidence.generation)
-                            ),
-                            canonical_route_evidence=canonical_route_evidence,
-                        )
-                        proof = adapt_native_bound_transition_route(
-                            native_route, source=flow_graph,
-                            source_catalog=entry_catalog,
-                            block_refs_by_serial=block_refs_by_serial,
-                            canonical_evidence=canonical_route_evidence,
-                        )
-                        source_ref = block_refs_by_serial.get(int(native_route.source_block_serial))
-                        target_ref = block_refs_by_serial.get(int(native_route.target_handler_serial))
-                        if type(source_ref) is not NativeBlockRef or type(target_ref) is not NativeBlockRef:
-                            return compile_with_dispatcher_coverage(())
-                        concrete_entry_route_forecasts = (
-                            ConcreteEntryRouteForecast(
-                                normalized_state=native_route.state_constant,
-                                target_handler=native_route.target_handler_serial,
-                                source_kinds=entry_route.source_kinds,
-                                physical_fact_id=native_route.fact_id,
-                                canonical_proof_id=proof.proof_id,
-                                source_identity=source_ref.identity,
-                                source_anchor_ea=native_route.source_instruction_ea,
-                                target_identity=target_ref.identity,
-                                state_identity=entry_state_identity,
-                                proof_owner_identity=(
-                                    "concrete-entry:"
-                                    f"fact_id={native_route.fact_id}:"
-                                    f"source_ea=0x{int(native_route.source_instruction_ea):X}"
-                                ),
-                            ),
-                        )
-                    except (TypeError, ValueError) as exc:
-                        if logger.info_on:
-                            logger.info(
-                                "unflat typed entry authority abstained: reason=%s",
-                                type(exc).__name__ + ":" + str(exc),
                             )
-                        return compile_with_dispatcher_coverage(())
+                        held_entry_fact = entry_fact
+                    else:
+                        try:
+                            entry_catalog = build_source_identity_catalog(
+                                flow_graph, block_refs_by_serial,
+                                source_generation=(
+                                    int(source_generation) if source_generation is not None
+                                    else int(canonical_route_evidence.generation)
+                                ),
+                                canonical_route_evidence=canonical_route_evidence,
+                            )
+                            proof = adapt_native_bound_transition_route(
+                                native_route, source=flow_graph,
+                                source_catalog=entry_catalog,
+                                block_refs_by_serial=block_refs_by_serial,
+                                canonical_evidence=canonical_route_evidence,
+                            )
+                            source_ref = block_refs_by_serial.get(int(native_route.source_block_serial))
+                            target_ref = block_refs_by_serial.get(int(native_route.target_handler_serial))
+                            if type(source_ref) is not NativeBlockRef or type(target_ref) is not NativeBlockRef:
+                                return compile_with_dispatcher_coverage(())
+                            concrete_entry_route_forecasts = (
+                                ConcreteEntryRouteForecast(
+                                    normalized_state=native_route.state_constant,
+                                    target_handler=native_route.target_handler_serial,
+                                    source_kinds=entry_route.source_kinds,
+                                    physical_fact_id=native_route.fact_id,
+                                    canonical_proof_id=proof.proof_id,
+                                    source_identity=source_ref.identity,
+                                    source_anchor_ea=native_route.source_instruction_ea,
+                                    target_identity=target_ref.identity,
+                                    state_identity=entry_state_identity,
+                                    proof_owner_identity=(
+                                        "concrete-entry:"
+                                        f"fact_id={native_route.fact_id}:"
+                                        f"source_ea=0x{int(native_route.source_instruction_ea):X}"
+                                    ),
+                                ),
+                            )
+                        except (TypeError, ValueError) as exc:
+                            if logger.info_on:
+                                logger.info(
+                                    "unflat typed entry authority abstained: reason=%s",
+                                    type(exc).__name__ + ":" + str(exc),
+                                )
+                            return compile_with_dispatcher_coverage(())
             bridged = bool(dynamic_entry_bridge_edges) or (
                 entry_route is not None
             )
@@ -10955,7 +11031,7 @@ def emit_minimal_unflatten(
             )
         ]
         mods = list(mods) + conditional_bridge_mods
-    arm_mods = build_conditional_arm_redirects(
+    arm_mods, arm_forecasts = _build_conditional_arm_redirects_with_forecasts(
         flow_graph,
         dispatcher,
         handler_transitions,
@@ -10975,6 +11051,7 @@ def emit_minimal_unflatten(
         infer_unmatched_returns=not materialized_computed_goto_profile,
         state_var_stkoff=_soff,
         state_var_reg=state_var_reg,
+        decision_dag=condition_chain_dag,
     )
     guard_candidates = build_loop_carrier_guard_transitions(
         flow_graph,
@@ -11220,7 +11297,121 @@ def emit_minimal_unflatten(
             "cleanup_source=%s",
             _format_block_label(flow_graph, terminal_switch_cleanup_source),
         )
+    pre_normalization_arm_mods = tuple(arm_mods)
     mods = _normalize_degenerate_branch_redirects(flow_graph, list(mods))
+    correlated_arm_forecasts = _correlate_surviving_conditional_arm_forecasts(
+        pre_normalization_arm_mods,
+        arm_forecasts,
+        tuple(mods),
+    )
+    if correlated_arm_forecasts is None:
+        return compile_with_dispatcher_coverage(())
+    surviving_arm_forecasts = correlated_arm_forecasts
+    if not caller_supplied_canonical_evidence and native_key is not None:
+        if local_production_context is None and state_identity_for_evidence is not None:
+            generation = 0 if source_generation is None else int(source_generation)
+            group_token = snapshot_id or f"{int(flow_graph.func_ea):X}"
+            local_production_context = CanonicalSemanticEvidenceProductionContext(
+                native_key=native_key,
+                generation=generation,
+                atomic_group_id=f"minimal-state-routes:{group_token}",
+                state_identity=state_identity_for_evidence,
+                blocks=tuple(flow_graph.blocks.values()),
+                identities_by_serial=tuple(
+                    (int(serial), ref.identity)
+                    for serial, ref in block_refs_by_serial.items()
+                    if isinstance(ref, NativeBlockRef)
+                ),
+                entry_serial=int(flow_graph.entry_serial),
+            )
+        if local_production_context is not None:
+            final_facts = _complete_local_semantic_route_facts(
+                tuple(
+                    fact
+                    for fact in local_route_facts
+                    if held_entry_fact is None or fact.fact_id != held_entry_fact.fact_id
+                ),
+                held_entry_fact,
+                tuple(forecast.route_fact for forecast in surviving_arm_forecasts),
+            )
+            if final_facts is None or not final_facts:
+                return compile_with_dispatcher_coverage(())
+            production_result = build_canonical_semantic_evidence(
+                final_facts, local_production_context,
+            )
+            if production_result.evidence is None:
+                abstention = production_result.abstention
+                coordinate = None if abstention is None else abstention.coordinate
+                if logger.info_on:
+                    logger.info(
+                        "unflat canonical route evidence abstained: reason=%s stage=%s "
+                        "fact_kind=%s owner_serial=%s source_serial=%s "
+                        "source_instruction_ea=%s target_serial=%s state_constant=%s",
+                        "unknown" if abstention is None else abstention.reason.value,
+                        "unknown" if abstention is None else abstention.stage.value,
+                        None if coordinate is None else coordinate.fact_kind.value,
+                        None if coordinate is None else coordinate.owner_serial,
+                        None if coordinate is None else coordinate.source_serial,
+                        None if coordinate is None else f"0x{coordinate.source_instruction_ea:X}",
+                        None if coordinate is None else coordinate.target_serial,
+                        None if coordinate is None else coordinate.state_constant,
+                    )
+                return compile_with_dispatcher_coverage(())
+            canonical_route_evidence = production_result.evidence
+            if concrete_entry_native_routes:
+                if len(concrete_entry_native_routes) != 1 or entry_route_resolution is None:
+                    return compile_with_dispatcher_coverage(())
+                entry_route = entry_route_resolution.route
+                native_route = concrete_entry_native_routes[0]
+                if entry_route is None or held_entry_fact is None:
+                    return compile_with_dispatcher_coverage(())
+                try:
+                    entry_catalog = build_source_identity_catalog(
+                        flow_graph,
+                        block_refs_by_serial,
+                        source_generation=(
+                            int(source_generation)
+                            if source_generation is not None
+                            else int(canonical_route_evidence.generation)
+                        ),
+                        canonical_route_evidence=canonical_route_evidence,
+                    )
+                    proof = adapt_native_bound_transition_route(
+                        native_route,
+                        source=flow_graph,
+                        source_catalog=entry_catalog,
+                        block_refs_by_serial=block_refs_by_serial,
+                        canonical_evidence=canonical_route_evidence,
+                    )
+                    source_ref = block_refs_by_serial.get(int(native_route.source_block_serial))
+                    target_ref = block_refs_by_serial.get(int(native_route.target_handler_serial))
+                    if type(source_ref) is not NativeBlockRef or type(target_ref) is not NativeBlockRef:
+                        return compile_with_dispatcher_coverage(())
+                    concrete_entry_route_forecasts = (
+                        ConcreteEntryRouteForecast(
+                            normalized_state=native_route.state_constant,
+                            target_handler=native_route.target_handler_serial,
+                            source_kinds=entry_route.source_kinds,
+                            physical_fact_id=native_route.fact_id,
+                            canonical_proof_id=proof.proof_id,
+                            source_identity=source_ref.identity,
+                            source_anchor_ea=native_route.source_instruction_ea,
+                            target_identity=target_ref.identity,
+                            state_identity=local_production_context.state_identity,
+                            proof_owner_identity=(
+                                "concrete-entry:"
+                                f"fact_id={native_route.fact_id}:"
+                                f"source_ea=0x{int(native_route.source_instruction_ea):X}"
+                            ),
+                        ),
+                    )
+                except (TypeError, ValueError) as exc:
+                    if logger.info_on:
+                        logger.info(
+                            "unflat typed entry authority abstained: reason=%s",
+                            type(exc).__name__ + ":" + str(exc),
+                        )
+                    return compile_with_dispatcher_coverage(())
     legacy_severance_bail = severance_bail_enabled()
     use_def_audit = audit_use_def_severances(
         mods,
@@ -11383,6 +11574,33 @@ def emit_minimal_unflatten(
                     block_refs_by_serial=block_refs_by_serial,
                     selected_transitions=selected_transition_index,
                 )
+            selected_arm_proofs: list[SemanticRouteProof] = []
+            for forecast in surviving_arm_forecasts:
+                modification = forecast.modification
+                owner = (
+                    "conditional_arm:"
+                    f"{type(modification).__name__}:"
+                    f"from={int(modification.from_serial)}:"
+                    f"old={int(modification.old_target)}:"
+                    f"new={int(modification.new_target)}:"
+                    f"state=0x{int(forecast.state_constant):08X}"
+                )
+                proof = adapt_conditional_arm_route(
+                    forecast,
+                    source=flow_graph,
+                    source_catalog=route_catalog,
+                    block_refs_by_serial=block_refs_by_serial,
+                    canonical_evidence=canonical_route_evidence,
+                    state_identity=state_identity,
+                )
+                select_route(owner, proof)
+                selected_arm_proofs.append(proof)
+            if (
+                len(selected_arm_proofs) != len(surviving_arm_forecasts)
+                or len({proof.proof_id for proof in selected_arm_proofs})
+                != len(selected_arm_proofs)
+            ):
+                raise ValueError("conditional arm proof selection is not one-to-one")
             if conditional_entry_bridge is not None:
                 conditional_proofs = tuple(
                     adapt_conditional_entry_route(

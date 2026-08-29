@@ -124,9 +124,15 @@ from d810.transforms.minimal_unflatten_emit import (
     MissingSemanticRouteFactCoordinate,
     _missing_semantic_route_fact_coordinates,
     _conditional_arm_route_forecast,
+    _correlate_surviving_conditional_arm_forecasts,
+    _complete_local_semantic_route_facts,
 )
 from d810.transforms.unflatten_authority.producer_api import (
     ConditionalEntryBridgeForecast,
+)
+from d810.analyses.control_flow.semantic_route_evidence import (
+    SemanticRouteFact,
+    SemanticRouteFactKind,
 )
 from tests.native_preanalysis import make_native_key
 from tests.typed_patch_authority import emit_minimal_unflatten, graph_modifications
@@ -275,6 +281,65 @@ def _forecast_direct_arm(graph: FlowGraph, arm: TransitionArm, dag: DecisionDag)
         state_var_stkoff=_STATE,
         state_var_reg=None,
     )
+
+
+def test_conditional_arm_correlation_selects_only_unsuppressed_exact_operation() -> None:
+    """A suppressed arm cannot carry authority for its surviving sibling."""
+
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    survivor = RedirectGoto(1, 2, 3)
+    suppressed = RedirectGoto(4, 5, 6)
+    forecast = _conditional_arm_route_forecast(
+        survivor, arm, graph, dag, state_var_stkoff=_STATE, state_var_reg=None,
+    )
+    assert forecast is not None
+    suppressed_forecast = replace(
+        forecast,
+        modification=suppressed,
+        target_serial=6,
+        route_fact=replace(
+            forecast.route_fact,
+            owner_serial=4,
+            source_serial=4,
+            target_serial=6,
+            path_serials=(4,),
+        ),
+    )
+    assert _correlate_surviving_conditional_arm_forecasts(
+        (survivor, suppressed), (forecast, suppressed_forecast), (survivor,)
+    ) == (forecast,)
+
+
+def test_final_local_fact_join_rejects_divergent_same_id() -> None:
+    backedge = SemanticRouteFact(
+        SemanticRouteFactKind.NATIVE_BOUND, 1, 1, 0x1000, 0x10, 2,
+        0x1000, 0x2000, (1,), (), "same",
+    )
+    divergent_entry = replace(backedge, target_serial=3)
+
+    assert _complete_local_semantic_route_facts(
+        (backedge,), divergent_entry, (),
+    ) is None
+
+
+def test_final_local_fact_join_deduplicates_only_exact_fact() -> None:
+    fact = SemanticRouteFact(
+        SemanticRouteFactKind.NATIVE_BOUND, 1, 1, 0x1000, 0x10, 2,
+        0x1000, 0x2000, (1,), (), "same",
+    )
+
+    assert _complete_local_semantic_route_facts((fact,), fact, ()) == (fact,)
+
+
+def test_final_local_fact_join_keeps_distinct_none_id_arm_facts() -> None:
+    _state, graph, arm, dag = _direct_conditional_arm_fixture()
+    forecast = _forecast_direct_arm(graph, arm, dag)
+    first = replace(forecast.route_fact, fact_id=None)
+    second = replace(first, source_instruction_ea=first.source_instruction_ea + 4)
+
+    assert _complete_local_semantic_route_facts(
+        (), None, (first, second, first),
+    ) == (first, second)
 
 
 def test_conditional_arm_forecast_rejects_absent_intermediate_path_block() -> None:
