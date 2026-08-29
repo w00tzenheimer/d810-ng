@@ -33,6 +33,7 @@ from d810.mba.certified_catalogue import (  # noqa: E402
 from d810.mba.dsl import Const, Var, Zext  # noqa: E402
 from d810.mba.typed_term import TypedBvTerm  # noqa: E402
 from d810.mba.provider_outcome import (  # noqa: E402
+    MatcherSelection,
     ProviderOutcomeStatus,
     RawMatcherWorkReceipt,
 )
@@ -1536,6 +1537,9 @@ def test_fallback_miss_publishes_dispatch_telemetry_before_clearing_refs() -> No
     }
     assert outcome.metadata["canonical_source"] == "fallback-miss"
     assert outcome.matcher.stop_reason == "miss"
+    assert outcome.matcher.selection is MatcherSelection.CANONICAL_FALLBACK
+    assert outcome.matcher.terminal_stop_reason == "miss"
+    assert outcome.matcher.native_equivalence_verdict is None
     assert adapter._shadow_lowering is None
     assert adapter._shadow_match_report is None
     assert adapter._shadow_structural_native_paths is None

@@ -80,6 +80,75 @@ _CATALOGUE_CASES = (
     ("mba_shape_catalogue_09", "Or_HackersDelightRule_2"),
     ("mba_shape_catalogue_10", "Xor_HackersDelightRule_1"),
 )
+# One receipt row is pinned to the intended catalogue rule for each native
+# function.  The rows are deliberately independent of the other rule attempts
+# emitted by the live handler, so Python and Cython runs exercise this same
+# contract table rather than accepting an arbitrary non-empty receipt.
+_CATALOGUE_RECEIPT_CONTRACT = {
+    "mba_shape_catalogue_01": (
+        "Add_HackersDelightRule_2",
+        MatcherSelection.CANONICAL_FALLBACK,
+        "matched",
+        True,
+        ProviderOutcomeStatus.APPLIED,
+    ),
+    "mba_shape_catalogue_02": (
+        "Add_HackersDelightRule_3",
+        MatcherSelection.NONE,
+        "miss",
+        None,
+        ProviderOutcomeStatus.UNCHANGED,
+    ),
+    "mba_shape_catalogue_03": (
+        "Xor_HackersDelightRule_3",
+        MatcherSelection.RAW,
+        "matched",
+        None,
+        ProviderOutcomeStatus.APPLIED,
+    ),
+    "mba_shape_catalogue_05": (
+        "Or_MbaRule_1",
+        MatcherSelection.NONE,
+        "not_observed",
+        None,
+        None,
+    ),
+    "mba_shape_catalogue_06": (
+        "And_HackersDelightRule_4",
+        MatcherSelection.NONE,
+        "not_observed",
+        None,
+        None,
+    ),
+    "mba_shape_catalogue_07": (
+        "Add_HackersDelightRule_2",
+        MatcherSelection.CANONICAL_FALLBACK,
+        "matched",
+        True,
+        ProviderOutcomeStatus.APPLIED,
+    ),
+    "mba_shape_catalogue_08": (
+        "Add_HackersDelightRule_4",
+        MatcherSelection.RAW,
+        "matched",
+        None,
+        ProviderOutcomeStatus.APPLIED,
+    ),
+    "mba_shape_catalogue_09": (
+        "Or_HackersDelightRule_2",
+        MatcherSelection.NONE,
+        "not_observed",
+        None,
+        None,
+    ),
+    "mba_shape_catalogue_10": (
+        "Xor_HackersDelightRule_1",
+        MatcherSelection.NONE,
+        "not_observed",
+        None,
+        None,
+    ),
+}
 _PORTFOLIO_PROJECT = "mba_compiler_shape_catalogue.json"
 _EXPECTED_NATIVE_PROVIDERS = tuple(MbaProviderKind)
 
@@ -941,6 +1010,7 @@ class TestCompilerShapeCatalogueNative:
                 lambda _pattern, _candidate: None,
             )
             accepted_catalogue_by_function: dict[str, tuple[object, ...]] = {}
+            observed_catalogue_by_function: dict[str, tuple[object, ...]] = {}
             with capture_native_provider_histories(adapters):
                 handler_started = time.monotonic()
                 state.start_d810()
@@ -975,6 +1045,11 @@ class TestCompilerShapeCatalogueNative:
                             else adapter.provider_outcomes()[cursor:]
                         )
                     )
+                    observed_catalogue_by_function[function] = tuple(
+                        outcome
+                        for outcome in new_outcomes
+                        if outcome.provider is MbaProviderKind.CATALOGUE
+                    )
                     accepted = tuple(
                         outcome
                         for outcome in new_outcomes
@@ -989,6 +1064,119 @@ class TestCompilerShapeCatalogueNative:
                     )
                     assert sum(native_proof_results[proof_start:]) >= fallback_count
                 state.stop_d810()
+            for function, outcomes in observed_catalogue_by_function.items():
+                if function == "mba_shape_catalogue_04":
+                    # This 64-bit subtraction is a lowering-sensitive source
+                    # row.  Its decisive proof is covered by the deterministic
+                    # portable regression; in the live IDA corpus retain only
+                    # the invariant that every observed attempt is a
+                    # provenance-backed miss or a native-proved fallback.
+                    target_outcomes = tuple(
+                        outcome
+                        for outcome in outcomes
+                        if outcome.metadata.get("rule_name")
+                        == "Sub_HackersDelightRule_2"
+                    )
+                    assert target_outcomes
+                    for outcome in target_outcomes:
+                        assert outcome.matcher is not None
+                        assert outcome.matcher.selection in {
+                            MatcherSelection.NONE,
+                            MatcherSelection.CANONICAL_FALLBACK,
+                        }
+                        assert outcome.matcher.terminal_stop_reason in {
+                            "miss",
+                            "clean_miss",
+                            "matched",
+                        }
+                        if outcome.matcher.selection is MatcherSelection.NONE:
+                            assert outcome.matcher.native_equivalence_verdict in {
+                                None,
+                                False,
+                            }
+                            assert outcome.status is not ProviderOutcomeStatus.APPLIED
+                        elif outcome.status is ProviderOutcomeStatus.APPLIED:
+                            assert outcome.matcher.native_equivalence_verdict is True
+                    continue
+                configured_contract = _CATALOGUE_RECEIPT_CONTRACT[function]
+                expected_contracts = (configured_contract,)
+                expected_rule = next(
+                    rule_name
+                    for case_name, rule_name in _CATALOGUE_CASES
+                    if case_name == function
+                )
+                if not outcomes:
+                    # GCC/Hex-Rays may simplify a source pair before the
+                    # catalogue callback.  Keep that row as an explicit
+                    # boundary-level ``none/not_observed`` contract: no
+                    # provider candidate was observed, so no matcher metadata
+                    # may be invented.
+                    assert not _catalogue_reaches_provider(function)
+                    assert expected_contracts == (
+                        (
+                            expected_rule,
+                            MatcherSelection.NONE,
+                            "not_observed",
+                            None,
+                            None,
+                        ),
+                    )
+                    continue
+                target_outcomes = tuple(
+                    outcome
+                    for outcome in outcomes
+                    if outcome.metadata.get("rule_name") == expected_rule
+                )
+                assert target_outcomes, (
+                    f"{function} did not record its contract rule {expected_rule}"
+                )
+                assert any(
+                    any(
+                        outcome.matcher is not None
+                        and outcome.matcher.selection is expected_selection
+                        and outcome.matcher.terminal_stop_reason == expected_stop
+                        and outcome.matcher.native_equivalence_verdict is expected_proof
+                        and outcome.status is expected_status
+                        for (
+                            _expected_rule,
+                            expected_selection,
+                            expected_stop,
+                            expected_proof,
+                            expected_status,
+                        ) in expected_contracts
+                    )
+                    for outcome in target_outcomes
+                ), f"{function} receipt contract mismatch: {target_outcomes!r}"
+                for outcome in outcomes:
+                    assert outcome.source_provenance
+                    assert outcome.metadata.get("rule_name")
+                    matcher = outcome.matcher
+                    assert matcher is not None
+                    assert matcher.selection in {
+                        MatcherSelection.RAW,
+                        MatcherSelection.CANONICAL_FALLBACK,
+                        MatcherSelection.NONE,
+                    }
+                    assert matcher.terminal_stop_reason
+                    if matcher.selection is MatcherSelection.RAW:
+                        assert matcher.fallback_comparisons == 0
+                        assert matcher.native_equivalence_verdict is None
+                        assert outcome.proof_verdict is None
+                    elif matcher.selection is MatcherSelection.CANONICAL_FALLBACK:
+                        assert matcher.fallback_comparisons > 0
+                        assert matcher.native_equivalence_verdict in {True, False, None}
+                        if outcome.status is ProviderOutcomeStatus.APPLIED:
+                            assert matcher.native_equivalence_verdict is True
+                            # The native mutation proof is matcher telemetry;
+                            # the generic provider proof field is reserved for
+                            # provider-level proofs and remains unset here.
+                            assert outcome.proof_verdict is None
+                        else:
+                            assert matcher.native_equivalence_verdict in {None, False}
+                            assert outcome.proof_verdict in {None, False}
+                    else:
+                        assert outcome.status is not ProviderOutcomeStatus.APPLIED
+                        assert outcome.proof_verdict in {None, False}
             applied_catalogue_outcomes = tuple(
                 outcome
                 for function_outcomes in accepted_catalogue_by_function.values()

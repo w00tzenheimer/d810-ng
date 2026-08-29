@@ -264,6 +264,14 @@ class TestNativeMbaCorpusCapture:
             MbaProviderKind.CATALOGUE
         ]
         assert case.outcomes[0].status is ProviderOutcomeStatus.APPLIED
+        receipt = case.outcomes[0].matcher
+        assert receipt is not None
+        assert receipt.selection.value == "raw"
+        assert receipt.terminal_stop_reason == "matched"
+        assert receipt.fallback_comparisons == 0
+        assert receipt.native_equivalence_verdict is None
+        assert case.outcomes[0].source_provenance
+        assert case.outcomes[0].metadata["rule_name"] == "Add_HackersDelightRule_2"
 
         capture_path = tmp_path / "native-capture.json"
         report_path = tmp_path / "report.json"
