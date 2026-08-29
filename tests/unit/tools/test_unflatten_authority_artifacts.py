@@ -59,55 +59,42 @@ def _command(target: str, log: str = "authority.log") -> list[str]:
     ]
 
 
-def _parity() -> dict:
+def _canonical_pair() -> dict:
     return {
-        "schema": "unflatten_authority_shadow_parity.v2",
         "authority_id": "authority-1",
-        "case_ids": {"projected": "case-p", "observed": "case-o"},
-        "projected": {"accepted_equal": True, "reason_equal": True, "losses_equal": True},
-        "observed": {"accepted_equal": True, "reason_equal": True, "losses_equal": True},
-        "legacy_anchored_loss_labels": {"projected": [], "observed": []},
-        "counters": {"projected": [1, 1, 1, 0], "observed": [1, 1, 1, 0]},
-        "codec": {
-            "captured_keys": ["full_unflattening_claim"],
-            "adaptations": [{
-                "key": "full_unflattening_claim",
-                "family": "full_unflattening_claim",
-                "result_ids": ["result-1"],
-                "payload_sha256": "a" * 64,
-            }],
-            "all_adapted": True,
-        },
-        "parity_ok": True,
+        "projected_case_id": "case-p",
+        "observed_case_id": "case-o",
+        "source_fingerprint": "source-1",
+        "projected_candidate_fingerprint": "candidate-p",
+        "observed_candidate_fingerprint": "candidate-o",
+        "observed_binding_id": "binding-1",
+        "plan_id": "plan-1",
+        "attempt_id": "attempt-1",
+        "session_id": "session-1",
+        "projected_timings": _timings(),
+        "observed_timings": _timings(),
+    }
+
+
+def _timings() -> dict:
+    return {
+        "inventory_ms": 1, "binding_ms": 2, "evaluation_ms": 3,
+        "views_ms": 4, "total_authority_ms": 10,
+        "source_inventory_builds": 1, "candidate_inventory_builds": 1,
+        "index_folds": 1, "view_graph_traversals": 0,
     }
 
 
 def _marker(wt: Path, target: str) -> dict:
     digest = __import__("hashlib").sha256((wt / artifacts.TARGETS[target]["source"]).read_bytes()).hexdigest()
-    phases = {
-        "inventory_ms": 1,
-        "binding_ms": 2,
-        "evaluation_ms": 3,
-        "views_ms": 4,
-        "total_authority_ms": 10,
-        "source_inventory_builds": 1,
-        "candidate_inventory_builds": 1,
-        "index_folds": 1,
-        "view_graph_traversals": 0,
-        "plan_id": "plan-1",
-        "attempt_id": "attempt-1",
-    }
     return {
-        "schema": "unflatten-authority-oracle.v1",
+        "schema": "unflatten-authority-oracle.v2",
         "target": target,
         "function": artifacts.TARGETS[target]["function"],
         "function_ea": 0x1234,
         "fixture_sha256": digest,
-        "session_id": "session-1",
         "image": artifacts.IMAGE,
-        "parity": _parity(),
-        "projected": phases,
-        "observed": phases,
+        "canonical_pair": _canonical_pair(),
     }
 
 
@@ -129,17 +116,16 @@ def test_run_target_records_exact_command_marker_and_fixture_hash(tmp_path: Path
     assert record["fixture_sha256"] == marker["fixture_sha256"]
     assert record["plan_id"] == "plan-1"
     assert record["attempt_id"] == "attempt-1"
-    assert record["parity"] == marker["parity"]
+    assert record["canonical_pair"] == marker["canonical_pair"]
     assert json.loads(output.read_text())["session_id"] == "session-1"
 
 
-def test_run_target_rejects_mismatched_phase_plan_and_attempt_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_target_rejects_invalid_canonical_pair_attempt_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, wt = _fixture_root(tmp_path, monkeypatch)
     marker = _marker(wt, "A")
-    marker["observed"] = dict(marker["observed"])
-    marker["observed"]["plan_id"] = "stale-plan"
+    marker["canonical_pair"]["attempt_id"] = ""
     _runner(root, marker)
-    with pytest.raises(artifacts.ArtifactError, match="plan/attempt"):
+    with pytest.raises(artifacts.ArtifactError, match="attempt_id"):
         artifacts.run_target(
             mode="pre-cutover",
             target="A",
@@ -222,7 +208,10 @@ def _record(target: str, mode: str, *, e2e: float = 100.0, authority: float = 10
         row["plan_id"] = "plan-1"
         row["attempt_id"] = "attempt-1"
         row["session_id"] = "session-1"
-        row["parity"] = _parity()
+        canonical_pair = _canonical_pair()
+        canonical_pair["projected_timings"] = dict(row["projected"])
+        canonical_pair["observed_timings"] = dict(row["observed"])
+        row["canonical_pair"] = canonical_pair
     return row
 
 
@@ -251,6 +240,7 @@ def test_compare_writes_one_relative_retry_then_rejects_second(tmp_path: Path) -
     candidate_data = json.loads(candidate.read_text())
     candidate_data["targets"][0]["end_to_end_ms"] = 6000
     candidate_data["targets"][0]["session_id"] = "session-2"
+    candidate_data["targets"][0]["canonical_pair"]["session_id"] = "session-2"
     candidate.write_text(json.dumps(candidate_data))
     retry = tmp_path / "retry.json"
     result = artifacts.compare(base=base, shadow=shadow, candidate=candidate, retry_file=retry)
@@ -319,7 +309,7 @@ def test_oracle_requires_exact_schema_keys_and_complete_phase_rows() -> None:
     }
     with pytest.raises(artifacts.ArtifactError):
         artifacts._oracle(payload, "A", "a" * 64)
-    payload["schema"] = "unflatten-authority-oracle.v1"
+    payload["schema"] = "unflatten-authority-oracle.v2"
     with pytest.raises(artifacts.ArtifactError):
         artifacts._oracle({**payload, "projected": {"inventory_ms": 0}}, "A", "a" * 64)
 
@@ -361,10 +351,15 @@ def test_compare_uses_lower_original_or_retry_measurement(tmp_path: Path) -> Non
     candidate_data["targets"][0]["end_to_end_ms"] = 6000
     candidate_data["targets"][0]["session_id"] = "session-2"
     candidate_data["targets"][0]["attempt_id"] = "attempt-2"
+    candidate_data["targets"][0]["canonical_pair"].update(
+        session_id="session-2", attempt_id="attempt-2"
+    )
     retry = tmp_path / "retry.json"
     prior = dict(candidate_data["targets"][0])
     prior["session_id"] = "session-1"
     prior["attempt_id"] = "attempt-1"
+    prior["canonical_pair"] = dict(prior["canonical_pair"])
+    prior["canonical_pair"].update(session_id="session-1", attempt_id="attempt-1")
     candidate_data["targets"][0]["end_to_end_ms"] = 100
     candidate.write_text(json.dumps(candidate_data))
     token = "a" * 32
@@ -460,7 +455,7 @@ def test_phase_row_rejects_inconsistent_total() -> None:
         artifacts._phase_row(row, field="projected")
 
 
-def test_oracle_requires_positive_runtime_ea_exact_image_and_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_oracle_requires_positive_runtime_ea_exact_image_and_canonical_pair(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, wt = _fixture_root(tmp_path, monkeypatch)
     marker = _marker(wt, "A")
     marker["function_ea"] = 0
@@ -473,37 +468,45 @@ def test_oracle_requires_positive_runtime_ea_exact_image_and_parity(tmp_path: Pa
     with pytest.raises(artifacts.ArtifactError, match="image"):
         artifacts.run_target(mode="pre-cutover", target="A", worktree=artifacts.WORKTREE_NAME, log="authority.log", output=(tmp_path / "A.json").absolute(), argv=_command("A"))
     marker["image"] = artifacts.IMAGE
-    del marker["parity"]
+    del marker["canonical_pair"]
     _runner(root, marker)
-    with pytest.raises(artifacts.ArtifactError, match="parity"):
+    with pytest.raises(artifacts.ArtifactError, match="canonical_pair"):
         artifacts.run_target(mode="pre-cutover", target="A", worktree=artifacts.WORKTREE_NAME, log="authority.log", output=(tmp_path / "A.json").absolute(), argv=_command("A"))
 
 
-def test_parity_requires_closed_codec_receipt() -> None:
-    parity = _parity()
-    del parity["codec"]
-    with pytest.raises(artifacts.ArtifactError, match="parity"):
-        artifacts._validate_parity(parity)
-    parity = _parity()
-    parity["codec"]["adaptations"][0]["payload_sha256"] = "not-a-digest"
-    with pytest.raises(artifacts.ArtifactError, match="payload_sha256"):
-        artifacts._validate_parity(parity)
+def test_canonical_pair_requires_distinct_cases_binding_and_timings() -> None:
+    pair = _canonical_pair()
+    pair["observed_case_id"] = pair["projected_case_id"]
+    with pytest.raises(artifacts.ArtifactError, match="case IDs"):
+        artifacts._canonical_pair(pair)
+    pair = _canonical_pair()
+    pair["observed_binding_id"] = ""
+    with pytest.raises(artifacts.ArtifactError, match="binding"):
+        artifacts._canonical_pair(pair)
+    pair = _canonical_pair()
+    pair["observed_timings"]["total_authority_ms"] = 99
+    with pytest.raises(artifacts.ArtifactError, match="total_authority_ms"):
+        artifacts._canonical_pair(pair)
 
 
-def test_parity_rejects_unsupported_family_and_noncanonical_digest() -> None:
-    parity = _parity()
-    parity["codec"]["captured_keys"] = ["unsupported_family"]
-    parity["codec"]["adaptations"][0]["key"] = "unsupported_family"
-    with pytest.raises(artifacts.ArtifactError, match="unsupported"):
-        artifacts._validate_parity(parity)
-    parity = _parity()
-    parity["codec"]["adaptations"][0]["family"] = "other_family"
-    with pytest.raises(artifacts.ArtifactError, match="family"):
-        artifacts._validate_parity(parity)
-    parity = _parity()
-    parity["codec"]["adaptations"][0]["payload_sha256"] = "A" * 64
-    with pytest.raises(artifacts.ArtifactError, match="payload_sha256"):
-        artifacts._validate_parity(parity)
+@pytest.mark.parametrize(
+    "field",
+    [
+        "authority_id",
+        "projected_case_id",
+        "source_fingerprint",
+        "projected_candidate_fingerprint",
+        "observed_candidate_fingerprint",
+        "plan_id",
+        "attempt_id",
+        "session_id",
+    ],
+)
+def test_canonical_pair_requires_nonempty_identity_and_fingerprint_fields(field: str) -> None:
+    pair = _canonical_pair()
+    pair[field] = ""
+    with pytest.raises(artifacts.ArtifactError, match=field):
+        artifacts._canonical_pair(pair)
 
 
 def test_base_record_requires_zero_authority_metrics_and_no_session() -> None:
@@ -520,6 +523,23 @@ def test_non_base_record_requires_plan_and_attempt_identity(field: str) -> None:
         artifacts._record_check(row, "A", "post-cutover")
 
 
+@pytest.mark.parametrize("field", ["plan_id", "attempt_id", "session_id"])
+def test_non_base_record_requires_canonical_pair_correlation(field: str) -> None:
+    row = _record("A", "post-cutover")
+    row[field] = f"foreign-{field}"
+    with pytest.raises(artifacts.ArtifactError, match="canonical_pair"):
+        artifacts._record_check(row, "A", "post-cutover")
+
+
+@pytest.mark.parametrize("phase", ["projected", "observed"])
+def test_non_base_record_requires_canonical_pair_timings(phase: str) -> None:
+    row = _record("A", "post-cutover")
+    row[phase]["inventory_ms"] = 2
+    row[phase]["total_authority_ms"] = 9.5
+    with pytest.raises(artifacts.ArtifactError, match="canonical_pair"):
+        artifacts._record_check(row, "A", "post-cutover")
+
+
 def test_retry_rejects_reused_attempt_identity(tmp_path: Path) -> None:
     base, shadow, candidate = (tmp_path / name for name in ("base.json", "shadow.json", "candidate.json"))
     _assembled(base, "base", e2e=100)
@@ -528,12 +548,14 @@ def test_retry_rejects_reused_attempt_identity(tmp_path: Path) -> None:
     candidate_data = json.loads(candidate.read_text())
     candidate_data["targets"][0]["end_to_end_ms"] = 6000
     candidate_data["targets"][0]["session_id"] = "session-2"
+    candidate_data["targets"][0]["canonical_pair"]["session_id"] = "session-2"
     candidate.write_text(json.dumps(candidate_data))
     retry = tmp_path / "retry.json"
     result = artifacts.compare(base=base, shadow=shadow, candidate=candidate, retry_file=retry)
     assert result["ok"] is False
     retry_data = json.loads(retry.read_text())
     retry_data["prior_record"]["session_id"] = "session-1"
+    retry_data["prior_record"]["canonical_pair"]["session_id"] = "session-1"
     retry_data["prior_record_sha256"] = artifacts._record_digest(retry_data["prior_record"])
     retry_data["used"] = True
     retry_data["attempts"] = 1
@@ -545,6 +567,9 @@ def test_retry_rejects_reused_attempt_identity(tmp_path: Path) -> None:
     }
     candidate_data["targets"][0]["plan_id"] = retry_data["prior_plan_id"]
     candidate_data["targets"][0]["attempt_id"] = retry_data["prior_attempt_id"]
+    candidate_data["targets"][0]["canonical_pair"].update(
+        plan_id=retry_data["prior_plan_id"], attempt_id=retry_data["prior_attempt_id"]
+    )
     candidate.write_text(json.dumps(candidate_data))
     retry.write_text(json.dumps(retry_data))
     with pytest.raises(artifacts.ArtifactError, match="attempt"):
@@ -558,6 +583,9 @@ def test_retry_rejects_stale_plan_identity(tmp_path: Path) -> None:
     _assembled(candidate, "post-cutover", e2e=100, authority=10)
     candidate_data = json.loads(candidate.read_text())
     candidate_data["targets"][0].update(end_to_end_ms=6000, session_id="session-2", attempt_id="attempt-2")
+    candidate_data["targets"][0]["canonical_pair"].update(
+        session_id="session-2", attempt_id="attempt-2"
+    )
     candidate.write_text(json.dumps(candidate_data))
     retry = tmp_path / "retry.json"
     artifacts.compare(base=base, shadow=shadow, candidate=candidate, retry_file=retry)
@@ -567,6 +595,7 @@ def test_retry_rejects_stale_plan_identity(tmp_path: Path) -> None:
     retry_data["prior_plan_id"] = "stale-plan"
     current = candidate_data["targets"][0]
     current.update(session_id="session-3", attempt_id="attempt-3")
+    current["canonical_pair"].update(session_id="session-3", attempt_id="attempt-3")
     current["retry_of"] = {
         "retry_token": retry_data["retry_token"],
         "prior_record_sha256": retry_data["prior_record_sha256"],

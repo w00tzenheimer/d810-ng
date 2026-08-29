@@ -17,23 +17,7 @@ AUTHORITY_COUNTERS = (
     "view_graph_traversals",
 )
 AUTHORITY_IMAGE = "idapro-9.4-speedups:latest"
-_PARITY_KEYS = frozenset(
-    {"schema", "authority_id", "case_ids", "projected", "observed", "counters", "codec", "legacy_anchored_loss_labels", "parity_ok"}
-)
-_PARITY_RESULT_KEYS = frozenset({"accepted_equal", "reason_equal", "losses_equal"})
-_CODEC_KEYS = frozenset({"captured_keys", "adaptations", "all_adapted"})
-_ADAPTATION_KEYS = frozenset({"key", "family", "result_ids", "payload_sha256"})
 _OBLIGATION_STATES = frozenset({"satisfied", "unproven", "violated", "inconsistent"})
-_LEGACY_KEYS = frozenset({
-    "concrete_state_route_provenance",
-    "dispatcher_corridor_coverage",
-    "dispatcher_removal_preflight_proof",
-    "exact_state_branch_effect_exclusions",
-    "full_unflattening_claim",
-    "native_bound_transition_route_receipts",
-    "unflatten_completion_status",
-    "use_def_severance_audit",
-})
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +50,6 @@ class AuthorityPhaseOracleRow:
 class AuthorityOracleEvidence:
     projected: AuthorityPhaseOracleRow
     observed: AuthorityPhaseOracleRow
-    parity: dict[str, object]
     plan_id: str
     attempt_id: str
     session_id: str
@@ -84,6 +67,8 @@ def authority_oracle_marker_payload(
     """Serialize the closed marker consumed by the timing artifact parser."""
     if type(evidence) is not AuthorityOracleEvidence:
         raise TypeError("evidence must be AuthorityOracleEvidence")
+    if str(session_id) != evidence.session_id:
+        raise ValueError("marker session_id must match authority evidence")
 
     def timing(row: AuthorityPhaseOracleRow) -> dict[str, object]:
         return {
@@ -96,21 +81,29 @@ def authority_oracle_marker_payload(
             "candidate_inventory_builds": row.candidate_inventory_builds,
             "index_folds": row.index_folds,
             "view_graph_traversals": row.view_graph_traversals,
-            "plan_id": evidence.plan_id,
-            "attempt_id": evidence.attempt_id,
         }
 
     return {
-        "schema": "unflatten-authority-oracle.v1",
+        "schema": "unflatten-authority-oracle.v2",
         "target": target,
         "function": function,
         "function_ea": int(function_ea),
         "fixture_sha256": fixture_sha256,
-        "session_id": str(session_id),
-        "projected": timing(evidence.projected),
-        "observed": timing(evidence.observed),
         "image": AUTHORITY_IMAGE,
-        "parity": evidence.parity,
+        "canonical_pair": {
+            "authority_id": evidence.projected.authority_id,
+            "projected_case_id": evidence.projected.case_id,
+            "observed_case_id": evidence.observed.case_id,
+            "source_fingerprint": evidence.projected.source_fingerprint,
+            "projected_candidate_fingerprint": evidence.projected.candidate_fingerprint,
+            "observed_candidate_fingerprint": evidence.observed.candidate_fingerprint,
+            "observed_binding_id": evidence.observed.binding_id,
+            "plan_id": evidence.plan_id,
+            "attempt_id": evidence.attempt_id,
+            "session_id": evidence.session_id,
+            "projected_timings": timing(evidence.projected),
+            "observed_timings": timing(evidence.observed),
+        },
     }
 
 
@@ -238,104 +231,12 @@ def _authority_phase_row(payload: Mapping[str, object], phase: str) -> Authority
     )
 
 
-def _authority_codec(value: object, field: str) -> dict[str, object]:
-    if not isinstance(value, Mapping) or set(value) != _CODEC_KEYS:
-        raise ValueError(f"{field} is incomplete")
-    captured = value.get("captured_keys")
-    adaptations = value.get("adaptations")
-    if not isinstance(captured, (list, tuple)) or not captured or list(captured) != sorted(set(captured)):
-        raise ValueError(f"{field} captured keys are invalid")
-    if any(key not in _LEGACY_KEYS for key in captured):
-        raise ValueError(f"{field} captured keys contain unsupported key")
-    if not isinstance(adaptations, (list, tuple)):
-        raise ValueError(f"{field} adaptations are invalid")
-    adapted_keys: list[str] = []
-    for adaptation in adaptations:
-        if not isinstance(adaptation, Mapping) or set(adaptation) != _ADAPTATION_KEYS:
-            raise ValueError(f"{field} adaptation is incomplete")
-        key = adaptation.get("key")
-        if not isinstance(key, str) or key not in _LEGACY_KEYS:
-            raise ValueError(f"{field} adaptation key is unsupported")
-        adapted_keys.append(key)
-        if adaptation.get("family") != key:
-            raise ValueError(f"{field} family is invalid")
-        result_ids = adaptation.get("result_ids")
-        if not isinstance(result_ids, (list, tuple)) or any(not isinstance(item, str) or not item for item in result_ids) or list(result_ids) != sorted(set(result_ids)):
-            raise ValueError(f"{field} result IDs are invalid")
-        digest = adaptation.get("payload_sha256")
-        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise ValueError(f"{field} payload digest is invalid")
-    if adapted_keys != list(captured) or value.get("all_adapted") is not True:
-        raise ValueError(f"{field} adaptation coverage is invalid")
-    return dict(value)
-
-
-def _authority_parity(
-    value: Mapping[str, object],
-    projected: AuthorityPhaseOracleRow,
-    observed: AuthorityPhaseOracleRow,
-    expected_codec: Mapping[str, object],
-) -> dict[str, object]:
-    if value.get("schema") != "unflatten_authority_shadow_parity.v2":
-        raise ValueError("parity schema or keys are invalid")
-    if "codec" not in value:
-        raise ValueError("parity codec is incomplete")
-    if set(value) != _PARITY_KEYS:
-        raise ValueError("parity schema or keys are invalid")
-    if value.get("authority_id") != projected.authority_id or value.get("authority_id") != observed.authority_id:
-        raise ValueError("parity authority ID does not match phase rows")
-    case_ids = value.get("case_ids")
-    if not isinstance(case_ids, Mapping) or set(case_ids) != {"projected", "observed"}:
-        raise ValueError("parity case IDs are invalid")
-    if case_ids["projected"] != projected.case_id or case_ids["observed"] != observed.case_id:
-        raise ValueError("parity case IDs do not match phase rows")
-    for phase in ("projected", "observed"):
-        row = value.get(phase)
-        if not isinstance(row, Mapping) or set(row) != _PARITY_RESULT_KEYS or any(row[key] is not True for key in _PARITY_RESULT_KEYS):
-            raise ValueError(f"parity {phase} result is invalid")
-    legacy_labels = value.get("legacy_anchored_loss_labels")
-    if not isinstance(legacy_labels, Mapping) or set(legacy_labels) != {"projected", "observed"}:
-        raise ValueError("parity legacy anchored loss labels are invalid")
-    for phase, phase_row in (("projected", projected), ("observed", observed)):
-        labels = legacy_labels[phase]
-        if (
-            not isinstance(labels, (list, tuple))
-            or any(
-                not isinstance(label, str)
-                or not re.fullmatch(r"(?:blk[0-9]+|subject:sha256:[0-9a-f]{64})@0x[0-9a-f]+", label)
-                for label in labels
-            )
-            or len(set(labels)) != len(labels)
-        ):
-            raise ValueError(f"parity {phase} legacy anchored loss labels are invalid")
-        if set(labels) != set(phase_row.anchored_loss_labels):
-            raise ValueError(f"parity {phase} exact loss labels differ from canonical loss ledger")
-        if value[phase]["losses_equal"] is not (set(labels) == set(phase_row.anchored_loss_labels)):
-            raise ValueError(f"parity {phase} losses_equal is not derived from exact loss labels")
-    counters = value.get("counters")
-    if not isinstance(counters, Mapping) or set(counters) != {"projected", "observed"}:
-        raise ValueError("parity counters are invalid")
-    expected = {
-        "projected": (projected.source_inventory_builds, projected.candidate_inventory_builds, projected.index_folds, projected.view_graph_traversals),
-        "observed": (observed.source_inventory_builds, observed.candidate_inventory_builds, observed.index_folds, observed.view_graph_traversals),
-    }
-    for phase, values in expected.items():
-        if not isinstance(counters[phase], (list, tuple)) or tuple(counters[phase]) != values:
-            raise ValueError("parity counters do not match phase rows")
-    codec = _authority_codec(value.get("codec"), "parity codec")
-    if codec != dict(expected_codec):
-        raise ValueError("parity codec differs from phase codec")
-    if value.get("parity_ok") is not True:
-        raise ValueError("parity_ok is false")
-    return dict(value)
-
-
 def parse_authority_phase_payloads(
     payloads: Iterable[Mapping[str, object]],
     *,
     expected_session_id: str | None = None,
 ) -> AuthorityOracleEvidence:
-    """Parse exactly one projected/observed phase and final observed parity."""
+    """Parse exactly one canonical projected/observed authority-phase pair."""
     selected: dict[str, Mapping[str, object]] = {}
     for payload in payloads:
         if not isinstance(payload, Mapping):
@@ -354,12 +255,6 @@ def parse_authority_phase_payloads(
         raise ValueError("authority phase payloads require exactly one projected and observed row")
     projected = _authority_phase_row(selected["projected_preflight"], "projected_preflight")
     observed = _authority_phase_row(selected["observed_post_apply"], "observed_post_apply")
-    projected_codec = _authority_codec(selected["projected_preflight"].get("codec"), "projected codec")
-    observed_codec = _authority_codec(selected["observed_post_apply"].get("codec"), "observed codec")
-    if projected_codec != observed_codec:
-        raise ValueError("projected and observed codec receipts differ")
-    if "parity" in selected["projected_preflight"]:
-        raise ValueError("projected phase parity is forbidden")
     if projected.authority_id != observed.authority_id:
         raise ValueError("authority IDs differ between phase rows")
     provenance = {
@@ -377,13 +272,9 @@ def parse_authority_phase_payloads(
         raise ValueError("source fingerprints differ between phase rows")
     if any(row.unproven or row.violated or row.inconsistent for row in (projected, observed)):
         raise ValueError("authority obligation states are not accepted")
-    parity = selected["observed_post_apply"].get("parity")
-    if not isinstance(parity, Mapping):
-        raise ValueError("observed phase parity is required")
     return AuthorityOracleEvidence(
         projected,
         observed,
-        _authority_parity(parity, projected, observed, projected_codec),
         provenance["plan_id"],
         provenance["attempt_id"],
         provenance["session_id"],

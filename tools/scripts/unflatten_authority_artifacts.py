@@ -66,26 +66,14 @@ COUNTERS = (
     "view_graph_traversals",
 )
 ORACLE_KEYS = frozenset(
-    {"schema", "target", "function", "function_ea", "fixture_sha256", "session_id", "projected", "observed", "image", "parity"}
+    {"schema", "target", "function", "function_ea", "fixture_sha256", "image", "canonical_pair"}
 )
-PARITY_KEYS = frozenset(
-    {"schema", "authority_id", "case_ids", "projected", "observed", "counters", "codec", "legacy_anchored_loss_labels", "parity_ok"}
-)
-PARITY_RESULT_KEYS = frozenset({"accepted_equal", "reason_equal", "losses_equal"})
-CODEC_KEYS = frozenset({"captured_keys", "adaptations", "all_adapted"})
-ADAPTATION_KEYS = frozenset({"key", "family", "result_ids", "payload_sha256"})
-LEGACY_KEYS = frozenset(
-    {
-        "concrete_state_route_provenance",
-        "dispatcher_corridor_coverage",
-        "dispatcher_removal_preflight_proof",
-        "exact_state_branch_effect_exclusions",
-        "full_unflattening_claim",
-        "native_bound_transition_route_receipts",
-        "unflatten_completion_status",
-        "use_def_severance_audit",
-    }
-)
+CANONICAL_PAIR_KEYS = frozenset({
+    "authority_id", "projected_case_id", "observed_case_id", "source_fingerprint",
+    "projected_candidate_fingerprint", "observed_candidate_fingerprint",
+    "observed_binding_id", "plan_id", "attempt_id", "session_id",
+    "projected_timings", "observed_timings",
+})
 
 
 class ArtifactError(ValueError):
@@ -199,93 +187,31 @@ def _phase_row(row: Any, *, field: str) -> dict[str, Any]:
     return result
 
 
-def _validate_parity(value: Any, *, field: str = "parity") -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != PARITY_KEYS:
-        _fail(f"{field} must match unflatten_authority_shadow_parity.v2")
-    if value["schema"] != "unflatten_authority_shadow_parity.v2":
-        _fail(f"{field}.schema is invalid")
-    if not isinstance(value["authority_id"], str) or not value["authority_id"]:
-        _fail(f"{field}.authority_id is invalid")
-    case_ids = value["case_ids"]
-    if not isinstance(case_ids, dict) or set(case_ids) != {"projected", "observed"}:
-        _fail(f"{field}.case_ids is invalid")
-    if any(not isinstance(case_ids[key], str) or not case_ids[key] for key in ("projected", "observed")):
-        _fail(f"{field}.case_ids must be non-empty")
-    if case_ids["projected"] == case_ids["observed"]:
-        _fail(f"{field}.case_ids must be distinct")
-    for phase in ("projected", "observed"):
-        row = value[phase]
-        if not isinstance(row, dict) or set(row) != PARITY_RESULT_KEYS or any(row[key] is not True for key in PARITY_RESULT_KEYS):
-            _fail(f"{field}.{phase} is not accepted parity")
-    legacy_labels = value["legacy_anchored_loss_labels"]
-    if not isinstance(legacy_labels, dict) or set(legacy_labels) != {"projected", "observed"}:
-        _fail(f"{field}.legacy_anchored_loss_labels is invalid")
-    for phase in ("projected", "observed"):
-        labels = legacy_labels[phase]
-        if (
-            not isinstance(labels, (list, tuple))
-            or any(not isinstance(label, str) or not re.fullmatch(r"(?:blk[0-9]+|subject:sha256:[0-9a-f]{64})@0x[0-9a-f]+", label) for label in labels)
-            or list(labels) != sorted(set(labels))
-        ):
-            _fail(f"{field}.legacy_anchored_loss_labels.{phase} is invalid")
-    counters = value["counters"]
-    if not isinstance(counters, dict) or set(counters) != {"projected", "observed"}:
-        _fail(f"{field}.counters is invalid")
-    for key in ("projected", "observed"):
-        if (
-            not isinstance(counters[key], (list, tuple))
-            or tuple(counters[key]) != (1, 1, 1, 0)
-        ):
-            _fail(f"{field}.counters are invalid")
-    codec = value["codec"]
-    if not isinstance(codec, dict) or set(codec) != CODEC_KEYS:
-        _fail(f"{field}.codec is invalid")
-    captured_keys = codec["captured_keys"]
-    if (
-        not isinstance(captured_keys, (list, tuple))
-        or not captured_keys
-        or list(captured_keys) != sorted(set(captured_keys))
+def _canonical_pair(value: Any) -> tuple[str, str, str, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    if not isinstance(value, dict) or set(value) != CANONICAL_PAIR_KEYS:
+        _fail("canonical_pair keys are invalid")
+    for key in (
+        "authority_id", "projected_case_id", "observed_case_id", "source_fingerprint",
+        "projected_candidate_fingerprint", "observed_candidate_fingerprint",
+        "observed_binding_id", "plan_id", "attempt_id", "session_id",
     ):
-        _fail(f"{field}.codec.captured_keys is invalid")
-    if any(key not in LEGACY_KEYS for key in captured_keys):
-        _fail(f"{field}.codec.captured_keys contains unsupported key")
-    adaptations = codec["adaptations"]
-    if not isinstance(adaptations, (list, tuple)):
-        _fail(f"{field}.codec.adaptations is invalid")
-    adapted_keys: list[str] = []
-    for index, adaptation in enumerate(adaptations):
-        if not isinstance(adaptation, dict) or set(adaptation) != ADAPTATION_KEYS:
-            _fail(f"{field}.codec.adaptations[{index}] is invalid")
-        key = adaptation["key"]
-        if not isinstance(key, str) or not key:
-            _fail(f"{field}.codec.adaptations[{index}].key is invalid")
-        if key not in LEGACY_KEYS:
-            _fail(f"{field}.codec.adaptations[{index}].key is unsupported")
-        adapted_keys.append(key)
-        if adaptation["family"] != key:
-            _fail(f"{field}.codec.adaptations[{index}].family is invalid")
-        result_ids = adaptation["result_ids"]
-        if (
-            not isinstance(result_ids, (list, tuple))
-            or any(not isinstance(result_id, str) or not result_id for result_id in result_ids)
-            or list(result_ids) != sorted(set(result_ids))
-        ):
-            _fail(f"{field}.codec.adaptations[{index}].result_ids is invalid")
-        payload_sha256 = adaptation["payload_sha256"]
-        if not isinstance(payload_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", payload_sha256):
-            _fail(f"{field}.codec.adaptations[{index}].payload_sha256 is invalid")
-    if adapted_keys != list(captured_keys) or codec["all_adapted"] is not True:
-        _fail(f"{field}.codec adaptation coverage is invalid")
-    if value["parity_ok"] is not True:
-        _fail(f"{field}.parity_ok is false")
-    return value
+        if not isinstance(value[key], str) or not value[key]:
+            _fail(f"canonical_pair.{key} is invalid")
+    if value["projected_case_id"] == value["observed_case_id"]:
+        _fail("canonical_pair case IDs must be distinct")
+    projected = _phase_row(value["projected_timings"], field="canonical_pair.projected_timings")
+    observed = _phase_row(value["observed_timings"], field="canonical_pair.observed_timings")
+    return (
+        value["plan_id"], value["attempt_id"], value["session_id"],
+        projected, observed, dict(value),
+    )
 
 
 def _oracle(payload: Any, target: str, fixture_sha256: str) -> tuple[str, str, str, int, dict[str, Any], dict[str, Any], str, dict[str, Any]]:
     if not isinstance(payload, dict):
         _fail("oracle marker JSON must be an object")
     schema = payload.get("schema")
-    if schema != "unflatten-authority-oracle.v1":
+    if schema != "unflatten-authority-oracle.v2":
         _fail("oracle schema is invalid")
     if set(payload) != ORACLE_KEYS:
         missing = ", ".join(sorted(ORACLE_KEYS - set(payload)))
@@ -304,23 +230,10 @@ def _oracle(payload: Any, target: str, fixture_sha256: str) -> tuple[str, str, s
     marker_digest = marker_digest.lower()
     if marker_digest != fixture_sha256:
         _fail("oracle fixture identity does not match committed MASM")
-    session = payload["session_id"]
-    if not isinstance(session, str) or not session:
-        _fail("oracle requires exactly one session_id")
-    projected = _phase_row(payload["projected"], field="projected")
-    observed = _phase_row(payload["observed"], field="observed")
-    plan_id = payload["projected"].get("plan_id")
-    attempt_id = payload["projected"].get("attempt_id")
-    if not isinstance(plan_id, str) or not plan_id:
-        _fail("oracle plan_id is invalid")
-    if not isinstance(attempt_id, str) or not attempt_id:
-        _fail("oracle attempt_id is invalid")
-    if payload["observed"].get("plan_id") != plan_id or payload["observed"].get("attempt_id") != attempt_id:
-        _fail("oracle plan/attempt identity differs between phases")
+    plan_id, attempt_id, session, projected, observed, canonical_pair = _canonical_pair(payload["canonical_pair"])
     if payload["image"] != IMAGE:
         _fail("oracle image is invalid")
-    parity = _validate_parity(payload["parity"])
-    return session, plan_id, attempt_id, function_ea, projected, observed, payload["image"], parity
+    return session, plan_id, attempt_id, function_ea, projected, observed, payload["image"], canonical_pair
 
 
 def _marker_payload(log_path: Path) -> Any:
@@ -381,7 +294,7 @@ def run_target(
     if completed.returncode != 0:
         _fail(f"child exited with status {completed.returncode}")
     payload = _marker_payload(worktree_root / ".tmp" / log)
-    session_id, plan_id, attempt_id, runtime_function_ea, projected, observed, image, parity = _oracle(payload, target, fixture_sha256)
+    session_id, plan_id, attempt_id, runtime_function_ea, projected, observed, image, canonical_pair = _oracle(payload, target, fixture_sha256)
     target_info = TARGETS[target]
     record = {
         "schema": "unflatten-authority-timing.v1",
@@ -402,7 +315,7 @@ def run_target(
         "log": log,
         "exit_code": completed.returncode,
         "image": image,
-        "parity": _validate_parity(parity),
+        "canonical_pair": canonical_pair,
         "output": str(Path(output)),
     }
     record["session_id"] = session_id
@@ -454,8 +367,10 @@ def _record_check(record: dict[str, Any], target: str, mode: str) -> None:
         _fail("target record commit is invalid")
     _normal_digest(record.get("fixture_sha256", ""))
     _number(record.get("end_to_end_ms"), "end_to_end_ms")
-    for key in ("projected", "observed"):
-        _phase_row(record.get(key), field=key)
+    phase_rows = {
+        key: _phase_row(record.get(key), field=key)
+        for key in ("projected", "observed")
+    }
     command = record.get("command")
     if not isinstance(command, list) or not command:
         _fail("target record command is invalid")
@@ -475,15 +390,30 @@ def _record_check(record: dict[str, Any], target: str, mode: str) -> None:
         session = record.get("session_id")
         if not isinstance(session, str) or not session:
             _fail("non-base target record session_id is required")
-        _validate_parity(record.get("parity"), field="target record parity")
+        (
+            pair_plan_id,
+            pair_attempt_id,
+            pair_session_id,
+            pair_projected,
+            pair_observed,
+            _,
+        ) = _canonical_pair(record.get("canonical_pair"))
+        if (record["plan_id"], record["attempt_id"], record["session_id"]) != (
+            pair_plan_id,
+            pair_attempt_id,
+            pair_session_id,
+        ):
+            _fail("target record correlation must match canonical_pair")
+        if (phase_rows["projected"], phase_rows["observed"]) != (pair_projected, pair_observed):
+            _fail("target record timings must match canonical_pair")
     else:
         for key in ("plan_id", "attempt_id"):
             if key in record:
                 _fail(f"base target record must not contain {key}")
         if "session_id" in record:
             _fail("base target record must not contain session_id")
-        if "parity" in record:
-            _fail("base target record must not contain parity")
+        if "canonical_pair" in record:
+            _fail("base target record must not contain canonical_pair")
         for subject in ("projected", "observed"):
             if any(record[subject][key] != 0 for key in (*PHASES, *COUNTERS, "total_authority_ms")):
                 _fail("base target record authority metrics must be zero")
