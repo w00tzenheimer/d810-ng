@@ -167,19 +167,10 @@ def test_conditional_arm_forecast_mints_complete_decision_dag_fact() -> None:
         DecisionDag(32, {2: RouteComparison(2, "jz", state, 3, 4)}, root=2),
         state_var_stkoff=_STATE, state_var_reg=None,
     ) is not None
-    route = minimal_state_recovery_module._route_state_through_decision_dag(
-        StateWriteTransition(1, state, 3, False, None), graph,
+    forecast = _conditional_arm_route_forecast(
+        RedirectGoto(1, 2, 3), arm, graph,
         DecisionDag(32, {2: RouteComparison(2, "jz", state, 3, 4)}, root=2),
         state_var_stkoff=_STATE, state_var_reg=None,
-    )
-    fact = minimal_state_recovery_module._semantic_route_fact_for_transition(
-        StateWriteTransition(1, state, 3, False, None), route, graph,
-        state_var_stkoff=_STATE, state_var_reg=None,
-    )
-    assert fact is not None
-    assert fact.kind is SemanticRouteFactKind.DECISION_DAG
-    forecast = _conditional_arm_route_forecast(
-        RedirectGoto(1, 2, 3), arm, fact,
     )
     assert forecast is not None
     assert forecast.route_fact.kind is SemanticRouteFactKind.DECISION_DAG
@@ -190,6 +181,20 @@ def test_conditional_arm_forecast_mints_complete_decision_dag_fact() -> None:
     assert witness.path_anchors == (0x1080,)
     assert witness.comparisons == ((2, RouteComparison(2, "jz", state, 3, 4)),)
     assert witness.aliases == ()
+    duplicate_write_graph = FlowGraph(
+        {**graph.blocks, 1: replace(graph.blocks[1], insn_snapshots=(write, write))},
+        entry_serial=0, func_ea=0x1000,
+    )
+    assert _conditional_arm_route_forecast(
+        RedirectGoto(1, 2, 3), arm, duplicate_write_graph,
+        DecisionDag(32, {2: RouteComparison(2, "jz", state, 3, 4)}, root=2),
+        state_var_stkoff=_STATE, state_var_reg=None,
+    ) is None
+    assert _conditional_arm_route_forecast(
+        RedirectGoto(1, 99, 3), replace(arm, ordered_path=()), graph,
+        DecisionDag(32, {2: RouteComparison(2, "jz", state, 3, 4)}, root=2),
+        state_var_stkoff=_STATE, state_var_reg=None,
+    ) is None
 
 _OP_MOV = 4
 _T_NUM, _T_STK, _T_REG = 2, 4, 1

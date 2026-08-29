@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 import re
 import hashlib
 
@@ -65,6 +66,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     HandlerTransition,
     StateWriteTransition,
     TransitionArm,
+    _route_state_through_decision_dag,
     TransitionProof,
     _source_local_constant_register_write,
     _is_goto_insn,
@@ -93,6 +95,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteFact,
     SemanticRouteFactKind,
     SemanticRouteProof,
+    DecisionDagRouteWitness,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
@@ -144,7 +147,7 @@ from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind, OperandKind
 from d810.ir.maturity import MaturityEnvelope
 from d810.ir.insn_projection import operand_kinds, operand_storages
 from d810.ir.semantics import PredicateKind
-from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind, storage_identity_from_mop_snapshot
 from d810.transforms.exit_path_liveness_policy import (
     exit_path_blocks_live_violations,
     evaluate_exit_path_shortcut,
@@ -8376,7 +8379,11 @@ def _normalize_degenerate_branch_redirects(
 def _conditional_arm_route_forecast(
     modification: RedirectGoto | RedirectBranch,
     arm: TransitionArm,
-    route_fact: SemanticRouteFact,
+    flow_graph: FlowGraph,
+    decision_dag: DecisionDag,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
 ) -> ConditionalArmRouteForecast | None:
     """Mint exact producer evidence for one direct conditional-arm redirect.
 
@@ -8386,7 +8393,11 @@ def _conditional_arm_route_forecast(
     """
 
     if (
-        arm.next_state is None
+        type(modification) not in (RedirectGoto, RedirectBranch)
+        or type(arm) is not TransitionArm
+        or type(flow_graph) is not FlowGraph
+        or type(decision_dag) is not DecisionDag
+        or arm.next_state is None
         or arm.target_handler is None
         or arm.is_return
         or arm.write_block is None
@@ -8395,14 +8406,65 @@ def _conditional_arm_route_forecast(
         or not 0 <= int(arm.next_state) <= 0xFFFFFFFF
     ):
         return None
+    source = flow_graph.get_block(int(arm.write_block))
+    branch = flow_graph.get_block(int(arm.branch_block)) if arm.branch_block is not None else None
+    exit_block = flow_graph.get_block(int(arm.exit_block)) if arm.exit_block is not None else None
+    path = tuple(int(serial) for serial in arm.ordered_path)
     if (
-        type(route_fact) is not SemanticRouteFact
-        or route_fact.kind is not SemanticRouteFactKind.DECISION_DAG
-        or route_fact.decision_dag_witness is None
+        source is None or branch is None or exit_block is None
+        or not path or int(arm.branch_block) not in path
+        or int(arm.write_block) not in path or int(arm.exit_block) not in path
+        or int(modification.old_target) not in tuple(int(item) for item in source.succs)
     ):
         return None
+    if state_var_stkoff is not None:
+        state_identity = StorageIdentity(StorageIdentityKind.STACK, int(state_var_stkoff))
+    elif state_var_reg is not None:
+        state_identity = StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
+    else:
+        return None
+    writes = tuple(
+        snapshot for snapshot in source.insn_snapshots
+        if snapshot.kind is InsnKind.MOV
+        and snapshot.l is not None and snapshot.d is not None
+        and snapshot.l.kind is OperandKind.NUMBER and snapshot.l.value is not None
+        and int(snapshot.l.size) == 4 and int(snapshot.d.size) == 4
+        and storage_identity_from_mop_snapshot(snapshot.d) == state_identity
+        and (int(snapshot.l.value) & 0xFFFFFFFF) == int(arm.next_state)
+    )
+    if len(writes) != 1:
+        return None
+    route = _route_state_through_decision_dag(
+        SimpleNamespace(next_state=int(arm.next_state)), flow_graph, decision_dag,
+        state_var_stkoff=state_var_stkoff, state_var_reg=state_var_reg,
+    )
+    if (
+        route is None or int(route.target) != int(arm.target_handler)
+        or int(arm.target_handler) not in route.certified_targets
+        or not route.path_serials or len(route.path_serials) != len(route.path_anchors)
+    ):
+        return None
+    target = flow_graph.get_block(int(arm.target_handler))
+    if target is None:
+        return None
+    source_anchor = int(source.native_start_ea or source.start_ea)
+    target_anchor = int(target.native_start_ea or target.start_ea)
+    write_ea = int(writes[0].native_ea or writes[0].ea)
+    fact = SemanticRouteFact(
+        kind=SemanticRouteFactKind.DECISION_DAG,
+        owner_serial=int(arm.write_block), source_serial=int(arm.write_block),
+        source_instruction_ea=write_ea, state_constant=int(arm.next_state),
+        target_serial=int(arm.target_handler), owner_anchor_ea=source_anchor,
+        target_anchor_ea=target_anchor, path_serials=(int(arm.write_block),),
+        path_edges=(), decision_dag_witness=DecisionDagRouteWitness(
+            state_identity, int(arm.next_state), int(route.entry_serial),
+            int(route.path_anchors[0]), tuple(int(item) for item in route.path_serials),
+            tuple(int(item) for item in route.path_anchors), tuple(route.comparisons),
+            tuple(route.aliases),
+        ),
+    )
     return ConditionalArmRouteForecast(
-        modification, int(arm.next_state), int(arm.target_handler), route_fact,
+        modification, int(arm.next_state), int(arm.target_handler), fact,
     )
 
 

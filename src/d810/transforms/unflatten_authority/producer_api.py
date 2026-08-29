@@ -32,6 +32,7 @@ from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, storage_identity_from_mop_snapshot
 from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.block_identity import stable_block_identity_semantic_anchor
 from d810.transforms.cfg_transaction import CfgBlockRef, LogicalBlockRef, NativeBlockRef, PlanBlockRef
 from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 from d810.transforms.use_def_redirect_filter import UseDefSeveranceAudit
@@ -1759,6 +1760,7 @@ def _matches_complete_decision_dag_route(
     owner_identity: StableBlockIdentity,
     target_identity: StableBlockIdentity,
     state_identity: StorageIdentity,
+    require_direct_owner: bool = False,
 ) -> bool:
     """Bind an exact raw decision-DAG fact to its stable canonical proof."""
 
@@ -1790,6 +1792,11 @@ def _matches_complete_decision_dag_route(
         or proof.destinations[0].target_anchor_ea != fact.target_anchor_ea
         or len(raw.path_serials) != len(dag.witness.path)
         or len(raw.comparisons) != len(dag.witness.comparisons)
+        or (require_direct_owner and (
+            int(fact.owner_serial) != int(fact.source_serial)
+            or fact.owner_anchor_ea != fact.source_instruction_ea
+            or owner_identity != source_identity
+        ))
     ):
         return False
     try:
@@ -1804,7 +1811,9 @@ def _matches_complete_decision_dag_route(
                 comparison.op,
                 int(comparison.const) & 0xFFFFFFFF,
                 _target_identity(source, source_catalog, block_refs_by_serial, comparison.true_target),
+                stable_block_identity_semantic_anchor(_target_identity(source, source_catalog, block_refs_by_serial, comparison.true_target)),
                 _target_identity(source, source_catalog, block_refs_by_serial, comparison.false_target),
+                stable_block_identity_semantic_anchor(_target_identity(source, source_catalog, block_refs_by_serial, comparison.false_target)),
             )
             for serial, comparison in raw.comparisons
         )
@@ -1814,13 +1823,17 @@ def _matches_complete_decision_dag_route(
                 comparison.operation,
                 comparison.constant,
                 comparison.true_target.identity,
+                comparison.true_target.anchor_ea,
                 comparison.false_target.identity,
+                comparison.false_target.anchor_ea,
             )
             for comparison in dag.witness.comparisons
         )
         raw_aliases = tuple(
             (_target_identity(source, source_catalog, block_refs_by_serial, left),
-             _target_identity(source, source_catalog, block_refs_by_serial, right))
+             stable_block_identity_semantic_anchor(_target_identity(source, source_catalog, block_refs_by_serial, left)),
+             _target_identity(source, source_catalog, block_refs_by_serial, right),
+             stable_block_identity_semantic_anchor(_target_identity(source, source_catalog, block_refs_by_serial, right)))
             for left, right in raw.aliases
         )
     except (KeyError, TypeError, ValueError):
@@ -1830,7 +1843,7 @@ def _matches_complete_decision_dag_route(
         and raw.state_constant == fact.state_constant
         and raw_path == canonical_path
         and raw_comparisons == canonical_comparisons
-        and raw_aliases == tuple((left.identity, right.identity) for left, right in dag.witness.aliases)
+        and raw_aliases == tuple((left.identity, left.anchor_ea, right.identity, right.anchor_ea) for left, right in dag.witness.aliases)
     )
 
 
@@ -1848,6 +1861,14 @@ def adapt_conditional_arm_route(
     if type(forecast) is not ConditionalArmRouteForecast:
         raise TypeError("conditional arm adapter requires an exact forecast")
     fact = forecast.route_fact
+    modification = forecast.modification
+    if (
+        int(fact.owner_serial) != int(fact.source_serial)
+        or int(fact.owner_serial) != int(modification.from_serial)
+        or fact.owner_anchor_ea != fact.source_instruction_ea
+        or int(modification.new_target) != int(forecast.target_serial)
+    ):
+        raise ValueError("conditional arm forecast owner/source or redirect drifted")
     source_identity = _target_identity(source, source_catalog, block_refs_by_serial, fact.source_serial)
     owner_identity = _target_identity(source, source_catalog, block_refs_by_serial, fact.owner_serial)
     target_identity = _target_identity(source, source_catalog, block_refs_by_serial, forecast.target_serial)
@@ -1857,7 +1878,7 @@ def adapt_conditional_arm_route(
             proof, fact=fact, source=source, source_catalog=source_catalog,
             block_refs_by_serial=block_refs_by_serial, source_identity=source_identity,
             owner_identity=owner_identity, target_identity=target_identity,
-            state_identity=state_identity,
+            state_identity=state_identity, require_direct_owner=True,
         ),
         "conditional arm",
     )
