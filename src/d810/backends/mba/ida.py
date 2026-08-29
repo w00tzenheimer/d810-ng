@@ -11,7 +11,6 @@ the rule definitions in d810.mba.rules pure and backend-agnostic.
 
 from __future__ import annotations
 
-import hashlib
 import itertools
 import json
 import os
@@ -1468,16 +1467,13 @@ class IDAPatternAdapter:
             payload["destination"] = payload["d"]
             destination = payload["d"]
             payload["size"] = None if destination is None else destination.get("size")
-            encoded = json.dumps(
-                payload,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            )
+            from d810.mba.native_corpus_capture import raw_identity_payload_fingerprint
+
+            fingerprint = raw_identity_payload_fingerprint(payload)
         except Exception:
             logger.debug("Raw native identity unavailable; failing closed", exc_info=True)
             return None, None
-        return f"raw:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}", payload
+        return fingerprint, payload
 
 
     @staticmethod

@@ -9,6 +9,7 @@ masked-operand rule with unknown ``x`` and ``y`` leaves.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,8 +23,20 @@ from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.mba.ac_matching import AcMatchStopReason
 from d810.mba.certified_rule_compiler import CompiledMbaRule, _enroll_admitted_rule
 from d810.mba.dsl import Const, SymbolicExpression, Var
-from d810.mba.native_corpus_capture import profiles_from_native_provider_histories
-from d810.mba.provider_outcome import MbaProviderKind, MbaProviderOutcome, ProviderOutcomeStatus
+from d810.mba.native_corpus_capture import (
+    NativeProviderHistorySnapshot,
+    _is_raw_native_identity_outcome,
+    raw_identity_payload_fingerprint,
+    capture_native_provider_case,
+    profiles_from_native_provider_histories,
+)
+from d810.mba.provider_outcome import (
+    MatcherOutcomeMetadata,
+    MatcherSelection,
+    MbaProviderKind,
+    MbaProviderOutcome,
+    ProviderOutcomeStatus,
+)
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.catalogue import MBA_RULE_FAMILIES
 from d810.mba.typed_term import TypedBvTerm
@@ -124,15 +137,164 @@ def test_motivating_rule_is_currently_admitted_by_production_catalogue() -> None
     assert receipt.compiled_rule.proof_widths == (8, 16, 32, 64)
 
 
-def test_raw_native_identity_is_not_a_semantic_profile_candidate() -> None:
-    raw = MbaProviderOutcome(
+def _valid_raw_identity_payload() -> dict[str, object]:
+    operand = {"type": 0, "oprops": 0, "size": 4, "valnum": 0}
+    payload = {
+        "opcode": 1,
+        "ea": 0x401000,
+        "iprops": 0,
+        "l": operand,
+        "r": operand.copy(),
+        "d": operand.copy(),
+    }
+    payload.update(
+        {
+            "left": payload["l"],
+            "right": payload["r"],
+            "destination": payload["d"],
+            "size": 4,
+        }
+    )
+    return payload
+
+
+def _valid_raw_outcome(
+    *, payload: dict[str, object] | None = None, fingerprint: str | None = None
+) -> MbaProviderOutcome:
+    identity = payload or _valid_raw_identity_payload()
+    return MbaProviderOutcome(
         provider=MbaProviderKind.CATALOGUE,
         status=ProviderOutcomeStatus.APPLIED,
-        fingerprint="raw:legacy-native",
-        metadata={"raw_native_identity": {"opcode": "add"}},
+        fingerprint=fingerprint or raw_identity_payload_fingerprint(identity),
+        source_provenance=("Task6Rule",),
+        metadata={"raw_native_identity": identity, "mutation_outcome": "accepted"},
+        matcher=MatcherOutcomeMetadata(
+            comparisons=1,
+            lazy_swaps=0,
+            flattened_arity=0,
+            stop_reason="matched",
+            selection=MatcherSelection.RAW,
+            raw_comparisons=1,
+            raw_lazy_swaps=0,
+            backend="legacy_ast",
+            fallback_comparisons=0,
+            terminal_stop_reason="matched",
+            native_equivalence_verdict=None,
+            mutation_outcome="accepted",
+        ),
     )
 
+
+def _raw_payload_without(field: str) -> dict[str, object]:
+    payload = _valid_raw_identity_payload()
+    payload.pop(field)
+    return payload
+
+
+def test_raw_native_identity_is_not_a_semantic_profile_candidate() -> None:
+    raw = _valid_raw_outcome()
+
+    assert _is_raw_native_identity_outcome(raw)
     assert profiles_from_native_provider_histories((_HistoryProvider(raw),)) == ()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (
+        _valid_raw_outcome(payload={"opcode": 1}, fingerprint="raw:" + "0" * 64),
+        _valid_raw_outcome(
+            payload={"opcode": 1, "unexpected": 2}, fingerprint="raw:" + "0" * 64
+        ),
+        _valid_raw_outcome(
+            payload=_raw_payload_without("left"), fingerprint="raw:" + "0" * 64
+        ),
+        _valid_raw_outcome(
+            payload={
+                **_valid_raw_identity_payload(),
+                "l": {"type": 0, "oprops": 0, "unknown": 1},
+            },
+            fingerprint="raw:" + "0" * 64,
+        ),
+        _valid_raw_outcome(fingerprint="raw:" + "0" * 64),
+    ),
+)
+def test_malformed_or_spoofed_raw_identity_is_not_skipped(outcome) -> None:
+    assert not _is_raw_native_identity_outcome(outcome)
+    with pytest.raises(ValueError):
+        profiles_from_native_provider_histories((_HistoryProvider(outcome),))
+
+
+def _raw_contract_mutations() -> tuple[tuple[str, MbaProviderOutcome], ...]:
+    valid = _valid_raw_outcome()
+    assert valid.matcher is not None
+
+    def metadata_update(**updates: object) -> MbaProviderOutcome:
+        metadata = dict(valid.metadata)
+        metadata.update(updates)
+        return replace(valid, metadata=metadata)
+
+    def matcher_update(**updates: object) -> MbaProviderOutcome:
+        return replace(valid, matcher=replace(valid.matcher, **updates))
+
+    return (
+        ("wrong provider", replace(valid, provider=MbaProviderKind.EGRAPH)),
+        ("wrong status", replace(valid, status=ProviderOutcomeStatus.UNCHANGED)),
+        ("missing raw metadata", metadata_update(raw_native_identity=None)),
+        ("spoofed fingerprint", replace(valid, fingerprint="raw:" + "0" * 64)),
+        ("wrong matcher selection", matcher_update(selection=MatcherSelection.CANONICAL_FALLBACK)),
+        ("non-matched stop", matcher_update(stop_reason="miss")),
+        ("non-matched terminal stop", matcher_update(terminal_stop_reason="miss")),
+        ("fallback work", matcher_update(fallback_comparisons=1)),
+        ("proof present", replace(valid, proof_verdict=True)),
+        ("mutation metadata missing", metadata_update(mutation_outcome=None)),
+        ("mutation receipt rejected", matcher_update(mutation_outcome="rejected")),
+        ("provenance missing", replace(valid, source_provenance=())),
+    )
+
+
+@pytest.mark.parametrize("label,outcome", _raw_contract_mutations())
+def test_raw_identity_contract_rejects_each_spoofed_dimension(
+    label: str, outcome: MbaProviderOutcome
+) -> None:
+    assert not _is_raw_native_identity_outcome(outcome), label
+    with pytest.raises(ValueError):
+        profiles_from_native_provider_histories((_HistoryProvider(outcome),))
+
+
+def test_raw_identity_unavailable_requires_valid_scoped_history() -> None:
+    missing = _HistoryProvider()
+    with pytest.raises(ValueError, match="requires a validated raw outcome"):
+        capture_native_provider_case(
+            case_id="missing-raw",
+            stratum="catalogue",
+            profile=None,
+            rules=(missing,),
+            expected_providers=(MbaProviderKind.CATALOGUE,),
+            unavailable_reason="raw_identity_profile_unavailable",
+        )
+
+    observed = _HistoryProvider(_valid_raw_outcome())
+    captured = capture_native_provider_case(
+        case_id="observed-raw",
+        stratum="catalogue",
+        profile=None,
+        rules=(observed,),
+        expected_providers=(MbaProviderKind.CATALOGUE,),
+        unavailable_reason="raw_identity_profile_unavailable",
+    )
+    assert captured.outcomes[0].status is ProviderOutcomeStatus.UNAVAILABLE
+
+    excluded_snapshot = NativeProviderHistorySnapshot({id(observed): 1})
+    with pytest.raises(ValueError, match="requires a validated raw outcome"):
+        capture_native_provider_case(
+            case_id="excluded-raw",
+            stratum="catalogue",
+            profile=None,
+            rules=(observed,),
+            history_snapshot=excluded_snapshot,
+            expected_providers=(MbaProviderKind.CATALOGUE,),
+            unavailable_reason="raw_identity_profile_unavailable",
+        )
 
 
 def _typed_leaf(name: str, width: int = 32) -> TypedBvTerm:

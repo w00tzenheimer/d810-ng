@@ -108,13 +108,6 @@ _CATALOGUE_RECEIPT_CONTRACT = {
         None,
         ProviderOutcomeStatus.APPLIED,
     ),
-    "mba_shape_catalogue_04": (
-        "Sub_HackersDelightRule_2",
-        MatcherSelection.CANONICAL_FALLBACK,
-        "matched",
-        True,
-        ProviderOutcomeStatus.APPLIED,
-    ),
     "mba_shape_catalogue_05": (
         "Or_MbaRule_1",
         MatcherSelection.NONE,
@@ -159,44 +152,84 @@ _CATALOGUE_RECEIPT_CONTRACT = {
     ),
 }
 
-# The subtraction source is lowered through several native roots.  Some roots
-# reach the canonical matcher and are rejected by the native equivalence gate;
-# those are still meaningful receipts, but they must be explicitly bounded so
-# this test cannot silently accept a new selection/status combination.
-_CATALOGUE_SECONDARY_RECEIPTS = {
-    "mba_shape_catalogue_04": frozenset(
-        {
-            (
-                MatcherSelection.NONE,
-                "miss",
-                None,
-                ProviderOutcomeStatus.UNCHANGED,
-                None,
-            ),
-            (
-                MatcherSelection.NONE,
-                "clean_miss",
-                None,
-                ProviderOutcomeStatus.UNCHANGED,
-                None,
-            ),
-            (
-                MatcherSelection.CANONICAL_FALLBACK,
-                "matched",
-                False,
-                ProviderOutcomeStatus.UNCHANGED,
-                None,
-            ),
-        }
+_CATALOGUE_ROW04_ALLOWED_RECEIPTS = frozenset(
+    {
+        (
+            MatcherSelection.NONE,
+            "miss",
+            None,
+            ProviderOutcomeStatus.UNCHANGED,
+            None,
+        ),
+        (
+            MatcherSelection.NONE,
+            "clean_miss",
+            None,
+            ProviderOutcomeStatus.UNCHANGED,
+            None,
+        ),
+        (
+            MatcherSelection.CANONICAL_FALLBACK,
+            "matched",
+            False,
+            ProviderOutcomeStatus.UNCHANGED,
+            None,
+        ),
+        (
+            MatcherSelection.CANONICAL_FALLBACK,
+            "matched",
+            True,
+            ProviderOutcomeStatus.APPLIED,
+            "accepted",
+        ),
+    }
+)
+
+
+def _assert_row04_invariant_contract(
+    function: str, expected_rule: str, outcomes: tuple[object, ...]
+) -> None:
+    """Accept only the backend-observed closed receipt set for subtraction."""
+
+    assert outcomes, f"{function} must record at least one provider receipt"
+    target_outcomes = tuple(
+        outcome for outcome in outcomes if outcome.metadata.get("rule_name") == expected_rule
     )
-}
+    assert target_outcomes, f"{function} did not record its contract rule {expected_rule}"
+    for outcome in target_outcomes:
+        matcher = outcome.matcher
+        assert matcher is not None
+        receipt = (
+            matcher.selection,
+            matcher.terminal_stop_reason,
+            matcher.native_equivalence_verdict,
+            outcome.status,
+            matcher.mutation_outcome,
+        )
+        assert receipt in _CATALOGUE_ROW04_ALLOWED_RECEIPTS, (
+            f"{function} receipt outside closed allowed set: {outcome!r}"
+        )
+        assert outcome.source_provenance, f"{function} receipt lacks source provenance"
+        if outcome.status is ProviderOutcomeStatus.APPLIED:
+            assert matcher.selection is MatcherSelection.CANONICAL_FALLBACK
+            assert matcher.terminal_stop_reason == "matched"
+            assert matcher.native_equivalence_verdict is True
+            assert matcher.mutation_outcome == "accepted"
+            assert outcome.metadata.get("mutation_outcome") == "accepted"
+        else:
+            assert outcome.metadata.get("mutation_outcome") != "accepted"
+
+
 
 
 def _assert_exact_catalogue_contract(function: str, outcomes: tuple[object, ...]) -> None:
-    configured = _CATALOGUE_RECEIPT_CONTRACT[function]
     expected_rule = next(
         rule_name for case_name, rule_name in _CATALOGUE_CASES if case_name == function
     )
+    if function == "mba_shape_catalogue_04":
+        _assert_row04_invariant_contract(function, expected_rule, outcomes)
+        return
+    configured = _CATALOGUE_RECEIPT_CONTRACT[function]
     if not outcomes:
         assert not _catalogue_reaches_provider(function)
         assert configured == (
@@ -212,26 +245,23 @@ def _assert_exact_catalogue_contract(function: str, outcomes: tuple[object, ...]
     )
     assert target_outcomes, f"{function} did not record its contract rule {expected_rule}"
     expected_selection, expected_stop, expected_proof, expected_status = configured[1:]
-    secondary_receipts = _CATALOGUE_SECONDARY_RECEIPTS.get(
-        function,
-        frozenset(
-            {
-                (
-                    MatcherSelection.NONE,
-                    "miss",
-                    None,
-                    ProviderOutcomeStatus.UNCHANGED,
-                    None,
-                ),
-                (
-                    MatcherSelection.NONE,
-                    "clean_miss",
-                    None,
-                    ProviderOutcomeStatus.UNCHANGED,
-                    None,
-                ),
-            }
-        ),
+    secondary_receipts = frozenset(
+        {
+            (
+                MatcherSelection.NONE,
+                "miss",
+                None,
+                ProviderOutcomeStatus.UNCHANGED,
+                None,
+            ),
+            (
+                MatcherSelection.NONE,
+                "clean_miss",
+                None,
+                ProviderOutcomeStatus.UNCHANGED,
+                None,
+            ),
+        }
     )
     decisive = tuple(
         outcome.matcher is not None

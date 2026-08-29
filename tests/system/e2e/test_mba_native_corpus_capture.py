@@ -477,14 +477,14 @@ class TestNativeMbaCorpusCapture:
         )
         assert without_snapshot.outcomes[0].status is ProviderOutcomeStatus.UNAVAILABLE
 
-        with_snapshot = capture.add_case(
-            case_id="prior-profile-with-snapshot",
-            stratum="catalogue",
-            profile=None,
-            rules=selected_rules,
-            history_snapshot=history_snapshot,
-            expected_providers=(MbaProviderKind.CATALOGUE,),
-            unavailable_reason="raw_identity_profile_unavailable",
-        )
-        assert with_snapshot.outcomes[0].status is ProviderOutcomeStatus.UNAVAILABLE
+        with pytest.raises(ValueError, match="requires a validated raw outcome"):
+            capture.add_case(
+                case_id="prior-profile-with-snapshot",
+                stratum="catalogue",
+                profile=None,
+                rules=selected_rules,
+                history_snapshot=history_snapshot,
+                expected_providers=(MbaProviderKind.CATALOGUE,),
+                unavailable_reason="raw_identity_profile_unavailable",
+            )
         assert "native_profile" not in first_raw.metadata
