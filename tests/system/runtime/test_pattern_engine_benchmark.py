@@ -12,9 +12,9 @@ import os
 import platform
 import hashlib
 import cProfile
+import contextlib
 import gc
 import io
-import json
 import pstats
 import statistics
 import time
@@ -40,6 +40,8 @@ from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     optimizer_logger,
 )
 from d810.optimizers.microcode.instructions.pattern_matching.engine import get_engine_info
+from d810.testing.cases import DeobfuscationCase
+from d810.testing.runner import run_deobfuscation_test
 from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups import (
     OpcodeIndexedStorage,
     compute_fingerprint,
@@ -186,6 +188,49 @@ def compiler_shape_real_asts(ida_database, configure_hexrays):
     if not asts:
         pytest.skip("compiler-shape raw witnesses have no convertible ASTs")
     return asts
+
+
+def _collect_real_shadow_evidence(
+    d810_state, pseudocode_to_string, monkeypatch
+) -> tuple[object, object]:
+    """Collect actual legacy-shadow evidence for benchmark authorization."""
+
+    observed: dict[str, object] = {}
+    monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
+    monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
+    monkeypatch.delenv("D810_CANONICAL_MATCH_FALLBACK", raising=False)
+
+    @contextlib.contextmanager
+    def recording_state():
+        with d810_state() as state:
+            assert state.load_project(
+                state.project_manager.index("mba_compiler_shape_catalogue.json")
+            ) is not None
+            yield state
+            observed["snapshot"] = state.current_certified_catalogue_snapshot
+            observed["ledger"] = state.current_shadow_matcher_parity_ledger
+
+    run_deobfuscation_test(
+        DeobfuscationCase(
+            function="mba_shape_catalogue_08",
+            description="Task 7 native shadow certificate evidence",
+            project="",
+            must_change=False,
+            required_rules=["Add_HackersDelightRule_4"],
+            forbidden_rules=[],
+        ),
+        d810_state=recording_state,
+        pseudocode_to_string=pseudocode_to_string,
+    )
+    snapshot = observed.get("snapshot")
+    ledger = observed.get("ledger")
+    assert snapshot is not None
+    assert ledger is not None
+    assert ledger.legacy_match_count > 0
+    assert ledger.legacy_rule_mismatches == 0
+    assert ledger.legacy_binding_mismatches == 0
+    assert ledger.legacy_binding_unknown == 0
+    return snapshot, ledger
 
 
 def _mop_projection(mop) -> tuple[object, ...] | None:
@@ -886,44 +931,103 @@ class TestCanonicalFallbackWorkBounds:
             _print=lambda: "task7-callback",
         )
 
+    def _discover_production_sample(
+        self, real_samples, d810_state, monkeypatch
+    ) -> _CompilerShapeSample:
+        """Pin one native callback sample before either A/B mode runs."""
+        from d810.core import OptimizationStatistics
+        from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+            PatternOptimizer,
+        )
+
+        monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
+        # Keep snapshot attachment enabled in both arms.  Shadow observation
+        # is read-only here; the canonical rollout flag remains the sole A/B
+        # dimension and is still explicitly 0 versus 1.
+        monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
+        monkeypatch.setenv("D810_CANONICAL_MATCH_FALLBACK", "0")
+        with d810_state() as state:
+            assert state.load_project(
+                state.project_manager.index("mba_compiler_shape_catalogue.json")
+            ) is not None
+            adapters = tuple(state.current_ins_rules)
+            adapter = next(
+                rule for rule in adapters if rule.name == "Add_HackersDelightRule_4"
+            )
+            optimizer = PatternOptimizer(
+                maturities=[ida_hexrays.MMAT_CALLS],
+                stats=OptimizationStatistics(),
+                verifiable_rules=list(adapters),
+            )
+            allowed = frozenset({adapter.name})
+            for sample in real_samples:
+                optimizer.last_matched_rule_name = None
+                result = optimizer._try_matches(
+                    sample.block,
+                    sample.instruction,
+                    sample.ast,
+                    allowed_rule_names=allowed,
+                    scheduled_rule_names=frozenset(),
+                    source_label="task7-production-benchmark-discovery",
+                )
+                if (
+                    result is not None
+                    and optimizer.last_matched_rule_name == adapter.name
+                ):
+                    return sample
+        pytest.fail(
+            "pinned Add_HackersDelightRule_4 has no raw-hit AST in the "
+            f"MMAT_CALLS compiler-shape witness (asts={len(real_samples)})"
+        )
+
     def _sample_production_raw_hit(
         self,
-        real_asts,
+        sample,
         d810_state,
         monkeypatch,
+        pseudocode_to_string,
         *,
         fallback_enabled: bool,
+        fallback_probe: bool = False,
     ) -> tuple[list[float], dict]:
         """Sample a real certified adapter through the production handler.
 
         The small synthetic helpers above intentionally isolate work-count
         invariants.  Timing must exercise the adapter registration and
         rollout flag, however, so this helper loads the catalogue through
-        ``D810State`` and invokes ``PatternOptimizer._try_matches`` with a
-        live AST/minsn pair from ``real_asts``.
+        ``D810State`` and invokes ``PatternOptimizer._try_matches`` with the
+        exact same live AST/minsn pair selected before the A/B modes.
         """
-        from d810.backends.mba.ida import (
-            attach_selected_certified_catalogue_snapshot,
-            runtime_semantics_digest,
-        )
         from d810.core import OptimizationStatistics
-        from d810.mba.certified_catalogue import (
-            ShadowMatcherParityLedger,
-            StructuralMatcherParityExpectation,
-            build_certified_catalogue_snapshot,
-            make_structural_matcher_parity_certificate,
-        )
+        from d810.core.config import ProjectConfiguration
         from d810.optimizers.microcode.instructions.pattern_matching.handler import (
             PatternOptimizer,
         )
 
         monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
-        monkeypatch.delenv("D810_SHADOW_DSL_MATCHING", raising=False)
+        # Request read-only snapshot attachment in both A/B arms.  The
+        # canonical rollout flag remains the only experimental dimension.
+        monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
         monkeypatch.setenv(
             "D810_CANONICAL_MATCH_FALLBACK", "1" if fallback_enabled else "0"
         )
         mode = "cython" if get_engine_info()["backend"] == "cython" else "python"
         calls = {"fallback_enabled": fallback_enabled}
+
+        # Both A/B arms use the same real certificate and production project
+        # configuration.  The only experimental dimension is the explicit
+        # rollout environment flag; this prevents the baseline from silently
+        # switching to an unrelated un-authorized adapter set.
+        evidence = _collect_real_shadow_evidence(
+            d810_state,
+            pseudocode_to_string,
+            monkeypatch,
+        )
+        monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
+        monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
+        monkeypatch.setenv(
+            "D810_CANONICAL_MATCH_FALLBACK", "1" if fallback_enabled else "0"
+        )
 
         with d810_state() as state:
             project_index = state.project_manager.index(
@@ -933,71 +1037,33 @@ class TestCanonicalFallbackWorkBounds:
             adapters = tuple(state.current_ins_rules)
             assert adapters
 
-            # The production loader creates the snapshot and adapters.  For
-            # this isolated timing probe, attach a snapshot-bound authorization
-            # artifact using the existing certificate API.  Its one-observation
-            # ledger is deliberately test-only: this benchmark is not allowed
-            # to self-authorize semantic parity, so the independently produced
-            # native shadow certificate remains the authority and is exercised
-            # by the compiler-shape E2E gate below.  No matcher/evaluator is
-            # fabricated for the timed callback itself.
-            if fallback_enabled:
-                rules = tuple(adapter.rule for adapter in adapters)
-                semantics_digest = runtime_semantics_digest()
-                snapshot = build_certified_catalogue_snapshot(
-                    rules,
-                    compiler_version="verifiable-rule-dsl-v1",
-                    enabled_families=tuple(
-                        dict.fromkeys(
-                            type(rule).__module__.rsplit(".", 1)[-1]
-                            for rule in rules
-                        )
-                    ),
-                    runtime_semantics_digest=semantics_digest,
-                )
-                corpus_digest = hashlib.sha256(
-                    b"task7-production-certified-adapter-benchmark"
-                ).hexdigest()
-                toolchain_digest = hashlib.sha256(
-                    b"task7-production-certified-adapter-benchmark-toolchain"
-                ).hexdigest()
-                ledger = ShadowMatcherParityLedger(
-                    observation_count=1,
-                    legacy_match_count=1,
-                )
-                certificate_path = (
-                    Path(__file__).resolve().parents[3]
-                    / ".tmp"
-                    / f"task7-production-benchmark-{mode}.certificate.json"
-                )
-                certificate_path.parent.mkdir(parents=True, exist_ok=True)
-                certificate_path.write_text(
-                    json.dumps(
-                        make_structural_matcher_parity_certificate(
-                            snapshot=snapshot,
-                            ledger=ledger,
-                            runtime_mode=mode,
-                            corpus_digest=corpus_digest,
-                            toolchain_digest=toolchain_digest,
-                            runtime_semantics_digest=semantics_digest,
-                        ),
-                        sort_keys=True,
-                    ),
-                    encoding="utf-8",
-                )
-                expectation = StructuralMatcherParityExpectation(
-                    corpus_digest=corpus_digest,
-                    toolchain_digest=toolchain_digest,
-                    runtime_semantics_digest=semantics_digest,
-                    legacy_observation_count=1,
-                    observation_count=1,
-                )
-                attach_selected_certified_catalogue_snapshot(
-                    adapters,
-                    parity_certificate_path=certificate_path,
-                    parity_expectation=expectation,
-                    runtime_mode=mode,
-                )
+            # Build authorization from a real legacy-shadow decompilation; no
+            # literal digest or invented ledger count can enable this
+            # benchmark.  The E2E corpus test independently validates the
+            # complete multi-case certificate path.
+            from tests.system.e2e.test_mba_compiler_shape_corpus import (
+                build_real_shadow_activation,
+            )
+            evidence_snapshot, evidence_ledger = evidence
+            certificate_path = (
+                Path(__file__).resolve().parents[3]
+                / ".tmp"
+                / f"task7-production-benchmark-{mode}.certificate.json"
+            )
+            activation_path, expectation = build_real_shadow_activation(
+                snapshot=evidence_snapshot,
+                ledger=evidence_ledger,
+                runtime_mode=mode,
+                output_path=certificate_path,
+            )
+            # Activate through the same D810State project/configuration path
+            # used by production, rather than attaching a snapshot directly.
+            state.add_project(ProjectConfiguration.from_file(activation_path))
+            assert state.load_project(
+                state.project_manager.index(activation_path.name)
+            ) is not None
+            adapters = tuple(state.current_ins_rules)
+            assert state.current_certified_catalogue_snapshot is not None
 
             assert all(
                 adapter.canonical_fallback_enabled is fallback_enabled
@@ -1012,46 +1078,76 @@ class TestCanonicalFallbackWorkBounds:
                 None,
             )
             assert adapter is not None
+            fallback_records: list[dict[str, int]] = []
+            active_record: dict[str, int] | None = None
+            if fallback_probe:
+                monkeypatch.setattr(
+                    adapter,
+                    "check_pattern_and_replace",
+                    lambda *_args, **_kwargs: None,
+                )
+                from d810.backends.mba import hexrays_island
+                from d810.backends.mba import ida as ida_backend
+                from d810.mba import ac_matching
+
+                def record_lowering(*args, **kwargs):
+                    if active_record is not None:
+                        active_record["lowerings"] += 1
+                    return original_lowering(*args, **kwargs)
+
+                def record_canonical_match(*args, **kwargs):
+                    if active_record is not None:
+                        active_record["canonical_matches"] += 1
+                    return original_canonical_match(*args, **kwargs)
+
+                def record_proof(*args, **kwargs):
+                    if active_record is not None:
+                        active_record["proofs"] += 1
+                    return original_proof(*args, **kwargs)
+
+                original_lowering = hexrays_island.lower_hexrays_island
+                original_canonical_match = ac_matching.match_canonical_term_pattern
+                original_proof = ida_backend.prove_native_ast_equivalence
+                original_emitter = adapter._get_shadow_replacement
+
+                def record_emitter(*args, **kwargs):
+                    if active_record is not None:
+                        active_record["emitters"] += 1
+                    return original_emitter(*args, **kwargs)
+
+                monkeypatch.setattr(hexrays_island, "lower_hexrays_island", record_lowering)
+                monkeypatch.setattr(
+                    ac_matching,
+                    "match_canonical_term_pattern",
+                    record_canonical_match,
+                )
+                monkeypatch.setattr(
+                    ida_backend,
+                    "prove_native_ast_equivalence",
+                    record_proof,
+                )
+                monkeypatch.setattr(adapter, "_get_shadow_replacement", record_emitter)
             optimizer = PatternOptimizer(
                 maturities=[ida_hexrays.MMAT_CALLS],
                 stats=OptimizationStatistics(),
                 verifiable_rules=list(adapters),
             )
-            # Discover the witness through the same production callback that
-            # will be timed.  This is deliberately not a nomut probe: the
-            # legacy path is mutating and may generate commutative candidates.
-            match = None
             allowed = frozenset({adapter.name})
-            for sample in real_asts:
-                candidate_ast = sample.ast
-                candidate_ins = sample.instruction
-                optimizer.last_matched_rule_name = None
-                result = optimizer._try_matches(
-                    sample.block,
-                    candidate_ins,
-                    candidate_ast,
-                    allowed_rule_names=allowed,
-                    scheduled_rule_names=frozenset(),
-                    source_label="task7-production-benchmark-discovery",
-                )
-                if (
-                    result is not None
-                    and optimizer.last_matched_rule_name == adapter.name
-                ):
-                    match = sample
-                    break
-            if match is None:
-                pytest.fail(
-                    "pinned Add_HackersDelightRule_4 has no raw-hit AST in "
-                    f"the MMAT_CALLS compiler-shape witness (asts={len(real_asts)})"
-                )
-            candidate_ast = match.ast
-            candidate_ins = match.instruction
-            block = match.block
-            assert match.mba.entry_ea == block.mba.entry_ea
+            candidate_ast = sample.ast
+            candidate_ins = sample.instruction
+            block = sample.block
+            assert sample.mba.entry_ea == block.mba.entry_ea
             assert block.mba.maturity == ida_hexrays.MMAT_CALLS
 
             def callback() -> None:
+                nonlocal active_record
+                if fallback_probe:
+                    active_record = {
+                        "lowerings": 0,
+                        "canonical_matches": 0,
+                        "proofs": 0,
+                        "emitters": 0,
+                    }
                 result = optimizer._try_matches(
                     block,
                     candidate_ins,
@@ -1060,10 +1156,71 @@ class TestCanonicalFallbackWorkBounds:
                     scheduled_rule_names=frozenset(),
                     source_label="task7-production-benchmark-raw-hit",
                 )
-                assert result is not None
+                if fallback_probe:
+                    record = active_record
+                    active_record = None
+                    assert record is not None
+                    assert result is not None
+                    outcome = adapter._last_provider_outcome
+                    assert outcome is not None and outcome.matcher is not None
+                    assert outcome.matcher.selection.value == "canonical_fallback"
+                    assert 1 <= outcome.matcher.fallback_comparisons <= 64
+                    assert record["lowerings"] == 1
+                    assert record["canonical_matches"] >= 1
+                    assert record["proofs"] == 1
+                    assert record["emitters"] == 1
+                    fallback_records.append(record)
+                else:
+                    assert result is not None
 
             for _ in range(10):
                 callback()
+            if fallback_probe:
+                profile_iterations = 20
+                profiler = cProfile.Profile()
+                profiler.enable()
+                for _ in range(profile_iterations):
+                    callback()
+                profiler.disable()
+                profile_stream = io.StringIO()
+                pstats.Stats(profiler, stream=profile_stream).strip_dirs().sort_stats(
+                    "cumulative"
+                ).print_stats()
+                gc.collect()
+                tracemalloc.start()
+                allocation_before = tracemalloc.get_traced_memory()[0]
+                for _ in range(profile_iterations):
+                    callback()
+                gc.collect()
+                allocation_current, allocation_peak = tracemalloc.get_traced_memory()
+                for _ in range(profile_iterations):
+                    callback()
+                gc.collect()
+                allocation_second_current, allocation_second_peak = (
+                    tracemalloc.get_traced_memory()
+                )
+                tracemalloc.stop()
+                calls.update(
+                    {
+                        "fallback_records": fallback_records,
+                        "profile_iterations": profile_iterations,
+                        "profile": profile_stream.getvalue(),
+                        "allocation_before_bytes": allocation_before,
+                        "allocation_current_bytes": allocation_current,
+                        "allocation_peak_bytes": allocation_peak,
+                        "allocation_second_current_bytes": allocation_second_current,
+                        "allocation_second_peak_bytes": allocation_second_peak,
+                    }
+                )
+                samples: list[float] = []
+                for _ in range(20):
+                    started = time.perf_counter()
+                    for _ in range(10):
+                        callback()
+                    samples.append((time.perf_counter() - started) / 10)
+                calls["sample_batches"] = 20
+                calls["batch_iterations"] = 10
+                return samples, calls
             # The production adapter/emitter path is deliberately sampled in
             # short batches: a 5,000-callback batch is useful for the
             # synthetic work-bound probe below, but makes ten fresh native
@@ -1082,87 +1239,46 @@ class TestCanonicalFallbackWorkBounds:
                 {
                     "adapter": adapter.name,
                     "candidate_ea": getattr(candidate_ins, "ea", None),
-                    "candidate_path": match.path,
-                    "owner_ea": getattr(match.top_instruction, "ea", None),
-                    "function_ea": getattr(match.mba, "entry_ea", None),
+                    "candidate_path": sample.path,
+                    "owner_ea": getattr(sample.top_instruction, "ea", None),
+                    "function_ea": getattr(sample.mba, "entry_ea", None),
                     "candidate_digest": hashlib.sha256(
                         repr(_benchmark_ast_shape(candidate_ast)).encode()
                     ).hexdigest(),
                     "pattern_candidates": len(adapter.pattern_candidates),
                     "canonical_fallback_enabled": adapter.canonical_fallback_enabled,
+                    "certificate_authorized": (
+                        state.current_certified_catalogue_snapshot is not None
+                    ),
+                    "adapter_receipt": tuple(
+                        (
+                            rule.name,
+                            getattr(rule, "canonical_fallback_declaration_index", None),
+                            len(rule.pattern_candidates),
+                            bool(rule.canonical_fallback_enabled),
+                            tuple(rule.maturities),
+                            bool(rule.uses_structural_matching),
+                        )
+                        for rule in adapters
+                    ),
+                    "adapter_identity": tuple(id(rule) for rule in adapters),
+                    # Keep the fresh native adapter proxies alive until the
+                    # paired arm has recorded its identity.  Otherwise SWIG
+                    # may recycle a proxy address after the state context
+                    # closes and make a genuinely fresh set look aliased.
+                    "_adapter_objects": adapters,
+                    "sample_identity": (
+                        id(sample.mba),
+                        id(sample.block),
+                        id(sample.top_instruction),
+                        id(sample.instruction),
+                        id(sample.ast),
+                    ),
                     "sample_batches": sample_batches,
                     "batch_iterations": batch_iterations,
                 }
             )
             return samples, calls
-
-    def _sample_fallback_hit(self, ast) -> tuple[list[float], dict]:
-        """Sample the controlled clean-miss/fallback-hit callback."""
-        term, shape = self._term_and_shape()
-        raw_rule, pattern, _raw_calls = self._make_rule("raw-benchmark", shape=shape)
-        fallback_rule, _fallback_pattern, calls = self._make_rule(
-            "fallback-benchmark",
-            shape=shape,
-            fallback_result=self._callback_instruction(),
-        )
-        optimizer = self._optimizer_for(raw_rule, (fallback_rule,))
-        block = SimpleNamespace(
-            mba=SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)
-        )
-        instruction = self._callback_instruction()
-
-        def callback() -> None:
-            result = optimizer._try_matches(
-                block,
-                instruction,
-                ast,
-                allowed_rule_names=None,
-                scheduled_rule_names=frozenset(),
-                source_label="task7-benchmark-fallback-hit",
-            )
-            assert result is not None
-
-        for _ in range(10):
-            callback()
-        profile_iterations = 1000
-        profiler = cProfile.Profile()
-        profiler.enable()
-        for _ in range(profile_iterations):
-            callback()
-        profiler.disable()
-        profile_stream = io.StringIO()
-        pstats.Stats(profiler, stream=profile_stream).strip_dirs().sort_stats(
-            "cumulative"
-        ).print_stats(8)
-
-        gc.collect()
-        tracemalloc.start()
-        allocation_before = tracemalloc.get_traced_memory()[0]
-        for _ in range(profile_iterations):
-            callback()
-        gc.collect()
-        allocation_current, allocation_peak = tracemalloc.get_traced_memory()
-        for _ in range(profile_iterations):
-            callback()
-        gc.collect()
-        allocation_second_current, allocation_second_peak = (
-            tracemalloc.get_traced_memory()
-        )
-        tracemalloc.stop()
-        calls["profile_iterations"] = profile_iterations
-        calls["profile"] = profile_stream.getvalue()
-        calls["allocation_before_bytes"] = allocation_before
-        calls["allocation_current_bytes"] = allocation_current
-        calls["allocation_peak_bytes"] = allocation_peak
-        calls["allocation_second_current_bytes"] = allocation_second_current
-        calls["allocation_second_peak_bytes"] = allocation_second_peak
-        samples: list[float] = []
-        for _ in range(40):
-            started = time.perf_counter()
-            for _ in range(5000):
-                callback()
-            samples.append((time.perf_counter() - started) / 5000.0)
-        return samples, calls
 
     @staticmethod
     def _p95(samples: list[float]) -> float:
@@ -1179,7 +1295,7 @@ class TestCanonicalFallbackWorkBounds:
 
     @pytest.mark.ida_required
     def test_bounded_callback_performance(
-        self, compiler_shape_real_asts, d810_state, monkeypatch
+        self, compiler_shape_real_asts, d810_state, monkeypatch, pseudocode_to_string
     ):
         """Record stable raw-hit and bounded fallback callback cost samples."""
         # Logging is not part of the callback budget and would dominate the
@@ -1205,34 +1321,40 @@ class TestCanonicalFallbackWorkBounds:
             "compile_canonical_pattern",
             count_catalogue_compile,
         )
-        ast = next(sample.ast for sample in compiler_shape_real_asts if sample.ast.is_node())
+        pinned_sample = self._discover_production_sample(
+            compiler_shape_real_asts, d810_state, monkeypatch
+        )
         benchmark_commit = os.environ.get("D810_BENCHMARK_COMMIT", "not supplied")
         rounds = []
         for round_index in range(5):
             if round_index % 2 == 0:
                 baseline, baseline_calls = self._sample_production_raw_hit(
-                    compiler_shape_real_asts,
+                    pinned_sample,
                     d810_state,
                     monkeypatch,
+                    pseudocode_to_string,
                     fallback_enabled=False,
                 )
                 candidate, candidate_calls = self._sample_production_raw_hit(
-                    compiler_shape_real_asts,
+                    pinned_sample,
                     d810_state,
                     monkeypatch,
+                    pseudocode_to_string,
                     fallback_enabled=True,
                 )
             else:
                 candidate, candidate_calls = self._sample_production_raw_hit(
-                    compiler_shape_real_asts,
+                    pinned_sample,
                     d810_state,
                     monkeypatch,
+                    pseudocode_to_string,
                     fallback_enabled=True,
                 )
                 baseline, baseline_calls = self._sample_production_raw_hit(
-                    compiler_shape_real_asts,
+                    pinned_sample,
                     d810_state,
                     monkeypatch,
+                    pseudocode_to_string,
                     fallback_enabled=False,
                 )
             assert baseline_calls["adapter"] == "Add_HackersDelightRule_4"
@@ -1243,6 +1365,27 @@ class TestCanonicalFallbackWorkBounds:
             assert candidate_calls["function_ea"] == baseline_calls["function_ea"]
             assert candidate_calls["candidate_digest"] == baseline_calls[
                 "candidate_digest"
+            ]
+            baseline_receipt = baseline_calls["adapter_receipt"]
+            candidate_receipt = candidate_calls["adapter_receipt"]
+            # The ordered certified rule set and runtime configuration are
+            # identical; only the candidate representation/rollout bit is
+            # intentionally different (legacy permutations vs one canonical
+            # candidate).
+            assert tuple(
+                (row[0], row[1], row[4]) for row in candidate_receipt
+            ) == tuple((row[0], row[1], row[4]) for row in baseline_receipt)
+            assert tuple(row[3] for row in baseline_receipt) == tuple(
+                False for _ in baseline_receipt
+            )
+            assert tuple(row[3] for row in candidate_receipt) == tuple(
+                True for _ in candidate_receipt
+            )
+            assert set(id(rule) for rule in baseline_calls["_adapter_objects"]).isdisjoint(
+                id(rule) for rule in candidate_calls["_adapter_objects"]
+            )
+            assert baseline_calls["sample_identity"] == candidate_calls[
+                "sample_identity"
             ]
             rounds.append(
                 {
@@ -1256,7 +1399,14 @@ class TestCanonicalFallbackWorkBounds:
                     "p95_delta": self._p95(candidate) / self._p95(baseline) - 1.0,
                 }
             )
-        fallback, fallback_calls = self._sample_fallback_hit(ast)
+        fallback, fallback_calls = self._sample_production_raw_hit(
+            pinned_sample,
+            d810_state,
+            monkeypatch,
+            pseudocode_to_string,
+            fallback_enabled=True,
+            fallback_probe=True,
+        )
         baseline_median = statistics.median(
             [round_result["baseline_median"] for round_result in rounds]
         )
@@ -1276,10 +1426,15 @@ class TestCanonicalFallbackWorkBounds:
         assert raw_p95_regression <= 0.10, raw_p95_regression
         assert baseline_calls["canonical_fallback_enabled"] is False
         assert candidate_calls["canonical_fallback_enabled"] is True
-        callback_count = 10 + fallback_calls["profile_iterations"] * 3 + 40 * 5000
-        assert fallback_calls["fallback"] == callback_count
-        assert fallback_calls["prepare"] == (
-            callback_count
+        assert baseline_calls["certificate_authorized"] is True
+        assert candidate_calls["certificate_authorized"] is True
+        assert fallback_calls["fallback_records"]
+        assert all(
+            record["lowerings"] == 1
+            and record["canonical_matches"] >= 1
+            and record["proofs"] == 1
+            and record["emitters"] == 1
+            for record in fallback_calls["fallback_records"]
         )
         assert max(
             fallback_calls["allocation_peak_bytes"],
@@ -1307,10 +1462,10 @@ class TestCanonicalFallbackWorkBounds:
                 for index, round_result in enumerate(rounds)
             )
             + "\n"
-            f"- Controlled raw-miss/fallback-hit synthetic work-bound probe: median `{statistics.median(fallback):.9g}`, p95 `{self._p95(fallback):.9g}`; fallback calls `{fallback_calls['fallback']}`; max comparisons `64` (verified independently by the live compiler-shape receipt)\n"
-            f"- Callback counts: catalogue compilation during benchmark setup `{catalogue_compilations}` (no compilation assertion is attributed to the timed raw-hit callback); shared structural lowerings `{fallback_calls['prepare']}` for `{fallback_calls['fallback']}` fallback callbacks; additional per-rule lowering `0`\n"
+            f"- Controlled live raw-miss/fallback-hit probe: median `{statistics.median(fallback):.9g}`, p95 `{self._p95(fallback):.9g}` across `{len(fallback_calls['fallback_records'])}` callbacks; every callback had one shared lowering, 1..64 canonical comparisons, one native proof, and one emitter\n"
+            f"- Callback counts: catalogue compilation during benchmark setup `{catalogue_compilations}`; live fallback callbacks `{len(fallback_calls['fallback_records'])}`; per-rule extra lowering `0`\n"
             f"- Allocation observation: `{fallback_calls['profile_iterations'] * 3}` un-timed callbacks in two equal windows, peak traced allocation `{max(fallback_calls['allocation_peak_bytes'], fallback_calls['allocation_second_peak_bytes'])}` bytes, retained current `{fallback_calls['allocation_current_bytes']}` -> `{fallback_calls['allocation_second_current_bytes']}` bytes after GC (window growth `{allocation_window_growth}` bytes; bound 131072)\n"
-            "- Work counts: raw-hit canonical lowering/comparisons `0/0`; clean-miss lowering `1` shared by eligible bucket; fallback budget separate from raw budget\n"
+            "- Work counts: raw-hit canonical lowering/comparisons `0/0`; controlled live fallback is separately bounded and uses the production lowerer -> canonical matcher -> native proof -> emitter path\n"
             "- Dominant callback paths (cProfile, cumulative):\n"
             + "\n".join(f"  {line}" for line in fallback_calls["profile"].strip().splitlines())
             + "\n"

@@ -1432,6 +1432,46 @@ def test_adapter_clears_structural_attempt_state_on_context_reset() -> None:
     assert adapter._shadow_structural_refused is False
 
 
+def test_profile_for_ast_reuses_exact_structural_lowering(monkeypatch) -> None:
+    """Telemetry must not lower a structural fallback root a second time."""
+
+    from d810.backends.mba import hexrays_island
+
+    adapter = IDAPatternAdapter(SimpleNamespace(name="profile-reuse", maturities=[7]))
+    source_ast = object()
+    profile = SimpleNamespace(fingerprint="reused-profile")
+    adapter._shadow_source_ast = source_ast
+    adapter._shadow_lowering = SimpleNamespace(profile=profile)
+
+    def unexpected_lowering(*_args, **_kwargs):
+        raise AssertionError("exact structural profile should be reused")
+
+    monkeypatch.setattr(
+        hexrays_island,
+        "lower_hexrays_island",
+        unexpected_lowering,
+    )
+    assert adapter._profile_for_ast(source_ast) is profile
+
+    adapter._canonical_fallback_enabled = True
+    adapter._shadow_source_ast = None
+    adapter._shadow_lowering = None
+    assert adapter._profile_for_ast(object()) is None
+
+    replacement_profile = SimpleNamespace(fingerprint="fresh-profile")
+    adapter._canonical_fallback_enabled = False
+    adapter._attempt_destination_size = 4
+    monkeypatch.setattr(
+        hexrays_island,
+        "lower_hexrays_island",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            profile=replacement_profile,
+            term=object(),
+        ),
+    )
+    assert adapter._profile_for_ast(object()) is replacement_profile
+
+
 @pytest.mark.usefixtures("ida_database")
 class TestRawSuccessTelemetry:
     binary_name = "libobfuscated.dll"

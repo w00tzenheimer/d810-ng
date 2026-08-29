@@ -1417,6 +1417,25 @@ class IDAPatternAdapter:
     def _profile_for_ast(self, ast: Any):
         """Return the exact native profile used to publish provider telemetry."""
 
+        # Structural fallback already lowered this exact source root in the
+        # shared handler preparation step.  Reuse that callback-owned profile
+        # instead of lowering the same root again while publishing telemetry.
+        # The identity check is deliberate: a profile from another attempt or
+        # another AST must never cross the callback boundary.
+        if getattr(self, "_shadow_source_ast", None) is ast:
+            lowering = getattr(self, "_shadow_lowering", None)
+            profile = getattr(lowering, "profile", None)
+            if profile is not None:
+                return profile
+
+        # Raw candidates are attempted before the shared canonical fallback
+        # preparation.  Once the fallback is enabled, lowering each raw miss
+        # solely to populate telemetry would defeat that single-root budget;
+        # publish the miss without a native profile and let the shared
+        # structural lowering provide the authoritative profile if selected.
+        if self.canonical_fallback_enabled:
+            return None
+
         destination_size = self._attempt_destination_size
         if destination_size is None:
             return None
@@ -1613,6 +1632,12 @@ class IDAPatternAdapter:
         """Publish a direct-rule miss even though no rule-fired stat exists."""
 
         if self._last_provider_outcome is not None:
+            return
+        # Canonical fallback roots are prepared only after all raw candidates
+        # have cleanly missed.  Do not manufacture a second native lowering
+        # merely to publish an intermediate raw-miss telemetry row; the shared
+        # fallback attempt owns the authoritative receipt for this root.
+        if self.canonical_fallback_enabled and getattr(self, "_shadow_lowering", None) is None:
             return
         capture_enabled = self._provider_outcome_capture_enabled()
         shadow_enabled = self._shadow_observation_enabled()

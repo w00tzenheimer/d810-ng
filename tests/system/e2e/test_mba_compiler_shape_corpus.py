@@ -34,6 +34,7 @@ import pytest
 from d810.core.config import ProjectConfiguration
 from d810.backends.mba import ida as ida_backend
 from d810.mba.certified_catalogue import (
+    make_structural_matcher_parity_certificate,
     ShadowMatcherParityLedger,
     StructuralMatcherParityExpectation,
     load_structural_matcher_parity_certificate,
@@ -500,6 +501,69 @@ def _task13_capture_toolchain_identity(runtime_mode: str) -> dict[str, str]:
         "matcher_backend": runtime_mode,
         "profile": "portfolio-interactive",
     }
+
+
+def build_real_shadow_activation(
+    *,
+    snapshot,
+    ledger: ShadowMatcherParityLedger,
+    runtime_mode: str,
+    output_path: Path,
+) -> tuple[Path, StructuralMatcherParityExpectation]:
+    """Build activation evidence from an observed native shadow run.
+
+    This is shared by the corpus gate and the bounded callback benchmark.  The
+    caller must provide the snapshot and ledger produced by a real
+    ``run_deobfuscation_test``; this helper does not synthesize observations or
+    accept caller-provided digests/counts.
+    """
+
+    corpus_digest = _sha256_file(_MANIFEST)
+    toolchain_digest = _canonical_json_digest(
+        _task13_capture_toolchain_identity(runtime_mode)
+    )
+    certificate = make_structural_matcher_parity_certificate(
+        snapshot=snapshot,
+        ledger=ledger,
+        runtime_mode=runtime_mode,
+        corpus_digest=corpus_digest,
+        toolchain_digest=toolchain_digest,
+        runtime_semantics_digest=snapshot.runtime_semantics_digest,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(certificate, allow_nan=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    expectation = StructuralMatcherParityExpectation(
+        corpus_digest=corpus_digest,
+        toolchain_digest=toolchain_digest,
+        runtime_semantics_digest=snapshot.runtime_semantics_digest,
+        legacy_observation_count=ledger.legacy_match_count,
+        observation_count=ledger.observation_count,
+    )
+    activation = json.loads(_CATALOGUE_CONFIG.read_text(encoding="utf-8"))
+    activation.setdefault("additional_configuration", {}).update(
+        {
+            "structural_matcher_parity_certificate": output_path.name,
+            "structural_matcher_parity_expectation": {
+                "corpus_digest": expectation.corpus_digest,
+                "toolchain_digest": expectation.toolchain_digest,
+                "runtime_semantics_digest": expectation.runtime_semantics_digest,
+                "legacy_observation_count": expectation.legacy_observation_count,
+                "observation_count": expectation.observation_count,
+            },
+        }
+    )
+    activation_path = output_path.with_name(
+        output_path.stem.replace(".certificate", "") + ".activation.json"
+    )
+    activation_path.write_text(
+        json.dumps(activation, allow_nan=False, ensure_ascii=True, indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    return activation_path, expectation
 
 
 def _persist_task13_native_capture(
@@ -1171,6 +1235,8 @@ class TestCompilerShapeCatalogueNative:
                 native_proof_results.append(result)
                 if real_fallback_callback_active:
                     real_bound_proof_count += 1
+                if active_root_record is not None:
+                    active_root_record["proofs"] += 1
                 if real_profile_active:
                     real_profiled_proof_count += 1
                 return result
@@ -1209,31 +1275,56 @@ class TestCompilerShapeCatalogueNative:
             real_replacement_count = 0
             real_success_callback_count = 0
             real_callback_allocation_count = 0
+            real_root_records: list[dict[str, object]] = []
+            active_root_record: dict[str, object] | None = None
+            real_clear_events: list[str] = []
             original_prepare = forced_fallback_rule.prepare_structural_candidate
             original_match = forced_fallback_rule.match_structural_and_replace
-            original_clear = forced_fallback_rule.clear_match_context
             from d810.backends.mba import hexrays_island
+            from d810.backends.mba import native_z3
             from d810.mba import ac_matching
+            from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+                PatternOptimizer,
+            )
+            original_try_matches = PatternOptimizer._try_matches
 
             real_island_lowering_count = 0
+            real_proof_lowering_count = 0
             real_canonical_match_count = 0
             original_island_lowering = hexrays_island.lower_hexrays_island
+            original_proof_lowering = native_z3.lower_hexrays_island
             original_canonical_match = ac_matching.match_canonical_term_pattern
 
             def record_island_lowering(*args, **kwargs):
                 nonlocal real_island_lowering_count
                 real_island_lowering_count += 1
+                if active_root_record is not None:
+                    active_root_record["island_lowerings"] += 1
                 return original_island_lowering(*args, **kwargs)
+
+            def record_proof_lowering(*args, **kwargs):
+                nonlocal real_proof_lowering_count
+                real_proof_lowering_count += 1
+                if active_root_record is not None:
+                    active_root_record["proof_lowerings"] += 1
+                return original_proof_lowering(*args, **kwargs)
 
             def record_canonical_match(*args, **kwargs):
                 nonlocal real_canonical_match_count
                 real_canonical_match_count += 1
+                if active_root_record is not None:
+                    active_root_record["canonical_matches"] += 1
                 return original_canonical_match(*args, **kwargs)
 
             monkeypatch.setattr(
                 hexrays_island,
                 "lower_hexrays_island",
                 record_island_lowering,
+            )
+            monkeypatch.setattr(
+                native_z3,
+                "lower_hexrays_island",
+                record_proof_lowering,
             )
             monkeypatch.setattr(
                 ac_matching,
@@ -1249,6 +1340,8 @@ class TestCompilerShapeCatalogueNative:
                     real_profile.enable()
                     real_profile_active = True
                 real_lowering_count += 1
+                if active_root_record is not None:
+                    active_root_record["prepares"] += 1
                 return original_prepare(*args, **kwargs)
 
             def record_real_fallback(*args, **kwargs):
@@ -1261,6 +1354,8 @@ class TestCompilerShapeCatalogueNative:
                 nonlocal real_callback_allocation_count
                 real_fallback_callback_count += 1
                 real_fallback_callback_active = True
+                if active_root_record is not None:
+                    active_root_record["callbacks"] += 1
                 gc.collect()
                 tracemalloc.start()
                 allocation_before = tracemalloc.get_traced_memory()[0]
@@ -1280,18 +1375,86 @@ class TestCompilerShapeCatalogueNative:
                 real_replacement_count += result is not None
                 if result is not None:
                     real_success_callback_count += 1
+                    if active_root_record is not None:
+                        active_root_record["successful_callbacks"] += 1
+                        outcome = forced_fallback_rule._last_provider_outcome
+                        matcher = getattr(outcome, "matcher", None)
+                        if matcher is not None:
+                            active_root_record["fallback_comparisons"] = (
+                                matcher.fallback_comparisons
+                            )
+                            active_root_record["selection"] = matcher.selection.value
                 if result is not None and not real_profile_completed:
                     real_profile.disable()
                     real_profile_active = False
                     real_profile_completed = True
                 return result
 
-            def clear_real_fallback_context(*args, **kwargs):
-                nonlocal real_fallback_callback_active
+            def record_try_matches(self, *args, **kwargs):
+                nonlocal active_root_record
+                previous = active_root_record
+                active_root_record = {
+                    "prepares": 0,
+                    "island_lowerings": 0,
+                    "proof_lowerings": 0,
+                    "canonical_matches": 0,
+                    "proofs": 0,
+                    "emitters": 0,
+                    "callbacks": 0,
+                    "successful_callbacks": 0,
+                    "fallback_comparisons": 0,
+                    "selection": None,
+                }
                 try:
-                    return original_clear(*args, **kwargs)
+                    result = original_try_matches(self, *args, **kwargs)
+                    active_root_record["result"] = result is not None
+                    return result
                 finally:
-                    real_fallback_callback_active = False
+                    record = active_root_record
+                    active_root_record = previous
+                    if record is not None and record["callbacks"]:
+                        real_root_records.append(record)
+
+            monkeypatch.setattr(PatternOptimizer, "_try_matches", record_try_matches)
+
+            original_emitter = forced_fallback_rule._create_replacement_from_candidate
+
+            def record_emitter(*args, **kwargs):
+                if active_root_record is not None:
+                    active_root_record["emitters"] += 1
+                return original_emitter(*args, **kwargs)
+
+            monkeypatch.setattr(
+                forced_fallback_rule,
+                "_create_replacement_from_candidate",
+                record_emitter,
+            )
+
+            # Verify callback-owned state immediately after every adapter's
+            # cleanup call, including the exception path.
+            for callback_adapter in adapters:
+                original_clear = callback_adapter.clear_match_context
+
+                def clear_callback_context(
+                    *args,
+                    _adapter=callback_adapter,
+                    _original_clear=original_clear,
+                    **kwargs,
+                ):
+                    nonlocal real_fallback_callback_active
+                    try:
+                        return _original_clear(*args, **kwargs)
+                    finally:
+                        _assert_adapter_callback_context_cleared(_adapter)
+                        real_clear_events.append(_adapter.name)
+                        if _adapter is forced_fallback_rule:
+                            real_fallback_callback_active = False
+
+                monkeypatch.setattr(
+                    callback_adapter,
+                    "clear_match_context",
+                    clear_callback_context,
+                )
 
             monkeypatch.setattr(
                 forced_fallback_rule,
@@ -1302,11 +1465,6 @@ class TestCompilerShapeCatalogueNative:
                 forced_fallback_rule,
                 "match_structural_and_replace",
                 record_real_fallback,
-            )
-            monkeypatch.setattr(
-                forced_fallback_rule,
-                "clear_match_context",
-                clear_real_fallback_context,
             )
             from d810.mba import canonical_pattern
 
@@ -1378,21 +1536,36 @@ class TestCompilerShapeCatalogueNative:
                         if outcome.matcher is not None
                         and outcome.matcher.selection is MatcherSelection.CANONICAL_FALLBACK
                     )
-                    fallback_count = sum(
-                        outcome.matcher is not None
-                        and outcome.matcher.selection is MatcherSelection.CANONICAL_FALLBACK
-                        for outcome in accepted
-                    )
                 state.stop_d810()
             assert real_fallback_callback_count >= 2
-            # The handler lowers every eligible root once, then dispatches the
-            # selected root bucket.  Only roots in this forced rule's bucket
-            # invoke its fallback callback, so unrelated-root lowerings are
-            # expected and must remain visible in the production receipt.
-            assert real_lowering_count >= real_fallback_callback_count
-            assert real_island_lowering_count >= real_lowering_count
-            assert real_canonical_match_count >= real_fallback_callback_count
-            assert real_bound_proof_count >= real_success_callback_count
+            # The per-root records are authoritative.  Global counters are
+            # retained only as diagnostic totals because unrelated roots and
+            # provider callbacks share the same decompilation.
+            assert real_root_records
+            successful_root_records = [
+                record
+                for record in real_root_records
+                if record.get("successful_callbacks")
+            ]
+            assert successful_root_records
+            assert all(
+                record["prepares"] == 1
+                and record["island_lowerings"] == 1
+                and record["callbacks"] == 1
+                and record["canonical_matches"] >= 1
+                and record["proofs"] == 1
+                and record["emitters"] == 1
+                and 1 <= record["fallback_comparisons"] <= 64
+                for record in successful_root_records
+            ), successful_root_records
+            assert all(
+                record["prepares"] == 1
+                and record["callbacks"] == 1
+                and record["successful_callbacks"] == 0
+                for record in real_root_records
+                if not record.get("successful_callbacks")
+            )
+            assert len(real_clear_events) >= len(adapters)
             assert real_profiled_proof_count >= 1
             assert real_replacement_count >= 2
             assert real_profile_active is False
@@ -1427,8 +1600,11 @@ class TestCompilerShapeCatalogueNative:
                         "fallback_callbacks": real_fallback_callback_count,
                         "lowerings": real_lowering_count,
                         "island_lowerings": real_island_lowering_count,
+                        "proof_lowerings": real_proof_lowering_count,
                         "canonical_match_calls": real_canonical_match_count,
                         "replacement_count": real_replacement_count,
+                        "root_callback_records": real_root_records,
+                        "clear_context_checks": len(real_clear_events),
                         "catalogue_compilations_during_callbacks": 0,
                         "allocation_before": real_allocation_before,
                         "allocation_first_current": real_first_current,
