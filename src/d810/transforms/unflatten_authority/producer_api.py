@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable, Mapping, MutableMapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
@@ -330,16 +330,15 @@ def _inventory_instruction_rows(
         ):
             storage = storage_identity_from_mop_snapshot(insn.l)
             if (
-                insn.l is None or insn.l.kind is not OperandKind.STACK
-                or insn.r is None or insn.r.kind is not OperandKind.NUMBER
-                or insn.r.value is None
-                or insn.d.kind is not OperandKind.BLOCK
-                or insn.d.block_ref is None or storage is None
+                insn.l is not None and insn.l.kind is OperandKind.STACK
+                and insn.r is not None and insn.r.kind is OperandKind.NUMBER
+                and insn.r.value is not None
+                and insn.d.kind is OperandKind.BLOCK
+                and insn.d.block_ref is not None and storage is not None
             ):
-                raise ValueError("malformed synthetic stack equality predicate")
-            predicate_observation = model.InventoryPredicateObservation(
-                PredicateKind.EQ, storage, insn.l.size, insn.r.value, insn.d.block_ref,
-            )
+                predicate_observation = model.InventoryPredicateObservation(
+                    PredicateKind.EQ, storage, insn.l.size, insn.r.value, insn.d.block_ref,
+                )
         rows.append(InventoryInstructionObservation(
             ordinal, instruction_ea, insn.opcode, max(sizes, default=0),
             insn.kind, insn.control_transfer_kind, insn.is_call, insn.call_kind,
@@ -369,6 +368,18 @@ def observe_inventory_block(
             anchor_ea = block.start_ea
     transfer_ea = None
     if rows and rows[-1].control_transfer_kind is not None:
+        tail = rows[-1]
+        if (
+            tail.instruction_ea is not None
+            and sum(
+                row.instruction_ea == tail.instruction_ea for row in rows
+            ) != 1
+        ):
+            # A collapsed native EA cannot identify which normalized row is
+            # the transfer tail.  Keep the native origin on the other row and
+            # omit the ambiguous tail coordinate rather than minting a false
+            # exact transfer identity.
+            rows = (*rows[:-1], replace(tail, instruction_ea=None))
         transfer_ea = rows[-1].instruction_ea
     if rows and (block.tail_opcode is None or block.tail_kind is None):
         raise ValueError(

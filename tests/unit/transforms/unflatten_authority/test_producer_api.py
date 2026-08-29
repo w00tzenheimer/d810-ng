@@ -4,8 +4,8 @@ import pytest
 from dataclasses import replace
 from types import SimpleNamespace
 
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, InsnKind, InsnSnapshot, MopSnapshot
-from d810.ir.semantics import ControlTransferKind
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, InsnKind, InsnSnapshot, MopSnapshot, OperandKind
+from d810.ir.semantics import ControlTransferKind, PredicateKind
 from d810.transforms.unflatten_authority.model import EffectSiteKind, TerminalKind
 from d810.transforms.unflatten_authority import producer_api as producer_module
 from d810.transforms.unflatten_authority.model import (
@@ -434,6 +434,53 @@ def test_inventory_adapter_retains_generated_candidate_control_transfer_without_
     assert observed.transfer_ea is None
     assert observed.instruction_observations[0].instruction_ea is None
     assert observed.instruction_observations[0].control_transfer_kind is ControlTransferKind.GOTO
+
+
+def test_inventory_adapter_omits_nonunique_native_tail_transfer_ea() -> None:
+    """A shared native EA cannot falsely identify the exact transfer tail."""
+
+    block = _block(
+        InsnSnapshot(0x42, 0x1000, (), kind=InsnKind.NOP),
+        InsnSnapshot(
+            0x43, 0x1000, (), kind=InsnKind.GOTO,
+            control_transfer_kind=ControlTransferKind.GOTO,
+        ),
+        kind=BlockKind.ONE_WAY,
+        succs=(2,),
+    )
+
+    observed = observe_inventory_block(
+        block, owner_ref=None, owner_anchor_ea=0x1000,
+    )
+
+    assert observed.native_instruction_eas == (0x1000,)
+    assert observed.instruction_observations[-1].instruction_ea is None
+    assert observed.transfer_ea is None
+
+
+def test_inventory_adapter_leaves_non_stack_equality_branch_unclassified() -> None:
+    """A native equality branch is not implicitly a synthetic state predicate."""
+
+    block = _block(
+        InsnSnapshot(
+            0x43, 0x1000, (),
+            l=MopSnapshot(kind=OperandKind.REGISTER, size=4, reg=1),
+            r=MopSnapshot(kind=OperandKind.NUMBER, size=4, value=7),
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+            kind=InsnKind.COND_JUMP,
+            branch_predicate=PredicateKind.EQ,
+            is_conditional_jump=True,
+        ),
+        kind=BlockKind.TWO_WAY,
+        succs=(2, 3),
+    )
+
+    observed = observe_inventory_block(
+        block, owner_ref=None, owner_anchor_ea=0x1000,
+    )
+
+    assert observed.transfer_ea == 0x1000
+    assert observed.instruction_observations[-1].predicate_observation is None
 
 
 def test_inventory_adapter_preserves_raw_opcode_absence_and_rejects_invented_tail_provenance() -> None:
