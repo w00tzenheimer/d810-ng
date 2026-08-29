@@ -9882,6 +9882,147 @@ def _candidate_prefix_partitioned_transitions() -> tuple[StateWriteTransition, .
     )
 
 
+def test_exact_low_u32_carrier_proof_carries_selected_source_instruction_ea() -> None:
+    """The minted receipt names the final selected wide carrier definition."""
+
+    wide_carrier = replace(_reg(8), size=8)
+    narrow_carrier = _reg(8)
+    graph = FlowGraph(
+        blocks={
+            1: _blk(
+                1,
+                (2,),
+                (),
+                (
+                    _mov(0x1100, replace(_num(6), size=8), wide_carrier),
+                    _mov(0x1104, replace(_num(7), size=8), wide_carrier),
+                ),
+                ea=0x1100,
+            ),
+            2: _blk(
+                2,
+                (3,),
+                (1,),
+                (_mov(0x1200, narrow_carrier, _stk(_STATE_OFF)),),
+                ea=0x1200,
+            ),
+            3: _blk(3, (), (2,), (), ea=0x1300),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+
+    proof = state_carrier.prove_exact_u32_carrier_state_write(
+        graph,
+        1,
+        2,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        required_comparison_serials=frozenset({3}),
+        allow_low_u32_projection=True,
+    )
+
+    assert proof is not None
+    assert proof.state == 7
+    assert proof.source_instruction_ea == 0x1104
+    assert proof.source_instruction_ea != 0x1100
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_fact"),
+    (
+        ("valid", True),
+        ("missing_source_ea", False),
+        ("wrong_source_serial", False),
+        ("wrong_feeder_serial", False),
+        ("wrong_state", False),
+        ("wrong_carrier", False),
+        ("wrong_state_identity", False),
+    ),
+)
+def test_state_carrier_route_fact_uses_proof_source_instruction_coordinate(
+    mutation: str,
+    expected_fact: bool,
+) -> None:
+    """Carrier facts consume the proven source coordinate, not operand recovery."""
+
+    wide_carrier = replace(_reg(8), size=8)
+    narrow_carrier = _reg(8)
+    graph = FlowGraph(
+        blocks={
+            1: _blk(
+                1,
+                (2,),
+                (),
+                (_mov(0x1104, replace(_num(7), size=8), wide_carrier),),
+                ea=0x1100,
+            ),
+            2: _blk(
+                2,
+                (3,),
+                (1,),
+                (_mov(0x1200, narrow_carrier, _stk(_STATE_OFF)),),
+                ea=0x1200,
+            ),
+            3: _blk(3, (), (2,), (), ea=0x1300),
+            4: _blk(4, (), (), (), ea=0x1400),
+        },
+        entry_serial=1,
+        func_ea=0x1000,
+    )
+    state_identity = minimal_state_recovery.StorageIdentity(
+        minimal_state_recovery.StorageIdentityKind.STACK, _STATE_OFF
+    )
+    proof = state_carrier.ExactCarrierStateWrite(
+        state=7,
+        source_serial=1,
+        source_instruction_ea=0x1104,
+        feeder_serial=2,
+        comparison_entry_serial=3,
+        carrier=Varnode(Space.REGISTER, 8, 4),
+        state_identity=state_identity,
+    )
+    if mutation == "missing_source_ea":
+        proof = replace(proof, source_instruction_ea=0x1108)
+    elif mutation == "wrong_source_serial":
+        proof = replace(proof, source_serial=4)
+    elif mutation == "wrong_feeder_serial":
+        proof = replace(proof, feeder_serial=3)
+    elif mutation == "wrong_state":
+        proof = replace(proof, state=8)
+    elif mutation == "wrong_carrier":
+        proof = replace(proof, carrier=Varnode(Space.REGISTER, 9, 4))
+    elif mutation == "wrong_state_identity":
+        proof = replace(
+            proof,
+            state_identity=minimal_state_recovery.StorageIdentity(
+                minimal_state_recovery.StorageIdentityKind.STACK, _STATE_OFF + 4
+            ),
+        )
+
+    fact = minimal_state_recovery._semantic_route_fact_for_transition(
+        StateWriteTransition(1, 7, 4, False, None, via_block=2),
+        minimal_state_recovery._DecisionDagStateRoute(
+            target=4,
+            certified_targets=frozenset({4}),
+            entry_serial=3,
+            path_serials=(3,),
+            path_anchors=(0x1300,),
+        ),
+        graph,
+        state_var_stkoff=_STATE_OFF,
+        state_var_reg=None,
+        carrier_proof=proof,
+    )
+
+    if not expected_fact:
+        assert fact is None
+        return
+    assert fact is not None
+    assert fact.kind is SemanticRouteFactKind.STATE_CARRIER
+    assert fact.source_instruction_ea == 0x1104
+
+
 def test_candidate_prefix_records_exact_alternate_corridor_partition(_seam) -> None:
     """The omitted prefix arm remains a typed, source-bound coverage fact."""
 

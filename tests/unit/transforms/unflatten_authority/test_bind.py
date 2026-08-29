@@ -23432,7 +23432,8 @@ def _compiler_corridor_unsupported_case(*, proof_kind):
             SemanticRouteFactKind.STATE_CARRIER, 2, 2, 0x1200, 7, 5,
             0x1200, 0x1500, (2,), (),
             carrier_witness=ExactCarrierStateWrite(
-                state=7, source_serial=2, feeder_serial=3,
+                state=7, source_serial=2, source_instruction_ea=0x1200,
+                feeder_serial=3,
                 comparison_entry_serial=4,
                 carrier=Varnode(Space.REGISTER, 16, 4), state_identity=storage,
             ),
@@ -23890,7 +23891,8 @@ def _branch_x_canonical_replay_case(proof_kind):
                 "d810.analyses.control_flow.state_carrier",
                 fromlist=["ExactCarrierStateWrite"],
             ).ExactCarrierStateWrite(
-                state=7, source_serial=2, feeder_serial=3,
+                state=7, source_serial=2, source_instruction_ea=0x1200,
+                feeder_serial=3,
                 comparison_entry_serial=4,
                 carrier=Varnode(Space.REGISTER, 16, 8),
                 state_identity=storage,

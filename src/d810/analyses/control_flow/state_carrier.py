@@ -59,6 +59,7 @@ class ExactCarrierStateWrite:
 
     state: int
     source_serial: int
+    source_instruction_ea: int
     feeder_serial: int
     comparison_entry_serial: int
     carrier: Varnode
@@ -1127,9 +1128,13 @@ def prove_exact_u32_carrier_state_write(
         allow_low_u32_projection=allow_low_u32_projection,
     ):
         return None
+    source_instruction_ea = candidate.attrs.get("ea")
+    if type(source_instruction_ea) is not int:
+        return None
     return ExactCarrierStateWrite(
         state=int(candidate.inputs[0].offset) & 0xFFFFFFFF,
         source_serial=source_serial,
+        source_instruction_ea=source_instruction_ea,
         feeder_serial=feeder_serial,
         comparison_entry_serial=comparison_entry,
         carrier=carrier,

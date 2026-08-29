@@ -1163,24 +1163,36 @@ def _semantic_route_fact_for_transition(
                 or transition.via_block is None
                 or int(carrier_proof.feeder_serial) != int(transition.via_block)
                 or int(carrier_proof.state) != int(transition.next_state)
+                or carrier_proof.state_identity != state_identity
             ):
                 return None
             source_block = flow_graph.get_block(int(carrier_proof.source_serial))
+            feeder_block = flow_graph.get_block(int(carrier_proof.feeder_serial))
             target_block = flow_graph.get_block(int(transition.target_handler))
-            if source_block is None or target_block is None:
+            if source_block is None or feeder_block is None or target_block is None:
                 return None
-            carrier_candidates = tuple(
-                (
-                    int(snapshot.native_ea or snapshot.ea),
-                    project_instruction(snapshot),
-                )
+            source_instruction_ea = carrier_proof.source_instruction_ea
+            if type(source_instruction_ea) is not int:
+                return None
+            source_candidates = tuple(
+                snapshot
                 for snapshot in source_block.insn_snapshots
-                if project_instruction(snapshot).result == carrier_proof.carrier
-                and project_instruction(snapshot).operation is ValueOpKind.MOVE
+                if int(snapshot.ea) == source_instruction_ea
             )
-            if len(carrier_candidates) != 1:
+            if len(source_candidates) != 1:
                 return None
-            source_ea = carrier_candidates[0][0]
+            feeder_candidates = tuple(
+                instruction
+                for snapshot in feeder_block.insn_snapshots
+                if (instruction := project_instruction(snapshot)).operation is ValueOpKind.MOVE
+                and len(instruction.inputs) == 1
+                and instruction.inputs[0] == carrier_proof.carrier
+                and instruction.result is not None
+                and int(instruction.result.size) == 4
+                and storage_identity_from_varnode(instruction.result) == state_identity
+            )
+            if len(feeder_candidates) != 1:
+                return None
             source_anchor = int(source_block.native_start_ea or source_block.start_ea)
             target_anchor = int(target_block.native_start_ea or target_block.start_ea)
             if source_anchor >= 0xFFFFFFFFFFFFFFFF or target_anchor >= 0xFFFFFFFFFFFFFFFF:
@@ -1189,7 +1201,7 @@ def _semantic_route_fact_for_transition(
                 kind=SemanticRouteFactKind.STATE_CARRIER,
                 owner_serial=int(carrier_proof.source_serial),
                 source_serial=int(carrier_proof.source_serial),
-                source_instruction_ea=source_ea,
+                source_instruction_ea=source_instruction_ea,
                 state_constant=int(carrier_proof.state),
                 target_serial=int(transition.target_handler),
                 owner_anchor_ea=source_anchor,

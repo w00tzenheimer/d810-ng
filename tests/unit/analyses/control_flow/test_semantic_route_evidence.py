@@ -2435,6 +2435,7 @@ def test_carrier_only_wide_projection_cannot_claim_target_without_partition_dag(
         carrier_witness=ExactCarrierStateWrite(
             state=7,
             source_serial=2,
+            source_instruction_ea=0x1200,
             feeder_serial=3,
             comparison_entry_serial=4,
             carrier=Varnode(Space.REGISTER, 16, 8),
