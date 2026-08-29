@@ -189,6 +189,7 @@ from d810.transforms.unflatten_authority.producer_api import (
     ConcreteEntryRouteForecast,
     ConditionalEntryBridgeForecast,
     adapt_conditional_entry_route,
+    adapt_native_bound_transition_route,
     adapt_state_transition_route,
     build_source_identity_catalog,
     build_use_def_fragment_witness,
@@ -3469,6 +3470,39 @@ def _missing_semantic_route_fact_coordinates(
     return tuple(coordinates)
 
 
+def _native_bound_route_fact(
+    flow_graph,
+    route: NativeBoundTransitionRoute,
+) -> SemanticRouteFact | None:
+    """Materialize one rebound native receipt into its canonical input fact."""
+
+    source = int(route.source_block_serial)
+    target = int(route.target_handler_serial)
+    source_block = flow_graph.get_block(source)
+    target_block = flow_graph.get_block(target)
+    if source_block is None or target_block is None:
+        return None
+    source_anchor = getattr(source_block, "native_start_ea", None)
+    target_anchor = getattr(target_block, "native_start_ea", None)
+    source_anchor = getattr(source_block, "start_ea", None) if source_anchor is None else source_anchor
+    target_anchor = getattr(target_block, "start_ea", None) if target_anchor is None else target_anchor
+    if source_anchor is None or target_anchor is None:
+        return None
+    return SemanticRouteFact(
+        kind=SemanticRouteFactKind.NATIVE_BOUND,
+        owner_serial=source,
+        source_serial=source,
+        source_instruction_ea=int(route.source_instruction_ea),
+        state_constant=int(route.state_constant),
+        target_serial=target,
+        owner_anchor_ea=int(source_anchor),
+        target_anchor_ea=int(target_anchor),
+        path_serials=(source,),
+        path_edges=(),
+        fact_id=route.fact_id,
+    )
+
+
 def _seed_native_bound_backedge_transitions(
     flow_graph,
     transitions: tuple[StateWriteTransition, ...],
@@ -3545,6 +3579,9 @@ def _seed_native_bound_backedge_transitions(
             or source not in {int(pred) for pred in router_block.preds}
         ):
             continue
+        semantic_fact = _native_bound_route_fact(flow_graph, route)
+        if semantic_fact is None:
+            continue
         seeded.append(
             StateWriteTransition(
                 write_block=source,
@@ -3561,27 +3598,7 @@ def _seed_native_bound_backedge_transitions(
                         f"native_ea=0x{int(route.source_instruction_ea):X}"
                     ),
                 ),
-                semantic_route_fact=SemanticRouteFact(
-                    kind=SemanticRouteFactKind.NATIVE_BOUND,
-                    owner_serial=source,
-                    source_serial=source,
-                    source_instruction_ea=int(route.source_instruction_ea),
-                    state_constant=state,
-                    target_serial=target,
-                    owner_anchor_ea=(
-                        None
-                        if source_block.native_start_ea is None
-                        else int(source_block.native_start_ea)
-                    ),
-                    target_anchor_ea=(
-                        None
-                        if target_block.native_start_ea is None
-                        else int(target_block.native_start_ea)
-                    ),
-                    path_serials=(source,),
-                    path_edges=(),
-                    fact_id=route.fact_id,
-                ),
+                semantic_route_fact=semantic_fact,
             )
         )
     return tuple(seeded)
@@ -9373,6 +9390,7 @@ def emit_minimal_unflatten(
     }
     dispatcher_state_plumbing_serials: frozenset[int] = frozenset()
     concrete_entry_route_forecasts: tuple[ConcreteEntryRouteForecast, ...] = ()
+    concrete_entry_native_routes: tuple[NativeBoundTransitionRoute, ...] = ()
     exact_state_effect_exclusions: tuple[
         ExactStateBranchEffectExclusion, ...
     ] = ()
@@ -10300,35 +10318,90 @@ def emit_minimal_unflatten(
                         and int(route.source_block_serial) in native_entry_sources
                     )
                 )
-                if len(exact_native_entry_routes) == 1 and entry_state_identity is not None:
-                    native_route = exact_native_entry_routes[0]
-                    source_ref = block_refs_by_serial.get(
-                        int(native_route.source_block_serial)
-                    )
-                    target_ref = block_refs_by_serial.get(
-                        int(native_route.target_handler_serial)
-                    )
-                    if (
-                        type(source_ref) is NativeBlockRef
-                        and type(target_ref) is NativeBlockRef
-                    ):
-                        concrete_entry_route_forecasts = (
-                            ConcreteEntryRouteForecast(
-                                normalized_state=entry_route.normalized_state,
-                                target_handler=entry_route.target_block,
-                                source_kinds=entry_route.source_kinds,
-                                physical_fact_id=native_route.fact_id,
-                                source_identity=source_ref.identity,
-                                source_anchor_ea=native_route.source_instruction_ea,
-                                target_identity=target_ref.identity,
-                                state_identity=entry_state_identity,
-                                proof_owner_identity=(
-                                    "concrete-entry:"
-                                    f"fact_id={native_route.fact_id}:"
-                                    f"source_ea=0x{int(native_route.source_instruction_ea):X}"
-                                ),
+                concrete_entry_native_routes = exact_native_entry_routes
+            if concrete_entry_native_routes:
+                if len(concrete_entry_native_routes) != 1:
+                    return compile_with_dispatcher_coverage(())
+                native_route = concrete_entry_native_routes[0]
+                entry_state_identity = (
+                    StorageIdentity(StorageIdentityKind.STACK, int(_soff))
+                    if _soff is not None
+                    else StorageIdentity(StorageIdentityKind.REGISTER, int(state_var_reg))
+                    if state_var_reg is not None
+                    else None
+                )
+                if entry_state_identity is None:
+                    return compile_with_dispatcher_coverage(())
+                if canonical_route_evidence is None and native_key is None:
+                    # Legacy untyped emission has no proposal boundary to
+                    # attach this proof to; retain its historical behavior.
+                    concrete_entry_native_routes = ()
+                if not concrete_entry_native_routes:
+                    pass
+                else:
+                    entry_fact = _native_bound_route_fact(flow_graph, native_route)
+                    if entry_fact is None or any(
+                        fact is not None and fact.fact_id == native_route.fact_id
+                        for fact in route_facts
+                    ) or any(fact is None for fact in route_facts):
+                        return compile_with_dispatcher_coverage(())
+                    generation = 0 if source_generation is None else int(source_generation)
+                    group_token = snapshot_id or f"{int(flow_graph.func_ea):X}"
+                    production_result = build_canonical_semantic_evidence(
+                        tuple((*route_facts, entry_fact)),
+                        CanonicalSemanticEvidenceProductionContext(
+                            native_key=native_key,
+                            generation=generation,
+                            atomic_group_id=f"minimal-state-routes:{group_token}",
+                            state_identity=entry_state_identity,
+                            blocks=tuple(flow_graph.blocks.values()),
+                            identities_by_serial=tuple(
+                                (int(serial), ref.identity)
+                                for serial, ref in block_refs_by_serial.items()
+                                if isinstance(ref, NativeBlockRef)
                             ),
-                        )
+                            entry_serial=int(flow_graph.entry_serial),
+                        ),
+                    )
+                    if production_result.evidence is None:
+                        return compile_with_dispatcher_coverage(())
+                    canonical_route_evidence = production_result.evidence
+                    entry_catalog = build_source_identity_catalog(
+                        flow_graph, block_refs_by_serial,
+                        source_generation=(
+                            int(source_generation) if source_generation is not None
+                            else int(canonical_route_evidence.generation)
+                        ),
+                        canonical_route_evidence=canonical_route_evidence,
+                    )
+                    proof = adapt_native_bound_transition_route(
+                        native_route, source=flow_graph,
+                        source_catalog=entry_catalog,
+                        block_refs_by_serial=block_refs_by_serial,
+                        canonical_evidence=canonical_route_evidence,
+                    )
+                    source_ref = block_refs_by_serial.get(int(native_route.source_block_serial))
+                    target_ref = block_refs_by_serial.get(int(native_route.target_handler_serial))
+                    if type(source_ref) is not NativeBlockRef or type(target_ref) is not NativeBlockRef:
+                        return compile_with_dispatcher_coverage(())
+                    concrete_entry_route_forecasts = (
+                        ConcreteEntryRouteForecast(
+                            normalized_state=native_route.state_constant,
+                            target_handler=native_route.target_handler_serial,
+                            source_kinds=entry_route.source_kinds,
+                            physical_fact_id=native_route.fact_id,
+                            canonical_proof_id=proof.proof_id,
+                            source_identity=source_ref.identity,
+                            source_anchor_ea=native_route.source_instruction_ea,
+                            target_identity=target_ref.identity,
+                            state_identity=entry_state_identity,
+                            proof_owner_identity=(
+                                "concrete-entry:"
+                                f"fact_id={native_route.fact_id}:"
+                                f"source_ea=0x{int(native_route.source_instruction_ea):X}"
+                            ),
+                        ),
+                    )
             bridged = bool(dynamic_entry_bridge_edges) or (
                 entry_route is not None
             )

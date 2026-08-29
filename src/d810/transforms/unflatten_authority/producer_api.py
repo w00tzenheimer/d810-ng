@@ -84,6 +84,7 @@ class ConcreteEntryRouteForecast:
     target_handler: int
     source_kinds: tuple[str, ...]
     physical_fact_id: str
+    canonical_proof_id: str
     source_identity: StableBlockIdentity
     source_anchor_ea: int
     target_identity: StableBlockIdentity
@@ -99,7 +100,8 @@ class ConcreteEntryRouteForecast:
             raise TypeError("concrete entry route requires a typed state identity")
         fact_id = str(self.physical_fact_id).strip()
         owner = str(self.proof_owner_identity).strip()
-        if not fact_id or not owner:
+        proof_id = str(self.canonical_proof_id).strip()
+        if not fact_id or not proof_id or not owner:
             raise ValueError("concrete entry route requires physical fact and owner identities")
         source_anchor_ea = int(self.source_anchor_ea)
         if not 0 <= source_anchor_ea < _BADADDR:
@@ -110,6 +112,7 @@ class ConcreteEntryRouteForecast:
         object.__setattr__(self, "target_handler", int(self.target_handler))
         object.__setattr__(self, "source_kinds", tuple(str(kind) for kind in self.source_kinds))
         object.__setattr__(self, "physical_fact_id", fact_id)
+        object.__setattr__(self, "canonical_proof_id", proof_id)
         object.__setattr__(self, "source_anchor_ea", source_anchor_ea)
         object.__setattr__(self, "proof_owner_identity", owner)
 
@@ -1501,14 +1504,13 @@ def resolve_concrete_entry_route(
     if expected_target != route.target_identity:
         raise ValueError("concrete entry target stable identity mismatch")
     matches = tuple(
-        proof
-        for proof in canonical_evidence.route_proofs
-        if ("fact_id", route.physical_fact_id) in proof.diagnostic_provenance
+        proof for proof in canonical_evidence.route_proofs
+        if proof.proof_id == route.canonical_proof_id
     )
     if len(matches) != 1:
         raise ValueError(
-            "concrete entry route has zero or multiple physical-fact proofs "
-            f"fact_id={route.physical_fact_id!r} "
+            "concrete entry route has zero or multiple canonical physical proofs "
+            f"proof_id={route.canonical_proof_id!r} "
             f"candidate_ids={tuple(proof.proof_id for proof in matches)!r}"
         )
     proof = matches[0]

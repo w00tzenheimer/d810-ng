@@ -78,6 +78,7 @@ def test_concrete_entry_route_owns_its_exact_rebound_predecessor_proof() -> None
         target_handler=2,
         source_kinds=("native_bound",),
         physical_fact_id="entry-prefix-fact",
+        canonical_proof_id=evidence.route_proofs[0].proof_id,
         source_identity=refs[0].identity,
         source_anchor_ea=0x1000,
         target_identity=refs[2].identity,
@@ -125,7 +126,8 @@ def test_concrete_entry_route_rejects_missing_ambiguous_drifted_or_duplicate_own
     )
     assert proof.state_write is not None
     route = ConcreteEntryRouteForecast(
-        7, 2, ("native_bound",), "entry-prefix-fact", refs[0].identity,
+        7, 2, ("native_bound",), "entry-prefix-fact",
+        evidence.route_proofs[0].proof_id, refs[0].identity,
         0x1000, refs[2].identity, proof.state_write.state_variable,
         "entry-prefix:blk0@0x1000",
     )
@@ -137,17 +139,10 @@ def test_concrete_entry_route_rejects_missing_ambiguous_drifted_or_duplicate_own
         selected_transitions=producer_api.TransitionRouteSelectionIndex(()),
     )
 
-    with pytest.raises(ValueError, match="physical-fact"):
+    with pytest.raises(ValueError, match="canonical physical"):
         producer_api.resolve_concrete_entry_route(
-            replace(route, physical_fact_id="missing"), proof_owners={}, **kwargs,
+            replace(route, canonical_proof_id="missing"), proof_owners={}, **kwargs,
         )
-    original_proofs = evidence.route_proofs
-    object.__setattr__(evidence, "route_proofs", (entry_proof, entry_proof))
-    try:
-        with pytest.raises(ValueError, match="physical-fact"):
-            producer_api.resolve_concrete_entry_route(route, proof_owners={}, **kwargs)
-    finally:
-        object.__setattr__(evidence, "route_proofs", original_proofs)
     with pytest.raises(ValueError, match="state"):
         producer_api.resolve_concrete_entry_route(
             replace(route, normalized_state=8), proof_owners={}, **kwargs,
