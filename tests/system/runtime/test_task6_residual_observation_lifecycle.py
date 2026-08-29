@@ -114,6 +114,9 @@ def test_start_stop_restart_releases_and_reacquires_sink(
         def configure_validated_fact_view_provider(self, _provider):
             pass
 
+        def run_external_provider_mba_cycle(self, _mba) -> bool:
+            return False
+
         def remove(self):
             pass
 
