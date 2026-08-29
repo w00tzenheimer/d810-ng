@@ -2567,6 +2567,55 @@ def test_local_authority_requires_scalar_consensus_when_initial_state_exists(
     assert plan.unflatten_proposal is None
 
 
+def test_local_authority_accepts_native_entry_receipt_at_default_target(
+    monkeypatch, _seam,
+):
+    """A rebound native entry receipt is exact even when its target is default."""
+    graph, state, entry_route, kwargs = _typed_entry_native_route_fixture(monkeypatch)
+    forecast_inputs = []
+    original_forecast = minimal_unflatten_emit_module.ConcreteEntryRouteForecast
+
+    def capture_forecast(*args, **forecast_kwargs):
+        forecast_inputs.append(forecast_kwargs)
+        return original_forecast(*args, **forecast_kwargs)
+
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "ConcreteEntryRouteForecast",
+        capture_forecast,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "_recover_initial_state",
+        lambda *_args, **_kwargs: state,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(0, 0x100000000, 20),),
+        default_target=20,
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        native_key=NATIVE_KEY,
+        dispatcher=dispatcher,
+        **{key: value for key, value in kwargs.items() if key != "dispatcher"},
+    )
+
+    assert plan.unflatten_proposal is not None
+    assert len(forecast_inputs) == 1
+    forecast = forecast_inputs[0]
+    assert forecast["physical_fact_id"] == entry_route.fact_id
+    assert forecast["source_kinds"] == (
+        minimal_unflatten_emit_module.NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND,
+    )
+    assert forecast["source_anchor_ea"] == entry_route.source_instruction_ea
+    assert forecast["target_handler"] == entry_route.target_handler_serial
+    assert forecast["canonical_proof_id"] in {
+        proof.proof_id for proof in plan.unflatten_proposal.route_evidence.route_proofs
+    }
+
+
 def test_supplied_canonical_evidence_abstains_on_refined_entry_write_collision(
     monkeypatch, _seam,
 ):

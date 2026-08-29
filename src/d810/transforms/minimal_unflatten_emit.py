@@ -3348,6 +3348,7 @@ def _resolve_entry_state_route_resolution(
             and target == default_target
             and SOURCE_CARRIER_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND
             not in route.source_kinds
+            and NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND not in route.source_kinds
             and not _explicit_singleton_route_evidence(
                 dispatcher, route.normalized_state, target
             )
