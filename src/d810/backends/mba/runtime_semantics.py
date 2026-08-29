@@ -84,7 +84,11 @@ def _manifest(package_name: str) -> tuple[str, ...]:
         raise RuntimeSemanticsUnavailable(
             f"runtime semantics manifest unavailable for {package_name}"
         ) from exc
-    if type(payload) is not dict or payload.get("schema_version") != 1:
+    if (
+        type(payload) is not dict
+        or type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
+    ):
         raise RuntimeSemanticsUnavailable("runtime semantics manifest has invalid schema")
     source_names = payload.get("runtime_sources")
     if type(source_names) is not list or not source_names:
@@ -92,6 +96,7 @@ def _manifest(package_name: str) -> tuple[str, ...]:
             "runtime semantics manifest has no source resources"
         )
     validated: list[str] = []
+    normalized_names: set[str] = set()
     for source_name in source_names:
         if type(source_name) is not str or not source_name:
             raise RuntimeSemanticsUnavailable(
@@ -102,11 +107,17 @@ def _manifest(package_name: str) -> tuple[str, ...]:
             raise RuntimeSemanticsUnavailable(
                 "runtime semantics manifest contains an unsafe resource path"
             )
-        validated.append(source_name)
-    if len(set(validated)) != len(validated):
-        raise RuntimeSemanticsUnavailable(
-            "runtime semantics manifest contains duplicate source resources"
-        )
+        normalized = path.as_posix()
+        if normalized in normalized_names:
+            raise RuntimeSemanticsUnavailable(
+                "runtime semantics manifest contains duplicate source resources"
+            )
+        if normalized != source_name:
+            raise RuntimeSemanticsUnavailable(
+                "runtime semantics manifest contains a noncanonical source path"
+            )
+        normalized_names.add(normalized)
+        validated.append(normalized)
     return tuple(sorted(validated))
 
 

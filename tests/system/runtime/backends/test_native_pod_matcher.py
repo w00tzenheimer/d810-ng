@@ -2,11 +2,33 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
 from d810.backends.mba.native_pod_matcher import matcher_backend
 from d810.core.cymode import CythonMode
 from d810.mba.typed_term import term_fingerprint
+from d810.backends.mba.compiled_pattern_catalogue import (
+    NativeMatchSelection,
+    NativeMatchStopReason,
+)
+
+
+@dataclass(frozen=True)
+class _ParityCase:
+    name: str
+    catalogue: object
+    candidate: object
+    comparison_budget: int
+    expected_selection: NativeMatchSelection
+    expected_stop_reason: NativeMatchStopReason
+    expected_match_count: int
+    expected_nonempty: bool
+    expected_raw_budget_exceeded: bool
+    expected_canonical_budget_exceeded: bool
+    expected_fallback_work: bool
+    configure: object = None
 
 
 def _match_semantics(result):
@@ -66,16 +88,27 @@ def test_active_cython_pod_matcher_is_selected_when_cython_is_enabled() -> None:
 def test_public_catalogue_preserves_python_cython_semantics_for_terminal_states(
     monkeypatch,
 ) -> None:
+    from d810.mba.ac_matching import AcMatchStopReason
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
     from d810.mba.certified_rule_compiler import (
+        CompiledMbaRule,
+        _enroll_admitted_rule,
         compile_add_rule_catalogue,
         compile_mba_rule_catalogue,
     )
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+    from d810.mba.dsl import Const, Var
+    from d810.mba.rules._base import VerifiableRule
 
-    add_catalogue = CompiledPatternCatalogue.from_rules(
-        compile_add_rule_catalogue().compiled_rules
+    monkeypatch.setattr(VerifiableRule, "registry", dict(VerifiableRule.registry))
+
+    add_rule = (
+        compile_add_rule_catalogue()
+        .receipt_for("Add_HackersDelightRule_2")
+        .compiled_rule
     )
+    assert add_rule is not None
+    add_catalogue = CompiledPatternCatalogue.from_rules((add_rule,))
     xor_rule = (
         compile_mba_rule_catalogue()
         .receipt_for("xor", "Xor_HackersDelightRule_3")
@@ -83,6 +116,23 @@ def test_public_catalogue_preserves_python_cython_semantics_for_terminal_states(
     )
     assert xor_rule is not None
     xor_catalogue = CompiledPatternCatalogue.from_rules((xor_rule,))
+    value, captured = Var("value"), Const("captured")
+
+    class CapturedCanonicalConstant(VerifiableRule):
+        PATTERN = value + captured
+        REPLACEMENT = captured
+
+    provenance_rule = _enroll_admitted_rule(
+        CompiledMbaRule(
+            source_name=CapturedCanonicalConstant.__name__,
+            aliases=(),
+            rule_type=CapturedCanonicalConstant,
+            proof_widths=(8, 16, 32, 64),
+            guarded=False,
+            family="add",
+        )
+    )
+    provenance_catalogue = CompiledPatternCatalogue.from_rules((provenance_rule,))
     x = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "x"))
     y = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "y"))
     z = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "z"))
@@ -116,19 +166,170 @@ def test_public_catalogue_preserves_python_cython_semantics_for_terminal_states(
         "unsupported_op", 32, children=(x, y)
     )
 
-    cases = (
-        (add_catalogue, raw_candidate, 64),
-        (xor_catalogue, fallback_candidate, 64),
-        (add_catalogue, miss_candidate, 64),
-        (add_catalogue, raw_candidate, 1),
-        (add_catalogue, no_match_candidate, 64),
-        (add_catalogue, unsupported_candidate, 64),
-    )
-    for catalogue, candidate, budget in cases:
-        active, python = _active_and_python_results(
-            monkeypatch, catalogue, candidate, budget=budget
+    def force_canonical_budget(patch):
+        from d810.mba.canonical_pattern import CanonicalPatternMatchReport
+
+        def exhausted(_self, _candidate, *, comparison_budget):
+            return CanonicalPatternMatchReport(
+                (), comparison_budget, 0, 0, AcMatchStopReason.COMPARISON_BUDGET
+            )
+
+        patch.setattr(
+            CompiledPatternCatalogue, "match_canonical_root", exhausted
         )
-        assert _match_semantics(active) == _match_semantics(python)
+
+    cases = (
+        _ParityCase(
+            "raw hit",
+            add_catalogue,
+            raw_candidate,
+            64,
+            NativeMatchSelection.RAW_POD,
+            NativeMatchStopReason.MATCHED,
+            1,
+            True,
+            False,
+            False,
+            False,
+        ),
+        _ParityCase(
+            "canonical fallback hit",
+            xor_catalogue,
+            fallback_candidate,
+            64,
+            NativeMatchSelection.CANONICAL_FALLBACK,
+            NativeMatchStopReason.MATCHED,
+            1,
+            True,
+            False,
+            False,
+            True,
+        ),
+        _ParityCase(
+            "canonical miss",
+            add_catalogue,
+            miss_candidate,
+            64,
+            NativeMatchSelection.NONE,
+            NativeMatchStopReason.CANONICAL_MISS,
+            0,
+            False,
+            False,
+            False,
+            True,
+        ),
+        _ParityCase(
+            "raw budget",
+            add_catalogue,
+            raw_candidate,
+            1,
+            NativeMatchSelection.NONE,
+            NativeMatchStopReason.RAW_BUDGET,
+            0,
+            False,
+            True,
+            False,
+            False,
+        ),
+        _ParityCase(
+            "unselected root family",
+            add_catalogue,
+            no_match_candidate,
+            64,
+            NativeMatchSelection.NONE,
+            NativeMatchStopReason.CANONICAL_MISS,
+            0,
+            False,
+            False,
+            False,
+            False,
+        ),
+        _ParityCase(
+            "unsupported native operation",
+            add_catalogue,
+            unsupported_candidate,
+            64,
+            NativeMatchSelection.NONE,
+            NativeMatchStopReason.RAW_UNSUPPORTED,
+            0,
+            False,
+            False,
+            False,
+            False,
+        ),
+        _ParityCase(
+            "canonical budget",
+            add_catalogue,
+            no_match_candidate,
+            64,
+            NativeMatchSelection.NONE,
+            NativeMatchStopReason.CANONICAL_BUDGET,
+            0,
+            False,
+            False,
+            True,
+            True,
+            force_canonical_budget,
+        ),
+        _ParityCase(
+            "provenance rejected",
+            provenance_catalogue,
+            NativeMbaTermView(
+                "add",
+                32,
+                children=(
+                    x,
+                    NativeMbaTermView(
+                        "neg", 32, children=(NativeMbaTermView(None, 32, constant_value=-5),)
+                    ),
+                ),
+            ),
+            64,
+            NativeMatchSelection.NONE,
+            NativeMatchStopReason.PROVENANCE_REJECTED,
+            0,
+            False,
+            False,
+            False,
+            True,
+        ),
+    )
+
+    for case in cases:
+        with monkeypatch.context() as case_patch:
+            if case.configure is not None:
+                case.configure(case_patch)
+            active, python = _active_and_python_results(
+                case_patch,
+                case.catalogue,
+                case.candidate,
+                budget=case.comparison_budget,
+            )
+        assert active.selection is case.expected_selection, case.name
+        assert active.stop_reason is case.expected_stop_reason, case.name
+        assert len(active.matches) == case.expected_match_count, case.name
+        assert bool(active.matches) is case.expected_nonempty, case.name
+        assert (
+            active.comparison_budget_exceeded is case.expected_raw_budget_exceeded
+        ), case.name
+        assert (
+            active.canonical_budget_exceeded is case.expected_canonical_budget_exceeded
+        ), case.name
+        fallback_work = (
+            active.fallback_comparisons,
+            active.fallback_commuted_branches,
+            active.fallback_flattened_nodes,
+        )
+        if case.expected_fallback_work:
+            assert any(fallback_work), case.name
+        else:
+            assert fallback_work == (0, 0, 0), case.name
+        if CythonMode().is_enabled():
+            assert active.matcher_backend == "cython", case.name
+            assert python.matcher_backend == "python", case.name
+        else:
+            assert active.matcher_backend == python.matcher_backend == "python", case.name
+        assert _match_semantics(active) == _match_semantics(python), case.name
 
 
 @pytest.mark.skipif(
