@@ -12,6 +12,7 @@ from d810.core.settings import get_settings
 from d810.hexrays.expr.ast import AstBase, AstNode, AstNodeProtocol
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
+from d810.mba.extension_api import CanonicalFallbackError
 from d810.mba.provider_outcome import RawMatcherWorkReceipt
 from d810.optimizers.microcode.instructions.handler import (
     GenericPatternRule,
@@ -30,6 +31,7 @@ from d810.optimizers.microcode.instructions.pattern_matching.engine import (
 
 optimizer_logger = getLogger("d810.optimizer")
 pattern_search_logger = getLogger("d810.pattern_search")
+_CANONICAL_FALLBACK_COMPARISON_BUDGET = 64
 
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
@@ -1152,6 +1154,7 @@ class PatternOptimizer(InstructionOptimizer):
             return None
         fallback_bucket_size = len(fallback_rules)
         fallback_attempt_count = 0
+        remaining_fallback_budget = _CANONICAL_FALLBACK_COMPARISON_BUDGET
         for rule in fallback_rules:
             rule_name = str(rule.name)
             bind_match_context = getattr(rule, "bind_match_context", None)
@@ -1178,13 +1181,53 @@ class PatternOptimizer(InstructionOptimizer):
                     test_ast,
                     bucket_size=fallback_bucket_size,
                     attempted_rule_count=fallback_attempt_count,
+                    comparison_budget=remaining_fallback_budget,
                     lowering=structural_lowering,
                     lowering_provided=True,
                 )
+                consumed = getattr(rule, "canonical_fallback_comparisons", 0)
+                if type(consumed) is not int or consumed < 0:
+                    raise CanonicalFallbackError(
+                        "matcher",
+                        ValueError(
+                            "canonical fallback reported an invalid comparison count"
+                        ),
+                    )
+                if consumed > remaining_fallback_budget:
+                    raise CanonicalFallbackError(
+                        "matcher",
+                        ValueError(
+                            "canonical fallback exceeded the root comparison budget"
+                        ),
+                    )
+                remaining_fallback_budget -= consumed
+                if getattr(rule, "canonical_fallback_budget_exhausted", False):
+                    return None
                 if new_ins is not None:
                     self.last_matched_rule_name = rule_name
                     self._pending_replacement_rule = rule
                     return new_ins
+                if remaining_fallback_budget == 0:
+                    return None
+            except CanonicalFallbackError as e:
+                record_attempt_error = getattr(rule, "record_attempt_error", None)
+                if record_attempt_error is not None:
+                    try:
+                        record_attempt_error(e)
+                    except Exception:
+                        optimizer_logger.debug(
+                            "Canonical fallback error telemetry failed for %s",
+                            rule,
+                            exc_info=True,
+                        )
+                optimizer_logger.error(
+                    "Terminal error during canonical fallback rule %s for instruction %s: %s",
+                    rule,
+                    format_minsn_t(ins),
+                    e,
+                    exc_info=True,
+                )
+                return None
             except Exception as e:
                 record_attempt_error = getattr(rule, "record_attempt_error", None)
                 if record_attempt_error is not None:

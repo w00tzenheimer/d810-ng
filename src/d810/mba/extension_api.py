@@ -139,6 +139,21 @@ class CanonicalPatternComparisonBudgetExceeded(RuntimeError):
     """A canonical rule matcher exhausted its caller-supplied comparison cap."""
 
 
+class CanonicalFallbackError(RuntimeError):
+    """An active canonical fallback stage failed for the current root.
+
+    The IDA adapter adds the native context to this typed boundary while the
+    optimizer only needs the stage to publish a truthful terminal outcome.
+    """
+
+    def __init__(self, stage: str, cause: BaseException) -> None:
+        if type(stage) is not str or not stage:
+            raise ValueError("canonical fallback error stage must be non-empty")
+        self.stage = stage
+        self.cause = cause
+        super().__init__(f"canonical fallback {stage} failed: {cause}")
+
+
 class CanonicalMbaRuleCatalogue(Protocol):
     """Narrow typed-term projection consumed by portable providers.
 
@@ -459,6 +474,7 @@ __all__ = [
     "AcMatchStopReason",
     "CanonicalCompiledPattern",
     "CanonicalFixedBindings",
+    "CanonicalFallbackError",
     "CanonicalMbaTermView",
     "CanonicalMbaRuleCatalogue",
     "CanonicalPatternComparisonBudgetExceeded",

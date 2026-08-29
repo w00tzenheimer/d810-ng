@@ -31,6 +31,7 @@ from d810.mba.certified_catalogue import (  # noqa: E402
     make_structural_matcher_parity_certificate,
 )
 from d810.mba.dsl import Const, Var, Zext  # noqa: E402
+from d810.mba.extension_api import CanonicalFallbackError  # noqa: E402
 from d810.mba.typed_term import TypedBvTerm  # noqa: E402
 from d810.mba.provider_outcome import (  # noqa: E402
     MatcherSelection,
@@ -894,7 +895,9 @@ def test_structural_selection_fails_closed_when_native_z3_rejects(monkeypatch) -
     replacement_instruction = object()
     monkeypatch.setattr(adapter, "observe_structural_match", lambda *_args, **_kwargs: report)
     adapter._shadow_structural_native_paths = {"x": (0,), "zero": (1,)}
-    monkeypatch.setattr(adapter, "get_replacement", lambda _candidate: replacement_instruction)
+    monkeypatch.setattr(
+        adapter, "_get_shadow_replacement", lambda _candidate: replacement_instruction
+    )
     monkeypatch.setattr(adapter, "_record_catalogue_success", lambda *_args: None)
     adapter._replacement_pattern_cache = object()
     monkeypatch.setattr(ida_backend, "minsn_to_ast", lambda _ins: source.left)
@@ -909,6 +912,7 @@ def test_structural_selection_fails_closed_when_native_z3_rejects(monkeypatch) -
             source,
             bucket_size=1,
             attempted_rule_count=1,
+            comparison_budget=64,
         )
         is None
     )
@@ -940,16 +944,150 @@ def test_structural_selection_fails_closed_when_emission_raises(monkeypatch) -> 
     def _raising_replacement(_candidate):
         raise RuntimeError("synthetic emitter failure")
 
-    monkeypatch.setattr(adapter, "get_replacement", _raising_replacement)
+    monkeypatch.setattr(adapter, "_get_shadow_replacement", _raising_replacement)
 
-    assert (
+    with pytest.raises(CanonicalFallbackError, match="emitter"):
         adapter.match_structural_and_replace(
             source,
             bucket_size=1,
             attempted_rule_count=1,
+            comparison_budget=64,
         )
-        is None
+
+
+def _canonical_probe_lowering(adapter, source):
+    """Build a minimal callback-local lowering for stage-boundary tests."""
+
+    from d810.mba.semantic_canonicalization import canonicalize_mba_term
+
+    typed = TypedBvTerm(
+        "add",
+        32,
+        children=(
+            TypedBvTerm(None, 32, leaf_key=("mop", "x")),
+            TypedBvTerm(None, 32, value=0),
+        ),
     )
+    adapter._attempt_destination_size = 4
+    adapter._prepare_shadow_canonical_templates()
+    return SimpleNamespace(
+        term=canonicalize_mba_term(typed).canonical_term,
+        raw_term=typed,
+        native_nodes_by_path={},
+        raw_native_nodes_by_path={},
+        profile=SimpleNamespace(fingerprint="stage-boundary"),
+    )
+
+
+def test_structural_matcher_error_is_terminal_and_typed(monkeypatch) -> None:
+    from d810.mba import ac_matching
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + Const("zero", 0)
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    lowering = _canonical_probe_lowering(adapter, source)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("matcher defect")
+
+    monkeypatch.setattr(ac_matching, "match_canonical_term_pattern", fail)
+    with pytest.raises(CanonicalFallbackError, match="matcher"):
+        adapter.observe_structural_match(
+            source, lowering=lowering, lowering_provided=True
+        )
+
+
+def test_structural_constraint_error_is_terminal_and_typed(monkeypatch) -> None:
+    from d810.mba import canonical_pattern
+    from d810.mba.ac_matching import match_canonical_term_pattern
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + Const("zero", 0)
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    lowering = _canonical_probe_lowering(adapter, source)
+    template = adapter._shadow_canonical_templates[32]
+    report = match_canonical_term_pattern(
+        template, lowering.term, comparison_budget=64
+    )
+    assert report.matches
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("constraint defect")
+
+    monkeypatch.setattr(canonical_pattern, "evaluate_frozen_constraints", fail)
+    with pytest.raises(CanonicalFallbackError, match="constraint"):
+        adapter.observe_structural_match(
+            source, lowering=lowering, lowering_provided=True
+        )
+
+
+def test_structural_provenance_error_is_terminal_and_typed(monkeypatch) -> None:
+    from d810.mba import canonical_pattern
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + Const("zero", 0)
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    lowering = _canonical_probe_lowering(adapter, source)
+    native_x = object()
+    native_zero = object()
+    lowering.native_nodes_by_path = {(0,): native_x, (1,): native_zero}
+    lowering.raw_native_nodes_by_path = {(0,): native_x, (1,): native_zero}
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("provenance defect")
+
+    monkeypatch.setattr(canonical_pattern, "resolve_canonical_match_paths", fail)
+    with pytest.raises(CanonicalFallbackError, match="provenance"):
+        adapter.observe_structural_match(
+            source, lowering=lowering, lowering_provided=True
+        )
+
+
+def test_structural_candidate_error_is_terminal_and_typed(monkeypatch) -> None:
+    x = Var("x")
+
+    class Rule:
+        pattern = x + Const("zero", 0)
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._canonical_fallback_enabled = True
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    source.dest_size = 4
+    source.ea = 0x401000
+    report = SimpleNamespace(
+        bindings=object(),
+        comparisons=1,
+        stop_reason=AcMatchStopReason.MATCHED,
+    )
+    monkeypatch.setattr(
+        adapter, "observe_structural_match", lambda *_args, **_kwargs: report
+    )
+    adapter._shadow_structural_native_paths = {"x": (0,)}
+    monkeypatch.setattr(
+        adapter,
+        "_check_candidate",
+        lambda _candidate: (_ for _ in ()).throw(RuntimeError("candidate defect")),
+    )
+    with pytest.raises(CanonicalFallbackError, match="candidate"):
+        adapter.match_structural_and_replace(
+            source, bucket_size=1, attempted_rule_count=1, comparison_budget=64
+        )
 
 
 @pytest.mark.parametrize(
@@ -1324,6 +1462,7 @@ def test_structural_dispatch_is_root_bucketed_and_reports_attempt_count(
             *,
             bucket_size: int,
             attempted_rule_count: int,
+            comparison_budget: int,
             lowering,
             lowering_provided: bool,
         ):
@@ -1596,6 +1735,194 @@ def test_handler_clears_fallback_rule_context_when_later_callback_raises(
     assert rule.cleared is True
 
 
+def test_handler_shares_canonical_budget_across_multiple_fallback_adapters(
+    monkeypatch,
+) -> None:
+    """One root callback cannot give every eligible fallback adapter 64 comparisons."""
+
+    class Instruction:
+        ea = 0x401000
+
+        class d:
+            size = 4
+
+        @staticmethod
+        def _print():
+            return "shared-fallback-budget"
+
+    class Rule:
+        canonical_fallback_enabled = True
+        maturities = (7,)
+
+        def __init__(self, name, consumed, replacement=None):
+            self.name = name
+            self.consumed = consumed
+            self.replacement = replacement
+            self.budgets = []
+            self.canonical_fallback_comparisons = 0
+            self.canonical_fallback_budget_exhausted = False
+
+        def match_structural_and_replace(self, *_args, comparison_budget, **_kwargs):
+            self.budgets.append(comparison_budget)
+            self.canonical_fallback_comparisons = self.consumed
+            self.canonical_fallback_budget_exhausted = (
+                self.consumed >= comparison_budget
+            )
+            return self.replacement
+
+    first = Rule("first-fallback", 40)
+    second = Rule("second-fallback", 20, replacement="replacement")
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._get_candidates = lambda _candidate: []
+    monkeypatch.setattr(
+        optimizer,
+        "_prepare_canonical_fallback",
+        lambda *_args, **_kwargs: (object(), (first, second)),
+    )
+
+    assert (
+        optimizer._try_matches(
+            None,
+            Instruction(),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="shared-fallback-budget",
+        )
+        == "replacement"
+    )
+    assert first.budgets == [64]
+    assert second.budgets == [24]
+    assert first.canonical_fallback_comparisons + second.canonical_fallback_comparisons <= 64
+
+
+def test_fallback_budget_exhaustion_discards_partial_report_before_emission(
+    monkeypatch,
+) -> None:
+    """A report with matches and COMPARISON_BUDGET is a root-level no-op."""
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + Const("zero", 0)
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._canonical_fallback_enabled = True
+    adapter._structural_matching_enabled = True
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    source.dest_size = 4
+    source.ea = 0x401000
+    partial_report = SimpleNamespace(
+        matches=(object(),),
+        bindings=object(),
+        comparisons=64,
+        commuted_branches=0,
+        flattened_nodes=0,
+        stop_reason=AcMatchStopReason.COMPARISON_BUDGET,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "observe_structural_match",
+        lambda *_args, **_kwargs: partial_report,
+    )
+    adapter._shadow_structural_native_paths = {"x": (0,)}
+    monkeypatch.setattr(
+        adapter,
+        "_get_shadow_replacement",
+        lambda _candidate: pytest.fail("budget exhaustion must not emit"),
+    )
+
+    assert (
+        adapter.match_structural_and_replace(
+            source,
+            bucket_size=2,
+            attempted_rule_count=1,
+            comparison_budget=64,
+        )
+        is None
+    )
+    assert adapter.canonical_fallback_budget_exhausted is True
+    assert adapter.canonical_fallback_comparisons == 64
+
+
+def test_terminal_fallback_error_abstains_root_before_later_adapter(monkeypatch) -> None:
+    """An active fallback defect cannot let a later adapter mutate the root."""
+
+    class Instruction:
+        ea = 0x401000
+
+        class d:
+            size = 4
+
+        @staticmethod
+        def _print():
+            return "terminal-fallback-error"
+
+    class FailingRule:
+        name = "failing-fallback"
+        maturities = (7,)
+        canonical_fallback_enabled = True
+
+        def __init__(self):
+            self.errors = []
+
+        def match_structural_and_replace(self, *_args, **_kwargs):
+            raise CanonicalFallbackError("matcher", RuntimeError("active defect"))
+
+        def record_attempt_error(self, error):
+            self.errors.append(error)
+
+    class LaterRule:
+        name = "later-fallback"
+        maturities = (7,)
+        canonical_fallback_enabled = True
+
+        def __init__(self):
+            self.invoked = False
+
+        def match_structural_and_replace(self, *_args, **_kwargs):
+            self.invoked = True
+            return "must-not-mutate"
+
+    failing = FailingRule()
+    later = LaterRule()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._get_candidates = lambda _candidate: []
+    monkeypatch.setattr(
+        optimizer,
+        "_prepare_canonical_fallback",
+        lambda *_args, **_kwargs: (object(), (failing, later)),
+    )
+
+    assert (
+        optimizer._try_matches(
+            None,
+            Instruction(),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="terminal-fallback-error",
+        )
+        is None
+    )
+    assert later.invoked is False
+    assert len(failing.errors) == 1
+    assert failing.errors[0].stage == "matcher"
+
+
 def test_structural_selection_failure_publishes_terminal_receipt() -> None:
     """Unavailable fallback matching remains observable as a terminal refusal."""
 
@@ -1623,6 +1950,7 @@ def test_structural_selection_failure_publishes_terminal_receipt() -> None:
             source,
             bucket_size=1,
             attempted_rule_count=1,
+            comparison_budget=64,
             lowering=None,
             lowering_provided=True,
         )
@@ -1848,6 +2176,7 @@ def test_fallback_miss_publishes_dispatch_telemetry_before_clearing_refs() -> No
         SimpleNamespace(ea=0x401020),
         bucket_size=3,
         attempted_rule_count=2,
+        comparison_budget=64,
         lowering=lowering,
         lowering_provided=True,
     ) is None

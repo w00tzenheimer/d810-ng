@@ -472,6 +472,7 @@ def test_clean_raw_miss_runs_certified_fallback_in_declaration_order():
             *,
             bucket_size,
             attempted_rule_count,
+            comparison_budget,
             lowering,
             lowering_provided,
         ):

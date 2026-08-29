@@ -19,15 +19,16 @@ from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import ida_hexrays
 
 from d810.backends.mba.native_pod_matcher import active_runtime_identity
+from d810.backends.mba.native_z3 import prove_native_ast_equivalence
 from d810.backends.mba.runtime_semantics import (
     runtime_semantics_digest as _compute_runtime_semantics_digest,
 )
 from d810.core import getLogger
+from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional
 from d810.errors import AstEvaluationException
 from d810.hexrays.expr.ast import (
     AstConstant,
@@ -38,12 +39,15 @@ from d810.hexrays.expr.ast import (
 )
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
-from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
+from d810.hexrays.ir.number_operand import safe_make_number
 from d810.mba.constraints import (
     ComparisonConstraintProtocol,
     EqualityConstraintProtocol,
     is_constraint_expr,
 )
+from d810.mba.dsl import SymbolicExpression, SymbolicExpressionProtocol
+from d810.mba.extension_api import CanonicalFallbackError
+from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.mba.provider_outcome import (
     MatcherOutcomeMetadata,
     MatcherSelection,
@@ -52,9 +56,6 @@ from d810.mba.provider_outcome import (
     ProviderOutcomeStatus,
     RawMatcherWorkReceipt,
 )
-from d810.mba.provider_history import ProviderOutcomeHistory
-from d810.hexrays.ir.number_operand import safe_make_number
-from d810.backends.mba.native_z3 import prove_native_ast_equivalence
 
 logger = getLogger(__name__)
 
@@ -560,6 +561,9 @@ class IDAPatternAdapter:
         self._structural_selection_active = False
         self._structural_dispatch_bucket_size = 0
         self._structural_dispatch_attempt_count = 0
+        self._canonical_fallback_comparisons = 0
+        self._canonical_fallback_budget_exhausted = False
+        self._canonical_fallback_stop_reason: str | None = None
         self._generate_commutative_permutations = True
 
     def _clear_structural_attempt_state(self) -> None:
@@ -577,6 +581,18 @@ class IDAPatternAdapter:
         self._structural_selection_active = False
         self._structural_dispatch_bucket_size = 0
         self._structural_dispatch_attempt_count = 0
+
+    @property
+    def canonical_fallback_comparisons(self) -> int:
+        """Comparisons consumed by the current callback's fallback attempt."""
+
+        return int(getattr(self, "_canonical_fallback_comparisons", 0))
+
+    @property
+    def canonical_fallback_budget_exhausted(self) -> bool:
+        """Whether this callback's fallback report exhausted its supplied cap."""
+
+        return bool(getattr(self, "_canonical_fallback_budget_exhausted", False))
 
     def _structural_failure(self) -> None:
         """Clear borrowed state before returning a failed structural attempt."""
@@ -613,6 +629,9 @@ class IDAPatternAdapter:
         self._raw_match_selected = False
         self._raw_match_attempted = False
         self._raw_work_receipt = RawMatcherWorkReceipt(0, 0, "unknown")
+        self._canonical_fallback_comparisons = 0
+        self._canonical_fallback_budget_exhausted = False
+        self._canonical_fallback_stop_reason = None
         self._structural_selection_active = False
         self._structural_dispatch_bucket_size = 0
         self._structural_dispatch_attempt_count = 0
@@ -811,6 +830,7 @@ class IDAPatternAdapter:
         *,
         bucket_size: int,
         attempted_rule_count: int,
+        comparison_budget: int,
         lowering: Any | None = None,
         lowering_provided: bool = False,
     ) -> Any | None:
@@ -828,11 +848,36 @@ class IDAPatternAdapter:
         self._structural_selection_active = True
         self._structural_dispatch_bucket_size = max(0, int(bucket_size))
         self._structural_dispatch_attempt_count = max(0, int(attempted_rule_count))
-        report = self.observe_structural_match(
-            test_ast,
-            lowering=lowering,
-            lowering_provided=lowering_provided,
+        if type(comparison_budget) is not int or comparison_budget <= 0:
+            raise ValueError("comparison_budget must be a positive integer")
+        try:
+            report = self.observe_structural_match(
+                test_ast,
+                comparison_budget=comparison_budget,
+                lowering=lowering,
+                lowering_provided=lowering_provided,
+            )
+        except CanonicalFallbackError as exc:
+            self._canonical_fallback_stop_reason = f"error:{exc.stage}"
+            raise
+        comparisons = getattr(report, "comparisons", 0) if report is not None else 0
+        if type(comparisons) is not int or comparisons < 0:
+            raise CanonicalFallbackError(
+                "matcher",
+                ValueError("canonical matcher reported invalid comparison count"),
+            )
+        self._canonical_fallback_comparisons = comparisons
+        stop_reason = getattr(getattr(report, "stop_reason", None), "value", None)
+        if stop_reason is None:
+            stop_reason = getattr(report, "stop_reason", None)
+        self._canonical_fallback_stop_reason = (
+            None if stop_reason is None else str(stop_reason)
         )
+        if stop_reason == "comparison_budget":
+            self._canonical_fallback_budget_exhausted = True
+            # A bounded report may contain matches found before exhaustion;
+            # none of those partial results are valid for this root callback.
+            return self._structural_failure()
         paths = getattr(self, "_shadow_structural_native_paths", None)
         if report is None or report.bindings is None or not paths:
             return self._structural_failure()
@@ -842,17 +887,21 @@ class IDAPatternAdapter:
             if native is None:
                 return self._structural_failure()
             leafs_by_name[name] = native
+        candidate = _ShadowBindingCandidate(leafs_by_name, test_ast)
         try:
-            candidate = _ShadowBindingCandidate(leafs_by_name, test_ast)
-            if not candidate.ea or not self._check_candidate(candidate):
-                return self._structural_failure()
+            candidate_ok = self._check_candidate(candidate)
+        except Exception as exc:
+            raise CanonicalFallbackError("candidate", exc) from exc
+        if not candidate.ea or not candidate_ok:
+            return self._structural_failure()
+        try:
             # Structural bindings are a read-only projection of the source AST.
             # Reuse the clone-based emitter so its active-runtime binding carrier
             # preserves the original live mops instead of mutating the cached
             # legacy replacement pattern.
             replacement = self._get_shadow_replacement(candidate)
-        except Exception:
-            return self._structural_failure()
+        except Exception as exc:
+            raise CanonicalFallbackError("emitter", exc) from exc
         if replacement is None:
             return self._structural_failure()
         destination_size = self._attempt_destination_size
@@ -862,17 +911,20 @@ class IDAPatternAdapter:
             return self._structural_failure()
         try:
             replacement_ast = minsn_to_ast(replacement)
-        except Exception:
-            return self._structural_failure()
+        except Exception as exc:
+            raise CanonicalFallbackError("emitter", exc) from exc
         if replacement_ast is None:
             return self._structural_failure()
-        self._shadow_native_equivalence_verdict = bool(
-            prove_native_ast_equivalence(
-                test_ast,
-                replacement_ast,
-                width=destination_size * 8,
+        try:
+            self._shadow_native_equivalence_verdict = bool(
+                prove_native_ast_equivalence(
+                    test_ast,
+                    replacement_ast,
+                    width=destination_size * 8,
+                )
             )
-        )
+        except Exception as exc:
+            raise CanonicalFallbackError("equivalence", exc) from exc
         if not self._shadow_native_equivalence_verdict:
             return self._structural_failure()
         self._record_catalogue_success(
@@ -924,7 +976,10 @@ class IDAPatternAdapter:
         else:
             self._shadow_native_path_unavailable = False
         try:
-            from d810.mba.ac_matching import match_canonical_term_pattern
+            from d810.mba.ac_matching import (
+                AcMatchStopReason,
+                match_canonical_term_pattern,
+            )
             from d810.mba.canonical_pattern import (
                 CanonicalFixedBindings,
                 CanonicalPatternMatchReport,
@@ -932,8 +987,6 @@ class IDAPatternAdapter:
                 merge_canonical_bindings,
                 resolve_canonical_match_paths,
             )
-            from d810.mba.ac_matching import AcMatchStopReason
-
             if not lowering_provided:
                 lowering = self.prepare_structural_candidate(test_ast)
             if lowering is None:
@@ -957,11 +1010,18 @@ class IDAPatternAdapter:
                 )
                 if getattr(self, "_certified_catalogue_rule_id", None) not in bucket:
                     return None
-            report = match_canonical_term_pattern(
-                template,
-                lowering.term,
-                comparison_budget=comparison_budget,
-            )
+            try:
+                report = match_canonical_term_pattern(
+                    template,
+                    lowering.term,
+                    comparison_budget=comparison_budget,
+                )
+            except Exception as exc:
+                raise CanonicalFallbackError("matcher", exc) from exc
+            if report.stop_reason.value == "comparison_budget":
+                # The matcher may retain matches found before it hit the cap;
+                # those partial results are never candidates for this root.
+                report = replace(report, matches=(), compatibility_bindings=None)
             if report.matches:
                 valid_matches = []
                 for match in report.matches:
@@ -973,11 +1033,15 @@ class IDAPatternAdapter:
                     except ValueError:
                         continue
                     terms = dict(base_bindings.terms)
-                    if not evaluate_frozen_constraints(
-                        match.compiled_pattern.constraints,
-                        terms,
-                        width=lowering.term.width,
-                    ):
+                    try:
+                        constraints_match = evaluate_frozen_constraints(
+                            match.compiled_pattern.constraints,
+                            terms,
+                            width=lowering.term.width,
+                        )
+                    except Exception as exc:
+                        raise CanonicalFallbackError("constraint", exc) from exc
+                    if not constraints_match:
                         continue
                     valid_matches.append(
                         replace(
@@ -1017,14 +1081,17 @@ class IDAPatternAdapter:
                     raw_paths = raw_paths_by_identity.get(id(native), ())
                     if len(raw_paths) == 1:
                         canonical_to_raw_paths[canonical_path] = raw_paths[0]
-                resolved_matches = resolve_canonical_match_paths(
-                    report.matches,
-                    canonical_to_raw_paths=canonical_to_raw_paths,
-                    placeholder_order=(
-                        name for _kind, name in template.terminal_kinds
-                    ),
-                    required_names=required_names,
-                )
+                try:
+                    resolved_matches = resolve_canonical_match_paths(
+                        report.matches,
+                        canonical_to_raw_paths=canonical_to_raw_paths,
+                        placeholder_order=(
+                            name for _kind, name in template.terminal_kinds
+                        ),
+                        required_names=required_names,
+                    )
+                except Exception as exc:
+                    raise CanonicalFallbackError("provenance", exc) from exc
                 if not resolved_matches:
                     native_path_unavailable = True
                     self._provenance_rejection_count += 1
@@ -1049,9 +1116,13 @@ class IDAPatternAdapter:
             self._shadow_structural_native_paths = structural_native_paths
             self._shadow_native_path_unavailable = native_path_unavailable
             return report
-        except Exception:
-            # Shadow telemetry must never widen the legacy callback failure set.
-            return None
+        except CanonicalFallbackError as exc:
+            logger.debug(
+                "Canonical fallback stage failed for %s: %s",
+                getattr(self.rule, "name", "<unnamed>"),
+                exc,
+            )
+            raise
 
     def _matcher_metadata(self) -> MatcherOutcomeMetadata | None:
         raw_receipt = getattr(
@@ -1069,7 +1140,8 @@ class IDAPatternAdapter:
             return None
         if report is None:
             stop_reason = (
-                "fallback_unavailable"
+                getattr(self, "_canonical_fallback_stop_reason", None)
+                or "fallback_unavailable"
                 if structural_selection
                 else (
                     "matched"
