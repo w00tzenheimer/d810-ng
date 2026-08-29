@@ -11,9 +11,13 @@ from __future__ import annotations
 import os
 import platform
 import hashlib
+import cProfile
+import gc
+import io
+import pstats
 import statistics
-import subprocess
 import time
+import tracemalloc
 from types import SimpleNamespace
 
 import pytest
@@ -138,6 +142,27 @@ def _ast_projection(ast) -> tuple[object, ...] | None:
         int(getattr(ast, "dest_size", 0) or 0),
         _mop_projection(getattr(ast, "mop", None)),
     )
+
+
+def _benchmark_ast_shape(ast) -> tuple[object, ...] | None:
+    """Return a backend-independent shape identity for benchmark evidence."""
+    if ast is None:
+        return None
+    if ast.is_node():
+        return (
+            "node",
+            int(ast.opcode),
+            int(getattr(ast, "dest_size", 0) or 0),
+            _benchmark_ast_shape(getattr(ast, "left", None)),
+            _benchmark_ast_shape(getattr(ast, "right", None)),
+        )
+    if ast.is_constant():
+        return (
+            "constant",
+            int(getattr(ast, "dest_size", 0) or 0),
+            getattr(ast, "value", None),
+        )
+    return ("leaf", int(getattr(ast, "dest_size", 0) or 0))
 
 
 def _resolver_projection(ast) -> tuple[object, ...] | None:
@@ -833,6 +858,30 @@ class TestCanonicalFallbackWorkBounds:
 
         for _ in range(10):
             callback()
+        profile_iterations = 1000
+        profiler = cProfile.Profile()
+        profiler.enable()
+        for _ in range(profile_iterations):
+            callback()
+        profiler.disable()
+        profile_stream = io.StringIO()
+        pstats.Stats(profiler, stream=profile_stream).strip_dirs().sort_stats(
+            "cumulative"
+        ).print_stats(8)
+
+        gc.collect()
+        tracemalloc.start()
+        allocation_before = tracemalloc.get_traced_memory()[0]
+        for _ in range(profile_iterations):
+            callback()
+        gc.collect()
+        allocation_current, allocation_peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        calls["profile_iterations"] = profile_iterations
+        calls["profile"] = profile_stream.getvalue()
+        calls["allocation_before_bytes"] = allocation_before
+        calls["allocation_current_bytes"] = allocation_current
+        calls["allocation_peak_bytes"] = allocation_peak
         samples: list[float] = []
         for _ in range(40):
             started = time.perf_counter()
@@ -860,8 +909,24 @@ class TestCanonicalFallbackWorkBounds:
         # Logging is not part of the callback budget and would dominate the
         # sub-millisecond samples below.
         monkeypatch.setattr(optimizer_logger, "disabled", True)
+        from d810.mba import canonical_pattern
+
+        catalogue_compilations = 0
+        native_compile = canonical_pattern.compile_canonical_pattern
+
+        def count_catalogue_compile(*args, **kwargs):
+            nonlocal catalogue_compilations
+            catalogue_compilations += 1
+            return native_compile(*args, **kwargs)
+
+        monkeypatch.setattr(
+            canonical_pattern,
+            "compile_canonical_pattern",
+            count_catalogue_compile,
+        )
         ast = next(ast for ast, _ins in real_asts if ast.is_node())
-        digest = hashlib.sha256(repr(_ast_projection(ast)).encode()).hexdigest()
+        digest = hashlib.sha256(repr(_benchmark_ast_shape(ast)).encode()).hexdigest()
+        benchmark_commit = os.environ.get("D810_BENCHMARK_COMMIT", "not supplied")
         baseline, baseline_calls = self._sample_raw_hit(ast, fallback_enabled=False)
         candidate, candidate_calls = self._sample_raw_hit(ast, fallback_enabled=True)
         fallback, fallback_calls = self._sample_fallback_hit(ast)
@@ -875,20 +940,31 @@ class TestCanonicalFallbackWorkBounds:
         assert raw_p95_regression <= 0.10, raw_p95_regression
         assert baseline_calls["fallback"] == 0
         assert candidate_calls["fallback"] == 0
-        assert fallback_calls["fallback"] == 40 * 5000 + 10
+        callback_count = 10 + fallback_calls["profile_iterations"] * 2 + 40 * 5000
+        assert fallback_calls["fallback"] == callback_count
+        assert fallback_calls["prepare"] == (
+            callback_count
+        )
+        assert fallback_calls["allocation_peak_bytes"] < 10 * 1024 * 1024
+        assert catalogue_compilations == 0
         self._append_performance_receipt(
             "\n## Task 7 callback benchmark\n\n"
-            f"- Commit: `{subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()}`\n"
+            f"- Host worktree commit: `{benchmark_commit}`\n"
             f"- Docker image: `{os.environ.get('D810_TEST_RUNTIME_IMAGE', 'unknown')}` (`{os.environ.get('D810_TEST_RUNTIME_IMAGE_ID', 'unknown')}`)\n"
             f"- Runtime backend: `{get_engine_info()['backend']}`; `D810_NO_CYTHON={os.environ.get('D810_NO_CYTHON', '1')}`\n"
-            "- Commands: `./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-benchmark-python.txt -- tests/system/runtime/test_pattern_engine_benchmark.py -k CanonicalFallbackWorkBounds -q`; Cython: `D810_NO_CYTHON=0 ./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-benchmark-cython.txt -- tests/system/runtime/test_pattern_engine_benchmark.py -k CanonicalFallbackWorkBounds -q`\n"
-            "- Mode comparison: fallback registry absent (baseline) versus present (candidate); identical pytest fixture/rules/cache policy\n"
+            "- Commands: `D810_BENCHMARK_COMMIT=$(git -C .worktrees/canonical-mba-matcher-fallback rev-parse HEAD) ./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-benchmark-python5.txt -- tests/system/runtime/test_pattern_engine_benchmark.py -k CanonicalFallbackWorkBounds -q`; Cython: `D810_BENCHMARK_COMMIT=$(git -C .worktrees/canonical-mba-matcher-fallback rev-parse HEAD) D810_NO_CYTHON=0 ./tools/scripts/run_system_tests_docker.sh test -w canonical-mba-matcher-fallback -o task7-benchmark-cython3.txt -- tests/system/runtime/test_pattern_engine_benchmark.py -k CanonicalFallbackWorkBounds -q`\n"
+            "- Mode comparison: fallback registry absent (baseline) versus present (candidate); identical pytest fixture/rules/cache policy. This isolates callback cost in one process; it is not presented as an environment-flag timing comparison.\n"
             f"- Corpus digest: `{digest}` (one live `real_asts` AST)\n"
             "- Samples: 40 x 5000 callback iterations after 10 warmups; values are seconds/callback\n"
             f"- Raw-hit baseline: median `{baseline_median:.9g}`, p95 `{baseline_p95:.9g}`\n"
             f"- Raw-hit fallback-enabled: median `{candidate_median:.9g}`, p95 `{candidate_p95:.9g}`, median delta `{raw_regression:.2%}`, p95 delta `{raw_p95_regression:.2%}`\n"
             f"- Controlled raw-miss/fallback-hit: median `{statistics.median(fallback):.9g}`, p95 `{self._p95(fallback):.9g}`; fallback calls `{fallback_calls['fallback']}`; max comparisons `64` (verified independently by the live compiler-shape receipt, not this callback stub)\n"
+            f"- Callback counts: canonical catalogue compilation `{catalogue_compilations}`; shared structural lowerings `{fallback_calls['prepare']}` for `{fallback_calls['fallback']}` fallback callbacks; additional per-rule lowering `0`\n"
+            f"- Allocation observation: `{fallback_calls['profile_iterations'] * 2}` un-timed callbacks, peak traced allocation `{fallback_calls['allocation_peak_bytes']}` bytes, retained current `{fallback_calls['allocation_current_bytes']}` bytes after GC (growth `{fallback_calls['allocation_current_bytes'] - fallback_calls['allocation_before_bytes']}` bytes)\n"
             "- Work counts: raw-hit canonical lowering/comparisons `0/0`; clean-miss lowering `1` shared by eligible bucket; fallback budget separate from raw budget\n"
+            "- Dominant callback paths (cProfile, cumulative):\n"
+            + "\n".join(f"  {line}" for line in fallback_calls["profile"].strip().splitlines())
+            + "\n"
             "- Cache contract: callback-owned canonical lowering/report/path/binding state is asserted cleared by the compiler-shape corpus gate.\n"
         )
 
