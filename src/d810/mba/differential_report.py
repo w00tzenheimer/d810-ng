@@ -262,7 +262,11 @@ class MbaCorpusCaseReport:
             if any(
                 outcome.status is not ProviderOutcomeStatus.UNAVAILABLE
                 or outcome.refusal_reason
-                not in {"native_candidate_not_observed", "native_candidate_ambiguous"}
+                not in {
+                    "native_candidate_not_observed",
+                    "native_candidate_ambiguous",
+                    "raw_identity_profile_unavailable",
+                }
                 for outcome in self.outcomes
             ):
                 raise ValueError(

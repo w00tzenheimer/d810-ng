@@ -8,6 +8,9 @@ masked-operand rule with unknown ``x`` and ``y`` leaves.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from d810.backends.mba.compiled_pattern_catalogue import (
@@ -19,10 +22,14 @@ from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.mba.ac_matching import AcMatchStopReason
 from d810.mba.certified_rule_compiler import CompiledMbaRule, _enroll_admitted_rule
 from d810.mba.dsl import Const, SymbolicExpression, Var
+from d810.mba.native_corpus_capture import profiles_from_native_provider_histories
+from d810.mba.provider_outcome import MbaProviderKind, MbaProviderOutcome, ProviderOutcomeStatus
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.catalogue import MBA_RULE_FAMILIES
 from d810.mba.typed_term import TypedBvTerm
-from tests.unit.mba._compiled_rule_fixture import admitted_rule
+
+
+_RECEIPT_MANIFEST = Path(__file__).resolve().parents[2] / "fixtures/mba/certification_receipts.json"
 
 
 def _leaf(name: str, width: int = 32) -> NativeMbaTermView:
@@ -47,20 +54,20 @@ def _node(
     )
 
 
-def _certified_descriptor_fixture(
+def _matcher_only_descriptor_fixture(
     name: str,
     pattern: SymbolicExpression,
     replacement: SymbolicExpression | None = None,
     *,
     proof_widths: tuple[int, ...] = (32,),
 ) -> CompiledMbaRule:
-    """Enroll a controlled certified descriptor for matcher-only coverage."""
+    """Bypass verification for a controlled descriptor used only mechanically."""
     rule_type = type(
         name,
         (VerifiableRule,),
         {
             "PATTERN": pattern,
-            "REPLACEMENT": replacement if replacement is not None else Var("x"),
+            "REPLACEMENT": replacement if replacement is not None else pattern,
             "CONSTRAINTS": (),
         },
     )
@@ -69,11 +76,63 @@ def _certified_descriptor_fixture(
     )
 
 
-def _catalogue_rule(family: str, name: str) -> CompiledMbaRule:
-    rule_type = next(
-        rule for rule in MBA_RULE_FAMILIES[family] if rule.__name__ == name
+def _authoritative_descriptor_fixture(family: str, name: str) -> CompiledMbaRule:
+    """Use the checked-in production certificate and its source descriptor.
+
+    The default matcher gate deliberately does not rerun the full Z3 catalogue
+    compilation.  The receipt manifest is checked by the certification tests;
+    this fixture binds that certified source descriptor to the matcher-only
+    mechanics without presenting the fixture as a new production admission.
+    """
+    manifest = json.loads(_RECEIPT_MANIFEST.read_text(encoding="ascii"))
+    receipt = next(
+        item
+        for item in manifest["receipts"]
+        if item["family"] == family and item["source_name"] == name
     )
-    return admitted_rule(rule_type, family=family)
+    assert receipt["status"] == "compiled"
+    assert receipt["canonical_name"] == name
+    rule_type = next(
+        candidate
+        for candidate in MBA_RULE_FAMILIES[family]
+        if candidate.__name__ == name
+    )
+    from tools.scripts.render_mba_certification_receipts import _fingerprint
+
+    assert receipt["semantic_fingerprint"] == _fingerprint(rule_type)
+    return _matcher_only_descriptor_fixture(
+        name,
+        rule_type().pattern,
+        rule_type().replacement,
+        proof_widths=(8, 16, 32, 64),
+    )
+
+
+@pytest.mark.slow
+def test_motivating_rule_is_currently_admitted_by_production_catalogue() -> None:
+    """Keep the motivating corpus row tied to the live admission gate."""
+    from d810.mba.certified_rule_compiler import (
+        RuleCompilationStatus,
+        compile_mba_rule_catalogue,
+    )
+
+    receipt = compile_mba_rule_catalogue().receipt_for(
+        "or", "Or_EidRepeatedMaskedOperand_1"
+    )
+    assert receipt.status is RuleCompilationStatus.COMPILED
+    assert receipt.compiled_rule is not None
+    assert receipt.compiled_rule.proof_widths == (8, 16, 32, 64)
+
+
+def test_raw_native_identity_is_not_a_semantic_profile_candidate() -> None:
+    raw = MbaProviderOutcome(
+        provider=MbaProviderKind.CATALOGUE,
+        status=ProviderOutcomeStatus.APPLIED,
+        fingerprint="raw:legacy-native",
+        metadata={"raw_native_identity": {"opcode": "add"}},
+    )
+
+    assert profiles_from_native_provider_histories((_HistoryProvider(raw),)) == ()
 
 
 def _typed_leaf(name: str, width: int = 32) -> TypedBvTerm:
@@ -84,6 +143,14 @@ def _typed_node(
     operation: str, *children: TypedBvTerm, width: int = 32
 ) -> TypedBvTerm:
     return TypedBvTerm(operation, width, children=children)
+
+
+class _HistoryProvider:
+    def __init__(self, *outcomes):
+        self._outcomes = outcomes
+
+    def provider_outcomes(self):
+        return self._outcomes
 
 
 def _eid_repeated_mask_candidate() -> NativeMbaTermView:
@@ -123,7 +190,7 @@ def test_motivating_unknown_xy_shape_uses_canonical_fallback() -> None:
         REPEATED_OPERAND_MASK,
     )
 
-    rule = admitted_rule(Or_EidRepeatedMaskedOperand_1, family="eid")
+    rule = _authoritative_descriptor_fixture("or", Or_EidRepeatedMaskedOperand_1.__name__)
     catalogue = CompiledPatternCatalogue.from_rules((rule,))
     x, y = _leaf("x"), _leaf("y")
     masked_y = _node("and", y, _constant(REPEATED_OPERAND_MASK.value))
@@ -162,11 +229,11 @@ def test_motivating_unknown_xy_shape_uses_canonical_fallback() -> None:
 
 
 @pytest.mark.parametrize(
-    ("case", "rule", "candidate", "selection", "stop_reason", "proof"),
+    ("case", "rule", "candidate", "selection", "stop_reason", "expected_match"),
     (
         (
             "ac_commute",
-            _catalogue_rule("add", "Add_HackersDelightRule_2"),
+            _authoritative_descriptor_fixture("add", "Add_HackersDelightRule_2"),
             _node(
                 "add",
                 _node("mul", _constant(2), _node("and", _leaf("y"), _leaf("x"))),
@@ -178,7 +245,7 @@ def test_motivating_unknown_xy_shape_uses_canonical_fallback() -> None:
         ),
         (
             "ac_associate_equal_arity",
-            _certified_descriptor_fixture("AcThree", Var("x") + Var("y") + Var("z")),
+            _matcher_only_descriptor_fixture("AcThree", Var("x") + Var("y") + Var("z")),
             _node("add", _leaf("x"), _node("add", _leaf("y"), _leaf("z"))),
             NativeMatchSelection.RAW_POD,
             NativeMatchStopReason.MATCHED,
@@ -186,7 +253,7 @@ def test_motivating_unknown_xy_shape_uses_canonical_fallback() -> None:
         ),
         (
             "add_neg_to_sub_root_change",
-            _certified_descriptor_fixture("AddNegToSub", Var("x") + -Var("y"), Var("x") - Var("y")),
+            _matcher_only_descriptor_fixture("AddNegToSub", Var("x") + -Var("y"), Var("x") - Var("y")),
             _node("sub", _leaf("x"), _leaf("y")),
             NativeMatchSelection.CANONICAL_FALLBACK,
             NativeMatchStopReason.MATCHED,
@@ -194,7 +261,7 @@ def test_motivating_unknown_xy_shape_uses_canonical_fallback() -> None:
         ),
         (
             "double_negation",
-            _certified_descriptor_fixture(
+            _matcher_only_descriptor_fixture(
                 "DoubleNegation", (-(-Var("x"))) + Var("y"), Var("x") + Var("y")
             ),
             _node("add", _leaf("x"), _leaf("y")),
@@ -204,7 +271,7 @@ def test_motivating_unknown_xy_shape_uses_canonical_fallback() -> None:
         ),
         (
             "negative_modular_coefficient",
-            _catalogue_rule("xor", "Xor_HackersDelightRule_3"),
+            _authoritative_descriptor_fixture("xor", "Xor_HackersDelightRule_3"),
             _node(
                 "add",
                 _node("add", _leaf("x"), _leaf("y")),
@@ -222,14 +289,14 @@ def test_positive_canonical_shapes_have_stable_selection_receipts(
     candidate: NativeMbaTermView,
     selection: NativeMatchSelection,
     stop_reason: NativeMatchStopReason,
-    proof: bool,
+    expected_match: bool,
 ) -> None:
     result = CompiledPatternCatalogue.from_rules((rule,)).match_root(candidate)
 
     assert case
     assert result.selection is selection
     assert result.stop_reason is stop_reason
-    assert bool(result.matches) is proof
+    assert bool(result.matches) is expected_match
     assert result.matches
     assert tuple(match.rule for match in result.matches) == (rule,) * len(result.matches)
     assert result.fallback_comparisons == (
@@ -242,7 +309,7 @@ def test_positive_canonical_shapes_have_stable_selection_receipts(
 
 def test_fallback_replacement_is_materialized_from_exact_source_bindings() -> None:
     x, y = _leaf("x"), _leaf("y")
-    rule = _certified_descriptor_fixture("ExactBindings", Var("x") + -Var("y"), Var("x") - Var("y"))
+    rule = _matcher_only_descriptor_fixture("ExactBindings", Var("x") + -Var("y"), Var("x") - Var("y"))
     result = CompiledPatternCatalogue.from_rules((rule,)).match_root(_node("sub", x, y))
 
     assert result.selection is NativeMatchSelection.CANONICAL_FALLBACK
@@ -255,18 +322,18 @@ def test_fallback_replacement_is_materialized_from_exact_source_bindings() -> No
 
 
 @pytest.mark.parametrize(
-    ("case", "rule", "candidate", "stop_reason", "proof"),
+    ("case", "rule", "candidate", "stop_reason", "expected_match"),
     (
         (
             "wildcard_absorbing_ac_submultiset",
-            _certified_descriptor_fixture("TwoOperandWildcard", Var("left") + Var("right")),
+            _matcher_only_descriptor_fixture("TwoOperandWildcard", Var("left") + Var("right")),
             _node("add", _node("add", _leaf("x"), _leaf("y")), _leaf("z")),
             NativeMatchStopReason.CANONICAL_MISS,
             False,
         ),
         (
             "repeated_masked_subtree_requires_atomization",
-            _certified_descriptor_fixture(
+            _matcher_only_descriptor_fixture(
                 "GeneralEidAtomicOperand",
                 (Var("x") ^ Var("y"))
                 - (
@@ -282,35 +349,35 @@ def test_fallback_replacement_is_materialized_from_exact_source_bindings() -> No
         ),
         (
             "unsupported_call",
-            _certified_descriptor_fixture("CallBlocker", Var("x") + Var("y")),
+            _matcher_only_descriptor_fixture("CallBlocker", Var("x") + Var("y")),
             _node("call", _leaf("x"), _leaf("y")),
             NativeMatchStopReason.RAW_UNSUPPORTED,
             False,
         ),
         (
             "unsupported_load",
-            _certified_descriptor_fixture("LoadBlocker", Var("x") + Var("y")),
+            _matcher_only_descriptor_fixture("LoadBlocker", Var("x") + Var("y")),
             _node("load", _leaf("x"), _leaf("y")),
             NativeMatchStopReason.RAW_UNSUPPORTED,
             False,
         ),
         (
             "unsupported_store",
-            _certified_descriptor_fixture("StoreBlocker", Var("x") + Var("y")),
+            _matcher_only_descriptor_fixture("StoreBlocker", Var("x") + Var("y")),
             _node("store", _leaf("x"), _leaf("y")),
             NativeMatchStopReason.RAW_UNSUPPORTED,
             False,
         ),
         (
             "unsupported_cast",
-            _certified_descriptor_fixture("CastBlocker", Var("x") + Var("y")),
+            _matcher_only_descriptor_fixture("CastBlocker", Var("x") + Var("y")),
             _node("cast", _leaf("x"), _leaf("y")),
             NativeMatchStopReason.RAW_UNSUPPORTED,
             False,
         ),
         (
             "unsupported_shift",
-            _certified_descriptor_fixture("ShiftBlocker", Var("x") + Var("y")),
+            _matcher_only_descriptor_fixture("ShiftBlocker", Var("x") + Var("y")),
             _node("shl", _leaf("x"), width=32, shift_count=5),
             NativeMatchStopReason.CANONICAL_MISS,
             False,
@@ -322,13 +389,13 @@ def test_negative_shapes_are_explicit_no_match_receipts(
     rule: CompiledMbaRule,
     candidate: NativeMbaTermView,
     stop_reason: NativeMatchStopReason,
-    proof: bool,
+    expected_match: bool,
 ) -> None:
     result = CompiledPatternCatalogue.from_rules((rule,)).match_root(candidate)
 
     assert case
-    assert bool(result.matches) is proof
-    assert proof is False
+    assert bool(result.matches) is expected_match
+    assert expected_match is False
     assert result.matches == ()
     assert result.selection is NativeMatchSelection.NONE
     assert result.stop_reason is stop_reason
@@ -347,7 +414,7 @@ def test_ambiguous_shift_is_rejected_before_matching() -> None:
 def test_synthetic_binding_path_is_provenance_rejected() -> None:
     captured = Const("captured")
     value = Var("value")
-    rule = _certified_descriptor_fixture("SyntheticBinding", value + captured, captured)
+    rule = _matcher_only_descriptor_fixture("SyntheticBinding", value + captured)
     candidate = _node("add", _leaf("x"), _node("neg", _constant(-5)))
 
     result = CompiledPatternCatalogue.from_rules((rule,)).match_root(candidate)
@@ -360,7 +427,7 @@ def test_synthetic_binding_path_is_provenance_rejected() -> None:
 def test_fallback_budget_exhaustion_has_no_match_and_no_proof_candidate(monkeypatch) -> None:
     from d810.mba.canonical_pattern import CanonicalPatternMatchReport
 
-    rule = _catalogue_rule("add", "Add_HackersDelightRule_2")
+    rule = _authoritative_descriptor_fixture("add", "Add_HackersDelightRule_2")
     catalogue = CompiledPatternCatalogue.from_rules((rule,))
     candidate = _node("sub", _leaf("x"), _leaf("y"))
 

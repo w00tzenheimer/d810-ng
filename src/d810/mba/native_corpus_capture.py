@@ -27,6 +27,8 @@ from d810.mba.provider_outcome import (
 
 _NATIVE_PROFILE_METADATA_KEY = "native_profile"
 _NATIVE_CANDIDATE_NOT_OBSERVED = "native_candidate_not_observed"
+_RAW_NATIVE_IDENTITY_METADATA_KEY = "raw_native_identity"
+_RAW_IDENTITY_PROFILE_UNAVAILABLE = "raw_identity_profile_unavailable"
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,7 @@ class NativeCaptureSelection:
         elif self.unavailable_reason not in {
             _NATIVE_CANDIDATE_NOT_OBSERVED,
             "native_candidate_ambiguous",
+            _RAW_IDENTITY_PROFILE_UNAVAILABLE,
         }:
             raise ValueError("unknown native capture unavailable reason")
 
@@ -95,6 +98,14 @@ def native_profile_from_outcome(outcome: MbaProviderOutcome) -> MbaIslandProfile
 
 def _has_native_profile(outcome: MbaProviderOutcome) -> bool:
     return isinstance((outcome.metadata or {}).get(_NATIVE_PROFILE_METADATA_KEY), Mapping)
+
+
+def _is_raw_native_identity_outcome(outcome: MbaProviderOutcome) -> bool:
+    """Return whether an accepted legacy raw match lacks semantic profile data."""
+
+    return isinstance(
+        (outcome.metadata or {}).get(_RAW_NATIVE_IDENTITY_METADATA_KEY), Mapping
+    ) and not _has_native_profile(outcome)
 
 
 def _native_profile_key_present(outcome: MbaProviderOutcome) -> bool:
@@ -176,7 +187,9 @@ def profiles_from_native_provider_histories(
     profiles: dict[str, MbaIslandProfile] = {}
     for rule in rules:
         for outcome in _history_for_provider(rule, history_snapshot):
-            if outcome.fingerprint == "profile_unavailable":
+            if outcome.fingerprint == "profile_unavailable" or _is_raw_native_identity_outcome(
+                outcome
+            ):
                 continue
             profile = native_profile_from_outcome(outcome)
             previous = profiles.setdefault(profile.fingerprint, profile)
